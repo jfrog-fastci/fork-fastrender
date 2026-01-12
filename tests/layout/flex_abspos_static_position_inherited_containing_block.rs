@@ -45,20 +45,37 @@ fn abspos_static_position_is_rebased_when_flex_container_uses_inherited_containi
   abs_style.height = Some(Length::px(10.0));
 
   let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
-  let flex = BoxNode::new_block(Arc::new(flex_style), FormattingContextType::Flex, vec![abs_child]);
-  let root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![flex]);
+  let flex = BoxNode::new_block(
+    Arc::new(flex_style),
+    FormattingContextType::Flex,
+    vec![abs_child],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![flex],
+  );
 
   let constraints = LayoutConstraints::definite(200.0, 200.0);
   let fc = BlockFormattingContext::new();
   let fragment = fc.layout(&root, &constraints).expect("block layout");
 
-  assert_eq!(fragment.children.len(), 1, "flex container fragment should be present");
+  assert_eq!(
+    fragment.children.len(),
+    1,
+    "flex container fragment should be present"
+  );
   let flex_fragment = &fragment.children[0];
 
   let abs_fragment = flex_fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute-positioned child fragment should exist");
 
   assert!(
@@ -68,4 +85,3 @@ fn abspos_static_position_is_rebased_when_flex_container_uses_inherited_containi
     abs_fragment.bounds.y()
   );
 }
-

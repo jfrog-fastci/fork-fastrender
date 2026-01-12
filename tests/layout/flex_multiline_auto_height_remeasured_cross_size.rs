@@ -93,4 +93,3 @@ fn flex_multiline_auto_height_accumulates_remeasured_line_cross_sizes() {
     layout.size.height
   );
 }
-

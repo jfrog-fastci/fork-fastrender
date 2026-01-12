@@ -54,4 +54,3 @@ fn filter_blur_halo_is_preserved_outside_overflow_clip() {
   // Center of the clipped area: fully covered by the original element, so should remain solid blue.
   assert_eq!(rgba_at(&pixmap, 50, 100), [0, 0, 255, 255]);
 }
-

@@ -174,7 +174,13 @@ pub fn build_accessibility_tree(
   let mut aria_hidden = HashMap::new();
   let mut node_scope = HashMap::new();
   let mut ids_by_scope: HashMap<usize, HashMap<String, usize>> = HashMap::new();
-  compute_hidden_and_scoped_ids(root, &mut hidden, &mut aria_hidden, &mut node_scope, &mut ids_by_scope)?;
+  compute_hidden_and_scoped_ids(
+    root,
+    &mut hidden,
+    &mut aria_hidden,
+    &mut node_scope,
+    &mut ids_by_scope,
+  )?;
 
   let labels = collect_labels(root, &node_scope, &ids_by_scope, &lookup)?;
 
@@ -247,7 +253,10 @@ pub fn accessibility_tree_json(root: &StyledNode) -> serde_json::Value {
   }
 }
 
-fn build_styled_lookup<'a>(root: &'a StyledNode, out: &mut HashMap<usize, &'a StyledNode>) -> Result<()> {
+fn build_styled_lookup<'a>(
+  root: &'a StyledNode,
+  out: &mut HashMap<usize, &'a StyledNode>,
+) -> Result<()> {
   let mut stack: Vec<&'a StyledNode> = vec![root];
   let mut counter = 0usize;
   while let Some(node) = stack.pop() {
@@ -759,11 +768,9 @@ impl<'a, 'state> BuildContext<'a, 'state> {
                 frame.presentational = presentational;
 
                 // Script/style never contribute to the text alternative.
-                if frame
-                  .tag
-                  .as_deref()
-                  .is_some_and(|t| t.eq_ignore_ascii_case("script") || t.eq_ignore_ascii_case("style"))
-                {
+                if frame.tag.as_deref().is_some_and(|t| {
+                  t.eq_ignore_ascii_case("script") || t.eq_ignore_ascii_case("style")
+                }) {
                   pending = Some(Some(String::new()));
                   continue;
                 }
@@ -862,7 +869,9 @@ impl<'a, 'state> BuildContext<'a, 'state> {
               ElementStep::NativeName => {
                 let child = match tag {
                   Some("fieldset") => first_child_with_tag(node, self, "legend", false, frame.mode),
-                  Some("figure") => first_child_with_tag(node, self, "figcaption", true, frame.mode),
+                  Some("figure") => {
+                    first_child_with_tag(node, self, "figcaption", true, frame.mode)
+                  }
                   Some("table") => first_child_with_tag(node, self, "caption", true, frame.mode),
                   _ => None,
                 };
@@ -1092,11 +1101,9 @@ impl<'a, 'state> BuildContext<'a, 'state> {
                 stack.push(Frame::Node(frame));
               }
               ElementStep::NameFromContent => {
-                let mut allows_content = self.allows_name_from_content(
-                  node,
-                  role,
-                  frame.allow_name_from_content,
-                ) && allows_visible_text_name(tag, role);
+                let mut allows_content =
+                  self.allows_name_from_content(node, role, frame.allow_name_from_content)
+                    && allows_visible_text_name(tag, role);
 
                 if allows_content
                   && tag.is_some_and(|t| t.eq_ignore_ascii_case("dialog"))
@@ -1380,7 +1387,10 @@ fn clone_dom_subtree(node: &StyledNode) -> DomNode {
   root
 }
 
-fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>) -> Vec<AccessibilityNode> {
+fn build_nodes<'a, 'state>(
+  node: &'a StyledNode,
+  ctx: &BuildContext<'a, 'state>,
+) -> Vec<AccessibilityNode> {
   if ctx.is_hidden(node) {
     return Vec::new();
   }
@@ -1467,8 +1477,11 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
         let dom_subtree = needs_dom_subtree.then(|| clone_dom_subtree(node));
         let element_ref_node = dom_subtree.as_ref().unwrap_or(&node.node);
         let element_ref = ElementRef::with_ancestors(element_ref_node, dom_ancestors.as_slice());
-        let (mut role, presentational_role, role_from_attr) =
-          compute_role(node, dom_ancestors.as_slice(), styled_ancestors.last().copied());
+        let (mut role, presentational_role, role_from_attr) = compute_role(
+          node,
+          dom_ancestors.as_slice(),
+          styled_ancestors.last().copied(),
+        );
 
         // `<legend>` content is used to compute the accessible name for its owning `<fieldset>`; do
         // not expose it as a separate node unless the author explicitly assigns an ARIA role.
@@ -1516,8 +1529,13 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
           }
 
           let checked = compute_checked(node, role.as_deref(), &element_ref);
-          let selected =
-            compute_selected(node, role.as_deref(), &element_ref, styled_ancestors.as_slice(), ctx);
+          let selected = compute_selected(
+            node,
+            role.as_deref(),
+            &element_ref,
+            styled_ancestors.as_slice(),
+            ctx,
+          );
           let pressed = compute_pressed(node, role.as_deref(), ctx);
           let busy = attr_truthy(&node.node, "aria-busy");
           let modal = compute_modal(&node.node);
@@ -1537,8 +1555,10 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
             && ctx
               .interaction_state
               .is_some_and(|state| state.is_focused(node.node_id));
-          let focus_visible =
-            focused && ctx.interaction_state.is_some_and(|state| state.focus_visible);
+          let focus_visible = focused
+            && ctx
+              .interaction_state
+              .is_some_and(|state| state.focus_visible);
           let readonly = compute_readonly(&node.node, role.as_deref(), &element_ref);
           let value = compute_value(node, role.as_deref(), &element_ref, ctx);
           let level = compute_level(&node.node, role.as_deref());
@@ -1716,7 +1736,8 @@ fn collect_labels(
   ) -> Result<Option<&'a StyledNode>> {
     let mut stack: Vec<&'a StyledNode> = node.children.iter().rev().collect();
     while let Some(current) = stack.pop() {
-      render_control::check_active_periodic(counter, 1024, RenderStage::BoxTree).map_err(Error::Render)?;
+      render_control::check_active_periodic(counter, 1024, RenderStage::BoxTree)
+        .map_err(Error::Render)?;
 
       if matches!(current.node.node_type, DomNodeType::ShadowRoot { .. }) {
         continue;
@@ -1746,7 +1767,8 @@ fn collect_labels(
   let mut counter = 0usize;
 
   while let Some(node) = stack.pop() {
-    render_control::check_active_periodic(&mut counter, 1024, RenderStage::BoxTree).map_err(Error::Render)?;
+    render_control::check_active_periodic(&mut counter, 1024, RenderStage::BoxTree)
+      .map_err(Error::Render)?;
 
     let is_label = node
       .node
@@ -1891,8 +1913,7 @@ fn compute_aria_owns<'a>(
         continue;
       }
 
-      let Some(target_id) =
-        node_id_for_id_scoped(node_scope, ids_by_scope, owner.node_id, token)
+      let Some(target_id) = node_id_for_id_scoped(node_scope, ids_by_scope, owner.node_id, token)
       else {
         continue;
       };
@@ -2786,9 +2807,7 @@ fn collect_selected_option_text(
     let next_optgroup_disabled =
       optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-    if is_option
-      && current.node.get_attribute_ref("selected").is_some()
-      && !ctx.is_hidden(current)
+    if is_option && current.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(current)
     {
       out.push(option_label_text(current, ctx));
     }
@@ -2823,9 +2842,7 @@ fn find_selected_option_text(
     let next_optgroup_disabled =
       optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-    if is_option
-      && current.node.get_attribute_ref("selected").is_some()
-      && !ctx.is_hidden(current)
+    if is_option && current.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(current)
     {
       selected = Some(option_label_text(current, ctx));
     }
@@ -3008,9 +3025,7 @@ fn find_selected_option_node_id(
     let next_optgroup_disabled =
       optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-    if is_option
-      && current.node.get_attribute_ref("selected").is_some()
-      && !ctx.is_hidden(current)
+    if is_option && current.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(current)
     {
       selected = Some(current.node_id);
     }
@@ -3837,7 +3852,11 @@ fn compute_selected(
   None
 }
 
-fn compute_pressed(node: &StyledNode, role: Option<&str>, ctx: &BuildContext<'_, '_>) -> Option<PressedState> {
+fn compute_pressed(
+  node: &StyledNode,
+  role: Option<&str>,
+  ctx: &BuildContext<'_, '_>,
+) -> Option<PressedState> {
   if let Some(state) = parse_pressed_state(&node.node, "aria-pressed") {
     return Some(state);
   }
@@ -4195,7 +4214,11 @@ mod tests {
 
   #[test]
   fn accessibility_tree_build_is_stack_safe_for_deep_trees() {
-    fn make_styled_node(node_id: usize, node_type: DomNodeType, styles: &Arc<ComputedStyle>) -> StyledNode {
+    fn make_styled_node(
+      node_id: usize,
+      node_type: DomNodeType,
+      styles: &Arc<ComputedStyle>,
+    ) -> StyledNode {
       StyledNode {
         node_id,
         node: DomNode {
@@ -4256,10 +4279,7 @@ mod tests {
       unsafe {
         let node = &mut *current;
         node.children.push(child);
-        current = node
-          .children
-          .last_mut()
-          .expect("child was just pushed") as *mut StyledNode;
+        current = node.children.last_mut().expect("child was just pushed") as *mut StyledNode;
       }
     }
 

@@ -1,8 +1,10 @@
 use fastrender::js::{
-  fetch, EventLoop, FetchInit, HeadersInit, JsHeaders, JsPromiseValue, RunLimits, RunUntilIdleOutcome,
-  TaskSource, VirtualClock, WebFetchHost,
+  fetch, EventLoop, FetchInit, HeadersInit, JsHeaders, JsPromiseValue, RunLimits,
+  RunUntilIdleOutcome, TaskSource, VirtualClock, WebFetchHost,
 };
-use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher};
+use fastrender::resource::{
+  FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
+};
 use fastrender::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -162,7 +164,9 @@ fn fetch_forwards_request_headers() -> Result<()> {
       }),
     )?;
 
-    let _ = promise.then(event_loop, |_host, _event_loop, _response| Ok(JsPromiseValue::Value(())))?;
+    let _ = promise.then(event_loop, |_host, _event_loop, _response| {
+      Ok(JsPromiseValue::Value(()))
+    })?;
     Ok(())
   })?;
 
@@ -187,7 +191,11 @@ fn fetch_response_json_parses_body() -> Result<()> {
   let mut event_loop = EventLoop::<Host>::with_clock(clock);
 
   let mut host = Host {
-    fetcher: InMemoryFetcher::new().with_response("https://example.com/json", br#"{"ok": true}"#, 200),
+    fetcher: InMemoryFetcher::new().with_response(
+      "https://example.com/json",
+      br#"{"ok": true}"#,
+      200,
+    ),
     ..Host::default()
   };
 

@@ -1,10 +1,10 @@
+use crate::test_support;
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::{
   origin_from_url, CachingFetcher, FetchDestination, FetchRequest, HttpFetcher, ResourceFetcher,
 };
-use crate::test_support;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};

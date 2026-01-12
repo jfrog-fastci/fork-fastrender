@@ -41,7 +41,9 @@ impl WebIdlBindingsHost for TestBindingsHost {
     _args: &[Value],
     _new_target: Value,
   ) -> Result<Value, VmError> {
-    Err(VmError::Unimplemented("constructor dispatch not used in this test"))
+    Err(VmError::Unimplemented(
+      "constructor dispatch not used in this test",
+    ))
   }
 }
 
@@ -197,7 +199,10 @@ fn vmjs_webidl_bindings_missing_host_slot_throws_type_error() -> Result<(), VmEr
       let Value::String(message_s) = message else {
         panic!("expected error.message to be a string, got {message:?}");
       };
-      assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+      assert_eq!(
+        scope.heap().get_string(name_s)?.to_utf8_lossy(),
+        "TypeError"
+      );
       assert_eq!(
         scope.heap().get_string(message_s)?.to_utf8_lossy(),
         WEBIDL_BINDINGS_HOST_NOT_AVAILABLE

@@ -129,7 +129,8 @@ fn flex_auto_min_height_uses_definite_cross_size_when_available() {
   );
 
   let width = 200.0;
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(width), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(width), AvailableSpace::Indefinite);
 
   let flex_fc = FlexFormattingContext::new();
   let flex_fragment = flex_fc

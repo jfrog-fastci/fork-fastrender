@@ -51,4 +51,3 @@ fn root_workspace_excludes_vendored_ecma_rs() {
     }
   }
 }
-

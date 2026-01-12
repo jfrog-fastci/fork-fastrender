@@ -101,7 +101,7 @@ fn tbody_is_breakable_by_default_in_paged_media() {
     page1.contains("Header"),
     "expected repeated header on page 2; page_text={page1:?}"
   );
- 
+
   assert!(
     page0.contains("Row1"),
     "expected first row on page 1; page_text={page0:?}"

@@ -195,9 +195,7 @@ fn quickjs_dom_node_and_element_navigation_mvp() {
   // Toggle connectedness by mutating the underlying `dom2` document from Rust.
   {
     let mut dom_mut = dom.borrow_mut();
-    dom_mut
-      .remove_child(body_id, div_id)
-      .expect("remove_child");
+    dom_mut.remove_child(body_id, div_id).expect("remove_child");
   }
 
   ctx
@@ -209,9 +207,7 @@ fn quickjs_dom_node_and_element_navigation_mvp() {
 
   {
     let mut dom_mut = dom.borrow_mut();
-    dom_mut
-      .append_child(body_id, div_id)
-      .expect("append_child");
+    dom_mut.append_child(body_id, div_id).expect("append_child");
   }
 
   ctx
@@ -254,10 +250,16 @@ fn quickjs_dom_inner_html_and_outer_html_round_trip() {
 
       // innerHTML setter + getter should round trip.
       ctx.eval::<(), _>("div.innerHTML = '<span id=child>hi</span>tail';")?;
-      assert_eq!(ctx.eval::<String, _>("div.innerHTML")?, "<span id=\"child\">hi</span>tail");
+      assert_eq!(
+        ctx.eval::<String, _>("div.innerHTML")?,
+        "<span id=\"child\">hi</span>tail"
+      );
       assert_eq!(ctx.eval::<String, _>("div.firstChild.nodeName")?, "SPAN");
       assert_eq!(ctx.eval::<String, _>("div.firstChild.id")?, "child");
-      assert_eq!(ctx.eval::<String, _>("div.firstChild.nextSibling.nodeValue")?, "tail");
+      assert_eq!(
+        ctx.eval::<String, _>("div.firstChild.nextSibling.nodeValue")?,
+        "tail"
+      );
 
       // outerHTML getter should serialize the element itself.
       assert_eq!(
@@ -377,7 +379,10 @@ fn quickjs_dom_clone_node_deep_clones_detached_subtree() {
       assert_eq!(ctx.eval::<bool, _>("clone.parentNode === null")?, true);
 
       assert_eq!(ctx.eval::<String, _>("clone.firstChild.nodeName")?, "SPAN");
-      assert_eq!(ctx.eval::<bool, _>("clone.firstChild !== div.firstChild")?, true);
+      assert_eq!(
+        ctx.eval::<bool, _>("clone.firstChild !== div.firstChild")?,
+        true
+      );
       assert_eq!(
         ctx.eval::<String, _>("clone.firstChild.firstChild.nodeValue")?,
         "hello"
@@ -393,7 +398,10 @@ fn quickjs_dom_clone_node_deep_clones_detached_subtree() {
       assert_eq!(ctx.eval::<String, _>("docClone.nodeName")?, "#document");
       assert_eq!(ctx.eval::<bool, _>("docClone.parentNode === null")?, true);
       assert_eq!(ctx.eval::<bool, _>("docClone.isConnected")?, false);
-      assert_eq!(ctx.eval::<String, _>("docClone.firstChild.nodeName")?, "HTML");
+      assert_eq!(
+        ctx.eval::<String, _>("docClone.firstChild.nodeName")?,
+        "HTML"
+      );
       assert_eq!(
         ctx.eval::<String, _>("docClone.firstChild.lastChild.firstChild.id")?,
         "a"

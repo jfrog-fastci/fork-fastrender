@@ -41,14 +41,13 @@ pub(super) fn align_tracks(
   let gap = 0.0;
   let layout_is_reversed = false;
   let is_safe = false; // TODO: Implement safe alignment
-  let track_alignment =
-    apply_alignment_fallback(
-      free_space,
-      num_tracks,
-      track_alignment_style,
-      is_safe,
-      start_end_axis_positive,
-    );
+  let track_alignment = apply_alignment_fallback(
+    free_space,
+    num_tracks,
+    track_alignment_style,
+    is_safe,
+    start_end_axis_positive,
+  );
 
   // Compute offsets
   let mut total_offset = origin;

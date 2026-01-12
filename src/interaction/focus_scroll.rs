@@ -1,5 +1,8 @@
 use crate::geometry::{Point, Rect, Size};
-use crate::scroll::{build_scroll_chain, build_scroll_chain_with_root_mode, ScrollBounds, ScrollChainState, ScrollState};
+use crate::scroll::{
+  build_scroll_chain, build_scroll_chain_with_root_mode, ScrollBounds, ScrollChainState,
+  ScrollState,
+};
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree, HitTestRoot};
 use rustc_hash::FxHashSet;
@@ -20,8 +23,16 @@ fn scrollport_size_for_state(state: &ScrollChainState<'_>) -> Size {
   let width = state.viewport.width - reservation.left - reservation.right;
   let height = state.viewport.height - reservation.top - reservation.bottom;
   Size::new(
-    if width.is_finite() { width.max(0.0) } else { 0.0 },
-    if height.is_finite() { height.max(0.0) } else { 0.0 },
+    if width.is_finite() {
+      width.max(0.0)
+    } else {
+      0.0
+    },
+    if height.is_finite() {
+      height.max(0.0)
+    } else {
+      0.0
+    },
   )
 }
 
@@ -82,8 +93,16 @@ fn scroll_to_reveal_rect(
 ) -> Point {
   let current_scroll = sanitize_point(current_scroll);
   let viewport = Size::new(
-    if viewport.width.is_finite() { viewport.width.max(0.0) } else { 0.0 },
-    if viewport.height.is_finite() { viewport.height.max(0.0) } else { 0.0 },
+    if viewport.width.is_finite() {
+      viewport.width.max(0.0)
+    } else {
+      0.0
+    },
+    if viewport.height.is_finite() {
+      viewport.height.max(0.0)
+    } else {
+      0.0
+    },
   );
 
   // Focus-driven auto-scroll adjusts both axes, but we clamp horizontal scrolling to non-negative
@@ -131,7 +150,10 @@ fn collect_box_ids_for_styled_node(box_tree: &BoxTree, styled_node_id: usize) ->
   out
 }
 
-fn union_bounds_for_box_ids(fragment_tree: &FragmentTree, box_ids: &FxHashSet<usize>) -> Option<Rect> {
+fn union_bounds_for_box_ids(
+  fragment_tree: &FragmentTree,
+  box_ids: &FxHashSet<usize>,
+) -> Option<Rect> {
   let mut bounds: Option<Rect> = None;
   for id in box_ids.iter() {
     let Some(rect) = absolute_bounds_for_box_id(fragment_tree, *id) else {
@@ -145,7 +167,10 @@ fn union_bounds_for_box_ids(fragment_tree: &FragmentTree, box_ids: &FxHashSet<us
   bounds
 }
 
-fn find_fragment_path_within_root(root: &FragmentNode, box_ids: &FxHashSet<usize>) -> Option<Vec<usize>> {
+fn find_fragment_path_within_root(
+  root: &FragmentNode,
+  box_ids: &FxHashSet<usize>,
+) -> Option<Vec<usize>> {
   struct Frame<'a> {
     node: &'a FragmentNode,
     next_child: usize,
@@ -188,7 +213,10 @@ fn find_fragment_path_within_root(root: &FragmentNode, box_ids: &FxHashSet<usize
   None
 }
 
-fn find_fragment_path_for_box_ids(fragment_tree: &FragmentTree, box_ids: &FxHashSet<usize>) -> Option<(HitTestRoot, Vec<usize>)> {
+fn find_fragment_path_for_box_ids(
+  fragment_tree: &FragmentTree,
+  box_ids: &FxHashSet<usize>,
+) -> Option<(HitTestRoot, Vec<usize>)> {
   if let Some(path) = find_fragment_path_within_root(&fragment_tree.root, box_ids) {
     return Some((HitTestRoot::Root, path));
   }
@@ -224,7 +252,11 @@ fn apply_focus_scroll_chain(
   for (idx, state) in chain.iter_mut().enumerate() {
     let is_viewport = last_is_viewport && idx == chain_len.saturating_sub(1);
     let can_scroll = is_viewport || state.container.box_id().is_some();
-    let origin = if is_viewport { Point::ZERO } else { state.origin };
+    let origin = if is_viewport {
+      Point::ZERO
+    } else {
+      state.origin
+    };
 
     let target_local = target_bounds
       .translate(Point::new(-origin.x, -origin.y))
@@ -320,7 +352,8 @@ pub fn scroll_state_for_focus(
         }
       });
 
-      let target_in_viewport_space = target_bounds.translate(Point::new(-element_shift.x, -element_shift.y));
+      let target_in_viewport_space =
+        target_bounds.translate(Point::new(-element_shift.x, -element_shift.y));
       let viewport_scrollport = scrollport_size_for_state(viewport_state);
 
       next.viewport = scroll_to_reveal_rect(

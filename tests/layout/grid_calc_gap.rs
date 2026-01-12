@@ -43,7 +43,11 @@ fn grid_column_gap_calc_percentage_resolves_against_container_inline_size() {
   child_style.display = Display::Block;
   child_style.height = Some(Length::px(10.0));
 
-  let child1 = BoxNode::new_block(Arc::new(child_style.clone()), FormattingContextType::Block, vec![]);
+  let child1 = BoxNode::new_block(
+    Arc::new(child_style.clone()),
+    FormattingContextType::Block,
+    vec![],
+  );
   let child2 = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
 
   let grid = BoxNode::new_block(
@@ -64,7 +68,11 @@ fn grid_column_gap_calc_percentage_resolves_against_container_inline_size() {
   // 10% of 200px = 20px; calc(20px - 5px) = 15px.
   assert_approx(first.bounds.x(), 0.0, "first column origin");
   assert_approx(first.bounds.width(), 30.0, "first column width");
-  assert_approx(second.bounds.x(), 45.0, "second column offset includes resolved gap");
+  assert_approx(
+    second.bounds.x(),
+    45.0,
+    "second column offset includes resolved gap",
+  );
   assert_approx(second.bounds.width(), 40.0, "second column width");
 }
 
@@ -86,7 +94,11 @@ fn grid_row_gap_calc_percentage_resolves_against_container_inline_size() {
   child_style.display = Display::Block;
   child_style.height = Some(Length::px(10.0));
 
-  let child1 = BoxNode::new_block(Arc::new(child_style.clone()), FormattingContextType::Block, vec![]);
+  let child1 = BoxNode::new_block(
+    Arc::new(child_style.clone()),
+    FormattingContextType::Block,
+    vec![],
+  );
   let child2 = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
 
   let grid = BoxNode::new_block(
@@ -108,7 +120,11 @@ fn grid_row_gap_calc_percentage_resolves_against_container_inline_size() {
   // 10% of 200px = 20px; calc(20px - 5px) = 15px.
   assert_approx(first.bounds.y(), 0.0, "first row origin");
   assert_approx(first.bounds.height(), 10.0, "first row height");
-  assert_approx(second.bounds.y(), 25.0, "second row offset includes resolved gap");
+  assert_approx(
+    second.bounds.y(),
+    25.0,
+    "second row offset includes resolved gap",
+  );
   assert_approx(second.bounds.height(), 10.0, "second row height");
 }
 
@@ -164,7 +180,11 @@ fn grid_row_gap_calc_percentage_inherits_to_row_subgrid() {
   // 10% of 200px = 20px; calc(20px - 5px) = 15px.
   assert_approx(first.bounds.y(), 0.0, "first row origin");
   assert_approx(first.bounds.height(), 15.0, "first row size");
-  assert_approx(second.bounds.y(), 30.0, "second row offset includes resolved gap");
+  assert_approx(
+    second.bounds.y(),
+    30.0,
+    "second row offset includes resolved gap",
+  );
   assert_approx(second.bounds.height(), 25.0, "second row size");
 }
 
@@ -223,6 +243,10 @@ fn grid_column_gap_calc_percentage_inherits_to_column_subgrid() {
   // 10% of 200px = 20px; calc(20px - 5px) = 15px.
   assert_approx(first.bounds.x(), 0.0, "first column origin");
   assert_approx(first.bounds.width(), 30.0, "first column width");
-  assert_approx(second.bounds.x(), 45.0, "second column offset includes resolved gap");
+  assert_approx(
+    second.bounds.x(),
+    45.0,
+    "second column offset includes resolved gap",
+  );
   assert_approx(second.bounds.width(), 40.0, "second column width");
 }

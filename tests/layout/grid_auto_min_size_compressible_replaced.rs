@@ -17,8 +17,7 @@ fn grid_auto_min_size_compressible_replaced_caps_content_based_min() {
   let mut grid_style = ComputedStyle::default();
   grid_style.display = Display::Grid;
   grid_style.width = Some(Length::px(50.0));
-  grid_style.grid_template_columns =
-    vec![GridTrack::Fr(1.0), GridTrack::Length(Length::px(0.0))];
+  grid_style.grid_template_columns = vec![GridTrack::Fr(1.0), GridTrack::Length(Length::px(0.0))];
   grid_style.grid_template_rows = vec![GridTrack::Auto];
 
   let mut replaced_style = ComputedStyle::default();
@@ -70,4 +69,3 @@ fn grid_auto_min_size_compressible_replaced_caps_content_based_min() {
     "expected second grid item to start at ~50px due to compressible replaced min-size capping, got {x:.2}"
   );
 }
-

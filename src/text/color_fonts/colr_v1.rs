@@ -1561,7 +1561,10 @@ fn resolve_color_line_gradient_stops(
   }
   for stop in line.color_stops().iter().take(stop_count) {
     let rgba = resolve_rgba_color(stop.palette_index(), stop.alpha(), palette, text_color);
-    stops.push(GradientStop::new(stop.stop_offset().to_f32(), color_from_rgba(rgba)));
+    stops.push(GradientStop::new(
+      stop.stop_offset().to_f32(),
+      color_from_rgba(rgba),
+    ));
   }
   if stops.len() != stop_count {
     return None;

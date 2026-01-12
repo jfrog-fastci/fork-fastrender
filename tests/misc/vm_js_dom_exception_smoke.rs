@@ -97,4 +97,3 @@ fn dom_exception_constructs_and_has_name_message_and_to_string() -> Result<(), V
 
   Ok(())
 }
-

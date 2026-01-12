@@ -64,4 +64,3 @@ fn grid_auto_flow_rejects_invalid_identifiers_instead_of_substring_matching() {
   );
   assert_eq!(styles.grid_auto_flow, GridAutoFlow::Column);
 }
-

@@ -314,10 +314,7 @@ fn cycle_prevention_disallows_inserting_ancestor_into_descendant() {
   doc.append_child(b, c).unwrap();
 
   // Attempt to insert `a` under `c`, which would create a cycle.
-  assert_eq!(
-    doc.append_child(c, a),
-    Err(DomError::HierarchyRequestError)
-  );
+  assert_eq!(doc.append_child(c, a), Err(DomError::HierarchyRequestError));
   assert_eq!(doc.parent(a).unwrap(), Some(root));
   assert_eq!(doc.parent(b).unwrap(), Some(a));
   assert_eq!(doc.parent(c).unwrap(), Some(b));

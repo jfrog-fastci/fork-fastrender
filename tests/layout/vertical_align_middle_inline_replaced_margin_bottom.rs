@@ -33,7 +33,11 @@ fn find_line_with_text_abs_y<'a>(
   None
 }
 
-fn collect_replaced_abs_y<'a>(node: &'a FragmentNode, parent_y: f32, out: &mut Vec<(f32, &'a FragmentNode)>) {
+fn collect_replaced_abs_y<'a>(
+  node: &'a FragmentNode,
+  parent_y: f32,
+  out: &mut Vec<(f32, &'a FragmentNode)>,
+) {
   let abs_y = parent_y + node.bounds.y();
   if matches!(node.content, FragmentContent::Replaced { .. }) {
     out.push((abs_y, node));
@@ -96,4 +100,3 @@ fn vertical_align_middle_ignores_margin_bottom_for_inline_replaced_positioning()
     "expected images to have equal y positions (no-margin={img0_y:.2}, margin-bottom={img1_y:.2})"
   );
 }
-

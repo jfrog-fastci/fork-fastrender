@@ -32,10 +32,7 @@ impl DomInterface {
       // - Document/Element/DocumentFragment all inherit from Node
       // - Text inherits from Node
       // - Node inherits from EventTarget
-      (
-        Self::Document | Self::Element | Self::DocumentFragment | Self::Text,
-        Self::Node,
-      ) => true,
+      (Self::Document | Self::Element | Self::DocumentFragment | Self::Text, Self::Node) => true,
       (
         Self::Document | Self::Element | Self::DocumentFragment | Self::Text | Self::Node,
         Self::EventTarget,
@@ -93,7 +90,11 @@ impl DomPlatform {
 
     // Prototype objects.
     let proto_event_target = scope.alloc_object()?;
-    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_event_target))?);
+    prototype_roots.push(
+      scope
+        .heap_mut()
+        .add_root(Value::Object(proto_event_target))?,
+    );
     let proto_node = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_node))?);
     let proto_text = scope.alloc_object()?;
@@ -103,7 +104,11 @@ impl DomPlatform {
     let proto_document = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document))?);
     let proto_document_fragment = scope.alloc_object()?;
-    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document_fragment))?);
+    prototype_roots.push(
+      scope
+        .heap_mut()
+        .add_root(Value::Object(proto_document_fragment))?,
+    );
 
     // WebIDL / WHATWG DOM inheritance chain:
     //   Node -> EventTarget -> Object
@@ -225,10 +230,9 @@ impl DomPlatform {
     }
 
     let wrapper = scope.alloc_object()?;
-    scope.heap_mut().object_set_prototype(
-      wrapper,
-      Some(self.prototype_for(primary_interface)),
-    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(wrapper, Some(self.prototype_for(primary_interface)))?;
     self.register_wrapper(scope.heap(), wrapper, node_id, primary_interface);
     Ok(wrapper)
   }
@@ -282,9 +286,16 @@ impl DomPlatform {
     Ok(meta.node_id)
   }
 
-  pub fn require_document_fragment_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+  pub fn require_document_fragment_id(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<NodeId, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta.primary_interface.implements(DomInterface::DocumentFragment) {
+    if !meta
+      .primary_interface
+      .implements(DomInterface::DocumentFragment)
+    {
       return Err(VmError::TypeError("Illegal invocation"));
     }
     Ok(meta.node_id)

@@ -43,7 +43,10 @@ fn grid_auto_height_sizes_to_content_in_scrollable_layout() {
   // Two-column grid like the BBC hero section; no explicit height/min-height.
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-columns", PropertyValue::Keyword("1fr 1fr".into())),
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("1fr 1fr".into()),
+    ),
     &base,
     16.0,
     16.0,
@@ -57,7 +60,10 @@ fn grid_auto_height_sizes_to_content_in_scrollable_layout() {
   );
   apply_declaration(
     &mut grid_style,
-    &decl("justify-content", PropertyValue::Keyword("space-between".into())),
+    &decl(
+      "justify-content",
+      PropertyValue::Keyword("space-between".into()),
+    ),
     &base,
     16.0,
     16.0,
@@ -114,6 +120,9 @@ fn grid_auto_height_sizes_to_content_in_scrollable_layout() {
     .iter()
     .map(|child| child.bounds.y())
     .fold(f32::INFINITY, f32::min);
-  assert_approx(min_child_y, 0.0, "grid items should not be vertically offset");
+  assert_approx(
+    min_child_y,
+    0.0,
+    "grid items should not be vertically offset",
+  );
 }
-

@@ -11,12 +11,21 @@ use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let matches = match fragment.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => id == box_id,
     _ => false,
   };
   if matches {
@@ -64,7 +73,11 @@ fn flex_abspos_descendant_uses_flex_containing_block_height() {
   let mut item_style = ComputedStyle::default();
   item_style.display = Display::Block;
   item_style.height = Some(Length::px(80.0));
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![wrapper]);
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![wrapper],
+  );
 
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
@@ -82,7 +95,10 @@ fn flex_abspos_descendant_uses_flex_containing_block_height() {
   let fragment = fc
     .layout(
       &container,
-      &LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Definite(200.0)),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(100.0),
+        AvailableSpace::Definite(200.0),
+      ),
     )
     .expect("layout succeeds");
 
@@ -99,4 +115,3 @@ fn flex_abspos_descendant_uses_flex_containing_block_height() {
     abs_fragment.bounds.height()
   );
 }
-

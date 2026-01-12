@@ -48,8 +48,16 @@ fn flex_wrap_stretch_does_not_collapse_lines() {
   container_style.width = Some(Length::px(80.0));
   container_style.width_keyword = None;
 
-  let child1 = BoxNode::new_block(fixed_block(50.0, 10.0), FormattingContextType::Block, vec![]);
-  let child2 = BoxNode::new_block(fixed_block(50.0, 10.0), FormattingContextType::Block, vec![]);
+  let child1 = BoxNode::new_block(
+    fixed_block(50.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+  let child2 = BoxNode::new_block(
+    fixed_block(50.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -92,8 +100,16 @@ fn flex_wrap_center_does_not_collapse_lines() {
   container_style.width = Some(Length::px(80.0));
   container_style.width_keyword = None;
 
-  let child1 = BoxNode::new_block(fixed_block(50.0, 10.0), FormattingContextType::Block, vec![]);
-  let child2 = BoxNode::new_block(fixed_block(50.0, 10.0), FormattingContextType::Block, vec![]);
+  let child1 = BoxNode::new_block(
+    fixed_block(50.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+  let child2 = BoxNode::new_block(
+    fixed_block(50.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -129,11 +145,17 @@ fn flex_wrap_reverse_stacks_lines_in_reverse_order() {
   container_style.width = Some(Length::px(80.0));
   container_style.width_keyword = None;
 
-  let mut child1 =
-    BoxNode::new_block(fixed_block(50.0, 10.0), FormattingContextType::Block, vec![]);
+  let mut child1 = BoxNode::new_block(
+    fixed_block(50.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   child1.id = 1;
-  let mut child2 =
-    BoxNode::new_block(fixed_block(50.0, 10.0), FormattingContextType::Block, vec![]);
+  let mut child2 = BoxNode::new_block(
+    fixed_block(50.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   child2.id = 2;
 
   let container = BoxNode::new_block(

@@ -104,7 +104,10 @@ pub trait JsRuntime {
   /// Converts a property key to a JS String value.
   ///
   /// Per ECMAScript `ToString`, this must throw a TypeError if `key` is a Symbol.
-  fn property_key_to_js_string(&mut self, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error>;
+  fn property_key_to_js_string(
+    &mut self,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error>;
 
   fn alloc_object(&mut self) -> Result<Self::JsValue, Self::Error>;
   fn alloc_array(&mut self) -> Result<Self::JsValue, Self::Error>;
@@ -156,7 +159,10 @@ pub trait JsRuntime {
     key: Self::PropertyKey,
   ) -> Result<Self::JsValue, Self::Error>;
 
-  fn own_property_keys(&mut self, obj: Self::JsValue) -> Result<Vec<Self::PropertyKey>, Self::Error>;
+  fn own_property_keys(
+    &mut self,
+    obj: Self::JsValue,
+  ) -> Result<Vec<Self::PropertyKey>, Self::Error>;
 
   fn get_own_property(
     &mut self,
@@ -193,7 +199,10 @@ pub trait WebIdlJsRuntime: JsRuntime {
   fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
 
   /// Converts a JavaScript `Symbol` value into a property key value suitable for `get`/`get_method`.
-  fn symbol_to_property_key(&mut self, symbol: Self::JsValue) -> Result<Self::PropertyKey, Self::Error>;
+  fn symbol_to_property_key(
+    &mut self,
+    symbol: Self::JsValue,
+  ) -> Result<Self::PropertyKey, Self::Error>;
 
   /// If the value is a platform object, returns its embedding-defined opaque id.
   ///
@@ -237,7 +246,10 @@ pub trait WebIdlJsRuntime: JsRuntime {
   /// This provides an escape hatch for interface return values while the binding generator does
   /// not yet synthesize wrapper objects. Implementations should return `None` if the platform
   /// object does not belong to this runtime.
-  fn platform_object_to_js_value(&mut self, value: &webidl_ir::PlatformObject) -> Option<Self::JsValue>;
+  fn platform_object_to_js_value(
+    &mut self,
+    value: &webidl_ir::PlatformObject,
+  ) -> Option<Self::JsValue>;
 
   fn throw_type_error(&mut self, message: &str) -> Self::Error;
   fn throw_range_error(&mut self, message: &str) -> Self::Error;

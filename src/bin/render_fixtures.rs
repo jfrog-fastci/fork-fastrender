@@ -9,7 +9,9 @@
 use fastrender::cli_utils as common;
 
 use clap::Parser;
-use common::args::{default_jobs, parse_shard, parse_viewport, AnimationTimeArgs, CompatArgs, MediaTypeArg};
+use common::args::{
+  default_jobs, parse_shard, parse_viewport, AnimationTimeArgs, CompatArgs, MediaTypeArg,
+};
 use common::prng;
 use common::render_pipeline::{
   apply_test_render_delay, compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
@@ -17,8 +19,10 @@ use common::render_pipeline::{
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig, RenderArtifactRequest, RenderOptions};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
+use fastrender::render_control::{
+  push_stage_listener, with_deadline, RenderDeadline, StageHeartbeat,
+};
 use fastrender::resource::ResourcePolicy;
-use fastrender::render_control::{push_stage_listener, with_deadline, RenderDeadline, StageHeartbeat};
 use fastrender::text::font_db::FontConfig;
 use fastrender::{snapshot_pipeline, PipelineSnapshot, RenderArtifacts};
 use image::ImageFormat;
@@ -411,7 +415,11 @@ fn fixture_runtime_toggles_from_env_map(
   //
   // Keep this opt-out via `FASTR_WEB_FONT_WAIT_MS=0` for cases where matching a pre-swap baseline is
   // desirable.
-  let default_web_font_wait_ms = if patch_html_for_chrome_baseline { "1000" } else { "500" };
+  let default_web_font_wait_ms = if patch_html_for_chrome_baseline {
+    "1000"
+  } else {
+    "500"
+  };
   raw
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
     .or_insert_with(|| default_web_font_wait_ms.to_string());
@@ -422,7 +430,11 @@ fn fixture_runtime_toggles_from_env_map(
   // hinting disabled can produce large glyph shape differences on text-heavy pages.
   //
   // Keep this opt-out: callers can force-disable hinting by setting `FASTR_TEXT_HINTING=0`.
-  let default_hinting = if patch_html_for_chrome_baseline { "1" } else { "0" };
+  let default_hinting = if patch_html_for_chrome_baseline {
+    "1"
+  } else {
+    "0"
+  };
   raw
     .entry("FASTR_TEXT_HINTING".to_string())
     .or_insert_with(|| default_hinting.to_string());
@@ -1061,7 +1073,9 @@ fn run(cli: Cli) -> io::Result<()> {
         details.push(format!("{repeat_failure_count} repeat failures"));
       }
       if nondeterministic_count > 0 {
-        details.push(format!("{nondeterministic_count} nondeterministic fixtures"));
+        details.push(format!(
+          "{nondeterministic_count} nondeterministic fixtures"
+        ));
       }
       if !wrote_variants_ok {
         details.push("failed to save nondeterminism variants".to_string());
@@ -1611,7 +1625,7 @@ fn render_fixture(
     html_bytes = common::fixture_html_patch::patch_html_bytes(
       &html_bytes,
       Some(&base_url),
-      true,  // disable JS
+      true, // disable JS
       !shared.allow_animations,
       shared.allow_dark_mode,
     );
@@ -1737,15 +1751,15 @@ fn render_fixture(
       }
 
       let elapsed = overall_start.elapsed();
-      let remaining = hard_timeout
-        .checked_sub(elapsed)
-        .unwrap_or(Duration::ZERO);
+      let remaining = hard_timeout.checked_sub(elapsed).unwrap_or(Duration::ZERO);
       // Leave a small margin so the parent `recv_timeout` is unlikely to fire before we send a
       // cooperative timeout error.
       let remaining = remaining.saturating_sub(Duration::from_millis(100));
       let deadline = RenderDeadline::new(Some(remaining), None);
 
-      Some(with_deadline(Some(&deadline), || encode_image(&report.pixmap, OutputFormat::Png))?)
+      Some(with_deadline(Some(&deadline), || {
+        encode_image(&report.pixmap, OutputFormat::Png)
+      })?)
     } else {
       None
     };
@@ -2198,7 +2212,10 @@ mod tests {
     // Chrome baselines use spec-correct defaults; disable FastRender's non-standard
     // `max-width:100%` replaced-element compatibility shim unless the caller explicitly opts in.
     let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), true);
-    assert_eq!(toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), Some("0"));
+    assert_eq!(
+      toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"),
+      Some("0")
+    );
 
     let mut raw = HashMap::new();
     raw.insert(
@@ -2206,7 +2223,10 @@ mod tests {
       "1".to_string(),
     );
     let toggles = fixture_runtime_toggles_from_env_map(raw, true);
-    assert_eq!(toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), Some("1"));
+    assert_eq!(
+      toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"),
+      Some("1")
+    );
   }
 
   #[test]

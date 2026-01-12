@@ -55,8 +55,7 @@ fn wheel_scroll_chains_inner_to_outer_to_viewport() {
 
   // Give the viewport a larger scrollable area so leftover delta can propagate all the way out.
   let tail = FragmentNode::new_block(Rect::from_xywh(0.0, 300.0, 100.0, 100.0), vec![]);
-  let root =
-    FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![outer, tail]);
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![outer, tail]);
   let fragment_tree = FragmentTree::new(root);
 
   let next = apply_wheel_scroll_at_point(
@@ -70,7 +69,11 @@ fn wheel_scroll_chains_inner_to_outer_to_viewport() {
     },
   );
 
-  assert_eq!(next.element_offset(2), Point::new(0.0, 200.0), "inner clamps first");
+  assert_eq!(
+    next.element_offset(2),
+    Point::new(0.0, 200.0),
+    "inner clamps first"
+  );
   assert_eq!(
     next.element_offset(1),
     Point::new(0.0, 200.0),
@@ -170,7 +173,11 @@ fn wheel_scroll_does_not_chain_past_overscroll_none() {
     Point::new(0.0, 100.0),
     "element scroll offset remains clamped at max"
   );
-  assert_eq!(next.viewport, Point::ZERO, "viewport should not receive delta");
+  assert_eq!(
+    next.viewport,
+    Point::ZERO,
+    "viewport should not receive delta"
+  );
 }
 
 #[test]
@@ -213,10 +220,8 @@ fn wheel_scroll_entrypoint_uses_fragment_tree_viewport_size() {
 fn wheel_scroll_handles_additional_fragment_roots_without_promoting_to_viewport() {
   // Document root sits below a fixed header represented as an additional fragment root.
   let doc_content = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 400.0), vec![]);
-  let doc_root = FragmentNode::new_block(
-    Rect::from_xywh(0.0, 100.0, 100.0, 100.0),
-    vec![doc_content],
-  );
+  let doc_root =
+    FragmentNode::new_block(Rect::from_xywh(0.0, 100.0, 100.0, 100.0), vec![doc_content]);
 
   let header_content = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 300.0), vec![]);
   let header_scroller = block_with_id(
@@ -225,8 +230,10 @@ fn wheel_scroll_handles_additional_fragment_roots_without_promoting_to_viewport(
     vec![header_content],
     scroll_y_style(OverscrollBehavior::Auto),
   );
-  let header_root =
-    FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![header_scroller]);
+  let header_root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![header_scroller],
+  );
 
   let mut fragment_tree = FragmentTree::new(doc_root);
   fragment_tree.additional_fragments.push(header_root);
@@ -328,12 +335,15 @@ fn wheel_scroll_respects_overscroll_contain() {
   let (root_kind, path) = scrolled_tree
     .hit_test_path(Point::new(50.0, 50.0))
     .expect("hit path on scrolled tree");
-  assert_eq!(root_kind, fastrender::tree::fragment_tree::HitTestRoot::Root);
-  let chain = fastrender::scroll::build_scroll_chain(&fragment_tree.root, Size::new(100.0, 100.0), &path);
+  assert_eq!(
+    root_kind,
+    fastrender::tree::fragment_tree::HitTestRoot::Root
+  );
+  let chain =
+    fastrender::scroll::build_scroll_chain(&fragment_tree.root, Size::new(100.0, 100.0), &path);
   assert!(
-    chain
-      .iter()
-      .any(|state| state.container.box_id() == Some(2) && state.overscroll_behavior_y == OverscrollBehavior::Contain),
+    chain.iter().any(|state| state.container.box_id() == Some(2)
+      && state.overscroll_behavior_y == OverscrollBehavior::Contain),
     "expected inner scroll chain state to carry overscroll-behavior:contain"
   );
 

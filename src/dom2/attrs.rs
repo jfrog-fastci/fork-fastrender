@@ -1,6 +1,6 @@
 use crate::dom::HTML_NAMESPACE;
 
-use super::{DomError, Document, NodeId, NodeKind};
+use super::{Document, DomError, NodeId, NodeKind};
 
 #[inline]
 fn is_html_namespace(namespace: &str) -> bool {
@@ -51,11 +51,11 @@ fn attrs_and_is_html_mut(kind: &mut NodeKind) -> Option<(&mut Vec<(String, Strin
 #[inline]
 fn is_html_script_element(kind: &NodeKind) -> bool {
   match kind {
-    NodeKind::Element { tag_name, namespace, .. }
-      if is_html_namespace(namespace) && tag_name.eq_ignore_ascii_case("script") =>
-    {
-      true
-    }
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } if is_html_namespace(namespace) && tag_name.eq_ignore_ascii_case("script") => true,
     _ => false,
   }
 }
@@ -86,12 +86,7 @@ impl Document {
     )
   }
 
-  pub fn set_attribute(
-    &mut self,
-    node: NodeId,
-    name: &str,
-    value: &str,
-  ) -> Result<bool, DomError> {
+  pub fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) -> Result<bool, DomError> {
     let node_id = node;
     let (changed, old_value) = {
       let node = self.node_checked_mut(node_id)?;

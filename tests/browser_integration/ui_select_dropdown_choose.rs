@@ -97,8 +97,11 @@ fn browser_tab_controller_select_dropdown_choose_updates_dom_and_repaints() -> R
     })
     .expect("expected to find option with label \"Two\"");
 
-  let choose_msgs =
-    controller.handle_message(UiToWorker::select_dropdown_choose(tab_id, select_node_id, option_dom_id))?;
+  let choose_msgs = controller.handle_message(UiToWorker::select_dropdown_choose(
+    tab_id,
+    select_node_id,
+    option_dom_id,
+  ))?;
 
   assert!(
     choose_msgs

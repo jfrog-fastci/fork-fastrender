@@ -24,15 +24,13 @@ pub fn resolve_object_position(
     PositionComponent::Keyword(PositionKeyword::Start) => 0.0,
     PositionComponent::Keyword(PositionKeyword::Center) => free * 0.5,
     PositionComponent::Keyword(PositionKeyword::End) => free,
-    PositionComponent::Length(len) => {
-      crate::paint::paint_bounds::resolve_length_for_paint(
-        &len,
-        font_size,
-        root_font_size,
-        free,
-        viewport,
-      )
-    }
+    PositionComponent::Length(len) => crate::paint::paint_bounds::resolve_length_for_paint(
+      &len,
+      font_size,
+      root_font_size,
+      free,
+      viewport,
+    ),
     PositionComponent::Percentage(pct) => free * pct,
   }
 }
@@ -119,16 +117,7 @@ mod tests {
     };
 
     let (offset_x, offset_y, dest_w, dest_h) = compute_object_fit(
-      fit,
-      position,
-      200.0,
-      100.0,
-      100.0,
-      100.0,
-      true,
-      16.0,
-      16.0,
-      None,
+      fit, position, 200.0, 100.0, 100.0, 100.0, true, 16.0, 16.0, None,
     )
     .expect("fit computed");
     assert_eq!(dest_h, 100.0);

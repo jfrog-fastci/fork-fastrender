@@ -40,7 +40,11 @@ fn navigation_invalid_url_emits_navigation_failed() {
   .unwrap_or_else(|| panic!("timed out waiting for NavigationFailed for {url:?}"));
 
   let error = match msg {
-    WorkerToUi::NavigationFailed { url: msg_url, error, .. } => {
+    WorkerToUi::NavigationFailed {
+      url: msg_url,
+      error,
+      ..
+    } => {
       assert_eq!(msg_url, url);
       error
     }

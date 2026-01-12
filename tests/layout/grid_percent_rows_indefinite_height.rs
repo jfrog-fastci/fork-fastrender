@@ -72,4 +72,3 @@ fn grid_percent_rows_act_as_auto_when_height_is_indefinite_then_resolve() {
     "second row start (25% of resolved height)",
   );
 }
-

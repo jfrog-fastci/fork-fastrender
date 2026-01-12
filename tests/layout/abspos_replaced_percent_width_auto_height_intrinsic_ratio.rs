@@ -1,5 +1,8 @@
 use fastrender::geometry::{Point, Size};
-use fastrender::{AbsoluteLayout, AbsoluteLayoutInput, ContainingBlock, EdgeOffsets, LengthOrAuto, Position, PositionedStyle};
+use fastrender::{
+  AbsoluteLayout, AbsoluteLayoutInput, ContainingBlock, EdgeOffsets, LengthOrAuto, Position,
+  PositionedStyle,
+};
 
 fn default_style() -> PositionedStyle {
   PositionedStyle {
@@ -41,4 +44,3 @@ fn abspos_replaced_height_auto_uses_intrinsic_ratio_when_width_is_not_auto() {
     result.size.height
   );
 }
-

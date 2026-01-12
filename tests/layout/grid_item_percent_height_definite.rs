@@ -44,7 +44,10 @@ fn grid_item_percent_height_resolves_against_definite_grid_area_height() {
 
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-columns", PropertyValue::Keyword("100px".into())),
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("100px".into()),
+    ),
     &base,
     16.0,
     16.0,
@@ -106,4 +109,3 @@ fn grid_item_percent_height_resolves_against_definite_grid_area_height() {
     "percent-height child height",
   );
 }
-

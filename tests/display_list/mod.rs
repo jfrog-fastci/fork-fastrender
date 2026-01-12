@@ -1,7 +1,7 @@
 //! Display list tests consolidated from tests/display_list_*.rs
 
-mod background_tiling_viewport;
 mod background_clip_text_rtl;
+mod background_tiling_viewport;
 mod bidi_split_caret_affinity;
 mod box_shadow_blur_cache;
 mod builder_clip_path_backdrop_root_test;

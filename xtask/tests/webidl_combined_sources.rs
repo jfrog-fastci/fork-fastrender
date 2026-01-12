@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use xtask::webidl::{extract_webidl_blocks, parse_webidl, ParsedWebIdlWorld};
 use xtask::webidl::resolve::resolve_webidl_world;
+use xtask::webidl::{extract_webidl_blocks, parse_webidl, ParsedWebIdlWorld};
 
 #[test]
 fn combined_dom_html_url_fetch_parses_url_and_headers() {
@@ -51,10 +51,16 @@ fn combined_dom_html_url_fetch_parses_url_and_headers() {
   );
 
   let resolved = resolve_webidl_world(&world);
-  assert!(resolved.interface("URL").is_some(), "expected interface URL");
+  assert!(
+    resolved.interface("URL").is_some(),
+    "expected interface URL"
+  );
   assert!(
     resolved.interface("URLSearchParams").is_some(),
     "expected interface URLSearchParams"
   );
-  assert!(resolved.interface("Headers").is_some(), "expected interface Headers");
+  assert!(
+    resolved.interface("Headers").is_some(),
+    "expected interface Headers"
+  );
 }

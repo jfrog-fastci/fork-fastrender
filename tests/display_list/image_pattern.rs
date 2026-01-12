@@ -221,8 +221,8 @@ fn image_pattern_background_size_cover_renders_under_border_radius_clip() {
     .expect("layout document");
 
   let image_cache = ImageCache::new();
-  let list = DisplayListBuilder::with_image_cache(image_cache)
-    .build_with_stacking_tree(&fragments.root);
+  let list =
+    DisplayListBuilder::with_image_cache(image_cache).build_with_stacking_tree(&fragments.root);
 
   let viewport = Rect::from_xywh(0.0, 0.0, 30.0, 30.0);
   let (optimized, _) = DisplayListOptimizer::new()
@@ -325,8 +325,8 @@ fn image_pattern_background_size_cover_renders_for_absolutely_positioned_span() 
     .expect("layout document");
 
   let image_cache = ImageCache::new();
-  let list = DisplayListBuilder::with_image_cache(image_cache)
-    .build_with_stacking_tree(&fragments.root);
+  let list =
+    DisplayListBuilder::with_image_cache(image_cache).build_with_stacking_tree(&fragments.root);
 
   let viewport = Rect::from_xywh(0.0, 0.0, 30.0, 30.0);
   let (optimized, _) = DisplayListOptimizer::new()
@@ -422,8 +422,8 @@ fn image_pattern_background_paints_inside_overflow_scroll_container() {
     .expect("layout document");
 
   let image_cache = ImageCache::new();
-  let list = DisplayListBuilder::with_image_cache(image_cache)
-    .build_with_stacking_tree(&fragments.root);
+  let list =
+    DisplayListBuilder::with_image_cache(image_cache).build_with_stacking_tree(&fragments.root);
 
   let viewport = Rect::from_xywh(0.0, 0.0, 30.0, 30.0);
   let (optimized, _) = DisplayListOptimizer::new()

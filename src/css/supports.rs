@@ -88,8 +88,8 @@ fn strip_trailing_important(value: &str) -> &str {
 /// Validates a (property, value) pair for use in @supports queries.
 ///
 /// Returns true when the property is recognized and either the value is a CSS-wide keyword,
-  /// contains an arbitrary substitution function (`var()`/`if()`/`attr()`), or parses according to
-  /// the engine's supported grammar.
+/// contains an arbitrary substitution function (`var()`/`if()`/`attr()`), or parses according to
+/// the engine's supported grammar.
 pub fn supports_declaration(property: &str, value: &str) -> bool {
   let trimmed_property = trim_ascii_whitespace(property);
   if trimmed_property.is_empty() {
@@ -374,11 +374,20 @@ mod tests {
     assert!(supports_declaration("container-type", "scroll-state"));
     assert!(supports_declaration("container-type", "size scroll-state"));
     assert!(supports_declaration("container-type", "scroll-state size"));
-    assert!(supports_declaration("container-type", "inline-size scroll-state"));
-    assert!(supports_declaration("container-type", "scroll-state inline-size"));
+    assert!(supports_declaration(
+      "container-type",
+      "inline-size scroll-state"
+    ));
+    assert!(supports_declaration(
+      "container-type",
+      "scroll-state inline-size"
+    ));
 
     assert!(!supports_declaration("container-type", "size size"));
-    assert!(!supports_declaration("container-type", "scroll-state scroll-state"));
+    assert!(!supports_declaration(
+      "container-type",
+      "scroll-state scroll-state"
+    ));
     assert!(!supports_declaration("container-type", "size inline-size"));
     assert!(!supports_declaration("container-type", "normal size"));
 
@@ -460,7 +469,10 @@ mod tests {
   #[test]
   fn supports_transition_behavior_accepts_known_keywords_and_rejects_invalid() {
     assert!(supports_declaration("transition-behavior", "normal"));
-    assert!(supports_declaration("transition-behavior", "allow-discrete"));
+    assert!(supports_declaration(
+      "transition-behavior",
+      "allow-discrete"
+    ));
     assert!(supports_declaration(
       "transition-behavior",
       "normal, allow-discrete"

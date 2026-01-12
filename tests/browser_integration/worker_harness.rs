@@ -16,7 +16,10 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerToUiEvent {
-  Stage { tab_id: TabId, stage: StageHeartbeat },
+  Stage {
+    tab_id: TabId,
+    stage: StageHeartbeat,
+  },
   Favicon {
     tab_id: TabId,
     width: u32,
@@ -33,21 +36,48 @@ pub enum WorkerToUiEvent {
     select_node_id: usize,
     control: SelectControl,
   },
-  RequestOpenInNewTab { tab_id: TabId, url: String },
-  NavigationStarted { tab_id: TabId, url: String },
+  RequestOpenInNewTab {
+    tab_id: TabId,
+    url: String,
+  },
+  NavigationStarted {
+    tab_id: TabId,
+    url: String,
+  },
   NavigationCommitted {
     tab_id: TabId,
     url: String,
     can_go_back: bool,
     can_go_forward: bool,
   },
-  NavigationFailed { tab_id: TabId, url: String, error: String },
-  ScrollStateUpdated { tab_id: TabId, scroll: ScrollState },
-  LoadingState { tab_id: TabId, loading: bool },
-  Warning { tab_id: TabId, text: String },
-  SetClipboardText { tab_id: TabId, text: String },
-  DebugLog { tab_id: TabId, line: String },
-  SelectDropdownClosed { tab_id: TabId },
+  NavigationFailed {
+    tab_id: TabId,
+    url: String,
+    error: String,
+  },
+  ScrollStateUpdated {
+    tab_id: TabId,
+    scroll: ScrollState,
+  },
+  LoadingState {
+    tab_id: TabId,
+    loading: bool,
+  },
+  Warning {
+    tab_id: TabId,
+    text: String,
+  },
+  SetClipboardText {
+    tab_id: TabId,
+    text: String,
+  },
+  DebugLog {
+    tab_id: TabId,
+    line: String,
+  },
+  SelectDropdownClosed {
+    tab_id: TabId,
+  },
   ContextMenu {
     tab_id: TabId,
     pos_css: (f32, f32),
@@ -153,10 +183,9 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
-    WorkerToUi::RequestOpenInNewTab { tab_id, url } => (
-      WorkerToUiEvent::RequestOpenInNewTab { tab_id, url },
-      None,
-    ),
+    WorkerToUi::RequestOpenInNewTab { tab_id, url } => {
+      (WorkerToUiEvent::RequestOpenInNewTab { tab_id, url }, None)
+    }
     WorkerToUi::NavigationStarted { tab_id, url } => {
       (WorkerToUiEvent::NavigationStarted { tab_id, url }, None)
     }
@@ -176,10 +205,7 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       None,
     ),
     WorkerToUi::NavigationFailed {
-      tab_id,
-      url,
-      error,
-      ..
+      tab_id, url, error, ..
     } => (
       WorkerToUiEvent::NavigationFailed { tab_id, url, error },
       None,
@@ -190,12 +216,8 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::LoadingState { tab_id, loading } => {
       (WorkerToUiEvent::LoadingState { tab_id, loading }, None)
     }
-    WorkerToUi::Warning { tab_id, text } => {
-      (WorkerToUiEvent::Warning { tab_id, text }, None)
-    }
-    WorkerToUi::DebugLog { tab_id, line } => {
-      (WorkerToUiEvent::DebugLog { tab_id, line }, None)
-    }
+    WorkerToUi::Warning { tab_id, text } => (WorkerToUiEvent::Warning { tab_id, text }, None),
+    WorkerToUi::DebugLog { tab_id, line } => (WorkerToUiEvent::DebugLog { tab_id, line }, None),
     WorkerToUi::SelectDropdownClosed { tab_id } => {
       (WorkerToUiEvent::SelectDropdownClosed { tab_id }, None)
     }
@@ -244,10 +266,7 @@ pub fn assert_event_subsequence(events: &[WorkerToUiEvent], expected: &[WorkerEv
     expected.len(),
     "expected event subsequence {:?} in {:?}",
     expected,
-    events
-      .iter()
-      .map(WorkerToUiEvent::kind)
-      .collect::<Vec<_>>()
+    events.iter().map(WorkerToUiEvent::kind).collect::<Vec<_>>()
   );
 }
 
@@ -357,7 +376,13 @@ impl WorkerHarness {
       };
       let (event, frame) = split_message(msg);
       events.push(event.clone());
-      if let (WorkerToUiEvent::FrameReady { tab_id: msg_tab, .. }, Some(frame)) = (event, frame) {
+      if let (
+        WorkerToUiEvent::FrameReady {
+          tab_id: msg_tab, ..
+        },
+        Some(frame),
+      ) = (event, frame)
+      {
         if msg_tab == tab_id {
           return (frame, events);
         }

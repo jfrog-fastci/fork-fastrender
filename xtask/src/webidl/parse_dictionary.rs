@@ -46,7 +46,10 @@ pub fn parse_dictionary_member(input: &str) -> Result<ParsedDictionaryMember> {
   } else if rest.trim().is_empty() {
     None
   } else {
-    bail!("unexpected trailing input in dictionary member: `{}`", rest.trim());
+    bail!(
+      "unexpected trailing input in dictionary member: `{}`",
+      rest.trim()
+    );
   };
 
   Ok(ParsedDictionaryMember {

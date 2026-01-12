@@ -49,7 +49,12 @@ fn table_caption_respects_explicit_width_and_auto_margins() {
   let caption = wrapper
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.display), Some(Display::TableCaption)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.display),
+        Some(Display::TableCaption)
+      )
+    })
     .expect("caption fragment");
 
   assert!(
@@ -65,4 +70,3 @@ fn table_caption_respects_explicit_width_and_auto_margins() {
     expected_x
   );
 }
-

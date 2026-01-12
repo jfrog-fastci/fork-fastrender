@@ -91,4 +91,3 @@ fn text_emphasis_under_right_paints_on_right_in_vertical_lr() {
     "expected emphasis mark center to be on the right of the baseline in vertical-lr"
   );
 }
-

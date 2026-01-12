@@ -2,13 +2,13 @@
 
 #![allow(clippy::len_zero)]
 
-use fastrender::FastRender;
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom;
 use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::TextAlign;
+use fastrender::FastRender;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node

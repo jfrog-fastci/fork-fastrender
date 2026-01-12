@@ -49,4 +49,3 @@ fn inline_min_content_trims_soft_wrap_trailing_spaces() {
     "min-content should not include trailing collapsible spaces at soft wrap boundaries",
   );
 }
-

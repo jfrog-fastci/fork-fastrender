@@ -100,7 +100,9 @@ fn read_cached_document_from_file_url(
     }
   }
   Err(last_not_found.unwrap_or_else(|| {
-    fastrender::Error::Other(format!("Failed to resolve file URL to a readable path: {url}"))
+    fastrender::Error::Other(format!(
+      "Failed to resolve file URL to a readable path: {url}"
+    ))
   }))
 }
 
@@ -290,9 +292,7 @@ fn render_page(
     // hint to differ from the physical cache file path.
     let cached_file_document = url
       .starts_with("file://")
-      .then(|| {
-        read_cached_document_from_file_url(url)
-      })
+      .then(|| read_cached_document_from_file_url(url))
       .transpose()?;
 
     let mut tab = BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
@@ -325,9 +325,14 @@ fn render_page(
     let max_frames = 50usize;
     match tab.run_until_stable(max_frames)? {
       fastrender::api::RunUntilStableOutcome::Stable { frames_rendered } => {
-        log(&format!("JavaScript: stable (frames_rendered={frames_rendered})"));
+        log(&format!(
+          "JavaScript: stable (frames_rendered={frames_rendered})"
+        ));
       }
-      fastrender::api::RunUntilStableOutcome::Stopped { reason, frames_rendered } => {
+      fastrender::api::RunUntilStableOutcome::Stopped {
+        reason,
+        frames_rendered,
+      } => {
         log(&format!(
           "JavaScript: stopped before stable (reason={reason:?} frames_rendered={frames_rendered})"
         ));

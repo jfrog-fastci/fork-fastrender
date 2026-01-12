@@ -3,13 +3,13 @@ use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::float::Float;
 use fastrender::style::values::Length;
+use fastrender::tree::box_tree::ReplacedType;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
-use fastrender::FragmentContent;
 use fastrender::FormattingContext;
 use fastrender::FormattingContextType;
+use fastrender::FragmentContent;
 use fastrender::Size;
-use fastrender::tree::box_tree::ReplacedType;
 use std::sync::Arc;
 
 #[test]
@@ -57,7 +57,9 @@ fn inline_level_float_does_not_expand_non_bfc_block_height() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   assert_eq!(
     fragment.children.len(),

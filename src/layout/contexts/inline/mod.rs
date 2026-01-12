@@ -69,8 +69,8 @@ use crate::layout::profile::LayoutKind;
 use crate::layout::utils::compute_replaced_size;
 use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::render_control::{
-  active_deadline, active_heartbeat, active_stage, check_active, check_active_periodic, with_deadline,
-  StageGuard, StageHeartbeatGuard,
+  active_deadline, active_heartbeat, active_stage, check_active, check_active_periodic,
+  with_deadline, StageGuard, StageHeartbeatGuard,
 };
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
@@ -415,10 +415,7 @@ impl InlineFormattingContext {
   }
 
   fn hyphen_advance(&self, style: &ComputedStyle) -> f32 {
-    let inserted = style
-      .hyphenate_character
-      .as_deref()
-      .unwrap_or("\u{2010}");
+    let inserted = style.hyphenate_character.as_deref().unwrap_or("\u{2010}");
     if inserted.is_empty() {
       return 0.0;
     }
@@ -492,8 +489,10 @@ impl InlineFormattingContext {
                     u if u.is_absolute() => {
                       Some(crate::style::values::Length::new(term.value, u).to_px())
                     }
-                    u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
-                      .resolve_with_viewport_for_writing_mode(vw, vh, writing_mode),
+                    u if u.is_viewport_relative() => {
+                      crate::style::values::Length::new(term.value, u)
+                        .resolve_with_viewport_for_writing_mode(vw, vh, writing_mode)
+                    }
                     LengthUnit::Em => Some(term.value * font_px),
                     LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
                     LengthUnit::Rem => Some(term.value * root_px),
@@ -577,10 +576,12 @@ impl InlineFormattingContext {
                   .map(|m| m.root_ic_advance_px)
                   .unwrap_or(root_font_size)
             }
-            LengthUnit::Rlh => len.value
-              * root_metrics
-                .map(|m| m.root_used_line_height_px)
-                .unwrap_or(root_font_size * 1.2),
+            LengthUnit::Rlh => {
+              len.value
+                * root_metrics
+                  .map(|m| m.root_used_line_height_px)
+                  .unwrap_or(root_font_size * 1.2)
+            }
             // Treat `lh` as line-relative when encountered outside calc.
             LengthUnit::Lh => {
               if line_height.is_finite() {
@@ -1041,8 +1042,12 @@ impl InlineFormattingContext {
             self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
             let mut item =
               self.create_replaced_item(child, replaced_box, available_width, available_height)?;
-            let gap =
-              marker_inline_gap(&child.style, &self.font_context, self.viewport_size, root_font_metrics);
+            let gap = marker_inline_gap(
+              &child.style,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            );
             item = item.as_marker(gap, child.style.list_style_position, child.style.direction);
             current_items.push(InlineItem::Replaced(item));
             if matches!(child.style.list_style_position, ListStylePosition::Outside) {
@@ -1248,19 +1253,20 @@ impl InlineFormattingContext {
           let bottom_inset = padding_bottom + border_bottom;
           let fallback_metrics =
             self.compute_strut_metrics_for_segments(&child.style, &child_segments);
-          let mut first_inline_segment = child_segments.iter().enumerate().find_map(|(idx, seg)| {
-            let InlineFlowSegment::InlineItems(items) = seg else {
-              return None;
-            };
-            let only_bookkeeping_anchors = !items.is_empty()
-              && items.iter().all(|item| match item {
-                InlineItem::StaticPositionAnchor(anchor) => {
-                  anchor.running.is_none() && anchor.footnote.is_none()
-                }
-                _ => false,
-              });
-            (!items.is_empty() && !only_bookkeeping_anchors).then_some(idx)
-          });
+          let mut first_inline_segment =
+            child_segments.iter().enumerate().find_map(|(idx, seg)| {
+              let InlineFlowSegment::InlineItems(items) = seg else {
+                return None;
+              };
+              let only_bookkeeping_anchors = !items.is_empty()
+                && items.iter().all(|item| match item {
+                  InlineItem::StaticPositionAnchor(anchor) => {
+                    anchor.running.is_none() && anchor.footnote.is_none()
+                  }
+                  _ => false,
+                });
+              (!items.is_empty() && !only_bookkeeping_anchors).then_some(idx)
+            });
           let mut last_inline_segment =
             child_segments
               .iter()
@@ -1285,14 +1291,14 @@ impl InlineFormattingContext {
           // box still needs a first/last fragment to carry border/padding edges and establish the
           // containing block for positioned descendants.
           if first_inline_segment.is_none() {
-            first_inline_segment = child_segments.iter().position(|seg| {
-              matches!(seg, InlineFlowSegment::InlineItems(_))
-            });
+            first_inline_segment = child_segments
+              .iter()
+              .position(|seg| matches!(seg, InlineFlowSegment::InlineItems(_)));
           }
           if last_inline_segment.is_none() {
-            last_inline_segment = child_segments.iter().rposition(|seg| {
-              matches!(seg, InlineFlowSegment::InlineItems(_))
-            });
+            last_inline_segment = child_segments
+              .iter()
+              .rposition(|seg| matches!(seg, InlineFlowSegment::InlineItems(_)));
           }
 
           for (segment_index, segment) in child_segments.into_iter().enumerate() {
@@ -1986,7 +1992,10 @@ impl InlineFormattingContext {
             // empty line, so only drop the trailing hard break when the inline segment contains
             // real in-flow content before it.
             let has_non_break_content = current_items.iter().any(|item| {
-              !matches!(item, InlineItem::HardBreak(_) | InlineItem::StaticPositionAnchor(_))
+              !matches!(
+                item,
+                InlineItem::HardBreak(_) | InlineItem::StaticPositionAnchor(_)
+              )
             });
             if has_non_break_content {
               current_items.pop();
@@ -3203,18 +3212,17 @@ impl InlineFormattingContext {
     let root_font_metrics = self.factory.root_font_metrics();
     let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let metrics = self.resolve_scaled_metrics(style);
-    let line_height =
-      compute_line_height_with_metrics_viewport(
-        style,
-        metrics.as_ref(),
-        Some(self.viewport_size),
-        self.font_context.root_font_metrics(),
-      );
+    let line_height = compute_line_height_with_metrics_viewport(
+      style,
+      metrics.as_ref(),
+      Some(self.viewport_size),
+      self.font_context.root_font_metrics(),
+    );
     let fc = self.factory.get(fc_type);
 
-    let percentage_base =
-      (!inline_intrinsic_percentage_base_is_none() && available_width.is_finite())
-        .then_some(available_width);
+    let percentage_base = (!inline_intrinsic_percentage_base_is_none()
+      && available_width.is_finite())
+    .then_some(available_width);
     let percentage_base_px = percentage_base.unwrap_or(0.0);
     let inline_positive = crate::style::inline_axis_positive(style.writing_mode, style.direction);
     let block_positive = crate::style::block_axis_positive(style.writing_mode);
@@ -4977,8 +4985,12 @@ impl InlineFormattingContext {
     }
 
     if is_marker {
-      let gap =
-        marker_inline_gap(style, &self.font_context, self.viewport_size, self.factory.root_font_metrics());
+      let gap = marker_inline_gap(
+        style,
+        &self.font_context,
+        self.viewport_size,
+        self.factory.root_font_metrics(),
+      );
       let marker_extent = item.advance + gap;
       let sign = marker_inline_start_sign(style.writing_mode, style.direction);
       if style.list_style_position == ListStylePosition::Outside {
@@ -5579,13 +5591,12 @@ impl InlineFormattingContext {
     let root_font_metrics = self.factory.root_font_metrics();
     let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let metrics = self.resolve_scaled_metrics(style);
-    let line_height =
-      compute_line_height_with_metrics_viewport(
-        style,
-        metrics.as_ref(),
-        Some(self.viewport_size),
-        self.font_context.root_font_metrics(),
-      );
+    let line_height = compute_line_height_with_metrics_viewport(
+      style,
+      metrics.as_ref(),
+      Some(self.viewport_size),
+      self.font_context.root_font_metrics(),
+    );
     let width_base = available_width.is_finite().then_some(available_width);
     let height_base = available_height.filter(|h| h.is_finite());
     let percentage_size = match (width_base, height_base) {
@@ -6058,13 +6069,12 @@ impl InlineFormattingContext {
 
   fn compute_strut_metrics(&self, style: &ComputedStyle) -> BaselineMetrics {
     let scaled = self.resolve_scaled_metrics(style);
-    let line_height =
-      compute_line_height_with_metrics_viewport(
-        style,
-        scaled.as_ref(),
-        Some(self.viewport_size),
-        self.font_context.root_font_metrics(),
-      );
+    let line_height = compute_line_height_with_metrics_viewport(
+      style,
+      scaled.as_ref(),
+      Some(self.viewport_size),
+      self.font_context.root_font_metrics(),
+    );
     if let Some(scaled) = scaled {
       // CSS 2.1 §10.8: distribute leading equally above and below the font's ascent/descent.
       let half_leading = (line_height - (scaled.ascent + scaled.descent)) / 2.0;
@@ -6112,13 +6122,12 @@ impl InlineFormattingContext {
       return self.compute_strut_metrics(style);
     };
 
-    let line_height =
-      compute_line_height_with_metrics_viewport(
-        style,
-        Some(&scaled),
-        Some(self.viewport_size),
-        self.font_context.root_font_metrics(),
-      );
+    let line_height = compute_line_height_with_metrics_viewport(
+      style,
+      Some(&scaled),
+      Some(self.viewport_size),
+      self.font_context.root_font_metrics(),
+    );
     if !line_height.is_finite() || line_height <= 0.0 {
       return self.compute_strut_metrics(style);
     }
@@ -6165,13 +6174,12 @@ impl InlineFormattingContext {
       return self.compute_strut_metrics(style);
     };
 
-    let line_height =
-      compute_line_height_with_metrics_viewport(
-        style,
-        Some(&scaled),
-        Some(self.viewport_size),
-        self.font_context.root_font_metrics(),
-      );
+    let line_height = compute_line_height_with_metrics_viewport(
+      style,
+      Some(&scaled),
+      Some(self.viewport_size),
+      self.font_context.root_font_metrics(),
+    );
     if !line_height.is_finite() || line_height <= 0.0 {
       return self.compute_strut_metrics(style);
     }
@@ -7016,14 +7024,17 @@ impl InlineFormattingContext {
     for (i, positioned) in items.iter().enumerate() {
       let item_width = positioned.item.width();
       let mut inline_pos = if rtl { cursor - item_width } else { cursor };
-      let mut block_pos =
-        line.baseline + positioned.baseline_offset - positioned.item.baseline_metrics().baseline_offset;
+      let mut block_pos = line.baseline + positioned.baseline_offset
+        - positioned.item.baseline_metrics().baseline_offset;
       if let InlineItem::InlineBox(box_item) = &positioned.item {
         // Inline boxes can have vertical padding/borders that extend above the line-height strut.
         // The line builder sizes lines using `InlineBoxItem::metrics` (which may include that
         // border box), but fragment construction expects `block_pos` to be the line-height box
         // origin so it can convert to the painted border box top.
-        if !matches!(box_item.vertical_align, VerticalAlign::Top | VerticalAlign::Bottom) {
+        if !matches!(
+          box_item.vertical_align,
+          VerticalAlign::Top | VerticalAlign::Bottom
+        ) {
           let half_leading = box_item.strut_metrics.half_leading();
           let delta_above = (box_item.content_offset_y - half_leading).max(0.0);
           if delta_above > 0.0 {
@@ -7632,7 +7643,11 @@ impl InlineFormattingContext {
           box_item.width(),
           content_height + box_item.content_offset_y + box_item.bottom_inset,
         );
-        record_containing_block(bounds, parent_offset_in_line, &mut positioned_containing_blocks);
+        record_containing_block(
+          bounds,
+          parent_offset_in_line,
+          &mut positioned_containing_blocks,
+        );
         let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
         FragmentNode::new_with_style(
           bounds,
@@ -7849,10 +7864,7 @@ impl InlineFormattingContext {
             .translate(Point::new(inline_pos, 0.0));
           map.insert(
             anchor.box_id,
-            StaticPositionAnchorPoint {
-              baseline,
-              line_top,
-            },
+            StaticPositionAnchorPoint { baseline, line_top },
           );
         }
         if let Some(running) = anchor.running.as_ref() {
@@ -8878,9 +8890,9 @@ impl InlineFormattingContext {
       }
 
       let (segment_start, segment_end) = trim_segment(last_break, brk.byte_offset);
-      let mut segment_width =
-        (text_item.advance_at_offset(segment_end) - text_item.advance_at_offset(segment_start))
-          .max(0.0);
+      let mut segment_width = (text_item.advance_at_offset(segment_end)
+        - text_item.advance_at_offset(segment_start))
+      .max(0.0);
 
       if brk.adds_hyphen {
         let h = hyphen_width.get_or_insert_with(|| self.hyphen_advance(&text_item.style));
@@ -8894,9 +8906,9 @@ impl InlineFormattingContext {
 
     if last_break < len {
       let (segment_start, segment_end) = trim_segment(last_break, len);
-      let trailing =
-        (text_item.advance_at_offset(segment_end) - text_item.advance_at_offset(segment_start))
-          .max(0.0);
+      let trailing = (text_item.advance_at_offset(segment_end)
+        - text_item.advance_at_offset(segment_start))
+      .max(0.0);
       tracker.add_width(trailing);
     }
   }
@@ -9271,7 +9283,8 @@ fn compute_inline_box_line_metrics(
       match child {
         InlineItem::InlineBox(inline_box) => {
           acc.has_items = true;
-          let shift = acc.compute_baseline_shift(vertical_align, &inline_box.strut_metrics, Some(&fallback));
+          let shift =
+            acc.compute_baseline_shift(vertical_align, &inline_box.strut_metrics, Some(&fallback));
           let item_ascent = metrics.baseline_offset - shift;
           let item_descent = (metrics.height - metrics.baseline_offset) + shift;
           acc.max_ascent = acc.max_ascent.max(item_ascent);
@@ -12422,7 +12435,11 @@ impl InlineFormattingContext {
     }
   }
 
-  fn truncate_inline_item_from_start(&self, item: InlineItem, max_width: f32) -> Option<InlineItem> {
+  fn truncate_inline_item_from_start(
+    &self,
+    item: InlineItem,
+    max_width: f32,
+  ) -> Option<InlineItem> {
     const WIDTH_EPS: f32 = 0.01;
     if max_width <= WIDTH_EPS {
       return None;
@@ -13038,7 +13055,7 @@ impl InlineFormattingContext {
                          order: &mut Vec<FlowChunk>,
                          line_clamp_truncated: &mut bool,
                          anchor_positions: &mut HashMap<usize, StaticPositionAnchorPoint>|
-      -> Result<Option<(f32, f32, f32)>, LayoutError> {
+     -> Result<Option<(f32, f32, f32)>, LayoutError> {
       if pending.is_empty() {
         return Ok(None);
       }
@@ -13321,8 +13338,11 @@ impl InlineFormattingContext {
               let float_min_y = if pending.is_empty() {
                 float_base_y + line_offset
               } else {
-                let remaining_clamp = active_line_clamp.map(|limit| limit.saturating_sub(lines.len()));
-                let line_builder::LineBuildResult { lines: seg_lines, .. } = self.layout_segment_lines(
+                let remaining_clamp =
+                  active_line_clamp.map(|limit| limit.saturating_sub(lines.len()));
+                let line_builder::LineBuildResult {
+                  lines: seg_lines, ..
+                } = self.layout_segment_lines(
                   pending.clone(),
                   use_first_line_width,
                   first_line_width,
@@ -14155,7 +14175,10 @@ impl InlineFormattingContext {
         }
         if adjust_static_position {
           let origin = child_cb.origin();
-          child_static_position = Point::new(child_static_position.x - origin.x, child_static_position.y - origin.y);
+          child_static_position = Point::new(
+            child_static_position.x - origin.x,
+            child_static_position.y - origin.y,
+          );
           if let Some(line_top) = child_line_top.as_mut() {
             *line_top = Point::new(line_top.x - origin.x, line_top.y - origin.y);
           }
@@ -14271,8 +14294,10 @@ impl InlineFormattingContext {
               };
               static_position_for_abs_logical = Point::new(child_static_position.x, y);
             } else {
-              static_position_for_abs_logical =
-                Point::new(child_static_position.x, child_static_position.y - baseline_offset);
+              static_position_for_abs_logical = Point::new(
+                child_static_position.x,
+                child_static_position.y - baseline_offset,
+              );
             }
           } else {
             // For non-replaced inline content, keep legacy behavior: treat the element as a strut
@@ -15535,7 +15560,16 @@ fn marker_inline_gap(
   root_font_metrics: Option<RootFontMetrics>,
 ) -> f32 {
   let resolved = marker_inline_end_margin(style)
-    .map(|m| resolve_length_for_width(m, 0.0, style, font_context, viewport_size, root_font_metrics))
+    .map(|m| {
+      resolve_length_for_width(
+        m,
+        0.0,
+        style,
+        font_context,
+        viewport_size,
+        root_font_metrics,
+      )
+    })
     .unwrap_or(0.0);
 
   if resolved.abs() > f32::EPSILON {
@@ -16499,18 +16533,10 @@ mod tests {
     let phrase = make_text_box("Commonwealth X");
 
     let word_width = ifc
-      .intrinsic_width_for_children(
-        &container_style,
-        &[&word],
-        IntrinsicSizingMode::MaxContent,
-      )
+      .intrinsic_width_for_children(&container_style, &[&word], IntrinsicSizingMode::MaxContent)
       .expect("word width");
     let other_width = ifc
-      .intrinsic_width_for_children(
-        &container_style,
-        &[&other],
-        IntrinsicSizingMode::MaxContent,
-      )
+      .intrinsic_width_for_children(&container_style, &[&other], IntrinsicSizingMode::MaxContent)
       .expect("other width");
     let min_phrase = ifc
       .intrinsic_width_for_children(
@@ -16858,7 +16884,10 @@ mod tests {
     let inline_block = BoxNode::new_inline_block(
       Arc::new(inline_block_style),
       FormattingContextType::Block,
-      vec![BoxNode::new_text(default_style(), "Hello world".to_string())],
+      vec![BoxNode::new_text(
+        default_style(),
+        "Hello world".to_string(),
+      )],
     );
 
     let fc = ifc.factory.get(FormattingContextType::Block);
@@ -17482,8 +17511,13 @@ mod tests {
     let (_min_base0, max_base0) = fc
       .compute_intrinsic_inline_sizes(&float_node)
       .expect("intrinsic sizes");
-    let edges =
-      horizontal_padding_and_borders(&float_style, 0.0, ifc.viewport_size, &ifc.font_context, None);
+    let edges = horizontal_padding_and_borders(
+      &float_style,
+      0.0,
+      ifc.viewport_size,
+      &ifc.font_context,
+      None,
+    );
     let expected_border = max_base0;
     let containing_width = expected_border + edges * 0.5;
 
@@ -19721,13 +19755,12 @@ mod tests {
     } else {
       marker_fragment.bounds.x() - (text_fragment.bounds.x() + text_fragment.bounds.width())
     };
-    let expected_gap =
-      marker_inline_gap(
-        &marker_style_for_gap,
-        &ifc.font_context,
-        ifc.viewport_size,
-        None,
-      );
+    let expected_gap = marker_inline_gap(
+      &marker_style_for_gap,
+      &ifc.font_context,
+      ifc.viewport_size,
+      None,
+    );
     assert!(
       (gap - expected_gap).abs() < 0.5,
       "expected inline-end margin gap of {}, got {} (gap_x={}, marker={:?}, text={:?})",
@@ -19801,13 +19834,12 @@ mod tests {
     } else {
       marker_fragment.bounds.x() - (text_fragment.bounds.x() + text_fragment.bounds.width())
     };
-    let expected_gap =
-      marker_inline_gap(
-        &marker_style_for_gap,
-        &ifc.font_context,
-        ifc.viewport_size,
-        None,
-      );
+    let expected_gap = marker_inline_gap(
+      &marker_style_for_gap,
+      &ifc.font_context,
+      ifc.viewport_size,
+      None,
+    );
     assert!(
       (gap - expected_gap).abs() < 0.5,
       "expected inline-end margin gap of {}, got {} (gap_x={}, marker={:?}, text={:?})",
@@ -20377,11 +20409,17 @@ mod tests {
 
     let latin = BoxNode::new_inline(
       child_style.clone(),
-      vec![BoxNode::new_text(child_style.clone(), "English".to_string())],
+      vec![BoxNode::new_text(
+        child_style.clone(),
+        "English".to_string(),
+      )],
     );
     let arabic = BoxNode::new_inline(
       child_style.clone(),
-      vec![BoxNode::new_text(child_style.clone(), "العربية".to_string())],
+      vec![BoxNode::new_text(
+        child_style.clone(),
+        "العربية".to_string(),
+      )],
     );
     let root = BoxNode::new_block(
       root_style.clone(),
@@ -20445,13 +20483,29 @@ mod tests {
       "expected shaping to use different fonts for latin and arabic text"
     );
 
-    let metrics_latin =
-      TextItem::metrics_from_runs(&font_ctx, &latin_runs, expected_line_height, child_style.font_size);
-    let metrics_arabic =
-      TextItem::metrics_from_runs(&font_ctx, &arabic_runs, expected_line_height, child_style.font_size);
+    let metrics_latin = TextItem::metrics_from_runs(
+      &font_ctx,
+      &latin_runs,
+      expected_line_height,
+      child_style.font_size,
+    );
+    let metrics_arabic = TextItem::metrics_from_runs(
+      &font_ctx,
+      &arabic_runs,
+      expected_line_height,
+      child_style.font_size,
+    );
     let mut acc = baseline::LineBaselineAccumulator::new(&strut);
-    acc.add_baseline_relative(&metrics_latin, baseline::VerticalAlign::Baseline, Some(&strut));
-    acc.add_baseline_relative(&metrics_arabic, baseline::VerticalAlign::Baseline, Some(&strut));
+    acc.add_baseline_relative(
+      &metrics_latin,
+      baseline::VerticalAlign::Baseline,
+      Some(&strut),
+    );
+    acc.add_baseline_relative(
+      &metrics_arabic,
+      baseline::VerticalAlign::Baseline,
+      Some(&strut),
+    );
     assert!(
       acc.line_height() > expected_line_height + 0.1,
       "expected fallback font metrics to enlarge baseline-aligned line box; got {}",
@@ -23010,9 +23064,11 @@ mod tests {
     child_style.height_keyword = None;
     let child_style = Arc::new(child_style);
 
-    let mut a = BoxNode::new_inline_block(child_style.clone(), FormattingContextType::Block, vec![]);
+    let mut a =
+      BoxNode::new_inline_block(child_style.clone(), FormattingContextType::Block, vec![]);
     a.id = 1;
-    let mut b = BoxNode::new_inline_block(child_style.clone(), FormattingContextType::Block, vec![]);
+    let mut b =
+      BoxNode::new_inline_block(child_style.clone(), FormattingContextType::Block, vec![]);
     b.id = 2;
     let mut c = BoxNode::new_inline_block(child_style, FormattingContextType::Block, vec![]);
     c.id = 3;
@@ -23033,7 +23089,10 @@ mod tests {
       ) {
         return true;
       }
-      node.children.iter().any(|child| subtree_contains_box_id(child, target))
+      node
+        .children
+        .iter()
+        .any(|child| subtree_contains_box_id(child, target))
     }
 
     assert!(
@@ -23097,8 +23156,9 @@ mod tests {
     // Mirror the anonymous inline wrapper structure produced by the box tree builder: a block
     // container holds an anonymous inline box that holds the text. Clamping must still keep text
     // on the last visible line instead of dropping the inline box entirely.
-    let text = "clamping should keep content on the last line even when wrapped in anonymous inline boxes "
-      .repeat(6);
+    let text =
+      "clamping should keep content on the last line even when wrapped in anonymous inline boxes "
+        .repeat(6);
     let root = BoxNode::new_block(
       Arc::new(container_style),
       FormattingContextType::Block,
@@ -25689,7 +25749,8 @@ mod tests {
       }
     }
 
-    let (width, balanced) = selected.expect("text-wrap: balance should differ from auto at some width");
+    let (width, balanced) =
+      selected.expect("text-wrap: balance should differ from auto at some width");
     for line in balanced {
       assert!(
         (line.available_width - width).abs() < 0.01,

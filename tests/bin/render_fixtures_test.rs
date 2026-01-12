@@ -182,7 +182,11 @@ fn render_fixtures_force_light_mode_overrides_background() {
 
   let img = image::open(out_dark.join("bg.png")).expect("decode bg.png");
   let px = img.get_pixel(0, 0).0;
-  assert_eq!(px, [0, 0, 0, 255], "expected black background without patch");
+  assert_eq!(
+    px,
+    [0, 0, 0, 255],
+    "expected black background without patch"
+  );
 
   let out_light = temp.path().join("out_light");
   let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
@@ -210,11 +214,7 @@ fn render_fixtures_force_light_mode_overrides_background() {
 
   let img = image::open(out_light.join("bg.png")).expect("decode bg.png");
   let px = img.get_pixel(0, 0).0;
-  assert_eq!(
-    px,
-    [255, 255, 255, 255],
-    "expected forced white background"
-  );
+  assert_eq!(px, [255, 255, 255, 255], "expected forced white background");
 }
 
 #[test]

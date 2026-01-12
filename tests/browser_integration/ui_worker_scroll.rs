@@ -1,8 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
-};
+use fastrender::ui::messages::{NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -63,7 +61,10 @@ fn wait_for_scroll_update(
   tab_id: TabId,
 ) -> fastrender::scroll::ScrollState {
   recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
-    WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if got == tab_id => Some(scroll),
+    WorkerToUi::ScrollStateUpdated {
+      tab_id: got,
+      scroll,
+    } if got == tab_id => Some(scroll),
     _ => None,
   })
 }
@@ -196,8 +197,7 @@ fn scroll_without_pointer_updates_viewport_scroll() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-scroll-without-pointer").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-scroll-without-pointer").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
@@ -241,8 +241,7 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-scroll-with-pointer").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-scroll-with-pointer").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
@@ -288,9 +287,10 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page_scroller_far_down();
 
-  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-scroll-with-pointer-after-viewport-scroll")
-    .expect("spawn ui worker")
-    .split();
+  let (ui_tx, ui_rx, join) =
+    spawn_ui_worker("fastr-ui-worker-scroll-with-pointer-after-viewport-scroll")
+      .expect("spawn ui worker")
+      .split();
   let tab_id = TabId(1);
   ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
@@ -354,7 +354,9 @@ fn scroll_with_pointer_outside_scroller_scrolls_viewport() {
   let (_dir, url) = make_test_page();
 
   let (ui_tx, ui_rx, join) =
-    spawn_ui_worker("fastr-ui-worker-scroll-with-pointer-outside-scroller").expect("spawn ui worker").split();
+    spawn_ui_worker("fastr-ui-worker-scroll-with-pointer-outside-scroller")
+      .expect("spawn ui worker")
+      .split();
   let tab_id = TabId(1);
   ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
@@ -401,8 +403,7 @@ fn scroll_clamps_to_zero() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-scroll-clamp-zero").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-scroll-clamp-zero").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
@@ -485,9 +486,7 @@ fn pointer_hit_testing_uses_element_scroll_offsets() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (160, 120), 1.0))
     .expect("ViewportChanged");

@@ -19,7 +19,11 @@ pub struct WebIdlCodegenArgs {
   pub url_source: PathBuf,
 
   /// Path to the WHATWG Fetch Bikeshed source (`fetch.bs`).
-  #[arg(long, default_value = "specs/whatwg-fetch/fetch.bs", value_name = "FILE")]
+  #[arg(
+    long,
+    default_value = "specs/whatwg-fetch/fetch.bs",
+    value_name = "FILE"
+  )]
   pub fetch_source: PathBuf,
   /// Output Rust module path (relative to repo root unless absolute).
   #[arg(
@@ -67,7 +71,8 @@ pub fn run_webidl_codegen(args: WebIdlCodegenArgs) -> Result<()> {
     },
   ];
 
-  let loaded = load_combined_webidl(&repo_root, &sources).context("load combined WebIDL sources")?;
+  let loaded =
+    load_combined_webidl(&repo_root, &sources).context("load combined WebIDL sources")?;
   if !loaded.missing_sources.is_empty() {
     let mut message = String::from("missing WebIDL sources:\n");
     for (label, path) in &loaded.missing_sources {
@@ -96,7 +101,12 @@ pub fn run_webidl_codegen(args: WebIdlCodegenArgs) -> Result<()> {
     .interfaces
     .values()
     .flat_map(|i| i.members.iter())
-    .chain(resolved.interface_mixins.values().flat_map(|m| m.members.iter()))
+    .chain(
+      resolved
+        .interface_mixins
+        .values()
+        .flat_map(|m| m.members.iter()),
+    )
     .any(|m| {
       m.name.as_deref() == Some("fetch") || m.raw.contains(" fetch(") || m.raw.starts_with("fetch(")
     });

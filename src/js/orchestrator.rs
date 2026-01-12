@@ -188,9 +188,7 @@ impl ScriptOrchestrator {
     new_current_script: Option<NodeId>,
     f: impl FnOnce() -> Result<()>,
   ) -> Result<()> {
-    current_script_state
-      .borrow_mut()
-      .push(new_current_script)?;
+    current_script_state.borrow_mut().push(new_current_script)?;
     let result = f();
     let pop_result = current_script_state.borrow_mut().pop();
 
@@ -235,7 +233,9 @@ impl ScriptOrchestrator {
 
     let existing_current_script = host.current_script();
     let new_current_script = match script_type {
-      ScriptType::Classic => (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script),
+      ScriptType::Classic => {
+        (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script)
+      }
       // `Document.currentScript` is null for module scripts.
       ScriptType::Module => None,
       // Import map scripts do not set `Document.currentScript`; preserve the existing value.
@@ -360,7 +360,9 @@ impl ScriptOrchestrator {
 
     let existing_current_script = host.current_script();
     let new_current_script = match script_type {
-      ScriptType::Classic => (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script),
+      ScriptType::Classic => {
+        (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script)
+      }
       // `Document.currentScript` is null for module scripts.
       ScriptType::Module => None,
       // Import map scripts do not set `Document.currentScript`; preserve the existing value.
@@ -611,12 +613,7 @@ mod tests {
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = NestedExecutor::new(script_a, script_b);
 
-    orchestrator.execute_script_element(
-      &mut host,
-      script_a,
-      ScriptType::Classic,
-      &mut executor,
-    )?;
+    orchestrator.execute_script_element(&mut host, script_a, ScriptType::Classic, &mut executor)?;
 
     assert_eq!(
       executor.observed,
@@ -717,7 +714,12 @@ mod tests {
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = NestedImportMapExecutor::new(outer_script, import_map_script);
 
-    orchestrator.execute_script_element(&mut host, outer_script, ScriptType::Classic, &mut executor)?;
+    orchestrator.execute_script_element(
+      &mut host,
+      outer_script,
+      ScriptType::Classic,
+      &mut executor,
+    )?;
 
     assert_eq!(
       executor.observed,
@@ -829,8 +831,8 @@ mod tests {
 
   #[test]
   fn records_script_execution_log_with_current_script() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><script></script><script></script>")
-      .unwrap();
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><script></script><script></script>").unwrap();
     let dom = Dom2Document::from_renderer_dom(&renderer_dom);
     let scripts = find_script_elements(&dom);
     assert_eq!(scripts.len(), 2);
@@ -877,8 +879,8 @@ mod tests {
 
   #[test]
   fn script_execution_log_is_bounded_fifo() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><script></script><script></script>")
-      .unwrap();
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><script></script><script></script>").unwrap();
     let dom = Dom2Document::from_renderer_dom(&renderer_dom);
     let scripts = find_script_elements(&dom);
     assert_eq!(scripts.len(), 2);
@@ -936,12 +938,7 @@ mod tests {
     };
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = RecordingExecutor::default();
-    orchestrator.execute_script_element(
-      &mut host,
-      script,
-      ScriptType::Classic,
-      &mut executor,
-    )?;
+    orchestrator.execute_script_element(&mut host, script, ScriptType::Classic, &mut executor)?;
 
     assert_eq!(
       executor.observed,
@@ -971,12 +968,7 @@ mod tests {
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = RecordingExecutor::default();
 
-    orchestrator.execute_script_element(
-      &mut host,
-      script,
-      ScriptType::Classic,
-      &mut executor,
-    )?;
+    orchestrator.execute_script_element(&mut host, script, ScriptType::Classic, &mut executor)?;
     assert!(
       host.dom.node(script).script_already_started,
       "executed scripts must be marked already started"
@@ -986,12 +978,7 @@ mod tests {
     assert_eq!(host.script_state.borrow().stack_depth(), 0);
 
     // Second execution attempt should no-op.
-    orchestrator.execute_script_element(
-      &mut host,
-      script,
-      ScriptType::Classic,
-      &mut executor,
-    )?;
+    orchestrator.execute_script_element(&mut host, script, ScriptType::Classic, &mut executor)?;
     assert_eq!(
       executor.observed,
       vec![Some(script)],

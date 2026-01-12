@@ -146,13 +146,15 @@ fn progress_and_meter_respect_explicit_size_with_border_box() {
 
   let epsilon = 0.05;
   assert!(
-    (progress.bounds.width() - 120.0).abs() < epsilon && (progress.bounds.height() - 20.0).abs() < epsilon,
+    (progress.bounds.width() - 120.0).abs() < epsilon
+      && (progress.bounds.height() - 20.0).abs() < epsilon,
     "expected border-box progress to be 120x20, got {}x{}",
     progress.bounds.width(),
     progress.bounds.height()
   );
   assert!(
-    (meter.bounds.width() - 200.0).abs() < epsilon && (meter.bounds.height() - 40.0).abs() < epsilon,
+    (meter.bounds.width() - 200.0).abs() < epsilon
+      && (meter.bounds.height() - 40.0).abs() < epsilon,
     "expected border-box meter to be 200x40, got {}x{}",
     meter.bounds.width(),
     meter.bounds.height()

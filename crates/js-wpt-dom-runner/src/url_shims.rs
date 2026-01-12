@@ -14,7 +14,9 @@ fn parse_url(input: &str, base_url: Option<&str>) -> Result<Url, ParseUrlError> 
   if base_url.is_none() {
     match Url::parse(input) {
       Ok(url) => return Ok(url),
-      Err(url::ParseError::RelativeUrlWithoutBase) => return Err(ParseUrlError::RelativeUrlWithoutBase),
+      Err(url::ParseError::RelativeUrlWithoutBase) => {
+        return Err(ParseUrlError::RelativeUrlWithoutBase)
+      }
       Err(err) => return Err(ParseUrlError::Url(err)),
     }
   }
@@ -38,10 +40,7 @@ pub fn install_url_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
       let href = url.as_str().to_string();
       let origin = url.origin().unicode_serialization();
       let pathname = url.path().to_string();
-      let search = url
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
+      let search = url.query().map(|q| format!("?{q}")).unwrap_or_default();
 
       let out = Object::new(ctx.clone())?;
       out.set("href", href)?;

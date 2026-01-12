@@ -3,7 +3,10 @@ use fastrender::style::display::Display;
 use fastrender::tree::fragment_tree::FragmentNode;
 
 fn find_first_cell<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
-  if matches!(node.style.as_ref().map(|s| s.display), Some(Display::TableCell)) {
+  if matches!(
+    node.style.as_ref().map(|s| s.display),
+    Some(Display::TableCell)
+  ) {
     return Some(node);
   }
   node.children.iter().find_map(find_first_cell)
@@ -40,4 +43,3 @@ fn table_baseline_padding_does_not_inflate_row_height() {
     "expected row height ~22px, got {height}"
   );
 }
-

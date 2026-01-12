@@ -312,10 +312,9 @@ impl Harness {
 
   pub fn run_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     let scheduler = &mut self.script_scheduler;
-    self.event_loop.run_until_idle_with_hook(
-      &mut self.host,
-      limits,
-      |host, event_loop| {
+    self
+      .event_loop
+      .run_until_idle_with_hook(&mut self.host, limits, |host, event_loop| {
         let root = host.with_dom(|dom| dom.root());
         let base_url = host.window.base_url.clone();
         prepare_dynamic_scripts_on_subtree_insertion(
@@ -325,8 +324,7 @@ impl Harness {
           root,
           base_url.as_deref(),
         )
-      },
-    )
+      })
   }
 
   pub fn host_mut(&mut self) -> &mut HostState {
@@ -393,7 +391,9 @@ impl Harness {
 
   pub fn complete_external_script(&mut self, url: &str) -> Result<()> {
     self.host.complete_external_script(url)?;
-    self.script_scheduler.poll(&mut self.host, &mut self.event_loop)?;
+    self
+      .script_scheduler
+      .poll(&mut self.host, &mut self.event_loop)?;
     Ok(())
   }
 
@@ -489,7 +489,9 @@ fn reset_log_object(heap: &mut Heap, global: GcObject) -> Result<()> {
     .push_root(Value::Object(global))
     .map_err(|e| Error::Other(e.to_string()))?;
 
-  let log_obj = scope.alloc_object().map_err(|e| Error::Other(e.to_string()))?;
+  let log_obj = scope
+    .alloc_object()
+    .map_err(|e| Error::Other(e.to_string()))?;
   scope
     .push_root(Value::Object(log_obj))
     .map_err(|e| Error::Other(e.to_string()))?;
@@ -551,7 +553,7 @@ fn format_vm_error(heap: &mut Heap, err: VmError) -> String {
   }
 }
 
-mod smoke;
 mod dynamic_scripts;
-mod timers;
 mod script_scheduler;
+mod smoke;
+mod timers;

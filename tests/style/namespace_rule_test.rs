@@ -126,12 +126,10 @@ fn import_rules_after_namespace_rules_are_ignored() {
     svg|rect { display: none; }
   "#;
   let stylesheet = parse_stylesheet(css).unwrap();
-  assert!(
-    !stylesheet
-      .rules
-      .iter()
-      .any(|rule| matches!(rule, CssRule::Import(_)))
-  );
+  assert!(!stylesheet
+    .rules
+    .iter()
+    .any(|rule| matches!(rule, CssRule::Import(_))));
 }
 
 #[test]
@@ -174,8 +172,14 @@ fn import_rules_inside_media_rules_are_ignored() {
     panic!("expected stylesheet to contain a @media rule");
   };
 
-  assert!(!media.rules.iter().any(|rule| matches!(rule, CssRule::Import(_))));
-  assert!(media.rules.iter().any(|rule| matches!(rule, CssRule::Style(_))));
+  assert!(!media
+    .rules
+    .iter()
+    .any(|rule| matches!(rule, CssRule::Import(_))));
+  assert!(media
+    .rules
+    .iter()
+    .any(|rule| matches!(rule, CssRule::Style(_))));
 }
 
 #[test]

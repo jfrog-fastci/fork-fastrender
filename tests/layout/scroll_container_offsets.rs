@@ -5,8 +5,8 @@ use fastrender::api::RenderOptions;
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::paint::painter::{
-  paint_tree_display_list_with_resources_scaled_offset, paint_tree_with_resources_scaled_offset_backend,
-  PaintBackend,
+  paint_tree_display_list_with_resources_scaled_offset,
+  paint_tree_with_resources_scaled_offset_backend, PaintBackend,
 };
 use fastrender::scroll::ScrollState;
 use fastrender::style::color::Rgba;
@@ -320,7 +320,12 @@ fn fixed_inside_scroller_ignores_element_scroll_offsets() {
 
   let top_pixel = pixmap.pixel(5, 5).expect("top pixel");
   assert_eq!(
-    (top_pixel.red(), top_pixel.green(), top_pixel.blue(), top_pixel.alpha()),
+    (
+      top_pixel.red(),
+      top_pixel.green(),
+      top_pixel.blue(),
+      top_pixel.alpha()
+    ),
     (255, 0, 0, 255),
     "viewport-fixed element should not be shifted by element scroll offsets"
   );
@@ -402,7 +407,12 @@ fn fixed_inside_scroller_backend_parity() {
   for pixmap in [&legacy, &display_list] {
     let top_pixel = pixmap.pixel(5, 5).expect("top pixel");
     assert_eq!(
-      (top_pixel.red(), top_pixel.green(), top_pixel.blue(), top_pixel.alpha()),
+      (
+        top_pixel.red(),
+        top_pixel.green(),
+        top_pixel.blue(),
+        top_pixel.alpha()
+      ),
       (255, 0, 0, 255),
       "viewport-fixed element should remain at the top of the viewport"
     );
@@ -422,12 +432,19 @@ fn fixed_inside_scroller_backend_parity() {
   let legacy_top = legacy.pixel(5, 5).expect("legacy top pixel");
   let dl_top = display_list.pixel(5, 5).expect("display list top pixel");
   assert_eq!(
-    (legacy_top.red(), legacy_top.green(), legacy_top.blue(), legacy_top.alpha()),
+    (
+      legacy_top.red(),
+      legacy_top.green(),
+      legacy_top.blue(),
+      legacy_top.alpha()
+    ),
     (dl_top.red(), dl_top.green(), dl_top.blue(), dl_top.alpha()),
     "backends should paint identical fixed-in-scroller results"
   );
   let legacy_scrolled = legacy.pixel(5, 39).expect("legacy scrolled pixel");
-  let dl_scrolled = display_list.pixel(5, 39).expect("display list scrolled pixel");
+  let dl_scrolled = display_list
+    .pixel(5, 39)
+    .expect("display list scrolled pixel");
   assert_eq!(
     (
       legacy_scrolled.red(),

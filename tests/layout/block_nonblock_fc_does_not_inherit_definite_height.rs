@@ -26,7 +26,11 @@ fn block_delegation_to_flex_does_not_constrain_auto_height() {
   child_style.display = Display::Block;
   child_style.height = Some(Length::px(150.0));
 
-  let child1 = BoxNode::new_block(Arc::new(child_style.clone()), FormattingContextType::Block, vec![]);
+  let child1 = BoxNode::new_block(
+    Arc::new(child_style.clone()),
+    FormattingContextType::Block,
+    vec![],
+  );
   let child2 = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
 
   let flex_container = BoxNode::new_block(
@@ -35,7 +39,11 @@ fn block_delegation_to_flex_does_not_constrain_auto_height() {
     vec![child1, child2],
   );
 
-  let root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![flex_container]);
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![flex_container],
+  );
 
   // LayoutEngine drives block layout with a definite viewport height; block-level flex containers
   // in normal flow must still size-to-content (auto height) instead of being forced to that
@@ -44,7 +52,9 @@ fn block_delegation_to_flex_does_not_constrain_auto_height() {
     AvailableSpace::Definite(viewport.width),
     AvailableSpace::Definite(viewport.height),
   );
-  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let flex_fragment = fragment.children.first().expect("flex fragment");
   assert!(
@@ -96,7 +106,9 @@ fn block_delegation_to_flex_does_not_constrain_auto_height_with_definite_parent_
     AvailableSpace::Definite(viewport.width),
     AvailableSpace::Definite(viewport.height),
   );
-  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   assert!(
     (fragment.bounds.height() - 200.0).abs() < 0.5,

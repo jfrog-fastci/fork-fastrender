@@ -13,7 +13,8 @@ fn parses_dom_style_dictionary_member_boolean_default() {
 
 #[test]
 fn parses_required_dictionary_member_with_type_annotations() {
-  let parsed = parse_dictionary_member("[EnforceRange] required unsigned long long milliseconds;").unwrap();
+  let parsed =
+    parse_dictionary_member("[EnforceRange] required unsigned long long milliseconds;").unwrap();
   assert!(parsed.ext_attrs.iter().any(|a| a.name == "EnforceRange"));
   assert!(parsed.schema.required);
   assert_eq!(parsed.schema.name, "milliseconds");
@@ -25,4 +26,3 @@ fn parses_required_dictionary_member_with_type_annotations() {
     }
   );
 }
-

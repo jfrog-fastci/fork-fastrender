@@ -63,4 +63,3 @@ fn legacy_range_pseudo_element_styles_are_used() {
   let red = count_red(&pixmap, 90, 9, 119, 15);
   assert!(red > 0, "expected red pixels on the unfilled track region");
 }
-

@@ -29,7 +29,12 @@ fn solid_rounded_border_edges_snap_to_device_pixels() {
 
   let outside = pixmap.pixel(21, 10).expect("outside pixel");
   assert_eq!(
-    (outside.red(), outside.green(), outside.blue(), outside.alpha()),
+    (
+      outside.red(),
+      outside.green(),
+      outside.blue(),
+      outside.alpha()
+    ),
     (255, 102, 0, 255),
     "expected pixel outside border to remain the body background color"
   );
@@ -81,42 +86,72 @@ fn solid_rounded_border_half_pixel_edges_snap_consistently() {
 
   let outside_left = pixmap.pixel(2, 10).expect("outside-left pixel");
   assert_eq!(
-    (outside_left.red(), outside_left.green(), outside_left.blue(), outside_left.alpha()),
+    (
+      outside_left.red(),
+      outside_left.green(),
+      outside_left.blue(),
+      outside_left.alpha()
+    ),
     (255, 102, 0, 255),
     "expected pixel outside border to remain the body background color"
   );
 
   let border_left = pixmap.pixel(3, 10).expect("left border pixel");
   assert_eq!(
-    (border_left.red(), border_left.green(), border_left.blue(), border_left.alpha()),
+    (
+      border_left.red(),
+      border_left.green(),
+      border_left.blue(),
+      border_left.alpha()
+    ),
     (255, 255, 255, 255),
     "expected left border pixel to be solid white"
   );
 
   let inside_left = pixmap.pixel(4, 10).expect("inside-left pixel");
   assert_eq!(
-    (inside_left.red(), inside_left.green(), inside_left.blue(), inside_left.alpha()),
+    (
+      inside_left.red(),
+      inside_left.green(),
+      inside_left.blue(),
+      inside_left.alpha()
+    ),
     (0, 255, 0, 255),
     "expected pixel inside border to match element background color"
   );
 
   let inside_right = pixmap.pixel(19, 10).expect("inside-right pixel");
   assert_eq!(
-    (inside_right.red(), inside_right.green(), inside_right.blue(), inside_right.alpha()),
+    (
+      inside_right.red(),
+      inside_right.green(),
+      inside_right.blue(),
+      inside_right.alpha()
+    ),
     (0, 255, 0, 255),
     "expected pixel inside border to match element background color"
   );
 
   let border_right = pixmap.pixel(20, 10).expect("right border pixel");
   assert_eq!(
-    (border_right.red(), border_right.green(), border_right.blue(), border_right.alpha()),
+    (
+      border_right.red(),
+      border_right.green(),
+      border_right.blue(),
+      border_right.alpha()
+    ),
     (255, 255, 255, 255),
     "expected right border pixel to be solid white"
   );
 
   let outside_right = pixmap.pixel(21, 10).expect("outside-right pixel");
   assert_eq!(
-    (outside_right.red(), outside_right.green(), outside_right.blue(), outside_right.alpha()),
+    (
+      outside_right.red(),
+      outside_right.green(),
+      outside_right.blue(),
+      outside_right.alpha()
+    ),
     (255, 102, 0, 255),
     "expected pixel outside border to remain the body background color"
   );

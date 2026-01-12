@@ -11,7 +11,10 @@ fn collect_text(node: &FragmentNode, out: &mut String) {
   }
 }
 
-fn find_table_cell_containing<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
+fn find_table_cell_containing<'a>(
+  node: &'a FragmentNode,
+  needle: &str,
+) -> Option<&'a FragmentNode> {
   if matches!(
     node.style.as_ref().map(|s| s.display),
     Some(Display::TableCell)
@@ -22,7 +25,10 @@ fn find_table_cell_containing<'a>(node: &'a FragmentNode, needle: &str) -> Optio
       return Some(node);
     }
   }
-  node.children.iter().find_map(|child| find_table_cell_containing(child, needle))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_table_cell_containing(child, needle))
 }
 
 fn count_line_fragments(node: &FragmentNode) -> usize {
@@ -82,4 +88,3 @@ fn table_intrinsic_sizing_accounts_for_rem_padding() {
     "expected prerequisites cell to lay out on a single line (got {line_count})"
   );
 }
-

@@ -152,7 +152,8 @@ fn web_font_cors_enforcement_is_enabled_by_default() {
     data,
     access_control_allow_origin: None,
   });
-  let (ctx, fallback_family) = context_with_fetcher(fetcher).expect("fixture font should be loadable");
+  let (ctx, fallback_family) =
+    context_with_fetcher(fetcher).expect("fixture font should be loadable");
 
   let face = FontFaceRule {
     family: Some("CorsDefault".to_string()),

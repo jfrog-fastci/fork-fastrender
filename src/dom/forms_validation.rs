@@ -159,14 +159,20 @@ fn pattern_mismatch(pattern: &str, value: &str) -> bool {
 fn apply_length_constraints(state: &mut ValidityState, value: &str, node: &DomNode) {
   let len = utf16_len(value);
 
-  if let Some(max) = node.get_attribute_ref("maxlength").and_then(parse_non_negative_integer) {
+  if let Some(max) = node
+    .get_attribute_ref("maxlength")
+    .and_then(parse_non_negative_integer)
+  {
     if len > max {
       state.too_long = true;
     }
   }
 
   if !value.is_empty() {
-    if let Some(min) = node.get_attribute_ref("minlength").and_then(parse_non_negative_integer) {
+    if let Some(min) = node
+      .get_attribute_ref("minlength")
+      .and_then(parse_non_negative_integer)
+    {
       if len < min {
         state.too_short = true;
       }
@@ -231,7 +237,8 @@ pub(super) fn parse_time_value(value: &str) -> Option<i64> {
     }
   }
 
-  let total_ms = (hour as i64) * 3_600_000 + (minute as i64) * 60_000 + (second as i64) * 1_000 + millis as i64;
+  let total_ms =
+    (hour as i64) * 3_600_000 + (minute as i64) * 60_000 + (second as i64) * 1_000 + millis as i64;
   Some(total_ms)
 }
 
@@ -292,9 +299,17 @@ pub(super) fn parse_week_value(value: &str) -> Option<i32> {
   Some(date.num_days_from_ce())
 }
 
-fn range_flags_numeric(state: &mut ValidityState, value: f64, node: &DomNode) -> Option<(Option<f64>, Option<f64>)> {
-  let min = node.get_attribute_ref("min").and_then(super::parse_finite_number);
-  let max = node.get_attribute_ref("max").and_then(super::parse_finite_number);
+fn range_flags_numeric(
+  state: &mut ValidityState,
+  value: f64,
+  node: &DomNode,
+) -> Option<(Option<f64>, Option<f64>)> {
+  let min = node
+    .get_attribute_ref("min")
+    .and_then(super::parse_finite_number);
+  let max = node
+    .get_attribute_ref("max")
+    .and_then(super::parse_finite_number);
   if let Some(min) = min {
     if value < min {
       state.range_underflow = true;
@@ -352,7 +367,10 @@ pub(crate) fn validity_state(element: &ElementRef) -> Option<ValidityState> {
   validity_state_with_disabled(element, element.is_disabled())
 }
 
-pub(crate) fn validity_state_with_disabled(element: &ElementRef, disabled: bool) -> Option<ValidityState> {
+pub(crate) fn validity_state_with_disabled(
+  element: &ElementRef,
+  disabled: bool,
+) -> Option<ValidityState> {
   if !element.supports_validation() {
     return None;
   }
@@ -516,7 +534,9 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
 
   // Date/time-like inputs.
   if input_type.eq_ignore_ascii_case("date") {
-    return validity_for_date_like(element, required, parse_date_value, 1.0, |v| v as i64 * 86_400_000);
+    return validity_for_date_like(element, required, parse_date_value, 1.0, |v| {
+      v as i64 * 86_400_000
+    });
   }
   if input_type.eq_ignore_ascii_case("month") {
     return validity_for_month(element, required);
@@ -532,8 +552,13 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
   }
 
   // Text-like inputs (default to text for unknown types).
-  let value = super::input_text_like_value_string(element.node)
-    .unwrap_or_else(|| element.node.get_attribute_ref("value").unwrap_or_default().to_string());
+  let value = super::input_text_like_value_string(element.node).unwrap_or_else(|| {
+    element
+      .node
+      .get_attribute_ref("value")
+      .unwrap_or_default()
+      .to_string()
+  });
   if required && value_is_empty(&value) {
     state.value_missing = true;
     state.compute_validity();
@@ -591,7 +616,8 @@ fn validity_for_date_like(
     return state;
   };
 
-  let (min, _max) = range_flags_integer(&mut state, value, element.node, parser).unwrap_or((None, None));
+  let (min, _max) =
+    range_flags_integer(&mut state, value, element.node, parser).unwrap_or((None, None));
 
   let step_attr = element.node.get_attribute_ref("step");
   let step = step_attr.map(parse_step_attribute).unwrap_or(Step::Default);
@@ -862,10 +888,7 @@ pub(crate) fn range_state(element: &ElementRef) -> Option<bool> {
       return None;
     }
     let trimmed = super::trim_ascii_whitespace_html(raw);
-    let parsed = trimmed
-      .parse::<f64>()
-      .ok()
-      .filter(|v| v.is_finite())?;
+    let parsed = trimmed.parse::<f64>().ok().filter(|v| v.is_finite())?;
     let min = element
       .node
       .get_attribute_ref("min")
@@ -1087,10 +1110,8 @@ pub(crate) fn radio_group_is_missing(element: &ElementRef) -> bool {
         .eq_ignore_ascii_case("radio")
       && node.get_attribute_ref("name") == Some(name)
     {
-      let owner =
-        ElementRef::resolve_form_owner_for_node(node, nearest_form, &forms_by_id).map(|form| {
-          form as *const DomNode
-        });
+      let owner = ElementRef::resolve_form_owner_for_node(node, nearest_form, &forms_by_id)
+        .map(|form| form as *const DomNode);
       if owner == self_form_owner {
         if node.get_attribute_ref("checked").is_some() {
           return false;

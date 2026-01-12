@@ -4,8 +4,8 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
-use fastrender::style::types::InsetValue;
 use fastrender::style::types::BorderStyle;
+use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -47,12 +47,19 @@ fn abspos_child_origin_is_relative_to_padding_box_not_content_box() {
 
   let constraints = LayoutConstraints::definite(200.0, 200.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   let abs_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute positioned fragment present");
 
   assert!(
@@ -100,12 +107,19 @@ fn abspos_child_origin_is_offset_by_border_width_once() {
 
   let constraints = LayoutConstraints::definite(500.0, 500.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   let abs_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute positioned fragment present");
 
   assert!(
@@ -156,12 +170,19 @@ fn abspos_inset_stretch_fills_padding_box_without_extra_padding_offset() {
 
   let constraints = LayoutConstraints::definite(200.0, 200.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   let abs_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute positioned fragment present");
 
   assert!(
@@ -214,7 +235,11 @@ fn abspos_inset_stretch_with_auto_height_and_in_flow_content_is_not_offset_by_pa
   let mut content_style = ComputedStyle::default();
   content_style.display = Display::Block;
   content_style.height = Some(Length::px(50.0));
-  let content = BoxNode::new_block(Arc::new(content_style), FormattingContextType::Block, vec![]);
+  let content = BoxNode::new_block(
+    Arc::new(content_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -224,12 +249,19 @@ fn abspos_inset_stretch_with_auto_height_and_in_flow_content_is_not_offset_by_pa
 
   let constraints = LayoutConstraints::definite(200.0, 200.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   let overlay_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute overlay fragment present");
 
   assert!(
@@ -285,17 +317,29 @@ fn abspos_child_origin_is_relative_to_padding_box_when_container_is_block_child(
 
   let constraints = LayoutConstraints::definite(200.0, 200.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let container_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Relative)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Relative)
+      )
+    })
     .expect("container fragment present");
   let abs_fragment = container_fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute positioned fragment present");
 
   assert!(
@@ -343,8 +387,7 @@ fn viewport_fixed_children_do_not_inherit_padding_translation() {
   fixed_style.width = Some(Length::px(10.0));
   fixed_style.height = Some(Length::px(10.0));
 
-  let fixed_child =
-    BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
+  let fixed_child = BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
   let container = BoxNode::new_block(
     Arc::new(container_style),
     FormattingContextType::Block,
@@ -358,17 +401,29 @@ fn viewport_fixed_children_do_not_inherit_padding_translation() {
 
   let constraints = LayoutConstraints::definite(200.0, 200.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let container_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Relative)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Relative)
+      )
+    })
     .expect("container fragment present");
   let fixed_fragment = container_fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Fixed)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Fixed)
+      )
+    })
     .expect("fixed positioned fragment present");
 
   assert!(
@@ -422,12 +477,19 @@ fn abspos_child_origin_is_relative_to_padding_box_not_border_box() {
 
   let constraints = LayoutConstraints::definite(400.0, 400.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   let abs_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute positioned fragment present");
 
   assert!(
@@ -479,12 +541,19 @@ fn abspos_inset_stretch_fills_padding_box_without_double_border_offset() {
 
   let constraints = LayoutConstraints::definite(400.0, 400.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   let abs_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute positioned fragment present");
 
   assert!(

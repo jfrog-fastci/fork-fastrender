@@ -30,10 +30,14 @@ fn assert_is_blue(rgba: (u8, u8, u8, u8), msg: &str) {
 
 fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
   let mut dl = create_stacking_context_bounds_renderer();
-  let dl_pixmap = dl.render_html(html, width, height).expect("render display_list");
+  let dl_pixmap = dl
+    .render_html(html, width, height)
+    .expect("render display_list");
 
   let mut legacy = create_stacking_context_bounds_renderer_legacy();
-  let legacy_pixmap = legacy.render_html(html, width, height).expect("render legacy");
+  let legacy_pixmap = legacy
+    .render_html(html, width, height)
+    .expect("render legacy");
 
   (dl_pixmap, legacy_pixmap)
 }
@@ -67,7 +71,9 @@ fn background_clip_text_clips_background_to_glyph_shapes() {
       &format!("{backend}: background-clip:text should not paint outside glyph shapes"),
     );
 
-    let bbox = bounding_box_for_color(&pixmap, |(r, g, b, a)| r > 200 && g < 50 && b < 50 && a > 200);
+    let bbox = bounding_box_for_color(&pixmap, |(r, g, b, a)| {
+      r > 200 && g < 50 && b < 50 && a > 200
+    });
     assert!(
       bbox.is_some(),
       "{backend}: expected some red pixels to be painted inside glyph shapes"
@@ -106,8 +112,9 @@ fn background_clip_text_only_clips_layers_that_request_it() {
       &format!("{backend}: non-text layer should still paint outside glyph shapes"),
     );
 
-    let red_bbox =
-      bounding_box_for_color(&pixmap, |(r, g, b, a)| r > 200 && g < 50 && b < 50 && a > 200);
+    let red_bbox = bounding_box_for_color(&pixmap, |(r, g, b, a)| {
+      r > 200 && g < 50 && b < 50 && a > 200
+    });
     assert!(
       red_bbox.is_some(),
       "{backend}: expected some red pixels from the text-clipped top layer"

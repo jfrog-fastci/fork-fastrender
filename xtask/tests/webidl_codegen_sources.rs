@@ -53,7 +53,17 @@ fn webidl_codegen_sources_include_url_and_fetch() {
     .interfaces
     .values()
     .flat_map(|i| i.members.iter())
-    .chain(resolved.interface_mixins.values().flat_map(|m| m.members.iter()))
-    .any(|m| m.name.as_deref() == Some("fetch") || m.raw.contains(" fetch(") || m.raw.starts_with("fetch("));
-  assert!(has_fetch, "expected a fetch operation in the resolved world");
+    .chain(
+      resolved
+        .interface_mixins
+        .values()
+        .flat_map(|m| m.members.iter()),
+    )
+    .any(|m| {
+      m.name.as_deref() == Some("fetch") || m.raw.contains(" fetch(") || m.raw.starts_with("fetch(")
+    });
+  assert!(
+    has_fetch,
+    "expected a fetch operation in the resolved world"
+  );
 }

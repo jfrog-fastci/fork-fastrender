@@ -9,4 +9,3 @@ fn dom_integration_module_is_exported() {
   #[allow(unused_imports)]
   use fastrender::js::dom_integration;
 }
-

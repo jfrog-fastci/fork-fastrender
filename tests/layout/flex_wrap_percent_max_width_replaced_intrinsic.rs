@@ -48,11 +48,7 @@ fn flex_wrap_does_not_trigger_from_percent_max_width_inline_replaced_intrinsic_m
     vec![replaced],
   );
 
-  let right_item = BoxNode::new_block(
-    Arc::new(item_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let right_item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -83,4 +79,3 @@ fn flex_wrap_does_not_trigger_from_percent_max_width_inline_replaced_intrinsic_m
     "expected flex items to stay on the first line (y≈0); got y={y}"
   );
 }
-

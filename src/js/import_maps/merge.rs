@@ -1,8 +1,8 @@
 use rustc_hash::FxHashSet;
 
 use super::types::{
-  code_unit_cmp, ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ModuleIntegrityMap,
-  ModuleSpecifierMap, ResolvedModuleSetIndex,
+  code_unit_cmp, ImportMap, ImportMapError, ImportMapParseResult, ImportMapState,
+  ModuleIntegrityMap, ModuleSpecifierMap, ResolvedModuleSetIndex,
 };
 use super::ImportMapLimits;
 
@@ -102,7 +102,12 @@ fn merge_existing_and_new_import_maps_impl(
   new_import_map: &ImportMap,
 ) {
   let mut instr = ();
-  merge_existing_and_new_import_maps_impl_instrumented(old_import_map, resolved_module_set, new_import_map, &mut instr);
+  merge_existing_and_new_import_maps_impl_instrumented(
+    old_import_map,
+    resolved_module_set,
+    new_import_map,
+    &mut instr,
+  );
 }
 
 pub(crate) fn merge_existing_and_new_import_maps_impl_instrumented<I: MergeInstrumentation>(
@@ -146,12 +151,18 @@ pub(crate) fn merge_existing_and_new_import_maps_impl_instrumented<I: MergeInstr
       });
     }
 
-    if let Some((_, existing_scope_imports)) =
-      old_import_map.scopes.entries.iter_mut().find(|(prefix, _)| prefix == &scope_prefix)
+    if let Some((_, existing_scope_imports)) = old_import_map
+      .scopes
+      .entries
+      .iter_mut()
+      .find(|(prefix, _)| prefix == &scope_prefix)
     {
       *existing_scope_imports = merge_module_specifier_maps(&scope_imports, existing_scope_imports);
     } else {
-      old_import_map.scopes.entries.push((scope_prefix, scope_imports));
+      old_import_map
+        .scopes
+        .entries
+        .push((scope_prefix, scope_imports));
     }
   }
 

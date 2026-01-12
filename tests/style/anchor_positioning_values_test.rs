@@ -101,4 +101,3 @@ fn anchor_center_parses_for_alignment_properties() {
   assert_eq!(target.styles.align_items, AlignItems::AnchorCenter);
   assert_eq!(target.styles.justify_items, AlignItems::AnchorCenter);
 }
-

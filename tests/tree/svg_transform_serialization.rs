@@ -20,9 +20,9 @@ fn find_inline_svg_content(node: &BoxNode) -> Option<&SvgContent> {
 
 fn g_style_from_serialized_svg(svg: &str) -> Option<(Option<String>, Option<String>)> {
   let doc = roxmltree::Document::parse(svg).ok()?;
-  let g = doc.descendants().find(|node| {
-    node.has_tag_name("g") && node.attribute("id").is_some_and(|id| id == "g")
-  })?;
+  let g = doc
+    .descendants()
+    .find(|node| node.has_tag_name("g") && node.attribute("id").is_some_and(|id| id == "g"))?;
   Some((
     g.attribute("transform").map(|v| v.to_string()),
     g.attribute("style").map(|v| v.to_string()),
@@ -46,7 +46,10 @@ fn svg_transform_percentage_falls_back_to_css_style_text() {
   let dom = dom::parse_html(html).expect("parse html");
   let styled = cascade::apply_styles(&dom, &stylesheet);
   let tree = generate_box_tree(&styled).expect("box tree");
-  let svg = find_inline_svg_content(&tree.root).expect("inline svg").svg.as_str();
+  let svg = find_inline_svg_content(&tree.root)
+    .expect("inline svg")
+    .svg
+    .as_str();
 
   let (transform_attr, style_attr) =
     g_style_from_serialized_svg(svg).expect("find g in serialized svg");
@@ -83,7 +86,10 @@ fn svg_transform_calc_falls_back_to_css_style_text() {
   let dom = dom::parse_html(html).expect("parse html");
   let styled = cascade::apply_styles(&dom, &stylesheet);
   let tree = generate_box_tree(&styled).expect("box tree");
-  let svg = find_inline_svg_content(&tree.root).expect("inline svg").svg.as_str();
+  let svg = find_inline_svg_content(&tree.root)
+    .expect("inline svg")
+    .svg
+    .as_str();
 
   let (transform_attr, style_attr) =
     g_style_from_serialized_svg(svg).expect("find g in serialized svg");
@@ -123,7 +129,10 @@ fn svg_transform_unserializable_keeps_authored_transform_attribute() {
   let dom = dom::parse_html(html).expect("parse html");
   let styled = cascade::apply_styles(&dom, &stylesheet);
   let tree = generate_box_tree(&styled).expect("box tree");
-  let svg = find_inline_svg_content(&tree.root).expect("inline svg").svg.as_str();
+  let svg = find_inline_svg_content(&tree.root)
+    .expect("inline svg")
+    .svg
+    .as_str();
 
   let (transform_attr, style_attr) =
     g_style_from_serialized_svg(svg).expect("find g in serialized svg");

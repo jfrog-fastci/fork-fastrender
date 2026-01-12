@@ -97,7 +97,11 @@ impl Document {
   pub fn subtree_preorder(&self, root: NodeId) -> impl Iterator<Item = NodeId> + '_ {
     SubtreePreorder {
       doc: self,
-      stack: self.contains_node(root).then_some(root).into_iter().collect(),
+      stack: self
+        .contains_node(root)
+        .then_some(root)
+        .into_iter()
+        .collect(),
       remaining: self.nodes.len() + 1,
     }
   }
@@ -300,7 +304,8 @@ mod tests {
 
   #[test]
   fn connected_for_scripting_detects_detached_subtrees() {
-    let root = parse_html(r#"<!doctype html><html><body><script>live</script></body></html>"#).unwrap();
+    let root =
+      parse_html(r#"<!doctype html><html><body><script>live</script></body></html>"#).unwrap();
     let mut doc = Document::from_renderer_dom(&root);
 
     let script_id = doc
@@ -308,7 +313,9 @@ mod tests {
       .iter()
       .enumerate()
       .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script") => Some(NodeId(idx)),
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script") => {
+          Some(NodeId(idx))
+        }
         _ => None,
       })
       .expect("script node not found");
@@ -337,7 +344,9 @@ mod tests {
       .iter()
       .enumerate()
       .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script") => Some(NodeId(idx)),
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script") => {
+          Some(NodeId(idx))
+        }
         _ => None,
       })
       .expect("script node not found");
@@ -347,7 +356,9 @@ mod tests {
       .iter()
       .enumerate()
       .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => Some(NodeId(idx)),
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => {
+          Some(NodeId(idx))
+        }
         _ => None,
       })
       .expect("div node not found");

@@ -199,7 +199,9 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
 
   let mut ctx = RootingContext { heap: &mut heap };
 
-  let err = job.run(&mut ctx, &mut host).expect_err("host should return error");
+  let err = job
+    .run(&mut ctx, &mut host)
+    .expect_err("host should return error");
   assert!(matches!(
     err,
     VmError::Unimplemented("host_call_job_callback failed")
@@ -294,7 +296,9 @@ fn promise_reaction_job_error_still_releases_roots() -> Result<(), VmError> {
   assert!(weak_argument.upgrade(&heap).is_some());
 
   let mut ctx = RootingContext { heap: &mut heap };
-  let err = job.run(&mut ctx, &mut host).expect_err("host should return error");
+  let err = job
+    .run(&mut ctx, &mut host)
+    .expect_err("host should return error");
   assert!(matches!(
     err,
     VmError::Unimplemented("host_call_job_callback failed")
@@ -306,4 +310,3 @@ fn promise_reaction_job_error_still_releases_roots() -> Result<(), VmError> {
 
   Ok(())
 }
-

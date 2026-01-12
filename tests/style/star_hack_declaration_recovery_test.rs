@@ -24,4 +24,3 @@ fn star_hack_declaration_does_not_abort_style_block_parsing() {
   let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::default());
   assert_eq!(styled.styles.color, Rgba::BLUE);
 }
-

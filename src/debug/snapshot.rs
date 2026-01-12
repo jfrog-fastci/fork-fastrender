@@ -607,12 +607,10 @@ pub fn assert_dom2_snapshot_invariants(snapshot: &Dom2Snapshot) {
 
 #[track_caller]
 pub fn assert_dom2_snapshot_eq(actual: &Dom2Snapshot, expected: &Dom2Snapshot) {
-  let actual_json = serde_json::to_string_pretty(actual).unwrap_or_else(|err| {
-    format!("<failed to serialize actual Dom2Snapshot: {err}>")
-  });
-  let expected_json = serde_json::to_string_pretty(expected).unwrap_or_else(|err| {
-    format!("<failed to serialize expected Dom2Snapshot: {err}>")
-  });
+  let actual_json = serde_json::to_string_pretty(actual)
+    .unwrap_or_else(|err| format!("<failed to serialize actual Dom2Snapshot: {err}>"));
+  let expected_json = serde_json::to_string_pretty(expected)
+    .unwrap_or_else(|err| format!("<failed to serialize expected Dom2Snapshot: {err}>"));
   debug_assert_eq!(actual_json, expected_json);
 }
 
@@ -851,7 +849,8 @@ fn snapshot_box_node(node: &BoxNode) -> BoxNodeSnapshot {
     table_spans,
     style: snapshot_style(&node.style),
     children: {
-      let mut children: Vec<BoxNodeSnapshot> = node.children.iter().map(snapshot_box_node).collect();
+      let mut children: Vec<BoxNodeSnapshot> =
+        node.children.iter().map(snapshot_box_node).collect();
       if let Some(body) = node.footnote_body.as_deref() {
         children.push(snapshot_box_node(body));
       }
@@ -1199,33 +1198,33 @@ fn snapshot_display_item(item_id: usize, item: &DisplayItem) -> DisplayItemSnaps
         })).collect::<Vec<_>>(),
       })),
     ),
-    DisplayItem::Border(border) => (
-      "border".to_string(),
-      {
-        let mut obj = serde_json::Map::new();
-        obj.insert("rect".to_string(), serde_json::json!(snapshot_rect(border.rect)));
-        obj.insert("top".to_string(), snapshot_border_side(&border.top));
-        obj.insert("right".to_string(), snapshot_border_side(&border.right));
-        obj.insert("bottom".to_string(), snapshot_border_side(&border.bottom));
-        obj.insert("left".to_string(), snapshot_border_side(&border.left));
+    DisplayItem::Border(border) => ("border".to_string(), {
+      let mut obj = serde_json::Map::new();
+      obj.insert(
+        "rect".to_string(),
+        serde_json::json!(snapshot_rect(border.rect)),
+      );
+      obj.insert("top".to_string(), snapshot_border_side(&border.top));
+      obj.insert("right".to_string(), snapshot_border_side(&border.right));
+      obj.insert("bottom".to_string(), snapshot_border_side(&border.bottom));
+      obj.insert("left".to_string(), snapshot_border_side(&border.left));
+      obj.insert(
+        "has_image".to_string(),
+        serde_json::Value::Bool(border.image.is_some()),
+      );
+      obj.insert("radii".to_string(), snapshot_radii(border.radii));
+      if let Some(gap) = border.gap {
         obj.insert(
-          "has_image".to_string(),
-          serde_json::Value::Bool(border.image.is_some()),
+          "gap".to_string(),
+          serde_json::json!({
+            "edge": format!("{:?}", gap.edge),
+            "start": gap.start,
+            "end": gap.end,
+          }),
         );
-        obj.insert("radii".to_string(), snapshot_radii(border.radii));
-        if let Some(gap) = border.gap {
-          obj.insert(
-            "gap".to_string(),
-            serde_json::json!({
-              "edge": format!("{:?}", gap.edge),
-              "start": gap.start,
-              "end": gap.end,
-            }),
-          );
-        }
-        Some(serde_json::Value::Object(obj))
-      },
-    ),
+      }
+      Some(serde_json::Value::Object(obj))
+    }),
     DisplayItem::TableCollapsedBorders(borders) => (
       "table_collapsed_borders".to_string(),
       Some(serde_json::json!({

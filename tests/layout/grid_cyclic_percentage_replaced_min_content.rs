@@ -38,7 +38,11 @@ fn grid_fr_tracks_allow_replaced_percentage_width_to_compress_min_content() {
       None,
     );
 
-    BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![image])
+    BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Block,
+      vec![image],
+    )
   };
 
   let item1 = make_item(1);

@@ -109,7 +109,9 @@ fn create_contextual_fragment_uses_parent_element_for_comment_context() {
   let comment = doc.create_comment("ctx");
   doc.append_child(div, comment).unwrap();
 
-  let fragment = doc.create_contextual_fragment(comment, "<span>hi</span>").unwrap();
+  let fragment = doc
+    .create_contextual_fragment(comment, "<span>hi</span>")
+    .unwrap();
   assert_eq!(
     super::serialization::serialize_children(&doc, fragment),
     "<span>hi</span>"

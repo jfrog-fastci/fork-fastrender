@@ -40,4 +40,3 @@ fn bikeshed_does_not_confuse_prefix_for_pre_when_scanning() {
     blocks[0]
   );
 }
-

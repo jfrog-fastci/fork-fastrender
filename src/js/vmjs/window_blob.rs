@@ -17,8 +17,8 @@ use std::sync::{Mutex, OnceLock};
 
 use vm_js::{
   new_promise_capability_with_host_and_hooks, GcObject, GcString, Heap, NativeConstructId,
-  NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks, WeakGcObject,
+  NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, Scope, Value,
+  Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const BLOB_CTOR_REALM_ID_SLOT: usize = 0;
@@ -80,7 +80,11 @@ fn realm_id_from_slot(value: Value) -> Option<RealmId> {
   Some(RealmId::from_raw(raw))
 }
 
-fn realm_id_for_binding_call(vm: &Vm, scope: &Scope<'_>, callee: GcObject) -> Result<RealmId, VmError> {
+fn realm_id_for_binding_call(
+  vm: &Vm,
+  scope: &Scope<'_>,
+  callee: GcObject,
+) -> Result<RealmId, VmError> {
   if let Some(realm_id) = vm.current_realm() {
     return Ok(realm_id);
   }
@@ -104,9 +108,7 @@ fn with_realm_state_mut<R>(
 ) -> Result<R, VmError> {
   let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
 
-  let mut registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   let state = registry
     .realms
     .get_mut(&realm_id)
@@ -161,10 +163,16 @@ fn normalize_type(s: &str) -> String {
     return String::new();
   }
 
-  s.bytes().map(|b| (b as char).to_ascii_lowercase()).collect()
+  s.bytes()
+    .map(|b| (b as char).to_ascii_lowercase())
+    .collect()
 }
 
-fn js_string_to_utf8_bytes_limited(heap: &Heap, s: GcString, out: &mut Vec<u8>) -> Result<(), VmError> {
+fn js_string_to_utf8_bytes_limited(
+  heap: &Heap,
+  s: GcString,
+  out: &mut Vec<u8>,
+) -> Result<(), VmError> {
   let units = heap.get_string(s)?.as_code_units();
   for decoded in decode_utf16(units.iter().copied()) {
     let ch = decoded.unwrap_or('\u{FFFD}');
@@ -183,11 +191,16 @@ fn js_string_to_utf8_bytes_limited(heap: &Heap, s: GcString, out: &mut Vec<u8>) 
 }
 
 fn append_bytes_limited(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), VmError> {
-  let next_len = out.len().checked_add(bytes.len()).ok_or(VmError::OutOfMemory)?;
+  let next_len = out
+    .len()
+    .checked_add(bytes.len())
+    .ok_or(VmError::OutOfMemory)?;
   if next_len > MAX_BLOB_BYTES {
     return Err(VmError::TypeError("Blob size exceeds maximum length"));
   }
-  out.try_reserve_exact(bytes.len()).map_err(|_| VmError::OutOfMemory)?;
+  out
+    .try_reserve_exact(bytes.len())
+    .map_err(|_| VmError::OutOfMemory)?;
   out.extend_from_slice(bytes);
   Ok(())
 }
@@ -234,7 +247,9 @@ fn blob_ctor_construct(
           return Err(VmError::TypeError("Blob parts array has invalid length"));
         }
         let len = n as usize;
-        parts.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
+        parts
+          .try_reserve_exact(len)
+          .map_err(|_| VmError::OutOfMemory)?;
         for i in 0..len {
           let key = alloc_key(scope, &i.to_string())?;
           let v = vm.get_with_host_and_hooks(host, scope, hooks, parts_obj, key)?;
@@ -310,7 +325,11 @@ fn blob_ctor_construct(
 
   // Expose read-only `size` and `type` instance properties (common real-world usage).
   let size_key = alloc_key(&mut scope, "size")?;
-  scope.define_property(obj, size_key, data_desc(Value::Number(bytes.len() as f64), false))?;
+  scope.define_property(
+    obj,
+    size_key,
+    data_desc(Value::Number(bytes.len() as f64), false),
+  )?;
 
   let type_key = alloc_key(&mut scope, "type")?;
   let type_js = scope.alloc_string(&type_string)?;
@@ -318,22 +337,28 @@ fn blob_ctor_construct(
   scope.define_property(obj, type_key, data_desc(Value::String(type_js), false))?;
 
   with_realm_state_mut(vm, &mut scope, callee, |state| {
-    state
-      .blobs
-      .insert(WeakGcObject::from(obj), BlobData { bytes, r#type: type_string });
+    state.blobs.insert(
+      WeakGcObject::from(obj),
+      BlobData {
+        bytes,
+        r#type: type_string,
+      },
+    );
     Ok(())
   })?;
 
   Ok(Value::Object(obj))
 }
 
-fn clone_blob_data_for_object(vm: &Vm, heap: &Heap, obj: GcObject) -> Result<Option<BlobData>, VmError> {
+fn clone_blob_data_for_object(
+  vm: &Vm,
+  heap: &Heap,
+  obj: GcObject,
+) -> Result<Option<BlobData>, VmError> {
   let Some(realm_id) = vm.current_realm() else {
     return Ok(None);
   };
-  let mut registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   let Some(state) = registry.realms.get_mut(&realm_id) else {
     return Ok(None);
   };
@@ -348,7 +373,11 @@ fn clone_blob_data_for_object(vm: &Vm, heap: &Heap, obj: GcObject) -> Result<Opt
   Ok(state.blobs.get(&WeakGcObject::from(obj)).cloned())
 }
 
-pub(crate) fn clone_blob_data_for_fetch(vm: &Vm, heap: &Heap, value: Value) -> Result<Option<BlobData>, VmError> {
+pub(crate) fn clone_blob_data_for_fetch(
+  vm: &Vm,
+  heap: &Heap,
+  value: Value,
+) -> Result<Option<BlobData>, VmError> {
   let Value::Object(obj) = value else {
     return Ok(None);
   };
@@ -356,9 +385,7 @@ pub(crate) fn clone_blob_data_for_fetch(vm: &Vm, heap: &Heap, value: Value) -> R
 }
 
 pub(crate) fn blob_prototype_for_realm(realm_id: RealmId) -> Option<GcObject> {
-  let registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   registry.realms.get(&realm_id).map(|s| s.blob_proto)
 }
 
@@ -374,7 +401,11 @@ pub(crate) fn create_blob_with_proto(
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
   let size_key = alloc_key(scope, "size")?;
-  scope.define_property(obj, size_key, data_desc(Value::Number(data.bytes.len() as f64), false))?;
+  scope.define_property(
+    obj,
+    size_key,
+    data_desc(Value::Number(data.bytes.len() as f64), false),
+  )?;
 
   let type_key = alloc_key(scope, "type")?;
   let type_js = scope.alloc_string(&data.r#type)?;
@@ -469,10 +500,11 @@ fn blob_slice_native(
   }
   let content_type = normalize_type(&content_type);
 
-  let proto = scope
-    .heap()
-    .object_prototype(this_obj)?
-    .unwrap_or_else(|| vm.intrinsics().map(|i| i.object_prototype()).unwrap_or(this_obj));
+  let proto = scope.heap().object_prototype(this_obj)?.unwrap_or_else(|| {
+    vm.intrinsics()
+      .map(|i| i.object_prototype())
+      .unwrap_or(this_obj)
+  });
 
   let blob = create_blob_with_proto(
     vm,
@@ -505,7 +537,14 @@ fn blob_text_native(
   let text = String::from_utf8_lossy(&data.bytes);
   let s = scope.alloc_string(&text)?;
   scope.push_root(Value::String(s))?;
-  vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[Value::String(s)])?;
+  vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    resolve,
+    Value::Undefined,
+    &[Value::String(s)],
+  )?;
 
   Ok(promise)
 }
@@ -534,11 +573,22 @@ fn blob_array_buffer_native(
     .heap_mut()
     .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
 
-  vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[Value::Object(ab)])?;
+  vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    resolve,
+    Value::Undefined,
+    &[Value::Object(ab)],
+  )?;
   Ok(promise)
 }
 
-pub fn install_window_blob_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) -> Result<(), VmError> {
+pub fn install_window_blob_bindings(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut Heap,
+) -> Result<(), VmError> {
   let intr = realm.intrinsics();
   let realm_id = realm.id();
 
@@ -571,7 +621,11 @@ pub fn install_window_blob_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap)
       .unwrap_or(Value::Undefined)
     {
       Value::Object(obj) => obj,
-      _ => return Err(VmError::InvariantViolation("Blob constructor missing prototype object")),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "Blob constructor missing prototype object",
+        ))
+      }
     }
   };
   scope.push_root(Value::Object(proto))?;
@@ -639,9 +693,7 @@ pub fn install_window_blob_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap)
   let ctor_key = alloc_key(&mut scope, "Blob")?;
   scope.define_property(global, ctor_key, data_desc(Value::Object(ctor), true))?;
 
-  let mut registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   registry.realms.insert(
     realm_id,
     BlobRealmState {
@@ -655,9 +707,7 @@ pub fn install_window_blob_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap)
 }
 
 pub fn teardown_window_blob_bindings_for_realm(realm_id: RealmId) {
-  let mut registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   registry.realms.remove(&realm_id);
 }
 
@@ -700,11 +750,18 @@ mod tests {
 
     let promise = realm.exec_script("new Blob(['hello']).slice(-2).text()")?;
     let Value::Object(promise_obj) = promise else {
-      return Err(VmError::InvariantViolation("Blob.text must return a Promise"));
+      return Err(VmError::InvariantViolation(
+        "Blob.text must return a Promise",
+      ));
     };
-    assert_eq!(realm.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      realm.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
     let Some(result) = realm.heap().promise_result(promise_obj)? else {
-      return Err(VmError::InvariantViolation("Blob.text promise missing result"));
+      return Err(VmError::InvariantViolation(
+        "Blob.text promise missing result",
+      ));
     };
     assert_eq!(get_string(realm.heap(), result), "lo");
 
@@ -718,11 +775,18 @@ mod tests {
 
     let promise = realm.exec_script("new Blob(['h', 'i']).text()")?;
     let Value::Object(promise_obj) = promise else {
-      return Err(VmError::InvariantViolation("Blob.text must return a Promise"));
+      return Err(VmError::InvariantViolation(
+        "Blob.text must return a Promise",
+      ));
     };
-    assert_eq!(realm.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      realm.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
     let Some(result) = realm.heap().promise_result(promise_obj)? else {
-      return Err(VmError::InvariantViolation("Blob.text promise missing result"));
+      return Err(VmError::InvariantViolation(
+        "Blob.text promise missing result",
+      ));
     };
     assert_eq!(get_string(realm.heap(), result), "hi");
 
@@ -732,7 +796,10 @@ mod tests {
         "Blob.arrayBuffer must return a Promise",
       ));
     };
-    assert_eq!(realm.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      realm.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
     let Some(result) = realm.heap().promise_result(promise_obj)? else {
       return Err(VmError::InvariantViolation(
         "Blob.arrayBuffer promise missing result",

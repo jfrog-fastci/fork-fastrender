@@ -6,23 +6,27 @@ use fastrender::style::position::Position;
 use fastrender::style::types::AlignItems;
 use fastrender::style::types::FlexDirection;
 use fastrender::style::values::Length;
+use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::tree::box_tree::BoxNode;
 use fastrender::ComputedStyle;
 use fastrender::FormattingContextType;
 use std::sync::Arc;
 
 fn first_baseline_from_content(fragment: &FragmentNode) -> Option<f32> {
   if let Some(style) = fragment.style.as_deref() {
-    if style.running_position.is_some() || matches!(style.position, Position::Absolute | Position::Fixed) {
+    if style.running_position.is_some()
+      || matches!(style.position, Position::Absolute | Position::Fixed)
+    {
       return None;
     }
   }
 
   match &fragment.content {
     FragmentContent::Line { baseline } => Some(*baseline),
-    FragmentContent::Text { baseline_offset, .. } => Some(*baseline_offset),
+    FragmentContent::Text {
+      baseline_offset, ..
+    } => Some(*baseline_offset),
     FragmentContent::Replaced { .. } => Some(fragment.bounds.height()),
     _ => {
       for child in fragment.children.iter() {

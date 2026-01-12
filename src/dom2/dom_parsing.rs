@@ -15,7 +15,10 @@ fn element_context(
   doc: &Document,
   context: NodeId,
 ) -> Result<(&str, &str, &[(String, String)]), DomError> {
-  let node = doc.nodes.get(context.index()).ok_or(DomError::NotFoundError)?;
+  let node = doc
+    .nodes
+    .get(context.index())
+    .ok_or(DomError::NotFoundError)?;
   match &node.kind {
     NodeKind::Element {
       tag_name,
@@ -74,7 +77,9 @@ pub(super) fn parse_html_fragment_as_fragment(
   }
   for node_id in to_mark {
     let NodeKind::Element {
-      tag_name, namespace, ..
+      tag_name,
+      namespace,
+      ..
     } = &doc.nodes[node_id.index()].kind
     else {
       continue;

@@ -15,12 +15,18 @@ fn node_attrs_mut(node: &mut DomNode) -> Option<(&mut Vec<(String, String)>, boo
       namespace,
       attributes,
       ..
-    } => Some((attributes, namespace.is_empty() || namespace == HTML_NAMESPACE)),
+    } => Some((
+      attributes,
+      namespace.is_empty() || namespace == HTML_NAMESPACE,
+    )),
     DomNodeType::Slot {
       namespace,
       attributes,
       ..
-    } => Some((attributes, namespace.is_empty() || namespace == HTML_NAMESPACE)),
+    } => Some((
+      attributes,
+      namespace.is_empty() || namespace == HTML_NAMESPACE,
+    )),
     _ => None,
   }
 }
@@ -466,7 +472,10 @@ pub fn activate_radio(root: &mut DomNode, radio_node_id: usize) -> bool {
     while current != 0 {
       let is_boundary = index
         .with_node_mut(current, |node| {
-          matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. })
+          matches!(
+            node.node_type,
+            DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }
+          )
         })
         .unwrap_or(false);
       if is_boundary {
@@ -738,18 +747,24 @@ pub fn activate_select_option(
     return false;
   }
 
-  let Some((option_ok, option_selected, option_ptr)) = index.with_node_mut(option_node_id, |node| {
-    let is_option = node
-      .tag_name()
-      .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(node));
-    if !is_option {
-      return (false, false, std::ptr::null_mut());
-    }
-    if node.get_attribute_ref("disabled").is_some() {
-      return (false, false, std::ptr::null_mut());
-    }
-    (true, node.get_attribute_ref("selected").is_some(), node as *mut DomNode)
-  }) else {
+  let Some((option_ok, option_selected, option_ptr)) =
+    index.with_node_mut(option_node_id, |node| {
+      let is_option = node
+        .tag_name()
+        .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(node));
+      if !is_option {
+        return (false, false, std::ptr::null_mut());
+      }
+      if node.get_attribute_ref("disabled").is_some() {
+        return (false, false, std::ptr::null_mut());
+      }
+      (
+        true,
+        node.get_attribute_ref("selected").is_some(),
+        node as *mut DomNode,
+      )
+    })
+  else {
     return false;
   };
   if !option_ok {
@@ -787,7 +802,9 @@ pub fn activate_select_option(
   let changed = if select_multiple && toggle_for_multiple {
     // Multiple-select toggle.
     index
-      .with_node_mut(option_node_id, |node| set_bool_attr(node, "selected", !option_selected))
+      .with_node_mut(option_node_id, |node| {
+        set_bool_attr(node, "selected", !option_selected)
+      })
       .unwrap_or(false)
   } else {
     // Replacement selection (single-select and non-toggle multiple-select).

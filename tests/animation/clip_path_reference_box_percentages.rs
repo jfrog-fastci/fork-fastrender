@@ -102,6 +102,9 @@ fn clip_path_reference_boxes_affect_percentage_sampling() {
   // `circle(50%) content-box` resolves percentages against the content box size. With a 100px
   // content box, the end radius is 50px. Mid-transition should land at 25px.
   let eps = 1e-3;
-  assert!((len.to_px() - 25.0).abs() < eps, "radius_px={}", len.to_px());
+  assert!(
+    (len.to_px() - 25.0).abs() < eps,
+    "radius_px={}",
+    len.to_px()
+  );
 }
-

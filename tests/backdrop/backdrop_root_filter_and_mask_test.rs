@@ -92,4 +92,3 @@ fn backdrop_filter_stops_at_mask_backdrop_root() {
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
-

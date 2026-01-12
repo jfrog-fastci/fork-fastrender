@@ -83,4 +83,3 @@ fn grid_percent_tracks_with_definite_container_size_resolve() {
   assert_approx(c3.bounds.width(), 300.0, "cell 3 width (75%)");
   assert_approx(c3.bounds.height(), 140.0, "cell 3 height (70%)");
 }
-

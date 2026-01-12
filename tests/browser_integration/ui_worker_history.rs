@@ -16,7 +16,10 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 
 fn assert_frame_has_color(frame: &RenderedFrame, expected: (u8, u8, u8, u8)) {
   let pixmap = &frame.pixmap;
-  assert!(pixmap.width() > 0 && pixmap.height() > 0, "expected non-empty pixmap");
+  assert!(
+    pixmap.width() > 0 && pixmap.height() > 0,
+    "expected non-empty pixmap"
+  );
   // Avoid sampling the right/bottom edges: viewport scrollbars may reserve/paint over them.
   let x1 = if pixmap.width() > 1 { 1 } else { 0 };
   let y1 = if pixmap.height() > 1 { 1 } else { 0 };
@@ -104,7 +107,11 @@ fn next_scroll_state_updated(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Scroll
   })
 }
 
-fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
+fn spawn_worker() -> (
+  Sender<UiToWorker>,
+  Receiver<WorkerToUi>,
+  std::thread::JoinHandle<()>,
+) {
   let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
   (worker.tx, worker.rx, worker.join)
 }
@@ -148,9 +155,9 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   let (tx, rx, handle) = spawn_worker();
   let tab_id = TabId(1);
   tx.send(create_tab_msg(tab_id, Some("about:newtab".to_string())))
-  .unwrap();
+    .unwrap();
   tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
-  .unwrap();
+    .unwrap();
 
   // Start on `about:newtab` so history state is initialized deterministically.
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
@@ -161,7 +168,11 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   let _ = next_scroll_state_updated(&rx, tab_id);
   while rx.try_recv().is_ok() {}
 
-  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl))
+  tx.send(navigate_msg(
+    tab_id,
+    a_url.clone(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, a_url);
@@ -170,7 +181,11 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   let frame_a = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame_a, (255, 0, 0, 255));
 
-  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::TypedUrl))
+  tx.send(navigate_msg(
+    tab_id,
+    b_url.clone(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, b_url);
@@ -208,9 +223,9 @@ fn reload_does_not_create_new_history_entry() {
   let (tx, rx, handle) = spawn_worker();
   let tab_id = TabId(1);
   tx.send(create_tab_msg(tab_id, Some("about:newtab".to_string())))
-  .unwrap();
+    .unwrap();
   tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
-  .unwrap();
+    .unwrap();
 
   // Wait for the initial about:newtab navigation so history state is stable.
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
@@ -221,12 +236,20 @@ fn reload_does_not_create_new_history_entry() {
   let _ = next_scroll_state_updated(&rx, tab_id);
   while rx.try_recv().is_ok() {}
 
-  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl))
+  tx.send(navigate_msg(
+    tab_id,
+    a_url.clone(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
 
-  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::TypedUrl))
+  tx.send(navigate_msg(
+    tab_id,
+    b_url.clone(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
@@ -268,12 +291,15 @@ fn scroll_is_restored_across_back_and_forward() {
 
   let (tx, rx, handle) = spawn_worker();
   let tab_id = TabId(1);
-  tx.send(create_tab_msg(tab_id, None))
-  .unwrap();
+  tx.send(create_tab_msg(tab_id, None)).unwrap();
   tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
-  .unwrap();
+    .unwrap();
 
-  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl))
+  tx.send(navigate_msg(
+    tab_id,
+    a_url.clone(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
@@ -282,8 +308,7 @@ fn scroll_is_restored_across_back_and_forward() {
   let _ = next_scroll_state_updated(&rx, tab_id);
 
   // Scroll on A and ensure it is saved in history.
-  tx.send(scroll_msg(tab_id, (0.0, 240.0), None))
-  .unwrap();
+  tx.send(scroll_msg(tab_id, (0.0, 240.0), None)).unwrap();
   let _frame_scrolled_a = next_frame_ready(&rx, tab_id);
   let scrolled_a = next_scroll_state_updated(&rx, tab_id);
   assert!(
@@ -293,14 +318,17 @@ fn scroll_is_restored_across_back_and_forward() {
   );
   let saved_scroll_y_a = scrolled_a.viewport.y;
 
-  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::TypedUrl))
+  tx.send(navigate_msg(
+    tab_id,
+    b_url.clone(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
   let _ = next_scroll_state_updated(&rx, tab_id);
 
-  tx.send(scroll_msg(tab_id, (0.0, 400.0), None))
-  .unwrap();
+  tx.send(scroll_msg(tab_id, (0.0, 400.0), None)).unwrap();
   // Scroll repaint emits `FrameReady` then `ScrollStateUpdated`.
   let _frame_scrolled_b = next_frame_ready(&rx, tab_id);
   let scrolled_b = next_scroll_state_updated(&rx, tab_id);

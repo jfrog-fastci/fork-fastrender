@@ -343,17 +343,11 @@ pub fn fill_rect(
   if sa == 0 {
     return true;
   }
-  if sa != 255
-    && x.is_finite()
-    && y.is_finite()
-    && width.is_finite()
-    && height.is_finite()
-    && {
-      let x1 = x + width;
-      let y1 = y + height;
-      x1.is_finite() && y1.is_finite()
-    }
-  {
+  if sa != 255 && x.is_finite() && y.is_finite() && width.is_finite() && height.is_finite() && {
+    let x1 = x + width;
+    let y1 = y + height;
+    x1.is_finite() && y1.is_finite()
+  } {
     let x0 = x;
     let y0 = y;
     let x1 = x + width;
@@ -577,8 +571,24 @@ fn append_rounded_rect_contour(
   if tr.x > 0.0 && tr.y > 0.0 {
     let cx = right - tr.x;
     let cy = y + tr.y;
-    arc45(pb, cx, cy, tr.x, tr.y, (0.0, -1.0), (SQRT2_OVER_2, -SQRT2_OVER_2));
-    arc45(pb, cx, cy, tr.x, tr.y, (SQRT2_OVER_2, -SQRT2_OVER_2), (1.0, 0.0));
+    arc45(
+      pb,
+      cx,
+      cy,
+      tr.x,
+      tr.y,
+      (0.0, -1.0),
+      (SQRT2_OVER_2, -SQRT2_OVER_2),
+    );
+    arc45(
+      pb,
+      cx,
+      cy,
+      tr.x,
+      tr.y,
+      (SQRT2_OVER_2, -SQRT2_OVER_2),
+      (1.0, 0.0),
+    );
   } else {
     pb.line_to(right, y);
   }
@@ -587,8 +597,24 @@ fn append_rounded_rect_contour(
   if br.x > 0.0 && br.y > 0.0 {
     let cx = right - br.x;
     let cy = bottom - br.y;
-    arc45(pb, cx, cy, br.x, br.y, (1.0, 0.0), (SQRT2_OVER_2, SQRT2_OVER_2));
-    arc45(pb, cx, cy, br.x, br.y, (SQRT2_OVER_2, SQRT2_OVER_2), (0.0, 1.0));
+    arc45(
+      pb,
+      cx,
+      cy,
+      br.x,
+      br.y,
+      (1.0, 0.0),
+      (SQRT2_OVER_2, SQRT2_OVER_2),
+    );
+    arc45(
+      pb,
+      cx,
+      cy,
+      br.x,
+      br.y,
+      (SQRT2_OVER_2, SQRT2_OVER_2),
+      (0.0, 1.0),
+    );
   } else {
     pb.line_to(right, bottom);
   }
@@ -597,8 +623,24 @@ fn append_rounded_rect_contour(
   if bl.x > 0.0 && bl.y > 0.0 {
     let cx = x + bl.x;
     let cy = bottom - bl.y;
-    arc45(pb, cx, cy, bl.x, bl.y, (0.0, 1.0), (-SQRT2_OVER_2, SQRT2_OVER_2));
-    arc45(pb, cx, cy, bl.x, bl.y, (-SQRT2_OVER_2, SQRT2_OVER_2), (-1.0, 0.0));
+    arc45(
+      pb,
+      cx,
+      cy,
+      bl.x,
+      bl.y,
+      (0.0, 1.0),
+      (-SQRT2_OVER_2, SQRT2_OVER_2),
+    );
+    arc45(
+      pb,
+      cx,
+      cy,
+      bl.x,
+      bl.y,
+      (-SQRT2_OVER_2, SQRT2_OVER_2),
+      (-1.0, 0.0),
+    );
   } else {
     pb.line_to(x, bottom);
   }
@@ -607,8 +649,24 @@ fn append_rounded_rect_contour(
   if tl.x > 0.0 && tl.y > 0.0 {
     let cx = x + tl.x;
     let cy = y + tl.y;
-    arc45(pb, cx, cy, tl.x, tl.y, (-1.0, 0.0), (-SQRT2_OVER_2, -SQRT2_OVER_2));
-    arc45(pb, cx, cy, tl.x, tl.y, (-SQRT2_OVER_2, -SQRT2_OVER_2), (0.0, -1.0));
+    arc45(
+      pb,
+      cx,
+      cy,
+      tl.x,
+      tl.y,
+      (-1.0, 0.0),
+      (-SQRT2_OVER_2, -SQRT2_OVER_2),
+    );
+    arc45(
+      pb,
+      cx,
+      cy,
+      tl.x,
+      tl.y,
+      (-SQRT2_OVER_2, -SQRT2_OVER_2),
+      (0.0, -1.0),
+    );
   } else {
     pb.line_to(x, y);
   }
@@ -759,17 +817,11 @@ pub fn fill_rounded_rect(
   if sa == 0 {
     return true;
   }
-  if sa != 255
-    && x.is_finite()
-    && y.is_finite()
-    && width.is_finite()
-    && height.is_finite()
-    && {
-      let x1 = x + width;
-      let y1 = y + height;
-      x1.is_finite() && y1.is_finite()
-    }
-  {
+  if sa != 255 && x.is_finite() && y.is_finite() && width.is_finite() && height.is_finite() && {
+    let x1 = x + width;
+    let y1 = y + height;
+    x1.is_finite() && y1.is_finite()
+  } {
     // Rasterize the rounded-rect coverage into a temporary mask, then composite into the
     // destination premultiplied buffer using truncating `mul/255` arithmetic.
     const COVERAGE_MARGIN_PX: i64 = 2;
@@ -801,26 +853,45 @@ pub fn fill_rounded_rect(
     let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
       // Scratch would overflow; fall back to tiny-skia.
       let paint = make_paint(color);
-      pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+      pixmap.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+      );
       return true;
     };
     let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
       let paint = make_paint(color);
-      pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+      pixmap.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+      );
       return true;
     };
     if scratch_w == 0 || scratch_h == 0 {
       return true;
     }
 
-    let mut scratch = ROUNDED_RECT_MASK_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let mut scratch =
+      ROUNDED_RECT_MASK_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
     let mut mask = match scratch.mask.take() {
       Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
       _ => match Mask::new(scratch_w, scratch_h) {
         Some(m) => m,
         None => {
           let paint = make_paint(color);
-          pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+          pixmap.fill_path(
+            &path,
+            &paint,
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+          );
           scratch.mask = None;
           ROUNDED_RECT_MASK_SCRATCH.with(|cell| {
             *cell.borrow_mut() = scratch;
@@ -903,7 +974,13 @@ pub fn fill_rounded_rect(
   }
 
   let paint = make_paint(color);
-  pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+  pixmap.fill_path(
+    &path,
+    &paint,
+    FillRule::Winding,
+    Transform::identity(),
+    None,
+  );
   true
 }
 

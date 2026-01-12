@@ -51,7 +51,8 @@ fn author_css_cannot_observe_internal_hover_state_via_data_fastr_hover_attr() ->
   let mut doc = BrowserDocument::new(support::deterministic_renderer(), html, options)?;
   let mut engine = InteractionEngine::new();
 
-  let initial = doc.render_frame_with_scroll_state_and_interaction_state(Some(engine.interaction_state()))?;
+  let initial =
+    doc.render_frame_with_scroll_state_and_interaction_state(Some(engine.interaction_state()))?;
   assert_eq!(
     support::rgba_at(&initial.pixmap, 10, 10),
     [0, 0, 0, 255],
@@ -76,7 +77,8 @@ fn author_css_cannot_observe_internal_hover_state_via_data_fastr_hover_attr() ->
     "renderer must not inject data-fastr-hover onto the DOM"
   );
 
-  let hovered = doc.render_frame_with_scroll_state_and_interaction_state(Some(engine.interaction_state()))?;
+  let hovered =
+    doc.render_frame_with_scroll_state_and_interaction_state(Some(engine.interaction_state()))?;
   assert_eq!(
     support::rgba_at(&hovered.pixmap, 10, 10),
     [0, 0, 255, 255],
@@ -85,4 +87,3 @@ fn author_css_cannot_observe_internal_hover_state_via_data_fastr_hover_attr() ->
 
   Ok(())
 }
-

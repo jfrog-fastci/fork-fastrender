@@ -203,8 +203,9 @@ impl DisplayListOptimizer {
     // blend with content outside the intended scope. Track which stacking context pushes have
     // blend-mode descendants and keep them (also forcing `is_isolated` on the preserved context so
     // the renderer allocates an intermediate surface).
-    let blend_isolation_scopes = Self::compute_blend_isolation_scopes_checked(items, &mut deadline_counter)
-      .map_err(Error::Render)?;
+    let blend_isolation_scopes =
+      Self::compute_blend_isolation_scopes_checked(items, &mut deadline_counter)
+        .map_err(Error::Render)?;
     let mut indices: Vec<usize> = (0..items.len()).collect();
     let mut scratch_indices: Vec<usize> = Vec::with_capacity(indices.len());
     let mut stats = OptimizationStats {
@@ -287,7 +288,11 @@ impl DisplayListOptimizer {
             if let Some(prev) = pending_fill.take() {
               out.push(DisplayItem::FillRect(prev));
             }
-            out.push(Self::clone_item_with_blend_isolation(other, idx, &blend_isolation_scopes));
+            out.push(Self::clone_item_with_blend_isolation(
+              other,
+              idx,
+              &blend_isolation_scopes,
+            ));
           }
         }
       }
@@ -1004,7 +1009,9 @@ impl DisplayListOptimizer {
           DisplayItem::PushStackingContext(_) => stack.push(StackEntry::StackingContext),
           DisplayItem::PopStackingContext => pop_entry(&mut stack, StackEntry::StackingContext),
           DisplayItem::PushBackfaceVisibility(_) => stack.push(StackEntry::BackfaceVisibility),
-          DisplayItem::PopBackfaceVisibility => pop_entry(&mut stack, StackEntry::BackfaceVisibility),
+          DisplayItem::PopBackfaceVisibility => {
+            pop_entry(&mut stack, StackEntry::BackfaceVisibility)
+          }
           _ => {}
         }
       }
@@ -1982,16 +1989,13 @@ mod tests {
       "blend-descendant scoping boundary should not be removed as a no-op"
     );
     assert!(
-      optimized
-        .items()
-        .iter()
-        .any(|item| matches!(
-          item,
-          DisplayItem::PushStackingContext(sc)
-            if sc.mix_blend_mode == BlendMode::Normal
-              && sc.bounds == outer_bounds
-              && sc.is_isolated
-        )),
+      optimized.items().iter().any(|item| matches!(
+        item,
+        DisplayItem::PushStackingContext(sc)
+          if sc.mix_blend_mode == BlendMode::Normal
+            && sc.bounds == outer_bounds
+            && sc.is_isolated
+      )),
       "expected no-op outer stacking context to remain and be forced isolated"
     );
     assert_balanced(optimized.items());

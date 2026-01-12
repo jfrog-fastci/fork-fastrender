@@ -20,7 +20,10 @@ fn find_table_wrapper_with_caption<'a>(node: &'a FragmentNode) -> Option<&'a Fra
   {
     return Some(node);
   }
-  node.children.iter().find_map(find_table_wrapper_with_caption)
+  node
+    .children
+    .iter()
+    .find_map(find_table_wrapper_with_caption)
 }
 
 #[test]
@@ -53,12 +56,22 @@ fn table_caption_explicit_width_overflows_wrapper() {
   let caption = wrapper
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.display), Some(Display::TableCaption)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.display),
+        Some(Display::TableCaption)
+      )
+    })
     .expect("caption fragment");
   let grid = wrapper
     .children
     .iter()
-    .find(|child| child.style.as_ref().is_some_and(|s| is_table_like(s.display)))
+    .find(|child| {
+      child
+        .style
+        .as_ref()
+        .is_some_and(|s| is_table_like(s.display))
+    })
     .expect("table grid fragment");
 
   assert!(
@@ -89,4 +102,3 @@ fn table_caption_explicit_width_overflows_wrapper() {
     caption.bounds.x()
   );
 }
-

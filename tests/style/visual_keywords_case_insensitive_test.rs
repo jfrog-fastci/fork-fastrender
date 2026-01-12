@@ -29,7 +29,10 @@ fn visual_property_keywords_are_ascii_case_insensitive() {
     16.0,
     16.0,
   );
-  assert_eq!(styles.background_attachments[0], BackgroundAttachment::Fixed);
+  assert_eq!(
+    styles.background_attachments[0],
+    BackgroundAttachment::Fixed
+  );
 
   apply_declaration(
     &mut styles,
@@ -158,4 +161,3 @@ fn visual_property_keywords_are_ascii_case_insensitive() {
   );
   assert_eq!(styles.image_rendering, ImageRendering::Pixelated);
 }
-

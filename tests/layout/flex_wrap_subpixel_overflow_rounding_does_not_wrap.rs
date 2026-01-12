@@ -57,7 +57,10 @@ fn flex_wrap_does_not_wrap_when_subpixel_overflow_disappears_after_rounding() {
   );
 
   let fragment = fc
-    .layout(&container, &LayoutConstraints::definite_width(container_width))
+    .layout(
+      &container,
+      &LayoutConstraints::definite_width(container_width),
+    )
     .expect("layout succeeds");
 
   assert_eq!(fragment.children.len(), 2, "expected two flex items");
@@ -68,4 +71,3 @@ fn flex_wrap_does_not_wrap_when_subpixel_overflow_disappears_after_rounding() {
     second.bounds.y()
   );
 }
-

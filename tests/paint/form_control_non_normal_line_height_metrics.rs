@@ -74,18 +74,27 @@ fn form_controls_non_normal_line_height_do_not_inflate_selection_metrics_from_fa
   let line_height = 40.0;
 
   // Determine the primary font metrics by shaping an ASCII sample (forces the primary face).
-  let primary_runs = pipeline.shape("A", &style, &font_ctx).expect("shape primary");
+  let primary_runs = pipeline
+    .shape("A", &style, &font_ctx)
+    .expect("shape primary");
   assert!(
     !primary_runs.is_empty(),
     "expected shaping an ASCII sample to produce runs"
   );
   let primary_run = &primary_runs[0];
   let primary_scaled = font_ctx
-    .get_scaled_metrics_with_variations(primary_run.font.as_ref(), primary_run.font_size, &primary_run.variations)
+    .get_scaled_metrics_with_variations(
+      primary_run.font.as_ref(),
+      primary_run.font_size,
+      &primary_run.variations,
+    )
     .expect("scaled metrics for primary font");
 
-  let expected_metrics =
-    InlineTextItem::metrics_from_first_available_font(Some(&primary_scaled), line_height, style.font_size);
+  let expected_metrics = InlineTextItem::metrics_from_first_available_font(
+    Some(&primary_scaled),
+    line_height,
+    style.font_size,
+  );
   let expected_height = expected_metrics.ascent + expected_metrics.descent;
 
   // Pick a multi-script sample that forces font fallback *and* produces different max-run
@@ -157,8 +166,8 @@ fn form_controls_non_normal_line_height_do_not_inflate_selection_metrics_from_fa
   let input_list = DisplayListBuilder::new()
     .with_font_context(font_ctx.clone())
     .build(&input_fragment);
-  let input_sel_height =
-    selection_rect_height(input_list.items(), selection_color).expect("expected selection rect for input");
+  let input_sel_height = selection_rect_height(input_list.items(), selection_color)
+    .expect("expected selection rect for input");
   assert!(
     (input_sel_height - expected_height).abs() < 0.2,
     "expected input selection height to match primary font metrics (expected={expected_height:.2}, got={input_sel_height:.2}, inflated={inflated_height:.2}, text={text:?})"

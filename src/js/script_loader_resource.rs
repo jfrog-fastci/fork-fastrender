@@ -115,7 +115,8 @@ fn script_loader_thread_main<F: ResourceFetcher + 'static>(
       entry
     };
 
-    let result = ResourceScriptLoader::<F>::fetch_and_decode(&fetcher, destination, credentials_mode, &url);
+    let result =
+      ResourceScriptLoader::<F>::fetch_and_decode(&fetcher, destination, credentials_mode, &url);
     let _ = completion_tx.send((handle, result));
   }
 }
@@ -142,13 +143,16 @@ impl<F: ResourceFetcher + 'static> ScriptLoader for ResourceScriptLoader<F> {
     self.next_handle += 1;
 
     let (lock, cv) = &*self.state;
-    let mut st = lock.lock().map_err(|_| Error::Other("worker state mutex poisoned".to_string()))?;
+    let mut st = lock
+      .lock()
+      .map_err(|_| Error::Other("worker state mutex poisoned".to_string()))?;
     if st.shutdown {
       return Err(Error::Other(
         "start_load called after ResourceScriptLoader shutdown".to_string(),
       ));
     }
-    st.queue.push_back((handle, destination, credentials_mode, url.to_string()));
+    st.queue
+      .push_back((handle, destination, credentials_mode, url.to_string()));
     cv.notify_one();
 
     Ok(handle)
@@ -199,30 +203,18 @@ mod tests {
 
   impl MapFetcher {
     fn insert(&self, url: &str, bytes: Vec<u8>) {
-      self
-        .entries
-        .lock()
-        .unwrap()
-        .insert(url.to_string(), bytes);
+      self.entries.lock().unwrap().insert(url.to_string(), bytes);
     }
 
     fn gate(&self, url: &str) -> mpsc::Sender<()> {
       let (tx, rx) = mpsc::channel();
-      self
-        .waits
-        .lock()
-        .unwrap()
-        .insert(url.to_string(), rx);
+      self.waits.lock().unwrap().insert(url.to_string(), rx);
       tx
     }
 
     fn notify_on_start(&self, url: &str) -> mpsc::Receiver<()> {
       let (tx, rx) = mpsc::channel();
-      self
-        .started
-        .lock()
-        .unwrap()
-        .insert(url.to_string(), tx);
+      self.started.lock().unwrap().insert(url.to_string(), tx);
       rx
     }
   }
@@ -283,8 +275,16 @@ mod tests {
 
     let mut loader = ResourceScriptLoader::with_max_workers(fetcher, 2);
 
-    let h1 = loader.start_load("a.js", FetchDestination::Script, FetchCredentialsMode::Include)?;
-    let h2 = loader.start_load("b.js", FetchDestination::Script, FetchCredentialsMode::Include)?;
+    let h1 = loader.start_load(
+      "a.js",
+      FetchDestination::Script,
+      FetchCredentialsMode::Include,
+    )?;
+    let h2 = loader.start_load(
+      "b.js",
+      FetchDestination::Script,
+      FetchCredentialsMode::Include,
+    )?;
 
     // b.js should complete first.
     let (got_handle, got_source) = loop {
@@ -317,7 +317,11 @@ mod tests {
     fetcher.insert("bad.js", vec![0x80]);
     let mut loader = ResourceScriptLoader::with_max_workers(fetcher, 1);
 
-    let handle = loader.start_load("bad.js", FetchDestination::Script, FetchCredentialsMode::Include)?;
+    let handle = loader.start_load(
+      "bad.js",
+      FetchDestination::Script,
+      FetchCredentialsMode::Include,
+    )?;
 
     let (got_handle, got_source) = loop {
       if let Some((h, s)) = loader.poll_complete()? {
@@ -358,7 +362,10 @@ mod tests {
     });
 
     // The drop thread should be blocked until we release the fetch.
-    assert!(matches!(dropped_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    assert!(matches!(
+      dropped_rx.try_recv(),
+      Err(mpsc::TryRecvError::Empty)
+    ));
 
     release.send(()).unwrap();
 

@@ -39,7 +39,11 @@ fn flex_cross_axis_auto_clamps_to_available_when_max_content_exceeds_container()
     Arc::new(text_style),
     "This is a very long piece of text that should wrap across multiple lines".to_string(),
   );
-  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![text]);
+  let child = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -49,7 +53,9 @@ fn flex_cross_axis_auto_clamps_to_available_when_max_content_exceeds_container()
 
   let constraints =
     LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   assert_eq!(fragment.children.len(), 1);
   let child_fragment = &fragment.children[0];
@@ -66,4 +72,3 @@ fn flex_cross_axis_auto_clamps_to_available_when_max_content_exceeds_container()
     child_fragment.bounds.height()
   );
 }
-

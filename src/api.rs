@@ -7238,25 +7238,26 @@ impl FastRender {
         let svg_id_defs = fragment_tree.svg_id_defs.clone();
         let svg_id_defs_raw = fragment_tree.svg_id_defs_raw.clone();
         let base_url = self.base_url.clone();
-          let build_display_list_for_root =
-          |root: &FragmentNode| -> crate::Result<crate::paint::display_list::DisplayList> {
-            let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
-              .with_font_context(self.font_context.clone())
-              .with_svg_filter_defs(svg_filter_defs.clone())
-              .with_svg_id_defs(svg_id_defs.clone())
-              .with_svg_id_defs_raw(svg_id_defs_raw.clone())
-              .with_appearance_none_form_controls(fragment_tree.appearance_none_form_controls.clone())
-              .with_scroll_state(scroll_state_for_paint.clone())
-              .with_device_pixel_ratio(self.device_pixel_ratio)
-              .with_parallelism(&paint_parallelism)
-              .with_max_iframe_depth(self.max_iframe_depth)
-              .with_viewport_size(viewport.width, viewport.height)
-              .with_culling_viewport_size(target_width as f32, target_height as f32);
-            if let Some(base_url) = base_url.as_ref() {
-              builder.set_base_url(base_url.clone());
-            }
-            builder.build_with_stacking_tree_offset_checked(root, offset)
-          };
+        let build_display_list_for_root = |root: &FragmentNode| -> crate::Result<
+          crate::paint::display_list::DisplayList,
+        > {
+          let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
+            .with_font_context(self.font_context.clone())
+            .with_svg_filter_defs(svg_filter_defs.clone())
+            .with_svg_id_defs(svg_id_defs.clone())
+            .with_svg_id_defs_raw(svg_id_defs_raw.clone())
+            .with_appearance_none_form_controls(fragment_tree.appearance_none_form_controls.clone())
+            .with_scroll_state(scroll_state_for_paint.clone())
+            .with_device_pixel_ratio(self.device_pixel_ratio)
+            .with_parallelism(&paint_parallelism)
+            .with_max_iframe_depth(self.max_iframe_depth)
+            .with_viewport_size(viewport.width, viewport.height)
+            .with_culling_viewport_size(target_width as f32, target_height as f32);
+          if let Some(base_url) = base_url.as_ref() {
+            builder.set_base_url(base_url.clone());
+          }
+          builder.build_with_stacking_tree_offset_checked(root, offset)
+        };
 
         let build_result = (|| -> crate::Result<crate::paint::display_list::DisplayList> {
           let mut list = build_display_list_for_root(&fragment_tree.root)?;
@@ -9372,7 +9373,10 @@ impl FastRender {
       let mut display_list = DisplayListBuilder::new()
         .with_viewport_size(viewport_size.width, viewport_size.height)
         .with_appearance_none_form_controls(
-          intermediates.fragment_tree.appearance_none_form_controls.clone(),
+          intermediates
+            .fragment_tree
+            .appearance_none_form_controls
+            .clone(),
         )
         .with_scroll_state(scroll_state.clone())
         .build_with_stacking_tree(&intermediates.fragment_tree.root);
@@ -9380,7 +9384,10 @@ impl FastRender {
         let extra_list = DisplayListBuilder::new()
           .with_viewport_size(viewport_size.width, viewport_size.height)
           .with_appearance_none_form_controls(
-            intermediates.fragment_tree.appearance_none_form_controls.clone(),
+            intermediates
+              .fragment_tree
+              .appearance_none_form_controls
+              .clone(),
           )
           .with_scroll_state(scroll_state.clone())
           .build_with_stacking_tree(extra);
@@ -10796,10 +10803,8 @@ impl FastRender {
         MediaType::Screen => {
           headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
         }
-        other => {
-          headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
-            .with_media_type(other)
-        }
+        other => headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
+          .with_media_type(other),
       }
       .with_device_size(device_size.width, device_size.height)
       .with_device_pixel_ratio(resolved_viewport.device_pixel_ratio)
@@ -10830,9 +10835,10 @@ impl FastRender {
             let _stage_guard = StageGuard::install(stage);
             let _stage_heartbeat_guard =
               crate::render_control::StageHeartbeatGuard::install(stage_heartbeat);
-            let _stage_alloc_budget_guard = crate::render_control::StageAllocationBudgetGuard::install(
-              allocation_budget.as_ref(),
-            );
+            let _stage_alloc_budget_guard =
+              crate::render_control::StageAllocationBudgetGuard::install(
+                allocation_budget.as_ref(),
+              );
             let interaction_state = interaction_state.as_ref();
             let mut local_media_query_cache = MediaQueryCache::default();
             let styled_tree = match PreparedCascade::new_for_style_set(
@@ -11261,35 +11267,35 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
-      let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
-      if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
-        let deadline_stack = crate::render_control::deadline_stack_snapshot();
-        let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
-        let stage = crate::render_control::active_stage();
-        let stage_heartbeat = crate::render_control::active_stage_heartbeat();
-        let allocation_budget = crate::render_control::active_allocation_budget();
-        let parallel_debug_collector =
-          crate::layout::engine::current_layout_parallel_debug_collector();
-        return std::thread::scope(|scope| {
-          let handle = std::thread::Builder::new()
-            .name("fastr-layout".to_string())
-            .stack_size(8 * 1024 * 1024)
-            .spawn_scoped(scope, || {
-              let _deadline_stack_guard =
-                crate::render_control::DeadlineStackGuard::install(deadline_stack);
-              let _stage_listener_stack_guard =
-                crate::render_control::StageListenerStackGuard::install(stage_listener_stack);
-              let _stage_guard = StageGuard::install(stage);
-              let _stage_heartbeat_guard =
-                crate::render_control::StageHeartbeatGuard::install(stage_heartbeat);
-              let _stage_alloc_budget_guard =
-                crate::render_control::StageAllocationBudgetGuard::install(
-                  allocation_budget.as_ref(),
-                );
-              let _stack_guard = LayoutStackThreadGuard::install();
-              let _parallel_debug_guard =
-                crate::layout::engine::LayoutParallelDebugCollectorThreadGuard::install(
-                  parallel_debug_collector.clone(),
+    let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
+    if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
+      let deadline_stack = crate::render_control::deadline_stack_snapshot();
+      let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
+      let stage = crate::render_control::active_stage();
+      let stage_heartbeat = crate::render_control::active_stage_heartbeat();
+      let allocation_budget = crate::render_control::active_allocation_budget();
+      let parallel_debug_collector =
+        crate::layout::engine::current_layout_parallel_debug_collector();
+      return std::thread::scope(|scope| {
+        let handle = std::thread::Builder::new()
+          .name("fastr-layout".to_string())
+          .stack_size(8 * 1024 * 1024)
+          .spawn_scoped(scope, || {
+            let _deadline_stack_guard =
+              crate::render_control::DeadlineStackGuard::install(deadline_stack);
+            let _stage_listener_stack_guard =
+              crate::render_control::StageListenerStackGuard::install(stage_listener_stack);
+            let _stage_guard = StageGuard::install(stage);
+            let _stage_heartbeat_guard =
+              crate::render_control::StageHeartbeatGuard::install(stage_heartbeat);
+            let _stage_alloc_budget_guard =
+              crate::render_control::StageAllocationBudgetGuard::install(
+                allocation_budget.as_ref(),
+              );
+            let _stack_guard = LayoutStackThreadGuard::install();
+            let _parallel_debug_guard =
+              crate::layout::engine::LayoutParallelDebugCollectorThreadGuard::install(
+                parallel_debug_collector.clone(),
               );
             self.layout_document_for_media_with_artifacts_inner(
               dom,
@@ -11660,10 +11666,8 @@ impl FastRender {
       MediaType::Screen => {
         headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
       }
-      other => {
-        headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
-          .with_media_type(other)
-      }
+      other => headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
+        .with_media_type(other),
     }
     .with_device_size(device_size.width, device_size.height)
     .with_device_pixel_ratio(self.device_pixel_ratio)
@@ -12081,12 +12085,12 @@ impl FastRender {
         viewport_height: f32,
         root_font_metrics: Option<crate::style::RootFontMetrics>,
       ) {
-        let (viewport_inline, viewport_block) = if crate::style::inline_axis_is_horizontal(node.styles.writing_mode)
-        {
-          (viewport_width, viewport_height)
-        } else {
-          (viewport_height, viewport_width)
-        };
+        let (viewport_inline, viewport_block) =
+          if crate::style::inline_axis_is_horizontal(node.styles.writing_mode) {
+            (viewport_width, viewport_height)
+          } else {
+            (viewport_height, viewport_width)
+          };
 
         let typed_changed = {
           let styles = std::sync::Arc::make_mut(&mut node.styles);
@@ -12409,9 +12413,7 @@ impl FastRender {
     // engine is re-created per render pass to reflect the current viewport configuration. Re-apply
     // root metrics to the new engine so used-value resolution for root font-relative units
     // (`rex`/`rch`/`rcap`/`ric`/`rlh`) remains spec-accurate during layout.
-    self
-      .layout_engine
-      .set_root_font_metrics(root_font_metrics);
+    self.layout_engine.set_root_font_metrics(root_font_metrics);
     intrinsic_cache_clear();
     let report_intrinsic = toggles.truthy("FASTR_INTRINSIC_STATS");
     let report_layout_cache = toggles.truthy("FASTR_LAYOUT_CACHE_STATS");
@@ -19214,15 +19216,20 @@ fn build_pre_layout_container_query_context(
     let percentage_base = parent_content_width
       .is_finite()
       .then_some(parent_content_width.max(0.0))
-      .or_else(|| viewport.width.is_finite().then_some(viewport.width.max(0.0)));
+      .or_else(|| {
+        viewport
+          .width
+          .is_finite()
+          .then_some(viewport.width.max(0.0))
+      });
 
-    let padding_left = resolve_non_negative_length(style.padding_left, percentage_base, style, viewport);
-    let padding_right = resolve_non_negative_length(style.padding_right, percentage_base, style, viewport);
+    let padding_left =
+      resolve_non_negative_length(style.padding_left, percentage_base, style, viewport);
+    let padding_right =
+      resolve_non_negative_length(style.padding_right, percentage_base, style, viewport);
 
-    let border_left =
-      resolve_used_border_width(style.used_border_left_width(), style, viewport);
-    let border_right =
-      resolve_used_border_width(style.used_border_right_width(), style, viewport);
+    let border_left = resolve_used_border_width(style.used_border_left_width(), style, viewport);
+    let border_right = resolve_used_border_width(style.used_border_right_width(), style, viewport);
 
     let horiz_edges = padding_left + padding_right + border_left + border_right;
 
@@ -19245,8 +19252,10 @@ fn build_pre_layout_container_query_context(
         && !style.float.is_floating()
         && !style.shrink_to_fit_inline_size;
       if can_assume_stretch && parent_content_width.is_finite() {
-        let margin_left = resolve_optional_length(style.margin_left, percentage_base, style, viewport);
-        let margin_right = resolve_optional_length(style.margin_right, percentage_base, style, viewport);
+        let margin_left =
+          resolve_optional_length(style.margin_left, percentage_base, style, viewport);
+        let margin_right =
+          resolve_optional_length(style.margin_right, percentage_base, style, viewport);
         let mut width = parent_content_width;
         if margin_left.is_finite() {
           width -= margin_left;
@@ -19300,27 +19309,9 @@ fn build_pre_layout_container_query_context(
 
     if include_style_containers || style.container_type.supports_size_queries() {
       if include_style_containers {
-        containers.entry(node.node_id).or_insert_with(|| ContainerQueryInfo {
-          box_id: None,
-          width: 0.0,
-          height: 0.0,
-          inline_size: 0.0,
-          block_size: 0.0,
-          container_type: style.container_type,
-          names: style.container_name.clone(),
-          font_size: style.font_size,
-          styles: Arc::clone(&node.styles),
-          scroll_offset: Point::ZERO,
-          scroll_bounds: None,
-          stuck_mask: 0,
-          snapped_mask: 0,
-          scrolled_delta: Point::ZERO,
-        });
-      }
-
-      if style.container_type.supports_size_queries() {
-        if style.writing_mode == WritingMode::HorizontalTb && content_width.is_finite() {
-          let entry = containers.entry(node.node_id).or_insert_with(|| ContainerQueryInfo {
+        containers
+          .entry(node.node_id)
+          .or_insert_with(|| ContainerQueryInfo {
             box_id: None,
             width: 0.0,
             height: 0.0,
@@ -19336,6 +19327,28 @@ fn build_pre_layout_container_query_context(
             snapped_mask: 0,
             scrolled_delta: Point::ZERO,
           });
+      }
+
+      if style.container_type.supports_size_queries() {
+        if style.writing_mode == WritingMode::HorizontalTb && content_width.is_finite() {
+          let entry = containers
+            .entry(node.node_id)
+            .or_insert_with(|| ContainerQueryInfo {
+              box_id: None,
+              width: 0.0,
+              height: 0.0,
+              inline_size: 0.0,
+              block_size: 0.0,
+              container_type: style.container_type,
+              names: style.container_name.clone(),
+              font_size: style.font_size,
+              styles: Arc::clone(&node.styles),
+              scroll_offset: Point::ZERO,
+              scroll_bounds: None,
+              stuck_mask: 0,
+              snapped_mask: 0,
+              scrolled_delta: Point::ZERO,
+            });
           entry.width = content_width;
           entry.inline_size = content_width;
           entry.container_type = style.container_type;
@@ -19760,13 +19773,34 @@ fn build_container_query_context(
       0.0
     };
 
-    let padding_left =
-      resolve_padding(style.padding_left, percentage_base, style, viewport, root_font_metrics);
-    let padding_right =
-      resolve_padding(style.padding_right, percentage_base, style, viewport, root_font_metrics);
-    let padding_top = resolve_padding(style.padding_top, percentage_base, style, viewport, root_font_metrics);
-    let padding_bottom =
-      resolve_padding(style.padding_bottom, percentage_base, style, viewport, root_font_metrics);
+    let padding_left = resolve_padding(
+      style.padding_left,
+      percentage_base,
+      style,
+      viewport,
+      root_font_metrics,
+    );
+    let padding_right = resolve_padding(
+      style.padding_right,
+      percentage_base,
+      style,
+      viewport,
+      root_font_metrics,
+    );
+    let padding_top = resolve_padding(
+      style.padding_top,
+      percentage_base,
+      style,
+      viewport,
+      root_font_metrics,
+    );
+    let padding_bottom = resolve_padding(
+      style.padding_bottom,
+      percentage_base,
+      style,
+      viewport,
+      root_font_metrics,
+    );
 
     let mut padding_left = padding_left;
     let mut padding_right = padding_right;
@@ -22949,7 +22983,13 @@ mod tests {
       "expected stage memory budget error, got {err:?}"
     );
 
-    let err = match renderer.prepare_http_request("https://example.com/", "GET", &[], None, options.clone()) {
+    let err = match renderer.prepare_http_request(
+      "https://example.com/",
+      "GET",
+      &[],
+      None,
+      options.clone(),
+    ) {
       Ok(_) => panic!("expected render error from document fetch"),
       Err(err) => err,
     };
@@ -23584,7 +23624,10 @@ mod tests {
       .build()
       .unwrap();
 
-    let css = format!("/* accessibility_tree_respects_stage_alloc_budget */{}", ".a{color:red;}".repeat(128));
+    let css = format!(
+      "/* accessibility_tree_respects_stage_alloc_budget */{}",
+      ".a{color:red;}".repeat(128)
+    );
     let html = format!("<!doctype html><style>{css}</style><div>Hello</div>");
 
     let err = renderer
@@ -23689,13 +23732,17 @@ mod tests {
       .recv_timeout(Duration::from_secs(1))
       .expect("expected helper thread to start");
     assert!(
-      acquired_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+      acquired_rx
+        .recv_timeout(Duration::from_millis(200))
+        .is_err(),
       "expected diagnostics session mutex to be held while nested guards are active"
     );
 
     drop(inner);
     assert!(
-      acquired_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+      acquired_rx
+        .recv_timeout(Duration::from_millis(200))
+        .is_err(),
       "expected diagnostics session mutex to remain held until the outermost guard is dropped"
     );
 

@@ -52,4 +52,3 @@ fn filter_blur_samples_outside_ancestor_clip() {
     px.alpha()
   );
 }
-

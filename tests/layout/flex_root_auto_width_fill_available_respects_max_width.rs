@@ -48,11 +48,7 @@ fn assert_flex_root_max_width_case(
   );
   child.id = 1;
 
-  let container = BoxNode::new_block(
-    Arc::new(style),
-    FormattingContextType::Flex,
-    vec![child],
-  );
+  let container = BoxNode::new_block(Arc::new(style), FormattingContextType::Flex, vec![child]);
 
   let fragment = fc
     .layout(&container, &LayoutConstraints::definite_width(300.0))

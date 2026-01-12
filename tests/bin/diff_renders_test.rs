@@ -510,7 +510,9 @@ fn diff_renders_dimension_mismatch_reports_overlap_perceptual_and_region() {
   // Baseline ("before") is wider, but the top-left 2x2 overlap differs by one pixel.
   let mut before_img = RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 0, 255]));
   before_img.put_pixel(1, 0, image::Rgba([10, 10, 10, 255]));
-  before_img.save(before.join("page.png")).expect("save before");
+  before_img
+    .save(before.join("page.png"))
+    .expect("save before");
 
   let mut after_img = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
   after_img.put_pixel(1, 0, image::Rgba([40, 40, 40, 255]));
@@ -569,8 +571,7 @@ fn diff_renders_dimension_mismatch_reports_overlap_perceptual_and_region() {
     "expected baseline width in JSON report"
   );
   assert_eq!(
-    metrics["perceptual_region"]["policy"],
-    "overlap",
+    metrics["perceptual_region"]["policy"], "overlap",
     "expected perceptual policy to be recorded"
   );
   assert_eq!(

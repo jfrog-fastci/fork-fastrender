@@ -295,8 +295,12 @@ impl<State: WebIdlBindingsHost + 'static> EcmaVmRuntime<State> {
     // default dummy host).
     let mut host_ctx = EcmaVmHostContext::new(&mut self.state);
 
-    let (vm, env, heap, pending_host_error) =
-      (&mut self.vm, &mut self.env, &mut self.heap, &mut self.pending_host_error);
+    let (vm, env, heap, pending_host_error) = (
+      &mut self.vm,
+      &mut self.env,
+      &mut self.heap,
+      &mut self.pending_host_error,
+    );
     let mut evaluator = Evaluator {
       vm,
       env,
@@ -550,8 +554,8 @@ impl Evaluator<'_> {
         let key_s = child.alloc_string(&member.stx.right)?;
         child.push_root(Value::String(key_s))?;
         let key = vm_js::PropertyKey::String(key_s);
-        let func =
-          child.ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, obj, key, obj_value)?;
+        let func = child
+          .ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, obj, key, obj_value)?;
         (func, obj_value)
       }
       _ => {
@@ -1396,7 +1400,9 @@ mod tests {
       _args: &[Value],
       _new_target: Value,
     ) -> std::result::Result<Value, VmError> {
-      Err(VmError::Unimplemented("WebIDL bindings host not implemented for TestState"))
+      Err(VmError::Unimplemented(
+        "WebIDL bindings host not implemented for TestState",
+      ))
     }
   }
 
@@ -1486,15 +1492,7 @@ mod tests {
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
     let host = webidl_vm_js::host_from_hooks(hooks)?;
-    let _ = host.call_operation(
-      _vm,
-      _scope,
-      None,
-      "Test",
-      "log_downcast_via_hooks",
-      0,
-      &[],
-    )?;
+    let _ = host.call_operation(_vm, _scope, None, "Test", "log_downcast_via_hooks", 0, &[])?;
     Ok(Value::Undefined)
   }
 

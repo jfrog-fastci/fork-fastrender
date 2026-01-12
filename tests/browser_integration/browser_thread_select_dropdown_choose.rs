@@ -105,11 +105,7 @@ fn browser_thread_select_dropdown_choose_updates_styles_and_repaints() {
     .items
     .iter()
     .find_map(|item| match item {
-      SelectItem::Option {
-        label,
-        node_id,
-        ..
-      } if label == "Two" => Some(*node_id),
+      SelectItem::Option { label, node_id, .. } if label == "Two" => Some(*node_id),
       _ => None,
     })
     .expect("expected dropdown to contain option 'Two'");

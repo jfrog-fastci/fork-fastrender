@@ -176,7 +176,10 @@ fn order_modified_document_order_governs_line_grouping_and_break_propagation() {
       .iter()
       .map(|page| fragments_with_id(page, id).len())
       .sum();
-    assert_eq!(count, 1, "expected box id {id} to appear exactly once total");
+    assert_eq!(
+      count, 1,
+      "expected box id {id} to appear exactly once total"
+    );
   }
 }
 
@@ -365,7 +368,10 @@ fn running_anchor_child_does_not_affect_flex_line_boundaries() {
     .iter()
     .map(|page| fragments_with_id(page, running_id).len())
     .sum();
-  assert_eq!(running_id_count, 0, "running element should not have a box-id fragment");
+  assert_eq!(
+    running_id_count, 0,
+    "running element should not have a box-id fragment"
+  );
 
   let anchor_count: usize = pages.iter().map(|page| count_running_anchors(page)).sum();
   assert!(

@@ -87,4 +87,3 @@ fn flexbox_keyword_values_are_ascii_case_insensitive() {
   assert_eq!(auto.styles.align_self, None);
   assert_eq!(auto.styles.justify_self, None);
 }
-

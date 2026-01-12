@@ -61,4 +61,3 @@ fn grid_item_definite_height_contributes_to_max_content_row_size() {
   assert_approx(fragment.children[0].bounds.y(), 0.0, "first row start");
   assert_approx(fragment.children[1].bounds.y(), 40.0, "second row start");
 }
-

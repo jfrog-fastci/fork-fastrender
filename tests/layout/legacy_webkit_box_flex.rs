@@ -47,4 +47,3 @@ fn legacy_webkit_box_centers_child_with_box_pack_and_align() {
     "corner pixel should remain background"
   );
 }
-

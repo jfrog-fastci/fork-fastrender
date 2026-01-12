@@ -35,7 +35,10 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   (p.red(), p.green(), p.blue(), p.alpha())
 }
 
-fn bounding_box_for_predicate<F>(pixmap: &tiny_skia::Pixmap, predicate: F) -> Option<(u32, u32, u32, u32)>
+fn bounding_box_for_predicate<F>(
+  pixmap: &tiny_skia::Pixmap,
+  predicate: F,
+) -> Option<(u32, u32, u32, u32)>
 where
   F: Fn((u8, u8, u8, u8)) -> bool,
 {

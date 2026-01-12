@@ -1,3 +1,4 @@
+use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use fastrender::animation;
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::css::types::{BoxShadow, TextShadow};
@@ -11,7 +12,6 @@ use fastrender::style::types::{
 use fastrender::style::values::CustomPropertyTypedValue;
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
-use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use std::fs;
 use std::path::PathBuf;
 use svgtypes::{PathParser, PathSegment};
@@ -137,11 +137,7 @@ fn fragment_visibility(tree: &FragmentTree, box_id: usize) -> Visibility {
 
 fn fragment_color(tree: &FragmentTree, box_id: usize) -> fastrender::Rgba {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
-  frag
-    .style
-    .as_ref()
-    .map(|s| s.color)
-    .expect("style present")
+  frag.style.as_ref().map(|s| s.color).expect("style present")
 }
 
 fn fragment_transform_x(tree: &FragmentTree, box_id: usize) -> f32 {
@@ -509,7 +505,10 @@ fn transitions_inherit_visibility_current_value() {
   let viewport = mid.viewport_size();
   animation::apply_transitions(&mut mid, 500.0, viewport);
   assert_eq!(fragment_visibility(&mid, parent_box), Visibility::Visible);
-  assert_eq!(fragment_visibility(&mid, inherited_box), Visibility::Visible);
+  assert_eq!(
+    fragment_visibility(&mid, inherited_box),
+    Visibility::Visible
+  );
   assert_eq!(fragment_visibility(&mid, explicit_box), Visibility::Visible);
 }
 
@@ -702,7 +701,10 @@ fn transition_behavior_gates_value_pair_discrete_box_shadow_inset_mismatch() {
   let shadows = fragment_box_shadows(&sampled, box_id);
   assert_eq!(shadows.len(), 1);
   let shadow = &shadows[0];
-  assert!(shadow.inset, "expected discrete transition to preserve inset shadow");
+  assert!(
+    shadow.inset,
+    "expected discrete transition to preserve inset shadow"
+  );
   assert!((shadow.offset_x.to_px() - 0.0).abs() < 1e-3);
 }
 
@@ -777,7 +779,10 @@ fn transitions_recompute_currentcolor_dependent_border_color_when_color_transiti
   let mut mid = fragment_tree.clone();
   let viewport = mid.viewport_size();
   animation::apply_transitions(&mut mid, 500.0, viewport);
-  assert_eq!(fragment_color(&mid, box_id), fastrender::Rgba::new(128, 0, 128, 1.0));
+  assert_eq!(
+    fragment_color(&mid, box_id),
+    fastrender::Rgba::new(128, 0, 128, 1.0)
+  );
   assert_eq!(
     fragment_border_top_color(&mid, box_id),
     fastrender::Rgba::new(128, 0, 128, 1.0)
@@ -808,7 +813,10 @@ fn transitions_recompute_currentcolor_dependent_border_color_through_var_when_co
   let mut mid = fragment_tree.clone();
   let viewport = mid.viewport_size();
   animation::apply_transitions(&mut mid, 500.0, viewport);
-  assert_eq!(fragment_color(&mid, box_id), fastrender::Rgba::new(128, 0, 128, 1.0));
+  assert_eq!(
+    fragment_color(&mid, box_id),
+    fastrender::Rgba::new(128, 0, 128, 1.0)
+  );
   assert_eq!(
     fragment_border_top_color(&mid, box_id),
     fastrender::Rgba::new(128, 0, 128, 1.0)
@@ -837,7 +845,10 @@ fn transitions_do_not_recompute_border_color_without_currentcolor_dependency() {
   let mut mid = fragment_tree.clone();
   let viewport = mid.viewport_size();
   animation::apply_transitions(&mut mid, 500.0, viewport);
-  assert_eq!(fragment_color(&mid, box_id), fastrender::Rgba::new(128, 0, 128, 1.0));
+  assert_eq!(
+    fragment_color(&mid, box_id),
+    fastrender::Rgba::new(128, 0, 128, 1.0)
+  );
   assert_eq!(
     fragment_border_top_color(&mid, box_id),
     fastrender::Rgba::new(0, 255, 0, 1.0)
@@ -1063,7 +1074,10 @@ fn transitions_interpolate_border_shorthand_over_time_without_allow_discrete() {
   let viewport = start.viewport_size();
   animation::apply_transitions(&mut start, 0.0, viewport);
   assert!((fragment_border_top_width(&start, box_id) - 0.0).abs() < 1e-3);
-  assert_eq!(fragment_border_top_style(&start, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&start, box_id),
+    BorderStyle::Dashed
+  );
   assert_eq!(
     fragment_border_top_color(&start, box_id),
     fastrender::Rgba::new(255, 0, 0, 1.0)
@@ -1073,7 +1087,10 @@ fn transitions_interpolate_border_shorthand_over_time_without_allow_discrete() {
   let viewport = early.viewport_size();
   animation::apply_transitions(&mut early, 400.0, viewport);
   assert!((fragment_border_top_width(&early, box_id) - 4.0).abs() < 1e-3);
-  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&early, box_id),
+    BorderStyle::Dashed
+  );
   assert_eq!(
     fragment_border_top_color(&early, box_id),
     fastrender::Rgba::new(153, 0, 102, 1.0)
@@ -1241,7 +1258,10 @@ fn transitions_do_not_start_border_style_transition_without_allow_discrete() {
   let mut start = fragment_tree.clone();
   let viewport = start.viewport_size();
   animation::apply_transitions(&mut start, 0.0, viewport);
-  assert_eq!(fragment_border_top_style(&start, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&start, box_id),
+    BorderStyle::Dashed
+  );
   assert!((fragment_border_top_width(&start, box_id) - 4.0).abs() < 1e-3);
   assert_eq!(
     fragment_border_top_color(&start, box_id),
@@ -1273,12 +1293,18 @@ fn transitions_interpolate_border_style_over_time_with_allow_discrete() {
   let mut early = fragment_tree.clone();
   let viewport = early.viewport_size();
   animation::apply_transitions(&mut early, 400.0, viewport);
-  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_style(&early, box_id),
+    BorderStyle::Solid
+  );
 
   let mut late = fragment_tree.clone();
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
-  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&late, box_id),
+    BorderStyle::Dashed
+  );
 }
 
 #[test]
@@ -1339,13 +1365,19 @@ fn transition_behavior_list_repeats_last_value_for_discrete_properties() {
   let mut early = fragment_tree.clone();
   let viewport = early.viewport_size();
   animation::apply_transitions(&mut early, 400.0, viewport);
-  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_style(&early, box_id),
+    BorderStyle::Solid
+  );
   assert_eq!(fragment_visibility(&early, box_id), Visibility::Visible);
 
   let mut late = fragment_tree.clone();
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
-  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&late, box_id),
+    BorderStyle::Dashed
+  );
   assert_eq!(fragment_visibility(&late, box_id), Visibility::Visible);
 
   let mut end = fragment_tree.clone();
@@ -1381,13 +1413,19 @@ fn transition_behavior_list_respects_per_property_indexing() {
   let mut start = fragment_tree.clone();
   let viewport = start.viewport_size();
   animation::apply_transitions(&mut start, 0.0, viewport);
-  assert_eq!(fragment_border_top_style(&start, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_style(&start, box_id),
+    BorderStyle::Solid
+  );
   assert_eq!(fragment_visibility(&start, box_id), Visibility::Hidden);
 
   let mut late = fragment_tree.clone();
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
-  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&late, box_id),
+    BorderStyle::Dashed
+  );
   assert_eq!(fragment_visibility(&late, box_id), Visibility::Hidden);
 }
 
@@ -2058,8 +2096,7 @@ fn transition_starting_style_fixture_box_layout_is_untransformed() {
   let viewport = mid.viewport_size();
   animation::apply_transitions(&mut mid, 400.0, viewport);
 
-  let (frag, abs_x, abs_y) =
-    find_fragment_absolute(&mid.root, box_id, 0.0, 0.0).expect("fragment");
+  let (frag, abs_x, abs_y) = find_fragment_absolute(&mid.root, box_id, 0.0, 0.0).expect("fragment");
   let style = frag.style.as_ref().expect("style");
 
   // The fragment bounds represent layout (untransformed) geometry; `transform` should not affect it.

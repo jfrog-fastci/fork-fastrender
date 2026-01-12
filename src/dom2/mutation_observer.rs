@@ -1,6 +1,6 @@
 use crate::dom::HTML_NAMESPACE;
 
-use super::{DomError, Document, NodeId, NodeKind};
+use super::{Document, DomError, NodeId, NodeKind};
 use std::collections::HashMap;
 
 pub type MutationObserverId = u64;
@@ -146,7 +146,11 @@ impl MutationObserverRegistry {
     )
   }
 
-  fn queue_record(&mut self, observer: MutationObserverId, record: MutationRecord) -> Result<(), DomError> {
+  fn queue_record(
+    &mut self,
+    observer: MutationObserverId,
+    record: MutationRecord,
+  ) -> Result<(), DomError> {
     let limits = self.limits;
     if self.total_records >= limits.max_total_records {
       return Ok(());
@@ -198,7 +202,9 @@ fn is_html_namespace(namespace: &str) -> bool {
 
 fn is_html_element_kind(kind: &NodeKind) -> bool {
   match kind {
-    NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => is_html_namespace(namespace),
+    NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
+      is_html_namespace(namespace)
+    }
     _ => false,
   }
 }
@@ -256,20 +262,24 @@ impl Document {
       .saturating_sub(state.records.len());
 
     if state.in_pending {
-      self
-        .mutation_observers
-        .pending
-        .retain(|&id| id != observer);
+      self.mutation_observers.pending.retain(|&id| id != observer);
     }
 
     for target in state.observed_targets {
-      if let Some(list) = self.mutation_observers.registrations.get_mut(target.index()) {
+      if let Some(list) = self
+        .mutation_observers
+        .registrations
+        .get_mut(target.index())
+      {
         list.retain(|reg| reg.observer != observer);
       }
     }
   }
 
-  pub fn mutation_observer_take_records(&mut self, observer: MutationObserverId) -> Vec<MutationRecord> {
+  pub fn mutation_observer_take_records(
+    &mut self,
+    observer: MutationObserverId,
+  ) -> Vec<MutationRecord> {
     let Some(state) = self.mutation_observers.observers.get_mut(&observer) else {
       return Vec::new();
     };
@@ -280,7 +290,9 @@ impl Document {
     std::mem::take(&mut state.records)
   }
 
-  pub fn mutation_observer_take_deliveries(&mut self) -> Vec<(MutationObserverId, Vec<MutationRecord>)> {
+  pub fn mutation_observer_take_deliveries(
+    &mut self,
+  ) -> Vec<(MutationObserverId, Vec<MutationRecord>)> {
     self.mutation_observers.microtask_queued = false;
     self.mutation_observers.microtask_needs_queueing = false;
 
@@ -338,7 +350,9 @@ impl Document {
               continue;
             }
           }
-          interested.entry(reg.observer).or_insert_with(|| reg.options.clone());
+          interested
+            .entry(reg.observer)
+            .or_insert_with(|| reg.options.clone());
         }
       }
       current = self.nodes[node.index()].parent;
@@ -383,7 +397,9 @@ impl Document {
           if node != target && !reg.options.subtree {
             continue;
           }
-          interested.entry(reg.observer).or_insert_with(|| reg.options.clone());
+          interested
+            .entry(reg.observer)
+            .or_insert_with(|| reg.options.clone());
         }
       }
       current = self.nodes[node.index()].parent;
@@ -431,7 +447,9 @@ impl Document {
           if node != target && !reg.options.subtree {
             continue;
           }
-          interested.entry(reg.observer).or_insert_with(|| reg.options.clone());
+          interested
+            .entry(reg.observer)
+            .or_insert_with(|| reg.options.clone());
         }
       }
       current = self.nodes[node.index()].parent;

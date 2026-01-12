@@ -931,14 +931,17 @@ fn distribute_mode_spreads_mixed_scripts() {
 fn distribute_mode_includes_word_boundaries_and_inter_character_gaps() {
   let text = "AB C";
   let mut glyphs = vec![
-    glyph_with_cluster(0, 0.0, 10.0, false, 0), // A
+    glyph_with_cluster(0, 0.0, 10.0, false, 0),  // A
     glyph_with_cluster(1, 10.0, 10.0, false, 1), // B
     glyph_with_cluster(2, 20.0, 10.0, false, 2), // space
     glyph_with_cluster(3, 30.0, 10.0, false, 3), // C
   ];
 
   mark_word_boundaries(&mut glyphs, text);
-  assert!(glyphs[1].is_word_boundary, "B should end a word before the space");
+  assert!(
+    glyphs[1].is_word_boundary,
+    "B should end a word before the space"
+  );
 
   let options = JustificationOptions::default()
     .with_text_justify(TextJustify::Distribute)

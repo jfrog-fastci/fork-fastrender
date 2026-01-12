@@ -8,22 +8,31 @@ use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
 use fastrender::style::position_try::PositionTryRegistry;
 use fastrender::style::types::{
-  AnchorFunction, AnchorScope, AnchorSide, AnchorSizeAxis, AnchorSizeFunction, Direction, InsetValue,
-  PositionAnchor, PositionTryOrder, WritingMode,
+  AnchorFunction, AnchorScope, AnchorSide, AnchorSizeAxis, AnchorSizeFunction, Direction,
+  InsetValue, PositionAnchor, PositionTryOrder, WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::{BoxNode, GeneratedPseudoElement};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
+use fastrender::ComputedStyle;
 use fastrender::Point;
 use fastrender::Rect;
-use fastrender::ComputedStyle;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   fragment.iter_fragments().find(|node| match &node.content {
     FragmentContent::Block { box_id: Some(id) } => *id == box_id,
-    FragmentContent::Inline { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Text { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    FragmentContent::Inline {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Text {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   })
 }
@@ -33,9 +42,15 @@ fn find_abs_bounds_by_box_id(fragment: &FragmentNode, box_id: usize) -> Option<R
     let abs_bounds = node.bounds.translate(origin);
     let matches = match &node.content {
       FragmentContent::Block { box_id: Some(id) } => *id == box_id,
-      FragmentContent::Inline { box_id: Some(id), .. } => *id == box_id,
-      FragmentContent::Text { box_id: Some(id), .. } => *id == box_id,
-      FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      FragmentContent::Inline {
+        box_id: Some(id), ..
+      } => *id == box_id,
+      FragmentContent::Text {
+        box_id: Some(id), ..
+      } => *id == box_id,
+      FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches {
@@ -109,7 +124,11 @@ fn anchor_positioning_places_absolute_box_using_position_anchor() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -190,13 +209,18 @@ fn anchor_positioning_uses_implicit_anchor_for_position_anchor_auto() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
   overlay.implicit_anchor_box_id = Some(origin_id);
 
   origin.children.push(overlay);
 
-  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![origin]);
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![origin]);
   container.id = 101;
 
   let fc = BlockFormattingContext::new();
@@ -251,11 +275,16 @@ fn anchor_positioning_position_anchor_auto_without_implicit_anchor_uses_fallback
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
   overlay.implicit_anchor_box_id = None;
 
-  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
   container.id = 102;
 
   let fc = BlockFormattingContext::new();
@@ -297,8 +326,11 @@ fn anchor_positioning_named_position_anchor_overrides_implicit_anchor() {
   named_anchor_style.margin_left = Some(Length::px(50.0));
   named_anchor_style.margin_bottom = Some(Length::px(20.0));
   named_anchor_style.anchor_names = vec!["--a".to_string()];
-  let mut named_anchor =
-    BoxNode::new_block(Arc::new(named_anchor_style), FormattingContextType::Block, vec![]);
+  let mut named_anchor = BoxNode::new_block(
+    Arc::new(named_anchor_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   named_anchor.id = named_anchor_id;
 
   let mut origin_style = ComputedStyle::default();
@@ -332,7 +364,11 @@ fn anchor_positioning_named_position_anchor_overrides_implicit_anchor() {
   overlay_style.height = Some(Length::px(5.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
   overlay.implicit_anchor_box_id = Some(origin_id);
 
@@ -419,8 +455,11 @@ fn anchor_positioning_supports_inside_outside_center_and_percentage_sides() {
   outside_overlay_style.height = Some(Length::px(10.0));
   outside_overlay_style.width_keyword = None;
   outside_overlay_style.height_keyword = None;
-  let mut outside_overlay =
-    BoxNode::new_block(Arc::new(outside_overlay_style), FormattingContextType::Block, vec![]);
+  let mut outside_overlay = BoxNode::new_block(
+    Arc::new(outside_overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   outside_overlay.id = outside_overlay_id;
 
   let mut inside_overlay_style = ComputedStyle::default();
@@ -441,8 +480,11 @@ fn anchor_positioning_supports_inside_outside_center_and_percentage_sides() {
   inside_overlay_style.height = Some(Length::px(10.0));
   inside_overlay_style.width_keyword = None;
   inside_overlay_style.height_keyword = None;
-  let mut inside_overlay =
-    BoxNode::new_block(Arc::new(inside_overlay_style), FormattingContextType::Block, vec![]);
+  let mut inside_overlay = BoxNode::new_block(
+    Arc::new(inside_overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   inside_overlay.id = inside_overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -534,7 +576,11 @@ fn anchor_positioning_uses_transformed_anchor_box() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -618,8 +664,11 @@ fn anchor_positioning_applies_position_try_fallbacks_to_avoid_overflow() {
   overlay_style.height_keyword = None;
   overlay_style.position_try_registry = position_try_registry;
   overlay_style.position_try_fallbacks = vec!["--flip".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -681,7 +730,10 @@ fn anchor_positioning_uses_first_position_try_fallback_that_fits() {
   // First try set keeps the original overflowing placement.
   position_try_registry.register(
     "--overflow".to_string(),
-    vec![decl("left", PropertyValue::Keyword("anchor(right)".to_string()))],
+    vec![decl(
+      "left",
+      PropertyValue::Keyword("anchor(right)".to_string()),
+    )],
   );
   // Second try set flips the overlay to fit inside the containing block.
   position_try_registry.register(
@@ -713,8 +765,11 @@ fn anchor_positioning_uses_first_position_try_fallback_that_fits() {
   overlay_style.height_keyword = None;
   overlay_style.position_try_registry = position_try_registry;
   overlay_style.position_try_fallbacks = vec!["--overflow".to_string(), "--flip".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -787,8 +842,11 @@ fn anchor_positioning_supports_builtin_flip_inline_try() {
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
   overlay_style.position_try_fallbacks = vec!["flip-inline".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -868,8 +926,11 @@ fn anchor_positioning_flip_inline_respects_writing_mode_axis() {
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
   overlay_style.position_try_fallbacks = vec!["flip-inline".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -947,8 +1008,11 @@ fn anchor_positioning_supports_builtin_flip_block_try() {
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
   overlay_style.position_try_fallbacks = vec!["flip-block".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -1021,8 +1085,11 @@ fn anchor_positioning_supports_builtin_flip_x_try_in_vertical_writing_mode() {
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
   overlay_style.position_try_fallbacks = vec!["flip-x".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -1106,8 +1173,11 @@ fn anchor_positioning_supports_builtin_flip_y_try_in_vertical_writing_mode() {
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
   overlay_style.position_try_fallbacks = vec!["flip-y".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -1176,8 +1246,11 @@ fn anchor_positioning_supports_builtin_flip_start_try_for_anchor_size() {
   // Base styles overflow horizontally (200px wide in a 120px CB); flip-start should swap width/height
   // so the box can fit (50px wide, 100px tall).
   overlay_style.position_try_fallbacks = vec!["flip-start".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -1204,7 +1277,8 @@ fn anchor_positioning_supports_builtin_flip_start_try_for_anchor_size() {
     overlay_fragment.bounds.height()
   );
   assert!(
-    overlay_fragment.bounds.max_x() <= 120.0 + 0.1 && overlay_fragment.bounds.max_y() <= 220.0 + 0.1,
+    overlay_fragment.bounds.max_x() <= 120.0 + 0.1
+      && overlay_fragment.bounds.max_y() <= 220.0 + 0.1,
     "overlay should not overflow the containing block after applying flip-start"
   );
 }
@@ -1265,8 +1339,11 @@ fn anchor_positioning_supports_multiple_builtin_try_tactics() {
     "flip-block".to_string(),
     "flip-inline flip-block".to_string(),
   ];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -1292,7 +1369,8 @@ fn anchor_positioning_supports_multiple_builtin_try_tactics() {
     "flip-inline flip-block should place overlay above the anchor"
   );
   assert!(
-    overlay_fragment.bounds.max_x() <= 100.0 + 0.1 && overlay_fragment.bounds.max_y() <= 100.0 + 0.1,
+    overlay_fragment.bounds.max_x() <= 100.0 + 0.1
+      && overlay_fragment.bounds.max_y() <= 100.0 + 0.1,
     "overlay should not overflow the containing block after applying the multi-tactic fallback"
   );
 }
@@ -1339,8 +1417,11 @@ fn anchor_positioning_sorts_position_try_fallbacks_by_most_width() {
   overlay_style.position_try_registry = position_try_registry;
   overlay_style.position_try_fallbacks = vec!["--narrow".to_string(), "--wide".to_string()];
   overlay_style.position_try_order = PositionTryOrder::MostWidth;
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container =
@@ -1431,8 +1512,11 @@ fn anchor_positioning_allows_try_set_and_builtin_tactic_in_single_fallback() {
   overlay_style.height_keyword = None;
   overlay_style.position_try_registry = position_try_registry;
   overlay_style.position_try_fallbacks = vec!["--above-right flip-inline".to_string()];
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -1458,7 +1542,8 @@ fn anchor_positioning_allows_try_set_and_builtin_tactic_in_single_fallback() {
     "fallback should place overlay above the anchor"
   );
   assert!(
-    overlay_fragment.bounds.max_x() <= 100.0 + 0.1 && overlay_fragment.bounds.max_y() <= 100.0 + 0.1,
+    overlay_fragment.bounds.max_x() <= 100.0 + 0.1
+      && overlay_fragment.bounds.max_y() <= 100.0 + 0.1,
     "overlay should not overflow the containing block after applying the combined fallback"
   );
 }
@@ -1522,7 +1607,11 @@ fn anchor_positioning_includes_ancestor_transforms() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -1606,10 +1695,18 @@ fn anchor_positioning_resolves_with_ancestor_containing_block() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut wrapper = BoxNode::new_block(wrapper_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut wrapper = BoxNode::new_block(
+    wrapper_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   wrapper.id = wrapper_id;
 
   let mut container =
@@ -1684,11 +1781,18 @@ fn anchor_positioning_supports_logical_sides() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 105;
 
   let fc = BlockFormattingContext::new();
@@ -1764,20 +1868,25 @@ fn anchor_positioning_inline_sides_respect_rtl_when_inline_axis_is_vertical() {
       overlay_style.height = Some(Length::px(10.0));
       overlay_style.width_keyword = None;
       overlay_style.height_keyword = None;
-      let mut overlay =
-        BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+      let mut overlay = BoxNode::new_block(
+        Arc::new(overlay_style),
+        FormattingContextType::Block,
+        vec![],
+      );
       overlay.id = overlay_id;
 
-      let mut container =
-        BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+      let mut container = BoxNode::new_block(
+        container_style,
+        FormattingContextType::Block,
+        vec![anchor, overlay],
+      );
       container.id = 205;
 
       let fc = BlockFormattingContext::new();
       let constraints = LayoutConstraints::definite(200.0, 200.0);
       let fragment = fc.layout(&container, &constraints).expect("layout");
 
-      let anchor_fragment =
-        find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+      let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
       let overlay_fragment =
         find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
 
@@ -1848,8 +1957,11 @@ fn anchor_positioning_start_end_resolve_against_containing_block_axis() {
   start_overlay_style.height = Some(Length::px(10.0));
   start_overlay_style.width_keyword = None;
   start_overlay_style.height_keyword = None;
-  let mut start_overlay =
-    BoxNode::new_block(Arc::new(start_overlay_style), FormattingContextType::Block, vec![]);
+  let mut start_overlay = BoxNode::new_block(
+    Arc::new(start_overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   start_overlay.id = start_overlay_id;
 
   let mut end_overlay_style = ComputedStyle::default();
@@ -1870,8 +1982,11 @@ fn anchor_positioning_start_end_resolve_against_containing_block_axis() {
   end_overlay_style.height = Some(Length::px(10.0));
   end_overlay_style.width_keyword = None;
   end_overlay_style.height_keyword = None;
-  let mut end_overlay =
-    BoxNode::new_block(Arc::new(end_overlay_style), FormattingContextType::Block, vec![]);
+  let mut end_overlay = BoxNode::new_block(
+    Arc::new(end_overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   end_overlay.id = end_overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -1964,7 +2079,11 @@ fn anchor_positioning_self_start_end_resolve_against_positioned_writing_mode() {
     overlay_style.height = Some(Length::px(10.0));
     overlay_style.width_keyword = None;
     overlay_style.height_keyword = None;
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![])
+    BoxNode::new_block(
+      Arc::new(overlay_style),
+      FormattingContextType::Block,
+      vec![],
+    )
   };
 
   let mut start_overlay = overlay_base(AnchorSide::Start);
@@ -2044,10 +2163,15 @@ fn anchor_positioning_uses_fallback_when_anchor_missing() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
   container.id = 101;
 
   let fc = BlockFormattingContext::new();
@@ -2110,11 +2234,18 @@ fn anchor_positioning_anchor_size_sets_absolute_box_dimensions() {
   // Clamp via max-width to ensure anchor-size participates in min/max sizing.
   overlay_style.max_width = Some(Length::px(40.0));
   overlay_style.max_width_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 111;
 
   let fc = BlockFormattingContext::new();
@@ -2175,11 +2306,18 @@ fn anchor_positioning_anchor_size_inline_block_respects_containing_block_writing
     axis: AnchorSizeAxis::Block,
     fallback: None,
   });
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 112;
 
   let fc = BlockFormattingContext::new();
@@ -2240,11 +2378,18 @@ fn anchor_positioning_anchor_size_self_axes_respect_positioned_writing_mode() {
     axis: AnchorSizeAxis::SelfBlock,
     fallback: None,
   });
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 113;
 
   let fc = BlockFormattingContext::new();
@@ -2304,11 +2449,18 @@ fn anchor_positioning_anchor_size_axis_omission_defaults_to_property_axis() {
     axis: AnchorSizeAxis::Omitted,
     fallback: None,
   });
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 114;
 
   let fc = BlockFormattingContext::new();
@@ -2357,10 +2509,15 @@ fn anchor_positioning_anchor_size_uses_fallback_when_anchor_missing() {
     axis: AnchorSizeAxis::Height,
     fallback: Some(Length::px(44.0)),
   });
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
   container.id = 113;
 
   let fc = BlockFormattingContext::new();
@@ -2402,8 +2559,11 @@ fn anchor_positioning_picks_last_anchor_in_tree_order() {
   first_anchor_style.width_keyword = None;
   first_anchor_style.height_keyword = None;
   first_anchor_style.anchor_names = vec!["--a".to_string()];
-  let mut first_anchor =
-    BoxNode::new_block(Arc::new(first_anchor_style), FormattingContextType::Block, vec![]);
+  let mut first_anchor = BoxNode::new_block(
+    Arc::new(first_anchor_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   first_anchor.id = first_anchor_id;
 
   let mut second_anchor_style = ComputedStyle::default();
@@ -2413,8 +2573,11 @@ fn anchor_positioning_picks_last_anchor_in_tree_order() {
   second_anchor_style.width_keyword = None;
   second_anchor_style.height_keyword = None;
   second_anchor_style.anchor_names = vec!["--a".to_string()];
-  let mut second_anchor =
-    BoxNode::new_block(Arc::new(second_anchor_style), FormattingContextType::Block, vec![]);
+  let mut second_anchor = BoxNode::new_block(
+    Arc::new(second_anchor_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   second_anchor.id = second_anchor_id;
 
   let mut overlay_style = ComputedStyle::default();
@@ -2435,7 +2598,11 @@ fn anchor_positioning_picks_last_anchor_in_tree_order() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -2508,7 +2675,11 @@ fn anchor_positioning_allows_explicit_anchor_name_in_anchor_function() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -2579,8 +2750,11 @@ fn anchor_positioning_respects_anchor_scope_for_nested_positioned_descendants() 
   overlay1_style.width_keyword = None;
   overlay1_style.height_keyword = None;
 
-  let mut overlay1 =
-    BoxNode::new_block(Arc::new(overlay1_style), FormattingContextType::Block, vec![]);
+  let mut overlay1 = BoxNode::new_block(
+    Arc::new(overlay1_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay1.id = overlay1_id;
   let mut wrapper1 = BoxNode::new_block(
     Arc::new(wrapper1_style),
@@ -2617,8 +2791,11 @@ fn anchor_positioning_respects_anchor_scope_for_nested_positioned_descendants() 
   overlay2_style.width_keyword = None;
   overlay2_style.height_keyword = None;
 
-  let mut overlay2 =
-    BoxNode::new_block(Arc::new(overlay2_style), FormattingContextType::Block, vec![]);
+  let mut overlay2 = BoxNode::new_block(
+    Arc::new(overlay2_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay2.id = overlay2_id;
   let mut wrapper2 = BoxNode::new_block(
     Arc::new(wrapper2_style),
@@ -2627,8 +2804,11 @@ fn anchor_positioning_respects_anchor_scope_for_nested_positioned_descendants() 
   );
   wrapper2.id = wrapper2_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![wrapper1, wrapper2]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![wrapper1, wrapper2],
+  );
   container.id = 109;
 
   let fc = BlockFormattingContext::new();
@@ -2716,8 +2896,11 @@ fn anchor_positioning_scoped_anchors_are_not_visible_outside_the_scope_subtree()
   wrapper_style.height_keyword = None;
   wrapper_style.anchor_names = vec!["--a".to_string()];
   wrapper_style.anchor_scope = AnchorScope::Names(vec!["--a".to_string()]);
-  let mut wrapper =
-    BoxNode::new_block(Arc::new(wrapper_style), FormattingContextType::Block, vec![]);
+  let mut wrapper = BoxNode::new_block(
+    Arc::new(wrapper_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   wrapper.id = wrapper_id;
 
   let mut overlay_style = ComputedStyle::default();
@@ -2738,8 +2921,11 @@ fn anchor_positioning_scoped_anchors_are_not_visible_outside_the_scope_subtree()
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -2811,8 +2997,7 @@ fn anchor_positioning_position_anchor_auto_uses_implicit_anchor_for_pseudo_eleme
   pseudo_style.height = Some(Length::px(10.0));
   pseudo_style.width_keyword = None;
   pseudo_style.height_keyword = None;
-  let mut pseudo =
-    BoxNode::new_block(Arc::new(pseudo_style), FormattingContextType::Block, vec![]);
+  let mut pseudo = BoxNode::new_block(Arc::new(pseudo_style), FormattingContextType::Block, vec![]);
   pseudo.id = pseudo_id;
   pseudo.generated_pseudo = Some(GeneratedPseudoElement::Before);
   pseudo.implicit_anchor_box_id = Some(parent_id);
@@ -2868,11 +3053,15 @@ fn anchor_positioning_position_anchor_auto_uses_fallback_when_no_implicit_anchor
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay =
-    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
   container.id = 201;
 
   let fc = BlockFormattingContext::new();

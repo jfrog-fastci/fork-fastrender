@@ -197,7 +197,10 @@ fn position_try_order_parses_most_height_keyword() {
     "#,
   );
 
-  assert_eq!(target.styles.position_try_order, PositionTryOrder::MostHeight);
+  assert_eq!(
+    target.styles.position_try_order,
+    PositionTryOrder::MostHeight
+  );
 }
 
 #[test]
@@ -339,13 +342,21 @@ fn position_try_rules_keep_only_positioning_related_properties() {
     .get("--ok")
     .expect("expected @position-try rule to be collected");
   assert!(
-    decls.iter().all(|decl| decl.property.as_ref() != "color" && decl.property.as_ref() != "background"),
+    decls
+      .iter()
+      .all(|decl| decl.property.as_ref() != "color" && decl.property.as_ref() != "background"),
     "unexpected non-positioning properties in @position-try registry: {decls:?}"
   );
   assert!(decls.iter().any(|decl| decl.property.as_ref() == "top"));
-  assert!(decls.iter().any(|decl| decl.property.as_ref() == "position-anchor"));
-  assert!(decls.iter().any(|decl| decl.property.as_ref() == "position-area"));
-  assert!(decls.iter().any(|decl| decl.property.as_ref() == "margin-left"));
+  assert!(decls
+    .iter()
+    .any(|decl| decl.property.as_ref() == "position-anchor"));
+  assert!(decls
+    .iter()
+    .any(|decl| decl.property.as_ref() == "position-area"));
+  assert!(decls
+    .iter()
+    .any(|decl| decl.property.as_ref() == "margin-left"));
   assert!(decls.iter().any(|decl| decl.property.as_ref() == "width"));
 }
 

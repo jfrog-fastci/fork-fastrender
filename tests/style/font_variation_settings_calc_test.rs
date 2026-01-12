@@ -33,4 +33,3 @@ fn font_variation_settings_supports_calc_values() {
   assert_eq!(div.styles.font_variation_settings[1].tag, *b"wdth");
   assert!((div.styles.font_variation_settings[1].value - 100.0).abs() < 0.001);
 }
-

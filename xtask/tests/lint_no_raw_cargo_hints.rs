@@ -44,4 +44,3 @@ fn xtask_source_does_not_contain_raw_cargo_run_or_xtask_hints() {
     offenders.join("\n")
   );
 }
-

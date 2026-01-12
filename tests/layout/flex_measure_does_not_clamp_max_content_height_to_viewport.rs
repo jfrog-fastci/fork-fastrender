@@ -46,9 +46,13 @@ fn flex_item_max_content_height_is_not_clamped_to_viewport() {
 
   // When the flex container's main size is auto (indefinite height), Taffy asks for max-content
   // measurements. The flex item should be allowed to measure taller than the viewport.
-  let constraints =
-    LayoutConstraints::new(AvailableSpace::Definite(viewport.width), AvailableSpace::Indefinite);
-  let fragment = fc.layout(&outer, &constraints).expect("layout should succeed");
+  let constraints = LayoutConstraints::new(
+    AvailableSpace::Definite(viewport.width),
+    AvailableSpace::Indefinite,
+  );
+  let fragment = fc
+    .layout(&outer, &constraints)
+    .expect("layout should succeed");
 
   assert!(
     (fragment.bounds.height() - 310.0).abs() < 0.5,
@@ -63,4 +67,3 @@ fn flex_item_max_content_height_is_not_clamped_to_viewport() {
     inner_fragment.bounds.height()
   );
 }
-

@@ -12,8 +12,10 @@ fn intrinsic_min_content_does_not_break_after_nbsp_before_inline_block() {
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;
 
-  let text =
-    BoxNode::new_text(Arc::new(ComputedStyle::default()), "Community\u{00A0}".to_string());
+  let text = BoxNode::new_text(
+    Arc::new(ComputedStyle::default()),
+    "Community\u{00A0}".to_string(),
+  );
 
   let mut inline_block_style = ComputedStyle::default();
   inline_block_style.display = Display::InlineBlock;

@@ -1,5 +1,6 @@
 #![cfg(feature = "disk_cache")]
 
+use crate::test_support;
 use fastrender::pageset::pageset_stem;
 use fastrender::resource::{
   normalize_user_agent_for_log, CachingFetcherConfig, DiskCacheConfig, DiskCachingFetcher,
@@ -7,7 +8,6 @@ use fastrender::resource::{
 };
 use fastrender::Error;
 use fastrender::ResourceFetcher;
-use crate::test_support;
 use std::collections::HashMap;
 use std::io;
 use std::io::Read;

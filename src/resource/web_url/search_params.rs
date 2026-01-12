@@ -12,9 +12,7 @@ enum WebUrlSearchParamsInner {
     pairs: Arc<Mutex<Vec<(String, String)>>>,
   },
   /// A `URLSearchParams` view over an associated `WebUrl`.
-  Associated {
-    url: Arc<Mutex<WebUrlInner>>,
-  },
+  Associated { url: Arc<Mutex<WebUrlInner>> },
 }
 
 /// A bounded, WHATWG-shaped URLSearchParams list that preserves duplicates and stable ordering.
@@ -184,14 +182,12 @@ impl WebUrlSearchParams {
         }
         Ok(())
       }
-      WebUrlSearchParamsInner::Associated { url } => {
-        self.mutate_associated(url, |pairs| {
-          enforce_append_limits(pairs, name, value, &self.limits)?;
-          pairs.try_reserve(1)?;
-          pairs.push((try_clone_str(name)?, try_clone_str(value)?));
-          Ok(())
-        })
-      }
+      WebUrlSearchParamsInner::Associated { url } => self.mutate_associated(url, |pairs| {
+        enforce_append_limits(pairs, name, value, &self.limits)?;
+        pairs.try_reserve(1)?;
+        pairs.push((try_clone_str(name)?, try_clone_str(value)?));
+        Ok(())
+      }),
     }
   }
 
@@ -374,11 +370,14 @@ fn enforce_append_limits(
   value: &str,
   limits: &WebUrlLimits,
 ) -> Result<(), WebUrlError> {
-  let next_count = pairs.len().checked_add(1).ok_or(WebUrlError::LimitExceeded {
-    kind: WebUrlLimitKind::QueryPairs,
-    limit: limits.max_query_pairs,
-    attempted: usize::MAX,
-  })?;
+  let next_count = pairs
+    .len()
+    .checked_add(1)
+    .ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::QueryPairs,
+      limit: limits.max_query_pairs,
+      attempted: usize::MAX,
+    })?;
   if next_count > limits.max_query_pairs {
     return Err(WebUrlError::LimitExceeded {
       kind: WebUrlLimitKind::QueryPairs,
@@ -388,16 +387,21 @@ fn enforce_append_limits(
   }
 
   let current_total = total_decoded_bytes(pairs, limits)?;
-  let pair_len = name.len().checked_add(value.len()).ok_or(WebUrlError::LimitExceeded {
-    kind: WebUrlLimitKind::TotalQueryBytes,
-    limit: limits.max_total_query_bytes,
-    attempted: usize::MAX,
-  })?;
-  let next_total = current_total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
-    kind: WebUrlLimitKind::TotalQueryBytes,
-    limit: limits.max_total_query_bytes,
-    attempted: usize::MAX,
-  })?;
+  let pair_len = name
+    .len()
+    .checked_add(value.len())
+    .ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: usize::MAX,
+    })?;
+  let next_total = current_total
+    .checked_add(pair_len)
+    .ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: usize::MAX,
+    })?;
   if next_total > limits.max_total_query_bytes {
     return Err(WebUrlError::LimitExceeded {
       kind: WebUrlLimitKind::TotalQueryBytes,
@@ -425,56 +429,77 @@ fn enforce_set_limits(
         continue;
       }
       inserted = true;
-      next_count = next_count.checked_add(1).ok_or(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::QueryPairs,
-        limit: limits.max_query_pairs,
-        attempted: usize::MAX,
-      })?;
-      let pair_len = n.len().checked_add(value.len()).ok_or(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::TotalQueryBytes,
-        limit: limits.max_total_query_bytes,
-        attempted: usize::MAX,
-      })?;
-      next_total = next_total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::TotalQueryBytes,
-        limit: limits.max_total_query_bytes,
-        attempted: usize::MAX,
-      })?;
+      next_count = next_count
+        .checked_add(1)
+        .ok_or(WebUrlError::LimitExceeded {
+          kind: WebUrlLimitKind::QueryPairs,
+          limit: limits.max_query_pairs,
+          attempted: usize::MAX,
+        })?;
+      let pair_len = n
+        .len()
+        .checked_add(value.len())
+        .ok_or(WebUrlError::LimitExceeded {
+          kind: WebUrlLimitKind::TotalQueryBytes,
+          limit: limits.max_total_query_bytes,
+          attempted: usize::MAX,
+        })?;
+      next_total = next_total
+        .checked_add(pair_len)
+        .ok_or(WebUrlError::LimitExceeded {
+          kind: WebUrlLimitKind::TotalQueryBytes,
+          limit: limits.max_total_query_bytes,
+          attempted: usize::MAX,
+        })?;
     } else {
-      next_count = next_count.checked_add(1).ok_or(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::QueryPairs,
-        limit: limits.max_query_pairs,
-        attempted: usize::MAX,
-      })?;
-      let pair_len = n.len().checked_add(v.len()).ok_or(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::TotalQueryBytes,
-        limit: limits.max_total_query_bytes,
-        attempted: usize::MAX,
-      })?;
-      next_total = next_total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::TotalQueryBytes,
-        limit: limits.max_total_query_bytes,
-        attempted: usize::MAX,
-      })?;
+      next_count = next_count
+        .checked_add(1)
+        .ok_or(WebUrlError::LimitExceeded {
+          kind: WebUrlLimitKind::QueryPairs,
+          limit: limits.max_query_pairs,
+          attempted: usize::MAX,
+        })?;
+      let pair_len = n
+        .len()
+        .checked_add(v.len())
+        .ok_or(WebUrlError::LimitExceeded {
+          kind: WebUrlLimitKind::TotalQueryBytes,
+          limit: limits.max_total_query_bytes,
+          attempted: usize::MAX,
+        })?;
+      next_total = next_total
+        .checked_add(pair_len)
+        .ok_or(WebUrlError::LimitExceeded {
+          kind: WebUrlLimitKind::TotalQueryBytes,
+          limit: limits.max_total_query_bytes,
+          attempted: usize::MAX,
+        })?;
     }
   }
 
   if !inserted {
-    next_count = next_count.checked_add(1).ok_or(WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::QueryPairs,
-      limit: limits.max_query_pairs,
-      attempted: usize::MAX,
-    })?;
-    let pair_len = name.len().checked_add(value.len()).ok_or(WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::TotalQueryBytes,
-      limit: limits.max_total_query_bytes,
-      attempted: usize::MAX,
-    })?;
-    next_total = next_total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::TotalQueryBytes,
-      limit: limits.max_total_query_bytes,
-      attempted: usize::MAX,
-    })?;
+    next_count = next_count
+      .checked_add(1)
+      .ok_or(WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::QueryPairs,
+        limit: limits.max_query_pairs,
+        attempted: usize::MAX,
+      })?;
+    let pair_len = name
+      .len()
+      .checked_add(value.len())
+      .ok_or(WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::TotalQueryBytes,
+        limit: limits.max_total_query_bytes,
+        attempted: usize::MAX,
+      })?;
+    next_total = next_total
+      .checked_add(pair_len)
+      .ok_or(WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::TotalQueryBytes,
+        limit: limits.max_total_query_bytes,
+        attempted: usize::MAX,
+      })?;
   }
 
   if next_count > limits.max_query_pairs {
@@ -495,24 +520,35 @@ fn enforce_set_limits(
   Ok(())
 }
 
-fn total_decoded_bytes(pairs: &[(String, String)], limits: &WebUrlLimits) -> Result<usize, WebUrlError> {
+fn total_decoded_bytes(
+  pairs: &[(String, String)],
+  limits: &WebUrlLimits,
+) -> Result<usize, WebUrlError> {
   let mut total: usize = 0;
   for (n, v) in pairs {
-    let pair_len = n.len().checked_add(v.len()).ok_or(WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::TotalQueryBytes,
-      limit: limits.max_total_query_bytes,
-      attempted: usize::MAX,
-    })?;
-    total = total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::TotalQueryBytes,
-      limit: limits.max_total_query_bytes,
-      attempted: usize::MAX,
-    })?;
+    let pair_len = n
+      .len()
+      .checked_add(v.len())
+      .ok_or(WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::TotalQueryBytes,
+        limit: limits.max_total_query_bytes,
+        attempted: usize::MAX,
+      })?;
+    total = total
+      .checked_add(pair_len)
+      .ok_or(WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::TotalQueryBytes,
+        limit: limits.max_total_query_bytes,
+        attempted: usize::MAX,
+      })?;
   }
   Ok(total)
 }
 
-fn parse_urlencoded_pairs(input: &str, limits: &WebUrlLimits) -> Result<Vec<(String, String)>, WebUrlError> {
+fn parse_urlencoded_pairs(
+  input: &str,
+  limits: &WebUrlLimits,
+) -> Result<Vec<(String, String)>, WebUrlError> {
   let input = input.strip_prefix('?').unwrap_or(input);
 
   if input.len() > limits.max_input_bytes {
@@ -550,11 +586,14 @@ fn parse_urlencoded_pairs(input: &str, limits: &WebUrlLimits) -> Result<Vec<(Str
       continue;
     }
 
-    let next_count = pairs.len().checked_add(1).ok_or(WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::QueryPairs,
-      limit: limits.max_query_pairs,
-      attempted: usize::MAX,
-    })?;
+    let next_count = pairs
+      .len()
+      .checked_add(1)
+      .ok_or(WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::QueryPairs,
+        limit: limits.max_query_pairs,
+        attempted: usize::MAX,
+      })?;
     if next_count > limits.max_query_pairs {
       return Err(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::QueryPairs,
@@ -576,11 +615,14 @@ fn parse_urlencoded_pairs(input: &str, limits: &WebUrlLimits) -> Result<Vec<(Str
       total_decoded_bytes,
       limits.max_total_query_bytes,
     )?;
-    let total_after_name = total_decoded_bytes.checked_add(name_bytes).ok_or(WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::TotalQueryBytes,
-      limit: limits.max_total_query_bytes,
-      attempted: usize::MAX,
-    })?;
+    let total_after_name =
+      total_decoded_bytes
+        .checked_add(name_bytes)
+        .ok_or(WebUrlError::LimitExceeded {
+          kind: WebUrlLimitKind::TotalQueryBytes,
+          limit: limits.max_total_query_bytes,
+          attempted: usize::MAX,
+        })?;
     let (value, value_bytes) = decode_urlencoded_component_limited(
       value_part,
       value_decoded_len,
@@ -588,11 +630,14 @@ fn parse_urlencoded_pairs(input: &str, limits: &WebUrlLimits) -> Result<Vec<(Str
       limits.max_total_query_bytes,
     )?;
 
-    let next_total = total_after_name.checked_add(value_bytes).ok_or(WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::TotalQueryBytes,
-      limit: limits.max_total_query_bytes,
-      attempted: usize::MAX,
-    })?;
+    let next_total =
+      total_after_name
+        .checked_add(value_bytes)
+        .ok_or(WebUrlError::LimitExceeded {
+          kind: WebUrlLimitKind::TotalQueryBytes,
+          limit: limits.max_total_query_bytes,
+          attempted: usize::MAX,
+        })?;
     if next_total > limits.max_total_query_bytes {
       return Err(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::TotalQueryBytes,
@@ -623,7 +668,12 @@ fn serialize_urlencoded_pairs(
     if idx != 0 {
       push_byte_limited(&mut bytes, b'&', &mut written, limits.max_input_bytes)?;
     }
-    append_urlencoded_limited(&mut bytes, name.as_bytes(), &mut written, limits.max_input_bytes)?;
+    append_urlencoded_limited(
+      &mut bytes,
+      name.as_bytes(),
+      &mut written,
+      limits.max_input_bytes,
+    )?;
     push_byte_limited(&mut bytes, b'=', &mut written, limits.max_input_bytes)?;
     append_urlencoded_limited(
       &mut bytes,
@@ -768,16 +818,20 @@ fn push_str_limited(
   total_so_far: usize,
   max_total: usize,
 ) -> Result<(), WebUrlError> {
-  let next_written = written.checked_add(s.len()).ok_or(WebUrlError::LimitExceeded {
-    kind: WebUrlLimitKind::TotalQueryBytes,
-    limit: max_total,
-    attempted: usize::MAX,
-  })?;
-  let next_total = total_so_far.checked_add(next_written).ok_or(WebUrlError::LimitExceeded {
-    kind: WebUrlLimitKind::TotalQueryBytes,
-    limit: max_total,
-    attempted: usize::MAX,
-  })?;
+  let next_written = written
+    .checked_add(s.len())
+    .ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: max_total,
+      attempted: usize::MAX,
+    })?;
+  let next_total = total_so_far
+    .checked_add(next_written)
+    .ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: max_total,
+      attempted: usize::MAX,
+    })?;
   if next_total > max_total {
     return Err(WebUrlError::LimitExceeded {
       kind: WebUrlLimitKind::TotalQueryBytes,
@@ -969,7 +1023,10 @@ mod tests {
   fn parse_decodes_invalid_utf8_lossily() {
     let limits = WebUrlLimits::default();
     let params = WebUrlSearchParams::parse("a=%FF%FF", &limits).unwrap();
-    assert_eq!(params.get("a").unwrap(), Some("\u{FFFD}\u{FFFD}".to_string()));
+    assert_eq!(
+      params.get("a").unwrap(),
+      Some("\u{FFFD}\u{FFFD}".to_string())
+    );
   }
 
   #[test]

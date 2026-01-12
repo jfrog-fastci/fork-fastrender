@@ -73,7 +73,11 @@ fn grid_item_forced_break_after_propagates_to_row_boundary_in_paged_media() {
     .unwrap();
   let page_roots = pages(&tree);
 
-  assert_eq!(page_roots.len(), 2, "expected forced break to create two pages");
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected forced break to create two pages"
+  );
 
   let red = Rgba::rgb(255, 0, 0);
   let blue = Rgba::rgb(0, 0, 255);
@@ -201,7 +205,11 @@ fn vertical_writing_mode_grid_item_forced_break_after_propagates_to_row_boundary
     .unwrap();
   let page_roots = pages(&tree);
 
-  assert_eq!(page_roots.len(), 2, "expected forced break to create two pages");
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected forced break to create two pages"
+  );
 
   let red = Rgba::rgb(255, 0, 0);
   let blue = Rgba::rgb(0, 0, 255);

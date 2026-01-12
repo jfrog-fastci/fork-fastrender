@@ -93,11 +93,9 @@ fn noscript_and_scripting_media_queries_are_consistent() {
 
   let config = FastRenderConfig::new().with_dom_scripting_enabled(true);
   let mut renderer = FastRender::with_config(config).expect("renderer");
-  let dom = fastrender::dom::parse_html_with_options(
-    html,
-    DomParseOptions::with_scripting_enabled(false),
-  )
-  .expect("parse");
+  let dom =
+    fastrender::dom::parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false))
+      .expect("parse");
   let tree = renderer.layout_document(&dom, 200, 100).expect("layout");
   let mut texts = Vec::new();
   collect_text(&tree.root, &mut texts);
@@ -107,4 +105,3 @@ fn noscript_and_scripting_media_queries_are_consistent() {
     "expected <noscript> fallback styled by (scripting: none); got texts: {texts:?}"
   );
 }
-

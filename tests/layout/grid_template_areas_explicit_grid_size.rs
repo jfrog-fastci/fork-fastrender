@@ -56,7 +56,10 @@ fn grid_template_areas_can_extend_explicit_grid_past_template_tracks() {
   // ...but two columns in the template areas.
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-areas", PropertyValue::Keyword("\"a b\"".into())),
+    &decl(
+      "grid-template-areas",
+      PropertyValue::Keyword("\"a b\"".into()),
+    ),
     &base,
     16.0,
     16.0,
@@ -142,7 +145,10 @@ fn grid_template_areas_extend_empty_tracks_for_alignment_distribution() {
   // ...but two rows in the template areas, where the second row is empty (no items).
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-areas", PropertyValue::Keyword("\"a\" \"b\"".into())),
+    &decl(
+      "grid-template-areas",
+      PropertyValue::Keyword("\"a\" \"b\"".into()),
+    ),
     &base,
     16.0,
     16.0,
@@ -215,7 +221,10 @@ fn grid_template_tracks_can_extend_explicit_grid_past_template_areas() {
   // ...but only three columns in the template areas.
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-areas", PropertyValue::Keyword("\"a b c\"".into())),
+    &decl(
+      "grid-template-areas",
+      PropertyValue::Keyword("\"a b c\"".into()),
+    ),
     &base,
     16.0,
     16.0,
@@ -333,7 +342,10 @@ fn grid_template_fr_tracks_can_extend_explicit_grid_past_template_areas() {
   // ...but only three columns in the template areas.
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-areas", PropertyValue::Keyword("\"a b c\"".into())),
+    &decl(
+      "grid-template-areas",
+      PropertyValue::Keyword("\"a b c\"".into()),
+    ),
     &base,
     16.0,
     16.0,

@@ -867,8 +867,9 @@ fn pageset_timeouts_manifest_is_legacy_guardrails_mirror() {
   let guardrails: serde_json::Value =
     serde_json::from_str(include_str!("../pages/pageset_guardrails.json"))
       .expect("failed to parse pageset guardrails manifest");
-  let legacy: serde_json::Value = serde_json::from_str(include_str!("../pages/pageset_timeouts.json"))
-    .expect("failed to parse legacy pageset timeouts manifest");
+  let legacy: serde_json::Value =
+    serde_json::from_str(include_str!("../pages/pageset_timeouts.json"))
+      .expect("failed to parse legacy pageset timeouts manifest");
 
   assert_eq!(
     guardrails, legacy,

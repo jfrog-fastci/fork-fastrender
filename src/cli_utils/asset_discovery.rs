@@ -7,7 +7,10 @@ use crate::css::loader::resolve_href;
 use regex::Regex;
 use std::sync::OnceLock;
 
-fn regex_or_none(lock: &'static OnceLock<Result<Regex, regex::Error>>, pattern: &str) -> Option<&'static Regex> {
+fn regex_or_none(
+  lock: &'static OnceLock<Result<Regex, regex::Error>>,
+  pattern: &str,
+) -> Option<&'static Regex> {
   match lock.get_or_init(|| Regex::new(pattern)) {
     Ok(re) => Some(re),
     Err(_) => None,
@@ -45,7 +48,8 @@ pub fn extract_inline_css_chunks(html: &str) -> Vec<String> {
   else {
     return Vec::new();
   };
-  let Some(style_attr_single) = regex_or_none(&STYLE_ATTR_SINGLE, "(?is)\\bstyle\\s*=\\s*'([^']*)'")
+  let Some(style_attr_single) =
+    regex_or_none(&STYLE_ATTR_SINGLE, "(?is)\\bstyle\\s*=\\s*'([^']*)'")
   else {
     return Vec::new();
   };

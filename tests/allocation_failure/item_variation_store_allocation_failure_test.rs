@@ -1,8 +1,8 @@
+use super::{fail_next_allocation, failed_allocs, lock_allocator};
 use fastrender::text::otvar::item_variation_store::{
   parse_item_variation_store, ParseError, VariationRegion,
 };
 use std::mem;
-use super::{fail_next_allocation, failed_allocs, lock_allocator};
 
 #[test]
 fn item_variation_store_allocation_failure_is_reported_instead_of_aborting() {

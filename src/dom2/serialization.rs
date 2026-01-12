@@ -105,13 +105,8 @@ fn serialize_end_tag(out: &mut String, tag_name: &str, namespace: &str) {
 }
 
 enum Frame {
-  Enter {
-    node: NodeId,
-    parent_rawtext: bool,
-  },
-  ExitElement {
-    node: NodeId,
-  },
+  Enter { node: NodeId, parent_rawtext: bool },
+  ExitElement { node: NodeId },
 }
 
 fn serialize_nodes(
@@ -261,7 +256,9 @@ pub(super) fn serialize_children(doc: &Document, parent: NodeId) -> String {
 
   let rawtext = match &node.kind {
     NodeKind::Element {
-      tag_name, namespace, ..
+      tag_name,
+      namespace,
+      ..
     } => is_rawtext_element(tag_name, namespace),
     NodeKind::Slot { namespace, .. } => is_rawtext_element("slot", namespace),
     _ => false,

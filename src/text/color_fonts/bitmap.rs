@@ -484,9 +484,13 @@ mod tests {
     ];
 
     for (name, data, format) in cases {
-      let result =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_image_with_format(data, *format)));
-      assert!(result.is_ok(), "decode_image_with_format panicked for {name}");
+      let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        decode_image_with_format(data, *format)
+      }));
+      assert!(
+        result.is_ok(),
+        "decode_image_with_format panicked for {name}"
+      );
     }
   }
 }

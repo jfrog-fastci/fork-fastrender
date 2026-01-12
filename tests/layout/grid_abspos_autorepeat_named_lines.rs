@@ -69,4 +69,3 @@ fn grid_abspos_static_position_resolves_autorepeat_named_lines() {
     "abspos child should align to `col 3` (x=40px)",
   );
 }
-

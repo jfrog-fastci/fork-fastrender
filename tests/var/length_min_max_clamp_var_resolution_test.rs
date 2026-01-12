@@ -92,4 +92,3 @@ fn clamp_length_function_survives_var_resolution() {
   // Preferred branch is larger than the upper bound at 2000px; clamp() should pick 10rem.
   assert!((resolve(2000.0) - 160.0).abs() < 1e-3);
 }
-

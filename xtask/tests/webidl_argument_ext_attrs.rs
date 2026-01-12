@@ -1,7 +1,7 @@
+use xtask::webidl::resolve::resolve_webidl_world;
 use xtask::webidl::{
   analyze_resolved_world, parse_webidl, BuiltinType, IdlLiteral, IdlType, InterfaceMember,
 };
-use xtask::webidl::resolve::resolve_webidl_world;
 
 #[test]
 fn parses_argument_level_ext_attrs_enforce_range() {
@@ -15,7 +15,10 @@ fn parses_argument_level_ext_attrs_enforce_range() {
   let resolved = resolve_webidl_world(&parsed);
   let analyzed = analyze_resolved_world(&resolved);
 
-  let iface = analyzed.interfaces.get("AbortSignal").expect("AbortSignal parsed");
+  let iface = analyzed
+    .interfaces
+    .get("AbortSignal")
+    .expect("AbortSignal parsed");
   let timeout_args = iface
     .members
     .iter()
@@ -31,7 +34,10 @@ fn parses_argument_level_ext_attrs_enforce_range() {
 
   assert_eq!(timeout_args.len(), 1);
   assert!(
-    timeout_args[0].ext_attrs.iter().any(|a| a.name == "EnforceRange"),
+    timeout_args[0]
+      .ext_attrs
+      .iter()
+      .any(|a| a.name == "EnforceRange"),
     "expected [EnforceRange] on AbortSignal.timeout(milliseconds)"
   );
 

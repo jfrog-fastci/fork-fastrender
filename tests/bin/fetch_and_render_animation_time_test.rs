@@ -56,7 +56,10 @@ fn fetch_and_render_animation_time_flag_changes_output() {
     .status()
     .expect("run fetch_and_render at t=800ms");
   assert!(status_800.success(), "expected success for t=800ms");
-  assert!(out_800.exists(), "expected output file to exist for t=800ms");
+  assert!(
+    out_800.exists(),
+    "expected output file to exist for t=800ms"
+  );
 
   let png_0 = fs::read(&out_0).expect("read t=0 png");
   let png_800 = fs::read(&out_800).expect("read t=800 png");

@@ -1073,7 +1073,10 @@ mod tests {
 
     let stages_a = stages_a.lock().unwrap().clone();
     let stages_b = stages_b.lock().unwrap().clone();
-    assert_eq!(stages_a, vec![StageHeartbeat::DomParse, StageHeartbeat::Cascade]);
+    assert_eq!(
+      stages_a,
+      vec![StageHeartbeat::DomParse, StageHeartbeat::Cascade]
+    );
     assert_eq!(stages_b, vec![StageHeartbeat::CssParse]);
   }
 
@@ -1125,7 +1128,9 @@ mod tests {
     let deadline = RenderDeadline::new(None, Some(cb));
     let outer_stage = StageGuard::install(Some(RenderStage::Layout));
 
-    let err = deadline.check(RenderStage::Paint).expect_err("expected cancellation");
+    let err = deadline
+      .check(RenderStage::Paint)
+      .expect_err("expected cancellation");
     match err {
       RenderError::Timeout { stage, .. } => assert_eq!(stage, RenderStage::Paint),
       other => panic!("unexpected error: {other:?}"),

@@ -80,4 +80,3 @@ fn preserve_3d_root_mix_blend_mode_is_applied_when_compositing_scene() {
   );
   assert_eq!(pixel.alpha(), 255);
 }
-

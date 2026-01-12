@@ -78,4 +78,3 @@ fn svg_render_to_image_preserve_aspect_ratio_xmax_ymin_meet() {
     "expected right side to be red"
   );
 }
-

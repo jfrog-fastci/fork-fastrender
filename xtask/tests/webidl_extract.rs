@@ -1,5 +1,6 @@
 use xtask::webidl::{
-  extract_webidl_blocks, extract_webidl_blocks_from_bikeshed, extract_webidl_blocks_from_whatwg_html,
+  extract_webidl_blocks, extract_webidl_blocks_from_bikeshed,
+  extract_webidl_blocks_from_whatwg_html,
 };
 
 #[test]

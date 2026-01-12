@@ -17,8 +17,10 @@ use super::Document;
 /// - `options.scripting_enabled` controls html5ever parsing semantics (not execution); it primarily
 ///   affects parsing of elements such as `<noscript>`.
 pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<Document> {
-  let mut parser =
-    StreamingHtmlParser::new_with_scripting_enabled(/* document_url */ None, options.scripting_enabled);
+  let mut parser = StreamingHtmlParser::new_with_scripting_enabled(
+    /* document_url */ None,
+    options.scripting_enabled,
+  );
   parser.push_str(html);
   parser.set_eof();
 
@@ -38,7 +40,10 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
   };
   document.scripting_enabled = options.scripting_enabled;
 
-  if matches!(options.compatibility_mode, DomCompatibilityMode::Compatibility) {
+  if matches!(
+    options.compatibility_mode,
+    DomCompatibilityMode::Compatibility
+  ) {
     // Reuse the existing compatibility mutation logic (implemented for the renderer's immutable
     // `DomNode` tree) by snapshotting to a renderer DOM, applying mutations, and importing back.
     let mut snapshot = document.to_renderer_dom();
@@ -58,8 +63,8 @@ pub fn parse_html(html: &str) -> Result<Document> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::dom::DomNodeType;
   use crate::debug::snapshot::snapshot_dom;
+  use crate::dom::DomNodeType;
 
   #[test]
   fn parse_html_dom2_roundtrips_to_renderer_snapshot() {
@@ -118,7 +123,8 @@ mod tests {
   #[test]
   fn parse_html_dom2_preserves_scripting_enabled_flag() {
     let html = "<!doctype html><html><body><div>ok</div></body></html>";
-    let doc2 = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).unwrap();
+    let doc2 =
+      parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).unwrap();
     let snapshot = doc2.to_renderer_dom();
     match &snapshot.node_type {
       DomNodeType::Document {

@@ -1005,10 +1005,10 @@ impl LoadedFont {
     }
 
     match metric {
-      FontSizeAdjustMetric::ExHeight => self
-        .metrics()
-        .ok()
-        .and_then(|m| m.x_height.and_then(|xh| ratio_from_units(m.units_per_em, xh))),
+      FontSizeAdjustMetric::ExHeight => self.metrics().ok().and_then(|m| {
+        m.x_height
+          .and_then(|xh| ratio_from_units(m.units_per_em, xh))
+      }),
       FontSizeAdjustMetric::CapHeight => self.metrics().ok().and_then(|m| {
         m.cap_height
           .and_then(|ch| ratio_from_units(m.units_per_em, ch))
@@ -1034,7 +1034,9 @@ impl LoadedFont {
       FontSizeAdjustMetric::ChWidth => 0.5,
       FontSizeAdjustMetric::IcWidth | FontSizeAdjustMetric::IcHeight => 1.0,
     };
-    self.font_size_adjust_metric_ratio(metric).unwrap_or(fallback)
+    self
+      .font_size_adjust_metric_ratio(metric)
+      .unwrap_or(fallback)
   }
 }
 
@@ -1051,7 +1053,9 @@ pub fn compute_font_size_adjusted_size(
 ) -> f32 {
   let (metric, desired) = match font_size_adjust {
     FontSizeAdjust::None => return base_size,
-    FontSizeAdjust::Number { ratio, metric } => (metric, (ratio.is_finite() && ratio > 0.0).then_some(ratio)),
+    FontSizeAdjust::Number { ratio, metric } => {
+      (metric, (ratio.is_finite() && ratio > 0.0).then_some(ratio))
+    }
     FontSizeAdjust::FromFont { metric } => (
       metric,
       preferred_ratio.or_else(|| font.font_size_adjust_metric_ratio(metric)),
@@ -1285,7 +1289,10 @@ impl GenericFamily {
 
   /// Returns true if resolution should try explicit fallback names before mapping to a fontdb generic.
   pub fn prefers_named_fallbacks_first(self) -> bool {
-    matches!(self, GenericFamily::Emoji | GenericFamily::Math | GenericFamily::Fangsong)
+    matches!(
+      self,
+      GenericFamily::Emoji | GenericFamily::Math | GenericFamily::Fangsong
+    )
   }
 
   /// Converts to fontdb Family for querying.
@@ -1549,8 +1556,7 @@ impl FontDatabase {
     }
 
     let after_ids: HashSet<ID> = self.db.faces().map(|face| face.id).collect();
-    Arc::make_mut(&mut self.bundled_face_ids)
-      .extend(after_ids.difference(&before_ids).copied());
+    Arc::make_mut(&mut self.bundled_face_ids).extend(after_ids.difference(&before_ids).copied());
   }
 
   /// Recomputes the default families used for fontdb generic queries based on the currently loaded fonts.
@@ -1573,8 +1579,11 @@ impl FontDatabase {
     // depending on the host font enumeration order (fontdb loads system fonts in whatever order the
     // OS/fontconfig reports). This matches typical browser font fallback behavior more closely and
     // keeps fixture renders stable as long as the same candidate fonts are present.
-    let non_emoji_faces: Vec<&fontdb::FaceInfo> =
-      faces.iter().copied().filter(|face| !Self::face_is_emoji_font(face)).collect();
+    let non_emoji_faces: Vec<&fontdb::FaceInfo> = faces
+      .iter()
+      .copied()
+      .filter(|face| !Self::face_is_emoji_font(face))
+      .collect();
     let find_candidate = |candidate: &str, faces: &[&fontdb::FaceInfo]| -> Option<String> {
       for face in faces {
         for (name, _) in &face.families {
@@ -1950,7 +1959,8 @@ impl FontDatabase {
     // descriptors to align fallback font metrics. Apply small built-in overrides to bundled Latin
     // fallbacks so `line-height: normal` behaves closer to Chrome when fixtures omit webfonts.
     let mut face_metrics_overrides = FontFaceMetricsOverrides::default();
-    let apply_bundled_overrides = self.is_shared_bundled_db() || self.bundled_face_ids.contains(&id);
+    let apply_bundled_overrides =
+      self.is_shared_bundled_db() || self.bundled_face_ids.contains(&id);
     if apply_bundled_overrides {
       match family.as_str() {
         "Roboto Flex" => {
@@ -2415,9 +2425,7 @@ fn apply_mvar_line_metric_deltas(
     if !value.is_finite() {
       return;
     }
-    *base = value
-      .round()
-      .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+    *base = value.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
   };
 
   let lookup_delta = |tag: Tag| -> Option<f32> {
@@ -2427,12 +2435,7 @@ fn apply_mvar_line_metric_deltas(
       if Tag::from_bytes(&bytes) != tag {
         continue;
       }
-      let var_idx = u32::from_be_bytes(
-        mvar
-          .get(rec_offset + 4..rec_offset + 8)?
-          .try_into()
-          .ok()?,
-      );
+      let var_idx = u32::from_be_bytes(mvar.get(rec_offset + 4..rec_offset + 8)?.try_into().ok()?);
       let index = DeltaSetIndex::from_u32(var_idx);
       return store.evaluate_delta(index, &coords);
     }
@@ -2451,7 +2454,10 @@ fn apply_mvar_line_metric_deltas(
 }
 
 #[inline]
-fn select_css_line_metrics(face: &ttf_parser::Face<'_>, variations: &[(Tag, f32)]) -> (i16, i16, i16) {
+fn select_css_line_metrics(
+  face: &ttf_parser::Face<'_>,
+  variations: &[(Tag, f32)],
+) -> (i16, i16, i16) {
   // Use the same line metric selection as the shaping backend (FreeType) and browser engines:
   //
   // - When the OS/2 `USE_TYPO_METRICS` bit (fsSelection bit 7) is **set**, prefer OS/2
@@ -2743,7 +2749,10 @@ impl FontMetrics {
     // `line_height != ascent - descent + line_gap`, fall back to snapping the raw line-height
     // value directly.
     let mut line_height = ascent.round() + descent.round() + line_gap.round();
-    if raw_line_height.is_finite() && line_height.is_finite() && raw_line_height - line_height >= 0.9 {
+    if raw_line_height.is_finite()
+      && line_height.is_finite()
+      && raw_line_height - line_height >= 0.9
+    {
       line_height += 1.0;
     }
     let metric_snap_plausible = raw_line_height.is_finite()
@@ -2959,7 +2968,8 @@ mod tests {
   fn font_metrics_use_os2_typo_metrics_when_use_typo_metrics_bit_is_set() {
     // Mirrors `font_metrics_respect_use_typo_metrics_bit`, but with OS/2.fsSelection bit 7 set.
     // We should switch to OS/2 typographic metrics (sTypo*).
-    let data = include_bytes!("../../tests/fixtures/fonts/line-metrics-selection-test-use-typo.ttf");
+    let data =
+      include_bytes!("../../tests/fixtures/fonts/line-metrics-selection-test-use-typo.ttf");
     let metrics = FontMetrics::from_data(data, 0).expect("parse metrics");
     assert_eq!(metrics.units_per_em, 1000);
     assert_eq!(metrics.ascent, 800);
@@ -3127,7 +3137,8 @@ mod tests {
     let noto = include_bytes!("../../tests/fixtures/fonts/NotoSans-subset.ttf");
 
     let mut db = FontDatabase::empty();
-    db.load_font_data(dejavu.to_vec()).expect("load DejaVu Sans");
+    db.load_font_data(dejavu.to_vec())
+      .expect("load DejaVu Sans");
     db.load_font_data(noto.to_vec()).expect("load Noto Sans");
     db.refresh_generic_fallbacks();
 
@@ -3152,7 +3163,8 @@ mod tests {
     let roboto = include_bytes!("../../tests/fonts/RobotoFlex-VF.ttf");
 
     let mut db = FontDatabase::empty();
-    db.load_font_data(roboto.to_vec()).expect("load Roboto Flex");
+    db.load_font_data(roboto.to_vec())
+      .expect("load Roboto Flex");
     db.load_font_data(noto.to_vec()).expect("load Noto Sans");
     db.refresh_generic_fallbacks();
 
@@ -3631,9 +3643,7 @@ mod tests {
     assert_eq!(noto.face_metrics_overrides.line_gap_override, Some(0.25));
 
     let ctx = crate::text::font_loader::FontContext::empty();
-    let scaled = ctx
-      .get_scaled_metrics(&noto, 12.0)
-      .expect("scaled metrics");
+    let scaled = ctx.get_scaled_metrics(&noto, 12.0).expect("scaled metrics");
     assert!(
       (scaled.line_height - 15.0).abs() < 1e-3,
       "expected 15px line height at 12px, got {}",

@@ -19,7 +19,9 @@ fn svg_background_with_no_intrinsic_size_uses_positioning_area_for_auto_size() {
   let html = fs::read_to_string(HTML_PATH).expect("read fixture");
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(&html).expect("parse html");
-  let fragments = renderer.layout_document(&dom, 140, 60).expect("layout document");
+  let fragments = renderer
+    .layout_document(&dom, 140, 60)
+    .expect("layout document");
 
   let pixmap = paint_tree_with_resources_scaled_offset_backend(
     &fragments,
@@ -43,4 +45,3 @@ fn svg_background_with_no_intrinsic_size_uses_positioning_area_for_auto_size() {
   assert_eq!(pixel(&pixmap, 70, 10), (0, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 70, 30), (255, 255, 255, 255));
 }
-

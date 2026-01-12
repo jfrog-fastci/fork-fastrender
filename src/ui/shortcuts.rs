@@ -165,9 +165,15 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     // Many browsers support both Ctrl/Cmd+L and Ctrl/Cmd+K for focusing the address bar.
     (Key::L | Key::K, _) if cmd => Some(ShortcutAction::FocusAddressBar),
     // Many browsers support F6 to focus the address bar.
-    (Key::F6, Modifiers { ctrl: false, shift: false, alt: false, meta: false }) => {
-      Some(ShortcutAction::FocusAddressBar)
-    }
+    (
+      Key::F6,
+      Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        meta: false,
+      },
+    ) => Some(ShortcutAction::FocusAddressBar),
 
     // Tabs.
     (Key::T, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::ReopenClosedTab),
@@ -183,25 +189,45 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
 
     // Navigation.
     // On macOS, most browsers use Cmd+[ / Cmd+] for back/forward.
-    (Key::OpenBracket, Modifiers { shift: false, .. }) if cmd && matches!(platform, Platform::Mac) => {
-      Some(ShortcutAction::Back)
-    }
-    (Key::CloseBracket, Modifiers { shift: false, .. }) if cmd && matches!(platform, Platform::Mac) => {
-      Some(ShortcutAction::Forward)
-    }
-    (Key::Left, Modifiers { alt: true, ctrl: false, meta: false, .. })
-      if matches!(platform, Platform::Other) =>
+    (Key::OpenBracket, Modifiers { shift: false, .. })
+      if cmd && matches!(platform, Platform::Mac) =>
     {
       Some(ShortcutAction::Back)
     }
-    (Key::Right, Modifiers { alt: true, ctrl: false, meta: false, .. })
-      if matches!(platform, Platform::Other) =>
+    (Key::CloseBracket, Modifiers { shift: false, .. })
+      if cmd && matches!(platform, Platform::Mac) =>
     {
       Some(ShortcutAction::Forward)
     }
+    (
+      Key::Left,
+      Modifiers {
+        alt: true,
+        ctrl: false,
+        meta: false,
+        ..
+      },
+    ) if matches!(platform, Platform::Other) => Some(ShortcutAction::Back),
+    (
+      Key::Right,
+      Modifiers {
+        alt: true,
+        ctrl: false,
+        meta: false,
+        ..
+      },
+    ) if matches!(platform, Platform::Other) => Some(ShortcutAction::Forward),
     (Key::R, _) if cmd => Some(ShortcutAction::Reload),
     // F5 should reload even without modifiers. Ignore Ctrl/Cmd+F5 / Alt+F5 for now.
-    (Key::F5, Modifiers { alt: false, ctrl: false, meta: false, .. }) => Some(ShortcutAction::Reload),
+    (
+      Key::F5,
+      Modifiers {
+        alt: false,
+        ctrl: false,
+        meta: false,
+        ..
+      },
+    ) => Some(ShortcutAction::Reload),
 
     // Ctrl/Cmd+1..9 switches tabs (9 = last tab).
     (Key::Num1, _) if cmd => Some(ShortcutAction::ActivateTabNumber(1)),
@@ -225,36 +251,86 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     // - Shift+Delete = Cut
     // - Shift+Insert = Paste
     // Keep these separate from the `cmd` mapping so they do not fire on unrelated modifier combos.
-    (Key::Insert, Modifiers { ctrl: true, shift: false, alt: false, meta: false }) => {
-      Some(ShortcutAction::Copy)
-    }
-    (Key::Delete, Modifiers { ctrl: false, shift: true, alt: false, meta: false }) => {
-      Some(ShortcutAction::Cut)
-    }
-    (Key::Insert, Modifiers { ctrl: false, shift: true, alt: false, meta: false }) => {
-      Some(ShortcutAction::Paste)
-    }
+    (
+      Key::Insert,
+      Modifiers {
+        ctrl: true,
+        shift: false,
+        alt: false,
+        meta: false,
+      },
+    ) => Some(ShortcutAction::Copy),
+    (
+      Key::Delete,
+      Modifiers {
+        ctrl: false,
+        shift: true,
+        alt: false,
+        meta: false,
+      },
+    ) => Some(ShortcutAction::Cut),
+    (
+      Key::Insert,
+      Modifiers {
+        ctrl: false,
+        shift: true,
+        alt: false,
+        meta: false,
+      },
+    ) => Some(ShortcutAction::Paste),
     (Key::C, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::Copy),
     (Key::X, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::Cut),
     (Key::V, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::Paste),
     (Key::A, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::SelectAll),
 
     // Scrolling / page keys.
-    (Key::PageUp, Modifiers { ctrl: false, shift: false, alt: false, meta: false }) => {
-      Some(ShortcutAction::PageUp)
-    }
-    (Key::PageDown, Modifiers { ctrl: false, shift: false, alt: false, meta: false }) => {
-      Some(ShortcutAction::PageDown)
-    }
+    (
+      Key::PageUp,
+      Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        meta: false,
+      },
+    ) => Some(ShortcutAction::PageUp),
+    (
+      Key::PageDown,
+      Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        meta: false,
+      },
+    ) => Some(ShortcutAction::PageDown),
     // Match `Space` regardless of `shift` so the caller can implement `Shift+Space` scrolling up
     // (common browser behaviour).
-    (Key::Space, Modifiers { ctrl: false, alt: false, meta: false, .. }) => Some(ShortcutAction::Space),
-    (Key::Home, Modifiers { ctrl: false, shift: false, alt: false, meta: false }) => {
-      Some(ShortcutAction::Home)
-    }
-    (Key::End, Modifiers { ctrl: false, shift: false, alt: false, meta: false }) => {
-      Some(ShortcutAction::End)
-    }
+    (
+      Key::Space,
+      Modifiers {
+        ctrl: false,
+        alt: false,
+        meta: false,
+        ..
+      },
+    ) => Some(ShortcutAction::Space),
+    (
+      Key::Home,
+      Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        meta: false,
+      },
+    ) => Some(ShortcutAction::Home),
+    (
+      Key::End,
+      Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        meta: false,
+      },
+    ) => Some(ShortcutAction::End),
 
     _ => None,
   }
@@ -307,7 +383,10 @@ mod tests {
   #[test]
   fn f6_focuses_address_bar() {
     assert_eq!(
-      map_shortcut_with_platform(KeyEvent::new(Key::F6, Modifiers::default()), Platform::Other),
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F6, Modifiers::default()),
+        Platform::Other
+      ),
       Some(ShortcutAction::FocusAddressBar)
     );
   }

@@ -180,7 +180,8 @@ fn table_direction_rtl_colgroup_background_spans_correct_columns_in_collapsed_bo
 }
 
 #[test]
-fn table_direction_rtl_colgroup_with_col_children_background_spans_correct_columns_in_collapsed_border_model() {
+fn table_direction_rtl_colgroup_with_col_children_background_spans_correct_columns_in_collapsed_border_model(
+) {
   let html = r#"
     <html>
       <head>

@@ -78,8 +78,8 @@ fn flex_item_flex_container_auto_width_does_not_measure_as_zero() {
     .layout(&root, &LayoutConstraints::definite(200.0, 20.0))
     .expect("layout succeeds");
 
-  let right_fragment =
-    find_fragment_by_box_id(&fragment, 2).unwrap_or_else(|| panic!("missing fragment: {fragment:#?}"));
+  let right_fragment = find_fragment_by_box_id(&fragment, 2)
+    .unwrap_or_else(|| panic!("missing fragment: {fragment:#?}"));
 
   let eps = 0.1;
   assert!(
@@ -103,4 +103,3 @@ fn flex_item_flex_container_auto_width_does_not_measure_as_zero() {
     right_fragment.bounds
   );
 }
-

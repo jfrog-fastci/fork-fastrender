@@ -124,7 +124,10 @@ fn background_attachment_accepts_case_insensitive_keywords() {
     16.0,
   );
 
-  assert_eq!(styles.background_attachments[0], BackgroundAttachment::Fixed);
+  assert_eq!(
+    styles.background_attachments[0],
+    BackgroundAttachment::Fixed
+  );
 }
 
 #[test]

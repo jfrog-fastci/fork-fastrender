@@ -7,9 +7,9 @@ use crate::image_compare::{self, CompareConfig};
 use crate::paint::pixmap::reserve_buffer;
 use crate::paint::pixmap::MAX_PIXMAP_BYTES;
 use image::GenericImageView;
+use image::Rgb;
 use image::Rgba;
 use image::RgbaImage;
-use image::Rgb;
 use std::ffi::c_void;
 use std::io::Write;
 use tiny_skia::Pixmap;
@@ -170,8 +170,8 @@ pub fn pixmap_to_rgba8(pixmap: &Pixmap, mode: RgbaAlphaMode) -> Result<Vec<u8>> 
 
   match mode {
     RgbaAlphaMode::Premultiplied => {
-      let mut out =
-        reserve_buffer(expected_len_u64, "pixmap_to_rgba8: RGBA output buffer").map_err(Error::Render)?;
+      let mut out = reserve_buffer(expected_len_u64, "pixmap_to_rgba8: RGBA output buffer")
+        .map_err(Error::Render)?;
       out.extend_from_slice(pixels);
       Ok(out)
     }
@@ -182,8 +182,8 @@ pub fn pixmap_to_rgba8(pixmap: &Pixmap, mode: RgbaAlphaMode) -> Result<Vec<u8>> 
         })
       })?;
 
-      let mut out =
-        reserve_buffer(expected_len_u64, "pixmap_to_rgba8: RGBA output buffer").map_err(Error::Render)?;
+      let mut out = reserve_buffer(expected_len_u64, "pixmap_to_rgba8: RGBA output buffer")
+        .map_err(Error::Render)?;
       out.resize(expected_len, 0);
 
       for (src_row, dst_row) in pixels
@@ -212,7 +212,8 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
 
       // Cap encoded output to the same budget we use for pixmap allocations so huge outputs fail
       // with a structured error instead of aborting the process.
-      let mut buffer = FallibleVecWriter::new(MAX_PIXMAP_BYTES as usize, "encode_image: PNG output");
+      let mut buffer =
+        FallibleVecWriter::new(MAX_PIXMAP_BYTES as usize, "encode_image: PNG output");
       {
         let mut encoder = png::Encoder::new(&mut buffer, width, height);
         encoder.set_color(png::ColorType::Rgba);
@@ -239,8 +240,8 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
             message: "encode_image: PNG row buffer length does not fit in u64".to_string(),
           })
         })?;
-        let mut row_buf = reserve_buffer(row_len_u64, "encode_image: PNG row buffer")
-          .map_err(Error::Render)?;
+        let mut row_buf =
+          reserve_buffer(row_len_u64, "encode_image: PNG row buffer").map_err(Error::Render)?;
         row_buf.resize(row_len, 0);
         for row in pixels.chunks_exact(row_len) {
           // PNG encoding can dominate wall time for large renders (and is outside the renderer's
@@ -304,7 +305,8 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
         pixels,
       };
 
-      let mut buffer = FallibleVecWriter::new(MAX_PIXMAP_BYTES as usize, "encode_image: JPEG output");
+      let mut buffer =
+        FallibleVecWriter::new(MAX_PIXMAP_BYTES as usize, "encode_image: JPEG output");
       let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality);
       encoder.encode_image(&view).map_err(|e| {
         Error::Render(RenderError::EncodeFailed {
@@ -402,13 +404,11 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
           }));
         }
 
-        let argb_len = stride
-          .checked_mul(height as usize)
-          .ok_or_else(|| {
-            Error::Render(RenderError::InvalidParameters {
-              message: "encode_image: WebP ARGB buffer length overflow".to_string(),
-            })
-          })?;
+        let argb_len = stride.checked_mul(height as usize).ok_or_else(|| {
+          Error::Render(RenderError::InvalidParameters {
+            message: "encode_image: WebP ARGB buffer length overflow".to_string(),
+          })
+        })?;
         let argb = std::slice::from_raw_parts_mut(picture.0.argb, argb_len);
 
         for (y, row) in pixels.chunks_exact(pixels_per_row * 4).enumerate() {
@@ -436,7 +436,8 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
         let mut writer = WriterGuard(writer);
 
         picture.0.writer = Some(libwebp_sys::WebPMemoryWrite);
-        picture.0.custom_ptr = (&mut writer.0 as *mut libwebp_sys::WebPMemoryWriter).cast::<c_void>();
+        picture.0.custom_ptr =
+          (&mut writer.0 as *mut libwebp_sys::WebPMemoryWriter).cast::<c_void>();
 
         if libwebp_sys::WebPEncode(&config, &mut picture.0) == 0 {
           return Err(Error::Render(RenderError::EncodeFailed {
@@ -452,7 +453,8 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
             reason: "WebP output size does not fit in u64".to_string(),
           })
         })?;
-        let mut out = reserve_buffer(out_len, "encode_image: WebP output").map_err(Error::Render)?;
+        let mut out =
+          reserve_buffer(out_len, "encode_image: WebP output").map_err(Error::Render)?;
         out.extend_from_slice(data);
         Ok(out)
       }
@@ -521,7 +523,9 @@ pub fn diff_png_with_alpha(
     .and_then(|px| px.checked_mul(4))
     .ok_or_else(|| {
       Error::Render(RenderError::InvalidParameters {
-        message: format!("diff_png_with_alpha: diff image dimensions overflow ({max_width}x{max_height})"),
+        message: format!(
+          "diff_png_with_alpha: diff image dimensions overflow ({max_width}x{max_height})"
+        ),
       })
     })?;
   if diff_bytes > MAX_PIXMAP_BYTES {
@@ -538,8 +542,8 @@ pub fn diff_png_with_alpha(
       message: format!("diff_png_with_alpha: diff image byte size does not fit in usize ({max_width}x{max_height})"),
     })
   })?;
-  let mut diff_buf = reserve_buffer(diff_bytes, "diff_png_with_alpha: diff image buffer")
-    .map_err(Error::Render)?;
+  let mut diff_buf =
+    reserve_buffer(diff_bytes, "diff_png_with_alpha: diff image buffer").map_err(Error::Render)?;
   diff_buf.resize(diff_len, 0);
   let mut diff_image = RgbaImage::from_raw(max_width, max_height, diff_buf).ok_or_else(|| {
     Error::Render(RenderError::InvalidParameters {
@@ -588,8 +592,18 @@ pub fn diff_png_with_alpha(
             if first_mismatch.is_none() {
               first_mismatch = Some((x, y));
               first_mismatch_rgba = Some((
-                [rendered_px[0], rendered_px[1], rendered_px[2], rendered_px[3]],
-                [expected_px[0], expected_px[1], expected_px[2], expected_px[3]],
+                [
+                  rendered_px[0],
+                  rendered_px[1],
+                  rendered_px[2],
+                  rendered_px[3],
+                ],
+                [
+                  expected_px[0],
+                  expected_px[1],
+                  expected_px[2],
+                  expected_px[3],
+                ],
               ));
             }
             let alpha = max_diff.saturating_mul(2).min(255);
@@ -605,7 +619,12 @@ pub fn diff_png_with_alpha(
           if first_mismatch.is_none() {
             first_mismatch = Some((x, y));
             first_mismatch_rgba = Some((
-              [rendered_px[0], rendered_px[1], rendered_px[2], rendered_px[3]],
+              [
+                rendered_px[0],
+                rendered_px[1],
+                rendered_px[2],
+                rendered_px[3],
+              ],
               [0, 0, 0, 0],
             ));
           }
@@ -619,7 +638,12 @@ pub fn diff_png_with_alpha(
             first_mismatch = Some((x, y));
             first_mismatch_rgba = Some((
               [0, 0, 0, 0],
-              [expected_px[0], expected_px[1], expected_px[2], expected_px[3]],
+              [
+                expected_px[0],
+                expected_px[1],
+                expected_px[2],
+                expected_px[3],
+              ],
             ));
           }
           diff_image.put_pixel(x, y, Rgba([255, 0, 255, 255]));
@@ -751,7 +775,10 @@ mod tests {
       diff_png_with_alpha(&rendered_png, &expected_png, 0, true).expect("diff");
     assert_eq!(metrics.rendered_dimensions, (1, 2));
     assert_eq!(metrics.expected_dimensions, (2, 1));
-    assert_eq!(metrics.total_pixels, 3, "union of 1x2 and 2x1 should be 3 pixels");
+    assert_eq!(
+      metrics.total_pixels, 3,
+      "union of 1x2 and 2x1 should be 3 pixels"
+    );
     assert_eq!(metrics.pixel_diff, 2);
     assert_eq!(metrics.first_mismatch, Some((1, 0)));
     assert_eq!(
@@ -776,7 +803,7 @@ mod tests {
     let err = crate::render_control::with_deadline(Some(&deadline), || {
       encode_image(&pixmap, OutputFormat::Png)
     })
-      .expect_err("expected encode_image to time out under expired deadline");
+    .expect_err("expected encode_image to time out under expired deadline");
 
     assert!(
       matches!(err, Error::Render(RenderError::Timeout { .. })),

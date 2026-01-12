@@ -12,4 +12,3 @@ fn grid_line_auto_keyword_is_ascii_case_insensitive() {
   assert_eq!(parse_grid_line("auto", &named_lines), 0);
   assert_eq!(parse_grid_line("AuTo", &named_lines), 0);
 }
-

@@ -124,8 +124,8 @@ fn part_selector_matches_into_closed_shadow_root() {
   "#;
 
   let dom = parse_html(html).expect("parsed html");
-  let stylesheet = parse_stylesheet("x-host::part(label) { color: rgb(4, 5, 6); }")
-    .expect("stylesheet");
+  let stylesheet =
+    parse_stylesheet("x-host::part(label) { color: rgb(4, 5, 6); }").expect("stylesheet");
   let style_set = StyleSet {
     document: stylesheet,
     shadows: HashMap::new(),
@@ -150,8 +150,8 @@ fn exportparts_chain_works_across_closed_shadow_root() {
   "#;
 
   let dom = parse_html(html).expect("parsed html");
-  let stylesheet = parse_stylesheet("x-host::part(outer) { color: rgb(7, 8, 9); }")
-    .expect("stylesheet");
+  let stylesheet =
+    parse_stylesheet("x-host::part(outer) { color: rgb(7, 8, 9); }").expect("stylesheet");
   let style_set = StyleSet {
     document: stylesheet,
     shadows: HashMap::new(),

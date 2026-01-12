@@ -1,5 +1,7 @@
 use fastrender::geometry::Rect;
-use fastrender::paint::display_list::{DisplayItem, DisplayList, FillRectItem, ImageData, ImageFilterQuality, ImageItem};
+use fastrender::paint::display_list::{
+  DisplayItem, DisplayList, FillRectItem, ImageData, ImageFilterQuality, ImageItem,
+};
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::text::font_loader::FontContext;
 use fastrender::Rgba;
@@ -42,16 +44,25 @@ fn image_src_rect_is_clipped_to_dest_rect() {
 
   let bleed_px = pixmap.pixel(5, 2).unwrap();
   assert_eq!(
-    (bleed_px.red(), bleed_px.green(), bleed_px.blue(), bleed_px.alpha()),
+    (
+      bleed_px.red(),
+      bleed_px.green(),
+      bleed_px.blue(),
+      bleed_px.alpha()
+    ),
     (255, 255, 255, 255),
     "image draw should not bleed above dest_rect"
   );
 
   let visible_px = pixmap.pixel(5, 7).unwrap();
   assert_eq!(
-    (visible_px.red(), visible_px.green(), visible_px.blue(), visible_px.alpha()),
+    (
+      visible_px.red(),
+      visible_px.green(),
+      visible_px.blue(),
+      visible_px.alpha()
+    ),
     (0, 255, 0, 255),
     "image draw should render the cropped source region within dest_rect"
   );
 }
-

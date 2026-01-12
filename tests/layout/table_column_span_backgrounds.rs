@@ -21,7 +21,10 @@ fn collect_fragments_with_display<'a>(
   }
 }
 
-fn assert_has_fragment_spanning_width(tree: &fastrender::tree::fragment_tree::FragmentTree, display: Display) {
+fn assert_has_fragment_spanning_width(
+  tree: &fastrender::tree::fragment_tree::FragmentTree,
+  display: Display,
+) {
   let mut fragments = Vec::new();
   collect_fragments_with_display(&tree.root, display, &mut fragments);
   for fragment in &tree.additional_fragments {
@@ -137,7 +140,10 @@ fn col_span_background_respects_direction_rtl_column_mapping() {
     collect_fragments_with_display(fragment, Display::TableColumn, &mut fragments);
   }
 
-  let widths: Vec<f32> = fragments.iter().map(|fragment| fragment.bounds.width()).collect();
+  let widths: Vec<f32> = fragments
+    .iter()
+    .map(|fragment| fragment.bounds.width())
+    .collect();
   assert!(
     widths.iter().any(|w| (*w - 100.0).abs() < 0.1),
     "expected a TableColumn fragment spanning ~100px (40px+60px) for RTL <col span>, got widths {:?}",
@@ -185,7 +191,10 @@ fn col_span_background_respects_direction_rtl_column_mapping_in_collapsed_border
     collect_fragments_with_display(fragment, Display::TableColumn, &mut fragments);
   }
 
-  let widths: Vec<f32> = fragments.iter().map(|fragment| fragment.bounds.width()).collect();
+  let widths: Vec<f32> = fragments
+    .iter()
+    .map(|fragment| fragment.bounds.width())
+    .collect();
   assert!(
     widths.iter().any(|w| (*w - 100.0).abs() < 0.1),
     "expected a TableColumn fragment spanning ~100px (40px+60px) for RTL <col span> in collapsed border model, got widths {:?}",
@@ -233,7 +242,10 @@ fn colgroup_span_background_respects_direction_rtl_column_mapping() {
     collect_fragments_with_display(fragment, Display::TableColumnGroup, &mut fragments);
   }
 
-  let widths: Vec<f32> = fragments.iter().map(|fragment| fragment.bounds.width()).collect();
+  let widths: Vec<f32> = fragments
+    .iter()
+    .map(|fragment| fragment.bounds.width())
+    .collect();
   assert!(
     widths.iter().any(|w| (*w - 100.0).abs() < 0.1),
     "expected a TableColumnGroup fragment spanning ~100px (40px+60px) for RTL <colgroup span>, got widths {:?}",

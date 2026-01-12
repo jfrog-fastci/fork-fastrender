@@ -141,13 +141,7 @@ impl DomBindingsContext {
     define_native_method(scope, node_proto, "querySelector", query_selector_id, 1)?;
 
     let get_attribute_id = vm.register_native_call(dom_get_attribute)?;
-    define_native_method(
-      scope,
-      element_proto,
-      "getAttribute",
-      get_attribute_id,
-      1,
-    )?;
+    define_native_method(scope, element_proto, "getAttribute", get_attribute_id, 1)?;
 
     Ok(())
   }
@@ -194,11 +188,12 @@ impl DomBindingsContext {
   }
 
   fn node_id_from_wrapper(&self, heap: &vm_js::Heap, obj: GcObject) -> Result<NodeId, VmError> {
-    let slots = heap
-      .object_host_slots(obj)?
-      .ok_or(VmError::Unimplemented("DOM wrapper missing NodeId host slots"))?;
-    let _kind = WrapperKind::from_u64(slots.b)
-      .ok_or(VmError::Unimplemented("DOM wrapper host slots kind is invalid"))?;
+    let slots = heap.object_host_slots(obj)?.ok_or(VmError::Unimplemented(
+      "DOM wrapper missing NodeId host slots",
+    ))?;
+    let _kind = WrapperKind::from_u64(slots.b).ok_or(VmError::Unimplemented(
+      "DOM wrapper host slots kind is invalid",
+    ))?;
 
     let idx_u64 = slots.a;
     if idx_u64 > (usize::MAX as u64) {
@@ -245,10 +240,14 @@ fn dom_query_selector(
 ) -> Result<Value, VmError> {
   let ctx = vm
     .user_data_mut::<DomBindingsContext>()
-    .ok_or(VmError::Unimplemented("missing DomBindingsContext user data"))?;
+    .ok_or(VmError::Unimplemented(
+      "missing DomBindingsContext user data",
+    ))?;
 
   let Value::Object(this_obj) = this else {
-    return Err(VmError::Unimplemented("querySelector: receiver is not an object"));
+    return Err(VmError::Unimplemented(
+      "querySelector: receiver is not an object",
+    ));
   };
   let this_node = ctx.node_id_from_wrapper(scope.heap(), this_obj)?;
 
@@ -290,16 +289,22 @@ fn dom_get_attribute(
 ) -> Result<Value, VmError> {
   let ctx = vm
     .user_data_mut::<DomBindingsContext>()
-    .ok_or(VmError::Unimplemented("missing DomBindingsContext user data"))?;
+    .ok_or(VmError::Unimplemented(
+      "missing DomBindingsContext user data",
+    ))?;
 
   let Value::Object(this_obj) = this else {
-    return Err(VmError::Unimplemented("getAttribute: receiver is not an object"));
+    return Err(VmError::Unimplemented(
+      "getAttribute: receiver is not an object",
+    ));
   };
   let node_id = ctx.node_id_from_wrapper(scope.heap(), this_obj)?;
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::String(name) = name_value else {
-    return Err(VmError::Unimplemented("getAttribute: name must be a string"));
+    return Err(VmError::Unimplemented(
+      "getAttribute: name must be a string",
+    ));
   };
   let name = scope.heap().get_string(name)?.to_utf8_lossy();
 
@@ -332,7 +337,9 @@ fn event_target_add_event_listener(
 ) -> Result<Value, VmError> {
   let ctx = vm
     .user_data_mut::<DomBindingsContext>()
-    .ok_or(VmError::Unimplemented("missing DomBindingsContext user data"))?;
+    .ok_or(VmError::Unimplemented(
+      "missing DomBindingsContext user data",
+    ))?;
 
   let Value::Object(this_obj) = this else {
     return Err(VmError::Unimplemented(
@@ -370,7 +377,9 @@ fn event_target_remove_event_listener(
 ) -> Result<Value, VmError> {
   let ctx = vm
     .user_data_mut::<DomBindingsContext>()
-    .ok_or(VmError::Unimplemented("missing DomBindingsContext user data"))?;
+    .ok_or(VmError::Unimplemented(
+      "missing DomBindingsContext user data",
+    ))?;
 
   let Value::Object(this_obj) = this else {
     return Err(VmError::Unimplemented(

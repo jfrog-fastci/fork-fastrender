@@ -104,4 +104,3 @@ fn flex_wrap_percent_width_items_wrap_to_new_lines() {
     second_fragment.bounds.y()
   );
 }
-

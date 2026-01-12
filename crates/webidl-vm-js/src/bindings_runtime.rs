@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use vm_js::{
-  GcObject, GcString, Heap, NativeConstruct, NativeConstructId, NativeFunctionId, PropertyDescriptor,
-  PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
+  GcObject, GcString, Heap, NativeConstruct, NativeConstructId, NativeFunctionId,
+  PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
 };
 
 use webidl::WebIdlLimits;
@@ -225,9 +225,7 @@ impl BindingsHost {
         inner as *mut (dyn WebHostBindingsVm + '_),
       )
     };
-    Self {
-      inner,
-    }
+    Self { inner }
   }
 
   /// Returns the underlying bindings host.
@@ -280,7 +278,9 @@ impl WebIdlBindingsHost for BindingsHost {
       .copied()
       .map(BindingValue::from_js)
       .collect::<Vec<_>>();
-    let result = self.bindings_mut().call_constructor(interface, overload, args)?;
+    let result = self
+      .bindings_mut()
+      .call_constructor(interface, overload, args)?;
     binding_value_to_js(vm, scope, result)
   }
 }
@@ -397,7 +397,10 @@ impl<'a> BindingsRuntime<'a> {
   ///
   /// This is primarily used by WebIDL constructors, which must create wrapper objects whose
   /// `[[Prototype]]` is the interface prototype object (e.g. `URLSearchParams.prototype`).
-  pub fn alloc_object_with_prototype(&mut self, proto: Option<GcObject>) -> Result<GcObject, VmError> {
+  pub fn alloc_object_with_prototype(
+    &mut self,
+    proto: Option<GcObject>,
+  ) -> Result<GcObject, VmError> {
     // Root the prototype across allocation (GC can run while allocating the new object).
     if let Some(proto) = proto {
       let _ = self.root(Value::Object(proto))?;
@@ -497,13 +500,9 @@ impl<'a> BindingsRuntime<'a> {
         .scope
         .alloc_native_function(call_id, construct_id, name_s, length)?
     } else {
-      self.scope.alloc_native_function_with_slots(
-        call_id,
-        construct_id,
-        name_s,
-        length,
-        slots,
-      )?
+      self
+        .scope
+        .alloc_native_function_with_slots(call_id, construct_id, name_s, length, slots)?
     };
     let _ = self.root(Value::Object(func))?;
 
@@ -694,7 +693,10 @@ impl<'a> BindingsRuntime<'a> {
   }
 
   /// Convenience for downcasting a `&mut dyn VmHost` into a `&mut BindingsHost`.
-  pub fn require_bindings_host<'h>(&mut self, host: &'h mut dyn VmHost) -> Result<&'h mut BindingsHost, VmError> {
+  pub fn require_bindings_host<'h>(
+    &mut self,
+    host: &'h mut dyn VmHost,
+  ) -> Result<&'h mut BindingsHost, VmError> {
     host
       .as_any_mut()
       .downcast_mut::<BindingsHost>()
@@ -710,7 +712,7 @@ pub fn binding_value_to_js(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   value: BindingValue,
-  ) -> Result<Value, VmError> {
+) -> Result<Value, VmError> {
   match value {
     BindingValue::Undefined => Ok(Value::Undefined),
     BindingValue::Null => Ok(Value::Null),
@@ -722,52 +724,52 @@ pub fn binding_value_to_js(
     BindingValue::Sequence(items) => {
       let arr = scope.alloc_array(items.len())?;
       scope.push_root(Value::Object(arr))?;
- 
+
       if let Some(intr) = vm.intrinsics() {
         let proto = intr.array_prototype();
         scope.push_root(Value::Object(proto))?;
         scope.object_set_prototype(arr, Some(proto))?;
       }
- 
+
       for (idx, item) in items.into_iter().enumerate() {
         let mut child = scope.reborrow();
         child.push_root(Value::Object(arr))?;
- 
+
         // Root the key string across the recursive conversion (which may allocate/GC).
         let key_s = child.alloc_string(&idx.to_string())?;
         child.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
- 
+
         let v = binding_value_to_js(vm, &mut child, item)?;
         child.push_root(v)?;
         child.create_data_property_or_throw(arr, key, v)?;
       }
- 
+
       Ok(Value::Object(arr))
     }
     BindingValue::Dictionary(map) => {
       let obj = scope.alloc_object()?;
       scope.push_root(Value::Object(obj))?;
- 
+
       if let Some(intr) = vm.intrinsics() {
         let proto = intr.object_prototype();
         scope.push_root(Value::Object(proto))?;
         scope.object_set_prototype(obj, Some(proto))?;
       }
- 
+
       for (k, item) in map {
         let mut child = scope.reborrow();
         child.push_root(Value::Object(obj))?;
- 
+
         let key_s = child.alloc_string(&k)?;
         child.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
- 
+
         let v = binding_value_to_js(vm, &mut child, item)?;
         child.push_root(v)?;
         child.create_data_property_or_throw(obj, key, v)?;
       }
- 
+
       Ok(Value::Object(obj))
     }
   }

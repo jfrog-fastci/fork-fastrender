@@ -80,4 +80,3 @@ fn abspos_percent_sizing_uses_flex_container_containing_block() {
     abs_fragment.bounds.height()
   );
 }
-

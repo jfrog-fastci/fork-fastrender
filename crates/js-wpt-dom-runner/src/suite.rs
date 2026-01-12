@@ -335,7 +335,10 @@ impl BackendConstraint {
   }
 }
 
-fn load_expectations_filtered(path: &std::path::Path, backend: BackendKind) -> Result<Expectations> {
+fn load_expectations_filtered(
+  path: &std::path::Path,
+  backend: BackendKind,
+) -> Result<Expectations> {
   let raw =
     std::fs::read_to_string(path).with_context(|| format!("read manifest {}", path.display()))?;
 

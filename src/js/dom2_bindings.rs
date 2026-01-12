@@ -55,11 +55,9 @@ pub fn class_list_add<Host: DomHost + ?Sized>(
   element: NodeId,
   token: &str,
 ) -> std::result::Result<bool, DomError> {
-  host.mutate_dom(|dom| {
-    match dom.class_list_add(element, &[token]) {
-      Ok(changed) => (Ok(changed), changed),
-      Err(err) => (Err(err), false),
-    }
+  host.mutate_dom(|dom| match dom.class_list_add(element, &[token]) {
+    Ok(changed) => (Ok(changed), changed),
+    Err(err) => (Err(err), false),
   })
 }
 
@@ -164,7 +162,11 @@ pub fn remove_attribute<Host: DomHost + ?Sized>(
 /// `Element.dataset.<prop>` getter for a `dom2` element.
 ///
 /// Invalid property names yield `None`.
-pub fn dataset_get<Host: DomHost + ?Sized>(host: &Host, element: NodeId, prop: &str) -> Option<String> {
+pub fn dataset_get<Host: DomHost + ?Sized>(
+  host: &Host,
+  element: NodeId,
+  prop: &str,
+) -> Option<String> {
   host.with_dom(|dom| dom.dataset_get(element, prop).map(str::to_string))
 }
 

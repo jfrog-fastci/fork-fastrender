@@ -25,7 +25,10 @@ fn find_by_style<'a>(
       return Some(node);
     }
   }
-  node.children.iter().find_map(|child| find_by_style(child, predicate))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_by_style(child, predicate))
 }
 
 #[test]
@@ -74,9 +77,10 @@ fn float_grid_container_lays_out_children_as_grid() {
     .layout(&tree.root, &constraints)
     .expect("layout");
 
-  let float_fragment =
-    find_by_style(&fragment, &|s| s.float == Float::Left && s.display == Display::Grid)
-      .expect("float:grid fragment");
+  let float_fragment = find_by_style(&fragment, &|s| {
+    s.float == Float::Left && s.display == Display::Grid
+  })
+  .expect("float:grid fragment");
 
   let item1_fragment =
     find_by_style(float_fragment, &|s| s.width == Some(Length::px(20.0))).expect("item1");
@@ -95,4 +99,3 @@ fn float_grid_container_lays_out_children_as_grid() {
     item2_fragment.bounds.x(),
   );
 }
-

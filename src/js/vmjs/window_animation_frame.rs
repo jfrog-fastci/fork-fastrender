@@ -11,7 +11,8 @@ use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
 };
 use vm_js::{
-  Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks,
 };
 
 type VmResult<T> = std::result::Result<T, VmError>;
@@ -70,10 +71,7 @@ fn clear_registry_entry(
   Ok(())
 }
 
-fn get_raf_registry(
-  scope: &mut Scope<'_>,
-  global: vm_js::GcObject,
-) -> VmResult<vm_js::GcObject> {
+fn get_raf_registry(scope: &mut Scope<'_>, global: vm_js::GcObject) -> VmResult<vm_js::GcObject> {
   let key_s = scope.alloc_string(RAF_REGISTRY_KEY)?;
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
@@ -153,7 +151,9 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
 ) -> VmResult<Value> {
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(callback, Value::String(_)) {
-    return Err(throw_type_error(REQUEST_ANIMATION_FRAME_STRING_HANDLER_ERROR));
+    return Err(throw_type_error(
+      REQUEST_ANIMATION_FRAME_STRING_HANDLER_ERROR,
+    ));
   }
   if !is_callable(scope, callback) {
     return Err(throw_type_error(REQUEST_ANIMATION_FRAME_NOT_CALLABLE_ERROR));
@@ -319,10 +319,9 @@ pub fn install_window_animation_frame_bindings<Host: WindowRealmHost + 'static>(
   scope.push_root(Value::String(cancel_name))?;
   let cancel =
     scope.alloc_native_function_with_slots(cancel_id, None, cancel_name, 1, &global_slots)?;
-  scope.heap_mut().object_set_prototype(
-    cancel,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(cancel, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(cancel))?;
 
   let raf_key = alloc_key(&mut scope, "requestAnimationFrame")?;
@@ -340,8 +339,8 @@ mod tests {
   use crate::error::{Error, Result as RenderResult};
   use crate::js::clock::VirtualClock;
   use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
-  use crate::js::JsExecutionOptions;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use crate::js::JsExecutionOptions;
   use std::sync::Arc;
   use std::time::Duration;
   use vm_js::{PropertyDescriptor, PropertyKey, PropertyKind};
@@ -491,7 +490,9 @@ mod tests {
     let call_id = vm.register_native_call(cb).unwrap();
     let name_s = scope.alloc_string(name).unwrap();
     scope.push_root(Value::String(name_s)).unwrap();
-    let func = scope.alloc_native_function(call_id, None, name_s, 1).unwrap();
+    let func = scope
+      .alloc_native_function(call_id, None, name_s, 1)
+      .unwrap();
     scope
       .heap_mut()
       .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
@@ -563,10 +564,13 @@ mod tests {
     // Simulate a Promise job by directly enqueueing a `vm-js` job via the host hooks. This is
     // sufficient to validate that requestAnimationFrame callbacks are invoked with the correct
     // host hook implementation (so Promise jobs are routed into the FastRender event loop).
-    let job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, job_hooks| -> vm_js::JobResult {
-      let _ = ctx.call(job_hooks, Value::Object(job_cb), Value::Object(global), &[])?;
-      Ok(())
-    });
+    let job = vm_js::Job::new(
+      vm_js::JobKind::Promise,
+      move |ctx, job_hooks| -> vm_js::JobResult {
+        let _ = ctx.call(job_hooks, Value::Object(job_cb), Value::Object(global), &[])?;
+        Ok(())
+      },
+    );
     hooks.host_enqueue_promise_job(job, None);
 
     Ok(Value::Undefined)
@@ -588,7 +592,12 @@ mod tests {
       let global = realm.global_object();
       init_log(&mut scope, global);
       set_prop(&mut scope, global, "__raf_ts", Value::Undefined);
-      set_prop(&mut scope, global, "__raf_this_is_global", Value::Bool(false));
+      set_prop(
+        &mut scope,
+        global,
+        "__raf_this_is_global",
+        Value::Bool(false),
+      );
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
@@ -608,7 +617,7 @@ mod tests {
           Value::Undefined,
           &[Value::Object(cb)],
         )
-          .map_err(|e| Error::Other(e.to_string()))?;
+        .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
       })();
@@ -761,7 +770,10 @@ mod tests {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
       let global = realm.global_object();
-      (get_prop(&mut scope, global, "__raf_called"), get_prop(&mut scope, global, "__raf_ts"))
+      (
+        get_prop(&mut scope, global, "__raf_called"),
+        get_prop(&mut scope, global, "__raf_ts"),
+      )
     };
     assert_eq!(called, Value::Bool(true));
     assert_eq!(ts, Value::Number(10.0));
@@ -813,7 +825,7 @@ mod tests {
           Value::Undefined,
           &[id],
         )
-          .map_err(|e| Error::Other(e.to_string()))?;
+        .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
       })();
@@ -827,7 +839,10 @@ mod tests {
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(event_loop.run_animation_frame(&mut host)?, crate::js::RunAnimationFrameOutcome::Idle);
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      crate::js::RunAnimationFrameOutcome::Idle
+    );
 
     let log = {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
@@ -873,7 +888,7 @@ mod tests {
           Value::Undefined,
           &[Value::Object(raf_cb)],
         )
-          .map_err(|e| Error::Other(e.to_string()))?;
+        .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
       })();
@@ -982,7 +997,9 @@ mod tests {
 
     impl WindowRealmHost for DispatchHost {
       fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
-        let DispatchHost { host_ctx, window, .. } = self;
+        let DispatchHost {
+          host_ctx, window, ..
+        } = self;
         (host_ctx, window)
       }
 
@@ -1025,7 +1042,9 @@ mod tests {
 
       let name_s = scope.alloc_string("__webidl_dispatch").unwrap();
       scope.push_root(Value::String(name_s)).unwrap();
-      let func = scope.alloc_native_function(call_id, None, name_s, 1).unwrap();
+      let func = scope
+        .alloc_native_function(call_id, None, name_s, 1)
+        .unwrap();
       scope
         .heap_mut()
         .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
@@ -1050,9 +1069,7 @@ mod tests {
       if let Some(err) = hooks.finish(window_realm.heap_mut()) {
         return Err(err);
       }
-      result
-        .map(|_| ())
-        .map_err(|e| Error::Other(e.to_string()))
+      result.map(|_| ()).map_err(|e| Error::Other(e.to_string()))
     })?;
 
     assert_eq!(

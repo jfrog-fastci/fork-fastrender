@@ -18,8 +18,9 @@ use crate::js::window_realm::WindowRealmUserData;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use vm_js::{
-  new_promise_capability_with_host_and_hooks, new_type_error_object, GcObject, Heap, PromiseCapability,
-  PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  new_promise_capability_with_host_and_hooks, new_type_error_object, GcObject, Heap,
+  PromiseCapability, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+  VmError, VmHost, VmHostHooks,
 };
 
 const MAX_GET_RANDOM_VALUES_BYTES: usize = 65_536;
@@ -75,7 +76,11 @@ fn set_own_data_prop(
   scope.define_property(obj, key, data_desc(value, writable))
 }
 
-fn create_dom_exception_like(scope: &mut Scope<'_>, name: &str, message: &str) -> Result<Value, VmError> {
+fn create_dom_exception_like(
+  scope: &mut Scope<'_>,
+  name: &str,
+  message: &str,
+) -> Result<Value, VmError> {
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
 
@@ -132,7 +137,9 @@ fn xorshift64star_next(state: &mut u64) -> u64 {
 
 fn crypto_rng_fill_bytes(vm: &mut Vm, out: &mut [u8]) -> Result<(), VmError> {
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-    return Err(VmError::InvariantViolation("window realm missing user data"));
+    return Err(VmError::InvariantViolation(
+      "window realm missing user data",
+    ));
   };
 
   for chunk in out.chunks_mut(8) {
@@ -178,11 +185,15 @@ fn crypto_get_random_values_native(
 ) -> Result<Value, VmError> {
   let arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(array_obj) = arg else {
-    return Err(VmError::TypeError("crypto.getRandomValues expects a Uint8Array"));
+    return Err(VmError::TypeError(
+      "crypto.getRandomValues expects a Uint8Array",
+    ));
   };
 
   if !scope.heap().is_uint8_array_object(array_obj) {
-    return Err(VmError::TypeError("crypto.getRandomValues expects a Uint8Array"));
+    return Err(VmError::TypeError(
+      "crypto.getRandomValues expects a Uint8Array",
+    ));
   }
 
   let len = {
@@ -204,7 +215,9 @@ fn crypto_get_random_values_native(
   while offset < len {
     let n = (len - offset).min(buf.len());
     crypto_rng_fill_bytes(vm, &mut buf[..n])?;
-    let wrote = scope.heap_mut().uint8_array_write(array_obj, offset, &buf[..n])?;
+    let wrote = scope
+      .heap_mut()
+      .uint8_array_write(array_obj, offset, &buf[..n])?;
     debug_assert_eq!(wrote, n, "uint8_array_write should write full chunk");
     offset += wrote;
   }
@@ -518,8 +531,16 @@ pub(crate) fn install_window_crypto_bindings(
       subtle_unimpl_id
     };
     let func = scope.alloc_native_function(call_id, None, name_s, arity)?;
-    scope.heap_mut().object_set_prototype(func, Some(func_proto))?;
-    set_own_data_prop(&mut scope, subtle_obj, name, Value::Object(func), /* writable */ true)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(func_proto))?;
+    set_own_data_prop(
+      &mut scope,
+      subtle_obj,
+      name,
+      Value::Object(func),
+      /* writable */ true,
+    )?;
   }
 
   set_own_data_prop(
@@ -532,10 +553,18 @@ pub(crate) fn install_window_crypto_bindings(
 
   // Expose on global.
   let crypto_key = alloc_key(&mut scope, "crypto")?;
-  scope.define_property(global, crypto_key, read_only_data_desc(Value::Object(crypto_obj)))?;
+  scope.define_property(
+    global,
+    crypto_key,
+    read_only_data_desc(Value::Object(crypto_obj)),
+  )?;
 
   let crypto_ctor_key = alloc_key(&mut scope, "Crypto")?;
-  scope.define_property(global, crypto_ctor_key, data_desc(Value::Object(crypto_ctor), true))?;
+  scope.define_property(
+    global,
+    crypto_ctor_key,
+    data_desc(Value::Object(crypto_ctor), true),
+  )?;
 
   Ok(())
 }

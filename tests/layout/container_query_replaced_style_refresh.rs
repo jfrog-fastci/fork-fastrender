@@ -1,6 +1,6 @@
 use fastrender::{
-  FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Rgba,
-  RenderArtifactRequest, RenderOptions,
+  FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, RenderArtifactRequest,
+  RenderOptions, Rgba,
 };
 
 fn find_replaced_fragment(fragment: &FragmentNode) -> Option<&FragmentNode> {
@@ -64,7 +64,8 @@ fn container_query_refreshes_styles_for_replaced_fragments() {
     .as_ref()
     .expect("expected fragment tree artifact");
 
-  let img_fragment = find_replaced_fragment(&fragment_tree.root).expect("expected replaced fragment");
+  let img_fragment =
+    find_replaced_fragment(&fragment_tree.root).expect("expected replaced fragment");
   let style = img_fragment
     .style
     .as_ref()
@@ -76,4 +77,3 @@ fn container_query_refreshes_styles_for_replaced_fragments() {
     "expected replaced fragment style to reflect container-query border color"
   );
 }
-

@@ -1,6 +1,6 @@
 use super::{
-  create_import_map_parse_result, parse_import_map_string, parse_import_map_string_with_limits, resolve_imports_match,
-  ImportMapLimits,
+  create_import_map_parse_result, parse_import_map_string, parse_import_map_string_with_limits,
+  resolve_imports_match, ImportMapLimits,
 };
 use super::{ImportMapError, ImportMapWarningKind};
 
@@ -88,18 +88,22 @@ fn errors_when_scope_value_is_not_object() {
 
 #[test]
 fn normalizes_url_like_specifier_keys_to_absolute_url_strings() {
-  let (map, _warnings) =
-    parse_import_map_string(r#"{ "imports": { "/app/helper": "./helper.mjs" } }"#, &base_url())
-      .unwrap();
+  let (map, _warnings) = parse_import_map_string(
+    r#"{ "imports": { "/app/helper": "./helper.mjs" } }"#,
+    &base_url(),
+  )
+  .unwrap();
   assert_eq!(map.imports.entries.len(), 1);
   assert_eq!(map.imports.entries[0].0, "https://example.com/app/helper");
 }
 
 #[test]
 fn empty_specifier_key_is_skipped_with_warning() {
-  let (map, warnings) =
-    parse_import_map_string(r#"{ "imports": { "": "/skip.js", "a": "/a.js" } }"#, &base_url())
-      .unwrap();
+  let (map, warnings) = parse_import_map_string(
+    r#"{ "imports": { "": "/skip.js", "a": "/a.js" } }"#,
+    &base_url(),
+  )
+  .unwrap();
   assert_eq!(map.imports.entries.len(), 1);
   assert_eq!(map.imports.entries[0].0, "a");
   assert!(warnings
@@ -223,10 +227,9 @@ fn trailing_slash_mismatch_sets_address_to_null() {
   let (map, warnings) =
     parse_import_map_string(r#"{ "imports": { "pkg/": "/not-a-dir.js" } }"#, &base_url()).unwrap();
   assert_eq!(map.imports.entries, vec![("pkg/".to_string(), None)]);
-  assert!(warnings.iter().any(|w| matches!(
-    w.kind,
-    ImportMapWarningKind::TrailingSlashMismatch { .. }
-  )));
+  assert!(warnings
+    .iter()
+    .any(|w| matches!(w.kind, ImportMapWarningKind::TrailingSlashMismatch { .. })));
 }
 
 #[test]
@@ -248,10 +251,9 @@ fn url_serialization_must_not_create_prefix_keys_with_non_slash_addresses() {
     map.imports.entries,
     vec![("https://example.com/".to_string(), None)]
   );
-  assert!(warnings.iter().any(|w| matches!(
-    w.kind,
-    ImportMapWarningKind::TrailingSlashMismatch { .. }
-  )));
+  assert!(warnings
+    .iter()
+    .any(|w| matches!(w.kind, ImportMapWarningKind::TrailingSlashMismatch { .. })));
 
   // Most importantly: resolution must not hit the prefix invariant debug-assert.
   let specifier = "https://example.com/foo.js";
@@ -265,24 +267,19 @@ fn non_string_addresses_become_null() {
   let (map, warnings) =
     parse_import_map_string(r#"{ "imports": { "foo": 123 } }"#, &base_url()).unwrap();
   assert_eq!(map.imports.entries, vec![("foo".to_string(), None)]);
-  assert!(warnings.iter().any(|w| matches!(
-    w.kind,
-    ImportMapWarningKind::AddressNotString { .. }
-  )));
+  assert!(warnings
+    .iter()
+    .any(|w| matches!(w.kind, ImportMapWarningKind::AddressNotString { .. })));
 }
 
 #[test]
 fn invalid_address_url_becomes_null() {
-  let (map, warnings) = parse_import_map_string(
-    r#"{ "imports": { "foo": "http://[::1" } }"#,
-    &base_url(),
-  )
-  .unwrap();
+  let (map, warnings) =
+    parse_import_map_string(r#"{ "imports": { "foo": "http://[::1" } }"#, &base_url()).unwrap();
   assert_eq!(map.imports.entries, vec![("foo".to_string(), None)]);
-  assert!(warnings.iter().any(|w| matches!(
-    w.kind,
-    ImportMapWarningKind::AddressInvalid { .. }
-  )));
+  assert!(warnings
+    .iter()
+    .any(|w| matches!(w.kind, ImportMapWarningKind::AddressInvalid { .. })));
 }
 
 #[test]
@@ -293,16 +290,15 @@ fn scope_prefix_parse_failure_is_ignored_with_warning() {
   )
   .unwrap();
   assert!(map.scopes.entries.is_empty(), "{map:?}");
-  assert!(warnings.iter().any(|w| matches!(
-    w.kind,
-    ImportMapWarningKind::ScopePrefixNotParseable { .. }
-  )));
+  assert!(warnings
+    .iter()
+    .any(|w| matches!(w.kind, ImportMapWarningKind::ScopePrefixNotParseable { .. })));
 }
 
 #[test]
 fn unknown_top_level_keys_warn_but_do_not_error() {
-  let (_map, warnings) = parse_import_map_string(r#"{ "imports": {}, "bad": {} }"#, &base_url())
-    .unwrap();
+  let (_map, warnings) =
+    parse_import_map_string(r#"{ "imports": {}, "bad": {} }"#, &base_url()).unwrap();
   assert!(warnings.iter().any(|w| matches!(
     &w.kind,
     ImportMapWarningKind::UnknownTopLevelKey { key } if key == "bad"
@@ -311,11 +307,8 @@ fn unknown_top_level_keys_warn_but_do_not_error() {
 
 #[test]
 fn bare_relative_integrity_keys_are_ignored() {
-  let (map, warnings) = parse_import_map_string(
-    r#"{ "integrity": { "foo": "sha256-abc" } }"#,
-    &base_url(),
-  )
-  .unwrap();
+  let (map, warnings) =
+    parse_import_map_string(r#"{ "integrity": { "foo": "sha256-abc" } }"#, &base_url()).unwrap();
   assert!(map.integrity.entries.is_empty());
   assert!(warnings.iter().any(|w| matches!(
     w.kind,
@@ -325,16 +318,12 @@ fn bare_relative_integrity_keys_are_ignored() {
 
 #[test]
 fn integrity_values_must_be_strings() {
-  let (map, warnings) = parse_import_map_string(
-    r#"{ "integrity": { "/foo.js": 123 } }"#,
-    &base_url(),
-  )
-  .unwrap();
+  let (map, warnings) =
+    parse_import_map_string(r#"{ "integrity": { "/foo.js": 123 } }"#, &base_url()).unwrap();
   assert!(map.integrity.entries.is_empty());
-  assert!(warnings.iter().any(|w| matches!(
-    w.kind,
-    ImportMapWarningKind::IntegrityValueNotString { .. }
-  )));
+  assert!(warnings
+    .iter()
+    .any(|w| matches!(w.kind, ImportMapWarningKind::IntegrityValueNotString { .. })));
 }
 
 #[test]
@@ -344,7 +333,12 @@ fn imports_are_sorted_in_descending_code_unit_order() {
     &base_url(),
   )
   .unwrap();
-  let keys: Vec<_> = map.imports.entries.iter().map(|(k, _)| k.as_str()).collect();
+  let keys: Vec<_> = map
+    .imports
+    .entries
+    .iter()
+    .map(|(k, _)| k.as_str())
+    .collect();
   assert_eq!(keys, vec!["foo/bar/", "foo/"]);
 }
 
@@ -358,10 +352,14 @@ fn imports_sorting_uses_utf16_code_units_not_scalar_values() {
     &base_url(),
   )
   .unwrap();
-  let keys: Vec<_> = map.imports.entries.iter().map(|(k, _)| k.as_str()).collect();
+  let keys: Vec<_> = map
+    .imports
+    .entries
+    .iter()
+    .map(|(k, _)| k.as_str())
+    .collect();
   assert_eq!(keys, vec!["a\u{FFFF}", "a💩"]);
 }
-
 
 #[test]
 fn input_size_limit_trips_before_json_parse() {

@@ -7,7 +7,11 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
-fn recv_until_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId, deadline: Instant) -> fastrender::ui::messages::RenderedFrame {
+fn recv_until_frame(
+  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  tab_id: TabId,
+  deadline: Instant,
+) -> fastrender::ui::messages::RenderedFrame {
   loop {
     let now = Instant::now();
     if now >= deadline {
@@ -16,7 +20,10 @@ fn recv_until_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId, d
     let remaining = deadline.saturating_duration_since(now);
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::FrameReady { tab_id: msg_tab, frame } if msg_tab == tab_id => return frame,
+        WorkerToUi::FrameReady {
+          tab_id: msg_tab,
+          frame,
+        } if msg_tab == tab_id => return frame,
         _ => {}
       },
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -106,7 +113,9 @@ fn same_document_fragment_navigation_scrolls_without_fetching() {
       Ok(msg) => match msg {
         WorkerToUi::NavigationStarted { .. } => saw_started = true,
         WorkerToUi::NavigationFailed { .. } => saw_failed = true,
-        WorkerToUi::NavigationCommitted { url, can_go_back, .. } => {
+        WorkerToUi::NavigationCommitted {
+          url, can_go_back, ..
+        } => {
           if url.ends_with("#target") {
             committed = Some((url, can_go_back));
           }

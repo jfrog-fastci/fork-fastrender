@@ -92,4 +92,3 @@ fn flex_column_align_items_center_auto_width_honors_max_width() {
     item_fragment.bounds.x()
   );
 }
-

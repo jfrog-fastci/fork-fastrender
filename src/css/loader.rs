@@ -11,10 +11,12 @@ use crate::css::parser::{
 use crate::debug::runtime;
 use crate::dom::{DomNode, DomNodeType, DomParseOptions, HTML_NAMESPACE};
 use crate::error::{Error, RenderError, RenderStage, Result};
-use crate::resource::CorsMode;
 use crate::render_control::{check_active, check_active_periodic, RenderDeadline};
+use crate::resource::CorsMode;
 use crate::resource::ReferrerPolicy;
-use crate::url_normalize::{normalize_http_url_for_resolution, normalize_url_reference_for_resolution};
+use crate::url_normalize::{
+  normalize_http_url_for_resolution, normalize_url_reference_for_resolution,
+};
 use cssparser::{serialize_identifier, Parser, ParserInput, Token};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
@@ -328,10 +330,9 @@ fn unescape_js_escapes(input: &str) -> Cow<'_, str> {
 }
 
 fn normalize_embedded_css_candidate(candidate: &str) -> Option<String> {
-  let mut cleaned = trim_ascii_whitespace(
-    candidate.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')')),
-  )
-  .to_string();
+  let mut cleaned =
+    trim_ascii_whitespace(candidate.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')')))
+      .to_string();
 
   if cleaned.is_empty() {
     return None;
@@ -435,9 +436,8 @@ pub fn absolutize_css_urls_cow<'a>(
   }
 
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| {
-      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
-    })
+    value
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
   fn should_resolve_css_url(url: &str) -> bool {
@@ -935,7 +935,9 @@ fn parse_import_modifiers_and_media(
     parser.parse_nested_block(|nested| {
       let start = nested.position();
       consume_nested_tokens(nested)?;
-      Ok::<_, cssparser::ParseError<'i, ()>>(trim_ascii_whitespace(nested.slice_from(start)).to_string())
+      Ok::<_, cssparser::ParseError<'i, ()>>(
+        trim_ascii_whitespace(nested.slice_from(start)).to_string(),
+      )
     })
   }
 
@@ -1191,7 +1193,8 @@ impl InlineImportState {
     if requested_url == final_url {
       return;
     }
-    self.redirects
+    self
+      .redirects
       .insert(requested_url.to_string(), final_url.to_string());
   }
 
@@ -1353,7 +1356,14 @@ where
   D: FnMut(&str, &str),
 {
   let mut adapter = |ctx: ImportFetchContext<'_>| fetch(ctx.url, ctx.importer_url);
-  inline_imports_with_request_with_diagnostics(css, base_url, &mut adapter, state, diagnostics, deadline)
+  inline_imports_with_request_with_diagnostics(
+    css,
+    base_url,
+    &mut adapter,
+    state,
+    diagnostics,
+    deadline,
+  )
 }
 
 fn inline_imports_inner<F, D>(
@@ -1661,10 +1671,11 @@ where
                 budget_exhausted = true;
                 break;
               }
-              if !state
-                .budget
-                .import_depth_allowed(state.stack.len(), &canonical_resolved, diagnostics)
-              {
+              if !state.budget.import_depth_allowed(
+                state.stack.len(),
+                &canonical_resolved,
+                diagnostics,
+              ) {
                 if let Some(layer) = layer {
                   if let ImportLayerModifier::Named(path) = layer {
                     let mut wrapped: std::borrow::Cow<'_, str> =
@@ -2237,9 +2248,8 @@ fn extract_css_links_with_meta_from_dom(
   let scoped_sources = extract_scoped_css_sources(&dom);
 
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| {
-      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
-    })
+    value
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
   let mut consider_source = |source: &StylesheetSource| {
@@ -3109,15 +3119,15 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
           .tag_name()
           .is_some_and(|tag| tag.eq_ignore_ascii_case("link"))
         && is_html
-        {
-          if let Some(rel) = node.get_attribute_ref("rel") {
-            if rel
-              .split(is_ascii_whitespace_html_css)
-              .filter(|token| !token.is_empty())
-              .any(|token| token.eq_ignore_ascii_case("canonical"))
-            {
-              if let Some(href) = node.get_attribute_ref("href") {
-                if let Some(resolved) = resolve_href(base_url, href) {
+      {
+        if let Some(rel) = node.get_attribute_ref("rel") {
+          if rel
+            .split(is_ascii_whitespace_html_css)
+            .filter(|token| !token.is_empty())
+            .any(|token| token.eq_ignore_ascii_case("canonical"))
+          {
+            if let Some(href) = node.get_attribute_ref("href") {
+              if let Some(resolved) = resolve_href(base_url, href) {
                 if resolved.starts_with("http://") || resolved.starts_with("https://") {
                   return Some(resolved);
                 }
@@ -3324,9 +3334,11 @@ mod tests {
 
   #[test]
   fn resolves_absolute_href_with_pipe_character() {
-    let resolved =
-      resolve_href("https://example.com/dir/page.html", "https://cdn.example.com/a|b.png")
-        .expect("resolved");
+    let resolved = resolve_href(
+      "https://example.com/dir/page.html",
+      "https://cdn.example.com/a|b.png",
+    )
+    .expect("resolved");
     assert_eq!(resolved, "https://cdn.example.com/a%7Cb.png");
   }
 
@@ -3359,10 +3371,7 @@ mod tests {
     let base = "https://example.com/a/";
     let href = "https://static.example.com/img|1.png?x=1|2";
     let resolved = resolve_href(base, href).expect("resolved");
-    assert_eq!(
-      resolved,
-      "https://static.example.com/img%7C1.png?x=1%7C2"
-    );
+    assert_eq!(resolved, "https://static.example.com/img%7C1.png?x=1%7C2");
   }
 
   #[test]
@@ -3537,11 +3546,17 @@ mod tests {
       match url {
         "https://example.com/styles/imports/child.css" => {
           assert_eq!(referrer, "https://example.com/styles/main.css");
-          Ok(FetchedStylesheet::new("@import \"grand.css\";".to_string(), None))
+          Ok(FetchedStylesheet::new(
+            "@import \"grand.css\";".to_string(),
+            None,
+          ))
         }
         "https://example.com/styles/imports/grand.css" => {
           assert_eq!(referrer, "https://example.com/styles/imports/child.css");
-          Ok(FetchedStylesheet::new("body { color: red; }".to_string(), None))
+          Ok(FetchedStylesheet::new(
+            "body { color: red; }".to_string(),
+            None,
+          ))
         }
         other => panic!("unexpected url {other}"),
       }
@@ -3638,7 +3653,10 @@ mod tests {
     let css = "@IMPORT url(\"nested.css\");\nbody { color: black; }";
     let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       assert_eq!(url, "https://example.com/nested.css");
-      Ok(FetchedStylesheet::new("p { color: blue; }".to_string(), None))
+      Ok(FetchedStylesheet::new(
+        "p { color: blue; }".to_string(),
+        None,
+      ))
     };
     let out = inline_imports(
       css,
@@ -3658,7 +3676,10 @@ mod tests {
     let css = "@ImPoRt \"nested.css\";\nbody { color: black; }";
     let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       assert_eq!(url, "https://example.com/nested.css");
-      Ok(FetchedStylesheet::new("p { color: blue; }".to_string(), None))
+      Ok(FetchedStylesheet::new(
+        "p { color: blue; }".to_string(),
+        None,
+      ))
     };
     let out = inline_imports(
       css,
@@ -3697,10 +3718,12 @@ mod tests {
   fn inline_imports_preserves_media_wrappers_for_duplicates() {
     let mut state = InlineImportState::new();
     let css = "@import url(\"shared.css\") screen;\n@import url(\"shared.css\") print;";
-    let mut fetched =
-      |_url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
-        Ok(FetchedStylesheet::new("p { color: green; }".to_string(), None))
-      };
+    let mut fetched = |_url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
+      Ok(FetchedStylesheet::new(
+        "p { color: green; }".to_string(),
+        None,
+      ))
+    };
     let out = inline_imports(
       css,
       "https://example.com/main.css",
@@ -4233,7 +4256,10 @@ mod tests {
           None,
         ))
       } else {
-        Ok(FetchedStylesheet::new("@import \"a.css\";".to_string(), None))
+        Ok(FetchedStylesheet::new(
+          "@import \"a.css\";".to_string(),
+          None,
+        ))
       }
     };
     let mut diags: Vec<(String, String)> = Vec::new();
@@ -4428,8 +4454,8 @@ mod tests {
       <link rel="stylesheet" href="/nocors.css">
     "#;
 
-    let requests = extract_css_links_with_meta(html, "https://example.com/", MediaType::Screen)
-      .unwrap();
+    let requests =
+      extract_css_links_with_meta(html, "https://example.com/", MediaType::Screen).unwrap();
     assert_eq!(
       requests,
       vec![
@@ -4471,8 +4497,8 @@ mod tests {
       <link rel="stylesheet" crossorigin href="/a.css">
     "#;
 
-    let requests = extract_css_links_with_meta(html, "https://example.com/", MediaType::Screen)
-      .unwrap();
+    let requests =
+      extract_css_links_with_meta(html, "https://example.com/", MediaType::Screen).unwrap();
     assert_eq!(
       requests,
       vec![
@@ -5076,7 +5102,10 @@ mod tests {
         namespace: String::new(),
         attributes: vec![
           ("property".to_string(), "og:url".to_string()),
-          ("content".to_string(), "https://example.com/app/".to_string()),
+          (
+            "content".to_string(),
+            "https://example.com/app/".to_string(),
+          ),
         ],
       },
       children: Vec::new(),

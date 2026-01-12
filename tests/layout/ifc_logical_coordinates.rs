@@ -14,12 +14,21 @@ use std::sync::Arc;
 fn find_abs_bounds_by_box_id(root: &fastrender::FragmentNode, box_id: usize) -> Option<Rect> {
   let mut stack = vec![(root, Point::ZERO)];
   while let Some((node, parent_origin)) = stack.pop() {
-    let abs_origin = Point::new(parent_origin.x + node.bounds.origin.x, parent_origin.y + node.bounds.origin.y);
+    let abs_origin = Point::new(
+      parent_origin.x + node.bounds.origin.x,
+      parent_origin.y + node.bounds.origin.y,
+    );
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -100,4 +109,3 @@ fn inline_fc_layout_with_floats_returns_logical_coordinates_in_vertical_writing_
     img2_bounds.y()
   );
 }
-

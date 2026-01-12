@@ -1,5 +1,5 @@
-use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
 use crate::css::loader::{resolve_href, resolve_href_with_base};
+use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
 use crate::html::base_url_tracker::BaseUrlTracker;
 
 use html5ever::tendril::StrTendril;
@@ -421,26 +421,22 @@ impl Dom2TreeSink {
       haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
     }
 
-    let (in_head, in_foreign_namespace, in_template) = if tag_name.eq_ignore_ascii_case("base")
-      || tag_name.eq_ignore_ascii_case("link")
-    {
-      Self::compute_insertion_flags(doc, parent)
-    } else {
-      (false, false, false)
-    };
+    let (in_head, in_foreign_namespace, in_template) =
+      if tag_name.eq_ignore_ascii_case("base") || tag_name.eq_ignore_ascii_case("link") {
+        Self::compute_insertion_flags(doc, parent)
+      } else {
+        (false, false, false)
+      };
 
     if tag_name.eq_ignore_ascii_case("base") {
-      self
-        .base_url_tracker
-        .borrow_mut()
-        .on_element_inserted(
-          tag_name,
-          namespace,
-          attrs,
-          in_head,
-          in_foreign_namespace,
-          in_template,
-        );
+      self.base_url_tracker.borrow_mut().on_element_inserted(
+        tag_name,
+        namespace,
+        attrs,
+        in_head,
+        in_foreign_namespace,
+        in_template,
+      );
       return;
     }
     if tag_name.eq_ignore_ascii_case("link") && Self::is_html_namespace(namespace) {
@@ -484,7 +480,10 @@ impl Dom2TreeSink {
       };
 
       if let Some(url) = resolved {
-        self.pending_stylesheet_links.borrow_mut().push((child, url));
+        self
+          .pending_stylesheet_links
+          .borrow_mut()
+          .push((child, url));
       }
     }
   }
@@ -537,7 +536,9 @@ impl TreeSink for Dom2TreeSink {
     }
     match &doc.node(*_intended_parent).kind {
       NodeKind::Element {
-        tag_name, namespace, ..
+        tag_name,
+        namespace,
+        ..
       } => Self::is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
       NodeKind::Slot { namespace, .. } => {
         // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.
@@ -583,7 +584,9 @@ impl TreeSink for Dom2TreeSink {
     let mut doc = self.document.borrow_mut();
     let is_valid_shadow_host = match &doc.node(*location).kind {
       NodeKind::Element {
-        tag_name, namespace, ..
+        tag_name,
+        namespace,
+        ..
       } => Self::is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
       NodeKind::Slot { namespace, .. } => {
         // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.

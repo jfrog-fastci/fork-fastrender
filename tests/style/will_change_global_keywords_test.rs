@@ -99,4 +99,3 @@ fn will_change_inherit_keyword_accepts_comments_and_escapes() {
     WillChange::Hints(vec![WillChangeHint::Property("filter".to_string())])
   );
 }
-

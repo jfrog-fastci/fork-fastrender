@@ -49,4 +49,3 @@ fn max_content_intrinsic_width_sums_across_inline_items() {
     min
   );
 }
-

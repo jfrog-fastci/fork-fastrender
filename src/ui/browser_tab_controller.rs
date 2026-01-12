@@ -2,8 +2,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{
-  fragment_tree_with_scroll, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
-  InteractionState,
+  fragment_tree_with_scroll, FormSubmission, FormSubmissionMethod, InteractionAction,
+  InteractionEngine, InteractionState,
 };
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
@@ -142,7 +142,9 @@ impl BrowserTabController {
       } if tab_id == self.tab_id => {
         self.handle_select_dropdown_choose(select_node_id, option_node_id)
       }
-      UiToWorker::TextInput { tab_id, text } if tab_id == self.tab_id => self.handle_text_input(&text),
+      UiToWorker::TextInput { tab_id, text } if tab_id == self.tab_id => {
+        self.handle_text_input(&text)
+      }
       UiToWorker::Copy { tab_id } if tab_id == self.tab_id => self.handle_copy(),
       UiToWorker::Cut { tab_id } if tab_id == self.tab_id => self.handle_cut(),
       UiToWorker::Paste { tab_id, text } if tab_id == self.tab_id => self.handle_paste(&text),
@@ -306,7 +308,11 @@ impl BrowserTabController {
     }
   }
 
-  fn handle_pointer_down(&mut self, pos_css: (f32, f32), button: PointerButton) -> Result<Vec<WorkerToUi>> {
+  fn handle_pointer_down(
+    &mut self,
+    pos_css: (f32, f32),
+    button: PointerButton,
+  ) -> Result<Vec<WorkerToUi>> {
     if button != PointerButton::Primary && button != PointerButton::Middle {
       return Ok(Vec::new());
     }
@@ -647,9 +653,9 @@ impl BrowserTabController {
       tab_id: self.tab_id,
     }];
     let engine = &mut self.interaction;
-    let changed = self.document.mutate_dom(|dom| {
-      engine.activate_select_option(dom, select_node_id, option_node_id, false)
-    });
+    let changed = self
+      .document
+      .mutate_dom(|dom| engine.activate_select_option(dom, select_node_id, option_node_id, false));
     if changed {
       out.extend(self.paint_if_needed()?);
       Ok(out)
@@ -874,7 +880,9 @@ impl BrowserTabController {
   fn paint_if_needed(&mut self) -> Result<Vec<WorkerToUi>> {
     let Some(frame) = self
       .document
-      .render_if_needed_with_scroll_state_and_interaction_state(Some(self.interaction.interaction_state()))?
+      .render_if_needed_with_scroll_state_and_interaction_state(Some(
+        self.interaction.interaction_state(),
+      ))?
     else {
       return Ok(Vec::new());
     };
@@ -884,7 +892,9 @@ impl BrowserTabController {
   fn force_repaint(&mut self) -> Result<Vec<WorkerToUi>> {
     let frame = self
       .document
-      .render_frame_with_scroll_state_and_interaction_state(Some(self.interaction.interaction_state()))?;
+      .render_frame_with_scroll_state_and_interaction_state(Some(
+        self.interaction.interaction_state(),
+      ))?;
     Ok(self.emit_frame(frame))
   }
 

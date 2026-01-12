@@ -28,7 +28,10 @@ fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
   {
     return Some(node);
   }
-  node.children.iter().find_map(|child| find_dom_by_id(child, id))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_dom_by_id(child, id))
 }
 
 fn dom_node_id_by_id(dom: &DomNode, id: &str) -> usize {
@@ -72,10 +75,9 @@ fn part_supports_tree_abiding_pseudo_elements() {
     </x-host>
   "#;
   let dom = dom::parse_html(html).expect("parse html");
-  let stylesheet = parse_stylesheet(
-    r#"x-host::part(button)::before { content: "x"; color: rgb(4, 5, 6); }"#,
-  )
-  .expect("parse stylesheet");
+  let stylesheet =
+    parse_stylesheet(r#"x-host::part(button)::before { content: "x"; color: rgb(4, 5, 6); }"#)
+      .expect("parse stylesheet");
   let styled = apply_styles(&dom, &stylesheet);
 
   let button = find_by_id(&styled, "button").expect("part element");

@@ -112,7 +112,10 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
   /// Borrow the underlying tree sink.
   ///
   pub fn sink(&self) -> Option<&Sink> {
-    self.parser.as_ref().map(|parser| &parser.tokenizer.sink.sink)
+    self
+      .parser
+      .as_ref()
+      .map(|parser| &parser.tokenizer.sink.sink)
   }
 
   /// Mutably borrow the underlying tree sink.
@@ -380,7 +383,8 @@ mod tests {
   fn pump_aborts_on_expired_deadline() {
     let deadline = RenderDeadline::new(Some(Duration::from_millis(0)), None);
     let result = with_deadline(Some(&deadline), || {
-      let mut parser = PausableHtml5everParser::new_document(RcDom::default(), ParseOpts::default());
+      let mut parser =
+        PausableHtml5everParser::new_document(RcDom::default(), ParseOpts::default());
       parser.push_str("<!doctype html><p>x</p>");
       parser.set_eof();
       parser.pump()
@@ -415,7 +419,8 @@ mod tests {
       super::HTML5EVER_INPUT_MAX_TENDRIL_BYTES * (super::HTML5EVER_PUMP_DEADLINE_STRIDE + 1),
     );
     let result = with_deadline(Some(&deadline), || {
-      let mut parser = PausableHtml5everParser::new_document(RcDom::default(), ParseOpts::default());
+      let mut parser =
+        PausableHtml5everParser::new_document(RcDom::default(), ParseOpts::default());
       parser.push_str(&big);
       parser.set_eof();
       parser.pump()

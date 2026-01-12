@@ -1,7 +1,11 @@
-use fastrender::api::{FastRender, FastRenderConfig, RenderDiagnostics, RenderOptions, ResourceContext};
+use fastrender::api::{
+  FastRender, FastRenderConfig, RenderDiagnostics, RenderOptions, ResourceContext,
+};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::error::{Error, Result};
-use fastrender::resource::{origin_from_url, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+use fastrender::resource::{
+  origin_from_url, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher,
+};
 use fastrender::style::media::MediaType;
 use image::codecs::png::PngEncoder;
 use image::ColorType;
@@ -49,7 +53,11 @@ impl RecordingFetcher {
   fn with_png(mut self, url: &str, bytes: Vec<u8>, final_url: Option<&str>) -> Self {
     self.responses.insert(
       url.to_string(),
-      (bytes, Some("image/png".to_string()), final_url.map(|u| u.to_string())),
+      (
+        bytes,
+        Some("image/png".to_string()),
+        final_url.map(|u| u.to_string()),
+      ),
     );
     self
   }
@@ -124,9 +132,7 @@ fn renderer_for(fetcher: Arc<RecordingFetcher>) -> FastRender {
 fn css_import_referrer_is_importing_stylesheet_url() {
   let document_url = "https://example.test/page.html";
   let html = r#"<html><head><link rel="stylesheet" href="a.css"></head><body></body></html>"#;
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let a_url = "https://example.test/a.css";
   let b_url = "https://example.test/b.css";
@@ -181,9 +187,7 @@ fn css_import_referrer_is_importing_stylesheet_url() {
 fn css_imports_use_stylesheet_final_url_for_base_and_referrer() {
   let document_url = "https://example.test/page.html";
   let html = r#"<html><head><link rel="stylesheet" href="css/a.css"></head><body></body></html>"#;
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let a_url = "https://example.test/css/a.css";
   let a_final_url = "https://example.test/assets/a-final.css";
@@ -246,9 +250,7 @@ fn css_import_from_inline_style_uses_document_referrer_even_with_base_href() {
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let imported_url = "https://cdn.example.test/assets/import.css";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     imported_url,
@@ -287,9 +289,7 @@ fn render_html_with_config_base_url_uses_document_referrer_even_with_base_href()
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let imported_url = "https://cdn.example.test/assets/import.css";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     imported_url,
@@ -304,11 +304,9 @@ fn render_html_with_config_base_url_uses_document_referrer_even_with_base_href()
   let config = FastRenderConfig::default()
     .with_runtime_toggles(toggles)
     .with_base_url(document_url);
-  let mut renderer = FastRender::with_config_and_fetcher(
-    config,
-    Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
-  )
-  .expect("renderer should build");
+  let mut renderer =
+    FastRender::with_config_and_fetcher(config, Some(fetcher.clone() as Arc<dyn ResourceFetcher>))
+      .expect("renderer should build");
 
   renderer
     .render_html(
@@ -340,9 +338,7 @@ fn collect_document_stylesheet_inline_import_uses_document_referrer_even_with_ba
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let imported_url = "https://cdn.example.test/assets/import.css";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     imported_url,
@@ -390,9 +386,7 @@ fn collect_document_stylesheet_inline_import_uses_document_referrer_even_with_ba
 fn css_imports_from_inline_style_use_imported_final_url_for_nested_referrer_and_base() {
   let document_url = "https://example.test/page.html";
   let base_href = "https://example.test/css/";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let a_url = "https://example.test/css/a.css";
   let a_final_url = "https://cdn.example.test/assets/a-final.css";
@@ -451,9 +445,7 @@ fn link_stylesheet_uses_document_referrer_even_with_base_href() {
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let stylesheet_url = "https://cdn.example.test/assets/style.css";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     stylesheet_url,
@@ -492,9 +484,7 @@ fn inline_stylesheets_for_document_resolves_base_href_without_changing_referrer(
   let document_url = "https://example.test/page.html";
   let stylesheet_url = "https://example.test/static/style.css";
   let html = r#"<html><head><base href="static/"><link rel="stylesheet" href="style.css"></head><body></body></html>"#;
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     stylesheet_url,
@@ -537,9 +527,7 @@ fn font_face_from_inline_style_uses_document_referrer_even_with_base_href() {
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let font_url = "https://cdn.example.test/assets/font.woff2";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_font(font_url, b"", None));
 
@@ -570,7 +558,10 @@ fn font_face_from_inline_style_uses_document_referrer_even_with_base_href() {
     .find(|r| r.url == font_url && r.destination == FetchDestination::Font)
     .expect("request for font");
   assert_eq!(font_request.referrer_url.as_deref(), Some(document_url));
-  assert_eq!(font_request.client_origin.as_deref(), Some(expected_origin.as_str()));
+  assert_eq!(
+    font_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
 
 #[test]
@@ -581,9 +572,7 @@ fn font_face_from_linked_stylesheet_uses_stylesheet_final_url_as_referrer() {
   let stylesheet_url = "https://cdn.example.test/assets/style.css";
   let stylesheet_final_url = "https://static.other.test/v2/style.css";
   let font_url = "https://static.other.test/v2/font.woff2";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let css = r#"
     @font-face {
@@ -624,7 +613,10 @@ fn font_face_from_linked_stylesheet_uses_stylesheet_final_url_as_referrer() {
     Some(stylesheet_final_url),
     "expected font request referrer to be the stylesheet final URL"
   );
-  assert_eq!(font_request.client_origin.as_deref(), Some(expected_origin.as_str()));
+  assert_eq!(
+    font_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
 
 #[test]
@@ -633,9 +625,7 @@ fn font_face_from_imported_stylesheet_uses_import_url_as_referrer() {
   let entry_css = "https://example.test/css/entry.css";
   let import_css = "https://example.test/css/fonts.css";
   let font_url = "https://example.test/css/font.woff2";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
   let fetcher = Arc::new(
     RecordingFetcher::default()
@@ -678,7 +668,10 @@ fn font_face_from_imported_stylesheet_uses_import_url_as_referrer() {
     Some(import_css),
     "expected font request referrer to be the imported stylesheet URL"
   );
-  assert_eq!(font_request.client_origin.as_deref(), Some(expected_origin.as_str()));
+  assert_eq!(
+    font_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
 
 #[test]
@@ -686,13 +679,9 @@ fn css_background_image_from_inline_style_uses_document_referrer_even_with_base_
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let image_url = "https://cdn.example.test/assets/img.png";
-  let expected_origin = origin_from_url(document_url)
-    .expect("origin")
-    .to_string();
+  let expected_origin = origin_from_url(document_url).expect("origin").to_string();
 
-  let fetcher = Arc::new(
-    RecordingFetcher::default().with_png(image_url, png_bytes(), None),
-  );
+  let fetcher = Arc::new(RecordingFetcher::default().with_png(image_url, png_bytes(), None));
 
   let mut renderer = renderer_for(fetcher.clone());
   renderer

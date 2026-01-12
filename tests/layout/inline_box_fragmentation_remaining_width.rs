@@ -114,7 +114,10 @@ fn inline_boxes_do_not_spuriously_break_before_leading_collapsible_space() {
 
   let mut lines = Vec::new();
   collect_line_texts(&fragments.root, &mut lines);
-  let trimmed: Vec<String> = lines.into_iter().map(|line| line.trim().to_string()).collect();
+  let trimmed: Vec<String> = lines
+    .into_iter()
+    .map(|line| line.trim().to_string())
+    .collect();
 
   assert!(
     trimmed

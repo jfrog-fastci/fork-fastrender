@@ -64,4 +64,3 @@ fn float_shrink_to_fit_sums_inline_items_across_collapsed_space() {
     outer_fragment.bounds.width()
   );
 }
-

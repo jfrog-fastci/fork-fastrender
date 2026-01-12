@@ -96,10 +96,7 @@ fn table_fixed_layout_col_width_overrides_first_row_cell_width() {
   );
 
   let gap = b.x() - (a.x() + a.width());
-  assert!(
-    gap.abs() < 0.1,
-    "expected cells to be adjacent (gap={gap})"
-  );
+  assert!(gap.abs() < 0.1, "expected cells to be adjacent (gap={gap})");
 }
 
 #[test]
@@ -226,10 +223,7 @@ fn table_fixed_layout_col_width_overrides_first_row_cell_width_collapsed_border_
   );
 
   let gap = b.x() - (a.x() + a.width());
-  assert!(
-    gap.abs() < 0.1,
-    "expected cells to be adjacent (gap={gap})"
-  );
+  assert!(gap.abs() < 0.1, "expected cells to be adjacent (gap={gap})");
 }
 
 #[test]

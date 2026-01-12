@@ -73,4 +73,3 @@ fn grid_percent_tracks_act_as_auto_when_width_is_indefinite_then_resolve() {
     "second column start (25% of resolved width)",
   );
 }
-

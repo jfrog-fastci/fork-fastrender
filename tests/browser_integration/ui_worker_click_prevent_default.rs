@@ -58,8 +58,10 @@ fn ui_worker_click_prevent_default_blocks_navigation() {
     .send(support::viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("viewport");
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {index_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {index_url}"));
 
   // Drain any follow-up messages from the initial navigation to keep assertions scoped to the click.
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
@@ -145,8 +147,10 @@ fn ui_worker_enter_on_focused_link_respects_click_prevent_default() {
     .send(support::viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("viewport");
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {index_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {index_url}"));
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
   // Click once to focus the link (preventDefault suppresses navigation).

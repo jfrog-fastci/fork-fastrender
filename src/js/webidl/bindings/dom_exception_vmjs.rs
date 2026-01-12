@@ -1,7 +1,7 @@
 use crate::web::dom::DomException;
 use vm_js::{
-  new_error, GcObject, Intrinsics, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
-  PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  new_error, GcObject, Intrinsics, NativeConstructId, NativeFunctionId, PropertyDescriptor,
+  PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -44,18 +44,16 @@ impl DomExceptionClassVmJs {
     let key_dom_exception_s = scope.alloc_string("DOMException")?;
     scope.push_root(Value::String(key_dom_exception_s))?;
     let key_dom_exception = PropertyKey::from_string(key_dom_exception_s);
-    if let Some(Value::Object(existing_ctor)) =
-      scope
-        .heap()
-        .object_get_own_data_property_value(global, &key_dom_exception)?
+    if let Some(Value::Object(existing_ctor)) = scope
+      .heap()
+      .object_get_own_data_property_value(global, &key_dom_exception)?
     {
       let key_prototype_s = scope.alloc_string("prototype")?;
       scope.push_root(Value::String(key_prototype_s))?;
       let key_prototype = PropertyKey::from_string(key_prototype_s);
-      if let Some(Value::Object(existing_proto)) =
-        scope
-          .heap()
-          .object_get_own_data_property_value(existing_ctor, &key_prototype)?
+      if let Some(Value::Object(existing_proto)) = scope
+        .heap()
+        .object_get_own_data_property_value(existing_ctor, &key_prototype)?
       {
         return Ok(Self {
           constructor: existing_ctor,
@@ -105,14 +103,14 @@ impl DomExceptionClassVmJs {
     let key_to_string_s = scope.alloc_string("toString")?;
     scope.push_root(Value::String(key_to_string_s))?;
     let key_to_string = PropertyKey::from_string(key_to_string_s);
-    scope.define_property(proto, key_to_string, method_desc(Value::Object(to_string_fn)))?;
+    scope.define_property(
+      proto,
+      key_to_string,
+      method_desc(Value::Object(to_string_fn)),
+    )?;
 
     // Expose DOMException on the global object.
-    scope.define_property(
-      global,
-      key_dom_exception,
-      data_desc(Value::Object(ctor)),
-    )?;
+    scope.define_property(global, key_dom_exception, data_desc(Value::Object(ctor)))?;
 
     Ok(Self {
       constructor: ctor,
@@ -136,7 +134,9 @@ impl DomExceptionClassVmJs {
 
     let obj = scope.alloc_object()?;
     scope.push_root(Value::Object(obj))?;
-    scope.heap_mut().object_set_prototype(obj, Some(self.prototype))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(obj, Some(self.prototype))?;
 
     let key_name_s = scope.alloc_string("name")?;
     scope.push_root(Value::String(key_name_s))?;
@@ -151,9 +151,15 @@ impl DomExceptionClassVmJs {
     Ok(Value::Object(obj))
   }
 
-  pub fn from_dom_exception(&self, scope: &mut Scope<'_>, err: &DomException) -> Result<Value, VmError> {
+  pub fn from_dom_exception(
+    &self,
+    scope: &mut Scope<'_>,
+    err: &DomException,
+  ) -> Result<Value, VmError> {
     match err {
-      DomException::SyntaxError { message } => self.new_instance(scope, "SyntaxError", message.as_str()),
+      DomException::SyntaxError { message } => {
+        self.new_instance(scope, "SyntaxError", message.as_str())
+      }
       DomException::NoModificationAllowedError { message } => {
         self.new_instance(scope, "NoModificationAllowedError", message.as_str())
       }
@@ -236,7 +242,9 @@ fn dom_exception_create_instance(
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
-  scope.heap_mut().object_set_prototype(obj, Some(prototype))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(obj, Some(prototype))?;
 
   let key_name_s = scope.alloc_string("name")?;
   scope.push_root(Value::String(key_name_s))?;
@@ -324,7 +332,12 @@ fn dom_exception_to_string(
 
   let mut out: Vec<u16> = Vec::new();
   out
-    .try_reserve(name_units.len().saturating_add(2).saturating_add(message_units.len()))
+    .try_reserve(
+      name_units
+        .len()
+        .saturating_add(2)
+        .saturating_add(message_units.len()),
+    )
     .map_err(|_| VmError::OutOfMemory)?;
   out.extend_from_slice(name_units);
   out.push(b':' as u16);
@@ -369,10 +382,16 @@ pub fn throw_dom_exception_like_error(
   }
 }
 
-pub fn dom_exception_from_rust_like_error(scope: &mut Scope<'_>, intr: Intrinsics, err: &DomException) -> Value {
+pub fn dom_exception_from_rust_like_error(
+  scope: &mut Scope<'_>,
+  intr: Intrinsics,
+  err: &DomException,
+) -> Value {
   let (name, message) = match err {
     DomException::SyntaxError { message } => ("SyntaxError", message.as_str()),
-    DomException::NoModificationAllowedError { message } => ("NoModificationAllowedError", message.as_str()),
+    DomException::NoModificationAllowedError { message } => {
+      ("NoModificationAllowedError", message.as_str())
+    }
     DomException::NotSupportedError { message } => ("NotSupportedError", message.as_str()),
     DomException::InvalidStateError { message } => ("InvalidStateError", message.as_str()),
   };

@@ -351,17 +351,12 @@ mod tests {
     let mut id = egui::TextureId::User(1);
     let old_id = id;
 
-    let recreated = recreate_on_resize(
-      &mut registry,
-      &mut size_px,
-      &mut id,
-      (20, 30),
-      |registry| {
+    let recreated =
+      recreate_on_resize(&mut registry, &mut size_px, &mut id, (20, 30), |registry| {
         // Ensure we freed the old id before trying to "register" a new one.
         assert_eq!(registry.freed, vec![old_id]);
         ((), egui::TextureId::User(2))
-      },
-    );
+      });
 
     assert!(recreated.is_some());
     assert_eq!(registry.freed, vec![old_id]);

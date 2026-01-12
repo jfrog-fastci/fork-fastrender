@@ -38,4 +38,3 @@ fn slotted_supports_tree_abiding_pseudo_elements() {
   assert_eq!(before.content_value, ContentValue::from_string("x"));
   assert_eq!(before.color, Rgba::rgb(7, 8, 9));
 }
-

@@ -109,12 +109,18 @@ impl ResourceFetcher for WptResourceFetcher {
   }
 
   fn cookie_header_value(&self, _url: &str) -> Option<String> {
-    let lock = self.cookie_jar.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock = self
+      .cookie_jar
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     Some(lock.cookie_string())
   }
 
   fn store_cookie_from_document(&self, _url: &str, cookie_string: &str) {
-    let mut lock = self.cookie_jar.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut lock = self
+      .cookie_jar
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.set_cookie_string(cookie_string);
   }
 }
@@ -182,9 +188,7 @@ fn extract_raw_http_path(url: &str) -> Option<String> {
   match after_scheme.as_bytes()[idx] {
     b'/' => {
       let rest = &after_scheme[idx..];
-      let end = rest
-        .find(['?', '#'])
-        .unwrap_or_else(|| rest.len());
+      let end = rest.find(['?', '#']).unwrap_or_else(|| rest.len());
       Some(rest[..end].to_string())
     }
     // Query or fragment with no explicit path.

@@ -6,8 +6,8 @@ use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 
 use super::support::{
-  create_tab_msg, key_action, navigate_msg, pointer_down, pointer_up, text_input, viewport_changed_msg,
-  TempSite, DEFAULT_TIMEOUT,
+  create_tab_msg, key_action, navigate_msg, pointer_down, pointer_up, text_input,
+  viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
 };
 
 fn recv_until_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::RenderedFrame {
@@ -63,10 +63,7 @@ fn caret_column_in_rect(
     }
   }
 
-  let (best_dx, best) = counts
-    .iter()
-    .enumerate()
-    .max_by_key(|(_, count)| *count)?;
+  let (best_dx, best) = counts.iter().enumerate().max_by_key(|(_, count)| *count)?;
   if *best < 6 {
     return None;
   }
@@ -160,11 +157,12 @@ fn ui_worker_text_input_caret_moves_and_inserts_in_middle() {
   // Put caret at end and record x.
   ui_tx.send(key_action(tab_id, KeyAction::End)).expect("End");
   let frame_end = recv_until_frame(&ui_rx, tab_id);
-  let x_end =
-    caret_column_in_rect(&frame_end.pixmap, input_rect, caret_rgb).expect("caret at end");
+  let x_end = caret_column_in_rect(&frame_end.pixmap, input_rect, caret_rgb).expect("caret at end");
 
   // Move caret to start and record x.
-  ui_tx.send(key_action(tab_id, KeyAction::Home)).expect("Home");
+  ui_tx
+    .send(key_action(tab_id, KeyAction::Home))
+    .expect("Home");
   let frame_home = recv_until_frame(&ui_rx, tab_id);
   let x_home =
     caret_column_in_rect(&frame_home.pixmap, input_rect, caret_rgb).expect("caret at home");

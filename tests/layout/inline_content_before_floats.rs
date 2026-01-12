@@ -19,9 +19,15 @@ fn find_abs_bounds_by_box_id(fragment: &FragmentNode, box_id: usize) -> Option<R
     let abs_bounds = node.bounds.translate(origin);
     let matches = match &node.content {
       FragmentContent::Block { box_id: Some(id) } => *id == box_id,
-      FragmentContent::Inline { box_id: Some(id), .. } => *id == box_id,
-      FragmentContent::Text { box_id: Some(id), .. } => *id == box_id,
-      FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      FragmentContent::Inline {
+        box_id: Some(id), ..
+      } => *id == box_id,
+      FragmentContent::Text {
+        box_id: Some(id), ..
+      } => *id == box_id,
+      FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches {
@@ -79,7 +85,9 @@ fn float_after_wrapped_inline_content_uses_current_line_top() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(100.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let float_bounds = find_abs_bounds_by_box_id(&fragment, 3).expect("float fragment present");
 
@@ -131,7 +139,9 @@ fn float_after_inline_content_affects_text_align_center() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let inline_bounds = find_abs_bounds_by_box_id(&fragment, 1).expect("inline fragment present");
   let float_bounds = find_abs_bounds_by_box_id(&fragment, 2).expect("float fragment present");

@@ -18,9 +18,9 @@ fn main() {
 }
 
 #[cfg(feature = "browser_ui")]
-use clap::Parser;
-#[cfg(feature = "browser_ui")]
 use arboard::Clipboard;
+#[cfg(feature = "browser_ui")]
+use clap::Parser;
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone, Copy)]
@@ -215,13 +215,19 @@ fn determine_startup_session(
       Ok(Some(session)) => return (session, StartupSessionSource::Restored),
       Ok(None) => {}
       Err(err) => {
-        eprintln!("failed to load session from {}: {err}", session_path.display());
+        eprintln!(
+          "failed to load session from {}: {err}",
+          session_path.display()
+        );
       }
     }
   }
 
   if let Some(url) = cli_url {
-    return (fastrender::ui::BrowserSession::single(url), StartupSessionSource::CliUrl);
+    return (
+      fastrender::ui::BrowserSession::single(url),
+      StartupSessionSource::CliUrl,
+    );
   }
 
   (
@@ -494,7 +500,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
     // tick deadline when needed.
     app.drive_animation_tick();
-  app.update_control_flow_for_animation_ticks(control_flow);
+    app.update_control_flow_for_animation_ticks(control_flow);
   });
 }
 
@@ -539,10 +545,12 @@ fn run_headless_vmjs_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   };
   let outcome = tab.run_event_loop_until_idle(run_limits)?;
   if outcome != fastrender::js::RunUntilIdleOutcome::Idle {
-    return Err(fastrender::Error::Other(format!(
-      "expected vmjs event loop to reach idle, got {outcome:?}"
-    ))
-    .into());
+    return Err(
+      fastrender::Error::Other(format!(
+        "expected vmjs event loop to reach idle, got {outcome:?}"
+      ))
+      .into(),
+    );
   }
 
   let dom: &fastrender::dom2::Document = tab.dom();
@@ -553,21 +561,21 @@ fn run_headless_vmjs_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
     .get_attribute(body, "data-ok")
     .map_err(|err| fastrender::Error::Other(format!("failed to read body[data-ok]: {err}")))?;
   if value != Some("1") {
-    return Err(fastrender::Error::Other(format!(
-      "expected body[data-ok]=\"1\", got {value:?}"
-    ))
-    .into());
+    return Err(
+      fastrender::Error::Other(format!("expected body[data-ok]=\"1\", got {value:?}")).into(),
+    );
   }
 
   let pixmap = tab.render_frame()?;
   let pixmap_px = (pixmap.width(), pixmap.height());
   if pixmap_px != (expected_pixmap_w, expected_pixmap_h) {
-    return Err(fastrender::Error::Other(format!(
-      "unexpected pixmap size: got {}x{}, expected {}x{}",
-      pixmap_px.0, pixmap_px.1, expected_pixmap_w, expected_pixmap_h
-    )
-    )
-    .into());
+    return Err(
+      fastrender::Error::Other(format!(
+        "unexpected pixmap size: got {}x{}, expected {}x{}",
+        pixmap_px.0, pixmap_px.1, expected_pixmap_w, expected_pixmap_h
+      ))
+      .into(),
+    );
   }
 
   println!(
@@ -631,7 +639,9 @@ fn run_headless_smoke_mode(
     })?;
   }
 
-  let active_idx = session.active_tab_index.min(tab_ids.len().saturating_sub(1));
+  let active_idx = session
+    .active_tab_index
+    .min(tab_ids.len().saturating_sub(1));
   let active_tab_id = tab_ids[active_idx];
   ui_to_worker_tx.send(UiToWorker::ViewportChanged {
     tab_id: active_tab_id,
@@ -717,7 +727,10 @@ fn run_headless_smoke_mode(
   }
 
   if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
-    eprintln!("failed to save session to {}: {err}", session_path.display());
+    eprintln!(
+      "failed to save session to {}: {err}",
+      session_path.display()
+    );
   }
 
   let active_url = session
@@ -1056,9 +1069,7 @@ available adapters (instance.enumerate_adapters): {available}",
           "wgpu device request failed for adapter {adapter_info:?}.\n\
 requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
 error: {err}",
-          wgpu_init.backends,
-          wgpu_init.power_preference,
-          wgpu_init.force_fallback_adapter,
+          wgpu_init.backends, wgpu_init.power_preference, wgpu_init.force_fallback_adapter,
         );
         if !wgpu_init.force_fallback_adapter {
           msg.push_str(&format!(
@@ -1188,7 +1199,9 @@ error: {err}",
       });
     }
 
-    let active_idx = session.active_tab_index.min(tab_ids.len().saturating_sub(1));
+    let active_idx = session
+      .active_tab_index
+      .min(tab_ids.len().saturating_sub(1));
     let active_tab_id = tab_ids[active_idx];
     self.browser_state.set_active_tab(active_tab_id);
     self.send_worker_msg(UiToWorker::SetActiveTab {
@@ -1400,7 +1413,9 @@ error: {err}",
       if self
         .open_select_dropdown_rect
         .is_some_and(|rect| rect.contains(pos))
-        || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos))
+        || self
+          .open_context_menu_rect
+          .is_some_and(|rect| rect.contains(pos))
       {
         // Avoid updating page hover state while the pointer is interacting with a popup.
         return;
@@ -1417,7 +1432,9 @@ error: {err}",
       self
         .open_select_dropdown_rect
         .is_some_and(|rect| rect.contains(pos))
-        || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos))
+        || self
+          .open_context_menu_rect
+          .is_some_and(|rect| rect.contains(pos))
     });
 
     if !self.cursor_in_page || overlay_intercepts {
@@ -1791,7 +1808,9 @@ error: {err}",
     };
 
     // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
-    let clamp = self.browser_limits.clamp_viewport_and_dpr(viewport_css, dpr);
+    let clamp = self
+      .browser_limits
+      .clamp_viewport_and_dpr(viewport_css, dpr);
     let viewport_css = clamp.viewport_css;
     let dpr = clamp.dpr;
 
@@ -1833,7 +1852,9 @@ error: {err}",
       self
         .open_select_dropdown_rect
         .is_some_and(|rect| rect.contains(pos))
-        || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos))
+        || self
+          .open_context_menu_rect
+          .is_some_and(|rect| rect.contains(pos))
     });
 
     if !self.cursor_in_page || overlay_intercepts {
@@ -2151,7 +2172,9 @@ error: {err}",
     if self
       .open_select_dropdown_rect
       .is_some_and(|rect| rect.contains(pos_points))
-      || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_context_menu_rect
+        .is_some_and(|rect| rect.contains(pos_points))
     {
       self.hover_sync_pending = false;
       self.cursor_in_page = false;
@@ -2290,7 +2313,8 @@ error: {err}",
         let had_pointer_capture = self.pointer_captured;
         let had_scrollbar_drag = self.scrollbar_drag.is_some();
         let had_cursor_in_page = self.cursor_in_page;
-        let had_context_menu = self.open_context_menu.is_some() || self.pending_context_menu_request.is_some();
+        let had_context_menu =
+          self.open_context_menu.is_some() || self.pending_context_menu_request.is_some();
 
         // Winit does not provide cursor coordinates when leaving the window. Clear our cached
         // position so hover updates are not suppressed by stale dropdown rect checks.
@@ -2352,7 +2376,9 @@ error: {err}",
         if self
           .open_select_dropdown_rect
           .is_some_and(|rect| rect.contains(pos_points))
-          || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos_points))
+          || self
+            .open_context_menu_rect
+            .is_some_and(|rect| rect.contains(pos_points))
         {
           return;
         }
@@ -2362,9 +2388,7 @@ error: {err}",
           return;
         };
         let mut now_in_page = rect.contains(pos_points);
-        if now_in_page
-          && !self.pointer_captured
-          && self.cursor_over_overlay_scrollbars(pos_points)
+        if now_in_page && !self.pointer_captured && self.cursor_over_overlay_scrollbars(pos_points)
         {
           now_in_page = false;
         }
@@ -2601,7 +2625,10 @@ error: {err}",
                 pos_css,
                 anchor_points: pos_points,
               });
-              self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest { tab_id, pos_css });
+              self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
+                tab_id,
+                pos_css,
+              });
               self.window.request_redraw();
               return;
             }
@@ -2712,23 +2739,23 @@ error: {err}",
             self.window.request_redraw();
             return;
           }
- 
-           let dropdown_nav_key = match key {
-             VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
-             VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
-             VirtualKeyCode::Home => Some(fastrender::interaction::KeyAction::Home),
-             VirtualKeyCode::End => Some(fastrender::interaction::KeyAction::End),
-             _ => None,
-           };
-           if let Some(nav_key) = dropdown_nav_key {
-             self.update_open_select_dropdown_selection_for_key(nav_key);
-             self.window.request_redraw();
-             return;
-           } else {
-             self.cancel_select_dropdown();
-             self.window.request_redraw();
-           }
-         }
+
+          let dropdown_nav_key = match key {
+            VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
+            VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
+            VirtualKeyCode::Home => Some(fastrender::interaction::KeyAction::Home),
+            VirtualKeyCode::End => Some(fastrender::interaction::KeyAction::End),
+            _ => None,
+          };
+          if let Some(nav_key) = dropdown_nav_key {
+            self.update_open_select_dropdown_selection_for_key(nav_key);
+            self.window.request_redraw();
+            return;
+          } else {
+            self.cancel_select_dropdown();
+            self.window.request_redraw();
+          }
+        }
 
         // Centralised shortcut handling: interpret as a browser shortcut first, and only forward
         // to the page when it isn't reserved.
@@ -2793,50 +2820,53 @@ error: {err}",
                 let Some(tab_id) = self.browser_state.active_tab_id() else {
                   return;
                 };
- 
-                  match action {
-                    ShortcutAction::PageUp | ShortcutAction::PageDown => {
-                      let viewport_css = self
-                        .page_viewport_css
-                        .or_else(|| {
-                          self
-                           .browser_state
-                           .tab(tab_id)
-                           .and_then(|tab| tab.latest_frame_meta.as_ref())
-                           .map(|meta| meta.viewport_css)
-                       })
-                       .unwrap_or((0, 0));
-                      let h = viewport_css.1.max(1) as f32;
-                      let mut dy = (h * 0.9).max(1.0);
-                      if matches!(action, ShortcutAction::PageUp) {
-                        dy = -dy;
-                      }
-                      self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                        tab_id,
-                       delta_css: (0.0, dy),
-                       pointer_css: None,
-                      });
+
+                match action {
+                  ShortcutAction::PageUp | ShortcutAction::PageDown => {
+                    let viewport_css = self
+                      .page_viewport_css
+                      .or_else(|| {
+                        self
+                          .browser_state
+                          .tab(tab_id)
+                          .and_then(|tab| tab.latest_frame_meta.as_ref())
+                          .map(|meta| meta.viewport_css)
+                      })
+                      .unwrap_or((0, 0));
+                    let h = viewport_css.1.max(1) as f32;
+                    let mut dy = (h * 0.9).max(1.0);
+                    if matches!(action, ShortcutAction::PageUp) {
+                      dy = -dy;
                     }
-                     ShortcutAction::Copy => self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id }),
-                     ShortcutAction::Cut => self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id }),
-                     ShortcutAction::SelectAll => {
-                       self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id })
-                    }
-                    ShortcutAction::Paste => {
-                      if let Ok(mut clipboard) = Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                          // egui-winit can also emit `egui::Event::Paste` from Ctrl/Cmd+V. Suppress
-                          // it for this frame to avoid double pastes.
-                          self.suppress_paste_events = true;
-                          self
-                            .send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
-                        }
-                      }
-                    }
-                    _ => {}
+                    self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                      tab_id,
+                      delta_css: (0.0, dy),
+                      pointer_css: None,
+                    });
                   }
-                 return;
+                  ShortcutAction::Copy => {
+                    self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id })
+                  }
+                  ShortcutAction::Cut => {
+                    self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id })
+                  }
+                  ShortcutAction::SelectAll => {
+                    self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id })
+                  }
+                  ShortcutAction::Paste => {
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                      if let Ok(text) = clipboard.get_text() {
+                        // egui-winit can also emit `egui::Event::Paste` from Ctrl/Cmd+V. Suppress
+                        // it for this frame to avoid double pastes.
+                        self.suppress_paste_events = true;
+                        self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                      }
+                    }
+                  }
+                  _ => {}
                 }
+                return;
+              }
               // Allow these keys to be forwarded to the page so focused text controls can handle
               // them for caret navigation and text entry.
               ShortcutAction::Space | ShortcutAction::Home | ShortcutAction::End => {}
@@ -3446,23 +3476,27 @@ error: {err}",
             let dark = ui.visuals().dark_mode;
             let (r, g, b) = if dark { (255, 255, 255) } else { (0, 0, 0) };
 
-            let draw_scrollbar =
-              |scrollbar: fastrender::ui::scrollbars::OverlayScrollbar, dragging: bool| {
-                let thickness_points = match scrollbar.axis {
-                  fastrender::ui::scrollbars::ScrollbarAxis::Vertical => scrollbar.track_rect_points.width(),
-                  fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => scrollbar.track_rect_points.height(),
-                };
-                let rounding = egui::Rounding::same((thickness_points * 0.5).max(0.0));
-                let track = to_egui_rect(scrollbar.track_rect_points);
-                let thumb = to_egui_rect(scrollbar.thumb_rect_points);
-
-                let track_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 32);
-                let thumb_alpha = if dragging { 196 } else { 128 };
-                let thumb_color = egui::Color32::from_rgba_unmultiplied(r, g, b, thumb_alpha);
-
-                painter.rect_filled(track, rounding, track_color);
-                painter.rect_filled(thumb, rounding, thumb_color);
+            let draw_scrollbar = |scrollbar: fastrender::ui::scrollbars::OverlayScrollbar,
+                                  dragging: bool| {
+              let thickness_points = match scrollbar.axis {
+                fastrender::ui::scrollbars::ScrollbarAxis::Vertical => {
+                  scrollbar.track_rect_points.width()
+                }
+                fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => {
+                  scrollbar.track_rect_points.height()
+                }
               };
+              let rounding = egui::Rounding::same((thickness_points * 0.5).max(0.0));
+              let track = to_egui_rect(scrollbar.track_rect_points);
+              let thumb = to_egui_rect(scrollbar.thumb_rect_points);
+
+              let track_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 32);
+              let thumb_alpha = if dragging { 196 } else { 128 };
+              let thumb_color = egui::Color32::from_rgba_unmultiplied(r, g, b, thumb_alpha);
+
+              painter.rect_filled(track, rounding, track_color);
+              painter.rect_filled(thumb, rounding, thumb_color);
+            };
 
             if let Some(v) = self.overlay_scrollbars.vertical {
               let dragging = self

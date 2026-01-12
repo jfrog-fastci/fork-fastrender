@@ -139,7 +139,10 @@ fn sync_progress_accuracy_writes_accuracy_block() {
   assert_eq!(mismatch.get("x").and_then(|v| v.as_u64()), Some(10));
   assert_eq!(mismatch.get("y").and_then(|v| v.as_u64()), Some(20));
   assert_eq!(
-    mismatch.get("baseline_rgba").and_then(|v| v.as_array()).map(|arr| arr.len()),
+    mismatch
+      .get("baseline_rgba")
+      .and_then(|v| v.as_array())
+      .map(|arr| arr.len()),
     Some(4)
   );
   assert_eq!(
@@ -151,7 +154,10 @@ fn sync_progress_accuracy_writes_accuracy_block() {
     Some(1)
   );
   assert_eq!(
-    mismatch.get("rendered_rgba").and_then(|v| v.as_array()).map(|arr| arr.len()),
+    mismatch
+      .get("rendered_rgba")
+      .and_then(|v| v.as_array())
+      .map(|arr| arr.len()),
     Some(4)
   );
   assert_eq!(

@@ -130,7 +130,9 @@ pub fn parse_wgpu_backends(raw: &str) -> Result<wgpu::Backends, BrowserCliError>
   Ok(backends)
 }
 
-pub fn parse_wgpu_backends_env(raw: Option<&str>) -> Result<Option<wgpu::Backends>, BrowserCliError> {
+pub fn parse_wgpu_backends_env(
+  raw: Option<&str>,
+) -> Result<Option<wgpu::Backends>, BrowserCliError> {
   let Some(raw) = raw else {
     return Ok(None);
   };
@@ -138,9 +140,8 @@ pub fn parse_wgpu_backends_env(raw: Option<&str>) -> Result<Option<wgpu::Backend
   if raw.is_empty() {
     return Ok(None);
   }
-  let parsed = parse_wgpu_backends(raw).map_err(|err| {
-    BrowserCliError::new(format!("{ENV_WGPU_BACKENDS}: {}", err.message))
-  })?;
+  let parsed = parse_wgpu_backends(raw)
+    .map_err(|err| BrowserCliError::new(format!("{ENV_WGPU_BACKENDS}: {}", err.message)))?;
   Ok(Some(parsed))
 }
 
@@ -190,9 +191,10 @@ pub fn parse_browser_cli_args(args: &[String]) -> Result<BrowserCliAction, Brows
             "wgpu backend was already set; remove duplicate {arg}"
           )));
         }
-        wgpu_backends = Some(parse_wgpu_backends(value).map_err(|err| {
-          BrowserCliError::new(format!("{arg}: {}", err.message))
-        })?);
+        wgpu_backends = Some(
+          parse_wgpu_backends(value)
+            .map_err(|err| BrowserCliError::new(format!("{arg}: {}", err.message)))?,
+        );
       }
       other => {
         if let Some(value) = other
@@ -204,19 +206,24 @@ pub fn parse_browser_cli_args(args: &[String]) -> Result<BrowserCliAction, Brows
               "wgpu backend was already set; remove duplicate --wgpu-backend/--wgpu-backends",
             ));
           }
-          wgpu_backends = Some(parse_wgpu_backends(value).map_err(|err| {
-            BrowserCliError::new(format!("--wgpu-backend: {}", err.message))
-          })?);
+          wgpu_backends = Some(
+            parse_wgpu_backends(value)
+              .map_err(|err| BrowserCliError::new(format!("--wgpu-backend: {}", err.message)))?,
+          );
           continue;
         }
 
         if other.starts_with('-') {
-          return Err(BrowserCliError::new(format!("unexpected argument: {other:?}")));
+          return Err(BrowserCliError::new(format!(
+            "unexpected argument: {other:?}"
+          )));
         }
         if raw_url.is_none() {
           raw_url = Some(other.to_string());
         } else {
-          return Err(BrowserCliError::new(format!("unexpected argument: {other:?}")));
+          return Err(BrowserCliError::new(format!(
+            "unexpected argument: {other:?}"
+          )));
         }
       }
     }
@@ -300,7 +307,10 @@ mod tests {
   fn parse_wgpu_backends_env_values() {
     assert_eq!(parse_wgpu_backends_env(None), Ok(None));
     assert_eq!(parse_wgpu_backends_env(Some("")), Ok(None));
-    assert_eq!(parse_wgpu_backends_env(Some("gl")), Ok(Some(wgpu::Backends::GL)));
+    assert_eq!(
+      parse_wgpu_backends_env(Some("gl")),
+      Ok(Some(wgpu::Backends::GL))
+    );
 
     let err = parse_wgpu_backends_env(Some("wat")).expect_err("expected error");
     assert!(
@@ -312,13 +322,8 @@ mod tests {
 
   #[test]
   fn resolve_wgpu_options_prefers_cli_over_env() {
-    let options = resolve_wgpu_options(
-      true,
-      Some(wgpu::Backends::GL),
-      Some("0"),
-      Some("vulkan"),
-    )
-    .unwrap();
+    let options =
+      resolve_wgpu_options(true, Some(wgpu::Backends::GL), Some("0"), Some("vulkan")).unwrap();
     assert!(options.force_fallback_adapter);
     assert_eq!(options.backends, wgpu::Backends::GL);
   }

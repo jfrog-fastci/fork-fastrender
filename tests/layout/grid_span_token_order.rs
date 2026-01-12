@@ -75,4 +75,3 @@ fn grid_column_span_token_order_matches_span_syntax() {
     reordered_item.bounds.width()
   );
 }
-

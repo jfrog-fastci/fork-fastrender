@@ -7,4 +7,3 @@ fn test_render_delay_hook_is_linkable_without_browser_ui() {
   // without requiring the `browser_ui` feature.
   fastrender::render_control::set_test_render_delay_ms(None);
 }
-

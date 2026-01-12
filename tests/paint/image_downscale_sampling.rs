@@ -1,5 +1,7 @@
 use fastrender::geometry::Rect;
-use fastrender::paint::display_list::{DisplayItem, DisplayList, ImageData, ImageFilterQuality, ImageItem};
+use fastrender::paint::display_list::{
+  DisplayItem, DisplayList, ImageData, ImageFilterQuality, ImageItem,
+};
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::style::color::Rgba;
 use fastrender::text::font_loader::FontContext;
@@ -49,7 +51,11 @@ fn image_linear_downscale_with_fractional_dest_size_matches_pixel_center_grid() 
   let (image, values) = grayscale_gradient(10);
   let dest_rect = Rect::from_xywh(0.0, 0.0, 7.5, 1.0);
   let expected = expected_linear_samples(&values, dest_rect.x(), dest_rect.width());
-  assert_eq!(expected.len(), 7, "expected pixel-center coverage to be 7px wide");
+  assert_eq!(
+    expected.len(),
+    7,
+    "expected pixel-center coverage to be 7px wide"
+  );
 
   let mut list = DisplayList::new();
   list.push(DisplayItem::Image(ImageItem {
@@ -77,7 +83,12 @@ fn image_linear_downscale_with_fractional_dest_size_matches_pixel_center_grid() 
   // untouched.
   let trailing = pixmap.pixel(7, 0).expect("trailing pixel inside viewport");
   assert_eq!(
-    (trailing.red(), trailing.green(), trailing.blue(), trailing.alpha()),
+    (
+      trailing.red(),
+      trailing.green(),
+      trailing.blue(),
+      trailing.alpha()
+    ),
     (0, 0, 0, 0),
     "expected the pixel beyond the fractional edge to remain background"
   );
@@ -90,7 +101,11 @@ fn image_linear_downscale_with_subpixel_translation_matches_pixel_center_grid() 
   let (image, values) = grayscale_gradient(10);
   let dest_rect = Rect::from_xywh(0.3, 0.0, 7.0, 1.0);
   let expected = expected_linear_samples(&values, dest_rect.x(), dest_rect.width());
-  assert_eq!(expected.len(), 7, "expected pixel-center coverage to be 7px wide");
+  assert_eq!(
+    expected.len(),
+    7,
+    "expected pixel-center coverage to be 7px wide"
+  );
 
   let mut list = DisplayList::new();
   list.push(DisplayItem::Image(ImageItem {
@@ -116,9 +131,13 @@ fn image_linear_downscale_with_subpixel_translation_matches_pixel_center_grid() 
 
   let trailing = pixmap.pixel(7, 0).expect("trailing pixel inside viewport");
   assert_eq!(
-    (trailing.red(), trailing.green(), trailing.blue(), trailing.alpha()),
+    (
+      trailing.red(),
+      trailing.green(),
+      trailing.blue(),
+      trailing.alpha()
+    ),
     (0, 0, 0, 0),
     "expected the pixel beyond the destination rect to remain background"
   );
 }
-

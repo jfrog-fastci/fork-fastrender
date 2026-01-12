@@ -49,4 +49,3 @@ fn harness_smoke_exec_timer_advance_and_dom_mutation() -> Result<()> {
   assert_eq!(root.get_attribute_ref("data-done"), Some("1"));
   Ok(())
 }
-

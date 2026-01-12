@@ -40,4 +40,3 @@ fn stacking_context_filter_samples_offscreen_pixels_near_viewport_edge() {
     p.alpha()
   );
 }
-

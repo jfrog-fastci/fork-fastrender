@@ -32,10 +32,12 @@ fn grid_shorthand_auto_flow_detection_ignores_quoted_area_strings() {
     styles.grid_template_areas,
     vec![vec![Some("auto-flow".to_string())]]
   );
-  assert_eq!(styles.grid_template_rows, vec![GridTrack::Length(Length::px(10.0))]);
+  assert_eq!(
+    styles.grid_template_rows,
+    vec![GridTrack::Length(Length::px(10.0))]
+  );
   assert_eq!(
     styles.grid_template_columns,
     vec![GridTrack::Length(Length::px(20.0))]
   );
 }
-

@@ -350,8 +350,7 @@ fn style_sharing_does_not_mix_case_sensitive_attribute_values() {
   set_style_sharing_stats_enabled(true);
   reset_style_sharing_stats();
 
-  let css =
-    ".item { color: rgb(0, 0, 255); }\n[data-x=\"Foo\"] { color: rgb(255, 0, 0); }\n";
+  let css = ".item { color: rgb(0, 0, 255); }\n[data-x=\"Foo\"] { color: rgb(255, 0, 0); }\n";
   let stylesheet = parse_stylesheet(css).expect("stylesheet parses");
 
   let html = "<div id=\"root\"><div class=\"item\" data-x=\"Foo\"></div><div class=\"item\" data-x=\"foo\"></div></div>";

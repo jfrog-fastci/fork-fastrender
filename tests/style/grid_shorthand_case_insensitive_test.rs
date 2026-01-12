@@ -30,10 +30,12 @@ fn grid_shorthand_auto_flow_keywords_are_ascii_case_insensitive() {
   );
 
   assert_eq!(styles.grid_auto_flow, GridAutoFlow::ColumnDense);
-  assert_eq!(styles.grid_auto_rows[0], GridTrack::Length(Length::px(10.0)));
+  assert_eq!(
+    styles.grid_auto_rows[0],
+    GridTrack::Length(Length::px(10.0))
+  );
   assert_eq!(
     styles.grid_auto_columns[0],
     GridTrack::Length(Length::px(20.0))
   );
 }
-

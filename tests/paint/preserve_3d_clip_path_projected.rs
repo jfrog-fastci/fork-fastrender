@@ -30,7 +30,12 @@ fn assert_is_white(rgba: (u8, u8, u8, u8), msg: &str) {
   );
 }
 
-fn project_to_pixel(transform: &Transform3D, x: f32, y: f32, viewport: Rect) -> (u32, u32, f32, f32) {
+fn project_to_pixel(
+  transform: &Transform3D,
+  x: f32,
+  y: f32,
+  viewport: Rect,
+) -> (u32, u32, f32, f32) {
   let (tx, ty, _tz, tw) = transform.transform_point(x, y, 0.0);
   assert!(
     tw.is_finite() && tw.abs() >= Transform3D::MIN_PROJECTIVE_W && tw > 0.0,
@@ -94,7 +99,8 @@ fn preserve_3d_projected_clip_path_polygon_clips_in_projected_space() {
     clip_rect.x() + clip_rect.width() * 0.5,
     clip_rect.y() + clip_rect.height() * 0.5,
   );
-  let (sample_x, sample_y, px, _py) = project_to_pixel(&clip_transform, center.0, center.1, root_bounds);
+  let (sample_x, sample_y, px, _py) =
+    project_to_pixel(&clip_transform, center.0, center.1, root_bounds);
   assert!(
     px < clip_rect.min_x() || px > clip_rect.max_x(),
     "expected projected x ({px}) to be outside unprojected clip rect x-range {}..{}",
@@ -171,7 +177,8 @@ fn preserve_3d_projected_clip_path_circle_clips_in_projected_space() {
     clip_rect.x() + clip_rect.width() * 0.5,
     clip_rect.y() + clip_rect.height() * 0.5,
   );
-  let (center_x, center_y, px, _py) = project_to_pixel(&clip_transform, center.0, center.1, root_bounds);
+  let (center_x, center_y, px, _py) =
+    project_to_pixel(&clip_transform, center.0, center.1, root_bounds);
   assert!(
     px < clip_rect.min_x() || px > clip_rect.max_x(),
     "expected projected x ({px}) to be outside unprojected clip rect x-range {}..{}",
@@ -229,7 +236,9 @@ fn preserve_3d_projected_clip_path_circle_clips_in_projected_space() {
 
   assert_is_red(
     pixel(&pixmap, center_x, center_y),
-    &format!("expected projected circle clip-path to preserve center pixel at ({center_x},{center_y})"),
+    &format!(
+      "expected projected circle clip-path to preserve center pixel at ({center_x},{center_y})"
+    ),
   );
   assert_is_white(
     pixel(&pixmap, outside_x, outside_y),
@@ -252,7 +261,8 @@ fn preserve_3d_projected_clip_path_ellipse_clips_in_projected_space() {
     clip_rect.x() + clip_rect.width() * 0.5,
     clip_rect.y() + clip_rect.height() * 0.5,
   );
-  let (center_x, center_y, px, _py) = project_to_pixel(&clip_transform, center.0, center.1, root_bounds);
+  let (center_x, center_y, px, _py) =
+    project_to_pixel(&clip_transform, center.0, center.1, root_bounds);
   assert!(
     px < clip_rect.min_x() || px > clip_rect.max_x(),
     "expected projected x ({px}) to be outside unprojected clip rect x-range {}..{}",
@@ -336,7 +346,8 @@ fn preserve_3d_projected_clip_path_inset_round_clips_in_projected_space() {
     clip_rect.x() + clip_rect.width() * 0.5,
     clip_rect.y() + clip_rect.height() * 0.5,
   );
-  let (center_x, center_y, px, _py) = project_to_pixel(&clip_transform, center.0, center.1, root_bounds);
+  let (center_x, center_y, px, _py) =
+    project_to_pixel(&clip_transform, center.0, center.1, root_bounds);
   assert!(
     px < clip_rect.min_x() || px > clip_rect.max_x(),
     "expected projected x ({px}) to be outside unprojected clip rect x-range {}..{}",
@@ -346,8 +357,12 @@ fn preserve_3d_projected_clip_path_inset_round_clips_in_projected_space() {
 
   // A point inside the inset rect but outside the rounded corner.
   let outside_corner = (clip_rect.min_x() + 2.0, clip_rect.max_y() - 1.0);
-  let (corner_x, corner_y, _cpx, _cpy) =
-    project_to_pixel(&clip_transform, outside_corner.0, outside_corner.1, root_bounds);
+  let (corner_x, corner_y, _cpx, _cpy) = project_to_pixel(
+    &clip_transform,
+    outside_corner.0,
+    outside_corner.1,
+    root_bounds,
+  );
 
   let mut list = DisplayList::new();
   list.push(DisplayItem::PushStackingContext(ctx(
@@ -449,7 +464,10 @@ fn preserve_3d_projected_clip_path_respects_evenodd_fill_rule() {
 
   // Point inside the hole. If the fill rule is ignored (treated as winding), this pixel would be
   // painted red.
-  let hole_center = (hole.x() + hole.width() * 0.5, hole.y() + hole.height() * 0.5);
+  let hole_center = (
+    hole.x() + hole.width() * 0.5,
+    hole.y() + hole.height() * 0.5,
+  );
   let (_hole_px, _hole_py, hole_x, hole_y) = project(hole_center.0, hole_center.1);
 
   let mut builder = tiny_skia::PathBuilder::new();

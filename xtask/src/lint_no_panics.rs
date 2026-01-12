@@ -368,8 +368,7 @@ fn parse_external_mod_decl(item: &str) -> Option<ExternalModDecl> {
   i = skip_ws_and_comments(bytes, i);
 
   // Optional `pub` visibility.
-  if starts_with_token(bytes, i, b"pub")
-    && !bytes.get(i + 3).is_some_and(|b| is_ident_continue(*b))
+  if starts_with_token(bytes, i, b"pub") && !bytes.get(i + 3).is_some_and(|b| is_ident_continue(*b))
   {
     i += 3;
     i = skip_ws_and_comments(bytes, i);
@@ -542,7 +541,8 @@ fn write_baseline(repo_root: &Path, violations: &[Violation]) -> Result<()> {
       .with_context(|| format!("create baseline dir {}", parent.display()))?;
   }
   let json = serde_json::to_string_pretty(&entries).context("serialize baseline JSON")?;
-  fs::write(&path, format!("{json}\n")).with_context(|| format!("write baseline {}", path.display()))?;
+  fs::write(&path, format!("{json}\n"))
+    .with_context(|| format!("write baseline {}", path.display()))?;
   Ok(())
 }
 
@@ -736,11 +736,7 @@ fn attribute_range(bytes: &[u8], idx: usize) -> Option<(usize, usize, usize)> {
   None
 }
 
-fn parse_attribute<'a>(
-  source: &'a str,
-  bytes: &[u8],
-  idx: usize,
-) -> Option<(usize, &'a str)> {
+fn parse_attribute<'a>(source: &'a str, bytes: &[u8], idx: usize) -> Option<(usize, &'a str)> {
   let (end_after, content_start, content_end) = attribute_range(bytes, idx)?;
   let content = source.get(content_start..content_end)?;
   Some((end_after, content))
@@ -1197,9 +1193,7 @@ fn skip_cfg_item(bytes: &[u8], start: usize) -> usize {
           // Handle `if ... { ... } else { ... }` blocks.
           j = skip_ws_and_comments(bytes, i);
           if bytes.get(j..j + 4) == Some(b"else")
-            && !bytes
-              .get(j + 4)
-              .is_some_and(|b| is_ident_continue(*b))
+            && !bytes.get(j + 4).is_some_and(|b| is_ident_continue(*b))
           {
             i = j + 4;
             continue;
@@ -1422,7 +1416,10 @@ pub fn lint_source(path: &Path, source: &str) -> Vec<Violation> {
     }
 
     // `.unwrap()` / `.expect()`.
-    for (method, kind) in [(b"unwrap" as &[u8], ViolationKind::Unwrap), (b"expect", ViolationKind::Expect)] {
+    for (method, kind) in [
+      (b"unwrap" as &[u8], ViolationKind::Unwrap),
+      (b"expect", ViolationKind::Expect),
+    ] {
       if b == b'.' && starts_with_token(bytes, i + 1, method) {
         let after = i + 1 + method.len();
         if bytes.get(after).is_some_and(|b| is_ident_continue(*b)) {
@@ -1474,7 +1471,11 @@ pub fn allowlisted() {
 "#;
 
     let violations = lint_source(Path::new("demo.rs"), src);
-    assert_eq!(violations.len(), 1, "expected exactly one violation: {violations:#?}");
+    assert_eq!(
+      violations.len(),
+      1,
+      "expected exactly one violation: {violations:#?}"
+    );
     assert_eq!(violations[0].kind, ViolationKind::Unwrap);
     assert_eq!(violations[0].line, 4);
   }
@@ -1490,7 +1491,10 @@ pub fn demo() {
 "#;
 
     let violations = lint_source(Path::new("demo.rs"), src);
-    assert!(violations.is_empty(), "expected allow markers to suppress: {violations:#?}");
+    assert!(
+      violations.is_empty(),
+      "expected allow markers to suppress: {violations:#?}"
+    );
   }
 
   #[test]
@@ -1505,7 +1509,11 @@ pub fn demo() {
 "#;
 
     let violations = lint_source(Path::new("demo.rs"), src);
-    assert_eq!(violations.len(), 4, "expected four violations: {violations:#?}");
+    assert_eq!(
+      violations.len(),
+      4,
+      "expected four violations: {violations:#?}"
+    );
     assert_eq!(violations[0].kind, ViolationKind::Assert);
     assert_eq!(violations[0].line, 3);
     assert_eq!(violations[1].kind, ViolationKind::AssertEq);
@@ -1549,7 +1557,10 @@ pub fn demo() {
 "#;
 
     let violations = lint_source(Path::new("demo.rs"), src);
-    assert!(violations.is_empty(), "expected allow markers to suppress: {violations:#?}");
+    assert!(
+      violations.is_empty(),
+      "expected allow markers to suppress: {violations:#?}"
+    );
   }
 
   #[test]

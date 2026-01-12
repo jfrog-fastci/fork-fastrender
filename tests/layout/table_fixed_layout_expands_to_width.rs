@@ -181,7 +181,10 @@ fn table_fixed_layout_expands_to_specified_width_rtl() {
   }
 
   let gap = a.x() - (b.x() + b.width());
-  assert!(gap.abs() < 0.1, "expected cells to be adjacent in RTL (gap={gap})");
+  assert!(
+    gap.abs() < 0.1,
+    "expected cells to be adjacent in RTL (gap={gap})"
+  );
 }
 
 #[test]
@@ -324,5 +327,8 @@ fn table_fixed_layout_expands_to_specified_width_collapsed_border_model_rtl() {
   }
 
   let gap = a.x() - (b.x() + b.width());
-  assert!(gap.abs() < 0.1, "expected cells to be adjacent in RTL (gap={gap})");
+  assert!(
+    gap.abs() < 0.1,
+    "expected cells to be adjacent in RTL (gap={gap})"
+  );
 }

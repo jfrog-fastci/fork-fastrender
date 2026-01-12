@@ -9,8 +9,8 @@ pub use webidl_bindings_core::overload_resolution::*;
 mod tests {
   use super::*;
   use crate::JsRuntime;
-  use crate::WebIdlJsRuntime;
   use crate::VmJsRuntime;
+  use crate::WebIdlJsRuntime;
   use vm_js::{PropertyKey, Value, VmError};
   use webidl_ir::{DefaultValue, IdlType, NamedTypeKind, NumericType};
 
@@ -32,7 +32,9 @@ mod tests {
     let Value::String(key) = key_value else {
       panic!("expected string value for key");
     };
-    let msg = rt.get(Value::Object(obj), PropertyKey::String(key)).unwrap();
+    let msg = rt
+      .get(Value::Object(obj), PropertyKey::String(key))
+      .unwrap();
     let msg = rt.to_string(msg).unwrap();
     let Value::String(msg) = msg else {
       panic!("expected string message");
@@ -170,17 +172,13 @@ mod tests {
     assert_eq!(out.values.len(), 1);
 
     // f(Node, "b") selects f2.
-    let node = rt
-      .alloc_platform_object_value("Node", &[], 1)
-      .unwrap();
+    let node = rt.alloc_platform_object_value("Node", &[], 1).unwrap();
     let b = rt.alloc_string_value("b").unwrap();
     let out = resolve_overload(&mut rt, &overloads, &[node, b]).unwrap();
     assert_eq!(out.overload_index, 1);
 
     // f(Event, "b", undefined) selects f4 and marks optional c as missing.
-    let event = rt
-      .alloc_platform_object_value("Event", &[], 2)
-      .unwrap();
+    let event = rt.alloc_platform_object_value("Event", &[], 2).unwrap();
     let out = resolve_overload(&mut rt, &overloads, &[event, b, Value::Undefined]).unwrap();
     assert_eq!(out.overload_index, 3);
     assert_eq!(

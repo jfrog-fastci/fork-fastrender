@@ -3510,8 +3510,8 @@ mod tests {
       }
     }
 
-    let stylesheet = parse_stylesheet(r#"@import "a.css"; .after { color: red; }"#)
-      .expect("stylesheet parses");
+    let stylesheet =
+      parse_stylesheet(r#"@import "a.css"; .after { color: red; }"#).expect("stylesheet parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
     let err = stylesheet
@@ -3558,8 +3558,8 @@ mod tests {
     let loader = FailingLoader {
       requests: RefCell::new(Vec::new()),
     };
-    let stylesheet = parse_stylesheet(r#"@import "a.css"; .after { color: red; }"#)
-      .expect("stylesheet parses");
+    let stylesheet =
+      parse_stylesheet(r#"@import "a.css"; .after { color: red; }"#).expect("stylesheet parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
     let resolved = stylesheet

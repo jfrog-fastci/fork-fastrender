@@ -58,4 +58,3 @@ fn clip_rect_clips_stacking_context_children() {
   // Pixel inside the child but outside the clip rect stays white.
   assert_eq!(pixel(&pixmap, 5, 2), (255, 255, 255, 255));
 }
-

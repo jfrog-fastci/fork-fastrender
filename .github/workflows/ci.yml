@@ -680,7 +680,10 @@ jobs:
           fi
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        # `cargo fmt --all` also formats local path dependencies, including the nested
+        # `vendor/ecma-rs` workspace. Keep the formatting gate scoped to the top-level
+        # workspace to avoid churn from submodule updates.
+        run: cargo fmt --check
 
   # ===========================================================================
   # Docs Job - Check documentation builds

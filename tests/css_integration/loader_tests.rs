@@ -302,7 +302,10 @@ fn inline_imports_respects_depth_budget() {
         None,
       ))
     } else {
-      Ok(FetchedStylesheet::new("b { color: green; }".to_string(), None))
+      Ok(FetchedStylesheet::new(
+        "b { color: green; }".to_string(),
+        None,
+      ))
     }
   };
   let mut diags: Vec<(String, String)> = Vec::new();

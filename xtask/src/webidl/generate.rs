@@ -318,7 +318,9 @@ pub fn rustfmt(source: &str, rustfmt_config_path: &Path) -> Result<String> {
 
   {
     let mut stdin = child.stdin.take().context("take rustfmt stdin")?;
-    stdin.write_all(source.as_bytes()).context("write rustfmt stdin")?;
+    stdin
+      .write_all(source.as_bytes())
+      .context("write rustfmt stdin")?;
   }
 
   let output = child
@@ -341,7 +343,9 @@ pub fn rustfmt(source: &str, rustfmt_config_path: &Path) -> Result<String> {
   // which breaks consumers expecting valid Rust source on stdout. Strip it when detected.
   if let Some((maybe_path, rest)) = formatted.split_once("\n\n") {
     if maybe_path.ends_with(':')
-      && (maybe_path.contains('/') || maybe_path.contains('\\') || matches!(maybe_path, "stdin:" | "<stdin>:"))
+      && (maybe_path.contains('/')
+        || maybe_path.contains('\\')
+        || matches!(maybe_path, "stdin:" | "<stdin>:"))
     {
       formatted = rest.to_string();
     }

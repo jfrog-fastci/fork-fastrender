@@ -118,7 +118,8 @@ fn display_list_outline_cache_reused_across_font_sizes() {
     // auto-populates `opsz` based on the font size when `font-optical-sizing` is `auto`, which
     // would (correctly) make outlines differ between sizes. Disable optical sizing so both sizes
     // share the same variation coordinates and can reuse the cached outline.
-    let font_base64 = general_purpose::STANDARD.encode(include_bytes!("../fonts/RobotoFlex-VF.ttf"));
+    let font_base64 =
+      general_purpose::STANDARD.encode(include_bytes!("../fonts/RobotoFlex-VF.ttf"));
     let html = format!(
       "<style>@font-face{{font-family:\"RobotoFlex\";src:url(\"data:font/ttf;base64,{font_base64}\") \
        format(\"truetype\");}}body{{margin:0;font-family:\"RobotoFlex\";font-optical-sizing:none;}}</style>\
@@ -159,7 +160,8 @@ fn display_list_reports_color_glyph_rasters() {
       "display_list".to_string(),
     )]));
 
-    let font_base64 = general_purpose::STANDARD.encode(include_bytes!("../fonts/ColorBitmapTest.ttf"));
+    let font_base64 =
+      general_purpose::STANDARD.encode(include_bytes!("../fonts/ColorBitmapTest.ttf"));
     let html = format!(
       r#"
         <style>

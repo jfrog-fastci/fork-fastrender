@@ -1,13 +1,13 @@
 use fastrender::js::bindings::{
-  install_worker_bindings, install_window_bindings, BindingValue, WebHostBindings,
+  install_window_bindings, install_worker_bindings, BindingValue, WebHostBindings,
 };
+use fastrender::js::webidl::legacy::VmJsRuntime;
 use fastrender::js::webidl::{
   InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlHooks, WebIdlLimits,
 };
-use fastrender::js::webidl::legacy::VmJsRuntime;
 use vm_js::{
-  ExecutionContext, Heap, HeapLimits, MicrotaskQueue, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmOptions,
+  ExecutionContext, Heap, HeapLimits, MicrotaskQueue, PropertyKey, PropertyKind, Realm, Scope,
+  Value, Vm, VmError, VmOptions,
 };
 use webidl_js_runtime::JsRuntime as _;
 
@@ -74,7 +74,11 @@ fn value_to_utf8_lossy(rt: &VmJsRuntime, value: Value) -> String {
   rt.heap().get_string(s).unwrap().to_utf8_lossy()
 }
 
-fn assert_legacy_array(rt: &mut VmJsRuntime, value: Value, expected: &[&str]) -> Result<(), VmError> {
+fn assert_legacy_array(
+  rt: &mut VmJsRuntime,
+  value: Value,
+  expected: &[&str],
+) -> Result<(), VmError> {
   let Value::Object(obj) = value else {
     return Err(VmError::TypeError("expected array object"));
   };
@@ -118,7 +122,10 @@ fn run_legacy_install_and_call_get_all(
   };
   install(&mut rt, &mut host)?;
 
-  let global = <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<ReturnArrayHost>>::global_object(&mut rt)?;
+  let global =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<ReturnArrayHost>>::global_object(
+      &mut rt,
+    )?;
 
   let ctor = legacy_get_method(&mut rt, global, "URLSearchParams")?;
   let proto = legacy_get(&mut rt, ctor, "prototype")?;

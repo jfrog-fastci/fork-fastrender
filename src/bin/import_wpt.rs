@@ -253,7 +253,9 @@ enum ImportError {
 
 fn compile_regex(label: &str, pattern: &str) -> Result<Regex> {
   Regex::new(pattern).map_err(|e| {
-    ImportError::Message(format!("internal error: failed to compile {label} regex: {e}"))
+    ImportError::Message(format!(
+      "internal error: failed to compile {label} regex: {e}"
+    ))
   })
 }
 
@@ -1505,12 +1507,18 @@ fn find_network_urls_strict(content: &str) -> Result<Vec<String>> {
     // logic so strict mode can scan broadly without being tripped up by `data:` payloads.
     let mut spans = Vec::new();
 
-    let double_quoted =
-      compile_regex("data url span double quoted", r#"(?is)"(?P<url>data:[^"]*)""#)?;
-    let single_quoted =
-      compile_regex("data url span single quoted", r#"(?is)'(?P<url>data:[^']*)'"#)?;
-    let css_url_unquoted =
-      compile_regex("data url span css url()", r#"(?is)url\(\s*(?P<url>data:[^)]*)\)"#)?;
+    let double_quoted = compile_regex(
+      "data url span double quoted",
+      r#"(?is)"(?P<url>data:[^"]*)""#,
+    )?;
+    let single_quoted = compile_regex(
+      "data url span single quoted",
+      r#"(?is)'(?P<url>data:[^']*)'"#,
+    )?;
+    let css_url_unquoted = compile_regex(
+      "data url span css url()",
+      r#"(?is)url\(\s*(?P<url>data:[^)]*)\)"#,
+    )?;
 
     for caps in double_quoted.captures_iter(content) {
       if let Some(m) = caps.name("url") {
@@ -1544,8 +1552,7 @@ fn find_network_urls_strict(content: &str) -> Result<Vec<String>> {
     "strict offline http url",
     r#"(?i)https?://[^\s"'<>)]{1,200}"#,
   )?;
-  let scheme_re =
-    compile_regex("strict offline scheme url", r#"(?i)//[^\s"'<>)]{1,200}"#)?;
+  let scheme_re = compile_regex("strict offline scheme url", r#"(?i)//[^\s"'<>)]{1,200}"#)?;
 
   let data_spans = data_url_spans(content)?;
   let content_bytes = content.as_bytes();
@@ -1851,8 +1858,8 @@ mod tests {
     assert!(!test_html.contains("src='/resources/"));
     assert!(test_html.contains("reftest-ref.html"));
 
-    let unquoted = fs::read_to_string(out_dir.path().join("wpt/css/simple/reftest-unquoted.html"))
-      .unwrap();
+    let unquoted =
+      fs::read_to_string(out_dir.path().join("wpt/css/simple/reftest-unquoted.html")).unwrap();
     assert!(!unquoted.contains("href=\"/resources/"));
     assert!(!unquoted.contains("href='/resources/"));
     assert!(!unquoted.contains("src=\"/resources/"));
@@ -1998,8 +2005,7 @@ mod tests {
     assert!(!imported.contains("srcset=\""));
     assert!(!imported.contains("srcset='"));
     assert!(!imported.contains("srcset=/resources/"));
-    let srcset_attr =
-      Regex::new("(?i)\\ssrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
+    let srcset_attr = Regex::new("(?i)\\ssrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
     let srcset_caps = srcset_attr.captures(&imported).expect("srcset attribute");
     let srcset_value = srcset_caps.name("value").unwrap().as_str();
     assert!(!srcset_value.starts_with('/'));
@@ -2390,17 +2396,19 @@ mod tests {
 
     run_import(config).expect("import should succeed");
 
-    let imported =
-      fs::read_to_string(out_dir.path().join("out/html/network/imagesrcset-unquoted.html"))
-        .unwrap();
+    let imported = fs::read_to_string(
+      out_dir
+        .path()
+        .join("out/html/network/imagesrcset-unquoted.html"),
+    )
+    .unwrap();
     assert!(!imported.contains("web-platform.test"));
     assert!(!imported.contains("http://"));
     assert!(!imported.contains("https://"));
     assert!(!imported.contains("imagesrcset=\""));
     assert!(!imported.contains("imagesrcset='"));
     assert!(!imported.contains("imagesrcset=/resources/"));
-    let imagesrcset_attr =
-      Regex::new("(?i)\\simagesrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
+    let imagesrcset_attr = Regex::new("(?i)\\simagesrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
     let imagesrcset_caps = imagesrcset_attr
       .captures(&imported)
       .expect("imagesrcset attribute");

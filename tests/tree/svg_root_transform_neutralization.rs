@@ -60,4 +60,3 @@ fn svg_root_transform_attribute_is_neutralized_in_serialized_markup() {
     "serialized root svg must neutralize transform via style attribute: {style}"
   );
 }
-

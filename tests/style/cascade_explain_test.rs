@@ -38,8 +38,8 @@ fn explain_property_matches_cascade_winner_and_ordering() {
   let target = find_by_id(&styled, "target").expect("target node");
   assert_eq!(target.styles.color, Rgba::rgb(10, 11, 12));
 
-  let explain =
-    explain_property_for_node(&dom, &sheet, &media, None, target.node_id, "color").expect("explain");
+  let explain = explain_property_for_node(&dom, &sheet, &media, None, target.node_id, "color")
+    .expect("explain");
   assert_eq!(explain.winner, Some(3));
   assert_eq!(explain.candidates_in_cascade_order.len(), 4);
 
@@ -71,4 +71,3 @@ fn explain_property_matches_cascade_winner_and_ordering() {
     target.styles.color.to_string()
   );
 }
-

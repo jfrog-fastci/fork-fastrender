@@ -487,7 +487,11 @@ fn flex_pagination_does_not_split_row_gap_across_pages() {
     vec![],
   );
 
-  let flex = BoxNode::new_block(flex_style, FormattingContextType::Flex, vec![item_a, item_b]);
+  let flex = BoxNode::new_block(
+    flex_style,
+    FormattingContextType::Flex,
+    vec![item_a, item_b],
+  );
   let root = BoxNode::new_block(
     Arc::new(ComputedStyle::default()),
     FormattingContextType::Block,

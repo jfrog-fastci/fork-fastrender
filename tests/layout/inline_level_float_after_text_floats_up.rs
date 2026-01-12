@@ -7,7 +7,11 @@ use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
 use std::sync::Arc;
 
-fn find_float_fragment<'a>(node: &'a FragmentNode, width: f32, height: f32) -> Option<&'a FragmentNode> {
+fn find_float_fragment<'a>(
+  node: &'a FragmentNode,
+  width: f32,
+  height: f32,
+) -> Option<&'a FragmentNode> {
   if matches!(node.content, FragmentContent::Block { .. })
     && (node.bounds.width() - width).abs() < 0.01
     && (node.bounds.height() - height).abs() < 0.01
@@ -43,11 +47,8 @@ fn inline_level_float_after_text_floats_up_to_line_top() {
   float_style.float = Float::Right;
   float_style.width = Some(Length::px(50.0));
   float_style.height = Some(Length::px(10.0));
-  let float_node = BoxNode::new_inline_block(
-    Arc::new(float_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let float_node =
+    BoxNode::new_inline_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
 
   let root = BoxNode::new_block(
     Arc::new(root_style),
@@ -57,7 +58,9 @@ fn inline_level_float_after_text_floats_up_to_line_top() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let float_frag =
     find_float_fragment(&fragment, 50.0, 10.0).expect("expected to find float fragment");

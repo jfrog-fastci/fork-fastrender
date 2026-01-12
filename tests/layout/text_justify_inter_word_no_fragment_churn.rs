@@ -67,4 +67,3 @@ fn text_justify_inter_word_does_not_split_text_into_fragments() {
     line.bounds.width()
   );
 }
-

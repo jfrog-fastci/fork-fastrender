@@ -18,14 +18,23 @@ use fastrender::Rect;
 use fastrender::Size;
 use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let mut stack = vec![fragment];
   while let Some(node) = stack.pop() {
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -43,9 +52,15 @@ fn find_abs_bounds_by_box_id(fragment: &FragmentNode, box_id: usize) -> Option<R
     let abs_bounds = node.bounds.translate(origin);
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -119,8 +134,11 @@ fn abspos_descendant_inside_inline_wrapper_uses_positioned_ancestor_containing_b
   let mut link = BoxNode::new_inline(Arc::new(link_style), vec![img]);
   link.id = 2;
 
-  let mut positioned =
-    BoxNode::new_block(Arc::new(positioned_style), FormattingContextType::Block, vec![link]);
+  let mut positioned = BoxNode::new_block(
+    Arc::new(positioned_style),
+    FormattingContextType::Block,
+    vec![link],
+  );
   positioned.id = 1;
 
   let root = BoxNode::new_block(
@@ -191,8 +209,11 @@ fn abspos_inset_offsets_resolve_against_padding_edge_in_block_layout() {
   let mut link = BoxNode::new_inline(Arc::new(link_style), vec![abs_child]);
   link.id = 2;
 
-  let mut positioned =
-    BoxNode::new_block(Arc::new(positioned_style), FormattingContextType::Block, vec![link]);
+  let mut positioned = BoxNode::new_block(
+    Arc::new(positioned_style),
+    FormattingContextType::Block,
+    vec![link],
+  );
   positioned.id = 1;
 
   let root = BoxNode::new_block(

@@ -73,7 +73,8 @@ impl ParsedPropertyValueCacheKey {
 type ParsedPropertyValueCache = LruCache<ParsedPropertyValueCacheKey, PropertyValue, FxBuildHasher>;
 
 fn new_cache() -> ParsedPropertyValueCache {
-  let cap = NonZeroUsize::new(PARSED_PROPERTY_VALUE_CACHE_CAPACITY.max(1)).unwrap_or(NonZeroUsize::MIN);
+  let cap =
+    NonZeroUsize::new(PARSED_PROPERTY_VALUE_CACHE_CAPACITY.max(1)).unwrap_or(NonZeroUsize::MIN);
   ParsedPropertyValueCache::with_hasher(cap, FxBuildHasher::default())
 }
 

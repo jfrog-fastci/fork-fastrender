@@ -23,7 +23,11 @@ fn intrinsic_min_content_width_nowrap_sums_inline_blocks() {
 
     let mut style = ComputedStyle::default();
     style.display = Display::InlineBlock;
-    BoxNode::new_inline_block(Arc::new(style), FormattingContextType::Block, vec![replaced])
+    BoxNode::new_inline_block(
+      Arc::new(style),
+      FormattingContextType::Block,
+      vec![replaced],
+    )
   };
 
   let mk_container = |white_space: WhiteSpace| {

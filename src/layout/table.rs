@@ -90,13 +90,13 @@ use crate::{
   render_control::StageHeartbeatGuard,
 };
 use rayon::prelude::*;
+use rustc_hash::FxHasher;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use rustc_hash::FxHasher;
 
 const TABLE_PARALLEL_MAX_THREADS: usize = 8;
 
@@ -1112,7 +1112,10 @@ fn with_cell_emptiness_cache<R>(
 }
 
 fn is_ascii_whitespace_char(c: char) -> bool {
-  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+  matches!(
+    c,
+    '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+  )
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -1527,7 +1530,10 @@ impl StyleOverrideCache {
       let canonical_ptr = {
         let bucket_hash = style_bucket_hash(base.as_ref());
         let bucket = canonical_buckets.entry(bucket_hash).or_default();
-        if let Some(existing) = bucket.iter().find(|candidate| candidate.as_ref() == base.as_ref()) {
+        if let Some(existing) = bucket
+          .iter()
+          .find(|candidate| candidate.as_ref() == base.as_ref())
+        {
           Arc::as_ptr(existing) as usize
         } else {
           bucket.push(base.clone());
@@ -1632,38 +1638,38 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
     // Convert border-box sizing hints to content-box hints by subtracting the stripped horizontal
     // edges (padding + borders). Use calc-term arithmetic so this stays allocation-free and does
     // not depend on percentage base resolution.
-      if style.box_sizing == BoxSizing::BorderBox {
-        let mut horizontal_edges = CalcLength::empty();
-        let to_calc = |len: Length| -> Option<CalcLength> {
-          match len.calc {
-            Some(crate::style::values::LengthCalc::Linear(calc)) => Some(calc),
-            // Non-linear calc expressions cannot be manipulated as linear term sums.
-            Some(crate::style::values::LengthCalc::Expr(_)) => None,
-            None => {
-              if len.unit == LengthUnit::Calc {
-                None
-              } else {
-                Some(CalcLength::single(len.unit, len.value))
-              }
+    if style.box_sizing == BoxSizing::BorderBox {
+      let mut horizontal_edges = CalcLength::empty();
+      let to_calc = |len: Length| -> Option<CalcLength> {
+        match len.calc {
+          Some(crate::style::values::LengthCalc::Linear(calc)) => Some(calc),
+          // Non-linear calc expressions cannot be manipulated as linear term sums.
+          Some(crate::style::values::LengthCalc::Expr(_)) => None,
+          None => {
+            if len.unit == LengthUnit::Calc {
+              None
+            } else {
+              Some(CalcLength::single(len.unit, len.value))
             }
           }
+        }
+      };
+      for edge in [
+        style.padding_left,
+        style.padding_right,
+        style.used_border_left_width(),
+        style.used_border_right_width(),
+      ] {
+        let Some(edge_calc) = to_calc(edge) else {
+          horizontal_edges = CalcLength::empty();
+          break;
         };
-        for edge in [
-          style.padding_left,
-          style.padding_right,
-          style.used_border_left_width(),
-          style.used_border_right_width(),
-        ] {
-          let Some(edge_calc) = to_calc(edge) else {
-            horizontal_edges = CalcLength::empty();
-            break;
-          };
-          if let Some(next) = horizontal_edges.add_scaled(&edge_calc, 1.0) {
-            horizontal_edges = next;
-          } else {
-            // Expression too complex; bail out and keep original widths to avoid churn.
-            horizontal_edges = CalcLength::empty();
-            break;
+        if let Some(next) = horizontal_edges.add_scaled(&edge_calc, 1.0) {
+          horizontal_edges = next;
+        } else {
+          // Expression too complex; bail out and keep original widths to avoid churn.
+          horizontal_edges = CalcLength::empty();
+          break;
         }
       }
 
@@ -2380,8 +2386,8 @@ impl TableStructure {
         }
       }
 
-    structure.cells.push(cell);
-  }
+      structure.cells.push(cell);
+    }
 
     structure.percent_sensitive = percent_sensitive;
 
@@ -3030,7 +3036,9 @@ fn resolve_opt_length_against(
   containing_width: Option<f32>,
   root_metrics: Option<RootFontMetrics>,
 ) -> Option<f32> {
-  length.and_then(|l| resolve_length_against(l, font_size, root_font_size, containing_width, root_metrics))
+  length.and_then(|l| {
+    resolve_length_against(l, font_size, root_font_size, containing_width, root_metrics)
+  })
 }
 
 /// Decide which column distribution algorithm to use for a table.
@@ -5031,8 +5039,12 @@ fn table_structure_cached(
 ) -> Arc<TableStructure> {
   let epoch = ensure_table_cache_epoch();
   let key = table_structure_cache_key(table_box);
-  let build_structure =
-    || Arc::new(TableStructure::from_box_tree_with_root_metrics(table_box, root_metrics));
+  let build_structure = || {
+    Arc::new(TableStructure::from_box_tree_with_root_metrics(
+      table_box,
+      root_metrics,
+    ))
+  };
   if let Some(key) = key {
     TABLE_STRUCTURE_CACHE.with(|cache| {
       if let Some(entry) = cache.borrow().get(&key) {
@@ -5300,16 +5312,14 @@ impl TableFormattingContext {
     let mut constraints: Vec<ColumnConstraints> = (0..structure.column_count)
       .map(|_| ColumnConstraints::new(0.0, 0.0))
       .collect();
-    self
-      .populate_column_constraints(
-        table_box,
-        structure,
-        &mut constraints,
-        mode,
-        percent_base,
-        &style_overrides,
-      )
-      ?;
+    self.populate_column_constraints(
+      table_box,
+      structure,
+      &mut constraints,
+      mode,
+      percent_base,
+      &style_overrides,
+    )?;
     self.normalize_percentage_constraints(&mut constraints, percent_base);
     let distributor = ColumnDistributor::new(mode).with_min_column_width(0.0);
     let distribution = distributor.distribute(&constraints, available_content_width);
@@ -5429,16 +5439,18 @@ impl TableFormattingContext {
       if cell_box.id() == 0 {
         let mut stripped_cell = cell_box.clone();
         stripped_cell.style = stripped_style.clone();
-        let min = match fc.compute_intrinsic_inline_size(&stripped_cell, IntrinsicSizingMode::MinContent) {
-          Ok(value) => value,
-          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-          Err(_) => 0.0,
-        };
-        let max = match fc.compute_intrinsic_inline_size(&stripped_cell, IntrinsicSizingMode::MaxContent) {
-          Ok(value) => value,
-          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-          Err(_) => min,
-        };
+        let min =
+          match fc.compute_intrinsic_inline_size(&stripped_cell, IntrinsicSizingMode::MinContent) {
+            Ok(value) => value,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => 0.0,
+          };
+        let max =
+          match fc.compute_intrinsic_inline_size(&stripped_cell, IntrinsicSizingMode::MaxContent) {
+            Ok(value) => value,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => min,
+          };
         return Ok((min, max));
       }
 
@@ -5446,16 +5458,18 @@ impl TableFormattingContext {
         cell_box.id(),
         stripped_style.clone(),
         || {
-          let min = match fc.compute_intrinsic_inline_size(cell_box, IntrinsicSizingMode::MinContent) {
-            Ok(value) => value,
-            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-            Err(_) => 0.0,
-          };
-          let max = match fc.compute_intrinsic_inline_size(cell_box, IntrinsicSizingMode::MaxContent) {
-            Ok(value) => value,
-            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-            Err(_) => min,
-          };
+          let min =
+            match fc.compute_intrinsic_inline_size(cell_box, IntrinsicSizingMode::MinContent) {
+              Ok(value) => value,
+              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+              Err(_) => 0.0,
+            };
+          let max =
+            match fc.compute_intrinsic_inline_size(cell_box, IntrinsicSizingMode::MaxContent) {
+              Ok(value) => value,
+              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+              Err(_) => min,
+            };
           Ok((min, max))
         },
       )
@@ -5480,7 +5494,12 @@ impl TableFormattingContext {
       ),
       BorderCollapse::Collapse => {
         // Collapsed borders don't add to box width; include padding only.
-        horizontal_padding(style, percent_base, self.viewport_size, self.factory.font_context())
+        horizontal_padding(
+          style,
+          percent_base,
+          self.viewport_size,
+          self.factory.font_context(),
+        )
       }
     };
     min += padding_and_borders;
@@ -5661,35 +5680,27 @@ impl TableFormattingContext {
             SpecifiedWidth::Auto => {}
           }
         }
-        if let Some(min_len) = col_info
-          .author_min_width
-          .as_ref()
-          .and_then(|len| {
-            resolve_length_against(
-              len,
-              font_size,
-              table_box.style.root_font_size,
-              percent_base,
-              root_metrics,
-            )
-          })
-        {
+        if let Some(min_len) = col_info.author_min_width.as_ref().and_then(|len| {
+          resolve_length_against(
+            len,
+            font_size,
+            table_box.style.root_font_size,
+            percent_base,
+            root_metrics,
+          )
+        }) {
           constraint.min_width = constraint.min_width.max(min_len);
           constraint.max_width = constraint.max_width.max(constraint.min_width);
         }
-        if let Some(max_len) = col_info
-          .author_max_width
-          .as_ref()
-          .and_then(|len| {
-            resolve_length_against(
-              len,
-              font_size,
-              table_box.style.root_font_size,
-              percent_base,
-              root_metrics,
-            )
-          })
-        {
+        if let Some(max_len) = col_info.author_max_width.as_ref().and_then(|len| {
+          resolve_length_against(
+            len,
+            font_size,
+            table_box.style.root_font_size,
+            percent_base,
+            root_metrics,
+          )
+        }) {
           let cap = max_len.max(constraint.min_width);
           constraint.max_width = if constraint.max_width.is_finite() {
             constraint.max_width.min(cap)
@@ -5750,37 +5761,27 @@ impl TableFormattingContext {
         // Apply min-width/max-width from the cell itself. Percentages only participate when the
         // table width is definite per CSS 2.1 §10.4 (percentage on width/min/max). Clamp max to
         // remain ≥ min so constraints stay sane.
-        if let Some(min_len) = cell_box
-          .style
-          .min_width
-          .as_ref()
-          .and_then(|len| {
-            resolve_length_against(
-              len,
-              cell_box.style.font_size,
-              cell_box.style.root_font_size,
-              percent_base,
-              root_metrics,
-            )
-          })
-        {
+        if let Some(min_len) = cell_box.style.min_width.as_ref().and_then(|len| {
+          resolve_length_against(
+            len,
+            cell_box.style.font_size,
+            cell_box.style.root_font_size,
+            percent_base,
+            root_metrics,
+          )
+        }) {
           min_w = min_w.max(min_len);
           max_w = max_w.max(min_w);
         }
-        if let Some(max_len) = cell_box
-          .style
-          .max_width
-          .as_ref()
-          .and_then(|len| {
-            resolve_length_against(
-              len,
-              cell_box.style.font_size,
-              cell_box.style.root_font_size,
-              percent_base,
-              root_metrics,
-            )
-          })
-        {
+        if let Some(max_len) = cell_box.style.max_width.as_ref().and_then(|len| {
+          resolve_length_against(
+            len,
+            cell_box.style.font_size,
+            cell_box.style.root_font_size,
+            percent_base,
+            root_metrics,
+          )
+        }) {
           let cap = max_len.max(min_w);
           max_w = if max_w.is_finite() {
             max_w.min(cap)
@@ -5859,7 +5860,8 @@ impl TableFormattingContext {
                 continue;
               }
               col.min_width = col.min_width.max(min_w);
-              if !(mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite()) {
+              if !(mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite())
+              {
                 col.max_width = col.max_width.max(max_w);
               }
             }
@@ -5882,7 +5884,8 @@ impl TableFormattingContext {
                 col.fixed_width = Some(col.fixed_width.unwrap_or(0.0).max(px));
                 col.is_flexible = false;
               }
-              if !(mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite()) {
+              if !(mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite())
+              {
                 col.min_width = col.min_width.max(px);
                 col.max_width = col.max_width.max(px);
               }
@@ -6041,35 +6044,27 @@ impl TableFormattingContext {
             SpecifiedWidth::Auto => {}
           }
         }
-        if let Some(min_len) = col_info
-          .author_min_width
-          .as_ref()
-          .and_then(|len| {
-            resolve_length_against(
-              len,
-              font_size,
-              table_box.style.root_font_size,
-              percent_base,
-              root_metrics,
-            )
-          })
-        {
+        if let Some(min_len) = col_info.author_min_width.as_ref().and_then(|len| {
+          resolve_length_against(
+            len,
+            font_size,
+            table_box.style.root_font_size,
+            percent_base,
+            root_metrics,
+          )
+        }) {
           constraint.min_width = constraint.min_width.max(min_len);
           constraint.max_width = constraint.max_width.max(constraint.min_width);
         }
-        if let Some(max_len) = col_info
-          .author_max_width
-          .as_ref()
-          .and_then(|len| {
-            resolve_length_against(
-              len,
-              font_size,
-              table_box.style.root_font_size,
-              percent_base,
-              root_metrics,
-            )
-          })
-        {
+        if let Some(max_len) = col_info.author_max_width.as_ref().and_then(|len| {
+          resolve_length_against(
+            len,
+            font_size,
+            table_box.style.root_font_size,
+            percent_base,
+            root_metrics,
+          )
+        }) {
           let cap = max_len.max(constraint.min_width);
           constraint.max_width = if constraint.max_width.is_finite() {
             constraint.max_width.min(cap)
@@ -6226,65 +6221,65 @@ impl FormattingContext for TableFormattingContext {
     constraints: &LayoutConstraints,
   ) -> Result<FragmentNode, LayoutError> {
     if crate::layout::auto_scrollbars::should_bypass(box_node) {
-    let _profile = layout_timer(LayoutKind::Table);
-    let mut deadline_counter = 0usize;
-    let style_override = crate::layout::style_override::style_override_for(box_node.id);
-    let has_running_children_for_cache = box_node
-      .children
-      .iter()
-      .any(|child| child.style.running_position.is_some());
-    if !has_running_children_for_cache {
-      if let Some(cached) = layout_cache_lookup(
-        box_node,
-        FormattingContextType::Table,
-        constraints,
-        self.factory.viewport_scroll(),
-        self.viewport_size,
-        self.nearest_positioned_cb,
-        self.nearest_fixed_cb,
-      ) {
-        return Ok(cached);
+      let _profile = layout_timer(LayoutKind::Table);
+      let mut deadline_counter = 0usize;
+      let style_override = crate::layout::style_override::style_override_for(box_node.id);
+      let has_running_children_for_cache = box_node
+        .children
+        .iter()
+        .any(|child| child.style.running_position.is_some());
+      if !has_running_children_for_cache {
+        if let Some(cached) = layout_cache_lookup(
+          box_node,
+          FormattingContextType::Table,
+          constraints,
+          self.factory.viewport_scroll(),
+          self.viewport_size,
+          self.nearest_positioned_cb,
+          self.nearest_fixed_cb,
+        ) {
+          return Ok(cached);
+        }
       }
-    }
-    let normalized_table = self.normalize_table_root(box_node)?;
-    let table_box = normalized_table.as_ref();
-    let table_root_style: &ComputedStyle = style_override
-      .as_deref()
-      .unwrap_or_else(|| table_box.style.as_ref());
-    let root_metrics = self.factory.font_context().root_font_metrics();
-    let dump = runtime::runtime_toggles().truthy("FASTR_DUMP_TABLE");
-    let mut positioned_children: Vec<&BoxNode> = Vec::new();
-    let mut running_children: Vec<(usize, &BoxNode)> = Vec::new();
-    for (child_idx, child) in table_box.children.iter().enumerate() {
-      check_layout_deadline(&mut deadline_counter)?;
-      if child.style.running_position.is_some() {
-        running_children.push((child_idx, child));
-        continue;
+      let normalized_table = self.normalize_table_root(box_node)?;
+      let table_box = normalized_table.as_ref();
+      let table_root_style: &ComputedStyle = style_override
+        .as_deref()
+        .unwrap_or_else(|| table_box.style.as_ref());
+      let root_metrics = self.factory.font_context().root_font_metrics();
+      let dump = runtime::runtime_toggles().truthy("FASTR_DUMP_TABLE");
+      let mut positioned_children: Vec<&BoxNode> = Vec::new();
+      let mut running_children: Vec<(usize, &BoxNode)> = Vec::new();
+      for (child_idx, child) in table_box.children.iter().enumerate() {
+        check_layout_deadline(&mut deadline_counter)?;
+        if child.style.running_position.is_some() {
+          running_children.push((child_idx, child));
+          continue;
+        }
+        if matches!(
+          child.style.position,
+          crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+        ) {
+          positioned_children.push(child);
+        }
       }
-      if matches!(
-        child.style.position,
-        crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
-      ) {
-        positioned_children.push(child);
-      }
-    }
-    let has_running_children = !running_children.is_empty();
+      let has_running_children = !running_children.is_empty();
 
-    let structure = table_structure_cached(table_box, root_metrics);
-    if dump {
-      let cw = match constraints.available_width {
-        AvailableSpace::Definite(w) => format!("{:.2}", w),
-        AvailableSpace::MaxContent => "max-content".to_string(),
-        AvailableSpace::MinContent => "min-content".to_string(),
-        AvailableSpace::Indefinite => "indefinite".to_string(),
-      };
-      let ch = match constraints.available_height {
-        AvailableSpace::Definite(h) => format!("{:.2}", h),
-        AvailableSpace::MaxContent => "max-content".to_string(),
-        AvailableSpace::MinContent => "min-content".to_string(),
-        AvailableSpace::Indefinite => "indefinite".to_string(),
-      };
-      eprintln!(
+      let structure = table_structure_cached(table_box, root_metrics);
+      if dump {
+        let cw = match constraints.available_width {
+          AvailableSpace::Definite(w) => format!("{:.2}", w),
+          AvailableSpace::MaxContent => "max-content".to_string(),
+          AvailableSpace::MinContent => "min-content".to_string(),
+          AvailableSpace::Indefinite => "indefinite".to_string(),
+        };
+        let ch = match constraints.available_height {
+          AvailableSpace::Definite(h) => format!("{:.2}", h),
+          AvailableSpace::MaxContent => "max-content".to_string(),
+          AvailableSpace::MinContent => "min-content".to_string(),
+          AvailableSpace::Indefinite => "indefinite".to_string(),
+        };
+        eprintln!(
                 "table constraints: width={} height={} display={:?} id={} border_spacing=({:.2},{:.2}) collapse={:?}",
                 cw,
                 ch,
@@ -6294,112 +6289,112 @@ impl FormattingContext for TableFormattingContext {
                 structure.border_spacing.1,
                 structure.border_collapse
             );
-    }
-    let captions: Vec<&BoxNode> = table_box
-      .children
-      .iter()
-      .filter(|child| {
-        child.style.running_position.is_none()
-          && !matches!(
-            child.style.position,
-            crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
-          )
-          && matches!(child.style.display, Display::TableCaption)
-      })
-      .collect();
-
-    let max_source_row = structure
-      .rows
-      .iter()
-      .map(|r| r.source_index)
-      .max()
-      .unwrap_or(0);
-    let mut source_row_to_visible = if structure.rows.is_empty() {
-      Vec::new()
-    } else {
-      vec![None; max_source_row + 1]
-    };
-    for row in &structure.rows {
-      check_layout_deadline(&mut deadline_counter)?;
-      if row.source_index >= source_row_to_visible.len() {
-        source_row_to_visible.resize(row.source_index + 1, None);
       }
-      source_row_to_visible[row.source_index] = Some(row.index);
-    }
+      let captions: Vec<&BoxNode> = table_box
+        .children
+        .iter()
+        .filter(|child| {
+          child.style.running_position.is_none()
+            && !matches!(
+              child.style.position,
+              crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+            )
+            && matches!(child.style.display, Display::TableCaption)
+        })
+        .collect();
 
-    let max_source_col = structure
-      .columns
-      .iter()
-      .map(|c| c.source_index)
-      .max()
-      .unwrap_or(0);
-    let mut source_col_to_visible = if structure.columns.is_empty() {
-      Vec::new()
-    } else {
-      vec![None; max_source_col + 1]
-    };
-    for col in &structure.columns {
-      check_layout_deadline(&mut deadline_counter)?;
-      if col.source_index >= source_col_to_visible.len() {
-        source_col_to_visible.resize(col.source_index + 1, None);
+      let max_source_row = structure
+        .rows
+        .iter()
+        .map(|r| r.source_index)
+        .max()
+        .unwrap_or(0);
+      let mut source_row_to_visible = if structure.rows.is_empty() {
+        Vec::new()
+      } else {
+        vec![None; max_source_row + 1]
+      };
+      for row in &structure.rows {
+        check_layout_deadline(&mut deadline_counter)?;
+        if row.source_index >= source_row_to_visible.len() {
+          source_row_to_visible.resize(row.source_index + 1, None);
+        }
+        source_row_to_visible[row.source_index] = Some(row.index);
       }
-      source_col_to_visible[col.source_index] = Some(col.index);
-    }
 
-    let row_group_constraints =
-      self.collect_row_group_constraints(table_box, &source_row_to_visible);
-    let mut row_to_group: Vec<Option<usize>> = vec![None; structure.row_count];
-    for (idx, group) in row_group_constraints.iter().enumerate() {
-      check_layout_deadline(&mut deadline_counter)?;
-      for row in group.start..group.end {
-        if let Some(slot) = row_to_group.get_mut(row) {
-          *slot = Some(idx);
+      let max_source_col = structure
+        .columns
+        .iter()
+        .map(|c| c.source_index)
+        .max()
+        .unwrap_or(0);
+      let mut source_col_to_visible = if structure.columns.is_empty() {
+        Vec::new()
+      } else {
+        vec![None; max_source_col + 1]
+      };
+      for col in &structure.columns {
+        check_layout_deadline(&mut deadline_counter)?;
+        if col.source_index >= source_col_to_visible.len() {
+          source_col_to_visible.resize(col.source_index + 1, None);
+        }
+        source_col_to_visible[col.source_index] = Some(col.index);
+      }
+
+      let row_group_constraints =
+        self.collect_row_group_constraints(table_box, &source_row_to_visible);
+      let mut row_to_group: Vec<Option<usize>> = vec![None; structure.row_count];
+      for (idx, group) in row_group_constraints.iter().enumerate() {
+        check_layout_deadline(&mut deadline_counter)?;
+        for row in group.start..group.end {
+          if let Some(slot) = row_to_group.get_mut(row) {
+            *slot = Some(idx);
+          }
         }
       }
-    }
 
-    let source_rows = collect_source_rows(table_box);
+      let source_rows = collect_source_rows(table_box);
 
-    let containing_width =
-      constraints
-        .inline_percentage_base
-        .or_else(|| match constraints.available_width {
-          AvailableSpace::Definite(w) => Some(w),
-          _ => None,
-        });
-    let containing_height = match constraints.available_height {
-      AvailableSpace::Definite(h) => Some(h),
-      _ => None,
-    };
+      let containing_width =
+        constraints
+          .inline_percentage_base
+          .or_else(|| match constraints.available_width {
+            AvailableSpace::Definite(w) => Some(w),
+            _ => None,
+          });
+      let containing_height = match constraints.available_height {
+        AvailableSpace::Definite(h) => Some(h),
+        _ => None,
+      };
 
-    // Honor explicit table width if present.
-    let font_size = table_root_style.font_size;
-    let root_metrics = self.factory.font_context().root_font_metrics();
-    let mut intrinsic_sizes_for_keywords: Option<(f32, f32)> = None;
-    let mut compute_intrinsic_sizes_for_keywords = || -> Result<(f32, f32), LayoutError> {
-      if let Some(sizes) = intrinsic_sizes_for_keywords {
-        return Ok(sizes);
-      }
-      let compute = || self.compute_intrinsic_inline_sizes(box_node);
-      let sizes = if box_node.id != 0 {
-        let mut override_style = table_root_style.clone();
-        override_style.width = None;
-        override_style.width_keyword = None;
-        override_style.min_width = None;
-        override_style.min_width_keyword = None;
-        override_style.max_width = None;
-        override_style.max_width_keyword = None;
-        crate::layout::style_override::with_style_override(
-          box_node.id,
-          Arc::new(override_style),
-          compute,
-        )
-      } else {
-        compute()
-      }?;
-      intrinsic_sizes_for_keywords = Some(sizes);
-      Ok(sizes)
-    };
+      // Honor explicit table width if present.
+      let font_size = table_root_style.font_size;
+      let root_metrics = self.factory.font_context().root_font_metrics();
+      let mut intrinsic_sizes_for_keywords: Option<(f32, f32)> = None;
+      let mut compute_intrinsic_sizes_for_keywords = || -> Result<(f32, f32), LayoutError> {
+        if let Some(sizes) = intrinsic_sizes_for_keywords {
+          return Ok(sizes);
+        }
+        let compute = || self.compute_intrinsic_inline_sizes(box_node);
+        let sizes = if box_node.id != 0 {
+          let mut override_style = table_root_style.clone();
+          override_style.width = None;
+          override_style.width_keyword = None;
+          override_style.min_width = None;
+          override_style.min_width_keyword = None;
+          override_style.max_width = None;
+          override_style.max_width_keyword = None;
+          crate::layout::style_override::with_style_override(
+            box_node.id,
+            Arc::new(override_style),
+            compute,
+          )
+        } else {
+          compute()
+        }?;
+        intrinsic_sizes_for_keywords = Some(sizes);
+        Ok(sizes)
+      };
 
       let mut resolve_size_keyword = |keyword: IntrinsicSizeKeyword| -> Result<f32, LayoutError> {
         let (intrinsic_min, intrinsic_max) = compute_intrinsic_sizes_for_keywords()?;
@@ -6410,17 +6405,17 @@ impl FormattingContext for TableFormattingContext {
           IntrinsicSizeKeyword::FillAvailable => available,
           IntrinsicSizeKeyword::FitContent { limit } => match limit {
             None => intrinsic_max.min(available.max(intrinsic_min)),
-              Some(limit) => {
-                let limit_px = resolve_length_against(
-                  &limit,
-                  font_size,
-                  table_root_style.root_font_size,
-                  containing_width,
-                  root_metrics,
-                )
-                .unwrap_or(f32::INFINITY);
-                intrinsic_max.min(limit_px.max(intrinsic_min))
-              }
+            Some(limit) => {
+              let limit_px = resolve_length_against(
+                &limit,
+                font_size,
+                table_root_style.root_font_size,
+                containing_width,
+                root_metrics,
+              )
+              .unwrap_or(f32::INFINITY);
+              intrinsic_max.min(limit_px.max(intrinsic_min))
+            }
           },
           IntrinsicSizeKeyword::CalcSize(calc) => {
             use crate::style::types::CalcSizeBasis;
@@ -6443,21 +6438,21 @@ impl FormattingContext for TableFormattingContext {
                   intrinsic_max.min(limit_px.max(intrinsic_min))
                 }
               },
-              CalcSizeBasis::Length(len) => {
-                resolve_length_against(
-                  &len,
-                  font_size,
-                  table_root_style.root_font_size,
-                  containing_width,
-                  root_metrics,
-                )
-                  .unwrap_or(intrinsic_max)
-                  .max(0.0)
-              }
+              CalcSizeBasis::Length(len) => resolve_length_against(
+                &len,
+                font_size,
+                table_root_style.root_font_size,
+                containing_width,
+                root_metrics,
+              )
+              .unwrap_or(intrinsic_max)
+              .max(0.0),
             };
             let basis_border = basis_border.max(0.0);
             crate::style::values::calc_size_expr_with_size(calc.expr, basis_border)
-              .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+              .and_then(|expr_sum| {
+                crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+              })
               .and_then(|expr_len| {
                 resolve_length_against(
                   &expr_len,
@@ -6474,121 +6469,119 @@ impl FormattingContext for TableFormattingContext {
         Ok(resolved)
       };
 
-    let specified_width = match table_root_style.width.as_ref() {
-      Some(len) => resolve_length_against(
-        len,
-        font_size,
-        table_root_style.root_font_size,
-        containing_width,
-        root_metrics,
-      ),
-      None => match table_root_style.width_keyword {
+      let specified_width = match table_root_style.width.as_ref() {
+        Some(len) => resolve_length_against(
+          len,
+          font_size,
+          table_root_style.root_font_size,
+          containing_width,
+          root_metrics,
+        ),
+        None => match table_root_style.width_keyword {
+          Some(keyword) => Some(resolve_size_keyword(keyword)?),
+          None => None,
+        },
+      };
+
+      let resolved_min_width = match table_root_style.min_width_keyword {
         Some(keyword) => Some(resolve_size_keyword(keyword)?),
-        None => None,
-      },
-    };
-
-    let resolved_min_width = match table_root_style.min_width_keyword {
-      Some(keyword) => Some(resolve_size_keyword(keyword)?),
-      None => resolve_opt_length_against(
-        table_root_style.min_width.as_ref(),
-        font_size,
-        table_root_style.root_font_size,
-        containing_width,
-        root_metrics,
-      ),
-    };
-    let resolved_max_width = match table_root_style.max_width_keyword {
-      Some(keyword) => Some(resolve_size_keyword(keyword)?),
-      None => resolve_opt_length_against(
-        table_root_style.max_width.as_ref(),
-        font_size,
-        table_root_style.root_font_size,
-        containing_width,
-        root_metrics,
-      ),
-    };
-    let resolved_max_width =
-      if let (Some(min_w), Some(max_w)) = (resolved_min_width, resolved_max_width) {
-        Some(max_w.max(min_w))
-      } else {
-        resolved_max_width
+        None => resolve_opt_length_against(
+          table_root_style.min_width.as_ref(),
+          font_size,
+          table_root_style.root_font_size,
+          containing_width,
+          root_metrics,
+        ),
       };
+      let resolved_max_width = match table_root_style.max_width_keyword {
+        Some(keyword) => Some(resolve_size_keyword(keyword)?),
+        None => resolve_opt_length_against(
+          table_root_style.max_width.as_ref(),
+          font_size,
+          table_root_style.root_font_size,
+          containing_width,
+          root_metrics,
+        ),
+      };
+      let resolved_max_width =
+        if let (Some(min_w), Some(max_w)) = (resolved_min_width, resolved_max_width) {
+          Some(max_w.max(min_w))
+        } else {
+          resolved_max_width
+        };
 
-    let min_width = resolved_min_width;
-    let max_width = resolved_max_width;
+      let min_width = resolved_min_width;
+      let max_width = resolved_max_width;
 
-    // Table width for sizing; percentages on columns use a definite table width when available.
-    //
-    // `LayoutConstraints::used_border_box_width` is set by outer layout modes (block/inline/flex/grid)
-    // when they have already resolved the table wrapper's used size (e.g. inline-table shrink-to-fit
-    // or flex/grid item sizing). Honor it as an override so table layout doesn't expand back to the
-    // full containing block width.
-    let used_border_box_width = constraints
-      .used_border_box_width
-      .filter(|w| w.is_finite() && *w >= 0.0);
-    // Treat `width:auto` tables as shrink-to-fit rather than immediately expanding to the
-    // containing block width. The auto-layout column distribution clamps itself to intrinsic
-    // max-content widths; fixed-layout tables additionally clamp the available width after we
-    // know the column constraints (see `available_content` below).
-    let table_width =
-      used_border_box_width.or(specified_width).map(|w| clamp_to_min_max(w, min_width, max_width));
-    let percent_base_width = table_width;
-    // Table padding and borders (ignored for box sizing under collapsed model per CSS 2.1),
-    // but we still track outer borders for percentage-height resolution.
-    //
-    // Percentage padding on the table element resolves against the containing block's inline size
-    // (CSS2.1 §10.5/§10.6.1), not the used table width. Treat unresolved percentage terms as 0.
-    let resolve_len = |l: &Length, percentage_base: Option<f32>| {
-      l.resolve_with_context(
-        percentage_base,
-        self.viewport_size.width,
-        self.viewport_size.height,
-        font_size,
-        table_root_style.root_font_size,
-      )
-      .unwrap_or(0.0)
-    };
-    let resolve_non_percent = |l: &Length| resolve_len(l, Some(0.0));
-    let resolve_table_padding = |l: &Length| resolve_len(l, containing_width);
-
-    let _outer_border_left = resolve_non_percent(&table_root_style.used_border_left_width());
-    let _outer_border_right = resolve_non_percent(&table_root_style.used_border_right_width());
-    let outer_border_top = resolve_non_percent(&table_root_style.used_border_top_width());
-    let outer_border_bottom = resolve_non_percent(&table_root_style.used_border_bottom_width());
-    let outer_border_v = outer_border_top + outer_border_bottom;
-    let mut pad_left = resolve_table_padding(&table_root_style.padding_left);
-    let mut pad_right = resolve_table_padding(&table_root_style.padding_right);
-    let mut pad_top = resolve_table_padding(&table_root_style.padding_top);
-    // In the collapsing border model, the table box has no padding (CSS 2.2 §17.6.2).
-    let pad_bottom = if structure.border_collapse == BorderCollapse::Collapse {
-      pad_left = 0.0;
-      pad_right = 0.0;
-      pad_top = 0.0;
-      0.0
-    } else {
-      resolve_table_padding(&table_root_style.padding_bottom)
-    };
-    let (border_left, border_right, border_top, border_bottom) =
-      if structure.border_collapse == BorderCollapse::Collapse {
-        (0.0, 0.0, 0.0, 0.0)
-      } else {
-        (
-          resolve_non_percent(&table_root_style.used_border_left_width()),
-          resolve_non_percent(&table_root_style.used_border_right_width()),
-          resolve_non_percent(&table_root_style.used_border_top_width()),
-          resolve_non_percent(&table_root_style.used_border_bottom_width()),
+      // Table width for sizing; percentages on columns use a definite table width when available.
+      //
+      // `LayoutConstraints::used_border_box_width` is set by outer layout modes (block/inline/flex/grid)
+      // when they have already resolved the table wrapper's used size (e.g. inline-table shrink-to-fit
+      // or flex/grid item sizing). Honor it as an override so table layout doesn't expand back to the
+      // full containing block width.
+      let used_border_box_width = constraints
+        .used_border_box_width
+        .filter(|w| w.is_finite() && *w >= 0.0);
+      // Treat `width:auto` tables as shrink-to-fit rather than immediately expanding to the
+      // containing block width. The auto-layout column distribution clamps itself to intrinsic
+      // max-content widths; fixed-layout tables additionally clamp the available width after we
+      // know the column constraints (see `available_content` below).
+      let table_width = used_border_box_width
+        .or(specified_width)
+        .map(|w| clamp_to_min_max(w, min_width, max_width));
+      let percent_base_width = table_width;
+      // Table padding and borders (ignored for box sizing under collapsed model per CSS 2.1),
+      // but we still track outer borders for percentage-height resolution.
+      //
+      // Percentage padding on the table element resolves against the containing block's inline size
+      // (CSS2.1 §10.5/§10.6.1), not the used table width. Treat unresolved percentage terms as 0.
+      let resolve_len = |l: &Length, percentage_base: Option<f32>| {
+        l.resolve_with_context(
+          percentage_base,
+          self.viewport_size.width,
+          self.viewport_size.height,
+          font_size,
+          table_root_style.root_font_size,
         )
+        .unwrap_or(0.0)
       };
-    let padding_h = pad_left + pad_right;
-    let padding_v = pad_top + pad_bottom;
-    let border_h = border_left + border_right;
-    let border_v = border_top + border_bottom;
+      let resolve_non_percent = |l: &Length| resolve_len(l, Some(0.0));
+      let resolve_table_padding = |l: &Length| resolve_len(l, containing_width);
 
-    let specified_height = table_root_style
-      .height
-      .as_ref()
-      .and_then(|len| {
+      let _outer_border_left = resolve_non_percent(&table_root_style.used_border_left_width());
+      let _outer_border_right = resolve_non_percent(&table_root_style.used_border_right_width());
+      let outer_border_top = resolve_non_percent(&table_root_style.used_border_top_width());
+      let outer_border_bottom = resolve_non_percent(&table_root_style.used_border_bottom_width());
+      let outer_border_v = outer_border_top + outer_border_bottom;
+      let mut pad_left = resolve_table_padding(&table_root_style.padding_left);
+      let mut pad_right = resolve_table_padding(&table_root_style.padding_right);
+      let mut pad_top = resolve_table_padding(&table_root_style.padding_top);
+      // In the collapsing border model, the table box has no padding (CSS 2.2 §17.6.2).
+      let pad_bottom = if structure.border_collapse == BorderCollapse::Collapse {
+        pad_left = 0.0;
+        pad_right = 0.0;
+        pad_top = 0.0;
+        0.0
+      } else {
+        resolve_table_padding(&table_root_style.padding_bottom)
+      };
+      let (border_left, border_right, border_top, border_bottom) =
+        if structure.border_collapse == BorderCollapse::Collapse {
+          (0.0, 0.0, 0.0, 0.0)
+        } else {
+          (
+            resolve_non_percent(&table_root_style.used_border_left_width()),
+            resolve_non_percent(&table_root_style.used_border_right_width()),
+            resolve_non_percent(&table_root_style.used_border_top_width()),
+            resolve_non_percent(&table_root_style.used_border_bottom_width()),
+          )
+        };
+      let padding_h = pad_left + pad_right;
+      let padding_v = pad_top + pad_bottom;
+      let border_h = border_left + border_right;
+      let border_v = border_top + border_bottom;
+
+      let specified_height = table_root_style.height.as_ref().and_then(|len| {
         resolve_length_against(
           len,
           font_size,
@@ -6597,159 +6590,275 @@ impl FormattingContext for TableFormattingContext {
           root_metrics,
         )
       });
-    let min_height = resolve_opt_length_against(
-      table_root_style.min_height.as_ref(),
-      font_size,
-      table_root_style.root_font_size,
-      containing_height,
-      root_metrics,
-    );
-    let max_height = resolve_opt_length_against(
-      table_root_style.max_height.as_ref(),
-      font_size,
-      table_root_style.root_font_size,
-      containing_height,
-      root_metrics,
-    );
-    let used_border_box_height = constraints
-      .used_border_box_height
-      .filter(|h| h.is_finite() && *h >= 0.0);
-    let table_height = used_border_box_height
-      .or(specified_height)
-      .map(|h| clamp_to_min_max(h, min_height, max_height));
+      let min_height = resolve_opt_length_against(
+        table_root_style.min_height.as_ref(),
+        font_size,
+        table_root_style.root_font_size,
+        containing_height,
+        root_metrics,
+      );
+      let max_height = resolve_opt_length_against(
+        table_root_style.max_height.as_ref(),
+        font_size,
+        table_root_style.root_font_size,
+        containing_height,
+        root_metrics,
+      );
+      let used_border_box_height = constraints
+        .used_border_box_height
+        .filter(|h| h.is_finite() && *h >= 0.0);
+      let table_height = used_border_box_height
+        .or(specified_height)
+        .map(|h| clamp_to_min_max(h, min_height, max_height));
 
-    // Helper to position out-of-flow children against containing blocks.
-    let place_out_of_flow = |fragment: &mut FragmentNode,
-                             cb_for_absolute: ContainingBlock,
-                             cb_for_fixed: ContainingBlock|
-     -> Result<(), LayoutError> {
-      if positioned_children.is_empty() {
-        return Ok(());
-      }
-      let root_box_id = fragment.box_id().unwrap_or(0);
-      let mut anchor_index = fragment
-        .style
-        .as_ref()
-        .map(|style| {
-          crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
-            fragment.children_ref(),
+      // Helper to position out-of-flow children against containing blocks.
+      let place_out_of_flow = |fragment: &mut FragmentNode,
+                               cb_for_absolute: ContainingBlock,
+                               cb_for_fixed: ContainingBlock|
+       -> Result<(), LayoutError> {
+        if positioned_children.is_empty() {
+          return Ok(());
+        }
+        let root_box_id = fragment.box_id().unwrap_or(0);
+        let mut anchor_index = fragment
+          .style
+          .as_ref()
+          .map(|style| {
+            crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+              fragment.children_ref(),
+              root_box_id,
+              &style.anchor_scope,
+              self.viewport_size,
+            )
+          })
+          .unwrap_or_else(|| {
+            crate::layout::anchor_positioning::AnchorIndex::from_fragments(
+              fragment.children_ref(),
+              self.viewport_size,
+            )
+          });
+        if let Some(style) = fragment.style.as_ref() {
+          anchor_index.insert_names_for_box(
             root_box_id,
-            &style.anchor_scope,
-            self.viewport_size,
-          )
-        })
-        .unwrap_or_else(|| {
-          crate::layout::anchor_positioning::AnchorIndex::from_fragments(
-            fragment.children_ref(),
-            self.viewport_size,
-          )
-        });
-      if let Some(style) = fragment.style.as_ref() {
-        anchor_index.insert_names_for_box(
-          root_box_id,
-          &style.anchor_names,
-          crate::layout::anchor_positioning::AnchorBox {
-            rect: Rect::new(Point::ZERO, fragment.bounds.size),
-            writing_mode: style.writing_mode,
-            direction: style.direction,
-          },
-        );
-      }
-      let abs = AbsoluteLayout::with_font_context(self.factory.font_context().clone());
-      // `FormattingContextFactory::with_positioned_cb` and `with_fixed_cb` reset the per-factory
-      // cached formatting contexts store. Build factory variants once so we can reuse cached
-      // formatting contexts when multiple positioned children share the same containing block.
-      let base_factory = self.factory.clone();
-      let positioned_factory = if cb_for_fixed == base_factory.nearest_fixed_cb() {
-        base_factory
-      } else {
-        base_factory.with_fixed_cb(cb_for_fixed)
-      };
-      let abs_factory = if cb_for_absolute == positioned_factory.nearest_positioned_cb() {
-        positioned_factory
-      } else {
-        positioned_factory.with_positioned_cb(cb_for_absolute)
-      };
-      for child in positioned_children.iter().copied() {
-        let original_style = child.style.clone();
-        let mut static_style = (*child.style).clone();
-        static_style.position = crate::style::position::Position::Relative;
-        static_style.top = crate::style::types::InsetValue::Auto;
-        static_style.right = crate::style::types::InsetValue::Auto;
-        static_style.bottom = crate::style::types::InsetValue::Auto;
-        static_style.left = crate::style::types::InsetValue::Auto;
-        let static_style = Arc::new(static_style);
-
-        let cb = match child.style.position {
-          crate::style::position::Position::Fixed => cb_for_fixed,
-          _ => cb_for_absolute,
+            &style.anchor_names,
+            crate::layout::anchor_positioning::AnchorBox {
+              rect: Rect::new(Point::ZERO, fragment.bounds.size),
+              writing_mode: style.writing_mode,
+              direction: style.direction,
+            },
+          );
+        }
+        let abs = AbsoluteLayout::with_font_context(self.factory.font_context().clone());
+        // `FormattingContextFactory::with_positioned_cb` and `with_fixed_cb` reset the per-factory
+        // cached formatting contexts store. Build factory variants once so we can reuse cached
+        // formatting contexts when multiple positioned children share the same containing block.
+        let base_factory = self.factory.clone();
+        let positioned_factory = if cb_for_fixed == base_factory.nearest_fixed_cb() {
+          base_factory
+        } else {
+          base_factory.with_fixed_cb(cb_for_fixed)
         };
-
-        let fc_type = child
-          .formatting_context()
-          .unwrap_or(crate::style::display::FormattingContextType::Block);
-        let child_constraints = LayoutConstraints::new(
-          AvailableSpace::Definite(cb.rect.size.width),
-          AvailableSpace::Definite(cb.rect.size.height),
-        );
-        let implicit_anchor_box_id = child.implicit_anchor_box_id;
-        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
-          query_parent_box_id: Some(root_box_id),
-          implicit_anchor_box_id,
+        let abs_factory = if cb_for_absolute == positioned_factory.nearest_positioned_cb() {
+          positioned_factory
+        } else {
+          positioned_factory.with_positioned_cb(cb_for_absolute)
         };
-        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
-          &child.style,
-          &cb,
-          self.viewport_size,
-          self.factory.font_context(),
-          Some(&anchor_index),
-          anchor_query,
-        );
-        let is_replaced = child.is_replaced();
-        let has_inline_keyword = positioned_style.width_keyword.is_some()
-          || positioned_style.min_width_keyword.is_some()
-          || positioned_style.max_width_keyword.is_some();
-        let has_block_keyword = positioned_style.height_keyword.is_some()
-          || positioned_style.min_height_keyword.is_some()
-          || positioned_style.max_height_keyword.is_some();
-        let needs_inline_intrinsics = has_inline_keyword
-          || (positioned_style.width.is_auto()
-            && (positioned_style.left.is_auto()
-              || positioned_style.right.is_auto()
-              || is_replaced));
-        let needs_block_intrinsics = has_block_keyword
-          || (positioned_style.height.is_auto()
-            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
+        for child in positioned_children.iter().copied() {
+          let original_style = child.style.clone();
+          let mut static_style = (*child.style).clone();
+          static_style.position = crate::style::position::Position::Relative;
+          static_style.top = crate::style::types::InsetValue::Auto;
+          static_style.right = crate::style::types::InsetValue::Auto;
+          static_style.bottom = crate::style::types::InsetValue::Auto;
+          static_style.left = crate::style::types::InsetValue::Auto;
+          let static_style = Arc::new(static_style);
 
-        let (
-          mut child_fragment,
-          preferred_min_inline,
-          preferred_inline,
-          preferred_min_block,
-          preferred_block,
-        ) = if child.id != 0 {
-          crate::layout::style_override::with_style_override(
-            child.id,
-            static_style.clone(),
-            || match fc_type {
+          let cb = match child.style.position {
+            crate::style::position::Position::Fixed => cb_for_fixed,
+            _ => cb_for_absolute,
+          };
+
+          let fc_type = child
+            .formatting_context()
+            .unwrap_or(crate::style::display::FormattingContextType::Block);
+          let child_constraints = LayoutConstraints::new(
+            AvailableSpace::Definite(cb.rect.size.width),
+            AvailableSpace::Definite(cb.rect.size.height),
+          );
+          let implicit_anchor_box_id = child.implicit_anchor_box_id;
+          let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+            query_parent_box_id: Some(root_box_id),
+            implicit_anchor_box_id,
+          };
+          let positioned_style =
+            crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
+              &child.style,
+              &cb,
+              self.viewport_size,
+              self.factory.font_context(),
+              Some(&anchor_index),
+              anchor_query,
+            );
+          let is_replaced = child.is_replaced();
+          let has_inline_keyword = positioned_style.width_keyword.is_some()
+            || positioned_style.min_width_keyword.is_some()
+            || positioned_style.max_width_keyword.is_some();
+          let has_block_keyword = positioned_style.height_keyword.is_some()
+            || positioned_style.min_height_keyword.is_some()
+            || positioned_style.max_height_keyword.is_some();
+          let needs_inline_intrinsics = has_inline_keyword
+            || (positioned_style.width.is_auto()
+              && (positioned_style.left.is_auto()
+                || positioned_style.right.is_auto()
+                || is_replaced));
+          let needs_block_intrinsics = has_block_keyword
+            || (positioned_style.height.is_auto()
+              && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
+
+          let (
+            mut child_fragment,
+            preferred_min_inline,
+            preferred_inline,
+            preferred_min_block,
+            preferred_block,
+          ) = if child.id != 0 {
+            crate::layout::style_override::with_style_override(
+              child.id,
+              static_style.clone(),
+              || match fc_type {
+                FormattingContextType::Table => {
+                  let fc = abs_factory.create(fc_type);
+                  let fragment = fc.layout(child, &child_constraints)?;
+                  let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
+                    match fc.compute_intrinsic_inline_sizes(child) {
+                      Ok((min, max)) => (Some(min), Some(max)),
+                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                      Err(_) => {
+                        let min = match fc
+                          .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MinContent)
+                        {
+                          Ok(value) => Some(value),
+                          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                          Err(_) => None,
+                        };
+                        let max = match fc
+                          .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
+                        {
+                          Ok(value) => Some(value),
+                          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                          Err(_) => None,
+                        };
+                        (min, max)
+                      }
+                    }
+                  } else {
+                    (None, None)
+                  };
+                  let preferred_min_block = if needs_block_intrinsics {
+                    match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent) {
+                      Ok(value) => Some(value),
+                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                      Err(_) => None,
+                    }
+                  } else {
+                    None
+                  };
+                  let preferred_block = if needs_block_intrinsics {
+                    match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent) {
+                      Ok(value) => Some(value),
+                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                      Err(_) => None,
+                    }
+                  } else {
+                    None
+                  };
+                  Ok((
+                    fragment,
+                    preferred_min_inline,
+                    preferred_inline,
+                    preferred_min_block,
+                    preferred_block,
+                  ))
+                }
+                _ => abs_factory.with_fc(fc_type, |fc| {
+                  let fragment = fc.layout(child, &child_constraints)?;
+                  let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
+                    match fc.compute_intrinsic_inline_sizes(child) {
+                      Ok((min, max)) => (Some(min), Some(max)),
+                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                      Err(_) => {
+                        let min = match fc
+                          .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MinContent)
+                        {
+                          Ok(value) => Some(value),
+                          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                          Err(_) => None,
+                        };
+                        let max = match fc
+                          .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
+                        {
+                          Ok(value) => Some(value),
+                          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                          Err(_) => None,
+                        };
+                        (min, max)
+                      }
+                    }
+                  } else {
+                    (None, None)
+                  };
+                  let preferred_min_block = if needs_block_intrinsics {
+                    match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent) {
+                      Ok(value) => Some(value),
+                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                      Err(_) => None,
+                    }
+                  } else {
+                    None
+                  };
+                  let preferred_block = if needs_block_intrinsics {
+                    match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent) {
+                      Ok(value) => Some(value),
+                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                      Err(_) => None,
+                    }
+                  } else {
+                    None
+                  };
+                  Ok((
+                    fragment,
+                    preferred_min_inline,
+                    preferred_inline,
+                    preferred_min_block,
+                    preferred_block,
+                  ))
+                }),
+              },
+            )?
+          } else {
+            let mut layout_child = child.clone();
+            layout_child.style = static_style.clone();
+            match fc_type {
               FormattingContextType::Table => {
                 let fc = abs_factory.create(fc_type);
-                let fragment = fc.layout(child, &child_constraints)?;
+                let fragment = fc.layout(&layout_child, &child_constraints)?;
                 let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-                  match fc.compute_intrinsic_inline_sizes(child) {
+                  match fc.compute_intrinsic_inline_sizes(&layout_child) {
                     Ok((min, max)) => (Some(min), Some(max)),
                     Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                     Err(_) => {
-                      let min = match fc
-                        .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MinContent)
-                      {
+                      let min = match fc.compute_intrinsic_inline_size(
+                        &layout_child,
+                        IntrinsicSizingMode::MinContent,
+                      ) {
                         Ok(value) => Some(value),
                         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                         Err(_) => None,
                       };
-                      let max = match fc
-                        .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
-                      {
+                      let max = match fc.compute_intrinsic_inline_size(
+                        &layout_child,
+                        IntrinsicSizingMode::MaxContent,
+                      ) {
                         Ok(value) => Some(value),
                         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                         Err(_) => None,
@@ -6761,7 +6870,9 @@ impl FormattingContext for TableFormattingContext {
                   (None, None)
                 };
                 let preferred_min_block = if needs_block_intrinsics {
-                  match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent) {
+                  match fc
+                    .compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent)
+                  {
                     Ok(value) => Some(value),
                     Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                     Err(_) => None,
@@ -6770,7 +6881,9 @@ impl FormattingContext for TableFormattingContext {
                   None
                 };
                 let preferred_block = if needs_block_intrinsics {
-                  match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent) {
+                  match fc
+                    .compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent)
+                  {
                     Ok(value) => Some(value),
                     Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                     Err(_) => None,
@@ -6778,31 +6891,33 @@ impl FormattingContext for TableFormattingContext {
                 } else {
                   None
                 };
-                Ok((
+                (
                   fragment,
                   preferred_min_inline,
                   preferred_inline,
                   preferred_min_block,
                   preferred_block,
-                ))
+                )
               }
               _ => abs_factory.with_fc(fc_type, |fc| {
-                let fragment = fc.layout(child, &child_constraints)?;
+                let fragment = fc.layout(&layout_child, &child_constraints)?;
                 let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-                  match fc.compute_intrinsic_inline_sizes(child) {
+                  match fc.compute_intrinsic_inline_sizes(&layout_child) {
                     Ok((min, max)) => (Some(min), Some(max)),
                     Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                     Err(_) => {
-                      let min = match fc
-                        .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MinContent)
-                      {
+                      let min = match fc.compute_intrinsic_inline_size(
+                        &layout_child,
+                        IntrinsicSizingMode::MinContent,
+                      ) {
                         Ok(value) => Some(value),
                         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                         Err(_) => None,
                       };
-                      let max = match fc
-                        .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
-                      {
+                      let max = match fc.compute_intrinsic_inline_size(
+                        &layout_child,
+                        IntrinsicSizingMode::MaxContent,
+                      ) {
                         Ok(value) => Some(value),
                         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                         Err(_) => None,
@@ -6814,7 +6929,9 @@ impl FormattingContext for TableFormattingContext {
                   (None, None)
                 };
                 let preferred_min_block = if needs_block_intrinsics {
-                  match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent) {
+                  match fc
+                    .compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent)
+                  {
                     Ok(value) => Some(value),
                     Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                     Err(_) => None,
@@ -6823,7 +6940,9 @@ impl FormattingContext for TableFormattingContext {
                   None
                 };
                 let preferred_block = if needs_block_intrinsics {
-                  match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent) {
+                  match fc
+                    .compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent)
+                  {
                     Ok(value) => Some(value),
                     Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                     Err(_) => None,
@@ -6838,174 +6957,54 @@ impl FormattingContext for TableFormattingContext {
                   preferred_min_block,
                   preferred_block,
                 ))
-              }),
-            },
-          )?
-        } else {
-          let mut layout_child = child.clone();
-          layout_child.style = static_style.clone();
-          match fc_type {
-            FormattingContextType::Table => {
-              let fc = abs_factory.create(fc_type);
-              let fragment = fc.layout(&layout_child, &child_constraints)?;
-              let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-                match fc.compute_intrinsic_inline_sizes(&layout_child) {
-                  Ok((min, max)) => (Some(min), Some(max)),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => {
-                    let min = match fc
-                      .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MinContent)
-                    {
-                      Ok(value) => Some(value),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                    let max = match fc
-                      .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MaxContent)
-                    {
-                      Ok(value) => Some(value),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                    (min, max)
-                  }
-                }
-              } else {
-                (None, None)
-              };
-              let preferred_min_block = if needs_block_intrinsics {
-                match fc
-                  .compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent)
-                {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                }
-              } else {
-                None
-              };
-              let preferred_block = if needs_block_intrinsics {
-                match fc
-                  .compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent)
-                {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                }
-              } else {
-                None
-              };
-              (
-                fragment,
-                preferred_min_inline,
-                preferred_inline,
-                preferred_min_block,
-                preferred_block,
-              )
+              })?,
             }
-            _ => abs_factory.with_fc(fc_type, |fc| {
-              let fragment = fc.layout(&layout_child, &child_constraints)?;
-              let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-                match fc.compute_intrinsic_inline_sizes(&layout_child) {
-                  Ok((min, max)) => (Some(min), Some(max)),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => {
-                    let min = match fc
-                      .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MinContent)
-                    {
-                      Ok(value) => Some(value),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                    let max = match fc
-                      .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MaxContent)
-                    {
-                      Ok(value) => Some(value),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                    (min, max)
-                  }
-                }
-              } else {
-                (None, None)
-              };
-              let preferred_min_block = if needs_block_intrinsics {
-                match fc
-                  .compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent)
-                {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                }
-              } else {
-                None
-              };
-              let preferred_block = if needs_block_intrinsics {
-                match fc
-                  .compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent)
-                {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                }
-              } else {
-                None
-              };
-              Ok((
-                fragment,
-                preferred_min_inline,
-                preferred_inline,
-                preferred_min_block,
-                preferred_block,
-              ))
-            })?,
-          }
-        };
-        let actual_horizontal = positioned_style.padding.left
-          + positioned_style.padding.right
-          + positioned_style.border_width.left
-          + positioned_style.border_width.right;
-        let actual_vertical = positioned_style.padding.top
-          + positioned_style.padding.bottom
-          + positioned_style.border_width.top
-          + positioned_style.border_width.bottom;
-        let content_offset = Point::new(
-          positioned_style.border_width.left + positioned_style.padding.left,
-          positioned_style.border_width.top + positioned_style.padding.top,
-        );
-        let (intrinsic_horizontal, intrinsic_vertical) =
-          crate::layout::absolute_positioning::intrinsic_edge_sizes(
-            &original_style,
-            self.viewport_size,
-            self.factory.font_context(),
+          };
+          let actual_horizontal = positioned_style.padding.left
+            + positioned_style.padding.right
+            + positioned_style.border_width.left
+            + positioned_style.border_width.right;
+          let actual_vertical = positioned_style.padding.top
+            + positioned_style.padding.bottom
+            + positioned_style.border_width.top
+            + positioned_style.border_width.bottom;
+          let content_offset = Point::new(
+            positioned_style.border_width.left + positioned_style.padding.left,
+            positioned_style.border_width.top + positioned_style.padding.top,
           );
-        let preferred_min_inline =
-          preferred_min_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
-        let preferred_inline = preferred_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
-        let preferred_min_block = preferred_min_block.map(|v| (v - intrinsic_vertical).max(0.0));
-        let preferred_block = preferred_block.map(|v| (v - intrinsic_vertical).max(0.0));
-        let intrinsic_size = crate::geometry::Size::new(
-          (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
-          (child_fragment.bounds.size.height - actual_vertical).max(0.0),
-        );
+          let (intrinsic_horizontal, intrinsic_vertical) =
+            crate::layout::absolute_positioning::intrinsic_edge_sizes(
+              &original_style,
+              self.viewport_size,
+              self.factory.font_context(),
+            );
+          let preferred_min_inline =
+            preferred_min_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+          let preferred_inline = preferred_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+          let preferred_min_block = preferred_min_block.map(|v| (v - intrinsic_vertical).max(0.0));
+          let preferred_block = preferred_block.map(|v| (v - intrinsic_vertical).max(0.0));
+          let intrinsic_size = crate::geometry::Size::new(
+            (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
+            (child_fragment.bounds.size.height - actual_vertical).max(0.0),
+          );
 
-        let mut input = AbsoluteLayoutInput::new(positioned_style, intrinsic_size, Point::ZERO);
-        input.is_replaced = is_replaced;
-        input.preferred_min_inline_size = preferred_min_inline;
-        input.preferred_inline_size = preferred_inline;
-        input.preferred_min_block_size = preferred_min_block;
-        input.preferred_block_size = preferred_block;
+          let mut input = AbsoluteLayoutInput::new(positioned_style, intrinsic_size, Point::ZERO);
+          input.is_replaced = is_replaced;
+          input.preferred_min_inline_size = preferred_min_inline;
+          input.preferred_inline_size = preferred_inline;
+          input.preferred_min_block_size = preferred_min_block;
+          input.preferred_block_size = preferred_block;
 
-        let supports_used_border_box = matches!(
-          fc_type,
-          FormattingContextType::Block
-            | FormattingContextType::Flex
-            | FormattingContextType::Grid
-            | FormattingContextType::Inline
-        );
-        let layout_with_fc =
-          |node: &BoxNode, constraints: &LayoutConstraints| -> Result<FragmentNode, LayoutError> {
+          let supports_used_border_box = matches!(
+            fc_type,
+            FormattingContextType::Block
+              | FormattingContextType::Flex
+              | FormattingContextType::Grid
+              | FormattingContextType::Inline
+          );
+          let layout_with_fc = |node: &BoxNode,
+                                constraints: &LayoutConstraints|
+           -> Result<FragmentNode, LayoutError> {
             match fc_type {
               FormattingContextType::Table => {
                 let fc = abs_factory.create(fc_type);
@@ -7015,77 +7014,11 @@ impl FormattingContext for TableFormattingContext {
             }
           };
 
-        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
-          query_parent_box_id: Some(root_box_id),
-          implicit_anchor_box_id,
-        };
-        let (mut layout_positioned_style, mut result) =
-          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
-            &abs,
-            &input,
-            &original_style,
-            &cb,
-            self.viewport_size,
-            self.factory.font_context(),
-            Some(&anchor_index),
-            anchor_query,
-          )?;
-        let mut border_size = crate::geometry::Size::new(
-          result.size.width + actual_horizontal,
-          result.size.height + actual_vertical,
-        );
-        let mut border_origin = Point::new(
-          result.position.x - content_offset.x,
-          result.position.y - content_offset.y,
-        );
-
-        if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
-          &layout_positioned_style,
-          input.is_replaced,
-        ) && (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-        {
-          let measure_constraints = child_constraints
-            .with_width(AvailableSpace::Definite(border_size.width))
-            .with_height(AvailableSpace::Indefinite)
-            .with_used_border_box_size(Some(border_size.width), None);
-
-          child_fragment = if child.id != 0 {
-            if supports_used_border_box {
-              crate::layout::style_override::with_style_override(
-                child.id,
-                static_style.clone(),
-                || layout_with_fc(child, &measure_constraints),
-              )?
-            } else {
-              let mut measure_style = (*static_style).clone();
-              measure_style.width = Some(Length::px(border_size.width));
-              measure_style.width_keyword = None;
-              measure_style.min_width_keyword = None;
-              measure_style.max_width_keyword = None;
-              crate::layout::style_override::with_style_override(
-                child.id,
-                Arc::new(measure_style),
-                || layout_with_fc(child, &measure_constraints),
-              )?
-            }
-          } else {
-            let mut measure_child = child.clone();
-            if supports_used_border_box {
-              measure_child.style = static_style.clone();
-            } else {
-              let mut measure_style = (*static_style).clone();
-              measure_style.width = Some(Length::px(border_size.width));
-              measure_style.width_keyword = None;
-              measure_style.min_width_keyword = None;
-              measure_style.max_width_keyword = None;
-              measure_child.style = Arc::new(measure_style);
-            }
-            layout_with_fc(&measure_child, &measure_constraints)?
+          let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+            query_parent_box_id: Some(root_box_id),
+            implicit_anchor_box_id,
           };
-
-          input.intrinsic_size.height =
-            (child_fragment.bounds.size.height - actual_vertical).max(0.0);
-          (layout_positioned_style, result) =
+          let (mut layout_positioned_style, mut result) =
             crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
               &abs,
               &input,
@@ -7096,86 +7029,2167 @@ impl FormattingContext for TableFormattingContext {
               Some(&anchor_index),
               anchor_query,
             )?;
-          border_size = crate::geometry::Size::new(
+          let mut border_size = crate::geometry::Size::new(
             result.size.width + actual_horizontal,
             result.size.height + actual_vertical,
           );
-          border_origin = Point::new(
+          let mut border_origin = Point::new(
             result.position.x - content_offset.x,
             result.position.y - content_offset.y,
           );
-        }
 
-        let relayout_for_inset_resolved_size =
-          crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
-        let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
-        let needs_relayout = needs_relayout || relayout_for_inset_resolved_size;
-        if needs_relayout {
-          let relayout_constraints = child_constraints
-            .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
-          if child.id != 0 {
-            if supports_used_border_box {
-              child_fragment = crate::layout::style_override::with_style_override(
-                child.id,
-                static_style.clone(),
-                || layout_with_fc(child, &relayout_constraints),
-              )?;
+          if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
+            &layout_positioned_style,
+            input.is_replaced,
+          ) && (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+          {
+            let measure_constraints = child_constraints
+              .with_width(AvailableSpace::Definite(border_size.width))
+              .with_height(AvailableSpace::Indefinite)
+              .with_used_border_box_size(Some(border_size.width), None);
+
+            child_fragment = if child.id != 0 {
+              if supports_used_border_box {
+                crate::layout::style_override::with_style_override(
+                  child.id,
+                  static_style.clone(),
+                  || layout_with_fc(child, &measure_constraints),
+                )?
+              } else {
+                let mut measure_style = (*static_style).clone();
+                measure_style.width = Some(Length::px(border_size.width));
+                measure_style.width_keyword = None;
+                measure_style.min_width_keyword = None;
+                measure_style.max_width_keyword = None;
+                crate::layout::style_override::with_style_override(
+                  child.id,
+                  Arc::new(measure_style),
+                  || layout_with_fc(child, &measure_constraints),
+                )?
+              }
             } else {
-              let mut relayout_style = (*static_style).clone();
-              relayout_style.width = Some(Length::px(border_size.width));
-              relayout_style.height = Some(Length::px(border_size.height));
-              relayout_style.width_keyword = None;
-              relayout_style.height_keyword = None;
-              child_fragment = crate::layout::style_override::with_style_override(
-                child.id,
-                Arc::new(relayout_style),
-                || layout_with_fc(child, &relayout_constraints),
+              let mut measure_child = child.clone();
+              if supports_used_border_box {
+                measure_child.style = static_style.clone();
+              } else {
+                let mut measure_style = (*static_style).clone();
+                measure_style.width = Some(Length::px(border_size.width));
+                measure_style.width_keyword = None;
+                measure_style.min_width_keyword = None;
+                measure_style.max_width_keyword = None;
+                measure_child.style = Arc::new(measure_style);
+              }
+              layout_with_fc(&measure_child, &measure_constraints)?
+            };
+
+            input.intrinsic_size.height =
+              (child_fragment.bounds.size.height - actual_vertical).max(0.0);
+            (layout_positioned_style, result) =
+              crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+                &abs,
+                &input,
+                &original_style,
+                &cb,
+                self.viewport_size,
+                self.factory.font_context(),
+                Some(&anchor_index),
+                anchor_query,
               )?;
-            }
-          } else {
-            let mut relayout_child = child.clone();
-            if supports_used_border_box {
-              relayout_child.style = static_style.clone();
+            border_size = crate::geometry::Size::new(
+              result.size.width + actual_horizontal,
+              result.size.height + actual_vertical,
+            );
+            border_origin = Point::new(
+              result.position.x - content_offset.x,
+              result.position.y - content_offset.y,
+            );
+          }
+
+          let relayout_for_inset_resolved_size =
+            crate::layout::absolute_positioning::auto_size_resolved_by_insets(
+              &layout_positioned_style,
+            );
+          let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+            || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+          let needs_relayout = needs_relayout || relayout_for_inset_resolved_size;
+          if needs_relayout {
+            let relayout_constraints = child_constraints
+              .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
+            if child.id != 0 {
+              if supports_used_border_box {
+                child_fragment = crate::layout::style_override::with_style_override(
+                  child.id,
+                  static_style.clone(),
+                  || layout_with_fc(child, &relayout_constraints),
+                )?;
+              } else {
+                let mut relayout_style = (*static_style).clone();
+                relayout_style.width = Some(Length::px(border_size.width));
+                relayout_style.height = Some(Length::px(border_size.height));
+                relayout_style.width_keyword = None;
+                relayout_style.height_keyword = None;
+                child_fragment = crate::layout::style_override::with_style_override(
+                  child.id,
+                  Arc::new(relayout_style),
+                  || layout_with_fc(child, &relayout_constraints),
+                )?;
+              }
             } else {
-              let mut relayout_style = (*static_style).clone();
-              relayout_style.width = Some(Length::px(border_size.width));
-              relayout_style.height = Some(Length::px(border_size.height));
-              relayout_style.width_keyword = None;
-              relayout_style.height_keyword = None;
-              relayout_child.style = Arc::new(relayout_style);
+              let mut relayout_child = child.clone();
+              if supports_used_border_box {
+                relayout_child.style = static_style.clone();
+              } else {
+                let mut relayout_style = (*static_style).clone();
+                relayout_style.width = Some(Length::px(border_size.width));
+                relayout_style.height = Some(Length::px(border_size.height));
+                relayout_style.width_keyword = None;
+                relayout_style.height_keyword = None;
+                relayout_child.style = Arc::new(relayout_style);
+              }
+              child_fragment = layout_with_fc(&relayout_child, &relayout_constraints)?;
             }
-            child_fragment = layout_with_fc(&relayout_child, &relayout_constraints)?;
+          }
+
+          child_fragment.bounds = Rect::new(border_origin, border_size);
+          child_fragment.style = Some(original_style);
+          fragment.children_mut().push(child_fragment);
+        }
+        Ok(())
+      };
+
+      if (structure.column_count == 0 || structure.row_count == 0) && captions.is_empty() {
+        let width = specified_width.or(containing_width).unwrap_or(0.0);
+        let height = table_height.unwrap_or(0.0);
+        let mut fragment = FragmentNode::new_with_style(
+          Rect::from_xywh(0.0, 0.0, width, height),
+          FragmentContent::Block {
+            box_id: Some(table_box.id),
+          },
+          vec![],
+          table_box.style.clone(),
+        );
+        if !running_children.is_empty() {
+          let snapshot_constraints = LayoutConstraints::new(
+            AvailableSpace::Definite(width.max(0.0)),
+            AvailableSpace::Indefinite,
+          );
+          for (order, (_, running_child)) in running_children.iter().copied().enumerate() {
+            let Some(name) = running_child.style.running_position.clone() else {
+              continue;
+            };
+
+            let mut snapshot_node = running_child.clone();
+            let mut snapshot_style = snapshot_node.style.as_ref().clone();
+            snapshot_style.running_position = None;
+            snapshot_style.position = crate::style::position::Position::Static;
+            snapshot_node.style = Arc::new(snapshot_style);
+            clear_running_position_in_box_tree(&mut snapshot_node);
+
+            let fc_type = snapshot_node
+              .formatting_context()
+              .unwrap_or(FormattingContextType::Block);
+            let snapshot_result = match fc_type {
+              FormattingContextType::Table => {
+                let fc = self.factory.create(fc_type);
+                fc.layout(&snapshot_node, &snapshot_constraints)
+              }
+              _ => self.factory.with_fc(fc_type, |fc| {
+                fc.layout(&snapshot_node, &snapshot_constraints)
+              }),
+            };
+            match snapshot_result {
+              Ok(snapshot_fragment) => {
+                let anchor_bounds = Rect::from_xywh(0.0, (order as f32) * 1e-4, 0.0, 0.01);
+                let mut anchor =
+                  FragmentNode::new_running_anchor(anchor_bounds, name, snapshot_fragment);
+                anchor.style = Some(running_child.style.clone());
+                fragment.children_mut().push(anchor);
+              }
+              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+              Err(_) => {}
+            }
           }
         }
-
-        child_fragment.bounds = Rect::new(border_origin, border_size);
-        child_fragment.style = Some(original_style);
-        fragment.children_mut().push(child_fragment);
+        if !positioned_children.is_empty() {
+          // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the padding
+          // box of the nearest positioned ancestor, i.e. the rectangle bounded by the padding edge
+          // (border box minus borders).
+          let padding_origin = Point::new(border_left, border_top);
+          let padding_rect = Rect::new(
+            padding_origin,
+            crate::geometry::Size::new(
+              width - border_left - border_right,
+              height - border_top - border_bottom,
+            ),
+          );
+          // Percentage offsets on absolutely positioned boxes resolve against the used height of
+          // the padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
+          let block_base = Some(padding_rect.size.height);
+          let padding_cb = ContainingBlock::with_viewport_and_bases(
+            padding_rect,
+            self.viewport_size,
+            Some(padding_rect.size.width),
+            block_base,
+          )
+          .with_writing_mode_and_direction(
+            table_root_style.writing_mode,
+            table_root_style.direction,
+          );
+          let establishes_abs_cb = table_root_style.establishes_abs_containing_block();
+          let establishes_fixed_cb = table_root_style.establishes_fixed_containing_block();
+          let cb_for_absolute = if establishes_abs_cb {
+            padding_cb
+          } else {
+            self.nearest_positioned_cb
+          };
+          let cb_for_fixed = if establishes_fixed_cb {
+            padding_cb
+          } else {
+            self.nearest_fixed_cb
+          };
+          place_out_of_flow(&mut fragment, cb_for_absolute, cb_for_fixed)?;
+        }
+        if !has_running_children {
+          layout_cache_store(
+            box_node,
+            FormattingContextType::Table,
+            constraints,
+            &fragment,
+            self.factory.viewport_scroll(),
+            self.viewport_size,
+            self.nearest_positioned_cb,
+            self.nearest_fixed_cb,
+          );
+        }
+        return Ok(fragment);
       }
-      Ok(())
-    };
 
-    if (structure.column_count == 0 || structure.row_count == 0) && captions.is_empty() {
-      let width = specified_width.or(containing_width).unwrap_or(0.0);
-      let height = table_height.unwrap_or(0.0);
-      let mut fragment = FragmentNode::new_with_style(
-        Rect::from_xywh(0.0, 0.0, width, height),
+      let wants_fixed_layout = matches!(table_root_style.table_layout, TableLayout::Fixed);
+      let has_computed_width =
+        table_root_style.width.is_some() || table_root_style.width_keyword.is_some();
+      let mode = choose_table_distribution_mode(
+        wants_fixed_layout,
+        has_computed_width,
+        table_root_style,
+        Some(constraints),
+      );
+      let style_override_cache = StyleOverrideCache::for_table_layout(
+        "layout",
+        table_box.id,
+        &source_rows,
+        &structure,
+        mode,
+      );
+      let spacing = structure.total_horizontal_spacing();
+      let edge_consumption = padding_h
+        + if structure.border_collapse == BorderCollapse::Collapse {
+          0.0
+        } else {
+          border_h
+        };
+      let percent_base = percent_base_width.map(|w| (w - spacing - edge_consumption).max(0.0));
+
+      let mut column_constraints = self.column_constraints_cached(
+        table_box,
+        &structure,
+        mode,
+        percent_base,
+        &style_override_cache,
+      )?;
+      self.normalize_percentage_constraints(&mut column_constraints, percent_base);
+
+      if dump {
+        let desc: String = column_constraints
+          .iter()
+          .enumerate()
+          .map(|(i, c)| {
+            format!(
+              "#{} min={:.2} max={:.2} fixed={:?} pct={:?} flex={}",
+              i, c.min_width, c.max_width, c.fixed_width, c.percentage, c.is_flexible
+            )
+          })
+          .collect::<Vec<_>>()
+          .join(" | ");
+        eprintln!("column constraints: {}", desc);
+      }
+
+      let min_content_sum: f32 = column_constraints.iter().map(|c| c.min_width).sum();
+      let max_content_sum: f32 = column_constraints.iter().map(|c| c.max_width).sum();
+      let mut available_content = match (table_width, constraints.available_width) {
+        (Some(w), _) => (w - spacing - edge_consumption).max(0.0),
+        (None, AvailableSpace::Definite(w)) => (w - spacing - edge_consumption).max(0.0),
+        (None, AvailableSpace::MinContent) => min_content_sum,
+        (None, AvailableSpace::MaxContent) | (None, AvailableSpace::Indefinite) => max_content_sum,
+      };
+      if !available_content.is_finite() {
+        // Prefer the widest finite bound; fall back to min content to stay stable.
+        if max_content_sum.is_finite() {
+          available_content = max_content_sum;
+        } else if min_content_sum.is_finite() {
+          available_content = min_content_sum;
+        } else {
+          available_content = 0.0;
+        }
+      }
+      // Fixed table layout distributes slack to fill the supplied available width (CSS 2.1
+      // §17.5.2.1). For `width:auto` tables, the used table width is shrink-to-fit, so clamp the
+      // available width to the intrinsic min/max sums before distribution.
+      if table_width.is_none() && mode == DistributionMode::Fixed {
+        if max_content_sum.is_finite() {
+          available_content = available_content.min(max_content_sum);
+        }
+        if min_content_sum.is_finite() {
+          available_content = available_content.max(min_content_sum);
+        }
+      }
+      // Honor min/max width constraints even when the table width is auto: expand or clamp the content
+      // box before column distribution so columns and fragment bounds agree with the final border box.
+      if let Some(min_w) = min_width {
+        let min_content = (min_w - spacing - edge_consumption).max(0.0);
+        available_content = available_content.max(min_content);
+      }
+      if let Some(max_w) = max_width {
+        let max_content = (max_w - spacing - edge_consumption).max(0.0);
+        available_content = available_content.min(max_content);
+      }
+      let distributor = ColumnDistributor::new(mode).with_min_column_width(0.0);
+      let distribution = distributor.distribute(&column_constraints, available_content);
+      if let Some(err) = distributor.take_timeout_error() {
+        return Err(err);
+      }
+      let mut col_widths = if distribution.widths.len() == structure.column_count {
+        distribution.widths
+      } else {
+        vec![0.0; structure.column_count]
+      };
+
+      // Fallback: if all columns computed to zero, distribute available space equally
+      if col_widths.iter().all(|w| *w == 0.0) && available_content > 0.0 && !col_widths.is_empty() {
+        let per = available_content / structure.column_count as f32;
+        col_widths = vec![per; structure.column_count];
+      }
+
+      // CSS 2.1 §17.5.2.1 (Fixed table layout): when the table is wider than the sum of the column
+      // widths, the extra space should be distributed over the columns. `ColumnDistributor` handles
+      // this in fixed mode, so at this point `col_widths` should already fill `available_content`
+      // unless all columns hit authored max-width caps.
+
+      // Auto layout normally sizes columns to their intrinsic max-content widths when the available
+      // width is larger than the max-content sum. That is correct for `width:auto` shrink-to-fit
+      // tables, but when the table's *used* border-box width is definite and larger (e.g. a flex/grid
+      // item stretch, a specified width, or a min-width clamp), the columns must expand to fill the
+      // used width so the grid and fragment bounds agree.
+      if mode == DistributionMode::Auto && !col_widths.is_empty() {
+        let current: f32 = col_widths.iter().sum();
+        let current_border_box = current + spacing + edge_consumption;
+        let target_border_box = match table_width {
+          Some(w) => w,
+          None => clamp_to_min_max(current_border_box, min_width, max_width),
+        };
+        let target_columns_sum = (target_border_box - spacing - edge_consumption).max(0.0);
+
+        if target_columns_sum.is_finite() && target_columns_sum > current + 0.01 {
+          let extra = target_columns_sum - current;
+
+          // Prefer truly flexible columns (no fixed width, no percentage). If none exist, distribute
+          // across all columns.
+          let flex_indices: Vec<usize> = column_constraints
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_flexible && c.fixed_width.is_none() && c.percentage.is_none())
+            .map(|(i, _)| i)
+            .collect();
+          let indices: Vec<usize> = if flex_indices.is_empty() {
+            (0..col_widths.len()).collect()
+          } else {
+            flex_indices
+          };
+
+          // Distribute slack while respecting authored max-width caps (`has_max_cap`). Intrinsic
+          // max-content widths are treated as preferences, not hard caps.
+          let mut active: Vec<(usize, Option<f32>)> = Vec::with_capacity(indices.len());
+          for idx in indices {
+            if idx >= col_widths.len() || idx >= column_constraints.len() {
+              continue;
+            }
+            let col = &column_constraints[idx];
+            let cap = if col.has_max_cap && col.max_width.is_finite() {
+              Some(col.max_width.max(col.min_width))
+            } else {
+              None
+            };
+            active.push((idx, cap));
+          }
+
+          let epsilon = 0.01;
+          let mut remaining = extra;
+          while remaining > epsilon && !active.is_empty() {
+            // Drop saturated capped columns.
+            active.retain(|(idx, cap)| match cap {
+              Some(limit) => col_widths.get(*idx).copied().unwrap_or(0.0) + epsilon < *limit,
+              None => true,
+            });
+            if active.is_empty() {
+              break;
+            }
+
+            let mut finite_total = 0.0;
+            let mut infinite = Vec::new();
+            for (idx, _) in &active {
+              let flex = column_constraints
+                .get(*idx)
+                .map(|c| c.flexibility_range())
+                .unwrap_or(0.0);
+              if flex.is_infinite() {
+                infinite.push(*idx);
+              } else if flex.is_finite() && flex > 0.0 {
+                finite_total += flex;
+              }
+            }
+
+            let mut distributed = 0.0;
+            if !infinite.is_empty() {
+              let share = remaining / infinite.len() as f32;
+              for idx in infinite {
+                let cap = active
+                  .iter()
+                  .find(|(active_idx, _)| *active_idx == idx)
+                  .and_then(|(_, cap)| *cap);
+                let headroom = cap
+                  .map(|limit| (limit - col_widths[idx]).max(0.0))
+                  .unwrap_or(f32::INFINITY);
+                let add = share.min(headroom);
+                if add.is_finite() && add > 0.0 {
+                  col_widths[idx] += add;
+                  distributed += add;
+                }
+              }
+            } else if finite_total > 0.0 {
+              for (idx, cap) in &active {
+                let flex = column_constraints
+                  .get(*idx)
+                  .map(|c| c.flexibility_range())
+                  .unwrap_or(0.0);
+                if !(flex.is_finite() && flex > 0.0) {
+                  continue;
+                }
+                let mut add = remaining * (flex / finite_total);
+                if let Some(limit) = cap {
+                  add = add.min((*limit - col_widths[*idx]).max(0.0));
+                }
+                if add.is_finite() && add > 0.0 {
+                  col_widths[*idx] += add;
+                  distributed += add;
+                }
+              }
+            } else {
+              let share = remaining / active.len() as f32;
+              for (idx, cap) in &active {
+                let mut add = share;
+                if let Some(limit) = cap {
+                  add = add.min((*limit - col_widths[*idx]).max(0.0));
+                }
+                if add.is_finite() && add > 0.0 {
+                  col_widths[*idx] += add;
+                  distributed += add;
+                }
+              }
+            }
+
+            if distributed <= epsilon {
+              break;
+            }
+            remaining = (remaining - distributed).max(0.0);
+          }
+        }
+      }
+      if dump {
+        let widths: String = col_widths
+          .iter()
+          .map(|w| format!("{:.2}", w))
+          .collect::<Vec<_>>()
+          .join(", ");
+        eprintln!(
+          "table columns ({} cols): [{}] (available_content {:.2}, table_width {:?})",
+          col_widths.len(),
+          widths,
+          available_content,
+          table_width
+        );
+      }
+
+      let h_spacing = structure.border_spacing.0;
+      let v_spacing = structure.border_spacing.1;
+      let mut col_prefix = Vec::with_capacity(col_widths.len() + 1);
+      col_prefix.push(0.0);
+      for width in &col_widths {
+        check_layout_deadline(&mut deadline_counter)?;
+        let next = col_prefix.last().copied().unwrap_or(0.0) + *width;
+        col_prefix.push(next);
+      }
+      let establishes_fixed_cb = table_root_style.has_transform()
+        || table_root_style.perspective.is_some()
+        || table_root_style.containment.layout
+        || table_root_style.containment.paint;
+      let mut cell_bfc_owned = None;
+      let cell_bfc = if establishes_fixed_cb {
+        let content_width = if col_widths.is_empty() {
+          available_content
+        } else {
+          col_widths.iter().sum::<f32>() + structure.total_horizontal_spacing()
+        };
+        let padding_width = if structure.border_collapse == BorderCollapse::Collapse {
+          content_width
+        } else {
+          content_width + padding_h
+        };
+        let padding_height = table_height
+          .map(|h| (h - border_top - border_bottom).max(0.0))
+          .unwrap_or(padding_v.max(0.0));
+        let block_base = if table_root_style.height.is_some() {
+          Some(padding_height)
+        } else {
+          None
+        };
+        let padding_origin = Point::new(border_left + pad_left, border_top + pad_top);
+        let padding_rect = Rect::new(
+          padding_origin,
+          Size::new(padding_width.max(0.0), padding_height.max(0.0)),
+        );
+        let fixed_cb = ContainingBlock::with_viewport_and_bases(
+          padding_rect,
+          self.viewport_size,
+          Some(padding_rect.size.width),
+          block_base,
+        )
+        .with_writing_mode_and_direction(table_root_style.writing_mode, table_root_style.direction);
+        cell_bfc_owned = Some(BlockFormattingContext::with_factory(
+          self.factory.detached().with_fixed_cb(fixed_cb),
+        ));
+        cell_bfc_owned.as_ref().unwrap()
+      } else {
+        &self.cell_bfc
+      };
+      let mut fragments = Vec::new();
+      let mut row_markers: Vec<FragmentNode> = Vec::new();
+
+      struct LaidOutCell {
+        cell: CellInfo,
+        fragment: FragmentNode,
+        vertical_align: VerticalAlign,
+        baseline: Option<f32>,
+        height: f32,
+      }
+
+      // Layout all cells to obtain their fragments and measure heights, then distribute row heights with rowspans.
+      enum CellOutcome {
+        Success(LaidOutCell),
+        Missing,
+        Failed,
+      }
+
+      let layout_single_cell = |cell: &CellInfo| -> CellOutcome {
+        let max_prefix_idx = col_prefix.len().saturating_sub(1);
+        let start = cell.col.min(max_prefix_idx);
+        let span_end = (cell.col + cell.colspan).min(max_prefix_idx);
+        let sum_cols = col_prefix[span_end] - col_prefix[start];
+        let width = sum_cols + h_spacing * (cell.colspan.saturating_sub(1) as f32);
+        if dump {
+          eprintln!(
+            "  cell r{} c{} span={} width={:.2} min={:.2} max={:.2}",
+            cell.row, cell.col, cell.colspan, width, cell.min_width, cell.max_width
+          );
+        }
+
+        let Some(row) = source_rows.get(cell.source_row) else {
+          return CellOutcome::Missing;
+        };
+        let Some(cell_box) = row.children.get(cell.box_index) else {
+          return CellOutcome::Missing;
+        };
+        let row_vertical_align = structure.rows.get(cell.row).and_then(|r| r.vertical_align);
+        let effective_vertical_align = if cell_box.style.vertical_align_specified {
+          cell_box.style.vertical_align
+        } else {
+          row_vertical_align.unwrap_or(cell_box.style.vertical_align)
+        };
+        match self.layout_cell(
+          cell_box,
+          width,
+          structure.border_collapse,
+          cell_bfc,
+          &style_override_cache,
+        ) {
+          Ok(fragment) => {
+            if dump {
+              let b = fragment.bounds;
+              eprintln!(
+                "    cell fragment raw bounds: x={:.2} y={:.2} w={:.2} h={:.2}",
+                b.x(),
+                b.y(),
+                b.width(),
+                b.height()
+              );
+            }
+            let height = fragment.bounds.height();
+            let baseline = effective_vertical_align
+              .is_baseline_relative()
+              .then(|| cell_baseline(&fragment))
+              .flatten();
+            CellOutcome::Success(LaidOutCell {
+              cell: cell.clone(),
+              fragment,
+              vertical_align: effective_vertical_align,
+              baseline,
+              height,
+            })
+          }
+          Err(_) => CellOutcome::Failed,
+        }
+      };
+
+      let max_threads = self
+        .parallelism
+        .max_threads
+        .unwrap_or_else(|| default_layout_thread_budget().min(TABLE_PARALLEL_MAX_THREADS))
+        .max(1);
+      let should_parallelize_cells = !dump
+        && (self.parallelism.should_parallelize(structure.cells.len())
+          || (structure.cells.len() > 256 && max_threads > 1));
+      let outcomes: Vec<CellOutcome> = if should_parallelize_cells {
+        let deadline = active_deadline();
+        let stage = active_stage();
+        let heartbeat = active_heartbeat();
+        let record_parallel_work = self.parallelism.is_active();
+        let layout_cells = || {
+          structure
+            .cells
+            .par_iter()
+            .map(|cell| {
+              with_deadline(deadline.as_ref(), || {
+                let _hb_guard = StageHeartbeatGuard::install(heartbeat);
+                let _stage_guard = StageGuard::install(stage);
+                if record_parallel_work {
+                  self.factory.debug_record_parallel_work();
+                }
+                layout_single_cell(cell)
+              })
+            })
+            .collect()
+        };
+
+        if self.parallelism.is_active() {
+          layout_cells()
+        } else {
+          if let Some(pool) = layout_thread_pool_for_threads(max_threads) {
+            pool.install(layout_cells)
+          } else {
+            layout_cells()
+          }
+        }
+      } else {
+        let mut outcomes = Vec::with_capacity(structure.cells.len());
+        for cell in &structure.cells {
+          check_layout_deadline(&mut deadline_counter)?;
+          outcomes.push(layout_single_cell(cell));
+        }
+        outcomes
+      };
+      let mut laid_out_cells = Vec::new();
+      let mut failed_cells = 0usize;
+      for outcome in outcomes {
+        check_layout_deadline(&mut deadline_counter)?;
+        match outcome {
+          CellOutcome::Success(cell) => laid_out_cells.push(cell),
+          CellOutcome::Failed => failed_cells += 1,
+          CellOutcome::Missing => {}
+        }
+      }
+
+      // Compute row heights, accounting for rowspans and vertical spacing.
+      let mut row_heights = vec![0.0f32; structure.row_count];
+      for (idx, row) in structure.rows.iter().enumerate() {
+        check_layout_deadline(&mut deadline_counter)?;
+        if let Some(slot) = row_heights.get_mut(idx) {
+          *slot = row.min_height.max(*slot);
+        }
+      }
+
+      let baseline_split = |laid: &LaidOutCell, heights: &[f32]| {
+        let span_end = (laid.cell.row + laid.cell.rowspan).min(heights.len());
+        let spacing_total = v_spacing * laid.cell.rowspan.saturating_sub(1) as f32;
+        let allocated_height = if laid.cell.rowspan > 1 && span_end > laid.cell.row {
+          heights
+            .get(laid.cell.row..span_end)
+            .map(|rows| rows.iter().sum::<f32>() + spacing_total)
+            .unwrap_or(laid.height)
+        } else {
+          heights.get(laid.cell.row).copied().unwrap_or(laid.height)
+        };
+        let raw_baseline = laid.baseline.unwrap_or(laid.height);
+        let (target_height, baseline) =
+          if raw_baseline >= laid.height && allocated_height > laid.height {
+            (allocated_height, allocated_height)
+          } else {
+            let target_height = if laid.cell.rowspan == 1 && raw_baseline < laid.height {
+              laid.height
+            } else {
+              allocated_height
+            };
+            (target_height, raw_baseline)
+          };
+        if laid.cell.rowspan > 1 && span_end > laid.cell.row {
+          spanning_baseline_allocation(target_height, baseline, laid.cell.row, span_end, heights)
+        } else {
+          let clamped = baseline.min(target_height);
+          (clamped, (target_height - clamped).max(0.0))
+        }
+      };
+
+      // Baseline-aligned cells reserve enough height in their starting row to place the baseline.
+      for laid in &laid_out_cells {
+        if !laid.vertical_align.is_baseline_relative() {
+          continue;
+        }
+        let (top, bottom) = baseline_split(laid, &row_heights);
+        if let Some(slot) = row_heights.get_mut(laid.cell.row) {
+          *slot = (*slot).max(top + bottom);
+        }
+      }
+
+      let compute_percent_height_base = |base: f32| {
+        let mut content_base = if structure.border_collapse == BorderCollapse::Collapse {
+          (base - padding_v - outer_border_v).max(0.0)
+        } else {
+          (base - padding_v - border_v).max(0.0)
+        };
+        if structure.border_collapse != BorderCollapse::Collapse {
+          let spacing_total = structure.total_vertical_spacing();
+          content_base = (content_base - spacing_total).max(0.0);
+        }
+        content_base
+      };
+
+      let percent_height_base = table_height.map(|base| compute_percent_height_base(base));
+
+      let row_floor = |idx: usize, current: f32| -> f32 {
+        let row = structure.rows.get(idx);
+        if row.is_none() {
+          return current;
+        }
+        let row = row.unwrap();
+        let mut floor = current;
+        if let Some((Some(min_len), _)) = Some(resolve_row_min_max(row, percent_height_base)) {
+          floor = floor.max(min_len);
+        }
+        if let Some(spec) = row.specified_height {
+          match spec {
+            SpecifiedHeight::Fixed(h) => floor = floor.max(h),
+            SpecifiedHeight::Percent(pct) => {
+              if let Some(base) = percent_height_base {
+                floor = floor.max((pct / 100.0) * base);
+              }
+            }
+            SpecifiedHeight::Auto => {}
+          }
+        }
+        floor
+      };
+
+      for laid in &laid_out_cells {
+        if laid.cell.rowspan == 1 {
+          row_heights[laid.cell.row] = row_heights[laid.cell.row].max(laid.height);
+        } else {
+          let span_start = laid.cell.row;
+          let span_end = (laid.cell.row + laid.cell.rowspan).min(structure.row_count);
+          let spacing_total = v_spacing * (laid.cell.rowspan.saturating_sub(1) as f32);
+          let span_height = (laid.height - spacing_total).max(0.0);
+          let current_total: f32 = row_heights[span_start..span_end].iter().sum();
+          let remaining = (span_height - current_total).max(0.0);
+          if remaining > 0.0 && span_start < span_end {
+            let percent_base = percent_height_base;
+            let row_floor_fn = |idx: usize, _current: f32| -> f32 { row_floor(idx, 0.0) };
+            distribute_rowspan_targets_range(
+              span_start,
+              span_end,
+              &mut row_heights,
+              &structure.rows,
+              remaining,
+              percent_base,
+              &row_floor_fn,
+              &|current, share| current + share,
+            );
+          }
+        }
+      }
+
+      // Preserve the content-driven minimums so later distribution never shrinks below cell content.
+      let content_min_heights = row_heights.clone();
+
+      let percent_height_base = table_height.map(|base| compute_percent_height_base(base));
+
+      // Enforce row-specified minimums (length or percentage of table height) and percent targets.
+      for (idx, row) in structure.rows.iter().enumerate() {
+        let (min_len, max_len) = resolve_row_min_max(row, percent_height_base);
+        if let Some(min) = min_len {
+          row_heights[idx] = row_heights[idx].max(min);
+        }
+        if let Some(max) = max_len {
+          row_heights[idx] = row_heights[idx].min(max);
+        }
+        if let Some(SpecifiedHeight::Fixed(px)) = row.specified_height {
+          row_heights[idx] = row_heights[idx].max(px);
+        }
+        if let (Some(base), Some(SpecifiedHeight::Percent(pct))) =
+          (percent_height_base, row.specified_height)
+        {
+          let target = (pct / 100.0) * base;
+          row_heights[idx] = row_heights[idx].max(target);
+        }
+      }
+
+      apply_row_group_constraints(
+        &mut row_heights,
+        &structure.rows,
+        &row_group_constraints,
+        percent_height_base,
+        v_spacing,
+        &content_min_heights,
+      );
+
+      // If the table has a definite height, adjust rows so percent rows meet their targets and remaining space is distributed.
+      if let Some(percent_base) = percent_height_base {
+        let target_rows = percent_base.max(0.0);
+        let mut percent_rows = Vec::new();
+        let mut adjustable_rows = Vec::new();
+        for (idx, row) in structure.rows.iter().enumerate() {
+          if matches!(row.specified_height, Some(SpecifiedHeight::Percent(_))) {
+            percent_rows.push(idx);
+          } else {
+            adjustable_rows.push(idx);
+          }
+        }
+        let percent_total: f32 = percent_rows.iter().map(|i| row_heights[*i]).sum();
+        let flex_indices = if !adjustable_rows.is_empty() {
+          adjustable_rows
+        } else {
+          percent_rows.clone()
+        };
+
+        let available = target_rows - percent_total;
+        let flex_total: f32 = flex_indices.iter().map(|i| row_heights[*i]).sum();
+
+        if available > 0.0 {
+          if flex_total > 0.0 {
+            let scale = available / flex_total;
+            for i in &flex_indices {
+              row_heights[*i] = (row_heights[*i] * scale).max(content_min_heights[*i]);
+            }
+          } else if !flex_indices.is_empty() {
+            let share = available / flex_indices.len() as f32;
+            for i in &flex_indices {
+              row_heights[*i] = share;
+            }
+          }
+        }
+        for (idx, min_content) in content_min_heights.iter().enumerate() {
+          row_heights[idx] = row_heights[idx].max(*min_content);
+        }
+        for (idx, row) in structure.rows.iter().enumerate() {
+          let (min_len, max_len) = resolve_row_min_max(row, percent_height_base);
+          if let Some(min) = min_len {
+            row_heights[idx] = row_heights[idx].max(min);
+          }
+          if let Some(max) = max_len {
+            row_heights[idx] = row_heights[idx].min(max);
+          }
+        }
+      }
+
+      apply_row_group_constraints(
+        &mut row_heights,
+        &structure.rows,
+        &row_group_constraints,
+        percent_height_base,
+        v_spacing,
+        &content_min_heights,
+      );
+
+      if dump {
+        let min_col = col_widths.iter().copied().fold(f32::INFINITY, f32::min);
+        let max_col = col_widths.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let sum_col: f32 = col_widths.iter().sum();
+        let min_row = row_heights.iter().copied().fold(f32::INFINITY, f32::min);
+        let max_row = row_heights
+          .iter()
+          .copied()
+          .fold(f32::NEG_INFINITY, f32::max);
+        let sum_row: f32 = row_heights.iter().sum();
+        eprintln!(
+                "table layout: cols={} rows={} cells={} laid_out={} failed={} col_sum={:.2} col_min={:.2} col_max={:.2} row_sum={:.2} row_min={:.2} row_max={:.2}",
+                structure.column_count,
+                structure.row_count,
+                structure.cells.len(),
+                laid_out_cells.len(),
+                failed_cells,
+                sum_col,
+                min_col,
+                max_col,
+                sum_row,
+                min_row,
+                max_row
+            );
+      }
+
+      let rows_collapse_due_to_empty_cells =
+        compute_rows_that_collapse_due_to_empty_cells(&structure, &source_rows);
+
+      let mut row_metrics: Vec<RowMetrics> =
+        row_heights.iter().map(|h| RowMetrics::new(*h)).collect();
+
+      for laid in &laid_out_cells {
+        let row = &mut row_metrics[laid.cell.row];
+        let row_height = row_heights
+          .get(laid.cell.row)
+          .copied()
+          .unwrap_or(row.height);
+        let contribution = if laid.cell.rowspan == 1 {
+          laid.height
+        } else {
+          row_height
+        };
+        row.max_cell_height = row.max_cell_height.max(contribution);
+
+        // CSS 2.1 §17.5.3: row baselines ignore row-spanning cells.
+        // Baseline alignment for rows follows CSS 2.1 §17.5.3: the cell with the
+        // largest height above (and below) the baseline sets the row's baseline
+        // position. Row-spanning cells don't establish a row baseline.
+        if laid.vertical_align.is_baseline_relative() && laid.cell.rowspan == 1 {
+          let (top, bottom) = baseline_split(laid, &row_heights);
+          let clamped_top = top.min(row_height);
+          let clamped_bottom = bottom.min((row_height - clamped_top).max(0.0));
+          row.has_baseline = true;
+          row.baseline_top = row.baseline_top.max(clamped_top);
+          row.baseline_bottom = row.baseline_bottom.max(clamped_bottom);
+          row.max_cell_height = row.max_cell_height.max(clamped_top + clamped_bottom);
+        }
+      }
+
+      for (idx, row) in row_metrics.iter_mut().enumerate() {
+        if rows_collapse_due_to_empty_cells
+          .get(idx)
+          .copied()
+          .unwrap_or(false)
+        {
+          // CSS 2.1 §17.6.1: fully empty rows collapse to zero height.
+          row.height = 0.0;
+          row.max_cell_height = 0.0;
+          row.baseline_top = 0.0;
+          row.baseline_bottom = 0.0;
+          row.has_baseline = false;
+          continue;
+        }
+        let baseline_height = row.baseline_height();
+        let max_required = row.max_cell_height.max(baseline_height);
+        if max_required > row.height {
+          row.height = max_required;
+        }
+        if row.height <= 0.0 {
+          row.height = 1.0;
+        }
+        let (min_h, max_h) = resolve_row_min_max(&structure.rows[idx], percent_height_base);
+        if let Some(min) = min_h {
+          row.height = row.height.max(min);
+        }
+        if let Some(max) = max_h {
+          row.height = row.height.min(max);
+        }
+      }
+
+      // If the table has a definite (or minimum) height and rows don't fill it, distribute the extra.
+      if let Some(target_height) = table_height {
+        let rows_space: f32 = row_metrics.iter().map(|r| r.height).sum();
+        let target_rows =
+          percent_height_base.unwrap_or_else(|| compute_percent_height_base(target_height));
+        if target_rows > rows_space && !row_metrics.is_empty() {
+          let extra = target_rows - rows_space;
+          let flex_indices: Vec<usize> = structure
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, row)| match row.specified_height {
+              Some(SpecifiedHeight::Fixed(_)) | Some(SpecifiedHeight::Percent(_)) => None,
+              _ => {
+                if rows_collapse_due_to_empty_cells
+                  .get(idx)
+                  .copied()
+                  .unwrap_or(false)
+                {
+                  None
+                } else {
+                  Some(idx)
+                }
+              }
+            })
+            .collect();
+          let targets = if flex_indices.is_empty() {
+            (0..structure.row_count)
+              .filter(|idx| {
+                !rows_collapse_due_to_empty_cells
+                  .get(*idx)
+                  .copied()
+                  .unwrap_or(false)
+              })
+              .collect::<Vec<_>>()
+          } else {
+            flex_indices
+          };
+
+          distribute_extra_row_height_with_groups(
+            &mut row_metrics,
+            &structure.rows,
+            &targets,
+            extra,
+            percent_height_base,
+            &row_to_group,
+            &row_group_constraints,
+            v_spacing,
+          );
+        }
+      }
+
+      // Border-collapse adjustments
+      let collapsed_borders: Option<Arc<CollapsedBorders>> =
+        if structure.border_collapse == BorderCollapse::Collapse {
+          Some(collapsed_borders_cached(&table_box, &structure)?)
+        } else {
+          None
+        };
+
+      let mut vertical_line_max: Vec<f32> = Vec::with_capacity(structure.column_count + 1);
+      let mut horizontal_line_max: Vec<f32> = Vec::with_capacity(structure.row_count + 1);
+      let mut column_line_pos = Vec::new();
+      let mut row_line_pos = Vec::new();
+      let mut row_offsets = Vec::with_capacity(structure.row_count);
+      let mut col_offsets = Vec::with_capacity(structure.column_count);
+      let mut row_prefix_heights: Option<Vec<f32>> = None;
+
+      // Collapsed borders place border strokes on grid lines, with half of the outer
+      // borders inside the table box and half potentially spilling into the margin
+      // area (CSS 2.2 §17.6.2). Compute line centers and cell start offsets from the
+      // resolved line widths so that the table width/height include only half of the
+      // outer collapsed borders.
+      let (content_width, content_height, content_origin_x, content_origin_y) =
+        match collapsed_borders.as_ref() {
+          Some(collapsed_borders) => {
+            for (idx, segments) in collapsed_borders.vertical.iter().enumerate() {
+              check_layout_deadline(&mut deadline_counter)?;
+              let width = if idx == 0 || idx == structure.column_count {
+                // Table left/right border widths are based on the first row's collapsed border
+                // (CSS 2.2 §17.6.2), with any excess in later rows spilling into the margin.
+                if structure.row_count > 0 {
+                  segments.first().map(|b| b.width).unwrap_or(0.0)
+                } else {
+                  0.0
+                }
+              } else {
+                segments.iter().map(|b| b.width).fold(0.0, f32::max)
+              };
+              vertical_line_max.push(width);
+            }
+            horizontal_line_max = Vec::with_capacity(structure.row_count + 1);
+            for segments in &collapsed_borders.horizontal {
+              check_layout_deadline(&mut deadline_counter)?;
+              horizontal_line_max.push(segments.iter().map(|b| b.width).fold(0.0, f32::max));
+            }
+
+            let (cols, starts, collapsed_width) =
+              collapsed_line_positions(&col_widths, &vertical_line_max, pad_left, pad_right);
+            column_line_pos = cols;
+            col_offsets = starts;
+
+            let mut row_heights: Vec<f32> = Vec::with_capacity(row_metrics.len());
+            for row in &row_metrics {
+              check_layout_deadline(&mut deadline_counter)?;
+              row_heights.push(row.height);
+            }
+            let (rows, starts, collapsed_height) =
+              collapsed_line_positions(&row_heights, &horizontal_line_max, pad_top, pad_bottom);
+            row_line_pos = rows;
+            row_offsets = starts;
+
+            let content_origin_x = col_offsets.first().copied().unwrap_or(pad_left)
+              - vertical_line_max.first().copied().unwrap_or(0.0) * 0.5;
+            let content_origin_y = row_offsets.first().copied().unwrap_or(pad_top)
+              - horizontal_line_max.first().copied().unwrap_or(0.0) * 0.5;
+
+            (
+              collapsed_width,
+              collapsed_height,
+              content_origin_x,
+              content_origin_y,
+            )
+          }
+          None => {
+            let content_origin_y = border_top + pad_top;
+            // CSS 2.1 §17.6.1: in the separated border model, the edge cells are offset from the
+            // table's padding edge by a *full* border-spacing, not half.
+            let mut y = content_origin_y;
+            if structure.row_count > 0 {
+              y += v_spacing;
+            }
+
+            if dump {
+              let preview: String = row_metrics
+                .iter()
+                .take(8)
+                .map(|r| format!("{:.2}", r.height))
+                .collect::<Vec<_>>()
+                .join(", ");
+              eprintln!(
+                "  row heights (first {} of {}): {}",
+                row_metrics.len().min(8),
+                row_metrics.len(),
+                preview
+              );
+            }
+
+            for (idx, row) in row_metrics.iter().enumerate() {
+              row_offsets.push(y);
+              y += row.height;
+              if !rows_collapse_due_to_empty_cells
+                .get(idx)
+                .copied()
+                .unwrap_or(false)
+              {
+                y += v_spacing;
+              }
+            }
+
+            if dump {
+              let preview: String = row_offsets
+                .iter()
+                .take(8)
+                .map(|offset| format!("{:.2}", offset))
+                .collect::<Vec<_>>()
+                .join(", ");
+              eprintln!(
+                "  row offsets (first {} of {}): {}",
+                row_offsets.len().min(8),
+                row_offsets.len(),
+                preview
+              );
+            }
+
+            // Precompute column offsets for positioning in the separated model.
+            let start_x = border_left + pad_left;
+            let mut x = start_x;
+            if structure.column_count > 0 {
+              x += h_spacing;
+            }
+            for width in col_widths.iter().take(structure.column_count) {
+              col_offsets.push(x);
+              x += width + h_spacing;
+            }
+
+            let mut prefix = Vec::with_capacity(row_metrics.len().saturating_add(1));
+            prefix.push(0.0);
+            for (idx, row) in row_metrics.iter().enumerate() {
+              let spacing_after = if rows_collapse_due_to_empty_cells
+                .get(idx)
+                .copied()
+                .unwrap_or(false)
+              {
+                0.0
+              } else {
+                v_spacing
+              };
+              let next = prefix.last().copied().unwrap_or(0.0) + row.height + spacing_after;
+              prefix.push(next);
+            }
+            row_prefix_heights = Some(prefix);
+
+            let width = if col_widths.is_empty() {
+              available_content
+            } else {
+              col_widths.iter().sum::<f32>() + structure.total_horizontal_spacing()
+            };
+            let height = if structure.row_count > 0 {
+              (y - content_origin_y).max(0.0)
+            } else {
+              0.0
+            };
+            (width, height, start_x, content_origin_y)
+          }
+        };
+
+      let mut stripped_border_cache: HashMap<usize, Arc<ComputedStyle>> = HashMap::new();
+
+      let mut table_collapsed_borders = if let Some(borders) = collapsed_borders.as_ref() {
+        Some(Arc::new(build_table_collapsed_borders_metadata(
+          &structure,
+          borders,
+          &column_line_pos,
+          &row_line_pos,
+          &vertical_line_max,
+          &horizontal_line_max,
+        )?))
+      } else {
+        None
+      };
+
+      // Column group and column backgrounds precede row backgrounds/cells.
+      //
+      // `<col>` and `<colgroup>` can each map to multiple source columns via the HTML `span`
+      // attribute. Track the "source" column index separately from the visible column index so
+      // `visibility: collapse` filtering doesn't desync the traversal.
+      let mut column_styles: Vec<Option<Arc<ComputedStyle>>> = vec![None; structure.column_count];
+      let mut column_spans: Vec<(usize, usize, usize, Arc<ComputedStyle>)> = Vec::new();
+      let mut column_groups: Vec<(usize, usize, usize, Arc<ComputedStyle>)> = Vec::new();
+      let mut source_col_idx = 0usize;
+      for child in table_box
+        .children
+        .iter()
+        .filter(|child| child.style.running_position.is_none())
+      {
+        check_layout_deadline(&mut deadline_counter)?;
+        match TableStructure::get_table_element_type(child) {
+          TableElementType::Column => {
+            let span = child.table_column_span();
+            let mut first_visible = None;
+            let mut last_visible = None;
+            for offset in 0..span {
+              check_layout_deadline(&mut deadline_counter)?;
+              if let Some(visible) = source_col_to_visible
+                .get(source_col_idx + offset)
+                .and_then(|m| *m)
+              {
+                column_styles[visible] = Some(child.style.clone());
+                first_visible.get_or_insert(visible);
+                last_visible = Some(visible);
+              }
+            }
+            if let (Some(first), Some(last)) = (first_visible, last_visible) {
+              // `direction: rtl` mirrors source columns to physical indices, so the visible column
+              // indices encountered here can decrease. Normalize to `[start, end)` so the span
+              // remains valid regardless of traversal order.
+              let start = first.min(last);
+              let end = first.max(last) + 1;
+              column_spans.push((start, end, child.id, child.style.clone()));
+            }
+            source_col_idx += span;
+          }
+          TableElementType::ColumnGroup => {
+            let mut first_visible = None;
+            let mut last_visible = None;
+            let has_col_children = child.children.iter().any(|col_child| {
+              TableStructure::get_table_element_type(col_child) == TableElementType::Column
+            });
+            if has_col_children {
+              for col_child in &child.children {
+                check_layout_deadline(&mut deadline_counter)?;
+                if TableStructure::get_table_element_type(col_child) != TableElementType::Column {
+                  continue;
+                }
+                let span = col_child.table_column_span();
+                let mut col_first_visible = None;
+                let mut col_last_visible = None;
+                for offset in 0..span {
+                  check_layout_deadline(&mut deadline_counter)?;
+                  if let Some(visible) = source_col_to_visible
+                    .get(source_col_idx + offset)
+                    .and_then(|m| *m)
+                  {
+                    column_styles[visible] = Some(col_child.style.clone());
+                    first_visible.get_or_insert(visible);
+                    last_visible = Some(visible);
+                    col_first_visible.get_or_insert(visible);
+                    col_last_visible = Some(visible);
+                  }
+                }
+                if let (Some(first), Some(last)) = (col_first_visible, col_last_visible) {
+                  let start = first.min(last);
+                  let end = first.max(last) + 1;
+                  column_spans.push((start, end, col_child.id, col_child.style.clone()));
+                }
+                source_col_idx += span;
+              }
+            } else {
+              let span = child.table_column_span();
+              for offset in 0..span {
+                check_layout_deadline(&mut deadline_counter)?;
+                if let Some(visible) = source_col_to_visible
+                  .get(source_col_idx + offset)
+                  .and_then(|m| *m)
+                {
+                  first_visible.get_or_insert(visible);
+                  last_visible = Some(visible);
+                }
+              }
+              source_col_idx += span;
+            }
+            if let (Some(first), Some(last)) = (first_visible, last_visible) {
+              let start = first.min(last);
+              let end = first.max(last) + 1;
+              column_groups.push((start, end, child.id, child.style.clone()));
+            }
+          }
+          _ => {}
+        }
+      }
+
+      let mut push_column_span_fragment = |fragments: &mut Vec<FragmentNode>,
+                                           cache: &mut HashMap<usize, Arc<ComputedStyle>>,
+                                           box_id: usize,
+                                           style: Arc<ComputedStyle>,
+                                           start: usize,
+                                           end: usize| {
+        if start >= end || start >= col_offsets.len() {
+          return;
+        }
+        if !style_paints_background_or_border(&style, false) {
+          return;
+        }
+        let style = strip_borders_cached(&style, cache);
+        let mut x = if structure.border_collapse == BorderCollapse::Collapse {
+          col_offsets.get(start).copied().unwrap_or(0.0)
+            - vertical_line_max.get(start).copied().unwrap_or(0.0)
+        } else {
+          let base = col_offsets.get(start).copied().unwrap_or(content_origin_x);
+          let edge = if start == 0 {
+            h_spacing
+          } else {
+            h_spacing * 0.5
+          };
+          (base - edge).max(content_origin_x)
+        };
+        let mut right = if structure.border_collapse == BorderCollapse::Collapse {
+          let base = col_offsets.get(end.saturating_sub(1)).copied().unwrap_or(x)
+            + col_widths
+              .get(end.saturating_sub(1))
+              .copied()
+              .unwrap_or(0.0);
+          base + vertical_line_max.get(end).copied().unwrap_or(0.0)
+        } else {
+          let base = col_offsets.get(end.saturating_sub(1)).copied().unwrap_or(x)
+            + col_widths
+              .get(end.saturating_sub(1))
+              .copied()
+              .unwrap_or(0.0);
+          let edge = if end >= structure.column_count {
+            h_spacing
+          } else {
+            h_spacing * 0.5
+          };
+          base + edge
+        };
+        let max_x = content_origin_x + content_width;
+        x = x.max(content_origin_x);
+        right = right.min(max_x);
+        let width = (right - x).max(0.0);
+        if width <= 0.0 || content_height <= 0.0 {
+          return;
+        }
+        let rect = Rect::from_xywh(x, content_origin_y, width, content_height);
+        fragments.push(FragmentNode::new_with_style(
+          rect,
+          FragmentContent::Block {
+            box_id: Some(box_id),
+          },
+          Vec::new(),
+          style,
+        ));
+      };
+
+      for (start, end, box_id, style) in column_groups {
+        push_column_span_fragment(
+          &mut fragments,
+          &mut stripped_border_cache,
+          box_id,
+          style,
+          start,
+          end,
+        );
+      }
+      for (start, end, box_id, style) in column_spans {
+        push_column_span_fragment(
+          &mut fragments,
+          &mut stripped_border_cache,
+          box_id,
+          style,
+          start,
+          end,
+        );
+      }
+
+      // Paint order backgrounds before cells.
+      // Row groups
+      let mut row_styles: Vec<Option<(usize, Arc<ComputedStyle>)>> =
+        vec![None; structure.row_count];
+      let mut row_groups: Vec<(usize, usize, usize, Arc<ComputedStyle>, Display)> = Vec::new();
+      let mut header_rows: Option<(usize, usize)> = None;
+      let mut footer_rows: Option<(usize, usize)> = None;
+      let mut row_cursor = 0usize;
+      let mut seen_header_group = false;
+      let mut seen_footer_group = false;
+      for child in table_box
+        .children
+        .iter()
+        .filter(|child| child.style.running_position.is_none())
+      {
+        let element_type = TableStructure::get_table_element_type(child);
+        match element_type {
+          TableElementType::RowGroup
+          | TableElementType::HeaderGroup
+          | TableElementType::FooterGroup => {
+            let record_header_rows =
+              matches!(element_type, TableElementType::HeaderGroup) && !seen_header_group;
+            let record_footer_rows =
+              matches!(element_type, TableElementType::FooterGroup) && !seen_footer_group;
+            let mut effective_display = child.style.display;
+            match element_type {
+              TableElementType::HeaderGroup => {
+                if !seen_header_group {
+                  seen_header_group = true;
+                } else {
+                  effective_display = Display::TableRowGroup;
+                }
+              }
+              TableElementType::FooterGroup => {
+                if !seen_footer_group {
+                  seen_footer_group = true;
+                } else {
+                  effective_display = Display::TableRowGroup;
+                }
+              }
+              _ => {}
+            }
+            let mut first_visible = None;
+            let mut last_visible = None;
+            for row_child in &child.children {
+              if TableStructure::get_table_element_type(row_child) == TableElementType::Row {
+                if let Some(visible) = source_row_to_visible.get(row_cursor).and_then(|m| *m) {
+                  row_styles[visible] = Some((row_child.id, row_child.style.clone()));
+                  first_visible.get_or_insert(visible);
+                  last_visible = Some(visible);
+                }
+                row_cursor += 1;
+              }
+            }
+            if let (Some(start), Some(end)) = (first_visible, last_visible) {
+              row_groups.push((
+                start,
+                end + 1,
+                child.id,
+                child.style.clone(),
+                effective_display,
+              ));
+              if record_header_rows {
+                header_rows = Some((start, end + 1));
+              }
+              if record_footer_rows {
+                footer_rows = Some((start, end + 1));
+              }
+            }
+          }
+          TableElementType::Row => {
+            if let Some(visible) = source_row_to_visible.get(row_cursor).and_then(|m| *m) {
+              row_styles[visible] = Some((child.id, child.style.clone()));
+            }
+            row_cursor += 1;
+          }
+          _ => {}
+        }
+      }
+
+      if table_collapsed_borders.is_some() && (header_rows.is_some() || footer_rows.is_some()) {
+        if let Some(existing) = table_collapsed_borders.as_ref() {
+          let mut updated = (**existing).clone();
+          updated.header_rows = header_rows;
+          updated.footer_rows = footer_rows;
+          table_collapsed_borders = Some(Arc::new(updated));
+        }
+      }
+
+      for (start, end, row_group_id, style, effective_display) in row_groups {
+        // Always emit row-group fragments for fragmentation.
+        //
+        // The fragmentation engine treats table row(-group) fragments as atomic range candidates and
+        // uses `display: table-header-group` / `table-footer-group` fragments to repeat headers/footers
+        // across pages/columns (`fragmentation::inject_table_headers_and_footers`). If a row group does
+        // not paint, table layout still needs to emit a zero-paint marker fragment so `break-*` rules
+        // on `<tbody>/<thead>/<tfoot>` (and any elements styled as row groups) are honoured.
+        let paints = style_paints_background_or_border(&style, false);
+        let style = if paints {
+          let mut style = strip_borders_cached(&style, &mut stripped_border_cache);
+          if style.display != effective_display {
+            let mut overridden = (*style).clone();
+            overridden.display = effective_display;
+            style = Arc::new(overridden);
+          }
+          style
+        } else {
+          // Preserve non-paint properties (break hints, writing-mode, direction, etc.) while ensuring
+          // the marker fragment cannot paint.
+          let mut marker_style = (*style).clone();
+          marker_style.reset_background_to_initial();
+          marker_style.box_shadow.clear();
+          marker_style.border_top_width = Length::px(0.0);
+          marker_style.border_right_width = Length::px(0.0);
+          marker_style.border_bottom_width = Length::px(0.0);
+          marker_style.border_left_width = Length::px(0.0);
+          marker_style.border_top_style = BorderStyle::None;
+          marker_style.border_right_style = BorderStyle::None;
+          marker_style.border_bottom_style = BorderStyle::None;
+          marker_style.border_left_style = BorderStyle::None;
+          marker_style.display = effective_display;
+          Arc::new(marker_style)
+        };
+        if start >= row_offsets.len() {
+          break;
+        }
+        let top = row_offsets[start];
+        let bottom = if end < row_offsets.len() {
+          row_offsets[end]
+        } else {
+          let last_row_idx = row_offsets.len().saturating_sub(1);
+          let trailing_spacing = if structure.border_collapse != BorderCollapse::Collapse {
+            if rows_collapse_due_to_empty_cells
+              .get(last_row_idx)
+              .copied()
+              .unwrap_or(false)
+            {
+              0.0
+            } else {
+              v_spacing
+            }
+          } else {
+            0.0
+          };
+          row_offsets.last().copied().unwrap_or(top)
+            + row_metrics.last().map(|r| r.height).unwrap_or(0.0)
+            + trailing_spacing
+        };
+        let height = (bottom - top).max(0.0);
+        let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
+        let mut fragment = FragmentNode::new_with_style(
+          rect,
+          FragmentContent::Block {
+            box_id: Some(row_group_id),
+          },
+          Vec::new(),
+          style,
+        );
+        fragment.block_metadata = Some(BlockFragmentMetadata::default());
+        fragments.push(fragment);
+      }
+
+      // Rows
+      for (idx, row) in row_styles.iter().enumerate() {
+        if let Some((row_id, style)) = row.as_ref() {
+          let style = strip_borders_cached(style, &mut stripped_border_cache);
+          let top = row_offsets.get(idx).copied().unwrap_or(0.0);
+          let height = row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
+          let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
+          fragments.push(FragmentNode::new_with_style(
+            rect,
+            FragmentContent::Block {
+              box_id: Some(*row_id),
+            },
+            Vec::new(),
+            style,
+          ));
+        }
+      }
+
+      // Add explicit row boundary markers to make fragmentation row-aware.
+      //
+      // The rest of the table fragments are emitted in paint order (columns/row groups before rows,
+      // etc). Forced breaks use the fragment tree sibling order for break propagation, so ensure the
+      // row markers are the first children of the table fragment regardless of paint ordering.
+      for (idx, offset) in row_offsets.iter().enumerate() {
+        let height = row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
+        let mut marker_style = crate::style::ComputedStyle::default();
+        marker_style.display = Display::TableRow;
+        marker_style.writing_mode = table_root_style.writing_mode;
+        marker_style.direction = table_root_style.direction;
+        if let Some((_, row_style)) = row_styles.get(idx).and_then(|entry| entry.as_ref()) {
+          marker_style.break_before = row_style.break_before;
+          marker_style.break_after = row_style.break_after;
+          marker_style.break_inside = row_style.break_inside;
+          marker_style.orphans = row_style.orphans;
+          marker_style.widows = row_style.widows;
+        }
+        marker_style.reset_background_to_initial();
+        marker_style.border_top_width = Length::px(0.0);
+        marker_style.border_right_width = Length::px(0.0);
+        marker_style.border_bottom_width = Length::px(0.0);
+        marker_style.border_left_width = Length::px(0.0);
+        marker_style.border_top_style = BorderStyle::None;
+        marker_style.border_right_style = BorderStyle::None;
+        marker_style.border_bottom_style = BorderStyle::None;
+        marker_style.border_left_style = BorderStyle::None;
+        marker_style.box_shadow.clear();
+        let rect = Rect::from_xywh(content_origin_x, *offset, content_width, height);
+        row_markers.push(FragmentNode::new_with_style(
+          rect,
+          FragmentContent::Block { box_id: None },
+          Vec::new(),
+          Arc::new(marker_style),
+        ));
+      }
+
+      // Position cell fragments with vertical alignment within their row block.
+      // Preserve row/column traversal order (CSS 2.1 row baseline rules) without moving fragments.
+      let row_metric_heights: Vec<f32> = row_metrics.iter().map(|r| r.height).collect();
+      // Cells are collected from TableStructure in row-major order; preserve that order per row to
+      // keep paint order stable without shuffling the fragments themselves.
+      let mut cells_by_row: Vec<Vec<usize>> = vec![Vec::new(); structure.row_count];
+      let mut fallback_indices = Vec::new();
+      for (idx, laid) in laid_out_cells.iter().enumerate() {
+        if let Some(bucket) = cells_by_row.get_mut(laid.cell.row) {
+          bucket.push(idx);
+        } else {
+          fallback_indices.push(idx);
+        }
+      }
+      if cfg!(debug_assertions) {
+        let direction = table_root_style.direction;
+        for bucket in &cells_by_row {
+          let mut last_col = None;
+          for &idx in bucket {
+            let col = laid_out_cells[idx].cell.col;
+            if let Some(prev) = last_col {
+              match direction {
+                Direction::Ltr => {
+                  debug_assert!(prev <= col, "cells in a row should appear in column order");
+                }
+                Direction::Rtl => {
+                  debug_assert!(prev >= col, "cells in a row should appear in column order");
+                }
+              }
+            }
+            last_col = Some(col);
+          }
+        }
+      }
+      let placement_order = cells_by_row
+        .into_iter()
+        .flatten()
+        .chain(fallback_indices.into_iter())
+        .collect::<Vec<_>>();
+
+      // Compute table baseline per CSS 2.1: the baseline of the first row that has a
+      // baseline-aligned, non-rowspanning cell; otherwise the bottom content edge of the first row.
+      let table_baseline = row_metrics
+        .iter()
+        .enumerate()
+        .find(|(idx, r)| r.has_baseline && *idx < row_offsets.len())
+        .map(|(idx, r)| row_offsets[idx] + r.baseline_top)
+        .or_else(|| {
+          if !row_metrics.is_empty() && !row_offsets.is_empty() {
+            Some(row_offsets[0] + row_metrics[0].height)
+          } else {
+            None
+          }
+        });
+
+      let mut laid_out_cells: Vec<Option<LaidOutCell>> =
+        laid_out_cells.into_iter().map(Some).collect();
+
+      for idx in placement_order {
+        let Some(mut laid) = laid_out_cells.get_mut(idx).and_then(Option::take) else {
+          continue;
+        };
+        let cell = &laid.cell;
+        // Compute horizontal position
+        let base_x = col_offsets
+          .get(cell.col)
+          .copied()
+          .unwrap_or(content_origin_x);
+        let x = base_x;
+
+        let row_start = cell.row;
+        let span_end = (cell.row + cell.rowspan).min(row_metrics.len());
+        let spanned_height: f32 = if structure.border_collapse == BorderCollapse::Collapse {
+          let start = row_line_pos.get(row_start).copied().unwrap_or(0.0);
+          let end = row_line_pos.get(span_end).copied().unwrap_or(start);
+          (end - start).max(0.0)
+        } else if let Some(prefix) = &row_prefix_heights {
+          let start = prefix.get(row_start).copied().unwrap_or(0.0);
+          let end = prefix.get(span_end).copied().unwrap_or(start);
+          let trailing_spacing = if span_end > 0
+            && rows_collapse_due_to_empty_cells
+              .get(span_end.saturating_sub(1))
+              .copied()
+              .unwrap_or(false)
+          {
+            0.0
+          } else {
+            v_spacing
+          };
+          (end - start - trailing_spacing).max(0.0)
+        } else {
+          let mut total = 0.0;
+          for idx in row_start..span_end {
+            total += row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
+            if idx + 1 < span_end
+              && !rows_collapse_due_to_empty_cells
+                .get(idx)
+                .copied()
+                .unwrap_or(false)
+            {
+              total += v_spacing;
+            }
+          }
+          total
+        };
+
+        let base_y = row_offsets.get(row_start).copied().unwrap_or(0.0);
+        let cell_span_end = (cell.col + cell.colspan).min(col_widths.len());
+        let mut spanned_width = 0.0;
+        for col_idx in cell.col..cell_span_end {
+          spanned_width += col_widths.get(col_idx).copied().unwrap_or(0.0);
+        }
+        if cell_span_end > cell.col {
+          spanned_width += h_spacing * (cell_span_end - cell.col).saturating_sub(1) as f32;
+        }
+
+        let mut fragment =
+          crate::layout::contexts::block::unconvert_fragment_axes_root(laid.fragment);
+
+        // Table cells treat `height` as a *minimum* height (CSS 2.1 §17.5.3). When that minimum
+        // height inflates the cell box, the cell's fragment height (`laid.height`) equals the row
+        // height and a naive `(spanned_height - laid.height)` offset would be zero, preventing
+        // `vertical-align: middle/bottom` from moving the actual content.
+        //
+        // Instead, compute offsets based on the vertical extent of the cell's in-flow children so
+        // content is aligned even when the cell's own height is what set the row height.
+        let (content_min_y, content_height) = {
+          let mut min_y = f32::INFINITY;
+          let mut max_y = f32::NEG_INFINITY;
+          for child in &fragment.children {
+            let y0 = child.bounds.y();
+            let y1 = y0 + child.bounds.height();
+            min_y = min_y.min(y0);
+            max_y = max_y.max(y1);
+          }
+          if min_y.is_finite() && max_y.is_finite() {
+            (min_y, (max_y - min_y).max(0.0))
+          } else {
+            (0.0, 0.0)
+          }
+        };
+
+        let (y_offset, aligned_baseline) = match laid.vertical_align {
+          VerticalAlign::Top => (0.0, None),
+          VerticalAlign::Bottom => {
+            let desired_top = (spanned_height - content_height).max(0.0);
+            ((desired_top - content_min_y).max(0.0), None)
+          }
+          VerticalAlign::Middle => {
+            let desired_top = ((spanned_height - content_height) / 2.0).max(0.0);
+            ((desired_top - content_min_y).max(0.0), None)
+          }
+          _ => {
+            let raw_baseline = laid.baseline.unwrap_or(laid.height);
+            let baseline = if raw_baseline >= laid.height && spanned_height > laid.height {
+              spanned_height
+            } else {
+              raw_baseline
+            };
+            let baseline = if cell.rowspan > 1 {
+              let span_end = (cell.row + cell.rowspan).min(row_metrics.len());
+              spanning_baseline_allocation(
+                spanned_height,
+                baseline,
+                row_start,
+                span_end,
+                &row_metric_heights,
+              )
+              .0
+            } else {
+              let row_h = row_metrics
+                .get(row_start)
+                .map(|r| r.height)
+                .unwrap_or(baseline);
+              baseline.min(row_h).min(spanned_height)
+            };
+            let row_base = row_metrics
+              .get(row_start)
+              .map(|r| {
+                if r.has_baseline {
+                  r.baseline_top
+                } else {
+                  r.height
+                }
+              })
+              .unwrap_or(0.0);
+            (row_base - baseline, Some(row_base))
+          }
+        };
+
+        // Position the cell box at the start of its row/column span and give it the full spanned size
+        // so backgrounds and borders cover the allocated grid slot. Table slot geometry is expressed
+        // in the table's logical axes (inline = x, block = y). Each fragment stores its own logical
+        // coordinates, so the cell's writing-mode does not affect its placement in the table grid.
+        fragment.bounds =
+          crate::geometry::Rect::from_xywh(x, base_y, spanned_width, spanned_height);
+
+        if y_offset.abs() > 0.0 {
+          // `vertical-align` shifts content along the table's block axis.
+          let delta = Point::new(0.0, y_offset);
+          for child in fragment.children_mut() {
+            // Shift each direct child; their descendants stay relative to the shifted
+            // parent, preventing cumulative translations down the subtree.
+            child.bounds = child.bounds.translate(delta);
+          }
+        }
+        if let Some(baseline) = aligned_baseline {
+          fragment.baseline = Some(baseline);
+        }
+        fragments.push(fragment);
+      }
+
+      if !row_markers.is_empty() {
+        let mut reordered = row_markers;
+        reordered.append(&mut fragments);
+        fragments = reordered;
+      }
+
+      let mut total_width = if structure.border_collapse == BorderCollapse::Collapse {
+        content_width
+      } else {
+        content_width + padding_h + border_h
+      };
+      total_width = clamp_to_min_max(total_width, min_width, max_width);
+      let mut total_height = if let Some(specified) = table_height {
+        specified
+      } else {
+        let mut h = content_height
+          + if structure.border_collapse == BorderCollapse::Collapse {
+            0.0
+          } else {
+            padding_v + border_v
+          };
+        if let Some(max_h) = max_height {
+          h = h.min(max_h);
+        }
+        if let Some(min_h) = min_height {
+          h = h.max(min_h);
+        }
+        h
+      };
+      // Apply non-visual min/max clamps from the table box to the final border box per CSS 2.1 §17.5/§10.4.
+      if let Some(min_w) = resolved_min_width {
+        total_width = total_width.max(min_w);
+      }
+      if let Some(max_w) = resolved_max_width {
+        total_width = total_width.min(max_w);
+      }
+      if let Some(min_h) = min_height {
+        total_height = total_height.max(min_h);
+      }
+      if let Some(max_h) = max_height {
+        total_height = total_height.min(max_h);
+      }
+      let table_bounds = Rect::from_xywh(0.0, 0.0, total_width.max(0.0), total_height);
+
+      let mut table_style = table_root_style.clone();
+      if structure.border_collapse == BorderCollapse::Collapse {
+        table_style.border_top_width = crate::style::values::Length::px(0.0);
+        table_style.border_right_width = crate::style::values::Length::px(0.0);
+        table_style.border_bottom_width = crate::style::values::Length::px(0.0);
+        table_style.border_left_width = crate::style::values::Length::px(0.0);
+        table_style.logical.border_width_orders.top = 0;
+        table_style.logical.border_width_orders.right = 0;
+        table_style.logical.border_width_orders.bottom = 0;
+        table_style.logical.border_width_orders.left = 0;
+      }
+      let baseline_offset = table_baseline.map(|b| b - table_bounds.y());
+
+      if captions.is_empty() {
+        let mut fragment = FragmentNode::new_with_style(
+          table_bounds,
+          FragmentContent::Block {
+            box_id: Some(table_box.id),
+          },
+          fragments,
+          Arc::new(table_style),
+        );
+        fragment.baseline = baseline_offset;
+        fragment.table_borders = table_collapsed_borders.clone();
+        if !running_children.is_empty() {
+          let snapshot_constraints = LayoutConstraints::new(
+            AvailableSpace::Definite(table_bounds.width().max(0.0)),
+            AvailableSpace::Indefinite,
+          );
+          for (order, (_, running_child)) in running_children.iter().copied().enumerate() {
+            let Some(name) = running_child.style.running_position.clone() else {
+              continue;
+            };
+
+            let mut snapshot_node = running_child.clone();
+            let mut snapshot_style = snapshot_node.style.as_ref().clone();
+            snapshot_style.running_position = None;
+            snapshot_style.position = crate::style::position::Position::Static;
+            snapshot_node.style = Arc::new(snapshot_style);
+            clear_running_position_in_box_tree(&mut snapshot_node);
+
+            let fc_type = snapshot_node
+              .formatting_context()
+              .unwrap_or(FormattingContextType::Block);
+            let snapshot_result = match fc_type {
+              FormattingContextType::Table => {
+                let fc = self.factory.create(fc_type);
+                fc.layout(&snapshot_node, &snapshot_constraints)
+              }
+              _ => self.factory.with_fc(fc_type, |fc| {
+                fc.layout(&snapshot_node, &snapshot_constraints)
+              }),
+            };
+            match snapshot_result {
+              Ok(snapshot_fragment) => {
+                let anchor_bounds = Rect::from_xywh(0.0, (order as f32) * 1e-4, 0.0, 0.01);
+                let mut anchor =
+                  FragmentNode::new_running_anchor(anchor_bounds, name, snapshot_fragment);
+                anchor.style = Some(running_child.style.clone());
+                fragment.children_mut().push(anchor);
+              }
+              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+              Err(_) => {}
+            }
+          }
+        }
+        if !has_running_children {
+          layout_cache_store(
+            box_node,
+            FormattingContextType::Table,
+            constraints,
+            &fragment,
+            self.factory.viewport_scroll(),
+            self.viewport_size,
+            self.nearest_positioned_cb,
+            self.nearest_fixed_cb,
+          );
+        }
+        return Ok(fragment);
+      }
+
+      // CSS 2.1 §17.4: The width of the table wrapper box is the border-edge width of the table grid
+      // box. Caption boxes are laid out inside the wrapper, but must not affect its width.
+      let wrapper_width = table_bounds.width().max(0.0);
+
+      // Only the table box itself should render backgrounds/borders. Element-level visual
+      // effects (opacity/filters/transforms) apply to the wrapper that contains captions.
+      table_style.transform.clear();
+      table_style.filter.clear();
+      table_style.backdrop_filter.clear();
+      table_style.opacity = 1.0;
+      table_style.mix_blend_mode = crate::style::types::MixBlendMode::Normal;
+      table_style.isolation = crate::style::types::Isolation::Auto;
+
+      let mut table_fragment = FragmentNode::new_with_style(
+        table_bounds,
         FragmentContent::Block {
           box_id: Some(table_box.id),
         },
-        vec![],
-        table_box.style.clone(),
+        fragments,
+        Arc::new(table_style),
       );
+      table_fragment.baseline = baseline_offset;
+      table_fragment.table_borders = table_collapsed_borders.clone();
+
+      // Layout captions relative to the table's width.
+      let mut wrapper_children = Vec::new();
+      let mut offset_y = 0.0f32;
+      let mut margin_ctx = MarginCollapseContext::new();
+      let resolve_caption_margin = |margin: Option<&Length>, style: &ComputedStyle| -> f32 {
+        margin
+          .and_then(|len| {
+            len.resolve_with_context(
+              Some(wrapper_width),
+              self.viewport_size.width,
+              self.viewport_size.height,
+              style.font_size,
+              style.root_font_size,
+            )
+          })
+          .unwrap_or(0.0)
+      };
+
+      let layout_caption = |caption: &BoxNode| -> Result<FragmentNode, LayoutError> {
+        let fc_type = caption
+          .formatting_context()
+          .unwrap_or(crate::style::display::FormattingContextType::Block);
+        let caption_constraints = LayoutConstraints::new(
+          AvailableSpace::Definite(wrapper_width),
+          constraints.available_height,
+        );
+        let frag = match fc_type {
+          FormattingContextType::Table => {
+            let fc = self.factory.create(fc_type);
+            fc.layout(caption, &caption_constraints)
+          }
+          _ => self
+            .factory
+            .with_fc(fc_type, |fc| fc.layout(caption, &caption_constraints)),
+        }?;
+        Ok(frag)
+      };
+
+      let mut caption_offsets: std::collections::HashMap<usize, f32> =
+        std::collections::HashMap::new();
+
+      fn place_block(
+        mut frag: FragmentNode,
+        margin_top: f32,
+        margin_bottom: f32,
+        margin_ctx: &mut MarginCollapseContext,
+        offset_y: &mut f32,
+        wrapper_children: &mut Vec<FragmentNode>,
+      ) -> f32 {
+        margin_ctx.push_margin(margin_top);
+        *offset_y += margin_ctx.resolve();
+        let y = *offset_y;
+        frag.bounds = frag.bounds.translate(Point::new(0.0, y));
+        *offset_y += frag.bounds.height();
+        margin_ctx.push_margin(margin_bottom);
+        wrapper_children.push(frag);
+        y
+      }
+
+      for caption in captions
+        .iter()
+        .copied()
+        .filter(|c| matches!(c.style.caption_side, CaptionSide::Top))
+      {
+        let margin_top = resolve_caption_margin(caption.style.margin_top.as_ref(), &caption.style);
+        let margin_bottom =
+          resolve_caption_margin(caption.style.margin_bottom.as_ref(), &caption.style);
+        let frag = layout_caption(caption)?;
+        let y = place_block(
+          frag,
+          margin_top,
+          margin_bottom,
+          &mut margin_ctx,
+          &mut offset_y,
+          &mut wrapper_children,
+        );
+        caption_offsets.insert(caption.id, y);
+      }
+
+      // The table grid box is a block-level child of the wrapper with no margins.
+      margin_ctx.push_margin(0.0);
+      offset_y += margin_ctx.resolve();
+      let table_origin_y = offset_y;
+      let mut table_translated = table_fragment;
+      table_translated.bounds = table_translated
+        .bounds
+        .translate(Point::new(0.0, table_origin_y));
+      // CSS 2.1 §17.4: The table grid box (not the wrapper) is used when aligning an inline-table
+      // by baseline. When captions are present the wrapper fragment becomes the inline-level box, so
+      // propagate the translated table baseline into wrapper coordinates.
+      let wrapper_baseline = Some(
+        table_translated.bounds.y()
+          + table_translated
+            .baseline
+            .unwrap_or_else(|| table_translated.bounds.height()),
+      );
+      offset_y += table_translated.bounds.height();
+      margin_ctx.push_margin(0.0);
+      wrapper_children.push(table_translated);
+
+      for caption in captions
+        .iter()
+        .copied()
+        .filter(|c| matches!(c.style.caption_side, CaptionSide::Bottom))
+      {
+        let margin_top = resolve_caption_margin(caption.style.margin_top.as_ref(), &caption.style);
+        let margin_bottom =
+          resolve_caption_margin(caption.style.margin_bottom.as_ref(), &caption.style);
+        let frag = layout_caption(caption)?;
+        let y = place_block(
+          frag,
+          margin_top,
+          margin_bottom,
+          &mut margin_ctx,
+          &mut offset_y,
+          &mut wrapper_children,
+        );
+        caption_offsets.insert(caption.id, y);
+      }
+
+      let trailing_margin = margin_ctx.pending_margin();
+      if trailing_margin > 0.0 {
+        offset_y += trailing_margin;
+      }
+
+      let mut wrapper_style = table_root_style.clone();
+      // Keep transforms/opacity/filters on the wrapper so they apply to both caption and table,
+      // but avoid painting an extra background/border around the combined area.
+      wrapper_style.reset_background_to_initial();
+      // CSS 2.1 §17.4: The table element's padding/outline/overflow apply to the table grid box,
+      // not the wrapper box. Reset them here so captions are not affected by grid-only properties.
+      wrapper_style.padding_top = crate::style::values::Length::px(0.0);
+      wrapper_style.padding_right = crate::style::values::Length::px(0.0);
+      wrapper_style.padding_bottom = crate::style::values::Length::px(0.0);
+      wrapper_style.padding_left = crate::style::values::Length::px(0.0);
+      wrapper_style.outline_style = crate::style::types::OutlineStyle::None;
+      wrapper_style.overflow_x = crate::style::types::Overflow::Visible;
+      wrapper_style.overflow_y = crate::style::types::Overflow::Visible;
+      wrapper_style.border_top_width = crate::style::values::Length::px(0.0);
+      wrapper_style.border_right_width = crate::style::values::Length::px(0.0);
+      wrapper_style.border_bottom_width = crate::style::values::Length::px(0.0);
+      wrapper_style.border_left_width = crate::style::values::Length::px(0.0);
+      wrapper_style.border_top_style = BorderStyle::None;
+      wrapper_style.border_right_style = BorderStyle::None;
+      wrapper_style.border_bottom_style = BorderStyle::None;
+      wrapper_style.border_left_style = BorderStyle::None;
+      wrapper_style.box_shadow.clear();
+
+      let mut wrapper_fragment = FragmentNode::new_with_style(
+        Rect::from_xywh(0.0, 0.0, wrapper_width, offset_y),
+        FragmentContent::Block {
+          box_id: Some(table_box.id),
+        },
+        wrapper_children,
+        Arc::new(wrapper_style),
+      );
+      wrapper_fragment.baseline = wrapper_baseline;
+
       if !running_children.is_empty() {
         let snapshot_constraints = LayoutConstraints::new(
-          AvailableSpace::Definite(width.max(0.0)),
+          AvailableSpace::Definite(wrapper_width.max(0.0)),
           AvailableSpace::Indefinite,
         );
-        for (order, (_, running_child)) in running_children.iter().copied().enumerate() {
+
+        for (order, (idx, running_child)) in running_children.iter().copied().enumerate() {
           let Some(name) = running_child.style.running_position.clone() else {
             continue;
           };
+
+          let mut anchor_y = offset_y;
+          for sibling in table_box.children.iter().skip(idx.saturating_add(1)) {
+            if sibling.style.running_position.is_some() {
+              continue;
+            }
+            if matches!(
+              sibling.style.position,
+              crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+            ) {
+              continue;
+            }
+            anchor_y = if matches!(sibling.style.display, Display::TableCaption) {
+              caption_offsets
+                .get(&sibling.id)
+                .copied()
+                .unwrap_or(table_origin_y)
+            } else {
+              table_origin_y
+            };
+            break;
+          }
 
           let mut snapshot_node = running_child.clone();
           let mut snapshot_style = snapshot_node.style.as_ref().clone();
@@ -7198,31 +9212,32 @@ impl FormattingContext for TableFormattingContext {
           };
           match snapshot_result {
             Ok(snapshot_fragment) => {
-              let anchor_bounds = Rect::from_xywh(0.0, (order as f32) * 1e-4, 0.0, 0.01);
+              let anchor_bounds = Rect::from_xywh(0.0, anchor_y + (order as f32) * 1e-4, 0.0, 0.01);
               let mut anchor =
                 FragmentNode::new_running_anchor(anchor_bounds, name, snapshot_fragment);
               anchor.style = Some(running_child.style.clone());
-              fragment.children_mut().push(anchor);
+              wrapper_fragment.children_mut().push(anchor);
             }
             Err(err @ LayoutError::Timeout { .. }) => return Err(err),
             Err(_) => {}
           }
         }
       }
+
       if !positioned_children.is_empty() {
-        // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the padding
-        // box of the nearest positioned ancestor, i.e. the rectangle bounded by the padding edge
-        // (border box minus borders).
-        let padding_origin = Point::new(border_left, border_top);
+        // Containing blocks: absolute positioning uses the table's padding box when the table itself
+        // establishes an absolute containing block; fixed positioning uses the viewport unless a
+        // transform/perspective/containment establishes a fixed containing block.
+        let padding_origin = Point::new(border_left, table_origin_y + border_top);
         let padding_rect = Rect::new(
           padding_origin,
           crate::geometry::Size::new(
-            width - border_left - border_right,
-            height - border_top - border_bottom,
+            table_bounds.width() - border_left - border_right,
+            table_bounds.height() - border_top - border_bottom,
           ),
         );
-        // Percentage offsets on absolutely positioned boxes resolve against the used height of
-        // the padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
+        // Percentage offsets on absolutely positioned boxes resolve against the used height of the
+        // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
         let block_base = Some(padding_rect.size.height);
         let padding_cb = ContainingBlock::with_viewport_and_bases(
           padding_rect,
@@ -7243,2007 +9258,27 @@ impl FormattingContext for TableFormattingContext {
         } else {
           self.nearest_fixed_cb
         };
-        place_out_of_flow(&mut fragment, cb_for_absolute, cb_for_fixed)?;
+
+        place_out_of_flow(&mut wrapper_fragment, cb_for_absolute, cb_for_fixed)?;
       }
+
+      wrapper_fragment.scrollbar_reservation =
+        crate::layout::utils::scrollbar_reservation_for_style(table_root_style);
+
       if !has_running_children {
         layout_cache_store(
           box_node,
           FormattingContextType::Table,
           constraints,
-          &fragment,
+          &wrapper_fragment,
           self.factory.viewport_scroll(),
           self.viewport_size,
           self.nearest_positioned_cb,
           self.nearest_fixed_cb,
         );
       }
-      return Ok(fragment);
-    }
 
-    let wants_fixed_layout = matches!(table_root_style.table_layout, TableLayout::Fixed);
-    let has_computed_width =
-      table_root_style.width.is_some() || table_root_style.width_keyword.is_some();
-    let mode = choose_table_distribution_mode(
-      wants_fixed_layout,
-      has_computed_width,
-      table_root_style,
-      Some(constraints),
-    );
-    let style_override_cache =
-      StyleOverrideCache::for_table_layout("layout", table_box.id, &source_rows, &structure, mode);
-    let spacing = structure.total_horizontal_spacing();
-    let edge_consumption = padding_h
-      + if structure.border_collapse == BorderCollapse::Collapse {
-        0.0
-      } else {
-        border_h
-      };
-    let percent_base = percent_base_width.map(|w| (w - spacing - edge_consumption).max(0.0));
-
-    let mut column_constraints = self.column_constraints_cached(
-      table_box,
-      &structure,
-      mode,
-      percent_base,
-      &style_override_cache,
-    )?;
-    self.normalize_percentage_constraints(&mut column_constraints, percent_base);
-
-    if dump {
-      let desc: String = column_constraints
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-          format!(
-            "#{} min={:.2} max={:.2} fixed={:?} pct={:?} flex={}",
-            i, c.min_width, c.max_width, c.fixed_width, c.percentage, c.is_flexible
-          )
-        })
-        .collect::<Vec<_>>()
-        .join(" | ");
-      eprintln!("column constraints: {}", desc);
-    }
-
-    let min_content_sum: f32 = column_constraints.iter().map(|c| c.min_width).sum();
-    let max_content_sum: f32 = column_constraints.iter().map(|c| c.max_width).sum();
-    let mut available_content = match (table_width, constraints.available_width) {
-      (Some(w), _) => (w - spacing - edge_consumption).max(0.0),
-      (None, AvailableSpace::Definite(w)) => (w - spacing - edge_consumption).max(0.0),
-      (None, AvailableSpace::MinContent) => min_content_sum,
-      (None, AvailableSpace::MaxContent) | (None, AvailableSpace::Indefinite) => max_content_sum,
-    };
-    if !available_content.is_finite() {
-      // Prefer the widest finite bound; fall back to min content to stay stable.
-      if max_content_sum.is_finite() {
-        available_content = max_content_sum;
-      } else if min_content_sum.is_finite() {
-        available_content = min_content_sum;
-      } else {
-        available_content = 0.0;
-      }
-    }
-    // Fixed table layout distributes slack to fill the supplied available width (CSS 2.1
-    // §17.5.2.1). For `width:auto` tables, the used table width is shrink-to-fit, so clamp the
-    // available width to the intrinsic min/max sums before distribution.
-    if table_width.is_none() && mode == DistributionMode::Fixed {
-      if max_content_sum.is_finite() {
-        available_content = available_content.min(max_content_sum);
-      }
-      if min_content_sum.is_finite() {
-        available_content = available_content.max(min_content_sum);
-      }
-    }
-    // Honor min/max width constraints even when the table width is auto: expand or clamp the content
-    // box before column distribution so columns and fragment bounds agree with the final border box.
-    if let Some(min_w) = min_width {
-      let min_content = (min_w - spacing - edge_consumption).max(0.0);
-      available_content = available_content.max(min_content);
-    }
-    if let Some(max_w) = max_width {
-      let max_content = (max_w - spacing - edge_consumption).max(0.0);
-      available_content = available_content.min(max_content);
-    }
-    let distributor = ColumnDistributor::new(mode).with_min_column_width(0.0);
-    let distribution = distributor.distribute(&column_constraints, available_content);
-    if let Some(err) = distributor.take_timeout_error() {
-      return Err(err);
-    }
-    let mut col_widths = if distribution.widths.len() == structure.column_count {
-      distribution.widths
-    } else {
-      vec![0.0; structure.column_count]
-    };
-
-    // Fallback: if all columns computed to zero, distribute available space equally
-    if col_widths.iter().all(|w| *w == 0.0) && available_content > 0.0 && !col_widths.is_empty() {
-      let per = available_content / structure.column_count as f32;
-      col_widths = vec![per; structure.column_count];
-    }
-
-    // CSS 2.1 §17.5.2.1 (Fixed table layout): when the table is wider than the sum of the column
-    // widths, the extra space should be distributed over the columns. `ColumnDistributor` handles
-    // this in fixed mode, so at this point `col_widths` should already fill `available_content`
-    // unless all columns hit authored max-width caps.
-
-    // Auto layout normally sizes columns to their intrinsic max-content widths when the available
-    // width is larger than the max-content sum. That is correct for `width:auto` shrink-to-fit
-    // tables, but when the table's *used* border-box width is definite and larger (e.g. a flex/grid
-    // item stretch, a specified width, or a min-width clamp), the columns must expand to fill the
-    // used width so the grid and fragment bounds agree.
-    if mode == DistributionMode::Auto && !col_widths.is_empty() {
-      let current: f32 = col_widths.iter().sum();
-      let current_border_box = current + spacing + edge_consumption;
-      let target_border_box = match table_width {
-        Some(w) => w,
-        None => clamp_to_min_max(current_border_box, min_width, max_width),
-      };
-      let target_columns_sum = (target_border_box - spacing - edge_consumption).max(0.0);
-
-      if target_columns_sum.is_finite() && target_columns_sum > current + 0.01 {
-        let extra = target_columns_sum - current;
-
-        // Prefer truly flexible columns (no fixed width, no percentage). If none exist, distribute
-        // across all columns.
-        let flex_indices: Vec<usize> = column_constraints
-          .iter()
-          .enumerate()
-          .filter(|(_, c)| c.is_flexible && c.fixed_width.is_none() && c.percentage.is_none())
-          .map(|(i, _)| i)
-          .collect();
-        let indices: Vec<usize> = if flex_indices.is_empty() {
-          (0..col_widths.len()).collect()
-        } else {
-          flex_indices
-        };
-
-        // Distribute slack while respecting authored max-width caps (`has_max_cap`). Intrinsic
-        // max-content widths are treated as preferences, not hard caps.
-        let mut active: Vec<(usize, Option<f32>)> = Vec::with_capacity(indices.len());
-        for idx in indices {
-          if idx >= col_widths.len() || idx >= column_constraints.len() {
-            continue;
-          }
-          let col = &column_constraints[idx];
-          let cap = if col.has_max_cap && col.max_width.is_finite() {
-            Some(col.max_width.max(col.min_width))
-          } else {
-            None
-          };
-          active.push((idx, cap));
-        }
-
-        let epsilon = 0.01;
-        let mut remaining = extra;
-        while remaining > epsilon && !active.is_empty() {
-          // Drop saturated capped columns.
-          active.retain(|(idx, cap)| match cap {
-            Some(limit) => col_widths.get(*idx).copied().unwrap_or(0.0) + epsilon < *limit,
-            None => true,
-          });
-          if active.is_empty() {
-            break;
-          }
-
-          let mut finite_total = 0.0;
-          let mut infinite = Vec::new();
-          for (idx, _) in &active {
-            let flex = column_constraints
-              .get(*idx)
-              .map(|c| c.flexibility_range())
-              .unwrap_or(0.0);
-            if flex.is_infinite() {
-              infinite.push(*idx);
-            } else if flex.is_finite() && flex > 0.0 {
-              finite_total += flex;
-            }
-          }
-
-          let mut distributed = 0.0;
-          if !infinite.is_empty() {
-            let share = remaining / infinite.len() as f32;
-            for idx in infinite {
-              let cap = active
-                .iter()
-                .find(|(active_idx, _)| *active_idx == idx)
-                .and_then(|(_, cap)| *cap);
-              let headroom = cap
-                .map(|limit| (limit - col_widths[idx]).max(0.0))
-                .unwrap_or(f32::INFINITY);
-              let add = share.min(headroom);
-              if add.is_finite() && add > 0.0 {
-                col_widths[idx] += add;
-                distributed += add;
-              }
-            }
-          } else if finite_total > 0.0 {
-            for (idx, cap) in &active {
-              let flex = column_constraints
-                .get(*idx)
-                .map(|c| c.flexibility_range())
-                .unwrap_or(0.0);
-              if !(flex.is_finite() && flex > 0.0) {
-                continue;
-              }
-              let mut add = remaining * (flex / finite_total);
-              if let Some(limit) = cap {
-                add = add.min((*limit - col_widths[*idx]).max(0.0));
-              }
-              if add.is_finite() && add > 0.0 {
-                col_widths[*idx] += add;
-                distributed += add;
-              }
-            }
-          } else {
-            let share = remaining / active.len() as f32;
-            for (idx, cap) in &active {
-              let mut add = share;
-              if let Some(limit) = cap {
-                add = add.min((*limit - col_widths[*idx]).max(0.0));
-              }
-              if add.is_finite() && add > 0.0 {
-                col_widths[*idx] += add;
-                distributed += add;
-              }
-            }
-          }
-
-          if distributed <= epsilon {
-            break;
-          }
-          remaining = (remaining - distributed).max(0.0);
-        }
-      }
-    }
-    if dump {
-      let widths: String = col_widths
-        .iter()
-        .map(|w| format!("{:.2}", w))
-        .collect::<Vec<_>>()
-        .join(", ");
-      eprintln!(
-        "table columns ({} cols): [{}] (available_content {:.2}, table_width {:?})",
-        col_widths.len(),
-        widths,
-        available_content,
-        table_width
-      );
-    }
-
-    let h_spacing = structure.border_spacing.0;
-    let v_spacing = structure.border_spacing.1;
-    let mut col_prefix = Vec::with_capacity(col_widths.len() + 1);
-    col_prefix.push(0.0);
-    for width in &col_widths {
-      check_layout_deadline(&mut deadline_counter)?;
-      let next = col_prefix.last().copied().unwrap_or(0.0) + *width;
-      col_prefix.push(next);
-    }
-    let establishes_fixed_cb = table_root_style.has_transform()
-      || table_root_style.perspective.is_some()
-      || table_root_style.containment.layout
-      || table_root_style.containment.paint;
-    let mut cell_bfc_owned = None;
-    let cell_bfc = if establishes_fixed_cb {
-      let content_width = if col_widths.is_empty() {
-        available_content
-      } else {
-        col_widths.iter().sum::<f32>() + structure.total_horizontal_spacing()
-      };
-      let padding_width = if structure.border_collapse == BorderCollapse::Collapse {
-        content_width
-      } else {
-        content_width + padding_h
-      };
-      let padding_height = table_height
-        .map(|h| (h - border_top - border_bottom).max(0.0))
-        .unwrap_or(padding_v.max(0.0));
-      let block_base = if table_root_style.height.is_some() {
-        Some(padding_height)
-      } else {
-        None
-      };
-      let padding_origin = Point::new(border_left + pad_left, border_top + pad_top);
-      let padding_rect = Rect::new(
-        padding_origin,
-        Size::new(padding_width.max(0.0), padding_height.max(0.0)),
-      );
-      let fixed_cb = ContainingBlock::with_viewport_and_bases(
-        padding_rect,
-        self.viewport_size,
-        Some(padding_rect.size.width),
-        block_base,
-      )
-      .with_writing_mode_and_direction(table_root_style.writing_mode, table_root_style.direction);
-      cell_bfc_owned = Some(BlockFormattingContext::with_factory(
-        self.factory.detached().with_fixed_cb(fixed_cb),
-      ));
-      cell_bfc_owned.as_ref().unwrap()
-    } else {
-      &self.cell_bfc
-    };
-    let mut fragments = Vec::new();
-    let mut row_markers: Vec<FragmentNode> = Vec::new();
-
-    struct LaidOutCell {
-      cell: CellInfo,
-      fragment: FragmentNode,
-      vertical_align: VerticalAlign,
-      baseline: Option<f32>,
-      height: f32,
-    }
-
-    // Layout all cells to obtain their fragments and measure heights, then distribute row heights with rowspans.
-    enum CellOutcome {
-      Success(LaidOutCell),
-      Missing,
-      Failed,
-    }
-
-    let layout_single_cell = |cell: &CellInfo| -> CellOutcome {
-      let max_prefix_idx = col_prefix.len().saturating_sub(1);
-      let start = cell.col.min(max_prefix_idx);
-      let span_end = (cell.col + cell.colspan).min(max_prefix_idx);
-      let sum_cols = col_prefix[span_end] - col_prefix[start];
-      let width = sum_cols + h_spacing * (cell.colspan.saturating_sub(1) as f32);
-      if dump {
-        eprintln!(
-          "  cell r{} c{} span={} width={:.2} min={:.2} max={:.2}",
-          cell.row, cell.col, cell.colspan, width, cell.min_width, cell.max_width
-        );
-      }
-
-      let Some(row) = source_rows.get(cell.source_row) else {
-        return CellOutcome::Missing;
-      };
-      let Some(cell_box) = row.children.get(cell.box_index) else {
-        return CellOutcome::Missing;
-      };
-      let row_vertical_align = structure.rows.get(cell.row).and_then(|r| r.vertical_align);
-      let effective_vertical_align = if cell_box.style.vertical_align_specified {
-        cell_box.style.vertical_align
-      } else {
-        row_vertical_align.unwrap_or(cell_box.style.vertical_align)
-      };
-      match self.layout_cell(
-        cell_box,
-        width,
-        structure.border_collapse,
-        cell_bfc,
-        &style_override_cache,
-      ) {
-        Ok(fragment) => {
-          if dump {
-            let b = fragment.bounds;
-            eprintln!(
-              "    cell fragment raw bounds: x={:.2} y={:.2} w={:.2} h={:.2}",
-              b.x(),
-              b.y(),
-              b.width(),
-              b.height()
-            );
-          }
-          let height = fragment.bounds.height();
-          let baseline = effective_vertical_align
-            .is_baseline_relative()
-            .then(|| cell_baseline(&fragment))
-            .flatten();
-          CellOutcome::Success(LaidOutCell {
-            cell: cell.clone(),
-            fragment,
-            vertical_align: effective_vertical_align,
-            baseline,
-            height,
-          })
-        }
-        Err(_) => CellOutcome::Failed,
-      }
-    };
-
-    let max_threads = self
-      .parallelism
-      .max_threads
-      .unwrap_or_else(|| default_layout_thread_budget().min(TABLE_PARALLEL_MAX_THREADS))
-      .max(1);
-    let should_parallelize_cells = !dump
-      && (self.parallelism.should_parallelize(structure.cells.len())
-        || (structure.cells.len() > 256 && max_threads > 1));
-    let outcomes: Vec<CellOutcome> = if should_parallelize_cells {
-      let deadline = active_deadline();
-      let stage = active_stage();
-      let heartbeat = active_heartbeat();
-      let record_parallel_work = self.parallelism.is_active();
-      let layout_cells = || {
-        structure
-          .cells
-          .par_iter()
-          .map(|cell| {
-            with_deadline(deadline.as_ref(), || {
-              let _hb_guard = StageHeartbeatGuard::install(heartbeat);
-              let _stage_guard = StageGuard::install(stage);
-              if record_parallel_work {
-                self.factory.debug_record_parallel_work();
-              }
-              layout_single_cell(cell)
-            })
-          })
-          .collect()
-      };
-
-      if self.parallelism.is_active() {
-        layout_cells()
-      } else {
-        if let Some(pool) = layout_thread_pool_for_threads(max_threads) {
-          pool.install(layout_cells)
-        } else {
-          layout_cells()
-        }
-      }
-    } else {
-      let mut outcomes = Vec::with_capacity(structure.cells.len());
-      for cell in &structure.cells {
-        check_layout_deadline(&mut deadline_counter)?;
-        outcomes.push(layout_single_cell(cell));
-      }
-      outcomes
-    };
-    let mut laid_out_cells = Vec::new();
-    let mut failed_cells = 0usize;
-    for outcome in outcomes {
-      check_layout_deadline(&mut deadline_counter)?;
-      match outcome {
-        CellOutcome::Success(cell) => laid_out_cells.push(cell),
-        CellOutcome::Failed => failed_cells += 1,
-        CellOutcome::Missing => {}
-      }
-    }
-
-    // Compute row heights, accounting for rowspans and vertical spacing.
-    let mut row_heights = vec![0.0f32; structure.row_count];
-    for (idx, row) in structure.rows.iter().enumerate() {
-      check_layout_deadline(&mut deadline_counter)?;
-      if let Some(slot) = row_heights.get_mut(idx) {
-        *slot = row.min_height.max(*slot);
-      }
-    }
-
-    let baseline_split = |laid: &LaidOutCell, heights: &[f32]| {
-      let span_end = (laid.cell.row + laid.cell.rowspan).min(heights.len());
-      let spacing_total = v_spacing * laid.cell.rowspan.saturating_sub(1) as f32;
-      let allocated_height = if laid.cell.rowspan > 1 && span_end > laid.cell.row {
-        heights
-          .get(laid.cell.row..span_end)
-          .map(|rows| rows.iter().sum::<f32>() + spacing_total)
-          .unwrap_or(laid.height)
-      } else {
-        heights.get(laid.cell.row).copied().unwrap_or(laid.height)
-      };
-      let raw_baseline = laid.baseline.unwrap_or(laid.height);
-      let (target_height, baseline) =
-        if raw_baseline >= laid.height && allocated_height > laid.height {
-          (allocated_height, allocated_height)
-        } else {
-          let target_height = if laid.cell.rowspan == 1 && raw_baseline < laid.height {
-            laid.height
-          } else {
-            allocated_height
-          };
-          (target_height, raw_baseline)
-        };
-      if laid.cell.rowspan > 1 && span_end > laid.cell.row {
-        spanning_baseline_allocation(target_height, baseline, laid.cell.row, span_end, heights)
-      } else {
-        let clamped = baseline.min(target_height);
-        (clamped, (target_height - clamped).max(0.0))
-      }
-    };
-
-    // Baseline-aligned cells reserve enough height in their starting row to place the baseline.
-    for laid in &laid_out_cells {
-      if !laid.vertical_align.is_baseline_relative() {
-        continue;
-      }
-      let (top, bottom) = baseline_split(laid, &row_heights);
-      if let Some(slot) = row_heights.get_mut(laid.cell.row) {
-        *slot = (*slot).max(top + bottom);
-      }
-    }
-
-    let compute_percent_height_base = |base: f32| {
-      let mut content_base = if structure.border_collapse == BorderCollapse::Collapse {
-        (base - padding_v - outer_border_v).max(0.0)
-      } else {
-        (base - padding_v - border_v).max(0.0)
-      };
-      if structure.border_collapse != BorderCollapse::Collapse {
-        let spacing_total = structure.total_vertical_spacing();
-        content_base = (content_base - spacing_total).max(0.0);
-      }
-      content_base
-    };
-
-    let percent_height_base = table_height.map(|base| compute_percent_height_base(base));
-
-    let row_floor = |idx: usize, current: f32| -> f32 {
-      let row = structure.rows.get(idx);
-      if row.is_none() {
-        return current;
-      }
-      let row = row.unwrap();
-      let mut floor = current;
-      if let Some((Some(min_len), _)) = Some(resolve_row_min_max(row, percent_height_base)) {
-        floor = floor.max(min_len);
-      }
-      if let Some(spec) = row.specified_height {
-        match spec {
-          SpecifiedHeight::Fixed(h) => floor = floor.max(h),
-          SpecifiedHeight::Percent(pct) => {
-            if let Some(base) = percent_height_base {
-              floor = floor.max((pct / 100.0) * base);
-            }
-          }
-          SpecifiedHeight::Auto => {}
-        }
-      }
-      floor
-    };
-
-    for laid in &laid_out_cells {
-      if laid.cell.rowspan == 1 {
-        row_heights[laid.cell.row] = row_heights[laid.cell.row].max(laid.height);
-      } else {
-        let span_start = laid.cell.row;
-        let span_end = (laid.cell.row + laid.cell.rowspan).min(structure.row_count);
-        let spacing_total = v_spacing * (laid.cell.rowspan.saturating_sub(1) as f32);
-        let span_height = (laid.height - spacing_total).max(0.0);
-        let current_total: f32 = row_heights[span_start..span_end].iter().sum();
-        let remaining = (span_height - current_total).max(0.0);
-        if remaining > 0.0 && span_start < span_end {
-          let percent_base = percent_height_base;
-          let row_floor_fn = |idx: usize, _current: f32| -> f32 { row_floor(idx, 0.0) };
-          distribute_rowspan_targets_range(
-            span_start,
-            span_end,
-            &mut row_heights,
-            &structure.rows,
-            remaining,
-            percent_base,
-            &row_floor_fn,
-            &|current, share| current + share,
-          );
-        }
-      }
-    }
-
-    // Preserve the content-driven minimums so later distribution never shrinks below cell content.
-    let content_min_heights = row_heights.clone();
-
-    let percent_height_base = table_height.map(|base| compute_percent_height_base(base));
-
-    // Enforce row-specified minimums (length or percentage of table height) and percent targets.
-    for (idx, row) in structure.rows.iter().enumerate() {
-      let (min_len, max_len) = resolve_row_min_max(row, percent_height_base);
-      if let Some(min) = min_len {
-        row_heights[idx] = row_heights[idx].max(min);
-      }
-      if let Some(max) = max_len {
-        row_heights[idx] = row_heights[idx].min(max);
-      }
-      if let Some(SpecifiedHeight::Fixed(px)) = row.specified_height {
-        row_heights[idx] = row_heights[idx].max(px);
-      }
-      if let (Some(base), Some(SpecifiedHeight::Percent(pct))) =
-        (percent_height_base, row.specified_height)
-      {
-        let target = (pct / 100.0) * base;
-        row_heights[idx] = row_heights[idx].max(target);
-      }
-    }
-
-    apply_row_group_constraints(
-      &mut row_heights,
-      &structure.rows,
-      &row_group_constraints,
-      percent_height_base,
-      v_spacing,
-      &content_min_heights,
-    );
-
-    // If the table has a definite height, adjust rows so percent rows meet their targets and remaining space is distributed.
-    if let Some(percent_base) = percent_height_base {
-      let target_rows = percent_base.max(0.0);
-      let mut percent_rows = Vec::new();
-      let mut adjustable_rows = Vec::new();
-      for (idx, row) in structure.rows.iter().enumerate() {
-        if matches!(row.specified_height, Some(SpecifiedHeight::Percent(_))) {
-          percent_rows.push(idx);
-        } else {
-          adjustable_rows.push(idx);
-        }
-      }
-      let percent_total: f32 = percent_rows.iter().map(|i| row_heights[*i]).sum();
-      let flex_indices = if !adjustable_rows.is_empty() {
-        adjustable_rows
-      } else {
-        percent_rows.clone()
-      };
-
-      let available = target_rows - percent_total;
-      let flex_total: f32 = flex_indices.iter().map(|i| row_heights[*i]).sum();
-
-      if available > 0.0 {
-        if flex_total > 0.0 {
-          let scale = available / flex_total;
-          for i in &flex_indices {
-            row_heights[*i] = (row_heights[*i] * scale).max(content_min_heights[*i]);
-          }
-        } else if !flex_indices.is_empty() {
-          let share = available / flex_indices.len() as f32;
-          for i in &flex_indices {
-            row_heights[*i] = share;
-          }
-        }
-      }
-      for (idx, min_content) in content_min_heights.iter().enumerate() {
-        row_heights[idx] = row_heights[idx].max(*min_content);
-      }
-      for (idx, row) in structure.rows.iter().enumerate() {
-        let (min_len, max_len) = resolve_row_min_max(row, percent_height_base);
-        if let Some(min) = min_len {
-          row_heights[idx] = row_heights[idx].max(min);
-        }
-        if let Some(max) = max_len {
-          row_heights[idx] = row_heights[idx].min(max);
-        }
-      }
-    }
-
-    apply_row_group_constraints(
-      &mut row_heights,
-      &structure.rows,
-      &row_group_constraints,
-      percent_height_base,
-      v_spacing,
-      &content_min_heights,
-    );
-
-    if dump {
-      let min_col = col_widths.iter().copied().fold(f32::INFINITY, f32::min);
-      let max_col = col_widths.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-      let sum_col: f32 = col_widths.iter().sum();
-      let min_row = row_heights.iter().copied().fold(f32::INFINITY, f32::min);
-      let max_row = row_heights
-        .iter()
-        .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
-      let sum_row: f32 = row_heights.iter().sum();
-      eprintln!(
-                "table layout: cols={} rows={} cells={} laid_out={} failed={} col_sum={:.2} col_min={:.2} col_max={:.2} row_sum={:.2} row_min={:.2} row_max={:.2}",
-                structure.column_count,
-                structure.row_count,
-                structure.cells.len(),
-                laid_out_cells.len(),
-                failed_cells,
-                sum_col,
-                min_col,
-                max_col,
-                sum_row,
-                min_row,
-                max_row
-            );
-    }
-
-    let rows_collapse_due_to_empty_cells =
-      compute_rows_that_collapse_due_to_empty_cells(&structure, &source_rows);
-
-    let mut row_metrics: Vec<RowMetrics> =
-      row_heights.iter().map(|h| RowMetrics::new(*h)).collect();
-
-    for laid in &laid_out_cells {
-      let row = &mut row_metrics[laid.cell.row];
-      let row_height = row_heights
-        .get(laid.cell.row)
-        .copied()
-        .unwrap_or(row.height);
-      let contribution = if laid.cell.rowspan == 1 {
-        laid.height
-      } else {
-        row_height
-      };
-      row.max_cell_height = row.max_cell_height.max(contribution);
-
-      // CSS 2.1 §17.5.3: row baselines ignore row-spanning cells.
-      // Baseline alignment for rows follows CSS 2.1 §17.5.3: the cell with the
-      // largest height above (and below) the baseline sets the row's baseline
-      // position. Row-spanning cells don't establish a row baseline.
-      if laid.vertical_align.is_baseline_relative() && laid.cell.rowspan == 1 {
-        let (top, bottom) = baseline_split(laid, &row_heights);
-        let clamped_top = top.min(row_height);
-        let clamped_bottom = bottom.min((row_height - clamped_top).max(0.0));
-        row.has_baseline = true;
-        row.baseline_top = row.baseline_top.max(clamped_top);
-        row.baseline_bottom = row.baseline_bottom.max(clamped_bottom);
-        row.max_cell_height = row.max_cell_height.max(clamped_top + clamped_bottom);
-      }
-    }
-
-    for (idx, row) in row_metrics.iter_mut().enumerate() {
-      if rows_collapse_due_to_empty_cells.get(idx).copied().unwrap_or(false) {
-        // CSS 2.1 §17.6.1: fully empty rows collapse to zero height.
-        row.height = 0.0;
-        row.max_cell_height = 0.0;
-        row.baseline_top = 0.0;
-        row.baseline_bottom = 0.0;
-        row.has_baseline = false;
-        continue;
-      }
-      let baseline_height = row.baseline_height();
-      let max_required = row.max_cell_height.max(baseline_height);
-      if max_required > row.height {
-        row.height = max_required;
-      }
-      if row.height <= 0.0 {
-        row.height = 1.0;
-      }
-      let (min_h, max_h) = resolve_row_min_max(&structure.rows[idx], percent_height_base);
-      if let Some(min) = min_h {
-        row.height = row.height.max(min);
-      }
-      if let Some(max) = max_h {
-        row.height = row.height.min(max);
-      }
-    }
-
-    // If the table has a definite (or minimum) height and rows don't fill it, distribute the extra.
-    if let Some(target_height) = table_height {
-      let rows_space: f32 = row_metrics.iter().map(|r| r.height).sum();
-      let target_rows =
-        percent_height_base.unwrap_or_else(|| compute_percent_height_base(target_height));
-      if target_rows > rows_space && !row_metrics.is_empty() {
-        let extra = target_rows - rows_space;
-        let flex_indices: Vec<usize> = structure
-          .rows
-          .iter()
-          .enumerate()
-          .filter_map(|(idx, row)| match row.specified_height {
-            Some(SpecifiedHeight::Fixed(_)) | Some(SpecifiedHeight::Percent(_)) => None,
-            _ => {
-              if rows_collapse_due_to_empty_cells.get(idx).copied().unwrap_or(false) {
-                None
-              } else {
-                Some(idx)
-              }
-            }
-          })
-          .collect();
-        let targets = if flex_indices.is_empty() {
-          (0..structure.row_count)
-            .filter(|idx| !rows_collapse_due_to_empty_cells.get(*idx).copied().unwrap_or(false))
-            .collect::<Vec<_>>()
-        } else {
-          flex_indices
-        };
-
-        distribute_extra_row_height_with_groups(
-          &mut row_metrics,
-          &structure.rows,
-          &targets,
-          extra,
-          percent_height_base,
-          &row_to_group,
-          &row_group_constraints,
-          v_spacing,
-        );
-      }
-    }
-
-    // Border-collapse adjustments
-    let collapsed_borders: Option<Arc<CollapsedBorders>> =
-      if structure.border_collapse == BorderCollapse::Collapse {
-        Some(collapsed_borders_cached(&table_box, &structure)?)
-      } else {
-        None
-      };
-
-    let mut vertical_line_max: Vec<f32> = Vec::with_capacity(structure.column_count + 1);
-    let mut horizontal_line_max: Vec<f32> = Vec::with_capacity(structure.row_count + 1);
-    let mut column_line_pos = Vec::new();
-    let mut row_line_pos = Vec::new();
-    let mut row_offsets = Vec::with_capacity(structure.row_count);
-    let mut col_offsets = Vec::with_capacity(structure.column_count);
-    let mut row_prefix_heights: Option<Vec<f32>> = None;
-
-    // Collapsed borders place border strokes on grid lines, with half of the outer
-    // borders inside the table box and half potentially spilling into the margin
-    // area (CSS 2.2 §17.6.2). Compute line centers and cell start offsets from the
-    // resolved line widths so that the table width/height include only half of the
-    // outer collapsed borders.
-    let (content_width, content_height, content_origin_x, content_origin_y) =
-      match collapsed_borders.as_ref() {
-        Some(collapsed_borders) => {
-          for (idx, segments) in collapsed_borders.vertical.iter().enumerate() {
-            check_layout_deadline(&mut deadline_counter)?;
-            let width = if idx == 0 || idx == structure.column_count {
-              // Table left/right border widths are based on the first row's collapsed border
-              // (CSS 2.2 §17.6.2), with any excess in later rows spilling into the margin.
-              if structure.row_count > 0 {
-                segments.first().map(|b| b.width).unwrap_or(0.0)
-              } else {
-                0.0
-              }
-            } else {
-              segments.iter().map(|b| b.width).fold(0.0, f32::max)
-            };
-            vertical_line_max.push(width);
-          }
-          horizontal_line_max = Vec::with_capacity(structure.row_count + 1);
-          for segments in &collapsed_borders.horizontal {
-            check_layout_deadline(&mut deadline_counter)?;
-            horizontal_line_max.push(segments.iter().map(|b| b.width).fold(0.0, f32::max));
-          }
-
-          let (cols, starts, collapsed_width) =
-            collapsed_line_positions(&col_widths, &vertical_line_max, pad_left, pad_right);
-          column_line_pos = cols;
-          col_offsets = starts;
-
-          let mut row_heights: Vec<f32> = Vec::with_capacity(row_metrics.len());
-          for row in &row_metrics {
-            check_layout_deadline(&mut deadline_counter)?;
-            row_heights.push(row.height);
-          }
-          let (rows, starts, collapsed_height) =
-            collapsed_line_positions(&row_heights, &horizontal_line_max, pad_top, pad_bottom);
-          row_line_pos = rows;
-          row_offsets = starts;
-
-          let content_origin_x = col_offsets.first().copied().unwrap_or(pad_left)
-            - vertical_line_max.first().copied().unwrap_or(0.0) * 0.5;
-          let content_origin_y = row_offsets.first().copied().unwrap_or(pad_top)
-            - horizontal_line_max.first().copied().unwrap_or(0.0) * 0.5;
-
-          (
-            collapsed_width,
-            collapsed_height,
-            content_origin_x,
-            content_origin_y,
-          )
-        }
-        None => {
-          let content_origin_y = border_top + pad_top;
-          // CSS 2.1 §17.6.1: in the separated border model, the edge cells are offset from the
-          // table's padding edge by a *full* border-spacing, not half.
-          let mut y = content_origin_y;
-          if structure.row_count > 0 {
-            y += v_spacing;
-          }
-
-          if dump {
-            let preview: String = row_metrics
-              .iter()
-              .take(8)
-              .map(|r| format!("{:.2}", r.height))
-              .collect::<Vec<_>>()
-              .join(", ");
-            eprintln!(
-              "  row heights (first {} of {}): {}",
-              row_metrics.len().min(8),
-              row_metrics.len(),
-              preview
-            );
-          }
-
-          for (idx, row) in row_metrics.iter().enumerate() {
-            row_offsets.push(y);
-            y += row.height;
-            if !rows_collapse_due_to_empty_cells
-              .get(idx)
-              .copied()
-              .unwrap_or(false)
-            {
-              y += v_spacing;
-            }
-          }
-
-          if dump {
-            let preview: String = row_offsets
-              .iter()
-              .take(8)
-              .map(|offset| format!("{:.2}", offset))
-              .collect::<Vec<_>>()
-              .join(", ");
-            eprintln!(
-              "  row offsets (first {} of {}): {}",
-              row_offsets.len().min(8),
-              row_offsets.len(),
-              preview
-            );
-          }
-
-          // Precompute column offsets for positioning in the separated model.
-          let start_x = border_left + pad_left;
-          let mut x = start_x;
-          if structure.column_count > 0 {
-            x += h_spacing;
-          }
-          for width in col_widths.iter().take(structure.column_count) {
-            col_offsets.push(x);
-            x += width + h_spacing;
-          }
-
-          let mut prefix = Vec::with_capacity(row_metrics.len().saturating_add(1));
-          prefix.push(0.0);
-          for (idx, row) in row_metrics.iter().enumerate() {
-            let spacing_after = if rows_collapse_due_to_empty_cells
-              .get(idx)
-              .copied()
-              .unwrap_or(false)
-            {
-              0.0
-            } else {
-              v_spacing
-            };
-            let next = prefix.last().copied().unwrap_or(0.0) + row.height + spacing_after;
-            prefix.push(next);
-          }
-          row_prefix_heights = Some(prefix);
-
-          let width = if col_widths.is_empty() {
-            available_content
-          } else {
-            col_widths.iter().sum::<f32>() + structure.total_horizontal_spacing()
-          };
-          let height = if structure.row_count > 0 {
-            (y - content_origin_y).max(0.0)
-          } else {
-            0.0
-          };
-          (width, height, start_x, content_origin_y)
-        }
-      };
-
-    let mut stripped_border_cache: HashMap<usize, Arc<ComputedStyle>> = HashMap::new();
-
-    let mut table_collapsed_borders = if let Some(borders) = collapsed_borders.as_ref() {
-      Some(Arc::new(build_table_collapsed_borders_metadata(
-        &structure,
-        borders,
-        &column_line_pos,
-        &row_line_pos,
-        &vertical_line_max,
-        &horizontal_line_max,
-      )?))
-    } else {
-      None
-    };
-
-    // Column group and column backgrounds precede row backgrounds/cells.
-    //
-    // `<col>` and `<colgroup>` can each map to multiple source columns via the HTML `span`
-    // attribute. Track the "source" column index separately from the visible column index so
-    // `visibility: collapse` filtering doesn't desync the traversal.
-    let mut column_styles: Vec<Option<Arc<ComputedStyle>>> = vec![None; structure.column_count];
-    let mut column_spans: Vec<(usize, usize, usize, Arc<ComputedStyle>)> = Vec::new();
-    let mut column_groups: Vec<(usize, usize, usize, Arc<ComputedStyle>)> = Vec::new();
-    let mut source_col_idx = 0usize;
-    for child in table_box
-      .children
-      .iter()
-      .filter(|child| child.style.running_position.is_none())
-    {
-      check_layout_deadline(&mut deadline_counter)?;
-      match TableStructure::get_table_element_type(child) {
-        TableElementType::Column => {
-          let span = child.table_column_span();
-          let mut first_visible = None;
-          let mut last_visible = None;
-          for offset in 0..span {
-            check_layout_deadline(&mut deadline_counter)?;
-            if let Some(visible) =
-              source_col_to_visible
-                .get(source_col_idx + offset)
-                .and_then(|m| *m)
-            {
-              column_styles[visible] = Some(child.style.clone());
-              first_visible.get_or_insert(visible);
-              last_visible = Some(visible);
-            }
-          }
-          if let (Some(first), Some(last)) = (first_visible, last_visible) {
-            // `direction: rtl` mirrors source columns to physical indices, so the visible column
-            // indices encountered here can decrease. Normalize to `[start, end)` so the span
-            // remains valid regardless of traversal order.
-            let start = first.min(last);
-            let end = first.max(last) + 1;
-            column_spans.push((start, end, child.id, child.style.clone()));
-          }
-          source_col_idx += span;
-        }
-        TableElementType::ColumnGroup => {
-          let mut first_visible = None;
-          let mut last_visible = None;
-          let has_col_children = child.children.iter().any(|col_child| {
-            TableStructure::get_table_element_type(col_child) == TableElementType::Column
-          });
-          if has_col_children {
-            for col_child in &child.children {
-              check_layout_deadline(&mut deadline_counter)?;
-              if TableStructure::get_table_element_type(col_child) != TableElementType::Column {
-                continue;
-              }
-              let span = col_child.table_column_span();
-              let mut col_first_visible = None;
-              let mut col_last_visible = None;
-              for offset in 0..span {
-                check_layout_deadline(&mut deadline_counter)?;
-                if let Some(visible) =
-                  source_col_to_visible
-                    .get(source_col_idx + offset)
-                    .and_then(|m| *m)
-                {
-                  column_styles[visible] = Some(col_child.style.clone());
-                  first_visible.get_or_insert(visible);
-                  last_visible = Some(visible);
-                  col_first_visible.get_or_insert(visible);
-                  col_last_visible = Some(visible);
-                }
-              }
-              if let (Some(first), Some(last)) = (col_first_visible, col_last_visible) {
-                let start = first.min(last);
-                let end = first.max(last) + 1;
-                column_spans.push((start, end, col_child.id, col_child.style.clone()));
-              }
-              source_col_idx += span;
-            }
-          } else {
-            let span = child.table_column_span();
-            for offset in 0..span {
-              check_layout_deadline(&mut deadline_counter)?;
-              if let Some(visible) =
-                source_col_to_visible
-                  .get(source_col_idx + offset)
-                  .and_then(|m| *m)
-              {
-                first_visible.get_or_insert(visible);
-                last_visible = Some(visible);
-              }
-            }
-            source_col_idx += span;
-          }
-          if let (Some(first), Some(last)) = (first_visible, last_visible) {
-            let start = first.min(last);
-            let end = first.max(last) + 1;
-            column_groups.push((start, end, child.id, child.style.clone()));
-          }
-        }
-        _ => {}
-      }
-    }
-
-    let mut push_column_span_fragment = |fragments: &mut Vec<FragmentNode>,
-                                         cache: &mut HashMap<usize, Arc<ComputedStyle>>,
-                                         box_id: usize,
-                                         style: Arc<ComputedStyle>,
-                                         start: usize,
-                                         end: usize| {
-      if start >= end || start >= col_offsets.len() {
-        return;
-      }
-      if !style_paints_background_or_border(&style, false) {
-        return;
-      }
-      let style = strip_borders_cached(&style, cache);
-      let mut x = if structure.border_collapse == BorderCollapse::Collapse {
-        col_offsets.get(start).copied().unwrap_or(0.0)
-          - vertical_line_max.get(start).copied().unwrap_or(0.0)
-      } else {
-        let base = col_offsets.get(start).copied().unwrap_or(content_origin_x);
-        let edge = if start == 0 { h_spacing } else { h_spacing * 0.5 };
-        (base - edge).max(content_origin_x)
-      };
-      let mut right = if structure.border_collapse == BorderCollapse::Collapse {
-        let base = col_offsets.get(end.saturating_sub(1)).copied().unwrap_or(x)
-          + col_widths
-            .get(end.saturating_sub(1))
-            .copied()
-            .unwrap_or(0.0);
-        base + vertical_line_max.get(end).copied().unwrap_or(0.0)
-      } else {
-        let base = col_offsets.get(end.saturating_sub(1)).copied().unwrap_or(x)
-          + col_widths
-            .get(end.saturating_sub(1))
-            .copied()
-            .unwrap_or(0.0);
-        let edge = if end >= structure.column_count {
-          h_spacing
-        } else {
-          h_spacing * 0.5
-        };
-        base + edge
-      };
-      let max_x = content_origin_x + content_width;
-      x = x.max(content_origin_x);
-      right = right.min(max_x);
-      let width = (right - x).max(0.0);
-      if width <= 0.0 || content_height <= 0.0 {
-        return;
-      }
-      let rect = Rect::from_xywh(x, content_origin_y, width, content_height);
-      fragments.push(FragmentNode::new_with_style(
-        rect,
-        FragmentContent::Block {
-          box_id: Some(box_id),
-        },
-        Vec::new(),
-        style,
-      ));
-    };
-
-    for (start, end, box_id, style) in column_groups {
-      push_column_span_fragment(
-        &mut fragments,
-        &mut stripped_border_cache,
-        box_id,
-        style,
-        start,
-        end,
-      );
-    }
-    for (start, end, box_id, style) in column_spans {
-      push_column_span_fragment(
-        &mut fragments,
-        &mut stripped_border_cache,
-        box_id,
-        style,
-        start,
-        end,
-      );
-    }
-
-    // Paint order backgrounds before cells.
-    // Row groups
-    let mut row_styles: Vec<Option<(usize, Arc<ComputedStyle>)>> = vec![None; structure.row_count];
-    let mut row_groups: Vec<(usize, usize, usize, Arc<ComputedStyle>, Display)> = Vec::new();
-    let mut header_rows: Option<(usize, usize)> = None;
-    let mut footer_rows: Option<(usize, usize)> = None;
-    let mut row_cursor = 0usize;
-    let mut seen_header_group = false;
-    let mut seen_footer_group = false;
-    for child in table_box
-      .children
-      .iter()
-      .filter(|child| child.style.running_position.is_none())
-    {
-      let element_type = TableStructure::get_table_element_type(child);
-      match element_type {
-        TableElementType::RowGroup
-        | TableElementType::HeaderGroup
-        | TableElementType::FooterGroup => {
-          let record_header_rows =
-            matches!(element_type, TableElementType::HeaderGroup) && !seen_header_group;
-          let record_footer_rows =
-            matches!(element_type, TableElementType::FooterGroup) && !seen_footer_group;
-          let mut effective_display = child.style.display;
-          match element_type {
-            TableElementType::HeaderGroup => {
-              if !seen_header_group {
-                seen_header_group = true;
-              } else {
-                effective_display = Display::TableRowGroup;
-              }
-            }
-            TableElementType::FooterGroup => {
-              if !seen_footer_group {
-                seen_footer_group = true;
-              } else {
-                effective_display = Display::TableRowGroup;
-              }
-            }
-            _ => {}
-          }
-          let mut first_visible = None;
-          let mut last_visible = None;
-          for row_child in &child.children {
-            if TableStructure::get_table_element_type(row_child) == TableElementType::Row {
-              if let Some(visible) = source_row_to_visible.get(row_cursor).and_then(|m| *m) {
-                 row_styles[visible] = Some((row_child.id, row_child.style.clone()));
-                 first_visible.get_or_insert(visible);
-                 last_visible = Some(visible);
-               }
-              row_cursor += 1;
-            }
-          }
-          if let (Some(start), Some(end)) = (first_visible, last_visible) {
-            row_groups.push((start, end + 1, child.id, child.style.clone(), effective_display));
-            if record_header_rows {
-              header_rows = Some((start, end + 1));
-            }
-            if record_footer_rows {
-              footer_rows = Some((start, end + 1));
-            }
-          }
-        }
-        TableElementType::Row => {
-          if let Some(visible) = source_row_to_visible.get(row_cursor).and_then(|m| *m) {
-            row_styles[visible] = Some((child.id, child.style.clone()));
-          }
-          row_cursor += 1;
-        }
-        _ => {}
-      }
-    }
-
-    if table_collapsed_borders.is_some() && (header_rows.is_some() || footer_rows.is_some()) {
-      if let Some(existing) = table_collapsed_borders.as_ref() {
-        let mut updated = (**existing).clone();
-        updated.header_rows = header_rows;
-        updated.footer_rows = footer_rows;
-        table_collapsed_borders = Some(Arc::new(updated));
-      }
-    }
-
-    for (start, end, row_group_id, style, effective_display) in row_groups {
-      // Always emit row-group fragments for fragmentation.
-      //
-      // The fragmentation engine treats table row(-group) fragments as atomic range candidates and
-      // uses `display: table-header-group` / `table-footer-group` fragments to repeat headers/footers
-      // across pages/columns (`fragmentation::inject_table_headers_and_footers`). If a row group does
-      // not paint, table layout still needs to emit a zero-paint marker fragment so `break-*` rules
-      // on `<tbody>/<thead>/<tfoot>` (and any elements styled as row groups) are honoured.
-      let paints = style_paints_background_or_border(&style, false);
-      let style = if paints {
-        let mut style = strip_borders_cached(&style, &mut stripped_border_cache);
-        if style.display != effective_display {
-          let mut overridden = (*style).clone();
-          overridden.display = effective_display;
-          style = Arc::new(overridden);
-        }
-        style
-      } else {
-        // Preserve non-paint properties (break hints, writing-mode, direction, etc.) while ensuring
-        // the marker fragment cannot paint.
-        let mut marker_style = (*style).clone();
-        marker_style.reset_background_to_initial();
-        marker_style.box_shadow.clear();
-        marker_style.border_top_width = Length::px(0.0);
-        marker_style.border_right_width = Length::px(0.0);
-        marker_style.border_bottom_width = Length::px(0.0);
-        marker_style.border_left_width = Length::px(0.0);
-        marker_style.border_top_style = BorderStyle::None;
-        marker_style.border_right_style = BorderStyle::None;
-        marker_style.border_bottom_style = BorderStyle::None;
-        marker_style.border_left_style = BorderStyle::None;
-        marker_style.display = effective_display;
-        Arc::new(marker_style)
-      };
-      if start >= row_offsets.len() {
-        break;
-      }
-      let top = row_offsets[start];
-      let bottom = if end < row_offsets.len() {
-        row_offsets[end]
-      } else {
-        let last_row_idx = row_offsets.len().saturating_sub(1);
-        let trailing_spacing = if structure.border_collapse != BorderCollapse::Collapse {
-          if rows_collapse_due_to_empty_cells
-            .get(last_row_idx)
-            .copied()
-            .unwrap_or(false)
-          {
-            0.0
-          } else {
-            v_spacing
-          }
-        } else {
-          0.0
-        };
-        row_offsets.last().copied().unwrap_or(top)
-          + row_metrics.last().map(|r| r.height).unwrap_or(0.0)
-          + trailing_spacing
-      };
-      let height = (bottom - top).max(0.0);
-      let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
-      let mut fragment = FragmentNode::new_with_style(
-        rect,
-        FragmentContent::Block {
-          box_id: Some(row_group_id),
-        },
-        Vec::new(),
-        style,
-      );
-      fragment.block_metadata = Some(BlockFragmentMetadata::default());
-      fragments.push(fragment);
-    }
-
-    // Rows
-    for (idx, row) in row_styles.iter().enumerate() {
-      if let Some((row_id, style)) = row.as_ref() {
-        let style = strip_borders_cached(style, &mut stripped_border_cache);
-        let top = row_offsets.get(idx).copied().unwrap_or(0.0);
-        let height = row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
-        let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
-        fragments.push(FragmentNode::new_with_style(
-          rect,
-          FragmentContent::Block {
-            box_id: Some(*row_id),
-          },
-          Vec::new(),
-          style,
-        ));
-      }
-    }
-
-    // Add explicit row boundary markers to make fragmentation row-aware.
-    //
-    // The rest of the table fragments are emitted in paint order (columns/row groups before rows,
-    // etc). Forced breaks use the fragment tree sibling order for break propagation, so ensure the
-    // row markers are the first children of the table fragment regardless of paint ordering.
-    for (idx, offset) in row_offsets.iter().enumerate() {
-      let height = row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
-      let mut marker_style = crate::style::ComputedStyle::default();
-      marker_style.display = Display::TableRow;
-      marker_style.writing_mode = table_root_style.writing_mode;
-      marker_style.direction = table_root_style.direction;
-      if let Some((_, row_style)) = row_styles.get(idx).and_then(|entry| entry.as_ref()) {
-        marker_style.break_before = row_style.break_before;
-        marker_style.break_after = row_style.break_after;
-        marker_style.break_inside = row_style.break_inside;
-        marker_style.orphans = row_style.orphans;
-        marker_style.widows = row_style.widows;
-      }
-      marker_style.reset_background_to_initial();
-      marker_style.border_top_width = Length::px(0.0);
-      marker_style.border_right_width = Length::px(0.0);
-      marker_style.border_bottom_width = Length::px(0.0);
-      marker_style.border_left_width = Length::px(0.0);
-      marker_style.border_top_style = BorderStyle::None;
-      marker_style.border_right_style = BorderStyle::None;
-      marker_style.border_bottom_style = BorderStyle::None;
-      marker_style.border_left_style = BorderStyle::None;
-      marker_style.box_shadow.clear();
-      let rect = Rect::from_xywh(content_origin_x, *offset, content_width, height);
-      row_markers.push(FragmentNode::new_with_style(
-        rect,
-        FragmentContent::Block { box_id: None },
-        Vec::new(),
-        Arc::new(marker_style),
-      ));
-    }
-
-    // Position cell fragments with vertical alignment within their row block.
-    // Preserve row/column traversal order (CSS 2.1 row baseline rules) without moving fragments.
-    let row_metric_heights: Vec<f32> = row_metrics.iter().map(|r| r.height).collect();
-    // Cells are collected from TableStructure in row-major order; preserve that order per row to
-    // keep paint order stable without shuffling the fragments themselves.
-    let mut cells_by_row: Vec<Vec<usize>> = vec![Vec::new(); structure.row_count];
-    let mut fallback_indices = Vec::new();
-    for (idx, laid) in laid_out_cells.iter().enumerate() {
-      if let Some(bucket) = cells_by_row.get_mut(laid.cell.row) {
-        bucket.push(idx);
-      } else {
-        fallback_indices.push(idx);
-      }
-    }
-    if cfg!(debug_assertions) {
-      let direction = table_root_style.direction;
-      for bucket in &cells_by_row {
-        let mut last_col = None;
-        for &idx in bucket {
-          let col = laid_out_cells[idx].cell.col;
-          if let Some(prev) = last_col {
-            match direction {
-              Direction::Ltr => {
-                debug_assert!(prev <= col, "cells in a row should appear in column order");
-              }
-              Direction::Rtl => {
-                debug_assert!(prev >= col, "cells in a row should appear in column order");
-              }
-            }
-          }
-          last_col = Some(col);
-        }
-      }
-    }
-    let placement_order = cells_by_row
-      .into_iter()
-      .flatten()
-      .chain(fallback_indices.into_iter())
-      .collect::<Vec<_>>();
-
-    // Compute table baseline per CSS 2.1: the baseline of the first row that has a
-    // baseline-aligned, non-rowspanning cell; otherwise the bottom content edge of the first row.
-    let table_baseline = row_metrics
-      .iter()
-      .enumerate()
-      .find(|(idx, r)| r.has_baseline && *idx < row_offsets.len())
-      .map(|(idx, r)| row_offsets[idx] + r.baseline_top)
-      .or_else(|| {
-        if !row_metrics.is_empty() && !row_offsets.is_empty() {
-          Some(row_offsets[0] + row_metrics[0].height)
-        } else {
-          None
-        }
-      });
-
-    let mut laid_out_cells: Vec<Option<LaidOutCell>> =
-      laid_out_cells.into_iter().map(Some).collect();
-
-    for idx in placement_order {
-      let Some(mut laid) = laid_out_cells.get_mut(idx).and_then(Option::take) else {
-        continue;
-      };
-      let cell = &laid.cell;
-      // Compute horizontal position
-      let base_x = col_offsets
-        .get(cell.col)
-        .copied()
-        .unwrap_or(content_origin_x);
-      let x = base_x;
-
-      let row_start = cell.row;
-      let span_end = (cell.row + cell.rowspan).min(row_metrics.len());
-      let spanned_height: f32 = if structure.border_collapse == BorderCollapse::Collapse {
-        let start = row_line_pos.get(row_start).copied().unwrap_or(0.0);
-        let end = row_line_pos.get(span_end).copied().unwrap_or(start);
-        (end - start).max(0.0)
-      } else if let Some(prefix) = &row_prefix_heights {
-        let start = prefix.get(row_start).copied().unwrap_or(0.0);
-        let end = prefix.get(span_end).copied().unwrap_or(start);
-        let trailing_spacing = if span_end > 0
-          && rows_collapse_due_to_empty_cells
-            .get(span_end.saturating_sub(1))
-            .copied()
-            .unwrap_or(false)
-        {
-          0.0
-        } else {
-          v_spacing
-        };
-        (end - start - trailing_spacing).max(0.0)
-      } else {
-        let mut total = 0.0;
-        for idx in row_start..span_end {
-          total += row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
-          if idx + 1 < span_end
-            && !rows_collapse_due_to_empty_cells.get(idx).copied().unwrap_or(false)
-          {
-            total += v_spacing;
-          }
-        }
-        total
-      };
-
-      let base_y = row_offsets.get(row_start).copied().unwrap_or(0.0);
-      let cell_span_end = (cell.col + cell.colspan).min(col_widths.len());
-      let mut spanned_width = 0.0;
-      for col_idx in cell.col..cell_span_end {
-        spanned_width += col_widths.get(col_idx).copied().unwrap_or(0.0);
-      }
-      if cell_span_end > cell.col {
-        spanned_width += h_spacing * (cell_span_end - cell.col).saturating_sub(1) as f32;
-      }
-
-      let mut fragment = crate::layout::contexts::block::unconvert_fragment_axes_root(laid.fragment);
-
-      // Table cells treat `height` as a *minimum* height (CSS 2.1 §17.5.3). When that minimum
-      // height inflates the cell box, the cell's fragment height (`laid.height`) equals the row
-      // height and a naive `(spanned_height - laid.height)` offset would be zero, preventing
-      // `vertical-align: middle/bottom` from moving the actual content.
-      //
-      // Instead, compute offsets based on the vertical extent of the cell's in-flow children so
-      // content is aligned even when the cell's own height is what set the row height.
-      let (content_min_y, content_height) = {
-        let mut min_y = f32::INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
-        for child in &fragment.children {
-          let y0 = child.bounds.y();
-          let y1 = y0 + child.bounds.height();
-          min_y = min_y.min(y0);
-          max_y = max_y.max(y1);
-        }
-        if min_y.is_finite() && max_y.is_finite() {
-          (min_y, (max_y - min_y).max(0.0))
-        } else {
-          (0.0, 0.0)
-        }
-      };
-
-      let (y_offset, aligned_baseline) = match laid.vertical_align {
-        VerticalAlign::Top => (0.0, None),
-        VerticalAlign::Bottom => {
-          let desired_top = (spanned_height - content_height).max(0.0);
-          ((desired_top - content_min_y).max(0.0), None)
-        }
-        VerticalAlign::Middle => {
-          let desired_top = ((spanned_height - content_height) / 2.0).max(0.0);
-          ((desired_top - content_min_y).max(0.0), None)
-        }
-        _ => {
-          let raw_baseline = laid.baseline.unwrap_or(laid.height);
-          let baseline = if raw_baseline >= laid.height && spanned_height > laid.height {
-            spanned_height
-          } else {
-            raw_baseline
-          };
-          let baseline = if cell.rowspan > 1 {
-            let span_end = (cell.row + cell.rowspan).min(row_metrics.len());
-            spanning_baseline_allocation(
-              spanned_height,
-              baseline,
-              row_start,
-              span_end,
-              &row_metric_heights,
-            )
-            .0
-          } else {
-            let row_h = row_metrics
-              .get(row_start)
-              .map(|r| r.height)
-              .unwrap_or(baseline);
-            baseline.min(row_h).min(spanned_height)
-          };
-          let row_base = row_metrics
-            .get(row_start)
-            .map(|r| {
-              if r.has_baseline {
-                r.baseline_top
-              } else {
-                r.height
-              }
-            })
-            .unwrap_or(0.0);
-          (row_base - baseline, Some(row_base))
-        }
-      };
-
-      // Position the cell box at the start of its row/column span and give it the full spanned size
-      // so backgrounds and borders cover the allocated grid slot. Table slot geometry is expressed
-      // in the table's logical axes (inline = x, block = y). Each fragment stores its own logical
-      // coordinates, so the cell's writing-mode does not affect its placement in the table grid.
-      fragment.bounds = crate::geometry::Rect::from_xywh(x, base_y, spanned_width, spanned_height);
-
-      if y_offset.abs() > 0.0 {
-        // `vertical-align` shifts content along the table's block axis.
-        let delta = Point::new(0.0, y_offset);
-        for child in fragment.children_mut() {
-          // Shift each direct child; their descendants stay relative to the shifted
-          // parent, preventing cumulative translations down the subtree.
-          child.bounds = child.bounds.translate(delta);
-        }
-      }
-      if let Some(baseline) = aligned_baseline {
-        fragment.baseline = Some(baseline);
-      }
-      fragments.push(fragment);
-    }
-
-    if !row_markers.is_empty() {
-      let mut reordered = row_markers;
-      reordered.append(&mut fragments);
-      fragments = reordered;
-    }
-
-    let mut total_width = if structure.border_collapse == BorderCollapse::Collapse {
-      content_width
-    } else {
-      content_width + padding_h + border_h
-    };
-    total_width = clamp_to_min_max(total_width, min_width, max_width);
-    let mut total_height = if let Some(specified) = table_height {
-      specified
-    } else {
-      let mut h = content_height
-        + if structure.border_collapse == BorderCollapse::Collapse {
-          0.0
-        } else {
-          padding_v + border_v
-        };
-      if let Some(max_h) = max_height {
-        h = h.min(max_h);
-      }
-      if let Some(min_h) = min_height {
-        h = h.max(min_h);
-      }
-      h
-    };
-    // Apply non-visual min/max clamps from the table box to the final border box per CSS 2.1 §17.5/§10.4.
-    if let Some(min_w) = resolved_min_width {
-      total_width = total_width.max(min_w);
-    }
-    if let Some(max_w) = resolved_max_width {
-      total_width = total_width.min(max_w);
-    }
-    if let Some(min_h) = min_height {
-      total_height = total_height.max(min_h);
-    }
-    if let Some(max_h) = max_height {
-      total_height = total_height.min(max_h);
-    }
-    let table_bounds = Rect::from_xywh(0.0, 0.0, total_width.max(0.0), total_height);
-
-    let mut table_style = table_root_style.clone();
-    if structure.border_collapse == BorderCollapse::Collapse {
-      table_style.border_top_width = crate::style::values::Length::px(0.0);
-      table_style.border_right_width = crate::style::values::Length::px(0.0);
-      table_style.border_bottom_width = crate::style::values::Length::px(0.0);
-      table_style.border_left_width = crate::style::values::Length::px(0.0);
-      table_style.logical.border_width_orders.top = 0;
-      table_style.logical.border_width_orders.right = 0;
-      table_style.logical.border_width_orders.bottom = 0;
-      table_style.logical.border_width_orders.left = 0;
-    }
-    let baseline_offset = table_baseline.map(|b| b - table_bounds.y());
-
-    if captions.is_empty() {
-      let mut fragment = FragmentNode::new_with_style(
-        table_bounds,
-        FragmentContent::Block {
-          box_id: Some(table_box.id),
-        },
-        fragments,
-        Arc::new(table_style),
-      );
-      fragment.baseline = baseline_offset;
-      fragment.table_borders = table_collapsed_borders.clone();
-      if !running_children.is_empty() {
-        let snapshot_constraints = LayoutConstraints::new(
-          AvailableSpace::Definite(table_bounds.width().max(0.0)),
-          AvailableSpace::Indefinite,
-        );
-        for (order, (_, running_child)) in running_children.iter().copied().enumerate() {
-          let Some(name) = running_child.style.running_position.clone() else {
-            continue;
-          };
-
-          let mut snapshot_node = running_child.clone();
-          let mut snapshot_style = snapshot_node.style.as_ref().clone();
-          snapshot_style.running_position = None;
-          snapshot_style.position = crate::style::position::Position::Static;
-          snapshot_node.style = Arc::new(snapshot_style);
-          clear_running_position_in_box_tree(&mut snapshot_node);
-
-          let fc_type = snapshot_node
-            .formatting_context()
-            .unwrap_or(FormattingContextType::Block);
-          let snapshot_result = match fc_type {
-            FormattingContextType::Table => {
-              let fc = self.factory.create(fc_type);
-              fc.layout(&snapshot_node, &snapshot_constraints)
-            }
-            _ => self.factory.with_fc(fc_type, |fc| {
-              fc.layout(&snapshot_node, &snapshot_constraints)
-            }),
-          };
-          match snapshot_result {
-            Ok(snapshot_fragment) => {
-              let anchor_bounds = Rect::from_xywh(0.0, (order as f32) * 1e-4, 0.0, 0.01);
-              let mut anchor =
-                FragmentNode::new_running_anchor(anchor_bounds, name, snapshot_fragment);
-              anchor.style = Some(running_child.style.clone());
-              fragment.children_mut().push(anchor);
-            }
-            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-            Err(_) => {}
-          }
-        }
-      }
-      if !has_running_children {
-        layout_cache_store(
-          box_node,
-          FormattingContextType::Table,
-          constraints,
-          &fragment,
-          self.factory.viewport_scroll(),
-          self.viewport_size,
-          self.nearest_positioned_cb,
-          self.nearest_fixed_cb,
-        );
-      }
-      return Ok(fragment);
-    }
-
-    // CSS 2.1 §17.4: The width of the table wrapper box is the border-edge width of the table grid
-    // box. Caption boxes are laid out inside the wrapper, but must not affect its width.
-    let wrapper_width = table_bounds.width().max(0.0);
-
-    // Only the table box itself should render backgrounds/borders. Element-level visual
-    // effects (opacity/filters/transforms) apply to the wrapper that contains captions.
-    table_style.transform.clear();
-    table_style.filter.clear();
-    table_style.backdrop_filter.clear();
-    table_style.opacity = 1.0;
-    table_style.mix_blend_mode = crate::style::types::MixBlendMode::Normal;
-    table_style.isolation = crate::style::types::Isolation::Auto;
-
-    let mut table_fragment = FragmentNode::new_with_style(
-      table_bounds,
-      FragmentContent::Block {
-        box_id: Some(table_box.id),
-      },
-      fragments,
-      Arc::new(table_style),
-    );
-    table_fragment.baseline = baseline_offset;
-    table_fragment.table_borders = table_collapsed_borders.clone();
-
-    // Layout captions relative to the table's width.
-    let mut wrapper_children = Vec::new();
-    let mut offset_y = 0.0f32;
-    let mut margin_ctx = MarginCollapseContext::new();
-    let resolve_caption_margin = |margin: Option<&Length>, style: &ComputedStyle| -> f32 {
-      margin
-        .and_then(|len| {
-          len.resolve_with_context(
-            Some(wrapper_width),
-            self.viewport_size.width,
-            self.viewport_size.height,
-            style.font_size,
-            style.root_font_size,
-          )
-        })
-        .unwrap_or(0.0)
-    };
-
-    let layout_caption = |caption: &BoxNode| -> Result<FragmentNode, LayoutError> {
-      let fc_type = caption
-        .formatting_context()
-        .unwrap_or(crate::style::display::FormattingContextType::Block);
-      let caption_constraints = LayoutConstraints::new(
-        AvailableSpace::Definite(wrapper_width),
-        constraints.available_height,
-      );
-      let frag = match fc_type {
-        FormattingContextType::Table => {
-          let fc = self.factory.create(fc_type);
-          fc.layout(caption, &caption_constraints)
-        }
-        _ => self
-          .factory
-          .with_fc(fc_type, |fc| fc.layout(caption, &caption_constraints)),
-      }?;
-      Ok(frag)
-    };
-
-    let mut caption_offsets: std::collections::HashMap<usize, f32> =
-      std::collections::HashMap::new();
-
-    fn place_block(
-      mut frag: FragmentNode,
-      margin_top: f32,
-      margin_bottom: f32,
-      margin_ctx: &mut MarginCollapseContext,
-      offset_y: &mut f32,
-      wrapper_children: &mut Vec<FragmentNode>,
-    ) -> f32 {
-      margin_ctx.push_margin(margin_top);
-      *offset_y += margin_ctx.resolve();
-      let y = *offset_y;
-      frag.bounds = frag.bounds.translate(Point::new(0.0, y));
-      *offset_y += frag.bounds.height();
-      margin_ctx.push_margin(margin_bottom);
-      wrapper_children.push(frag);
-      y
-    }
-
-    for caption in captions
-      .iter()
-      .copied()
-      .filter(|c| matches!(c.style.caption_side, CaptionSide::Top))
-    {
-      let margin_top = resolve_caption_margin(caption.style.margin_top.as_ref(), &caption.style);
-      let margin_bottom =
-        resolve_caption_margin(caption.style.margin_bottom.as_ref(), &caption.style);
-      let frag = layout_caption(caption)?;
-      let y = place_block(
-        frag,
-        margin_top,
-        margin_bottom,
-        &mut margin_ctx,
-        &mut offset_y,
-        &mut wrapper_children,
-      );
-      caption_offsets.insert(caption.id, y);
-    }
-
-    // The table grid box is a block-level child of the wrapper with no margins.
-    margin_ctx.push_margin(0.0);
-    offset_y += margin_ctx.resolve();
-    let table_origin_y = offset_y;
-    let mut table_translated = table_fragment;
-    table_translated.bounds = table_translated
-      .bounds
-      .translate(Point::new(0.0, table_origin_y));
-    // CSS 2.1 §17.4: The table grid box (not the wrapper) is used when aligning an inline-table
-    // by baseline. When captions are present the wrapper fragment becomes the inline-level box, so
-    // propagate the translated table baseline into wrapper coordinates.
-    let wrapper_baseline = Some(
-      table_translated.bounds.y()
-        + table_translated
-          .baseline
-          .unwrap_or_else(|| table_translated.bounds.height()),
-    );
-    offset_y += table_translated.bounds.height();
-    margin_ctx.push_margin(0.0);
-    wrapper_children.push(table_translated);
-
-    for caption in captions
-      .iter()
-      .copied()
-      .filter(|c| matches!(c.style.caption_side, CaptionSide::Bottom))
-    {
-      let margin_top = resolve_caption_margin(caption.style.margin_top.as_ref(), &caption.style);
-      let margin_bottom =
-        resolve_caption_margin(caption.style.margin_bottom.as_ref(), &caption.style);
-      let frag = layout_caption(caption)?;
-      let y = place_block(
-        frag,
-        margin_top,
-        margin_bottom,
-        &mut margin_ctx,
-        &mut offset_y,
-        &mut wrapper_children,
-      );
-      caption_offsets.insert(caption.id, y);
-    }
-
-    let trailing_margin = margin_ctx.pending_margin();
-    if trailing_margin > 0.0 {
-      offset_y += trailing_margin;
-    }
-
-    let mut wrapper_style = table_root_style.clone();
-    // Keep transforms/opacity/filters on the wrapper so they apply to both caption and table,
-    // but avoid painting an extra background/border around the combined area.
-    wrapper_style.reset_background_to_initial();
-    // CSS 2.1 §17.4: The table element's padding/outline/overflow apply to the table grid box,
-    // not the wrapper box. Reset them here so captions are not affected by grid-only properties.
-    wrapper_style.padding_top = crate::style::values::Length::px(0.0);
-    wrapper_style.padding_right = crate::style::values::Length::px(0.0);
-    wrapper_style.padding_bottom = crate::style::values::Length::px(0.0);
-    wrapper_style.padding_left = crate::style::values::Length::px(0.0);
-    wrapper_style.outline_style = crate::style::types::OutlineStyle::None;
-    wrapper_style.overflow_x = crate::style::types::Overflow::Visible;
-    wrapper_style.overflow_y = crate::style::types::Overflow::Visible;
-    wrapper_style.border_top_width = crate::style::values::Length::px(0.0);
-    wrapper_style.border_right_width = crate::style::values::Length::px(0.0);
-    wrapper_style.border_bottom_width = crate::style::values::Length::px(0.0);
-    wrapper_style.border_left_width = crate::style::values::Length::px(0.0);
-    wrapper_style.border_top_style = BorderStyle::None;
-    wrapper_style.border_right_style = BorderStyle::None;
-    wrapper_style.border_bottom_style = BorderStyle::None;
-    wrapper_style.border_left_style = BorderStyle::None;
-    wrapper_style.box_shadow.clear();
-
-    let mut wrapper_fragment = FragmentNode::new_with_style(
-      Rect::from_xywh(0.0, 0.0, wrapper_width, offset_y),
-      FragmentContent::Block {
-        box_id: Some(table_box.id),
-      },
-      wrapper_children,
-      Arc::new(wrapper_style),
-    );
-    wrapper_fragment.baseline = wrapper_baseline;
-
-    if !running_children.is_empty() {
-      let snapshot_constraints = LayoutConstraints::new(
-        AvailableSpace::Definite(wrapper_width.max(0.0)),
-        AvailableSpace::Indefinite,
-      );
-
-      for (order, (idx, running_child)) in running_children.iter().copied().enumerate() {
-        let Some(name) = running_child.style.running_position.clone() else {
-          continue;
-        };
-
-        let mut anchor_y = offset_y;
-        for sibling in table_box.children.iter().skip(idx.saturating_add(1)) {
-          if sibling.style.running_position.is_some() {
-            continue;
-          }
-          if matches!(
-            sibling.style.position,
-            crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
-          ) {
-            continue;
-          }
-          anchor_y = if matches!(sibling.style.display, Display::TableCaption) {
-            caption_offsets
-              .get(&sibling.id)
-              .copied()
-              .unwrap_or(table_origin_y)
-          } else {
-            table_origin_y
-          };
-          break;
-        }
-
-        let mut snapshot_node = running_child.clone();
-        let mut snapshot_style = snapshot_node.style.as_ref().clone();
-        snapshot_style.running_position = None;
-        snapshot_style.position = crate::style::position::Position::Static;
-        snapshot_node.style = Arc::new(snapshot_style);
-        clear_running_position_in_box_tree(&mut snapshot_node);
-
-        let fc_type = snapshot_node
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        let snapshot_result = match fc_type {
-          FormattingContextType::Table => {
-            let fc = self.factory.create(fc_type);
-            fc.layout(&snapshot_node, &snapshot_constraints)
-          }
-          _ => self.factory.with_fc(fc_type, |fc| {
-            fc.layout(&snapshot_node, &snapshot_constraints)
-          }),
-        };
-        match snapshot_result {
-          Ok(snapshot_fragment) => {
-            let anchor_bounds = Rect::from_xywh(0.0, anchor_y + (order as f32) * 1e-4, 0.0, 0.01);
-            let mut anchor =
-              FragmentNode::new_running_anchor(anchor_bounds, name, snapshot_fragment);
-            anchor.style = Some(running_child.style.clone());
-            wrapper_fragment.children_mut().push(anchor);
-          }
-          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-          Err(_) => {}
-        }
-      }
-    }
-
-    if !positioned_children.is_empty() {
-      // Containing blocks: absolute positioning uses the table's padding box when the table itself
-      // establishes an absolute containing block; fixed positioning uses the viewport unless a
-      // transform/perspective/containment establishes a fixed containing block.
-      let padding_origin = Point::new(border_left, table_origin_y + border_top);
-      let padding_rect = Rect::new(
-        padding_origin,
-        crate::geometry::Size::new(
-          table_bounds.width() - border_left - border_right,
-          table_bounds.height() - border_top - border_bottom,
-        ),
-      );
-      // Percentage offsets on absolutely positioned boxes resolve against the used height of the
-      // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
-      let block_base = Some(padding_rect.size.height);
-      let padding_cb = ContainingBlock::with_viewport_and_bases(
-        padding_rect,
-        self.viewport_size,
-        Some(padding_rect.size.width),
-        block_base,
-      )
-      .with_writing_mode_and_direction(table_root_style.writing_mode, table_root_style.direction);
-      let establishes_abs_cb = table_root_style.establishes_abs_containing_block();
-      let establishes_fixed_cb = table_root_style.establishes_fixed_containing_block();
-      let cb_for_absolute = if establishes_abs_cb {
-        padding_cb
-      } else {
-        self.nearest_positioned_cb
-      };
-      let cb_for_fixed = if establishes_fixed_cb {
-        padding_cb
-      } else {
-        self.nearest_fixed_cb
-      };
-
-      place_out_of_flow(&mut wrapper_fragment, cb_for_absolute, cb_for_fixed)?;
-    }
-
-    wrapper_fragment.scrollbar_reservation =
-      crate::layout::utils::scrollbar_reservation_for_style(table_root_style);
-
-    if !has_running_children {
-      layout_cache_store(
-        box_node,
-        FormattingContextType::Table,
-        constraints,
-        &wrapper_fragment,
-        self.factory.viewport_scroll(),
-        self.viewport_size,
-        self.nearest_positioned_cb,
-        self.nearest_fixed_cb,
-      );
-    }
-
-    return Ok(wrapper_fragment);
+      return Ok(wrapper_fragment);
     }
 
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
@@ -9253,7 +9288,9 @@ impl FormattingContext for TableFormattingContext {
       || (!matches!(base_style.overflow_x, crate::style::types::Overflow::Auto)
         && !matches!(base_style.overflow_y, crate::style::types::Overflow::Auto))
     {
-      return crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints));
+      return crate::layout::auto_scrollbars::with_bypass(box_node, || {
+        self.layout(box_node, constraints)
+      });
     }
 
     let containing_width = constraints
@@ -9285,9 +9322,15 @@ impl FormattingContext for TableFormattingContext {
       }
 
       let fragment = if overridden && box_node.id != 0 {
-        crate::layout::style_override::with_style_override(box_node.id, override_style.clone(), || {
-          crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints))
-        })
+        crate::layout::style_override::with_style_override(
+          box_node.id,
+          override_style.clone(),
+          || {
+            crate::layout::auto_scrollbars::with_bypass(box_node, || {
+              self.layout(box_node, constraints)
+            })
+          },
+        )
       } else if overridden {
         let mut cloned = box_node.clone();
         cloned.style = override_style.clone();
@@ -9322,7 +9365,9 @@ impl FormattingContext for TableFormattingContext {
 
     let Some(last) = last else {
       debug_assert!(false, "at least one layout pass");
-      return Err(LayoutError::MissingContext("table layout produced no fragments".to_string()));
+      return Err(LayoutError::MissingContext(
+        "table layout produced no fragments".to_string(),
+      ));
     };
     Ok(last)
   }
@@ -9510,9 +9555,14 @@ impl FormattingContext for TableFormattingContext {
         IntrinsicSizeKeyword::FitContent { limit } => match limit {
           None => intrinsic_max,
           Some(limit) => {
-            let limit_px =
-              resolve_length_against(&limit, font_size, table_root_style.root_font_size, None, root_metrics)
-                .unwrap_or(f32::INFINITY);
+            let limit_px = resolve_length_against(
+              &limit,
+              font_size,
+              table_root_style.root_font_size,
+              None,
+              root_metrics,
+            )
+            .unwrap_or(f32::INFINITY);
             intrinsic_max.min(limit_px.max(intrinsic_min))
           }
         },
@@ -9523,26 +9573,30 @@ impl FormattingContext for TableFormattingContext {
             CalcSizeBasis::MinContent => intrinsic_min,
             CalcSizeBasis::MaxContent => intrinsic_max,
             CalcSizeBasis::FillAvailable => intrinsic_max,
-              CalcSizeBasis::FitContent { limit } => match limit {
-                None => intrinsic_max,
-                Some(limit) => {
-                  let limit_px = resolve_length_against(
-                    &limit,
-                    font_size,
-                    table_root_style.root_font_size,
-                    None,
-                    root_metrics,
-                  )
-                  .unwrap_or(f32::INFINITY);
-                  intrinsic_max.min(limit_px.max(intrinsic_min))
-                }
-              },
-              CalcSizeBasis::Length(len) => {
-              resolve_length_against(&len, font_size, table_root_style.root_font_size, None, root_metrics)
-                .unwrap_or(intrinsic_max)
-                .max(0.0)
+            CalcSizeBasis::FitContent { limit } => match limit {
+              None => intrinsic_max,
+              Some(limit) => {
+                let limit_px = resolve_length_against(
+                  &limit,
+                  font_size,
+                  table_root_style.root_font_size,
+                  None,
+                  root_metrics,
+                )
+                .unwrap_or(f32::INFINITY);
+                intrinsic_max.min(limit_px.max(intrinsic_min))
               }
-            };
+            },
+            CalcSizeBasis::Length(len) => resolve_length_against(
+              &len,
+              font_size,
+              table_root_style.root_font_size,
+              None,
+              root_metrics,
+            )
+            .unwrap_or(intrinsic_max)
+            .max(0.0),
+          };
           let basis_border = basis_border.max(0.0);
           crate::style::values::calc_size_expr_with_size(calc.expr, basis_border)
             .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
@@ -9692,7 +9746,12 @@ mod tests {
     );
 
     assert_eq!(
-      TableStructure::length_to_specified_height(&Length::rem(1.0), font_size, root_font_size, root_metrics),
+      TableStructure::length_to_specified_height(
+        &Length::rem(1.0),
+        font_size,
+        root_font_size,
+        root_metrics
+      ),
       SpecifiedHeight::Fixed(20.0)
     );
 
@@ -9729,12 +9788,19 @@ mod tests {
 
     let calc_rch = Length::calc(CalcLength::single(LengthUnit::Rch, 2.0));
     assert_eq!(
-      resolve_length_against(&calc_rch, font_size, root_font_size, Some(100.0), root_metrics),
+      resolve_length_against(
+        &calc_rch,
+        font_size,
+        root_font_size,
+        Some(100.0),
+        root_metrics
+      ),
       Some(14.0)
     );
 
     assert!(
-      (resolve_border_spacing_length(&Length::rem(1.5), font_size, root_font_size, root_metrics) - 30.0)
+      (resolve_border_spacing_length(&Length::rem(1.5), font_size, root_font_size, root_metrics)
+        - 30.0)
         .abs()
         < 0.01
     );
@@ -11243,11 +11309,19 @@ mod tests {
     visible_cell_style.border_top_style = BorderStyle::Solid;
     visible_cell_style.border_bottom_style = BorderStyle::Solid;
     visible_cell_style.empty_cells = EmptyCells::Show;
-    let visible_cell = BoxNode::new_block(Arc::new(visible_cell_style), FormattingContextType::Block, vec![]);
+    let visible_cell = BoxNode::new_block(
+      Arc::new(visible_cell_style),
+      FormattingContextType::Block,
+      vec![],
+    );
 
     let mut hidden_cell_style = padded_cell_style.clone();
     hidden_cell_style.empty_cells = EmptyCells::Hide;
-    let hidden_cell = BoxNode::new_block(Arc::new(hidden_cell_style), FormattingContextType::Block, vec![]);
+    let hidden_cell = BoxNode::new_block(
+      Arc::new(hidden_cell_style),
+      FormattingContextType::Block,
+      vec![],
+    );
 
     // Mixed `empty-cells` values should not trigger the special row-collapsing behavior.
     let mixed_row = BoxNode::new_block(
@@ -11307,8 +11381,16 @@ mod tests {
     cell_style.empty_cells = EmptyCells::Hide;
 
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
-    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
-    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell],
+    );
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![row],
+    );
 
     let tfc = TableFormattingContext::new();
     let fragment = tfc
@@ -16204,8 +16286,7 @@ mod tests {
     )
     .with_baseline(5.0);
 
-    let root =
-      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 20.0), vec![abs_child]);
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 20.0), vec![abs_child]);
     let baseline = cell_baseline(&root).expect("baseline");
     assert!(
       (baseline - 20.0).abs() < 0.01,
@@ -16335,7 +16416,10 @@ mod tests {
       2,
       "wrapper should contain caption and table"
     );
-    assert!(fragment.baseline.is_some(), "wrapper baseline should be set");
+    assert!(
+      fragment.baseline.is_some(),
+      "wrapper baseline should be set"
+    );
 
     let table_frag = &fragment.children[1];
     assert!(
@@ -16407,7 +16491,10 @@ mod tests {
       2,
       "wrapper should contain table and caption"
     );
-    assert!(fragment.baseline.is_some(), "wrapper baseline should be set");
+    assert!(
+      fragment.baseline.is_some(),
+      "wrapper baseline should be set"
+    );
 
     let table_frag = &fragment.children[0];
     assert!((table_frag.bounds.y() - 0.0).abs() < 1e-3);
@@ -16589,7 +16676,10 @@ mod tests {
       fragment.bounds.width()
     );
     assert!(
-      fragment.children.first().is_some_and(|child| child.bounds.width() >= 179.0),
+      fragment
+        .children
+        .first()
+        .is_some_and(|child| child.bounds.width() >= 179.0),
       "caption fragment should keep its specified width and overflow the wrapper"
     );
   }
@@ -19440,7 +19530,11 @@ mod tests {
       FormattingContextType::Block,
       vec![inner],
     );
-    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell],
+    );
     let table = BoxNode::new_block(
       Arc::new(table_style),
       FormattingContextType::Table,

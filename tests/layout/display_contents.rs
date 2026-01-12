@@ -5,7 +5,10 @@ use fastrender::{FastRender, FontConfig};
 
 const EPS: f32 = 0.01;
 
-fn layout_html(renderer: &mut FastRender, html: &str) -> fastrender::tree::fragment_tree::FragmentTree {
+fn layout_html(
+  renderer: &mut FastRender,
+  html: &str,
+) -> fastrender::tree::fragment_tree::FragmentTree {
   let dom = renderer.parse_html(html).expect("parse HTML");
   renderer.layout_document(&dom, 800, 600).expect("layout")
 }
@@ -29,7 +32,12 @@ fn collect_text_fragments(node: &FragmentNode, offset: Point, out: &mut Vec<(Str
   }
 }
 
-fn collect_background_fragments(node: &FragmentNode, offset: Point, color: Rgba, out: &mut Vec<(f32, f32, f32, f32)>) {
+fn collect_background_fragments(
+  node: &FragmentNode,
+  offset: Point,
+  color: Rgba,
+  out: &mut Vec<(f32, f32, f32, f32)>,
+) {
   let abs = Point::new(offset.x + node.bounds.x(), offset.y + node.bounds.y());
   if let Some(style) = node.style.as_ref() {
     if style.background_color == color {

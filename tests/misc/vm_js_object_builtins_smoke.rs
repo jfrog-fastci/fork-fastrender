@@ -103,9 +103,13 @@ fn object_builtins_smoke() -> Result<(), VmError> {
     get_own_data_property(&mut scope, rt.realm.global_object(), "Object")?,
     Some(Value::Object(object))
   );
-  let _ = rt
-    .vm
-    .call_with_host(&mut scope, &mut host_hooks, Value::Object(object), Value::Undefined, &[])?;
+  let _ = rt.vm.call_with_host(
+    &mut scope,
+    &mut host_hooks,
+    Value::Object(object),
+    Value::Undefined,
+    &[],
+  )?;
 
   // Object.defineProperty
   let define_property = get_own_data_property(&mut scope, object, "defineProperty")?

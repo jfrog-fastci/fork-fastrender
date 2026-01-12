@@ -1,18 +1,18 @@
 use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{DomError, Document, NodeId, NodeKind};
+use crate::dom2::{Document, DomError, NodeId, NodeKind};
+use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::CurrentScriptState;
-use crate::js::bindings::DomExceptionClassVmJs;
 use crate::resource::ResourceFetcher;
 use crate::web::dom::DomException;
-use std::char::decode_utf16;
 use std::cell::RefCell;
+use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use vm_js::{
-  GcObject, GcString, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
-  Realm, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, GcString, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey,
+  PropertyKind, Realm, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +46,12 @@ fn dom_kind_for_node_kind(kind: &NodeKind) -> DomKind {
   }
 }
 
-fn data_desc(value: Value, writable: bool, enumerable: bool, configurable: bool) -> PropertyDescriptor {
+fn data_desc(
+  value: Value,
+  writable: bool,
+  enumerable: bool,
+  configurable: bool,
+) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable,
     configurable,
@@ -55,7 +60,9 @@ fn data_desc(value: Value, writable: bool, enumerable: bool, configurable: bool)
 }
 
 fn method_desc(value: Value) -> PropertyDescriptor {
-  data_desc(value, /* writable */ true, /* enumerable */ false, /* configurable */ true)
+  data_desc(
+    value, /* writable */ true, /* enumerable */ false, /* configurable */ true,
+  )
 }
 
 fn accessor_desc(get: Value) -> PropertyDescriptor {
@@ -79,13 +86,19 @@ fn accessor_desc_get_set(get: Value, set: Value) -> PropertyDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LiveCollectionKind {
-  TagName { qualified_name: String },
+  TagName {
+    qualified_name: String,
+  },
   TagNameNS {
     namespace: Option<String>,
     local_name: String,
   },
-  ClassName { required: Vec<String> },
-  Name { name: String },
+  ClassName {
+    required: Vec<String>,
+  },
+  Name {
+    name: String,
+  },
 }
 
 #[derive(Debug, Clone)]
@@ -147,7 +160,12 @@ fn element_kind_parts(kind: &NodeKind) -> Option<(&str, &str, &Vec<(String, Stri
   }
 }
 
-fn live_collection_matches(kind: &LiveCollectionKind, tag: &str, namespace: &str, attrs: &[(String, String)]) -> bool {
+fn live_collection_matches(
+  kind: &LiveCollectionKind,
+  tag: &str,
+  namespace: &str,
+  attrs: &[(String, String)],
+) -> bool {
   match kind {
     LiveCollectionKind::TagName { qualified_name } => {
       if qualified_name.is_empty() {
@@ -262,8 +280,9 @@ pub struct DomHost {
 }
 
 fn host_mut(vm: &mut Vm) -> Result<&mut DomHost, VmError> {
-  vm.user_data_mut::<DomHost>()
-    .ok_or(VmError::Unimplemented("DOM bindings not installed (missing DomHost user_data)"))
+  vm.user_data_mut::<DomHost>().ok_or(VmError::Unimplemented(
+    "DOM bindings not installed (missing DomHost user_data)",
+  ))
 }
 
 fn require_string<'a>(
@@ -325,7 +344,11 @@ fn js_string_to_rust_string_limited<'a>(
   Ok(out)
 }
 
-fn to_dom_string<'a>(scope: &mut Scope<'a>, host: &DomHost, value: Value) -> Result<String, VmError> {
+fn to_dom_string<'a>(
+  scope: &mut Scope<'a>,
+  host: &DomHost,
+  value: Value,
+) -> Result<String, VmError> {
   match value {
     Value::Object(_) => Ok("[object Object]".to_string()),
     Value::Symbol(_) => throw_type_error(scope, host, "Cannot convert a Symbol value to a string"),
@@ -391,7 +414,11 @@ fn require_this_document<'a>(
 ) -> Result<NodeId, VmError> {
   let (kind, node_id) = wrapper_meta(scope, host, this)?;
   if kind != DomKind::Document {
-    return throw_type_error(scope, host, "Document method called on incompatible receiver");
+    return throw_type_error(
+      scope,
+      host,
+      "Document method called on incompatible receiver",
+    );
   }
   Ok(node_id)
 }
@@ -403,7 +430,11 @@ fn require_this_element<'a>(
 ) -> Result<NodeId, VmError> {
   let (kind, node_id) = wrapper_meta(scope, host, this)?;
   if kind != DomKind::Element {
-    return throw_type_error(scope, host, "Element method called on incompatible receiver");
+    return throw_type_error(
+      scope,
+      host,
+      "Element method called on incompatible receiver",
+    );
   }
   Ok(node_id)
 }
@@ -452,11 +483,19 @@ fn require_this_dom_token_list<'a>(
 
   let slots = scope.heap().object_host_slots(obj)?;
   let Some(slots) = slots else {
-    return throw_type_error(scope, host, "DOMTokenList method called on incompatible receiver");
+    return throw_type_error(
+      scope,
+      host,
+      "DOMTokenList method called on incompatible receiver",
+    );
   };
 
   if slots.b != DOM_TOKEN_LIST_HOST_KIND {
-    return throw_type_error(scope, host, "DOMTokenList method called on incompatible receiver");
+    return throw_type_error(
+      scope,
+      host,
+      "DOMTokenList method called on incompatible receiver",
+    );
   }
 
   let node_idx_u64 = slots.a;
@@ -489,11 +528,19 @@ fn require_this_css_style_decl<'a>(
 
   let slots = scope.heap().object_host_slots(obj)?;
   let Some(slots) = slots else {
-    return throw_type_error(scope, host, "CSSStyleDeclaration method called on incompatible receiver");
+    return throw_type_error(
+      scope,
+      host,
+      "CSSStyleDeclaration method called on incompatible receiver",
+    );
   };
 
   if slots.b != CSS_STYLE_DECL_HOST_KIND {
-    return throw_type_error(scope, host, "CSSStyleDeclaration method called on incompatible receiver");
+    return throw_type_error(
+      scope,
+      host,
+      "CSSStyleDeclaration method called on incompatible receiver",
+    );
   }
 
   let node_idx_u64 = slots.a;
@@ -503,12 +550,22 @@ fn require_this_css_style_decl<'a>(
 
   let node_id = NodeId::from_index(node_idx_u64 as usize);
   if node_id.index() >= host.dom.borrow().nodes_len() {
-    return throw_type_error(scope, host, "CSSStyleDeclaration refers to an unknown DOM node");
+    return throw_type_error(
+      scope,
+      host,
+      "CSSStyleDeclaration refers to an unknown DOM node",
+    );
   }
 
   match &host.dom.borrow().node(node_id).kind {
     NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
-    _ => return throw_type_error(scope, host, "CSSStyleDeclaration refers to a non-Element node"),
+    _ => {
+      return throw_type_error(
+        scope,
+        host,
+        "CSSStyleDeclaration refers to a non-Element node",
+      )
+    }
   }
 
   Ok(node_id)
@@ -522,7 +579,9 @@ fn alloc_error_object<'a>(
 ) -> Result<Value, VmError> {
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
-  scope.heap_mut().object_set_prototype(obj, Some(prototype))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(obj, Some(prototype))?;
 
   let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
   let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
@@ -533,18 +592,29 @@ fn alloc_error_object<'a>(
   scope.define_property(
     obj,
     name_key,
-    data_desc(name_val, /* writable */ true, /* enumerable */ false, /* configurable */ true),
+    data_desc(
+      name_val, /* writable */ true, /* enumerable */ false, /* configurable */ true,
+    ),
   )?;
   scope.define_property(
     obj,
     message_key,
-    data_desc(message_val, /* writable */ true, /* enumerable */ false, /* configurable */ true),
+    data_desc(
+      message_val,
+      /* writable */ true,
+      /* enumerable */ false,
+      /* configurable */ true,
+    ),
   )?;
 
   Ok(Value::Object(obj))
 }
 
-fn throw_type_error<'a, T>(scope: &mut Scope<'a>, host: &DomHost, message: &str) -> Result<T, VmError> {
+fn throw_type_error<'a, T>(
+  scope: &mut Scope<'a>,
+  host: &DomHost,
+  message: &str,
+) -> Result<T, VmError> {
   let err = alloc_error_object(scope, host.type_error_prototype, "TypeError", message)?;
   Err(VmError::Throw(err))
 }
@@ -559,7 +629,11 @@ fn throw_dom_exception<'a, T>(
   Err(VmError::Throw(err))
 }
 
-fn throw_dom_error<'a, T>(scope: &mut Scope<'a>, host: &DomHost, err: DomError) -> Result<T, VmError> {
+fn throw_dom_error<'a, T>(
+  scope: &mut Scope<'a>,
+  host: &DomHost,
+  err: DomError,
+) -> Result<T, VmError> {
   throw_dom_exception(scope, host, err.code(), err.code())
 }
 
@@ -595,7 +669,9 @@ fn wrap_node<'a>(
     DomKind::Element => host.proto_element,
     DomKind::Document => host.proto_document,
   };
-  scope.heap_mut().object_set_prototype(wrapper, Some(proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(wrapper, Some(proto))?;
 
   scope.heap_mut().object_set_host_slots(
     wrapper,
@@ -605,7 +681,9 @@ fn wrap_node<'a>(
     },
   )?;
 
-  host.node_wrappers.insert(node_id, WeakGcObject::from(wrapper));
+  host
+    .node_wrappers
+    .insert(node_id, WeakGcObject::from(wrapper));
   Ok(Value::Object(wrapper))
 }
 
@@ -668,7 +746,10 @@ fn sync_one_live_collection<'a>(
         scope.define_property(
           array,
           PropertyKey::from_string(key_handle),
-          data_desc(wrapper, /* writable */ true, /* enumerable */ true, /* configurable */ true),
+          data_desc(
+            wrapper, /* writable */ true, /* enumerable */ true,
+            /* configurable */ true,
+          ),
         )?;
         out_len += 1;
       }
@@ -784,7 +865,13 @@ fn dom_html_collection_item(
   let host = host_mut(vm)?;
   let obj = match this {
     Value::Object(o) => o,
-    _ => return throw_type_error(scope, host, "HTMLCollection.item called on incompatible receiver"),
+    _ => {
+      return throw_type_error(
+        scope,
+        host,
+        "HTMLCollection.item called on incompatible receiver",
+      )
+    }
   };
 
   let idx_val = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -1587,7 +1674,11 @@ fn dom_node_node_name_getter(
           "slot".to_string()
         }
       }
-      NodeKind::Element { tag_name, namespace, .. } => {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
         if is_html_namespace(namespace) {
           tag_name.to_ascii_uppercase()
         } else {
@@ -1693,7 +1784,9 @@ fn dom_node_is_connected_getter(
 ) -> Result<Value, VmError> {
   let host = host_mut(vm)?;
   let node_id = require_this_node(scope, host, this)?;
-  Ok(Value::Bool(host.dom.borrow().is_connected_for_scripting(node_id)))
+  Ok(Value::Bool(
+    host.dom.borrow().is_connected_for_scripting(node_id),
+  ))
 }
 
 fn dom_element_tag_name_getter(
@@ -1711,7 +1804,11 @@ fn dom_element_tag_name_getter(
   let tag_name = {
     let dom = host.dom.borrow();
     match &dom.node(element_id).kind {
-      NodeKind::Element { tag_name, namespace, .. } => {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
         if is_html_namespace(namespace) {
           tag_name.to_ascii_uppercase()
         } else {
@@ -1976,14 +2073,15 @@ fn dom_element_insert_adjacent_element(
   let where_ = to_dom_string(scope, host, where_val)?;
   let new_element_id = require_element_arg(scope, host, new_element_val)?;
 
-  let inserted = match host
-    .dom
-    .borrow_mut()
-    .insert_adjacent_element(element_id, &where_, new_element_id)
-  {
-    Ok(v) => v,
-    Err(err) => return throw_dom_error(scope, host, err),
-  };
+  let inserted =
+    match host
+      .dom
+      .borrow_mut()
+      .insert_adjacent_element(element_id, &where_, new_element_id)
+    {
+      Ok(v) => v,
+      Err(err) => return throw_dom_error(scope, host, err),
+    };
 
   let Some(inserted_id) = inserted else {
     return Ok(Value::Null);
@@ -2450,7 +2548,10 @@ fn css_style_decl_get_property_value(
   let name_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let name = to_dom_string(scope, host, name_val)?;
 
-  let value = host.dom.borrow().style_get_property_value(element_id, &name);
+  let value = host
+    .dom
+    .borrow()
+    .style_get_property_value(element_id, &name);
   Ok(Value::String(scope.alloc_string(&value)?))
 }
 
@@ -2519,7 +2620,9 @@ fn dom_document_cookie_getter(
     }
   }
 
-  Ok(Value::String(scope.alloc_string(&host.cookie_jar.cookie_string())?))
+  Ok(Value::String(
+    scope.alloc_string(&host.cookie_jar.cookie_string())?,
+  ))
 }
 
 fn dom_document_cookie_setter(
@@ -2537,7 +2640,9 @@ fn dom_document_cookie_setter(
   let value = args.get(0).copied().unwrap_or(Value::Undefined);
   let cookie_string = match value {
     Value::Object(_) => "[object Object]".to_string(),
-    Value::Symbol(_) => return throw_type_error(scope, host, "Cannot convert a Symbol value to a string"),
+    Value::Symbol(_) => {
+      return throw_type_error(scope, host, "Cannot convert a Symbol value to a string")
+    }
     other => {
       let s = match scope.heap_mut().to_string(other) {
         Ok(s) => s,
@@ -2639,14 +2744,19 @@ pub fn install_dom_bindings_with_limits(
   let call_create_element = vm.register_native_call(dom_document_create_element)?;
   let call_get_element_by_id = vm.register_native_call(dom_document_get_element_by_id)?;
   let call_query_selector = vm.register_native_call(dom_document_query_selector)?;
-  let call_get_elements_by_tag_name = vm.register_native_call(dom_document_get_elements_by_tag_name)?;
-  let call_get_elements_by_tag_name_ns = vm.register_native_call(dom_document_get_elements_by_tag_name_ns)?;
-  let call_get_elements_by_class_name = vm.register_native_call(dom_document_get_elements_by_class_name)?;
+  let call_get_elements_by_tag_name =
+    vm.register_native_call(dom_document_get_elements_by_tag_name)?;
+  let call_get_elements_by_tag_name_ns =
+    vm.register_native_call(dom_document_get_elements_by_tag_name_ns)?;
+  let call_get_elements_by_class_name =
+    vm.register_native_call(dom_document_get_elements_by_class_name)?;
   let call_get_elements_by_name = vm.register_native_call(dom_document_get_elements_by_name)?;
-  let call_element_get_elements_by_tag_name = vm.register_native_call(dom_element_get_elements_by_tag_name)?;
+  let call_element_get_elements_by_tag_name =
+    vm.register_native_call(dom_element_get_elements_by_tag_name)?;
   let call_element_get_elements_by_tag_name_ns =
     vm.register_native_call(dom_element_get_elements_by_tag_name_ns)?;
-  let call_element_get_elements_by_class_name = vm.register_native_call(dom_element_get_elements_by_class_name)?;
+  let call_element_get_elements_by_class_name =
+    vm.register_native_call(dom_element_get_elements_by_class_name)?;
   let call_append_child = vm.register_native_call(dom_node_append_child)?;
   let call_clone_node = vm.register_native_call(dom_node_clone_node)?;
   let call_has_child_nodes = vm.register_native_call(dom_node_has_child_nodes)?;
@@ -2672,7 +2782,8 @@ pub fn install_dom_bindings_with_limits(
   let call_outer_html_get = vm.register_native_call(dom_element_outer_html_getter)?;
   let call_outer_html_set = vm.register_native_call(dom_element_outer_html_setter)?;
   let call_insert_adjacent_html = vm.register_native_call(dom_element_insert_adjacent_html)?;
-  let call_insert_adjacent_element = vm.register_native_call(dom_element_insert_adjacent_element)?;
+  let call_insert_adjacent_element =
+    vm.register_native_call(dom_element_insert_adjacent_element)?;
   let call_insert_adjacent_text = vm.register_native_call(dom_element_insert_adjacent_text)?;
   let call_current_script = vm.register_native_call(dom_document_current_script_getter)?;
   let call_cookie_get = vm.register_native_call(dom_document_cookie_getter)?;
@@ -2694,9 +2805,27 @@ pub fn install_dom_bindings_with_limits(
   let call_illegal_constructor = vm.register_native_call(dom_illegal_constructor)?;
 
   // Install methods/getters.
-  install_method(&mut scope, proto_document, "createElement", call_create_element, 1)?;
-  install_method(&mut scope, proto_document, "getElementById", call_get_element_by_id, 1)?;
-  install_method(&mut scope, proto_document, "querySelector", call_query_selector, 1)?;
+  install_method(
+    &mut scope,
+    proto_document,
+    "createElement",
+    call_create_element,
+    1,
+  )?;
+  install_method(
+    &mut scope,
+    proto_document,
+    "getElementById",
+    call_get_element_by_id,
+    1,
+  )?;
+  install_method(
+    &mut scope,
+    proto_document,
+    "querySelector",
+    call_query_selector,
+    1,
+  )?;
   install_method(
     &mut scope,
     proto_document,
@@ -2726,15 +2855,32 @@ pub fn install_dom_bindings_with_limits(
     1,
   )?;
   install_method(&mut scope, proto_document, "write", call_document_write, 0)?;
-  install_method(&mut scope, proto_document, "writeln", call_document_writeln, 0)?;
+  install_method(
+    &mut scope,
+    proto_document,
+    "writeln",
+    call_document_writeln,
+    0,
+  )?;
   install_method(&mut scope, proto_node, "appendChild", call_append_child, 1)?;
   install_method(&mut scope, proto_node, "cloneNode", call_clone_node, 1)?;
-  install_method(&mut scope, proto_node, "hasChildNodes", call_has_child_nodes, 0)?;
+  install_method(
+    &mut scope,
+    proto_node,
+    "hasChildNodes",
+    call_has_child_nodes,
+    0,
+  )?;
   install_getter(&mut scope, proto_node, "parentNode", call_parent_node)?;
   install_getter(&mut scope, proto_node, "parentElement", call_parent_element)?;
   install_getter(&mut scope, proto_node, "firstChild", call_first_child)?;
   install_getter(&mut scope, proto_node, "lastChild", call_last_child)?;
-  install_getter(&mut scope, proto_node, "previousSibling", call_previous_sibling)?;
+  install_getter(
+    &mut scope,
+    proto_node,
+    "previousSibling",
+    call_previous_sibling,
+  )?;
   install_getter(&mut scope, proto_node, "nextSibling", call_next_sibling)?;
   install_getter(&mut scope, proto_node, "nodeType", call_node_type)?;
   install_getter(&mut scope, proto_node, "nodeName", call_node_name)?;
@@ -2755,7 +2901,13 @@ pub fn install_dom_bindings_with_limits(
     call_class_name_get,
     call_class_name_set,
   )?;
-  install_method(&mut scope, proto_element, "setAttribute", call_set_attribute, 2)?;
+  install_method(
+    &mut scope,
+    proto_element,
+    "setAttribute",
+    call_set_attribute,
+    2,
+  )?;
   install_method(
     &mut scope,
     proto_element,
@@ -2812,8 +2964,19 @@ pub fn install_dom_bindings_with_limits(
     call_outer_html_get,
     call_outer_html_set,
   )?;
-  install_getter(&mut scope, proto_document, "currentScript", call_current_script)?;
-  install_accessor(&mut scope, proto_document, "cookie", call_cookie_get, call_cookie_set)?;
+  install_getter(
+    &mut scope,
+    proto_document,
+    "currentScript",
+    call_current_script,
+  )?;
+  install_accessor(
+    &mut scope,
+    proto_document,
+    "cookie",
+    call_cookie_get,
+    call_cookie_set,
+  )?;
   install_accessor(
     &mut scope,
     proto_node,
@@ -2825,11 +2988,41 @@ pub fn install_dom_bindings_with_limits(
   install_getter(&mut scope, proto_element, "dataset", call_dataset_get)?;
   install_getter(&mut scope, proto_element, "style", call_style_get)?;
 
-  install_method(&mut scope, proto_dom_token_list, "contains", call_token_list_contains, 1)?;
-  install_method(&mut scope, proto_dom_token_list, "add", call_token_list_add, 0)?;
-  install_method(&mut scope, proto_dom_token_list, "remove", call_token_list_remove, 0)?;
-  install_method(&mut scope, proto_dom_token_list, "toggle", call_token_list_toggle, 1)?;
-  install_method(&mut scope, proto_dom_token_list, "replace", call_token_list_replace, 2)?;
+  install_method(
+    &mut scope,
+    proto_dom_token_list,
+    "contains",
+    call_token_list_contains,
+    1,
+  )?;
+  install_method(
+    &mut scope,
+    proto_dom_token_list,
+    "add",
+    call_token_list_add,
+    0,
+  )?;
+  install_method(
+    &mut scope,
+    proto_dom_token_list,
+    "remove",
+    call_token_list_remove,
+    0,
+  )?;
+  install_method(
+    &mut scope,
+    proto_dom_token_list,
+    "toggle",
+    call_token_list_toggle,
+    1,
+  )?;
+  install_method(
+    &mut scope,
+    proto_dom_token_list,
+    "replace",
+    call_token_list_replace,
+    2,
+  )?;
   install_method(
     &mut scope,
     proto_css_style_decl,
@@ -2837,8 +3030,20 @@ pub fn install_dom_bindings_with_limits(
     call_style_get_prop,
     1,
   )?;
-  install_method(&mut scope, proto_css_style_decl, "setProperty", call_style_set_prop, 2)?;
-  install_method(&mut scope, proto_html_collection, "item", call_html_collection_item, 1)?;
+  install_method(
+    &mut scope,
+    proto_css_style_decl,
+    "setProperty",
+    call_style_set_prop,
+    2,
+  )?;
+  install_method(
+    &mut scope,
+    proto_html_collection,
+    "item",
+    call_html_collection_item,
+    1,
+  )?;
 
   let mut host = DomHost {
     dom: dom.clone(),
@@ -2914,10 +3119,18 @@ pub fn install_dom_bindings_with_limits(
     scope.heap_mut().add_root(Value::Object(proto_node))?,
     scope.heap_mut().add_root(Value::Object(proto_element))?,
     scope.heap_mut().add_root(Value::Object(proto_document))?,
-    scope.heap_mut().add_root(Value::Object(proto_dom_token_list))?,
-    scope.heap_mut().add_root(Value::Object(proto_dom_string_map))?,
-    scope.heap_mut().add_root(Value::Object(proto_css_style_decl))?,
-    scope.heap_mut().add_root(Value::Object(proto_html_collection))?,
+    scope
+      .heap_mut()
+      .add_root(Value::Object(proto_dom_token_list))?,
+    scope
+      .heap_mut()
+      .add_root(Value::Object(proto_dom_string_map))?,
+    scope
+      .heap_mut()
+      .add_root(Value::Object(proto_css_style_decl))?,
+    scope
+      .heap_mut()
+      .add_root(Value::Object(proto_html_collection))?,
     scope
       .heap_mut()
       .add_root(Value::Object(host.dom_exception.constructor))?,
@@ -3081,7 +3294,10 @@ mod tests {
 
   impl CookieRecordingFetcher {
     fn cookie_header(&self) -> String {
-      let lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let lock = self
+        .cookies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       lock
         .iter()
         .map(|(name, value)| format!("{name}={value}"))
@@ -3115,7 +3331,10 @@ mod tests {
         return;
       }
 
-      let mut lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let mut lock = self
+        .cookies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       if let Some(existing) = lock.iter_mut().find(|(n, _)| n == name) {
         existing.1 = value.to_string();
       } else {
@@ -3157,7 +3376,11 @@ mod tests {
     let Value::String(cookie_s) = cookie else {
       panic!("expected cookie string, got {cookie:?}");
     };
-    assert!(scope.heap().get_string(cookie_s)?.to_utf8_lossy().is_empty());
+    assert!(scope
+      .heap()
+      .get_string(cookie_s)?
+      .to_utf8_lossy()
+      .is_empty());
 
     let b = Value::String(scope.alloc_string("b=c; Path=/")?);
     vm.call_without_host(&mut scope, cookie_set, document_val, &[b])?;
@@ -3191,8 +3414,7 @@ mod tests {
 
     let fetcher = Arc::new(CookieRecordingFetcher::default());
     fetcher.store_cookie_from_document("https://example.invalid/", "z=1");
-    vm
-      .user_data_mut::<DomHost>()
+    vm.user_data_mut::<DomHost>()
       .expect("DomHost user_data should be installed")
       .set_cookie_fetcher_for_document("https://example.invalid/", fetcher.clone());
 
@@ -3276,7 +3498,8 @@ mod tests {
     let key_write = PropertyKey::from_string(scope.alloc_string("write")?);
     let write = vm.get(&mut scope, document_obj, key_write)?;
 
-    let html = "<!doctype html><html><body><script>noop</script><div id=\"after\"></div></body></html>";
+    let html =
+      "<!doctype html><html><body><script>noop</script><div id=\"after\"></div></body></html>";
     let mut parser = StreamingHtmlParser::new(Some("https://example.com/"));
     parser.push_str(html);
     parser.set_eof();
@@ -3309,7 +3532,9 @@ mod tests {
     let injected = finished
       .get_element_by_id("x")
       .expect("expected element inserted by document.write");
-    let after = finished.get_element_by_id("after").expect("expected #after element");
+    let after = finished
+      .get_element_by_id("after")
+      .expect("expected #after element");
 
     let element_children: Vec<NodeId> = finished
       .node(body)

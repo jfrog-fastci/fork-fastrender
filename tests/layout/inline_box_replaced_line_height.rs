@@ -63,7 +63,8 @@ fn inline_box_only_line_expands_for_replaced_content() {
     .layout_document(&dom, 200, 200)
     .expect("layout document");
 
-  let line = find_first_line_with_replaced(&fragments.root).expect("expected a line with replaced content");
+  let line =
+    find_first_line_with_replaced(&fragments.root).expect("expected a line with replaced content");
   let FragmentContent::Line { baseline } = line.content else {
     panic!("expected line fragment");
   };

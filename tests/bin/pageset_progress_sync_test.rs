@@ -246,7 +246,9 @@ fn pageset_progress_sync_preserves_existing_progress_without_cache() {
     "sync should not clobber existing status when caches are unavailable"
   );
   assert!(
-    updated.get("total_ms").is_some_and(|v| v.as_f64() == Some(123.0)),
+    updated
+      .get("total_ms")
+      .is_some_and(|v| v.as_f64() == Some(123.0)),
     "sync should preserve existing timings when caches are unavailable"
   );
   assert_eq!(

@@ -1921,7 +1921,9 @@ fn assign_implicit_anchor_box_ids(root: &mut BoxNode) {
   while let Some(node) = stack.pop() {
     if node.generated_pseudo.is_none() {
       if let Some(styled_id) = node.styled_node_id {
-        principal_by_styled_node_id.entry(styled_id).or_insert(node.id);
+        principal_by_styled_node_id
+          .entry(styled_id)
+          .or_insert(node.id);
       }
     }
     if let Some(body) = node.footnote_body.as_deref() {

@@ -43,10 +43,7 @@ fn invalid_margin_shorthand_does_not_override_prior_valid_value() {
 
 #[test]
 fn invalid_margin_inline_does_not_override_prior_valid_value() {
-  let node = styled_div(
-    r#"<div style="margin-inline: 7px; margin-inline: 1px 2px 3px;"></div>"#,
-  );
+  let node = styled_div(r#"<div style="margin-inline: 7px; margin-inline: 1px 2px 3px;"></div>"#);
   assert_eq!(node.styles.margin_left, Some(Length::px(7.0)));
   assert_eq!(node.styles.margin_right, Some(Length::px(7.0)));
 }
-

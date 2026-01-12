@@ -63,7 +63,11 @@ fn transition_behavior_property_parses_comma_separated_list() {
 
   assert_eq!(
     styles.transition_behaviors,
-    vec![TransitionBehavior::Normal, TransitionBehavior::AllowDiscrete].into()
+    vec![
+      TransitionBehavior::Normal,
+      TransitionBehavior::AllowDiscrete
+    ]
+    .into()
   );
 }
 
@@ -150,7 +154,10 @@ fn transition_behavior_longhand_overrides_transition_shorthand() {
     DEFAULT_VIEWPORT,
     false,
   );
-  assert_eq!(styles.transition_behaviors, vec![TransitionBehavior::Normal].into());
+  assert_eq!(
+    styles.transition_behaviors,
+    vec![TransitionBehavior::Normal].into()
+  );
 
   let behavior_decl = Declaration {
     property: "transition-behavior".into(),
@@ -224,7 +231,10 @@ fn transition_shorthand_resets_transition_behavior_longhand() {
     false,
   );
 
-  assert_eq!(styles.transition_behaviors, vec![TransitionBehavior::Normal].into());
+  assert_eq!(
+    styles.transition_behaviors,
+    vec![TransitionBehavior::Normal].into()
+  );
 }
 
 #[test]
@@ -874,7 +884,11 @@ fn transition_timing_function_parses_valid_comma_list() {
 
   assert_eq!(
     styles.transition_timing_functions,
-    vec![TransitionTimingFunction::EaseIn, TransitionTimingFunction::Linear].into()
+    vec![
+      TransitionTimingFunction::EaseIn,
+      TransitionTimingFunction::Linear
+    ]
+    .into()
   );
 }
 
@@ -1490,7 +1504,10 @@ fn animation_direction_ignores_invalid_value() {
     DEFAULT_VIEWPORT,
     false,
   );
-  assert_eq!(styles.animation_directions, vec![AnimationDirection::Reverse].into());
+  assert_eq!(
+    styles.animation_directions,
+    vec![AnimationDirection::Reverse].into()
+  );
 
   let invalid_decl = Declaration {
     property: "animation-direction".into(),
@@ -1511,7 +1528,10 @@ fn animation_direction_ignores_invalid_value() {
     false,
   );
 
-  assert_eq!(styles.animation_directions, vec![AnimationDirection::Reverse].into());
+  assert_eq!(
+    styles.animation_directions,
+    vec![AnimationDirection::Reverse].into()
+  );
 }
 
 #[test]
@@ -1537,7 +1557,10 @@ fn animation_fill_mode_ignores_invalid_value() {
     DEFAULT_VIEWPORT,
     false,
   );
-  assert_eq!(styles.animation_fill_modes, vec![AnimationFillMode::Forwards].into());
+  assert_eq!(
+    styles.animation_fill_modes,
+    vec![AnimationFillMode::Forwards].into()
+  );
 
   let invalid_decl = Declaration {
     property: "animation-fill-mode".into(),
@@ -1558,7 +1581,10 @@ fn animation_fill_mode_ignores_invalid_value() {
     false,
   );
 
-  assert_eq!(styles.animation_fill_modes, vec![AnimationFillMode::Forwards].into());
+  assert_eq!(
+    styles.animation_fill_modes,
+    vec![AnimationFillMode::Forwards].into()
+  );
 }
 
 #[test]
@@ -1584,7 +1610,10 @@ fn animation_play_state_ignores_invalid_value() {
     DEFAULT_VIEWPORT,
     false,
   );
-  assert_eq!(styles.animation_play_states, vec![AnimationPlayState::Paused].into());
+  assert_eq!(
+    styles.animation_play_states,
+    vec![AnimationPlayState::Paused].into()
+  );
 
   let invalid_decl = Declaration {
     property: "animation-play-state".into(),
@@ -1605,7 +1634,10 @@ fn animation_play_state_ignores_invalid_value() {
     false,
   );
 
-  assert_eq!(styles.animation_play_states, vec![AnimationPlayState::Paused].into());
+  assert_eq!(
+    styles.animation_play_states,
+    vec![AnimationPlayState::Paused].into()
+  );
 }
 
 #[test]
@@ -1685,7 +1717,12 @@ fn transition_timing_function_rejects_invalid_steps_function() {
     false,
   );
 
-  for value in ["steps(0)", "steps(1, jump-none)", "steps(5, wat)", "steps(5, start, end)"] {
+  for value in [
+    "steps(0)",
+    "steps(1, jump-none)",
+    "steps(5, wat)",
+    "steps(5, start, end)",
+  ] {
     let invalid_decl = Declaration {
       property: "transition-timing-function".into(),
       value: PropertyValue::Keyword(value.into()),

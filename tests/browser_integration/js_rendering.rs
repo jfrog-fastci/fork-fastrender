@@ -4,9 +4,9 @@ use fastrender::html::base_url_tracker::BaseUrlTracker;
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use fastrender::js::{
-  Clock, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptElementSpec, ScriptId,
-  ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource, VirtualClock,
-  WindowHostState,
+  Clock, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptElementSpec,
+  ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
+  VirtualClock, WindowHostState,
 };
 use fastrender::resource::ResourceFetcher;
 use fastrender::text::font_db::FontConfig;
@@ -121,18 +121,19 @@ impl SchedulerState {
     &self.js_execution_depth
   }
 
-  fn register_script(&mut self, node_id: NodeId, spec: ScriptElementSpec) -> Result<(ScriptId, Vec<ScriptSchedulerAction<NodeId>>)> {
+  fn register_script(
+    &mut self,
+    node_id: NodeId,
+    spec: ScriptElementSpec,
+  ) -> Result<(ScriptId, Vec<ScriptSchedulerAction<NodeId>>)> {
     let base_url_at_discovery = spec.base_url.clone();
-    let discovered = self
-      .scheduler
-      .discovered_parser_script(spec.clone(), node_id, base_url_at_discovery)?;
-    self.scripts.insert(
-      discovered.id,
-      ScriptEntry {
-        node_id,
-        spec,
-      },
-    );
+    let discovered =
+      self
+        .scheduler
+        .discovered_parser_script(spec.clone(), node_id, base_url_at_discovery)?;
+    self
+      .scripts
+      .insert(discovered.id, ScriptEntry { node_id, spec });
     Ok((discovered.id, discovered.actions))
   }
 
@@ -180,7 +181,11 @@ impl SchedulerState {
           return Ok(());
         }
         host
-          .exec_script_with_name_in_event_loop(self.event_loop, self.source_name.clone(), self.source_text)
+          .exec_script_with_name_in_event_loop(
+            self.event_loop,
+            self.source_name.clone(),
+            self.source_text,
+          )
           .map(|_value| ())
       }
     }
@@ -199,7 +204,12 @@ impl SchedulerState {
 
     // Avoid double-borrowing `self` by temporarily moving the orchestrator out.
     let mut orchestrator = std::mem::take(&mut self.orchestrator);
-    let result = orchestrator.execute_script_element(host, entry.node_id, entry.spec.script_type, &mut adapter);
+    let result = orchestrator.execute_script_element(
+      host,
+      entry.node_id,
+      entry.spec.script_type,
+      &mut adapter,
+    );
     self.orchestrator = orchestrator;
     result
   }
@@ -224,13 +234,19 @@ fn apply_scheduler_actions(
               script_id.as_u64()
             ))
           })?;
-          let is_blocking = entry.spec.src_attr_present && !entry.spec.async_attr && !entry.spec.defer_attr;
+          let is_blocking =
+            entry.spec.src_attr_present && !entry.spec.async_attr && !entry.spec.defer_attr;
           (Arc::clone(&st.fetcher), is_blocking)
         };
 
         if is_blocking {
           let source = fetch_script_source(fetcher.as_ref(), &url)?;
-          let actions = { state.borrow_mut().scheduler.fetch_completed(script_id, source)? };
+          let actions = {
+            state
+              .borrow_mut()
+              .scheduler
+              .fetch_completed(script_id, source)?
+          };
           apply_scheduler_actions(state, host, event_loop, actions)?;
           continue;
         }
@@ -294,10 +310,13 @@ fn apply_scheduler_actions(
         event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
           let depth = { Rc::clone(state_for_task.borrow().js_execution_depth()) };
           let _guard = JsExecutionGuard::enter(&depth);
-          let result = state_for_task
+          let result =
+            state_for_task
+              .borrow_mut()
+              .execute_script(host, event_loop, script_id, &source_text);
+          state_for_task
             .borrow_mut()
-            .execute_script(host, event_loop, script_id, &source_text);
-          state_for_task.borrow_mut().finish_script_execution(script_id)?;
+            .finish_script_execution(script_id)?;
           result
         })?;
       }
@@ -333,7 +352,11 @@ impl JsFixtureHarness {
 
     // The host DOM is overwritten with snapshots from the streaming parser as parsing progresses.
     // It only exists to seed the `WindowHostState` with a stable DOM backing store.
-    let host = WindowHostState::new_with_fetcher(Document::new(QuirksMode::NoQuirks), fixture_url.clone(), fetcher.clone())?;
+    let host = WindowHostState::new_with_fetcher(
+      Document::new(QuirksMode::NoQuirks),
+      fixture_url.clone(),
+      fetcher.clone(),
+    )?;
 
     let clock = Arc::new(VirtualClock::new());
     let clock_for_loop: Arc<dyn Clock> = clock;
@@ -381,7 +404,13 @@ impl JsFixtureHarness {
       fetch_script_source(fetcher.as_ref(), url)?
     };
 
-    let actions = { self.state.borrow_mut().scheduler.fetch_completed(script_id, source)? };
+    let actions = {
+      self
+        .state
+        .borrow_mut()
+        .scheduler
+        .fetch_completed(script_id, source)?
+    };
     apply_scheduler_actions(&self.state, &mut self.host, &mut self.event_loop, actions)?;
 
     // If parsing is still ongoing, propagate any DOM mutations back into the streaming parser's
@@ -412,7 +441,11 @@ impl JsFixtureHarness {
     Ok(())
   }
 
-  fn on_script_boundary(&mut self, script: NodeId, base_url_at_this_point: Option<String>) -> Result<()> {
+  fn on_script_boundary(
+    &mut self,
+    script: NodeId,
+    base_url_at_this_point: Option<String>,
+  ) -> Result<()> {
     let snapshot = {
       let Some(doc) = self.parser.document() else {
         return Err(Error::Other(
@@ -426,7 +459,9 @@ impl JsFixtureHarness {
     // HTML: before executing a parser-inserted script at a script end-tag boundary, perform a
     // microtask checkpoint when the JS execution context stack is empty.
     if self.state.borrow().js_execution_depth.get() == 0 {
-      self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
+      self
+        .event_loop
+        .perform_microtask_checkpoint(&mut self.host)?;
     }
 
     let spec = {

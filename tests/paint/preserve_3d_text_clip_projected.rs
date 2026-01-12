@@ -48,7 +48,9 @@ fn ctx(
   }
 }
 
-fn glyph_instances_from_text_run(run: &fastrender::text::pipeline::ShapedRun) -> Vec<GlyphInstance> {
+fn glyph_instances_from_text_run(
+  run: &fastrender::text::pipeline::ShapedRun,
+) -> Vec<GlyphInstance> {
   run
     .glyphs
     .iter()
@@ -128,10 +130,11 @@ fn preserve_3d_text_clip_is_projected_in_clip_override() {
     color: Rgba::RED,
   }));
   baseline.push(DisplayItem::PopClip);
-  let baseline_pixmap = DisplayListRenderer::new(width, height, Rgba::TRANSPARENT, font_ctx.clone())
-    .unwrap()
-    .render(&baseline)
-    .unwrap();
+  let baseline_pixmap =
+    DisplayListRenderer::new(width, height, Rgba::TRANSPARENT, font_ctx.clone())
+      .unwrap()
+      .render(&baseline)
+      .unwrap();
 
   // Root perspective and a projective rotate around the canvas center.
   let perspective = Transform3D::perspective(250.0);
@@ -183,7 +186,9 @@ fn preserve_3d_text_clip_is_projected_in_clip_override() {
         continue;
       }
 
-      let displaced = (projected.x - p_center.x).abs().max((projected.y - p_center.y).abs());
+      let displaced = (projected.x - p_center.x)
+        .abs()
+        .max((projected.y - p_center.y).abs());
       if displaced <= 2.0 {
         continue;
       }
@@ -211,7 +216,8 @@ fn preserve_3d_text_clip_is_projected_in_clip_override() {
       break 'outer;
     }
   }
-  let ((_p_x, _p_y), (p_prime_x, p_prime_y)) = chosen.expect("expected a movable interior clip pixel");
+  let ((_p_x, _p_y), (p_prime_x, p_prime_y)) =
+    chosen.expect("expected a movable interior clip pixel");
 
   let mut projected_list = DisplayList::new();
   projected_list.push(DisplayItem::PushStackingContext(ctx(
@@ -248,8 +254,10 @@ fn preserve_3d_text_clip_is_projected_in_clip_override() {
   projected_list.push(DisplayItem::PopStackingContext);
   projected_list.push(DisplayItem::PopStackingContext);
 
-  let projected_pixmap =
-    DisplayListRenderer::new(width, height, Rgba::TRANSPARENT, font_ctx).unwrap().render(&projected_list).unwrap();
+  let projected_pixmap = DisplayListRenderer::new(width, height, Rgba::TRANSPARENT, font_ctx)
+    .unwrap()
+    .render(&projected_list)
+    .unwrap();
 
   let mut found = false;
   for dy in -PROJECTED_NEIGHBORHOOD_RADIUS..=PROJECTED_NEIGHBORHOOD_RADIUS {
@@ -274,7 +282,6 @@ fn preserve_3d_text_clip_is_projected_in_clip_override() {
   assert!(
     found,
     "expected projected clip to produce red pixels near projected position (p'=({}, {}))",
-    p_prime_x,
-    p_prime_y
+    p_prime_x, p_prime_y
   );
 }

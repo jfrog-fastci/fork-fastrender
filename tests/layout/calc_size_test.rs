@@ -26,7 +26,13 @@ fn calc_size_auto_resolves_against_available_width() {
     important: false,
     contains_var: false,
   };
-  apply_declaration(&mut child_style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+  apply_declaration(
+    &mut child_style,
+    &decl,
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
 
   let child = BoxNode::new_block(
     Arc::new(child_style),
@@ -58,4 +64,3 @@ fn calc_size_auto_resolves_against_available_width() {
     child_fragment.bounds.width()
   );
 }
-

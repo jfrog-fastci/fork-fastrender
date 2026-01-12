@@ -42,12 +42,16 @@ fn bfc_root_block_is_pushed_down_when_too_wide_to_fit_next_to_floats() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let bfc_frags: Vec<_> = fragment
     .children
     .iter()
-    .filter(|child| (child.bounds.width() - 200.0).abs() < 0.01 && (child.bounds.height() - 10.0).abs() < 0.01)
+    .filter(|child| {
+      (child.bounds.width() - 200.0).abs() < 0.01 && (child.bounds.height() - 10.0).abs() < 0.01
+    })
     .collect();
   assert_eq!(
     bfc_frags.len(),
@@ -98,12 +102,16 @@ fn bfc_root_auto_width_shrinks_to_fit_next_to_floats() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let bfc_frags: Vec<_> = fragment
     .children
     .iter()
-    .filter(|child| (child.bounds.width() - 150.0).abs() < 0.01 && (child.bounds.height() - 10.0).abs() < 0.01)
+    .filter(|child| {
+      (child.bounds.width() - 150.0).abs() < 0.01 && (child.bounds.height() - 10.0).abs() < 0.01
+    })
     .collect();
   assert_eq!(
     bfc_frags.len(),
@@ -147,7 +155,9 @@ fn bfc_root_negative_margins_do_not_get_clamped_when_no_floats_overlap() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   assert_eq!(
     fragment.children.len(),
@@ -204,7 +214,9 @@ fn bfc_root_float_avoidance_accounts_for_offset_containing_block_in_shared_float
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   assert_eq!(
     fragment.children.len(),

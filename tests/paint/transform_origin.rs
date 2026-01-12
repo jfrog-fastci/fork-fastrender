@@ -53,4 +53,3 @@ fn transform_origin_affects_painting() {
   // If we ignored `transform-origin`, the blue box would still be centered around x≈140.
   assert_eq!(pixel(&pixmap, 140, 30), [255, 255, 255, 255]);
 }
-

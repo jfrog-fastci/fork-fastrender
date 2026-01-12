@@ -31,14 +31,12 @@ fn docs_do_not_use_raw_cargo_in_code_fences() {
   //
   // This test focuses on fenced code blocks, where most command examples live.
 
-  let cargo_invocation = Regex::new(
-    r#"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*cargo\b"#,
-  )
-  .expect("valid regex");
+  let cargo_invocation =
+    Regex::new(r#"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*cargo\b"#)
+      .expect("valid regex");
 
   // Also catch patterns like `scripts/run_limited.sh --as 64G -- cargo run ...`.
-  let cargo_after_double_dash =
-    Regex::new(r#"(?:^|\s)--\s+cargo\b"#).expect("valid regex");
+  let cargo_after_double_dash = Regex::new(r#"(?:^|\s)--\s+cargo\b"#).expect("valid regex");
 
   // Allow examples that are explicitly labelled as incorrect (e.g. "WRONG — DO NOT RUN").
   let allowed_marker = Regex::new(r"(?i)\b(wrong|forbidden)\b").expect("valid regex");
@@ -90,8 +88,7 @@ fn docs_do_not_mention_raw_cargo_run_or_xtask() {
   // `cargo run` / `cargo xtask` is also easy to copy and accidentally bypasses the repo wrappers.
   //
   // Keep it simple: disallow raw `cargo run` / `cargo xtask` anywhere in docs/instructions/AGENTS.
-  let raw_run_or_xtask =
-    Regex::new(r"\bcargo\s+(run|xtask)\b").expect("valid regex");
+  let raw_run_or_xtask = Regex::new(r"\bcargo\s+(run|xtask)\b").expect("valid regex");
   let repo_root = repo_root();
   let mut violations: Vec<String> = Vec::new();
 
@@ -169,12 +166,12 @@ fn scan_file(
 
     let trimmed = line.trim_start();
 
-     if cargo_invocation.is_match(trimmed) || cargo_after_double_dash.is_match(trimmed) {
-       let has_marker = recent_nonempty
-         .iter()
-         .rev()
-         .take(3)
-         .any(|prev| allowed_marker.is_match(prev));
+    if cargo_invocation.is_match(trimmed) || cargo_after_double_dash.is_match(trimmed) {
+      let has_marker = recent_nonempty
+        .iter()
+        .rev()
+        .take(3)
+        .any(|prev| allowed_marker.is_match(prev));
 
       if !has_marker {
         violations.push(format!(

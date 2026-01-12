@@ -17,8 +17,9 @@ fn weibo_fixture_font_face_relative_url_resolves_against_document_base_url() {
 
   let doc_url = Url::from_file_path(doc_path.canonicalize().expect("canonical fixture path"))
     .expect("file URL for fixture");
-  let expected_font_url = Url::from_file_path(font_path.canonicalize().expect("canonical font path"))
-    .expect("file URL for font");
+  let expected_font_url =
+    Url::from_file_path(font_path.canonicalize().expect("canonical font path"))
+      .expect("file URL for font");
 
   let css = r#"
     @font-face {
@@ -36,7 +37,12 @@ fn weibo_fixture_font_face_relative_url_resolves_against_document_base_url() {
 
   let ctx = FontContext::empty();
   let report = ctx
-    .load_web_fonts_with_options(&faces, Some(doc_url.as_str()), None, WebFontLoadOptions::default())
+    .load_web_fonts_with_options(
+      &faces,
+      Some(doc_url.as_str()),
+      None,
+      WebFontLoadOptions::default(),
+    )
     .expect("load web font");
   assert!(
     report.events.iter().any(|event| {
@@ -54,4 +60,3 @@ fn weibo_fixture_font_face_relative_url_resolves_against_document_base_url() {
     .expect("web font should be available");
   assert_eq!(font.family, "WeiboCJKTest");
 }
-

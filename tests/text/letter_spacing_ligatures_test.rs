@@ -20,8 +20,7 @@ fn features_map(run: &fastrender::text::pipeline::FontRun) -> HashMap<[u8; 4], u
 #[test]
 fn letter_spacing_disables_optional_ligature_features() {
   let mut db = FontDatabase::empty();
-  db
-    .load_font_data(FALLBACK_FONT.to_vec())
+  db.load_font_data(FALLBACK_FONT.to_vec())
     .expect("fixture font should load");
   db.refresh_generic_fallbacks();
   let ctx = FontContext::with_database(Arc::new(db));
@@ -71,8 +70,7 @@ fn letter_spacing_disables_optional_ligature_features() {
 #[test]
 fn shaping_cache_key_includes_letter_spacing() {
   let mut db = FontDatabase::empty();
-  db
-    .load_font_data(FALLBACK_FONT.to_vec())
+  db.load_font_data(FALLBACK_FONT.to_vec())
     .expect("fixture font should load");
   db.refresh_generic_fallbacks();
   let ctx = FontContext::with_database(Arc::new(db));
@@ -98,4 +96,3 @@ fn shaping_cache_key_includes_letter_spacing() {
     "letter-spacing should produce a distinct shaping cache entry"
   );
 }
-

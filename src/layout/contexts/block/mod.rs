@@ -55,7 +55,8 @@ use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation::{
-  clip_node_with_axes, collect_forced_boundaries_for_explicit_page_breaks_with_axes_and_page_progression,
+  clip_node_with_axes,
+  collect_forced_boundaries_for_explicit_page_breaks_with_axes_and_page_progression,
   forces_break_between, normalize_fragment_margins_with_axes, propagate_fragment_metadata,
   propagate_fragmentainer_columns, ForcedBoundary, FragmentationAnalyzer, FragmentationContext,
 };
@@ -68,8 +69,8 @@ use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
-  active_deadline, active_heartbeat, active_stage, check_active, check_active_periodic, with_deadline,
-  StageGuard, StageHeartbeatGuard,
+  active_deadline, active_heartbeat, active_stage, check_active, check_active_periodic,
+  with_deadline, StageGuard, StageHeartbeatGuard,
 };
 use crate::style::block_axis_is_horizontal;
 use crate::style::block_axis_positive;
@@ -78,9 +79,10 @@ use crate::style::display::FormattingContextType;
 use crate::style::float::Clear;
 use crate::style::inline_axis_is_horizontal;
 use crate::style::inline_axis_positive;
+use crate::style::page::PageSide;
 use crate::style::position::Position;
-use crate::style::types::BreakBetween;
 use crate::style::types::BorderStyle;
+use crate::style::types::BreakBetween;
 use crate::style::types::ColumnFill;
 use crate::style::types::ColumnSpan;
 use crate::style::types::Direction;
@@ -91,10 +93,9 @@ use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::style::PhysicalSide;
 use crate::style::RootFontMetrics;
-use crate::style::page::PageSide;
 use crate::text::font_loader::FontContext;
-use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::AnonymousType;
+use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::fragment_tree::BlockFragmentMetadata;
@@ -185,7 +186,10 @@ fn record_overflow_auto_child_layout_pass() {}
 fn record_collapsed_block_margins_call() {}
 
 fn is_ascii_whitespace_char(c: char) -> bool {
-  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+  matches!(
+    c,
+    '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+  )
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -240,7 +244,10 @@ fn abspos_depends_on_cb_block_size(style: &crate::style::ComputedStyle) -> bool 
 
   // Intrinsic sizing keywords can also depend on the available block size (e.g.
   // `height: fill-available`), which is defined in terms of the containing block height.
-  if style.height_keyword.is_some() || style.min_height_keyword.is_some() || style.max_height_keyword.is_some() {
+  if style.height_keyword.is_some()
+    || style.min_height_keyword.is_some()
+    || style.max_height_keyword.is_some()
+  {
     return true;
   }
 
@@ -715,20 +722,22 @@ impl BlockFormattingContext {
           crate::style::types::BoxSizing::BorderBox => basis_border,
         };
 
-        let resolved_border = crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-          .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-          .map(|expr_len| {
-            let resolved_specified = resolve_length_for_width(
-              expr_len,
-              containing_width,
-              style,
-              &self.font_context,
-              self.viewport_size,
-              root_font_metrics,
-            );
-            border_size_from_box_sizing(resolved_specified, inline_edges, style.box_sizing).max(0.0)
-          })
-          .unwrap_or(basis_border);
+        let resolved_border =
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .map(|expr_len| {
+              let resolved_specified = resolve_length_for_width(
+                expr_len,
+                containing_width,
+                style,
+                &self.font_context,
+                self.viewport_size,
+                root_font_metrics,
+              );
+              border_size_from_box_sizing(resolved_specified, inline_edges, style.box_sizing)
+                .max(0.0)
+            })
+            .unwrap_or(basis_border);
         resolved_border
       }
     };
@@ -800,51 +809,61 @@ impl BlockFormattingContext {
     paint_viewport: Rect,
   ) -> Result<FragmentNode, LayoutError> {
     if crate::layout::auto_scrollbars::should_bypass(child) {
-    let parent_offset = crate::layout::formatting_context::fragmentainer_block_offset_hint();
-    let parent_offset = if parent_offset.is_finite() { parent_offset } else { 0.0 };
-    let child_offset = if box_y.is_finite() { box_y } else { 0.0 };
-    let _fragmentainer_offset_guard =
-      crate::layout::formatting_context::fragmentainer_block_size_hint()
-        .filter(|size| size.is_finite() && *size > 0.0)
-        .map(|_| {
-          crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
-            parent_offset + child_offset,
-          )
-        });
-    let toggles = crate::debug::runtime::runtime_toggles();
-    let dump_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
-    let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
-    if let BoxType::Replaced(replaced_box) = &child.box_type {
-      let mut fragment = self.layout_replaced_child(
-        parent,
-        child,
-        replaced_box,
-        containing_width,
-        constraints,
-        box_y,
-        nearest_positioned_cb,
-        nearest_fixed_cb,
-      )?;
-      self.maybe_attach_footnote_anchor(
-        child,
-        containing_width,
-        nearest_positioned_cb,
-        nearest_fixed_cb,
-        &mut fragment,
-      )?;
-      return Ok(fragment);
-    }
+      let parent_offset = crate::layout::formatting_context::fragmentainer_block_offset_hint();
+      let parent_offset = if parent_offset.is_finite() {
+        parent_offset
+      } else {
+        0.0
+      };
+      let child_offset = if box_y.is_finite() { box_y } else { 0.0 };
+      let _fragmentainer_offset_guard =
+        crate::layout::formatting_context::fragmentainer_block_size_hint()
+          .filter(|size| size.is_finite() && *size > 0.0)
+          .map(|_| {
+            crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
+              parent_offset + child_offset,
+            )
+          });
+      let toggles = crate::debug::runtime::runtime_toggles();
+      let dump_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
+      let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
+      if let BoxType::Replaced(replaced_box) = &child.box_type {
+        let mut fragment = self.layout_replaced_child(
+          parent,
+          child,
+          replaced_box,
+          containing_width,
+          constraints,
+          box_y,
+          nearest_positioned_cb,
+          nearest_fixed_cb,
+        )?;
+        self.maybe_attach_footnote_anchor(
+          child,
+          containing_width,
+          nearest_positioned_cb,
+          nearest_fixed_cb,
+          &mut fragment,
+        )?;
+        return Ok(fragment);
+      }
 
-    let style_override = crate::layout::style_override::style_override_for(child.id);
-    let style_arc = style_override.unwrap_or_else(|| child.style.clone());
-    let style = style_arc.as_ref();
-    let font_size = style.font_size; // Get font-size for resolving em units
-    let root_font_metrics = self.factory.root_font_metrics();
-    let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
-    // Map physical width/height inputs to the logical inline/block axes used by the block
-    // formatting context.
-    let (inline_length, inline_keyword, min_inline_length, min_inline_keyword, max_inline_length, max_inline_keyword) =
-      if inline_is_horizontal {
+      let style_override = crate::layout::style_override::style_override_for(child.id);
+      let style_arc = style_override.unwrap_or_else(|| child.style.clone());
+      let style = style_arc.as_ref();
+      let font_size = style.font_size; // Get font-size for resolving em units
+      let root_font_metrics = self.factory.root_font_metrics();
+      let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
+      // Map physical width/height inputs to the logical inline/block axes used by the block
+      // formatting context.
+      let (
+        inline_length,
+        inline_keyword,
+        min_inline_length,
+        min_inline_keyword,
+        max_inline_length,
+        max_inline_keyword,
+      ) = if inline_is_horizontal {
         (
           style.width,
           style.width_keyword,
@@ -863,416 +882,383 @@ impl BlockFormattingContext {
           style.max_height_keyword,
         )
       };
-    let (block_length, block_keyword, min_block_keyword, max_block_keyword) = if inline_is_horizontal {
-      (
-        style.height,
-        style.height_keyword,
-        style.min_height_keyword,
-        style.max_height_keyword,
-      )
-    } else {
-      (
-        style.width,
-        style.width_keyword,
-        style.min_width_keyword,
-        style.max_width_keyword,
-      )
-    };
-    // CSS Sizing L3: min-/max-content keywords on the *block-size* axis behave like `auto`
-    // (min-content block size is equivalent to max-content block size for block containers / inline
-    // boxes). Treat them as `auto` so we don't force a "min-content inline-size" reflow to measure
-    // height, which can spuriously inflate the used block-size due to extra wrapping.
-    let block_keyword = match block_keyword {
-      Some(crate::style::types::IntrinsicSizeKeyword::MinContent)
-      | Some(crate::style::types::IntrinsicSizeKeyword::MaxContent) => None,
-      other => other,
-    };
-    // Percentage block sizes resolve against the containing block's *definite* block-size
-    // (CSS2.1 §10.5). Thread this through via `LayoutConstraints::block_percentage_base` so we can
-    // keep the block-axis available space indefinite (in-flow content is allowed to overflow)
-    // without incorrectly resolving percentages against an ancestor's available height (e.g. the
-    // viewport).
-    let containing_height = if inline_is_horizontal {
-      constraints.height()
-    } else {
-      constraints.width()
-    };
-    // CSS2.1 §10.5: Percentage `height` values on in-flow elements compute to `auto` when the
-    // containing block's height depends on content (i.e. it is not specified explicitly).
-    //
-    // Prefer an explicit percentage base provided by the parent layout pass (e.g. specified
-    // height, flex/grid-used size, absolute-positioning inset sizing). This allows block layout to
-    // carry a definite percentage base even when `available_height` is indefinite (the common
-    // block-flow case), and avoids incorrectly resolving `height:100%` against a definite
-    // *available* height inherited from an ancestor (e.g. viewport).
-    let containing_height_for_percentages = constraints.block_percentage_base.or_else(|| {
-      // Only allow percentage heights to resolve when this block container has a definite block
-      // size, or when the parent layout algorithm has already forced a used border-box size.
-      //
-      // Percentage block sizes on in-flow children resolve against the used size of the containing
-      // block’s content box (CSS2.1 §10.5). This matters even when the parent itself was laid out
-      // with an indefinite available height (the common block-flow case): a fixed-height parent
-      // like `height: 28px` must still provide a definite percentage base for descendants
-      // (`height:100%`) even though its own *available* height is `auto`.
-      let parent_block_size_length = if inline_is_horizontal {
-        parent.style.height
-      } else {
-        parent.style.width
-      };
-      let parent_block_size_keyword = if inline_is_horizontal {
-        parent.style.height_keyword
-      } else {
-        parent.style.width_keyword
-      };
-      let parent_block_size_is_auto =
-        parent_block_size_length.is_none() && parent_block_size_keyword.is_none();
-      // When the parent formatting context already computed a final used border-box size for this
-      // containing block (e.g. flex/grid items or absolute positioning relayout), use that as the
-      // percentage basis after converting it to a content-box size.
-      let parent_used_border_box_block_size = if constraints.used_border_box_size_forces_block_percentage_base {
+      let (block_length, block_keyword, min_block_keyword, max_block_keyword) =
         if inline_is_horizontal {
-          constraints.used_border_box_height
+          (
+            style.height,
+            style.height_keyword,
+            style.min_height_keyword,
+            style.max_height_keyword,
+          )
         } else {
-          constraints.used_border_box_width
-        }
-      } else {
-        None
+          (
+            style.width,
+            style.width_keyword,
+            style.min_width_keyword,
+            style.max_width_keyword,
+          )
+        };
+      // CSS Sizing L3: min-/max-content keywords on the *block-size* axis behave like `auto`
+      // (min-content block size is equivalent to max-content block size for block containers / inline
+      // boxes). Treat them as `auto` so we don't force a "min-content inline-size" reflow to measure
+      // height, which can spuriously inflate the used block-size due to extra wrapping.
+      let block_keyword = match block_keyword {
+        Some(crate::style::types::IntrinsicSizeKeyword::MinContent)
+        | Some(crate::style::types::IntrinsicSizeKeyword::MaxContent) => None,
+        other => other,
       };
-
-      // `aspect-ratio` can establish a definite used size even when the corresponding block-size
-      // property is `auto`. Treat that ratio-derived size as a valid percentage basis so common
-      // patterns like `aspect-ratio` + `height:100%` descendants don't collapse to 0px.
-      let parent_aspect_ratio_content_block_size = if parent_block_size_is_auto
-        && parent_used_border_box_block_size.is_none()
-      {
-        match parent.style.aspect_ratio {
-          crate::style::types::AspectRatio::Ratio(ratio)
-          | crate::style::types::AspectRatio::AutoRatio(ratio) => {
-            if ratio > 0.0 && containing_width.is_finite() {
-              let raw = if inline_is_horizontal {
-                containing_width / ratio
-              } else {
-                containing_width * ratio
-              };
-              raw.is_finite().then_some(raw.max(0.0))
+      // Percentage block sizes resolve against the containing block's *definite* block-size
+      // (CSS2.1 §10.5). Thread this through via `LayoutConstraints::block_percentage_base` so we can
+      // keep the block-axis available space indefinite (in-flow content is allowed to overflow)
+      // without incorrectly resolving percentages against an ancestor's available height (e.g. the
+      // viewport).
+      let containing_height = if inline_is_horizontal {
+        constraints.height()
+      } else {
+        constraints.width()
+      };
+      // CSS2.1 §10.5: Percentage `height` values on in-flow elements compute to `auto` when the
+      // containing block's height depends on content (i.e. it is not specified explicitly).
+      //
+      // Prefer an explicit percentage base provided by the parent layout pass (e.g. specified
+      // height, flex/grid-used size, absolute-positioning inset sizing). This allows block layout to
+      // carry a definite percentage base even when `available_height` is indefinite (the common
+      // block-flow case), and avoids incorrectly resolving `height:100%` against a definite
+      // *available* height inherited from an ancestor (e.g. viewport).
+      let containing_height_for_percentages = constraints.block_percentage_base.or_else(|| {
+        // Only allow percentage heights to resolve when this block container has a definite block
+        // size, or when the parent layout algorithm has already forced a used border-box size.
+        //
+        // Percentage block sizes on in-flow children resolve against the used size of the containing
+        // block’s content box (CSS2.1 §10.5). This matters even when the parent itself was laid out
+        // with an indefinite available height (the common block-flow case): a fixed-height parent
+        // like `height: 28px` must still provide a definite percentage base for descendants
+        // (`height:100%`) even though its own *available* height is `auto`.
+        let parent_block_size_length = if inline_is_horizontal {
+          parent.style.height
+        } else {
+          parent.style.width
+        };
+        let parent_block_size_keyword = if inline_is_horizontal {
+          parent.style.height_keyword
+        } else {
+          parent.style.width_keyword
+        };
+        let parent_block_size_is_auto =
+          parent_block_size_length.is_none() && parent_block_size_keyword.is_none();
+        // When the parent formatting context already computed a final used border-box size for this
+        // containing block (e.g. flex/grid items or absolute positioning relayout), use that as the
+        // percentage basis after converting it to a content-box size.
+        let parent_used_border_box_block_size =
+          if constraints.used_border_box_size_forces_block_percentage_base {
+            if inline_is_horizontal {
+              constraints.used_border_box_height
             } else {
-              None
+              constraints.used_border_box_width
             }
-          }
-          crate::style::types::AspectRatio::Auto => None,
-        }
-      } else {
-        None
-      };
+          } else {
+            None
+          };
 
-      if parent_block_size_is_auto
-        && parent_used_border_box_block_size.is_none()
-        && parent_aspect_ratio_content_block_size.is_none()
-      {
-        return None;
-      }
-
-      let parent_axis_edges = if inline_is_horizontal {
-        vertical_padding_and_borders(
-          &parent.style,
-          containing_width,
-          self.viewport_size,
-          &self.font_context,
-          root_font_metrics,
-        )
-      } else {
-        horizontal_padding_and_borders(
-          &parent.style,
-          containing_width,
-          self.viewport_size,
-          &self.font_context,
-          root_font_metrics,
-        )
-      };
-      let parent_content_block_size = if let Some(border_box) = parent_used_border_box_block_size {
-        Some((border_box - parent_axis_edges).max(0.0))
-      } else if let Some(block_len) = parent_block_size_length {
-        resolve_length_with_percentage_metrics(
-          block_len,
-          containing_height,
-          self.viewport_size,
-          parent.style.font_size,
-          parent.style.root_font_size,
-          Some(&parent.style),
-          Some(&self.font_context),
-        )
-        .map(|resolved| {
-          let mut content =
-            content_size_from_box_sizing(resolved, parent_axis_edges, parent.style.box_sizing);
-          // Stable scrollbar gutters consume space from the content box even when
-          // `box-sizing: content-box` (mirrors the adjustment in this function when computing
-          // the parent's own used block size).
-          if parent.style.box_sizing == crate::style::types::BoxSizing::ContentBox {
-            let reserve_gutter = if inline_is_horizontal {
-              parent.style.scrollbar_gutter.stable
-                && matches!(
-                  parent.style.overflow_x,
-                  Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-                )
-            } else {
-              parent.style.scrollbar_gutter.stable
-                && matches!(
-                  parent.style.overflow_y,
-                  Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-                )
-            };
-            if reserve_gutter {
-              let gutter = resolve_scrollbar_width(&parent.style);
-              if gutter > 0.0 {
-                let delta = if parent.style.scrollbar_gutter.both_edges {
-                  gutter * 2.0
+        // `aspect-ratio` can establish a definite used size even when the corresponding block-size
+        // property is `auto`. Treat that ratio-derived size as a valid percentage basis so common
+        // patterns like `aspect-ratio` + `height:100%` descendants don't collapse to 0px.
+        let parent_aspect_ratio_content_block_size =
+          if parent_block_size_is_auto && parent_used_border_box_block_size.is_none() {
+            match parent.style.aspect_ratio {
+              crate::style::types::AspectRatio::Ratio(ratio)
+              | crate::style::types::AspectRatio::AutoRatio(ratio) => {
+                if ratio > 0.0 && containing_width.is_finite() {
+                  let raw = if inline_is_horizontal {
+                    containing_width / ratio
+                  } else {
+                    containing_width * ratio
+                  };
+                  raw.is_finite().then_some(raw.max(0.0))
                 } else {
-                  gutter
-                };
-                content = (content - delta).max(0.0);
+                  None
+                }
+              }
+              crate::style::types::AspectRatio::Auto => None,
+            }
+          } else {
+            None
+          };
+
+        if parent_block_size_is_auto
+          && parent_used_border_box_block_size.is_none()
+          && parent_aspect_ratio_content_block_size.is_none()
+        {
+          return None;
+        }
+
+        let parent_axis_edges = if inline_is_horizontal {
+          vertical_padding_and_borders(
+            &parent.style,
+            containing_width,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          )
+        } else {
+          horizontal_padding_and_borders(
+            &parent.style,
+            containing_width,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          )
+        };
+        let parent_content_block_size = if let Some(border_box) = parent_used_border_box_block_size
+        {
+          Some((border_box - parent_axis_edges).max(0.0))
+        } else if let Some(block_len) = parent_block_size_length {
+          resolve_length_with_percentage_metrics(
+            block_len,
+            containing_height,
+            self.viewport_size,
+            parent.style.font_size,
+            parent.style.root_font_size,
+            Some(&parent.style),
+            Some(&self.font_context),
+          )
+          .map(|resolved| {
+            let mut content =
+              content_size_from_box_sizing(resolved, parent_axis_edges, parent.style.box_sizing);
+            // Stable scrollbar gutters consume space from the content box even when
+            // `box-sizing: content-box` (mirrors the adjustment in this function when computing
+            // the parent's own used block size).
+            if parent.style.box_sizing == crate::style::types::BoxSizing::ContentBox {
+              let reserve_gutter = if inline_is_horizontal {
+                parent.style.scrollbar_gutter.stable
+                  && matches!(
+                    parent.style.overflow_x,
+                    Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+                  )
+              } else {
+                parent.style.scrollbar_gutter.stable
+                  && matches!(
+                    parent.style.overflow_y,
+                    Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+                  )
+              };
+              if reserve_gutter {
+                let gutter = resolve_scrollbar_width(&parent.style);
+                if gutter > 0.0 {
+                  let delta = if parent.style.scrollbar_gutter.both_edges {
+                    gutter * 2.0
+                  } else {
+                    gutter
+                  };
+                  content = (content - delta).max(0.0);
+                }
               }
             }
-          }
-          content.max(0.0)
-        })
-      } else {
-        parent_aspect_ratio_content_block_size
-      };
-      parent_content_block_size.filter(|value: &f32| value.is_finite())
-    });
+            content.max(0.0)
+          })
+        } else {
+          parent_aspect_ratio_content_block_size
+        };
+        parent_content_block_size.filter(|value: &f32| value.is_finite())
+      });
 
-    // Handle block-axis margins (resolve em/rem units with font-size)
-    let block_sides = block_axis_sides(style);
-    let margin_top = resolve_margin_side(
-      style,
-      block_sides.0,
-      containing_width,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    let margin_bottom = resolve_margin_side(
-      style,
-      block_sides.1,
-      containing_width,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    if dump_child_y && matches!(child.style.display, Display::Table) {
-      eprintln!(
-                "block child margins: display={:?} margin_top={:.2} box_y={:.2}",
-                child.style.display, margin_top, box_y
-            );
-    }
-
-    // Pre-resolve vertical edges so box-sizing and used-size overrides can convert border-box sizes
-    // into content sizes before laying out descendants.
-    let border_top = resolve_border_side(
-      style,
-      block_sides.0,
-      containing_width,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    let border_bottom = resolve_border_side(
-      style,
-      block_sides.1,
-      containing_width,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    let mut padding_top = resolve_padding_side(
-      style,
-      block_sides.0,
-      containing_width,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    let mut padding_bottom = resolve_padding_side(
-      style,
-      block_sides.1,
-      containing_width,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    let reserve_horizontal_gutter = style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_x,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      // Handle block-axis margins (resolve em/rem units with font-size)
+      let block_sides = block_axis_sides(style);
+      let margin_top = resolve_margin_side(
+        style,
+        block_sides.0,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+        root_font_metrics,
       );
-    let mut reserved_horizontal_gutter = 0.0;
-    if reserve_horizontal_gutter {
-      let gutter = resolve_scrollbar_width(style);
-      if gutter > 0.0 {
-        if style.scrollbar_gutter.both_edges {
-          padding_top += gutter;
-          reserved_horizontal_gutter += gutter;
-        }
-        padding_bottom += gutter;
-        reserved_horizontal_gutter += gutter;
+      let margin_bottom = resolve_margin_side(
+        style,
+        block_sides.1,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+        root_font_metrics,
+      );
+      if dump_child_y && matches!(child.style.display, Display::Table) {
+        eprintln!(
+          "block child margins: display={:?} margin_top={:.2} box_y={:.2}",
+          child.style.display, margin_top, box_y
+        );
       }
-    }
-    let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
-    // Create constraints for child layout.
-    let block_keyword_is_content_based = inline_is_horizontal
-      && matches!(
-        block_keyword,
-        Some(IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent)
-      );
-    let height_auto =
-      block_length.is_none() && (block_keyword.is_none() || block_keyword_is_content_based);
-    let available_block_border_box = containing_height
-      .map(|h| (h - margin_top - margin_bottom).max(0.0))
-      .unwrap_or(f32::INFINITY);
-
-    let intrinsic_block_sizes = if (block_keyword.is_some() && !block_keyword_is_content_based)
-      || min_block_keyword.is_some()
-      || max_block_keyword.is_some()
-    {
-      let factory = self.child_factory_for_cb(*nearest_positioned_cb);
-      let fc_type = child
-        .formatting_context()
-        .unwrap_or(FormattingContextType::Block);
-      let (min_base0, max_base0) = if fc_type == FormattingContextType::Block {
-        compute_intrinsic_block_sizes_without_block_size_constraints(self, child)?
-      } else {
-        let fc = factory.get(fc_type);
-        compute_intrinsic_block_sizes_without_block_size_constraints(fc.as_ref(), child)?
-      };
-
-      let border_top_base0 = resolve_border_side(
+      // Pre-resolve vertical edges so box-sizing and used-size overrides can convert border-box sizes
+      // into content sizes before laying out descendants.
+      let border_top = resolve_border_side(
         style,
         block_sides.0,
-        0.0,
+        containing_width,
         &self.font_context,
         self.viewport_size,
         root_font_metrics,
       );
-      let border_bottom_base0 = resolve_border_side(
+      let border_bottom = resolve_border_side(
         style,
         block_sides.1,
-        0.0,
+        containing_width,
         &self.font_context,
         self.viewport_size,
         root_font_metrics,
       );
-      let mut padding_top_base0 = resolve_padding_side(
+      let mut padding_top = resolve_padding_side(
         style,
         block_sides.0,
-        0.0,
+        containing_width,
         &self.font_context,
         self.viewport_size,
         root_font_metrics,
       );
-      let mut padding_bottom_base0 = resolve_padding_side(
+      let mut padding_bottom = resolve_padding_side(
         style,
         block_sides.1,
-        0.0,
+        containing_width,
         &self.font_context,
         self.viewport_size,
         root_font_metrics,
       );
+      let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+        && matches!(
+          style.overflow_x,
+          Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+        );
+      let mut reserved_horizontal_gutter = 0.0;
       if reserve_horizontal_gutter {
         let gutter = resolve_scrollbar_width(style);
-        if style.scrollbar_gutter.both_edges {
-          padding_top_base0 += gutter;
+        if gutter > 0.0 {
+          if style.scrollbar_gutter.both_edges {
+            padding_top += gutter;
+            reserved_horizontal_gutter += gutter;
+          }
+          padding_bottom += gutter;
+          reserved_horizontal_gutter += gutter;
         }
-        padding_bottom_base0 += gutter;
       }
-      let vertical_edges_base0 =
-        border_top_base0 + padding_top_base0 + padding_bottom_base0 + border_bottom_base0;
-      Some((
-        rebase_intrinsic_border_box_size(min_base0, vertical_edges_base0, vertical_edges),
-        rebase_intrinsic_border_box_size(max_base0, vertical_edges_base0, vertical_edges),
-      ))
-    } else {
-      None
-    };
+      let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
-    let mut specified_height = block_length.and_then(|h| {
-      resolve_length_with_percentage_metrics_and_root_font_metrics(
-        h,
-        containing_height_for_percentages,
-        self.viewport_size,
-        font_size,
-        style.root_font_size,
-        Some(style),
-        Some(&self.font_context),
-        self.factory.root_font_metrics(),
-      )
-    });
-    // Track whether the block-size we computed should establish a definite percentage base for
-    // descendants (CSS2.1 §10.5).
-    //
-    // Intrinsic sizing keywords like `min-content` depend on the element's own contents and must
-    // *not* be treated as definite bases for percentage heights, otherwise common patterns like
-    // `height: min-content` + `img { height: 100% }` create circular dependencies.
-    let mut block_size_definite_for_percentages = specified_height.is_some();
-    specified_height =
-      specified_height.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
-    if reserved_horizontal_gutter > 0.0
-      && block_length.is_some()
-      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
-    {
-      specified_height = specified_height.map(|h| (h - reserved_horizontal_gutter).max(0.0));
-    }
-    if let Some(height_keyword) = block_keyword {
-      if !block_keyword_is_content_based {
-        let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
-        let used_border_box = match height_keyword {
-          crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
-          crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
-          crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
-            if available_block_border_box.is_finite() {
-              available_block_border_box
-            } else {
-              intrinsic_max
-            }
-          },
-          crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-            let preferred_border = limit.and_then(|limit| {
-              resolve_length_with_percentage_metrics_and_root_font_metrics(
-                limit,
-                containing_height_for_percentages,
-                self.viewport_size,
-                font_size,
-                style.root_font_size,
-                Some(style),
-                Some(&self.font_context),
-                self.factory.root_font_metrics(),
-              )
-              .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            });
-            crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
-              Some(available_block_border_box),
-              preferred_border,
-              intrinsic_min,
-              intrinsic_max,
-            )
-          },
-          crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
-          use crate::style::types::BoxSizing;
-          use crate::style::types::CalcSizeBasis;
-          let basis_border = match calc.basis {
-            CalcSizeBasis::Auto => intrinsic_max,
-            CalcSizeBasis::MinContent => intrinsic_min,
-            CalcSizeBasis::MaxContent => intrinsic_max,
-            CalcSizeBasis::FillAvailable => {
+      // Create constraints for child layout.
+      let block_keyword_is_content_based = inline_is_horizontal
+        && matches!(
+          block_keyword,
+          Some(IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent)
+        );
+      let height_auto =
+        block_length.is_none() && (block_keyword.is_none() || block_keyword_is_content_based);
+      let available_block_border_box = containing_height
+        .map(|h| (h - margin_top - margin_bottom).max(0.0))
+        .unwrap_or(f32::INFINITY);
+
+      let intrinsic_block_sizes = if (block_keyword.is_some() && !block_keyword_is_content_based)
+        || min_block_keyword.is_some()
+        || max_block_keyword.is_some()
+      {
+        let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+        let fc_type = child
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let (min_base0, max_base0) = if fc_type == FormattingContextType::Block {
+          compute_intrinsic_block_sizes_without_block_size_constraints(self, child)?
+        } else {
+          let fc = factory.get(fc_type);
+          compute_intrinsic_block_sizes_without_block_size_constraints(fc.as_ref(), child)?
+        };
+
+        let border_top_base0 = resolve_border_side(
+          style,
+          block_sides.0,
+          0.0,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+        let border_bottom_base0 = resolve_border_side(
+          style,
+          block_sides.1,
+          0.0,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+        let mut padding_top_base0 = resolve_padding_side(
+          style,
+          block_sides.0,
+          0.0,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+        let mut padding_bottom_base0 = resolve_padding_side(
+          style,
+          block_sides.1,
+          0.0,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+        if reserve_horizontal_gutter {
+          let gutter = resolve_scrollbar_width(style);
+          if style.scrollbar_gutter.both_edges {
+            padding_top_base0 += gutter;
+          }
+          padding_bottom_base0 += gutter;
+        }
+        let vertical_edges_base0 =
+          border_top_base0 + padding_top_base0 + padding_bottom_base0 + border_bottom_base0;
+        Some((
+          rebase_intrinsic_border_box_size(min_base0, vertical_edges_base0, vertical_edges),
+          rebase_intrinsic_border_box_size(max_base0, vertical_edges_base0, vertical_edges),
+        ))
+      } else {
+        None
+      };
+
+      let mut specified_height = block_length.and_then(|h| {
+        resolve_length_with_percentage_metrics_and_root_font_metrics(
+          h,
+          containing_height_for_percentages,
+          self.viewport_size,
+          font_size,
+          style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
+          self.factory.root_font_metrics(),
+        )
+      });
+      // Track whether the block-size we computed should establish a definite percentage base for
+      // descendants (CSS2.1 §10.5).
+      //
+      // Intrinsic sizing keywords like `min-content` depend on the element's own contents and must
+      // *not* be treated as definite bases for percentage heights, otherwise common patterns like
+      // `height: min-content` + `img { height: 100% }` create circular dependencies.
+      let mut block_size_definite_for_percentages = specified_height.is_some();
+      specified_height =
+        specified_height.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+      if reserved_horizontal_gutter > 0.0
+        && block_length.is_some()
+        && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+      {
+        specified_height = specified_height.map(|h| (h - reserved_horizontal_gutter).max(0.0));
+      }
+      if let Some(height_keyword) = block_keyword {
+        if !block_keyword_is_content_based {
+          let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
+          let used_border_box = match height_keyword {
+            crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
+            crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+            crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
               if available_block_border_box.is_finite() {
                 available_block_border_box
               } else {
                 intrinsic_max
               }
             }
-            CalcSizeBasis::FitContent { limit } => {
-              let basis_border = match limit {
-                Some(limit) => resolve_length_with_percentage_metrics(
+            crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
+              let preferred_border = limit.and_then(|limit| {
+                resolve_length_with_percentage_metrics_and_root_font_metrics(
                   limit,
                   containing_height_for_percentages,
                   self.viewport_size,
@@ -1280,160 +1266,204 @@ impl BlockFormattingContext {
                   style.root_font_size,
                   Some(style),
                   Some(&self.font_context),
+                  self.factory.root_font_metrics(),
                 )
-                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-                .unwrap_or(f32::INFINITY),
-                None => available_block_border_box,
-              };
-              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-            }
-            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
-              len,
-              containing_height_for_percentages,
-              self.viewport_size,
-              font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(intrinsic_max),
-          }
-          .max(0.0);
-          let basis_content = (basis_border - vertical_edges).max(0.0);
-          let basis_specified = match style.box_sizing {
-            BoxSizing::ContentBox => basis_content,
-            BoxSizing::BorderBox => basis_border,
-          };
-          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-            .and_then(|expr_len| {
-              resolve_length_with_percentage_metrics(
-                expr_len,
-                containing_height_for_percentages,
-                self.viewport_size,
-                font_size,
-                style.root_font_size,
-                Some(style),
-                Some(&self.font_context),
+                .map(|resolved| {
+                  border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                })
+              });
+              crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+                Some(available_block_border_box),
+                preferred_border,
+                intrinsic_min,
+                intrinsic_max,
               )
-            })
-            .map(|resolved_specified| {
-              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
-            })
-            .unwrap_or(basis_border)
-          }
-        };
-        specified_height = Some((used_border_box - vertical_edges).max(0.0));
-        block_size_definite_for_percentages = matches!(
-          height_keyword,
-          crate::style::types::IntrinsicSizeKeyword::FillAvailable
-        ) && available_block_border_box.is_finite();
-      }
-    }
-    // `LayoutConstraints::used_border_box_*` describes the containing block's own used size (as
-    // computed by its parent formatting context). It is not a sizing constraint for this in-flow
-    // child: block-level in-flow boxes can overflow a definite-height containing block (CSS2.1
-    // §10.6.3), and should not be forced to fill its used block size.
-    if specified_height.is_none()
-      && height_auto
-      && block_axis_is_horizontal(style.writing_mode)
-      && available_block_border_box.is_finite()
-    {
-      // When flowing in a vertical/sideways writing mode, the block axis maps to the physical
-      // x-axis. `width: auto` should therefore stretch to fill the available block size of the
-      // containing block (mirroring the auto-width behavior for block boxes in horizontal writing
-      // modes) instead of collapsing to the content size.
-      specified_height = Some((available_block_border_box - vertical_edges).max(0.0));
-      block_size_definite_for_percentages = true;
-    }
-    // Compute inline size using CSS 2.1 Section 10.3.3 algorithm
-    let inline_sides = inline_axis_sides(style);
-    let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
-    let mut computed_width = compute_block_width(
-      style,
-      containing_width,
-      self.viewport_size,
-      root_font_metrics,
-      inline_sides,
-      inline_positive,
-      &self.font_context,
-    );
-    let width_auto = inline_length.is_none() && inline_keyword.is_none();
-    let inline_edges_for_fit = computed_width.border_left
-      + computed_width.padding_left
-      + computed_width.padding_right
-      + computed_width.border_right;
-    let available_inline_border_box = (containing_width
-      - resolve_margin_side(
-        style,
-        inline_sides.0,
-        containing_width,
-        &self.font_context,
-        self.viewport_size,
-        root_font_metrics,
-      )
-      - resolve_margin_side(
-        style,
-        inline_sides.1,
-        containing_width,
-        &self.font_context,
-        self.viewport_size,
-        root_font_metrics,
-      ))
-    .max(0.0);
-    let available_content_for_fit = (available_inline_border_box - inline_edges_for_fit).max(0.0);
-    let mut intrinsic_content_sizes = None;
-    if inline_length.is_none() {
-      if let Some(keyword) = inline_keyword {
-        let factory = self.child_factory_for_cb(*nearest_positioned_cb);
-        let fc_type = child
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        let (min_content, max_content) =
-          self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?;
-        intrinsic_content_sizes = Some((min_content, max_content));
-        let keyword_content = self.resolve_intrinsic_size_keyword_to_content_width(
-          keyword,
-          min_content,
-          max_content,
-          available_content_for_fit,
-          containing_width,
-          style,
-          inline_edges_for_fit,
-        );
-        let specified_width = match style.box_sizing {
-          crate::style::types::BoxSizing::ContentBox => keyword_content,
-          crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
-        };
-        let mut width_style = style.clone();
-        if inline_is_horizontal {
-          width_style.width = Some(Length::px(specified_width));
-          width_style.width_keyword = None;
-        } else {
-          width_style.height = Some(Length::px(specified_width));
-          width_style.height_keyword = None;
+            }
+            crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+              use crate::style::types::BoxSizing;
+              use crate::style::types::CalcSizeBasis;
+              let basis_border = match calc.basis {
+                CalcSizeBasis::Auto => intrinsic_max,
+                CalcSizeBasis::MinContent => intrinsic_min,
+                CalcSizeBasis::MaxContent => intrinsic_max,
+                CalcSizeBasis::FillAvailable => {
+                  if available_block_border_box.is_finite() {
+                    available_block_border_box
+                  } else {
+                    intrinsic_max
+                  }
+                }
+                CalcSizeBasis::FitContent { limit } => {
+                  let basis_border = match limit {
+                    Some(limit) => resolve_length_with_percentage_metrics(
+                      limit,
+                      containing_height_for_percentages,
+                      self.viewport_size,
+                      font_size,
+                      style.root_font_size,
+                      Some(style),
+                      Some(&self.font_context),
+                    )
+                    .map(|resolved| {
+                      border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                    })
+                    .unwrap_or(f32::INFINITY),
+                    None => available_block_border_box,
+                  };
+                  crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+                }
+                CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+                  len,
+                  containing_height_for_percentages,
+                  self.viewport_size,
+                  font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+                .map(|resolved| {
+                  border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                })
+                .unwrap_or(intrinsic_max),
+              }
+              .max(0.0);
+              let basis_content = (basis_border - vertical_edges).max(0.0);
+              let basis_specified = match style.box_sizing {
+                BoxSizing::ContentBox => basis_content,
+                BoxSizing::BorderBox => basis_border,
+              };
+              crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+                .and_then(|expr_sum| {
+                  crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+                })
+                .and_then(|expr_len| {
+                  resolve_length_with_percentage_metrics(
+                    expr_len,
+                    containing_height_for_percentages,
+                    self.viewport_size,
+                    font_size,
+                    style.root_font_size,
+                    Some(style),
+                    Some(&self.font_context),
+                  )
+                })
+                .map(|resolved_specified| {
+                  border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing)
+                    .max(0.0)
+                })
+                .unwrap_or(basis_border)
+            }
+          };
+          specified_height = Some((used_border_box - vertical_edges).max(0.0));
+          block_size_definite_for_percentages = matches!(
+            height_keyword,
+            crate::style::types::IntrinsicSizeKeyword::FillAvailable
+          ) && available_block_border_box.is_finite();
         }
-        computed_width = compute_block_width(
-          &width_style,
+      }
+      // `LayoutConstraints::used_border_box_*` describes the containing block's own used size (as
+      // computed by its parent formatting context). It is not a sizing constraint for this in-flow
+      // child: block-level in-flow boxes can overflow a definite-height containing block (CSS2.1
+      // §10.6.3), and should not be forced to fill its used block size.
+      if specified_height.is_none()
+        && height_auto
+        && block_axis_is_horizontal(style.writing_mode)
+        && available_block_border_box.is_finite()
+      {
+        // When flowing in a vertical/sideways writing mode, the block axis maps to the physical
+        // x-axis. `width: auto` should therefore stretch to fill the available block size of the
+        // containing block (mirroring the auto-width behavior for block boxes in horizontal writing
+        // modes) instead of collapsing to the content size.
+        specified_height = Some((available_block_border_box - vertical_edges).max(0.0));
+        block_size_definite_for_percentages = true;
+      }
+      // Compute inline size using CSS 2.1 Section 10.3.3 algorithm
+      let inline_sides = inline_axis_sides(style);
+      let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
+      let mut computed_width = compute_block_width(
+        style,
+        containing_width,
+        self.viewport_size,
+        root_font_metrics,
+        inline_sides,
+        inline_positive,
+        &self.font_context,
+      );
+      let width_auto = inline_length.is_none() && inline_keyword.is_none();
+      let inline_edges_for_fit = computed_width.border_left
+        + computed_width.padding_left
+        + computed_width.padding_right
+        + computed_width.border_right;
+      let available_inline_border_box = (containing_width
+        - resolve_margin_side(
+          style,
+          inline_sides.0,
           containing_width,
+          &self.font_context,
           self.viewport_size,
           root_font_metrics,
-          inline_sides,
-          inline_positive,
+        )
+        - resolve_margin_side(
+          style,
+          inline_sides.1,
+          containing_width,
           &self.font_context,
-        );
+          self.viewport_size,
+          root_font_metrics,
+        ))
+      .max(0.0);
+      let available_content_for_fit = (available_inline_border_box - inline_edges_for_fit).max(0.0);
+      let mut intrinsic_content_sizes = None;
+      if inline_length.is_none() {
+        if let Some(keyword) = inline_keyword {
+          let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+          let fc_type = child
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          let (min_content, max_content) =
+            self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?;
+          intrinsic_content_sizes = Some((min_content, max_content));
+          let keyword_content = self.resolve_intrinsic_size_keyword_to_content_width(
+            keyword,
+            min_content,
+            max_content,
+            available_content_for_fit,
+            containing_width,
+            style,
+            inline_edges_for_fit,
+          );
+          let specified_width = match style.box_sizing {
+            crate::style::types::BoxSizing::ContentBox => keyword_content,
+            crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
+          };
+          let mut width_style = style.clone();
+          if inline_is_horizontal {
+            width_style.width = Some(Length::px(specified_width));
+            width_style.width_keyword = None;
+          } else {
+            width_style.height = Some(Length::px(specified_width));
+            width_style.height_keyword = None;
+          }
+          computed_width = compute_block_width(
+            &width_style,
+            containing_width,
+            self.viewport_size,
+            root_font_metrics,
+            inline_sides,
+            inline_positive,
+            &self.font_context,
+          );
+        }
       }
-    }
-    if toggles.truthy("FASTR_LOG_BLOCK_WIDE")
-      && computed_width.total_width() > containing_width + 0.5
-    {
-      let selector = child
-        .debug_info
-        .as_ref()
-        .map(|d| d.to_selector())
-        .unwrap_or_else(|| "<child>".to_string());
-      eprintln!(
+      if toggles.truthy("FASTR_LOG_BLOCK_WIDE")
+        && computed_width.total_width() > containing_width + 0.5
+      {
+        let selector = child
+          .debug_info
+          .as_ref()
+          .map(|d| d.to_selector())
+          .unwrap_or_else(|| "<child>".to_string());
+        eprintln!(
                 "[block-wide] id={} selector={} containing_w={:.1} content_w={:.1} total_w={:.1} width_decl={:?} min_w={:?} max_w={:?} margins=({:.1},{:.1})",
                 child.id,
                 selector,
@@ -1446,239 +1476,80 @@ impl BlockFormattingContext {
                 computed_width.margin_left,
                 computed_width.margin_right,
             );
-    }
-    if width_auto {
-      if let (Some(ratio), Some(h)) = (
-        match style.aspect_ratio {
-          crate::style::types::AspectRatio::Ratio(ratio)
-          | crate::style::types::AspectRatio::AutoRatio(ratio) => Some(ratio),
-          crate::style::types::AspectRatio::Auto => None,
-        },
-        specified_height,
-      ) {
-        if ratio > 0.0 {
-          computed_width.content_width = if inline_is_horizontal {
-            h * ratio
-          } else {
-            h / ratio
-          };
+      }
+      if width_auto {
+        if let (Some(ratio), Some(h)) = (
+          match style.aspect_ratio {
+            crate::style::types::AspectRatio::Ratio(ratio)
+            | crate::style::types::AspectRatio::AutoRatio(ratio) => Some(ratio),
+            crate::style::types::AspectRatio::Auto => None,
+          },
+          specified_height,
+        ) {
+          if ratio > 0.0 {
+            computed_width.content_width = if inline_is_horizontal {
+              h * ratio
+            } else {
+              h / ratio
+            };
+          }
         }
       }
-    }
 
-    // Tables use a shrink-to-fit inline size when `width` is `auto` (CSS 2.1 §17.5.2).
-    // Without this, the block constraint equation would force auto-width tables to span the
-    // containing block, which then makes `table-layout: fixed` distribute slack into authored
-    // columns (CSS 2.1 §17.5.2.1) and breaks expected fixed-width column behavior.
-    let shrink_to_fit = style.shrink_to_fit_inline_size || matches!(style.display, Display::Table);
-    if shrink_to_fit && width_auto {
-      let inline_edges = computed_width.border_left
-        + computed_width.padding_left
-        + computed_width.padding_right
-        + computed_width.border_right;
-      let margin_left = resolve_margin_side(
-        style,
-        inline_sides.0,
-        containing_width,
-        &self.font_context,
-        self.viewport_size,
-        root_font_metrics,
-      );
-      let margin_right = resolve_margin_side(
-        style,
-        inline_sides.1,
-        containing_width,
-        &self.font_context,
-        self.viewport_size,
-        root_font_metrics,
-      );
-
-      let factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
-      let fc_type = child
-        .formatting_context()
-        .unwrap_or(FormattingContextType::Block);
-      let fc = factory.get(fc_type);
-      let (preferred_min_content, preferred_content) = fc.compute_intrinsic_inline_sizes(child)?;
-
-      let edges_base0 = inline_axis_padding_and_borders(
-        style,
-        0.0,
-        self.viewport_size,
-        &self.font_context,
-        root_font_metrics,
-      );
-      let preferred_min =
-        rebase_intrinsic_border_box_size(preferred_min_content, edges_base0, inline_edges);
-      let preferred =
-        rebase_intrinsic_border_box_size(preferred_content, edges_base0, inline_edges);
-      let available = (containing_width - margin_left - margin_right).max(0.0);
-      let shrink_border_box = preferred.min(available.max(preferred_min));
-      let shrink_content = (shrink_border_box - inline_edges).max(0.0);
-      let (margin_left, margin_right) = recompute_margins_for_width(
-        style,
-        containing_width,
-        shrink_content,
-        computed_width.border_left,
-        computed_width.padding_left,
-        computed_width.padding_right,
-        computed_width.border_right,
-        self.viewport_size,
-        &self.font_context,
-        root_font_metrics,
-      );
-      computed_width.content_width = shrink_content;
-      computed_width.margin_left = margin_left;
-      computed_width.margin_right = margin_right;
-    }
-
-    // CSS 2.1 §10.4: apply min/max inline-size constraints after computing the
-    // tentative used width/margins. When clamping changes the used width, we
-    // need to re-resolve auto margins so centering works (e.g. max-width +
-    // margin: 0 auto).
-    //
-    // In-flow block children are laid out via `layout_block_child` (not via a recursive
-    // BlockFormattingContext::layout call), so we must apply min/max sizing here to keep wrappers
-    // like `max-width: 920px; margin: 0 auto` from inflating to the full containing block width.
-    let horizontal_edges = computed_width.border_left
-      + computed_width.padding_left
-      + computed_width.padding_right
-      + computed_width.border_right;
-    let reserved_vertical_gutter =
-      if style.box_sizing == crate::style::types::BoxSizing::ContentBox {
-        let reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
-        (reservation.left + reservation.right).max(0.0)
-      } else {
-        0.0
-      };
-    let min_width = if let Some(keyword) = min_inline_keyword {
-      if intrinsic_content_sizes.is_none() {
-        let factory = self.child_factory_for_cb(*nearest_positioned_cb);
-        let fc_type = child
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        intrinsic_content_sizes =
-          Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?);
-      }
-      let (min_content, max_content) = intrinsic_content_sizes.unwrap();
-      self.resolve_intrinsic_size_keyword_to_content_width(
-        keyword,
-        min_content,
-        max_content,
-        available_content_for_fit,
-        containing_width,
-        style,
-        horizontal_edges,
-      )
-    } else {
-      min_inline_length
-        .as_ref()
-        .map(|l| {
-          resolve_length_for_width(
-            *l,
-            containing_width,
-            style,
-            &self.font_context,
-            self.viewport_size,
-            root_font_metrics,
-          )
-        })
-        .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
-        .unwrap_or(0.0)
-    };
-    let min_width = if reserved_vertical_gutter > 0.0
-      && min_inline_keyword.is_none()
-      && min_inline_length.is_some()
-    {
-      (min_width - reserved_vertical_gutter).max(0.0)
-    } else {
-      min_width
-    };
-
-    let max_width = if let Some(keyword) = max_inline_keyword {
-      if intrinsic_content_sizes.is_none() {
-        let factory = self.child_factory_for_cb(*nearest_positioned_cb);
-        let fc_type = child
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        intrinsic_content_sizes =
-          Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?);
-      }
-      let (min_content, max_content) = intrinsic_content_sizes.unwrap();
-      self.resolve_intrinsic_size_keyword_to_content_width(
-        keyword,
-        min_content,
-        max_content,
-        available_content_for_fit,
-        containing_width,
-        style,
-        horizontal_edges,
-      )
-    } else {
-      max_inline_length
-        .as_ref()
-        .map(|l| {
-          resolve_length_for_width(
-            *l,
-            containing_width,
-            style,
-            &self.font_context,
-            self.viewport_size,
-            root_font_metrics,
-          )
-        })
-        .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
-        .unwrap_or(f32::INFINITY)
-    };
-    let max_width = if reserved_vertical_gutter > 0.0
-      && max_inline_keyword.is_none()
-      && max_inline_length.is_some()
-      && max_width.is_finite()
-    {
-      (max_width - reserved_vertical_gutter).max(0.0)
-    } else {
-      max_width
-    };
-    let max_width = if max_width.is_finite() && max_width < min_width {
-      min_width
-    } else {
-      max_width
-    };
-    let clamped_content_width =
-      crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
-    if clamped_content_width != computed_width.content_width {
-      let (margin_left, margin_right) = recompute_margins_for_width(
-        style,
-        containing_width,
-        clamped_content_width,
-        computed_width.border_left,
-        computed_width.padding_left,
-        computed_width.padding_right,
-        computed_width.border_right,
-        self.viewport_size,
-        &self.font_context,
-        root_font_metrics,
-      );
-      computed_width.content_width = clamped_content_width;
-      computed_width.margin_left = margin_left;
-      computed_width.margin_right = margin_right;
-    }
-
-    if width_auto {
-      let used_border_box = if inline_is_horizontal {
-        constraints.used_border_box_width
-      } else {
-        constraints.used_border_box_height
-      };
-      if let Some(used_border_box) = used_border_box {
-        let horizontal_edges = computed_width.border_left
+      // Tables use a shrink-to-fit inline size when `width` is `auto` (CSS 2.1 §17.5.2).
+      // Without this, the block constraint equation would force auto-width tables to span the
+      // containing block, which then makes `table-layout: fixed` distribute slack into authored
+      // columns (CSS 2.1 §17.5.2.1) and breaks expected fixed-width column behavior.
+      let shrink_to_fit =
+        style.shrink_to_fit_inline_size || matches!(style.display, Display::Table);
+      if shrink_to_fit && width_auto {
+        let inline_edges = computed_width.border_left
           + computed_width.padding_left
           + computed_width.padding_right
           + computed_width.border_right;
-        let used_content = (used_border_box - horizontal_edges).max(0.0);
+        let margin_left = resolve_margin_side(
+          style,
+          inline_sides.0,
+          containing_width,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+        let margin_right = resolve_margin_side(
+          style,
+          inline_sides.1,
+          containing_width,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+
+        let factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
+        let fc_type = child
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let fc = factory.get(fc_type);
+        let (preferred_min_content, preferred_content) =
+          fc.compute_intrinsic_inline_sizes(child)?;
+
+        let edges_base0 = inline_axis_padding_and_borders(
+          style,
+          0.0,
+          self.viewport_size,
+          &self.font_context,
+          root_font_metrics,
+        );
+        let preferred_min =
+          rebase_intrinsic_border_box_size(preferred_min_content, edges_base0, inline_edges);
+        let preferred =
+          rebase_intrinsic_border_box_size(preferred_content, edges_base0, inline_edges);
+        let available = (containing_width - margin_left - margin_right).max(0.0);
+        let shrink_border_box = preferred.min(available.max(preferred_min));
+        let shrink_content = (shrink_border_box - inline_edges).max(0.0);
         let (margin_left, margin_right) = recompute_margins_for_width(
           style,
           containing_width,
-          used_content,
+          shrink_content,
           computed_width.border_left,
           computed_width.padding_left,
           computed_width.padding_right,
@@ -1687,157 +1558,325 @@ impl BlockFormattingContext {
           &self.font_context,
           root_font_metrics,
         );
-        computed_width.content_width = used_content;
+        computed_width.content_width = shrink_content;
         computed_width.margin_left = margin_left;
         computed_width.margin_right = margin_right;
       }
-    }
 
-    // CSS 2.1 §9.5.1: A block formatting context (BFC) root's border box must not overlap the
-    // margin boxes of floats in the same formatting context.
-    //
-    // FastRender already performs float avoidance for BFC roots by shifting/clamping their
-    // horizontal position, and (when the border box is too wide to fit next to floats) pushing the
-    // box down below them.
-    //
-    // However, browsers allow *auto-sized* BFC roots to shrink to the available width next to
-    // floats rather than always being pushed down. This is a common pattern for float-based
-    // two-column layouts (e.g. `float:left` sidebar + `overflow:hidden` content column).
-    //
-    // Implement this behavior by clamping the used content inline-size when:
-    // - The element is in-flow (not itself a float / abspos)
-    // - The inline-size is `auto`
-    // - There are overlapping floats that reduce the available width band at this Y position
-    //
-    // Min/max sizing has already been applied above; do not shrink below the computed `min-width`
-    // content size. If the minimum cannot fit in the float band, later float avoidance will still
-    // push the box down below floats.
-    if width_auto
-      && establishes_bfc(style)
-      && !style.float.is_floating()
-      && matches!(style.position, Position::Static | Position::Relative)
-      && (if inline_is_horizontal {
-        constraints.used_border_box_width.is_none()
-      } else {
-        constraints.used_border_box_height.is_none()
-      })
-    {
-      if let Some(ctx) = external_float_ctx.as_deref() {
-        let query_y = external_float_base_y + box_y;
-        let (_, available_width) = ctx.available_width_at_y_in_containing_block(
-          query_y,
-          external_float_base_x,
+      // CSS 2.1 §10.4: apply min/max inline-size constraints after computing the
+      // tentative used width/margins. When clamping changes the used width, we
+      // need to re-resolve auto margins so centering works (e.g. max-width +
+      // margin: 0 auto).
+      //
+      // In-flow block children are laid out via `layout_block_child` (not via a recursive
+      // BlockFormattingContext::layout call), so we must apply min/max sizing here to keep wrappers
+      // like `max-width: 920px; margin: 0 auto` from inflating to the full containing block width.
+      let horizontal_edges = computed_width.border_left
+        + computed_width.padding_left
+        + computed_width.padding_right
+        + computed_width.border_right;
+      let reserved_vertical_gutter =
+        if style.box_sizing == crate::style::types::BoxSizing::ContentBox {
+          let reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
+          (reservation.left + reservation.right).max(0.0)
+        } else {
+          0.0
+        };
+      let min_width = if let Some(keyword) = min_inline_keyword {
+        if intrinsic_content_sizes.is_none() {
+          let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+          let fc_type = child
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          intrinsic_content_sizes = Some(
+            self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?,
+          );
+        }
+        let (min_content, max_content) = intrinsic_content_sizes.unwrap();
+        self.resolve_intrinsic_size_keyword_to_content_width(
+          keyword,
+          min_content,
+          max_content,
+          available_content_for_fit,
           containing_width,
+          style,
+          horizontal_edges,
+        )
+      } else {
+        min_inline_length
+          .as_ref()
+          .map(|l| {
+            resolve_length_for_width(
+              *l,
+              containing_width,
+              style,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            )
+          })
+          .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
+          .unwrap_or(0.0)
+      };
+      let min_width = if reserved_vertical_gutter > 0.0
+        && min_inline_keyword.is_none()
+        && min_inline_length.is_some()
+      {
+        (min_width - reserved_vertical_gutter).max(0.0)
+      } else {
+        min_width
+      };
+
+      let max_width = if let Some(keyword) = max_inline_keyword {
+        if intrinsic_content_sizes.is_none() {
+          let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+          let fc_type = child
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          intrinsic_content_sizes = Some(
+            self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?,
+          );
+        }
+        let (min_content, max_content) = intrinsic_content_sizes.unwrap();
+        self.resolve_intrinsic_size_keyword_to_content_width(
+          keyword,
+          min_content,
+          max_content,
+          available_content_for_fit,
+          containing_width,
+          style,
+          horizontal_edges,
+        )
+      } else {
+        max_inline_length
+          .as_ref()
+          .map(|l| {
+            resolve_length_for_width(
+              *l,
+              containing_width,
+              style,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            )
+          })
+          .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
+          .unwrap_or(f32::INFINITY)
+      };
+      let max_width = if reserved_vertical_gutter > 0.0
+        && max_inline_keyword.is_none()
+        && max_inline_length.is_some()
+        && max_width.is_finite()
+      {
+        (max_width - reserved_vertical_gutter).max(0.0)
+      } else {
+        max_width
+      };
+      let max_width = if max_width.is_finite() && max_width < min_width {
+        min_width
+      } else {
+        max_width
+      };
+      let clamped_content_width =
+        crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
+      if clamped_content_width != computed_width.content_width {
+        let (margin_left, margin_right) = recompute_margins_for_width(
+          style,
+          containing_width,
+          clamped_content_width,
+          computed_width.border_left,
+          computed_width.padding_left,
+          computed_width.padding_right,
+          computed_width.border_right,
+          self.viewport_size,
+          &self.font_context,
+          root_font_metrics,
         );
-        // Allow a small epsilon to avoid layout instability from tiny float rounding errors.
-        const FLOAT_FIT_EPSILON: f32 = 0.01;
-        let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
-        if has_overlapping_floats {
-          let inline_edges = computed_width.border_left
+        computed_width.content_width = clamped_content_width;
+        computed_width.margin_left = margin_left;
+        computed_width.margin_right = margin_right;
+      }
+
+      if width_auto {
+        let used_border_box = if inline_is_horizontal {
+          constraints.used_border_box_width
+        } else {
+          constraints.used_border_box_height
+        };
+        if let Some(used_border_box) = used_border_box {
+          let horizontal_edges = computed_width.border_left
             + computed_width.padding_left
             + computed_width.padding_right
             + computed_width.border_right;
-          let available_content = (available_width - inline_edges).max(0.0);
-          if available_content.is_finite()
-            && available_content + FLOAT_FIT_EPSILON < computed_width.content_width
-            && available_content + FLOAT_FIT_EPSILON >= min_width
-          {
-            computed_width.content_width = available_content;
-          }
+          let used_content = (used_border_box - horizontal_edges).max(0.0);
+          let (margin_left, margin_right) = recompute_margins_for_width(
+            style,
+            containing_width,
+            used_content,
+            computed_width.border_left,
+            computed_width.padding_left,
+            computed_width.padding_right,
+            computed_width.border_right,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          );
+          computed_width.content_width = used_content;
+          computed_width.margin_left = margin_left;
+          computed_width.margin_right = margin_right;
         }
       }
-    }
 
-    let aspect_ratio_block_size_hint = if height_auto && specified_height.is_none() {
-      match style.aspect_ratio {
-        crate::style::types::AspectRatio::Ratio(ratio)
-        | crate::style::types::AspectRatio::AutoRatio(ratio) => {
-          if ratio > 0.0 && computed_width.content_width.is_finite() {
-            let raw = if inline_is_horizontal {
-              computed_width.content_width / ratio
-            } else {
-              computed_width.content_width * ratio
-            };
-            raw.is_finite().then_some(raw.max(0.0))
-          } else {
-            None
-          }
-        }
-        crate::style::types::AspectRatio::Auto => None,
-      }
-    } else {
-      None
-    };
-
-    // Definite block-size base used for descendant percentage resolution and containing block
-    // percentage offsets. Prefer the explicitly resolved size, but fall back to the ratio-derived
-    // size when `block-size:auto` + `aspect-ratio` yields a definite used size.
-    let specified_height_base = block_size_definite_for_percentages
-      .then(|| specified_height.filter(|h| h.is_finite()).map(|h| h.max(0.0)))
-      .flatten();
-    let child_block_size_base = specified_height_base.or(aspect_ratio_block_size_hint);
-    let child_height_space = specified_height_base
-      .map(AvailableSpace::Definite)
-      .unwrap_or(AvailableSpace::Indefinite);
-    let mut block_percentage_base = child_block_size_base;
-    if block_percentage_base.is_none()
-      && parent.id == 1
-      && child.generated_pseudo.is_none()
-      && self.factory.quirks_mode() == QuirksMode::Quirks
-    {
-      // In quirks mode, browsers treat the `<body>` element as having a definite height for the
-      // purpose of percentage resolution, even when its own `height` is `auto`. This allows common
-      // legacy patterns like `.container { height: 100% }` (without `html, body { height: 100% }`)
-      // to size to the viewport and enable `justify-content: center` vertical centering.
+      // CSS 2.1 §9.5.1: A block formatting context (BFC) root's border box must not overlap the
+      // margin boxes of floats in the same formatting context.
       //
-      // The root element always receives a definite block percentage base from the initial
-      // containing block; propagate that base to the principal root child so descendants can
-      // resolve percentages against the viewport.
-      let viewport_block_size = if inline_is_horizontal {
-        self.viewport_size.height
+      // FastRender already performs float avoidance for BFC roots by shifting/clamping their
+      // horizontal position, and (when the border box is too wide to fit next to floats) pushing the
+      // box down below them.
+      //
+      // However, browsers allow *auto-sized* BFC roots to shrink to the available width next to
+      // floats rather than always being pushed down. This is a common pattern for float-based
+      // two-column layouts (e.g. `float:left` sidebar + `overflow:hidden` content column).
+      //
+      // Implement this behavior by clamping the used content inline-size when:
+      // - The element is in-flow (not itself a float / abspos)
+      // - The inline-size is `auto`
+      // - There are overlapping floats that reduce the available width band at this Y position
+      //
+      // Min/max sizing has already been applied above; do not shrink below the computed `min-width`
+      // content size. If the minimum cannot fit in the float band, later float avoidance will still
+      // push the box down below floats.
+      if width_auto
+        && establishes_bfc(style)
+        && !style.float.is_floating()
+        && matches!(style.position, Position::Static | Position::Relative)
+        && (if inline_is_horizontal {
+          constraints.used_border_box_width.is_none()
+        } else {
+          constraints.used_border_box_height.is_none()
+        })
+      {
+        if let Some(ctx) = external_float_ctx.as_deref() {
+          let query_y = external_float_base_y + box_y;
+          let (_, available_width) = ctx.available_width_at_y_in_containing_block(
+            query_y,
+            external_float_base_x,
+            containing_width,
+          );
+          // Allow a small epsilon to avoid layout instability from tiny float rounding errors.
+          const FLOAT_FIT_EPSILON: f32 = 0.01;
+          let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
+          if has_overlapping_floats {
+            let inline_edges = computed_width.border_left
+              + computed_width.padding_left
+              + computed_width.padding_right
+              + computed_width.border_right;
+            let available_content = (available_width - inline_edges).max(0.0);
+            if available_content.is_finite()
+              && available_content + FLOAT_FIT_EPSILON < computed_width.content_width
+              && available_content + FLOAT_FIT_EPSILON >= min_width
+            {
+              computed_width.content_width = available_content;
+            }
+          }
+        }
+      }
+
+      let aspect_ratio_block_size_hint = if height_auto && specified_height.is_none() {
+        match style.aspect_ratio {
+          crate::style::types::AspectRatio::Ratio(ratio)
+          | crate::style::types::AspectRatio::AutoRatio(ratio) => {
+            if ratio > 0.0 && computed_width.content_width.is_finite() {
+              let raw = if inline_is_horizontal {
+                computed_width.content_width / ratio
+              } else {
+                computed_width.content_width * ratio
+              };
+              raw.is_finite().then_some(raw.max(0.0))
+            } else {
+              None
+            }
+          }
+          crate::style::types::AspectRatio::Auto => None,
+        }
       } else {
-        self.viewport_size.width
+        None
       };
-      // Treat the root child as if it fills the viewport *content* box (excluding its own block
-      // margins) so `height: 100%` descendants match browser quirks behavior without forcing the
-      // document to overflow by the UA default body margins.
-      let viewport_block_size = viewport_block_size - margin_top - margin_bottom;
-      block_percentage_base =
-        viewport_block_size.is_finite().then_some(viewport_block_size.max(0.0));
-    }
 
-    let child_constraints = if inline_is_horizontal {
-      LayoutConstraints::new(
-        AvailableSpace::Definite(computed_width.content_width),
-        child_height_space,
-      )
-    } else {
-      LayoutConstraints::new(
-        child_height_space,
-        AvailableSpace::Definite(computed_width.content_width),
-      )
-    }
-    .with_inline_percentage_base(Some(computed_width.content_width))
-    .with_block_percentage_base(block_percentage_base);
+      // Definite block-size base used for descendant percentage resolution and containing block
+      // percentage offsets. Prefer the explicitly resolved size, but fall back to the ratio-derived
+      // size when `block-size:auto` + `aspect-ratio` yields a definite used size.
+      let specified_height_base = block_size_definite_for_percentages
+        .then(|| {
+          specified_height
+            .filter(|h| h.is_finite())
+            .map(|h| h.max(0.0))
+        })
+        .flatten();
+      let child_block_size_base = specified_height_base.or(aspect_ratio_block_size_hint);
+      let child_height_space = specified_height_base
+        .map(AvailableSpace::Definite)
+        .unwrap_or(AvailableSpace::Indefinite);
+      let mut block_percentage_base = child_block_size_base;
+      if block_percentage_base.is_none()
+        && parent.id == 1
+        && child.generated_pseudo.is_none()
+        && self.factory.quirks_mode() == QuirksMode::Quirks
+      {
+        // In quirks mode, browsers treat the `<body>` element as having a definite height for the
+        // purpose of percentage resolution, even when its own `height` is `auto`. This allows common
+        // legacy patterns like `.container { height: 100% }` (without `html, body { height: 100% }`)
+        // to size to the viewport and enable `justify-content: center` vertical centering.
+        //
+        // The root element always receives a definite block percentage base from the initial
+        // containing block; propagate that base to the principal root child so descendants can
+        // resolve percentages against the viewport.
+        let viewport_block_size = if inline_is_horizontal {
+          self.viewport_size.height
+        } else {
+          self.viewport_size.width
+        };
+        // Treat the root child as if it fills the viewport *content* box (excluding its own block
+        // margins) so `height: 100%` descendants match browser quirks behavior without forcing the
+        // document to overflow by the UA default body margins.
+        let viewport_block_size = viewport_block_size - margin_top - margin_bottom;
+        block_percentage_base = viewport_block_size
+          .is_finite()
+          .then_some(viewport_block_size.max(0.0));
+      }
 
-    // Check if this child establishes a different formatting context
-    let fc_type = child.formatting_context();
-    let log_flex_child = toggles.truthy("FASTR_LOG_FLEX_CHILD");
-    let log_flex_child_ids = toggles
-      .usize_list("FASTR_LOG_FLEX_CHILD_IDS")
-      .unwrap_or_default();
+      let child_constraints = if inline_is_horizontal {
+        LayoutConstraints::new(
+          AvailableSpace::Definite(computed_width.content_width),
+          child_height_space,
+        )
+      } else {
+        LayoutConstraints::new(
+          child_height_space,
+          AvailableSpace::Definite(computed_width.content_width),
+        )
+      }
+      .with_inline_percentage_base(Some(computed_width.content_width))
+      .with_block_percentage_base(block_percentage_base);
 
-    if matches!(
-      fc_type,
-      Some(FormattingContextType::Flex | FormattingContextType::Grid)
-    ) {
-      if log_flex_child || log_flex_child_ids.contains(&child.id) {
-        let child_selector = child
-          .debug_info
-          .as_ref()
-          .map(|d| d.to_selector())
-          .unwrap_or_else(|| "<child>".to_string());
-        eprintln!(
+      // Check if this child establishes a different formatting context
+      let fc_type = child.formatting_context();
+      let log_flex_child = toggles.truthy("FASTR_LOG_FLEX_CHILD");
+      let log_flex_child_ids = toggles
+        .usize_list("FASTR_LOG_FLEX_CHILD_IDS")
+        .unwrap_or_default();
+
+      if matches!(
+        fc_type,
+        Some(FormattingContextType::Flex | FormattingContextType::Grid)
+      ) {
+        if log_flex_child || log_flex_child_ids.contains(&child.id) {
+          let child_selector = child
+            .debug_info
+            .as_ref()
+            .map(|d| d.to_selector())
+            .unwrap_or_else(|| "<child>".to_string());
+          eprintln!(
                     "[flex-child-constraint] parent_id={} child_id={} child_sel={} containing={:.1} content_w={:.1} total_w={:.1} constraint_w={:?} margins=({:.1},{:.1}) width={:?} min_w={:?} max_w={:?} viewport_w={:.1} style_margins=({:?},{:?}) parent_style_width={:?} parent_min_w={:?} parent_max_w={:?}",
                     parent.id,
                     child.id,
@@ -1858,25 +1897,25 @@ impl BlockFormattingContext {
                     parent.style.min_width,
                     parent.style.max_width,
                 );
-      }
-      if log_wide_flex {
-        let content_w = computed_width.content_width;
-        let total_w = computed_width.total_width();
-        let constraint_w = child_constraints.width();
-        if content_w > self.viewport_size.width + 0.5
-          || total_w > self.viewport_size.width + 0.5
-          || constraint_w
-            .map(|w| w > self.viewport_size.width + 0.5)
-            .unwrap_or(false)
-          || content_w > containing_width + 0.5
-          || total_w > containing_width + 0.5
-        {
-          let selector = child
-            .debug_info
-            .as_ref()
-            .map(|d| d.to_selector())
-            .unwrap_or_else(|| "<anonymous>".to_string());
-          eprintln!(
+        }
+        if log_wide_flex {
+          let content_w = computed_width.content_width;
+          let total_w = computed_width.total_width();
+          let constraint_w = child_constraints.width();
+          if content_w > self.viewport_size.width + 0.5
+            || total_w > self.viewport_size.width + 0.5
+            || constraint_w
+              .map(|w| w > self.viewport_size.width + 0.5)
+              .unwrap_or(false)
+            || content_w > containing_width + 0.5
+            || total_w > containing_width + 0.5
+          {
+            let selector = child
+              .debug_info
+              .as_ref()
+              .map(|d| d.to_selector())
+              .unwrap_or_else(|| "<anonymous>".to_string());
+            eprintln!(
                         "[flex-constraint-wide] parent_id={} child_id={:?} selector={} containing={:.1} content_w={:.1} total_w={:.1} constraint_w={:?} margins=({:.1},{:.1}) width={:?} min_w={:?} max_w={:?} viewport_w={:.1}",
                         parent.id,
                         child.id,
@@ -1892,20 +1931,20 @@ impl BlockFormattingContext {
                     child.style.max_width,
                     self.viewport_size.width,
                 );
+          }
         }
-      }
-      if toggles.truthy("FASTR_LOG_NARROW_FLEX") && computed_width.content_width < 150.0 {
-        // Compute how much auto margins and percentage padding/borders left for content.
-        let horiz_edges = computed_width.border_left
-          + computed_width.padding_left
-          + computed_width.padding_right
-          + computed_width.border_right;
-        let selector = child
-          .debug_info
-          .as_ref()
-          .map(|d| d.to_selector())
-          .unwrap_or_else(|| "<anonymous>".to_string());
-        eprintln!(
+        if toggles.truthy("FASTR_LOG_NARROW_FLEX") && computed_width.content_width < 150.0 {
+          // Compute how much auto margins and percentage padding/borders left for content.
+          let horiz_edges = computed_width.border_left
+            + computed_width.padding_left
+            + computed_width.padding_right
+            + computed_width.border_right;
+          let selector = child
+            .debug_info
+            .as_ref()
+            .map(|d| d.to_selector())
+            .unwrap_or_else(|| "<anonymous>".to_string());
+          eprintln!(
                     "[flex-constraint-narrow] child_id={:?} selector={} containing={:.1} content_w={:.1} total_w={:.1} constraint_w={:?} margins=({:.1},{:.1}) width={:?} min_w={:?} max_w={:?} viewport_w={:.1} edges={:.1} auto_width={:?}",
                     child.id,
                     selector,
@@ -1922,565 +1961,548 @@ impl BlockFormattingContext {
                     horiz_edges,
                     child.style.width.is_none(),
                 );
+        }
       }
-    }
 
-    // If this block establishes a new containing block for absolute/fixed descendants (via
-    // positioning, transforms, filters, containment, etc.), propagate that updated containing
-    // block into the descendant layout call. Otherwise absolutely-positioned descendants inside
-    // inline content can incorrectly resolve percentages against an ancestor CB (e.g. the
-    // viewport).
-    let establishes_positioned_cb = style.establishes_abs_containing_block();
-    let establishes_fixed_cb = style.establishes_fixed_containing_block();
-    let content_origin = Point::new(
-      computed_width.border_left + computed_width.padding_left,
-      border_top + padding_top,
-    );
-    // Child fragments are produced in the block's *content* coordinate space (0,0 at the content
-    // edge). Represent this block's padding box (the containing block for abs/fixed descendants)
-    // in that same coordinate space: the padding edge is offset from the content edge by the
-    // negative padding amounts.
-    let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
-    let content_height_base = child_block_size_base.unwrap_or(0.0);
-    let padding_size = Size::new(
-      computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
-      content_height_base + padding_top + padding_bottom,
-    );
-    let cb_block_base = child_block_size_base.map(|h| h + padding_top + padding_bottom);
-    let mut box_y = box_y;
-    let should_relayout_abspos_descendants_for_cb_height = establishes_positioned_cb
-      && cb_block_base.is_none()
-      && has_abspos_descendant_needing_used_cb_height(child);
-    let mut external_float_ctx = external_float_ctx;
-    // CSS 2.1 §9.5.1: boxes that establish a new block formatting context must not overlap the
-    // margin boxes of floats in the same formatting context. Real pages use this for clearfix
-    // patterns (`overflow:hidden`, `display: table`, etc.). Without applying float avoidance here,
-    // BFC roots can be laid out starting at x=0 and end up painting underneath floats.
-    let mut float_avoidance_offset = 0.0;
-    if establishes_bfc(style) {
-      if let Some(ctx) = external_float_ctx.as_deref() {
-        let border_box_width = computed_width.border_box_width();
-        let border_box_width = if border_box_width.is_finite() {
-          border_box_width.max(0.0)
-        } else {
-          0.0
-        };
+      // If this block establishes a new containing block for absolute/fixed descendants (via
+      // positioning, transforms, filters, containment, etc.), propagate that updated containing
+      // block into the descendant layout call. Otherwise absolutely-positioned descendants inside
+      // inline content can incorrectly resolve percentages against an ancestor CB (e.g. the
+      // viewport).
+      let establishes_positioned_cb = style.establishes_abs_containing_block();
+      let establishes_fixed_cb = style.establishes_fixed_containing_block();
+      let content_origin = Point::new(
+        computed_width.border_left + computed_width.padding_left,
+        border_top + padding_top,
+      );
+      // Child fragments are produced in the block's *content* coordinate space (0,0 at the content
+      // edge). Represent this block's padding box (the containing block for abs/fixed descendants)
+      // in that same coordinate space: the padding edge is offset from the content edge by the
+      // negative padding amounts.
+      let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
+      let content_height_base = child_block_size_base.unwrap_or(0.0);
+      let padding_size = Size::new(
+        computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
+        content_height_base + padding_top + padding_bottom,
+      );
+      let cb_block_base = child_block_size_base.map(|h| h + padding_top + padding_bottom);
+      let mut box_y = box_y;
+      let should_relayout_abspos_descendants_for_cb_height = establishes_positioned_cb
+        && cb_block_base.is_none()
+        && has_abspos_descendant_needing_used_cb_height(child);
+      let mut external_float_ctx = external_float_ctx;
+      // CSS 2.1 §9.5.1: boxes that establish a new block formatting context must not overlap the
+      // margin boxes of floats in the same formatting context. Real pages use this for clearfix
+      // patterns (`overflow:hidden`, `display: table`, etc.). Without applying float avoidance here,
+      // BFC roots can be laid out starting at x=0 and end up painting underneath floats.
+      let mut float_avoidance_offset = 0.0;
+      if establishes_bfc(style) {
+        if let Some(ctx) = external_float_ctx.as_deref() {
+          let border_box_width = computed_width.border_box_width();
+          let border_box_width = if border_box_width.is_finite() {
+            border_box_width.max(0.0)
+          } else {
+            0.0
+          };
 
-        // If the float context does not reduce the available width at this Y, there are no
-        // overlapping floats to avoid, so do not clamp margins. In particular, Bootstrap gutters
-        // rely on negative margins on flex containers (e.g. `.row { margin-left: -12px; }`) which
-        // legitimately overflow the containing block even in the absence of floats.
-        const FLOAT_FIT_EPSILON: f32 = 0.01;
+          // If the float context does not reduce the available width at this Y, there are no
+          // overlapping floats to avoid, so do not clamp margins. In particular, Bootstrap gutters
+          // rely on negative margins on flex containers (e.g. `.row { margin-left: -12px; }`) which
+          // legitimately overflow the containing block even in the absence of floats.
+          const FLOAT_FIT_EPSILON: f32 = 0.01;
 
-        // If the block's border box cannot fit in the available band next to floats at the
-        // computed y-position, push it down until it does (matching the float placement loop).
-        if border_box_width > 0.0 {
-          let min_y = external_float_base_y + box_y;
-          let (_, available_width) = ctx.available_width_at_y_in_containing_block(
-            min_y,
-            external_float_base_x,
-            containing_width,
-          );
-          let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
-
-          if has_overlapping_floats && available_width + FLOAT_FIT_EPSILON < border_box_width {
-            let fit_y = ctx.find_fit_in_containing_block(
-              border_box_width,
-              0.0,
+          // If the block's border box cannot fit in the available band next to floats at the
+          // computed y-position, push it down until it does (matching the float placement loop).
+          if border_box_width > 0.0 {
+            let min_y = external_float_base_y + box_y;
+            let (_, available_width) = ctx.available_width_at_y_in_containing_block(
               min_y,
               external_float_base_x,
               containing_width,
             );
-            if fit_y.is_finite() && fit_y > min_y {
-              box_y += fit_y - min_y;
-            }
-          }
+            let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
 
-          let query_y = external_float_base_y + box_y;
-          let (left_edge, available_width) = ctx.available_width_at_y_in_containing_block(
-            query_y,
-            external_float_base_x,
-            containing_width,
-          );
-          let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
-          if has_overlapping_floats {
-            let band_left = (left_edge - external_float_base_x).max(0.0);
-            let band_right = (band_left + available_width).max(band_left);
-
-            let desired_x = computed_width.margin_left;
-            let max_x = band_right - border_box_width;
-            let clamped_x = if max_x >= band_left {
-              desired_x.clamp(band_left, max_x)
-            } else {
-              band_left
-            };
-            float_avoidance_offset = clamped_x - desired_x;
-          }
-        }
-      }
-    }
-    let child_border_origin =
-      Point::new(float_avoidance_offset + computed_width.margin_left, box_y);
-    // Translate viewport-relative containing blocks into the child's coordinate space. Without
-    // this, absolute/fixed positioned descendants can mistakenly include the parent's placement
-    // offset (e.g. after parent/child margin collapsing shifts the child).
-    let cb_translation_origin =
-      if child_border_origin.x.is_finite() && child_border_origin.y.is_finite() {
-        child_border_origin
-      } else {
-        Point::ZERO
-      };
-    let child_cb_delta = Point::new(-cb_translation_origin.x, -cb_translation_origin.y);
-    let inherited_positioned_cb = nearest_positioned_cb.translate(child_cb_delta);
-    // Viewport-fixed positioned elements are represented in absolute (viewport) coordinates for
-    // paint. Keep the initial containing block un-translated so fixed descendants keep absolute
-    // bounds; fixed CB ancestors (e.g. transforms) still translate like normal CBs.
-    let viewport_fixed_cb = ContainingBlock::viewport(self.viewport_size);
-    let inherited_fixed_cb = if *nearest_fixed_cb == viewport_fixed_cb {
-      *nearest_fixed_cb
-    } else {
-      nearest_fixed_cb.translate(child_cb_delta)
-    };
-
-    let mut descendant_nearest_positioned_cb = if establishes_positioned_cb {
-      ContainingBlock::with_viewport_and_bases(
-        Rect::new(padding_origin, padding_size),
-        self.viewport_size,
-        Some(padding_size.width),
-        cb_block_base,
-      )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction)
-    } else {
-      inherited_positioned_cb
-    };
-    let mut descendant_nearest_fixed_cb = if establishes_fixed_cb {
-      ContainingBlock::with_viewport_and_bases(
-        Rect::new(padding_origin, padding_size),
-        self.viewport_size,
-        Some(padding_size.width),
-        cb_block_base,
-      )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction)
-    } else {
-      inherited_fixed_cb
-    };
-
-    let box_width = computed_width.border_box_width();
-    let box_width = if box_width.is_finite() {
-      box_width.max(0.0)
-    } else {
-      0.0
-    };
-    let child_content_origin = Point::new(
-      child_border_origin.x + content_origin.x,
-      child_border_origin.y + content_origin.y,
-    );
-    let child_viewport =
-      paint_viewport.translate(Point::new(-child_content_origin.x, -child_content_origin.y));
-
-    let skip_contents = match style.content_visibility {
-      crate::style::types::ContentVisibility::Hidden => true,
-      crate::style::types::ContentVisibility::Auto => {
-        // A deterministic heuristic aligned with Chrome: if the element's border box does not
-        // intersect the paint viewport, treat it as skipped content and size the box using
-        // `contain-intrinsic-size` fallback rules.
-        let activation_margin = toggles
-          .f64("FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX")
-          .unwrap_or(0.0)
-          .max(0.0) as f32;
-        let viewport = if activation_margin > 0.0 {
-          paint_viewport.inflate(activation_margin)
-        } else {
-          paint_viewport
-        };
-
-        let estimated_border_box_block_size = specified_height
-          .filter(|h| h.is_finite())
-          .map(|h| h.max(0.0))
-          .or_else(|| {
-            let axis_is_width = block_axis_is_horizontal(style.writing_mode);
-            let axis = if axis_is_width {
-              style.contain_intrinsic_width
-            } else {
-              style.contain_intrinsic_height
-            };
-            axis
-              .auto
-              .then(|| {
-                remembered_size_cache_lookup(child).map(|size| {
-                  if axis_is_width {
-                    size.width
-                  } else {
-                    size.height
-                  }
-                })
-              })
-              .flatten()
-              .filter(|v| v.is_finite())
-              .map(|v| v.max(0.0))
-              .or_else(|| {
-                axis
-                  .length
-                  .and_then(|l| {
-                    resolve_length_with_percentage_metrics_and_root_font_metrics(
-                      l,
-                      containing_height,
-                      self.viewport_size,
-                      style.font_size,
-                      style.root_font_size,
-                      Some(style),
-                      Some(&self.font_context),
-                      self.factory.root_font_metrics(),
-                    )
-                  })
-                  .map(|v| v.max(0.0))
-              })
-          })
-          .and_then(|content_estimate| {
-            let border_box = content_estimate + vertical_edges;
-            border_box.is_finite().then_some(border_box.max(0.0))
-          });
-
-        if let Some(block_size) = estimated_border_box_block_size {
-          let border_box = Rect::from_xywh(child_border_origin.x, box_y, box_width, block_size);
-          !viewport.intersects(border_box)
-        } else {
-          // Without a definite placeholder block-size (explicit height or a resolved
-          // `contain-intrinsic-*` length), skipping layout would collapse the element to 0px (the
-          // initial `contain-intrinsic-size: auto` has no fallback length) and pull later siblings
-          // upward. In that case, keep laying out to determine sizing; paint skipping still
-          // applies.
-          false
-        }
-      }
-      crate::style::types::ContentVisibility::Visible => false,
-    };
-
-    let use_columns = Self::is_multicol_container(style);
-
-    // Child establishes a non-block formatting context (flex/grid/table). Delegate layout to the
-    // appropriate formatting context and return its fragment directly.
-    //
-    // The block formatting context still owns margin collapsing and used width resolution for
-    // block-level boxes. Provide the resolved border-box size via `used_border_box_*` so the child
-    // formatting context doesn't re-run block wrapper logic (which would double-apply
-    // padding/borders and can generate duplicate fragments for the same box).
-    if !skip_contents {
-      if let Some(fc_type) = fc_type {
-        if fc_type != FormattingContextType::Block {
-          // Translate viewport-relative state (scroll offset + positioned/fixed containing blocks)
-          // into the child's coordinate space so nested formatting contexts can correctly resolve
-          // absolute/fixed positioning and `content-visibility:auto` decisions.
-          let factory = self
-            .child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb)
-            .translated_for_child(child_border_origin);
-          // Layout skipping (`content-visibility:auto`) is viewport-relative, so translate the
-          // viewport scroll offset into the child’s local coordinate space before invoking layout.
-          // Note: `viewport_scroll()` consults the thread-local override stack, so compute the
-          // translated scroll explicitly rather than reading it back from `factory`.
-          let parent_scroll = self.factory.viewport_scroll();
-          let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
-            parent_scroll
-          } else {
-            Point::ZERO
-          };
-          let child_scroll = Point::new(
-            parent_scroll.x - child_border_origin.x,
-            parent_scroll.y - child_border_origin.y,
-          );
-          let fc = factory.get(fc_type);
-
-          let used_border_box_inline = computed_width.border_box_width();
-          let used_border_box_block =
-            specified_height.map(|h| (h.max(0.0) + vertical_edges).max(0.0));
-          // Block layout performs sizing/margin resolution in logical inline/block coordinates, but
-          // flex/grid/table formatting contexts operate in the physical width/height axes. Map the
-          // resolved border-box size into physical space and then convert the resulting fragment
-          // tree back into the block formatting context’s logical space so the parent's
-          // axis-conversion step applies exactly once.
-          let (used_border_box_width, used_border_box_height) = if inline_is_horizontal {
-            (Some(used_border_box_inline), used_border_box_block)
-          } else {
-            (used_border_box_block, Some(used_border_box_inline))
-          };
-           // When delegating to a non-block formatting context (flex/grid/table), keep the
-           // *available size* in the block axis consistent with what block layout would pass to a
-           // normal child: only constrain it when the element has a definite block-size
-           // (`height`/`width` in the logical block axis, or a used-size override).
-          //
-          // Passing the parent's available height here (e.g. the viewport height for the root
-          // element) incorrectly forces auto-sized flex/grid containers to fill the viewport,
-          // pulling later siblings upward (notably visible on `walmart.com` where the footer would
-          // appear in the initial viewport).
-           let fc_constraints = if inline_is_horizontal {
-             // Block formatting contexts do not constrain in-flow children in the block axis.
-             // A definite available height may still be present (e.g. the viewport height), but
-             // treating it as an actual sizing constraint causes nested flex/grid/table layout
-             // to incorrectly stretch auto-sized containers (notably when `align-content: stretch`,
-             // which is common and the initial value for grid containers).
-             //
-             // Use the same block-axis available size we'd pass to a normal block child
-             // (`child_height_space`) when we're in scrollable layout. Percentage heights still
-             // resolve via `block_percentage_base` (see `containing_height_for_percentages`), so we
-             // can drop the definite available height without losing percentage resolution.
-             let mut available_height = constraints.available_height;
-             if crate::layout::formatting_context::fragmentainer_block_size_hint().is_none()
-               && matches!(available_height, AvailableSpace::Definite(_))
-             {
-               available_height = child_height_space;
-             }
-             LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height)
-           } else {
-             LayoutConstraints::new(
-               child_height_space,
-                AvailableSpace::Definite(containing_width),
-              )
-          }
-          .with_inline_percentage_base(Some(containing_width))
-          .with_block_percentage_base(containing_height_for_percentages)
-          .with_used_border_box_size(used_border_box_width, used_border_box_height);
-          let mut fragment = FormattingContextFactory::with_viewport_scroll_override(
-            child_scroll,
-            || fc.layout(child, &fc_constraints),
-          )?;
-          let physical_width = fragment.bounds.width();
-          let physical_height = fragment.bounds.height();
-          // Non-block formatting contexts (grid/flex/table) return fragments in physical
-          // coordinates. The block formatting context keeps fragments in logical coordinates
-          // until `convert_fragment_axes` runs at the end of `layout`, so convert the subtree
-          // back into logical space here to avoid double-applying the writing-mode transform.
-          fragment = unconvert_fragment_axes_root(fragment);
-          let desired_origin = child_border_origin;
-          let offset = Point::new(
-            desired_origin.x - fragment.bounds.x(),
-            desired_origin.y - fragment.bounds.y(),
-          );
-          if offset != Point::ZERO {
-            fragment.translate_root_in_place(offset);
-          }
-          let child_block_is_horizontal = block_axis_is_horizontal(style.writing_mode);
-          let border_box_block = if child_block_is_horizontal {
-            physical_width
-          } else {
-            physical_height
-          };
-          let remembered_block = (border_box_block - vertical_edges).max(0.0);
-          let remembered_inline = computed_width.content_width;
-          let remembered = if block_axis_is_horizontal(style.writing_mode) {
-            Size::new(remembered_block, remembered_inline)
-          } else {
-            Size::new(remembered_inline, remembered_block)
-          };
-          remembered_size_cache_store(child, remembered);
-          let parent_block_is_horizontal = block_axis_is_horizontal(parent.style.writing_mode);
-          let (inline_size_in_parent, block_size_in_parent) = if parent_block_is_horizontal {
-            (physical_height, physical_width)
-          } else {
-            (physical_width, physical_height)
-          };
-          fragment.bounds = Rect::from_xywh(
-            fragment.bounds.x(),
-            fragment.bounds.y(),
-            inline_size_in_parent,
-            block_size_in_parent,
-          );
-          fragment.block_metadata = Some(BlockFragmentMetadata {
-            margin_top,
-            margin_bottom,
-            ..BlockFragmentMetadata::default()
-          });
-          self.maybe_attach_footnote_anchor(
-            child,
-            containing_width,
-            nearest_positioned_cb,
-            nearest_fixed_cb,
-            &mut fragment,
-          )?;
-
-          return Ok(fragment);
-        }
-      }
-    }
-
-    let mut float_ctx_snapshot = if should_relayout_abspos_descendants_for_cb_height {
-      external_float_ctx.as_deref().cloned()
-    } else {
-      None
-    };
-
-    let (mut child_fragments, mut content_height, mut positioned_children, mut column_info) =
-      if skip_contents {
-        (Vec::new(), 0.0, Vec::new(), None)
-      } else if use_columns {
-        let (frags, height, positioned, info) = self.layout_multicolumn(
-          child,
-          &child_constraints,
-          &descendant_nearest_positioned_cb,
-          &descendant_nearest_fixed_cb,
-          computed_width.content_width,
-          child_viewport,
-        )?;
-        (frags, height, positioned, info)
-      } else {
-        let (frags, height, positioned) = self.layout_children_with_external_floats(
-          child,
-          &child_constraints,
-          &descendant_nearest_positioned_cb,
-          &descendant_nearest_fixed_cb,
-          child_viewport,
-          external_float_ctx.as_deref_mut(),
-          external_float_base_x + child_content_origin.x,
-          external_float_base_y + child_content_origin.y,
-        )?;
-        (frags, height, positioned, None)
-      };
-
-    if skip_contents || style.containment.size {
-      let axis_is_width = block_axis_is_horizontal(style.writing_mode);
-      let axis = if axis_is_width {
-        style.contain_intrinsic_width
-      } else {
-        style.contain_intrinsic_height
-      };
-      let remembered = axis
-        .auto
-        .then(|| {
-          remembered_size_cache_lookup(child).map(|size| {
-            if axis_is_width {
-              size.width
-            } else {
-              size.height
-            }
-          })
-        })
-        .flatten();
-      content_height = crate::layout::utils::resolve_contain_intrinsic_size_axis(
-        axis,
-        remembered,
-        containing_height,
-        self.viewport_size,
-        style.font_size,
-        style.root_font_size,
-      );
-    }
-
-    // Child fragments are produced in the block's content coordinate space (0,0 at the content
-    // box). Translate them into the fragment's local coordinate space (border box) so padding and
-    // borders correctly offset in-flow content.
-    if content_origin.x != 0.0 || content_origin.y != 0.0 {
-      for fragment in child_fragments.iter_mut() {
-        fragment.translate_root_in_place(content_origin);
-      }
-    }
-
-    // Height computation (CSS 2.1 Section 10.6.3) with aspect-ratio adjustment (CSS Sizing L4)
-    let mut height = specified_height.unwrap_or(content_height);
-    if specified_height.is_none() {
-      if let crate::style::types::AspectRatio::Ratio(ratio)
-      | crate::style::types::AspectRatio::AutoRatio(ratio) = style.aspect_ratio
-      {
-        if ratio > 0.0 && computed_width.content_width.is_finite() {
-          let ratio_height = if inline_is_horizontal {
-            computed_width.content_width / ratio
-          } else {
-            computed_width.content_width * ratio
-          };
-          // Do not shrink below content-based height
-          height = height.max(ratio_height);
-        }
-      }
-    }
-
-    // Apply min/max height constraints
-    let min_height_keyword = if inline_is_horizontal {
-      style.min_height_keyword
-    } else {
-      style.min_width_keyword
-    };
-    let min_height = if let Some(keyword) = min_height_keyword {
-      let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
-      let min_border = match keyword {
-        crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
-        crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
-        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
-          if available_block_border_box.is_finite() {
-            available_block_border_box
-          } else {
-            intrinsic_max
-          }
-        }
-        crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          let basis_border = match limit {
-            Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
-              limit,
-              containing_height_for_percentages,
-              self.viewport_size,
-              font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-              self.factory.root_font_metrics(),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(f32::INFINITY),
-            None => available_block_border_box,
-          };
-          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-        }
-        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
-          use crate::style::types::BoxSizing;
-          use crate::style::types::CalcSizeBasis;
-          let basis_border = match calc.basis {
-            CalcSizeBasis::Auto => intrinsic_max,
-            CalcSizeBasis::MinContent => intrinsic_min,
-            CalcSizeBasis::MaxContent => intrinsic_max,
-            CalcSizeBasis::FillAvailable => {
-              if available_block_border_box.is_finite() {
-                available_block_border_box
-              } else {
-                intrinsic_max
+            if has_overlapping_floats && available_width + FLOAT_FIT_EPSILON < border_box_width {
+              let fit_y = ctx.find_fit_in_containing_block(
+                border_box_width,
+                0.0,
+                min_y,
+                external_float_base_x,
+                containing_width,
+              );
+              if fit_y.is_finite() && fit_y > min_y {
+                box_y += fit_y - min_y;
               }
             }
-            CalcSizeBasis::FitContent { limit } => {
-              let basis_border = match limit {
-                Some(limit) => resolve_length_with_percentage_metrics(
-                  limit,
-                  containing_height_for_percentages,
-                  self.viewport_size,
-                  font_size,
-                  style.root_font_size,
-                  Some(style),
-                  Some(&self.font_context),
-                )
-                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-                .unwrap_or(f32::INFINITY),
-                None => available_block_border_box,
+
+            let query_y = external_float_base_y + box_y;
+            let (left_edge, available_width) = ctx.available_width_at_y_in_containing_block(
+              query_y,
+              external_float_base_x,
+              containing_width,
+            );
+            let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
+            if has_overlapping_floats {
+              let band_left = (left_edge - external_float_base_x).max(0.0);
+              let band_right = (band_left + available_width).max(band_left);
+
+              let desired_x = computed_width.margin_left;
+              let max_x = band_right - border_box_width;
+              let clamped_x = if max_x >= band_left {
+                desired_x.clamp(band_left, max_x)
+              } else {
+                band_left
               };
-              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+              float_avoidance_offset = clamped_x - desired_x;
             }
-            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
-              len,
-              containing_height_for_percentages,
-              self.viewport_size,
-              font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(intrinsic_max),
           }
-          .max(0.0);
-          let basis_content = (basis_border - vertical_edges).max(0.0);
-          let basis_specified = match style.box_sizing {
-            BoxSizing::ContentBox => basis_content,
-            BoxSizing::BorderBox => basis_border,
+        }
+      }
+      let child_border_origin =
+        Point::new(float_avoidance_offset + computed_width.margin_left, box_y);
+      // Translate viewport-relative containing blocks into the child's coordinate space. Without
+      // this, absolute/fixed positioned descendants can mistakenly include the parent's placement
+      // offset (e.g. after parent/child margin collapsing shifts the child).
+      let cb_translation_origin =
+        if child_border_origin.x.is_finite() && child_border_origin.y.is_finite() {
+          child_border_origin
+        } else {
+          Point::ZERO
+        };
+      let child_cb_delta = Point::new(-cb_translation_origin.x, -cb_translation_origin.y);
+      let inherited_positioned_cb = nearest_positioned_cb.translate(child_cb_delta);
+      // Viewport-fixed positioned elements are represented in absolute (viewport) coordinates for
+      // paint. Keep the initial containing block un-translated so fixed descendants keep absolute
+      // bounds; fixed CB ancestors (e.g. transforms) still translate like normal CBs.
+      let viewport_fixed_cb = ContainingBlock::viewport(self.viewport_size);
+      let inherited_fixed_cb = if *nearest_fixed_cb == viewport_fixed_cb {
+        *nearest_fixed_cb
+      } else {
+        nearest_fixed_cb.translate(child_cb_delta)
+      };
+
+      let mut descendant_nearest_positioned_cb = if establishes_positioned_cb {
+        ContainingBlock::with_viewport_and_bases(
+          Rect::new(padding_origin, padding_size),
+          self.viewport_size,
+          Some(padding_size.width),
+          cb_block_base,
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction)
+      } else {
+        inherited_positioned_cb
+      };
+      let mut descendant_nearest_fixed_cb = if establishes_fixed_cb {
+        ContainingBlock::with_viewport_and_bases(
+          Rect::new(padding_origin, padding_size),
+          self.viewport_size,
+          Some(padding_size.width),
+          cb_block_base,
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction)
+      } else {
+        inherited_fixed_cb
+      };
+
+      let box_width = computed_width.border_box_width();
+      let box_width = if box_width.is_finite() {
+        box_width.max(0.0)
+      } else {
+        0.0
+      };
+      let child_content_origin = Point::new(
+        child_border_origin.x + content_origin.x,
+        child_border_origin.y + content_origin.y,
+      );
+      let child_viewport =
+        paint_viewport.translate(Point::new(-child_content_origin.x, -child_content_origin.y));
+
+      let skip_contents = match style.content_visibility {
+        crate::style::types::ContentVisibility::Hidden => true,
+        crate::style::types::ContentVisibility::Auto => {
+          // A deterministic heuristic aligned with Chrome: if the element's border box does not
+          // intersect the paint viewport, treat it as skipped content and size the box using
+          // `contain-intrinsic-size` fallback rules.
+          let activation_margin = toggles
+            .f64("FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX")
+            .unwrap_or(0.0)
+            .max(0.0) as f32;
+          let viewport = if activation_margin > 0.0 {
+            paint_viewport.inflate(activation_margin)
+          } else {
+            paint_viewport
           };
-          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-            .and_then(|expr_len| {
-              resolve_length_with_percentage_metrics(
-                expr_len,
+
+          let estimated_border_box_block_size = specified_height
+            .filter(|h| h.is_finite())
+            .map(|h| h.max(0.0))
+            .or_else(|| {
+              let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+              let axis = if axis_is_width {
+                style.contain_intrinsic_width
+              } else {
+                style.contain_intrinsic_height
+              };
+              axis
+                .auto
+                .then(|| {
+                  remembered_size_cache_lookup(child).map(|size| {
+                    if axis_is_width {
+                      size.width
+                    } else {
+                      size.height
+                    }
+                  })
+                })
+                .flatten()
+                .filter(|v| v.is_finite())
+                .map(|v| v.max(0.0))
+                .or_else(|| {
+                  axis
+                    .length
+                    .and_then(|l| {
+                      resolve_length_with_percentage_metrics_and_root_font_metrics(
+                        l,
+                        containing_height,
+                        self.viewport_size,
+                        style.font_size,
+                        style.root_font_size,
+                        Some(style),
+                        Some(&self.font_context),
+                        self.factory.root_font_metrics(),
+                      )
+                    })
+                    .map(|v| v.max(0.0))
+                })
+            })
+            .and_then(|content_estimate| {
+              let border_box = content_estimate + vertical_edges;
+              border_box.is_finite().then_some(border_box.max(0.0))
+            });
+
+          if let Some(block_size) = estimated_border_box_block_size {
+            let border_box = Rect::from_xywh(child_border_origin.x, box_y, box_width, block_size);
+            !viewport.intersects(border_box)
+          } else {
+            // Without a definite placeholder block-size (explicit height or a resolved
+            // `contain-intrinsic-*` length), skipping layout would collapse the element to 0px (the
+            // initial `contain-intrinsic-size: auto` has no fallback length) and pull later siblings
+            // upward. In that case, keep laying out to determine sizing; paint skipping still
+            // applies.
+            false
+          }
+        }
+        crate::style::types::ContentVisibility::Visible => false,
+      };
+
+      let use_columns = Self::is_multicol_container(style);
+
+      // Child establishes a non-block formatting context (flex/grid/table). Delegate layout to the
+      // appropriate formatting context and return its fragment directly.
+      //
+      // The block formatting context still owns margin collapsing and used width resolution for
+      // block-level boxes. Provide the resolved border-box size via `used_border_box_*` so the child
+      // formatting context doesn't re-run block wrapper logic (which would double-apply
+      // padding/borders and can generate duplicate fragments for the same box).
+      if !skip_contents {
+        if let Some(fc_type) = fc_type {
+          if fc_type != FormattingContextType::Block {
+            // Translate viewport-relative state (scroll offset + positioned/fixed containing blocks)
+            // into the child's coordinate space so nested formatting contexts can correctly resolve
+            // absolute/fixed positioning and `content-visibility:auto` decisions.
+            let factory = self
+              .child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb)
+              .translated_for_child(child_border_origin);
+            // Layout skipping (`content-visibility:auto`) is viewport-relative, so translate the
+            // viewport scroll offset into the child’s local coordinate space before invoking layout.
+            // Note: `viewport_scroll()` consults the thread-local override stack, so compute the
+            // translated scroll explicitly rather than reading it back from `factory`.
+            let parent_scroll = self.factory.viewport_scroll();
+            let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
+              parent_scroll
+            } else {
+              Point::ZERO
+            };
+            let child_scroll = Point::new(
+              parent_scroll.x - child_border_origin.x,
+              parent_scroll.y - child_border_origin.y,
+            );
+            let fc = factory.get(fc_type);
+
+            let used_border_box_inline = computed_width.border_box_width();
+            let used_border_box_block =
+              specified_height.map(|h| (h.max(0.0) + vertical_edges).max(0.0));
+            // Block layout performs sizing/margin resolution in logical inline/block coordinates, but
+            // flex/grid/table formatting contexts operate in the physical width/height axes. Map the
+            // resolved border-box size into physical space and then convert the resulting fragment
+            // tree back into the block formatting context’s logical space so the parent's
+            // axis-conversion step applies exactly once.
+            let (used_border_box_width, used_border_box_height) = if inline_is_horizontal {
+              (Some(used_border_box_inline), used_border_box_block)
+            } else {
+              (used_border_box_block, Some(used_border_box_inline))
+            };
+            // When delegating to a non-block formatting context (flex/grid/table), keep the
+            // *available size* in the block axis consistent with what block layout would pass to a
+            // normal child: only constrain it when the element has a definite block-size
+            // (`height`/`width` in the logical block axis, or a used-size override).
+            //
+            // Passing the parent's available height here (e.g. the viewport height for the root
+            // element) incorrectly forces auto-sized flex/grid containers to fill the viewport,
+            // pulling later siblings upward (notably visible on `walmart.com` where the footer would
+            // appear in the initial viewport).
+            let fc_constraints = if inline_is_horizontal {
+              // Block formatting contexts do not constrain in-flow children in the block axis.
+              // A definite available height may still be present (e.g. the viewport height), but
+              // treating it as an actual sizing constraint causes nested flex/grid/table layout
+              // to incorrectly stretch auto-sized containers (notably when `align-content: stretch`,
+              // which is common and the initial value for grid containers).
+              //
+              // Use the same block-axis available size we'd pass to a normal block child
+              // (`child_height_space`) when we're in scrollable layout. Percentage heights still
+              // resolve via `block_percentage_base` (see `containing_height_for_percentages`), so we
+              // can drop the definite available height without losing percentage resolution.
+              let mut available_height = constraints.available_height;
+              if crate::layout::formatting_context::fragmentainer_block_size_hint().is_none()
+                && matches!(available_height, AvailableSpace::Definite(_))
+              {
+                available_height = child_height_space;
+              }
+              LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height)
+            } else {
+              LayoutConstraints::new(
+                child_height_space,
+                AvailableSpace::Definite(containing_width),
+              )
+            }
+            .with_inline_percentage_base(Some(containing_width))
+            .with_block_percentage_base(containing_height_for_percentages)
+            .with_used_border_box_size(used_border_box_width, used_border_box_height);
+            let mut fragment =
+              FormattingContextFactory::with_viewport_scroll_override(child_scroll, || {
+                fc.layout(child, &fc_constraints)
+              })?;
+            let physical_width = fragment.bounds.width();
+            let physical_height = fragment.bounds.height();
+            // Non-block formatting contexts (grid/flex/table) return fragments in physical
+            // coordinates. The block formatting context keeps fragments in logical coordinates
+            // until `convert_fragment_axes` runs at the end of `layout`, so convert the subtree
+            // back into logical space here to avoid double-applying the writing-mode transform.
+            fragment = unconvert_fragment_axes_root(fragment);
+            let desired_origin = child_border_origin;
+            let offset = Point::new(
+              desired_origin.x - fragment.bounds.x(),
+              desired_origin.y - fragment.bounds.y(),
+            );
+            if offset != Point::ZERO {
+              fragment.translate_root_in_place(offset);
+            }
+            let child_block_is_horizontal = block_axis_is_horizontal(style.writing_mode);
+            let border_box_block = if child_block_is_horizontal {
+              physical_width
+            } else {
+              physical_height
+            };
+            let remembered_block = (border_box_block - vertical_edges).max(0.0);
+            let remembered_inline = computed_width.content_width;
+            let remembered = if block_axis_is_horizontal(style.writing_mode) {
+              Size::new(remembered_block, remembered_inline)
+            } else {
+              Size::new(remembered_inline, remembered_block)
+            };
+            remembered_size_cache_store(child, remembered);
+            let parent_block_is_horizontal = block_axis_is_horizontal(parent.style.writing_mode);
+            let (inline_size_in_parent, block_size_in_parent) = if parent_block_is_horizontal {
+              (physical_height, physical_width)
+            } else {
+              (physical_width, physical_height)
+            };
+            fragment.bounds = Rect::from_xywh(
+              fragment.bounds.x(),
+              fragment.bounds.y(),
+              inline_size_in_parent,
+              block_size_in_parent,
+            );
+            fragment.block_metadata = Some(BlockFragmentMetadata {
+              margin_top,
+              margin_bottom,
+              ..BlockFragmentMetadata::default()
+            });
+            self.maybe_attach_footnote_anchor(
+              child,
+              containing_width,
+              nearest_positioned_cb,
+              nearest_fixed_cb,
+              &mut fragment,
+            )?;
+
+            return Ok(fragment);
+          }
+        }
+      }
+
+      let mut float_ctx_snapshot = if should_relayout_abspos_descendants_for_cb_height {
+        external_float_ctx.as_deref().cloned()
+      } else {
+        None
+      };
+
+      let (mut child_fragments, mut content_height, mut positioned_children, mut column_info) =
+        if skip_contents {
+          (Vec::new(), 0.0, Vec::new(), None)
+        } else if use_columns {
+          let (frags, height, positioned, info) = self.layout_multicolumn(
+            child,
+            &child_constraints,
+            &descendant_nearest_positioned_cb,
+            &descendant_nearest_fixed_cb,
+            computed_width.content_width,
+            child_viewport,
+          )?;
+          (frags, height, positioned, info)
+        } else {
+          let (frags, height, positioned) = self.layout_children_with_external_floats(
+            child,
+            &child_constraints,
+            &descendant_nearest_positioned_cb,
+            &descendant_nearest_fixed_cb,
+            child_viewport,
+            external_float_ctx.as_deref_mut(),
+            external_float_base_x + child_content_origin.x,
+            external_float_base_y + child_content_origin.y,
+          )?;
+          (frags, height, positioned, None)
+        };
+
+      if skip_contents || style.containment.size {
+        let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+        let axis = if axis_is_width {
+          style.contain_intrinsic_width
+        } else {
+          style.contain_intrinsic_height
+        };
+        let remembered = axis
+          .auto
+          .then(|| {
+            remembered_size_cache_lookup(child).map(|size| {
+              if axis_is_width {
+                size.width
+              } else {
+                size.height
+              }
+            })
+          })
+          .flatten();
+        content_height = crate::layout::utils::resolve_contain_intrinsic_size_axis(
+          axis,
+          remembered,
+          containing_height,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+        );
+      }
+
+      // Child fragments are produced in the block's content coordinate space (0,0 at the content
+      // box). Translate them into the fragment's local coordinate space (border box) so padding and
+      // borders correctly offset in-flow content.
+      if content_origin.x != 0.0 || content_origin.y != 0.0 {
+        for fragment in child_fragments.iter_mut() {
+          fragment.translate_root_in_place(content_origin);
+        }
+      }
+
+      // Height computation (CSS 2.1 Section 10.6.3) with aspect-ratio adjustment (CSS Sizing L4)
+      let mut height = specified_height.unwrap_or(content_height);
+      if specified_height.is_none() {
+        if let crate::style::types::AspectRatio::Ratio(ratio)
+        | crate::style::types::AspectRatio::AutoRatio(ratio) = style.aspect_ratio
+        {
+          if ratio > 0.0 && computed_width.content_width.is_finite() {
+            let ratio_height = if inline_is_horizontal {
+              computed_width.content_width / ratio
+            } else {
+              computed_width.content_width * ratio
+            };
+            // Do not shrink below content-based height
+            height = height.max(ratio_height);
+          }
+        }
+      }
+
+      // Apply min/max height constraints
+      let min_height_keyword = if inline_is_horizontal {
+        style.min_height_keyword
+      } else {
+        style.min_width_keyword
+      };
+      let min_height = if let Some(keyword) = min_height_keyword {
+        let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
+        let min_border = match keyword {
+          crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
+          crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+          crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+            if available_block_border_box.is_finite() {
+              available_block_border_box
+            } else {
+              intrinsic_max
+            }
+          }
+          crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
+            let basis_border = match limit {
+              Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
+                limit,
+                containing_height_for_percentages,
+                self.viewport_size,
+                font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+                self.factory.root_font_metrics(),
+              )
+              .map(|resolved| {
+                border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+              })
+              .unwrap_or(f32::INFINITY),
+              None => available_block_border_box,
+            };
+            crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+          }
+          crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+            use crate::style::types::BoxSizing;
+            use crate::style::types::CalcSizeBasis;
+            let basis_border = match calc.basis {
+              CalcSizeBasis::Auto => intrinsic_max,
+              CalcSizeBasis::MinContent => intrinsic_min,
+              CalcSizeBasis::MaxContent => intrinsic_max,
+              CalcSizeBasis::FillAvailable => {
+                if available_block_border_box.is_finite() {
+                  available_block_border_box
+                } else {
+                  intrinsic_max
+                }
+              }
+              CalcSizeBasis::FitContent { limit } => {
+                let basis_border = match limit {
+                  Some(limit) => resolve_length_with_percentage_metrics(
+                    limit,
+                    containing_height_for_percentages,
+                    self.viewport_size,
+                    font_size,
+                    style.root_font_size,
+                    Some(style),
+                    Some(&self.font_context),
+                  )
+                  .map(|resolved| {
+                    border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                  })
+                  .unwrap_or(f32::INFINITY),
+                  None => available_block_border_box,
+                };
+                crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+              }
+              CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+                len,
                 containing_height_for_percentages,
                 self.viewport_size,
                 font_size,
@@ -2488,20 +2510,46 @@ impl BlockFormattingContext {
                 Some(style),
                 Some(&self.font_context),
               )
-            })
-            .map(|resolved_specified| {
-              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
-            })
-            .unwrap_or(basis_border)
-        }
-      };
-      (min_border - vertical_edges).max(0.0)
-    } else {
-      (if inline_is_horizontal {
-        style.min_height
+              .map(|resolved| {
+                border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+              })
+              .unwrap_or(intrinsic_max),
+            }
+            .max(0.0);
+            let basis_content = (basis_border - vertical_edges).max(0.0);
+            let basis_specified = match style.box_sizing {
+              BoxSizing::ContentBox => basis_content,
+              BoxSizing::BorderBox => basis_border,
+            };
+            crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+              .and_then(|expr_sum| {
+                crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+              })
+              .and_then(|expr_len| {
+                resolve_length_with_percentage_metrics(
+                  expr_len,
+                  containing_height_for_percentages,
+                  self.viewport_size,
+                  font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+              })
+              .map(|resolved_specified| {
+                border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing)
+                  .max(0.0)
+              })
+              .unwrap_or(basis_border)
+          }
+        };
+        (min_border - vertical_edges).max(0.0)
       } else {
-        style.min_width
-      })
+        (if inline_is_horizontal {
+          style.min_height
+        } else {
+          style.min_width
+        })
         .as_ref()
         .and_then(|l| {
           resolve_length_with_percentage_metrics_and_root_font_metrics(
@@ -2517,109 +2565,91 @@ impl BlockFormattingContext {
         })
         .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
         .unwrap_or(0.0)
-    };
-    let min_height = if reserved_horizontal_gutter > 0.0
-      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
-      && min_height_keyword.is_none()
-      && (if inline_is_horizontal {
-        style.min_height.is_some()
+      };
+      let min_height = if reserved_horizontal_gutter > 0.0
+        && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+        && min_height_keyword.is_none()
+        && (if inline_is_horizontal {
+          style.min_height.is_some()
+        } else {
+          style.min_width.is_some()
+        }) {
+        (min_height - reserved_horizontal_gutter).max(0.0)
       } else {
-        style.min_width.is_some()
-      })
-    {
-      (min_height - reserved_horizontal_gutter).max(0.0)
-    } else {
-      min_height
-    };
-    let max_height_keyword = if inline_is_horizontal {
-      style.max_height_keyword
-    } else {
-      style.max_width_keyword
-    };
-    let max_height = if let Some(keyword) = max_height_keyword {
-      let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
-      let max_border = match keyword {
-        crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
-        crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
-        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
-          if available_block_border_box.is_finite() {
-            available_block_border_box
-          } else {
-            intrinsic_max
+        min_height
+      };
+      let max_height_keyword = if inline_is_horizontal {
+        style.max_height_keyword
+      } else {
+        style.max_width_keyword
+      };
+      let max_height = if let Some(keyword) = max_height_keyword {
+        let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
+        let max_border = match keyword {
+          crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
+          crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+          crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+            if available_block_border_box.is_finite() {
+              available_block_border_box
+            } else {
+              intrinsic_max
+            }
           }
-        }
-        crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          let basis_border = match limit {
-            Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
-              limit,
-              containing_height_for_percentages,
-              self.viewport_size,
-              font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-              self.factory.root_font_metrics(),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(f32::INFINITY),
-            None => available_block_border_box,
-          };
-          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-        }
-        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
-          use crate::style::types::BoxSizing;
-          use crate::style::types::CalcSizeBasis;
-          let basis_border = match calc.basis {
-            CalcSizeBasis::Auto => intrinsic_max,
-            CalcSizeBasis::MinContent => intrinsic_min,
-            CalcSizeBasis::MaxContent => intrinsic_max,
-            CalcSizeBasis::FillAvailable => {
-              if available_block_border_box.is_finite() {
-                available_block_border_box
-              } else {
-                intrinsic_max
+          crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
+            let basis_border = match limit {
+              Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
+                limit,
+                containing_height_for_percentages,
+                self.viewport_size,
+                font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+                self.factory.root_font_metrics(),
+              )
+              .map(|resolved| {
+                border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+              })
+              .unwrap_or(f32::INFINITY),
+              None => available_block_border_box,
+            };
+            crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+          }
+          crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+            use crate::style::types::BoxSizing;
+            use crate::style::types::CalcSizeBasis;
+            let basis_border = match calc.basis {
+              CalcSizeBasis::Auto => intrinsic_max,
+              CalcSizeBasis::MinContent => intrinsic_min,
+              CalcSizeBasis::MaxContent => intrinsic_max,
+              CalcSizeBasis::FillAvailable => {
+                if available_block_border_box.is_finite() {
+                  available_block_border_box
+                } else {
+                  intrinsic_max
+                }
               }
-            }
-            CalcSizeBasis::FitContent { limit } => {
-              let basis_border = match limit {
-                Some(limit) => resolve_length_with_percentage_metrics(
-                  limit,
-                  containing_height_for_percentages,
-                  self.viewport_size,
-                  font_size,
-                  style.root_font_size,
-                  Some(style),
-                  Some(&self.font_context),
-                )
-                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-                .unwrap_or(f32::INFINITY),
-                None => available_block_border_box,
-              };
-              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-            }
-            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
-              len,
-              containing_height_for_percentages,
-              self.viewport_size,
-              font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(intrinsic_max),
-          }
-          .max(0.0);
-          let basis_content = (basis_border - vertical_edges).max(0.0);
-          let basis_specified = match style.box_sizing {
-            BoxSizing::ContentBox => basis_content,
-            BoxSizing::BorderBox => basis_border,
-          };
-          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-            .and_then(|expr_len| {
-              resolve_length_with_percentage_metrics(
-                expr_len,
+              CalcSizeBasis::FitContent { limit } => {
+                let basis_border = match limit {
+                  Some(limit) => resolve_length_with_percentage_metrics(
+                    limit,
+                    containing_height_for_percentages,
+                    self.viewport_size,
+                    font_size,
+                    style.root_font_size,
+                    Some(style),
+                    Some(&self.font_context),
+                  )
+                  .map(|resolved| {
+                    border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                  })
+                  .unwrap_or(f32::INFINITY),
+                  None => available_block_border_box,
+                };
+                crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+              }
+              CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+                len,
                 containing_height_for_percentages,
                 self.viewport_size,
                 font_size,
@@ -2627,20 +2657,46 @@ impl BlockFormattingContext {
                 Some(style),
                 Some(&self.font_context),
               )
-            })
-            .map(|resolved_specified| {
-              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
-            })
-            .unwrap_or(basis_border)
-        }
-      };
-      (max_border - vertical_edges).max(0.0)
-    } else {
-      (if inline_is_horizontal {
-        style.max_height
+              .map(|resolved| {
+                border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+              })
+              .unwrap_or(intrinsic_max),
+            }
+            .max(0.0);
+            let basis_content = (basis_border - vertical_edges).max(0.0);
+            let basis_specified = match style.box_sizing {
+              BoxSizing::ContentBox => basis_content,
+              BoxSizing::BorderBox => basis_border,
+            };
+            crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+              .and_then(|expr_sum| {
+                crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+              })
+              .and_then(|expr_len| {
+                resolve_length_with_percentage_metrics(
+                  expr_len,
+                  containing_height_for_percentages,
+                  self.viewport_size,
+                  font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+              })
+              .map(|resolved_specified| {
+                border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing)
+                  .max(0.0)
+              })
+              .unwrap_or(basis_border)
+          }
+        };
+        (max_border - vertical_edges).max(0.0)
       } else {
-        style.max_width
-      })
+        (if inline_is_horizontal {
+          style.max_height
+        } else {
+          style.max_width
+        })
         .as_ref()
         .and_then(|l| {
           resolve_length_with_percentage_metrics_and_root_font_metrics(
@@ -2656,232 +2712,238 @@ impl BlockFormattingContext {
         })
         .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
         .unwrap_or(f32::INFINITY)
-    };
-    let max_height = if reserved_horizontal_gutter > 0.0
-      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
-      && max_height_keyword.is_none()
-      && (if inline_is_horizontal {
-        style.max_height.is_some()
-      } else {
-        style.max_width.is_some()
-      })
-      && max_height.is_finite()
-    {
-      (max_height - reserved_horizontal_gutter).max(0.0)
-    } else {
-      max_height
-    };
-    let max_height = if max_height.is_finite() && max_height < min_height {
-      min_height
-    } else {
-      max_height
-    };
-    let height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
-
-    if should_relayout_abspos_descendants_for_cb_height && !skip_contents {
-      // Absolutely positioned descendants can use percentage block-sizes/insets that resolve
-      // against the *used* padding box height of their containing block (CSS 2.1 §10.5/§10.6.4),
-      // even when the containing block itself is `height:auto`. The used height isn't known until
-      // after in-flow layout, but inline formatting contexts lay out their positioned descendants
-      // during the main flow pass. Re-run child layout with an updated containing block height so
-      // nested abspos descendants see the correct percentage basis.
-
-      // Restore the external float context snapshot so floats placed during the first pass do not
-      // get duplicated when we run the second pass.
-      if let (Some(snapshot), Some(ctx)) = (float_ctx_snapshot.take(), external_float_ctx.as_deref_mut()) {
-        *ctx = snapshot;
-      }
-
-      let used_padding_size = Size::new(padding_size.width, height + padding_top + padding_bottom);
-      let used_cb_block_base = Some(used_padding_size.height);
-      if establishes_positioned_cb {
-        descendant_nearest_positioned_cb = ContainingBlock::with_viewport_and_bases(
-          Rect::new(padding_origin, used_padding_size),
-          self.viewport_size,
-          Some(used_padding_size.width),
-          used_cb_block_base,
-        );
-      }
-      if establishes_fixed_cb {
-        descendant_nearest_fixed_cb = ContainingBlock::with_viewport_and_bases(
-          Rect::new(padding_origin, used_padding_size),
-          self.viewport_size,
-          Some(used_padding_size.width),
-          used_cb_block_base,
-        );
-      }
-
-      let (frags, _relayout_height, positioned, info) = if use_columns {
-        let (frags, height, positioned, info) = self.layout_multicolumn(
-          child,
-          &child_constraints,
-          &descendant_nearest_positioned_cb,
-          &descendant_nearest_fixed_cb,
-          computed_width.content_width,
-          child_viewport,
-        )?;
-        (frags, height, positioned, info)
-      } else {
-        let (frags, height, positioned) = self.layout_children_with_external_floats(
-          child,
-          &child_constraints,
-          &descendant_nearest_positioned_cb,
-          &descendant_nearest_fixed_cb,
-          child_viewport,
-          external_float_ctx.as_deref_mut(),
-          external_float_base_x + child_content_origin.x,
-          external_float_base_y + child_content_origin.y,
-        )?;
-        (frags, height, positioned, None)
       };
+      let max_height = if reserved_horizontal_gutter > 0.0
+        && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+        && max_height_keyword.is_none()
+        && (if inline_is_horizontal {
+          style.max_height.is_some()
+        } else {
+          style.max_width.is_some()
+        })
+        && max_height.is_finite()
+      {
+        (max_height - reserved_horizontal_gutter).max(0.0)
+      } else {
+        max_height
+      };
+      let max_height = if max_height.is_finite() && max_height < min_height {
+        min_height
+      } else {
+        max_height
+      };
+      let height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
 
-      child_fragments = frags;
-      positioned_children = positioned;
-      column_info = info;
+      if should_relayout_abspos_descendants_for_cb_height && !skip_contents {
+        // Absolutely positioned descendants can use percentage block-sizes/insets that resolve
+        // against the *used* padding box height of their containing block (CSS 2.1 §10.5/§10.6.4),
+        // even when the containing block itself is `height:auto`. The used height isn't known until
+        // after in-flow layout, but inline formatting contexts lay out their positioned descendants
+        // during the main flow pass. Re-run child layout with an updated containing block height so
+        // nested abspos descendants see the correct percentage basis.
 
-      if content_origin.x != 0.0 || content_origin.y != 0.0 {
-        for fragment in child_fragments.iter_mut() {
-          fragment.translate_root_in_place(content_origin);
+        // Restore the external float context snapshot so floats placed during the first pass do not
+        // get duplicated when we run the second pass.
+        if let (Some(snapshot), Some(ctx)) =
+          (float_ctx_snapshot.take(), external_float_ctx.as_deref_mut())
+        {
+          *ctx = snapshot;
+        }
+
+        let used_padding_size =
+          Size::new(padding_size.width, height + padding_top + padding_bottom);
+        let used_cb_block_base = Some(used_padding_size.height);
+        if establishes_positioned_cb {
+          descendant_nearest_positioned_cb = ContainingBlock::with_viewport_and_bases(
+            Rect::new(padding_origin, used_padding_size),
+            self.viewport_size,
+            Some(used_padding_size.width),
+            used_cb_block_base,
+          );
+        }
+        if establishes_fixed_cb {
+          descendant_nearest_fixed_cb = ContainingBlock::with_viewport_and_bases(
+            Rect::new(padding_origin, used_padding_size),
+            self.viewport_size,
+            Some(used_padding_size.width),
+            used_cb_block_base,
+          );
+        }
+
+        let (frags, _relayout_height, positioned, info) = if use_columns {
+          let (frags, height, positioned, info) = self.layout_multicolumn(
+            child,
+            &child_constraints,
+            &descendant_nearest_positioned_cb,
+            &descendant_nearest_fixed_cb,
+            computed_width.content_width,
+            child_viewport,
+          )?;
+          (frags, height, positioned, info)
+        } else {
+          let (frags, height, positioned) = self.layout_children_with_external_floats(
+            child,
+            &child_constraints,
+            &descendant_nearest_positioned_cb,
+            &descendant_nearest_fixed_cb,
+            child_viewport,
+            external_float_ctx.as_deref_mut(),
+            external_float_base_x + child_content_origin.x,
+            external_float_base_y + child_content_origin.y,
+          )?;
+          (frags, height, positioned, None)
+        };
+
+        child_fragments = frags;
+        positioned_children = positioned;
+        column_info = info;
+
+        if content_origin.x != 0.0 || content_origin.y != 0.0 {
+          for fragment in child_fragments.iter_mut() {
+            fragment.translate_root_in_place(content_origin);
+          }
         }
       }
-    }
 
-    // Create the fragment
-    let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
-    let box_width = computed_width.border_box_width();
+      // Create the fragment
+      let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
+      let box_width = computed_width.border_box_width();
 
-    // Layout out-of-flow positioned children against this block's padding box.
-    if !positioned_children.is_empty() {
-      let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
-        self.font_context.clone(),
-      );
-      let mut anchor_index =
-        crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
-          child_fragments.as_slice(),
-          child.id,
-          &style.anchor_scope,
-          self.viewport_size,
+      // Layout out-of-flow positioned children against this block's padding box.
+      if !positioned_children.is_empty() {
+        let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
+          self.font_context.clone(),
         );
-      // Allow descendants to anchor against the containing block element itself.
-      anchor_index.insert_names_for_box(
-        child.id,
-        &style.anchor_names,
-        crate::layout::anchor_positioning::AnchorBox {
-          rect: Rect::from_xywh(0.0, 0.0, box_width, box_height),
-          writing_mode: style.writing_mode,
-          direction: style.direction,
-        },
-      );
-      // In-flow children were translated into this block's border-box coordinate space above, so
-      // position out-of-flow children in that same coordinate space. The containing block for
-      // absolute/fixed descendants is the padding box (CSS 2.1 §10.1), whose origin is the padding
-      // edge inside the border box.
-      let padding_origin = Point::new(computed_width.border_left, border_top);
-      let padding_size = Size::new(
-        computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
-        height + padding_top + padding_bottom,
-      );
-      let padding_rect = Rect::new(padding_origin, padding_size);
-      let mut anchor_index_physical = None;
-      let mut parent_padding_cb_physical = None;
-      let needs_physical_coordinate_space =
-        block_axis_is_horizontal(style.writing_mode) || !inline_axis_positive(style.writing_mode, style.direction);
-      if needs_physical_coordinate_space {
-        let physical_children: Vec<_> = child_fragments
-          .iter()
-          .cloned()
-          .map(|fragment| {
-            convert_fragment_axes(
-              fragment,
-              box_width,
-              box_height,
-              style.writing_mode,
-              style.direction,
-            )
-          })
-          .collect();
-        let mut physical_index =
+        let mut anchor_index =
           crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
-            physical_children.as_slice(),
+            child_fragments.as_slice(),
             child.id,
             &style.anchor_scope,
             self.viewport_size,
           );
-        physical_index.insert_names_for_box(
+        // Allow descendants to anchor against the containing block element itself.
+        anchor_index.insert_names_for_box(
           child.id,
           &style.anchor_names,
           crate::layout::anchor_positioning::AnchorBox {
-            rect: Rect::new(
-              Point::ZERO,
-              if block_axis_is_horizontal(style.writing_mode) {
-                Size::new(box_height, box_width)
-              } else {
-                Size::new(box_width, box_height)
-              },
-            ),
+            rect: Rect::from_xywh(0.0, 0.0, box_width, box_height),
             writing_mode: style.writing_mode,
             direction: style.direction,
           },
         );
-        anchor_index_physical = Some(physical_index);
-
-        let padding_rect_physical = logical_rect_to_physical_full(
-          padding_rect,
-          box_width,
-          box_height,
-          style.writing_mode,
-          style.direction,
+        // In-flow children were translated into this block's border-box coordinate space above, so
+        // position out-of-flow children in that same coordinate space. The containing block for
+        // absolute/fixed descendants is the padding box (CSS 2.1 §10.1), whose origin is the padding
+        // edge inside the border box.
+        let padding_origin = Point::new(computed_width.border_left, border_top);
+        let padding_size = Size::new(
+          computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
+          height + padding_top + padding_bottom,
         );
-        parent_padding_cb_physical = Some(ContainingBlock::with_viewport_and_bases(
-          padding_rect_physical,
-          self.viewport_size,
-          Some(padding_rect_physical.size.width),
-          Some(padding_rect_physical.size.height),
-        ).with_writing_mode_and_direction(style.writing_mode, style.direction));
-      }
-      let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
-        padding_rect,
-        self.viewport_size,
-        Some(padding_size.width),
-        Some(padding_size.height),
-      )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction);
-      let base_factory = self.factory.clone();
-      let viewport_cb = ContainingBlock::viewport(self.viewport_size);
-      let abs_factory = if parent_padding_cb == base_factory.nearest_positioned_cb() {
-        base_factory.clone()
-      } else {
-        base_factory.with_positioned_cb(parent_padding_cb)
-      };
-      let fixed_factory = if viewport_cb == parent_padding_cb {
-        abs_factory.clone()
-      } else if viewport_cb == base_factory.nearest_positioned_cb() {
-        base_factory.clone()
-      } else {
-        base_factory.with_positioned_cb(viewport_cb)
-      };
-      let factory_for_cb = |cb: ContainingBlock| -> &FormattingContextFactory {
-        if cb == parent_padding_cb {
-          &abs_factory
-        } else if cb == viewport_cb {
-          &fixed_factory
-        } else {
-          &base_factory
-        }
-      };
+        let padding_rect = Rect::new(padding_origin, padding_size);
+        let mut anchor_index_physical = None;
+        let mut parent_padding_cb_physical = None;
+        let needs_physical_coordinate_space = block_axis_is_horizontal(style.writing_mode)
+          || !inline_axis_positive(style.writing_mode, style.direction);
+        if needs_physical_coordinate_space {
+          let physical_children: Vec<_> = child_fragments
+            .iter()
+            .cloned()
+            .map(|fragment| {
+              convert_fragment_axes(
+                fragment,
+                box_width,
+                box_height,
+                style.writing_mode,
+                style.direction,
+              )
+            })
+            .collect();
+          let mut physical_index =
+            crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+              physical_children.as_slice(),
+              child.id,
+              &style.anchor_scope,
+              self.viewport_size,
+            );
+          physical_index.insert_names_for_box(
+            child.id,
+            &style.anchor_names,
+            crate::layout::anchor_positioning::AnchorBox {
+              rect: Rect::new(
+                Point::ZERO,
+                if block_axis_is_horizontal(style.writing_mode) {
+                  Size::new(box_height, box_width)
+                } else {
+                  Size::new(box_width, box_height)
+                },
+              ),
+              writing_mode: style.writing_mode,
+              direction: style.direction,
+            },
+          );
+          anchor_index_physical = Some(physical_index);
 
-      let trace_positioned = trace_positioned_ids();
-      for PositionedCandidate {
-        node: pos_child,
-        source,
-        static_position,
-        query_parent_id,
-        implicit_anchor_box_id,
-      } in positioned_children
-      {
-        let original_style = pos_child.style.clone();
-        if trace_positioned.contains(&pos_child.id) {
-          eprintln!(
+          let padding_rect_physical = logical_rect_to_physical_full(
+            padding_rect,
+            box_width,
+            box_height,
+            style.writing_mode,
+            style.direction,
+          );
+          parent_padding_cb_physical = Some(
+            ContainingBlock::with_viewport_and_bases(
+              padding_rect_physical,
+              self.viewport_size,
+              Some(padding_rect_physical.size.width),
+              Some(padding_rect_physical.size.height),
+            )
+            .with_writing_mode_and_direction(style.writing_mode, style.direction),
+          );
+        }
+        let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
+          padding_rect,
+          self.viewport_size,
+          Some(padding_size.width),
+          Some(padding_size.height),
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction);
+        let base_factory = self.factory.clone();
+        let viewport_cb = ContainingBlock::viewport(self.viewport_size);
+        let abs_factory = if parent_padding_cb == base_factory.nearest_positioned_cb() {
+          base_factory.clone()
+        } else {
+          base_factory.with_positioned_cb(parent_padding_cb)
+        };
+        let fixed_factory = if viewport_cb == parent_padding_cb {
+          abs_factory.clone()
+        } else if viewport_cb == base_factory.nearest_positioned_cb() {
+          base_factory.clone()
+        } else {
+          base_factory.with_positioned_cb(viewport_cb)
+        };
+        let factory_for_cb = |cb: ContainingBlock| -> &FormattingContextFactory {
+          if cb == parent_padding_cb {
+            &abs_factory
+          } else if cb == viewport_cb {
+            &fixed_factory
+          } else {
+            &base_factory
+          }
+        };
+
+        let trace_positioned = trace_positioned_ids();
+        for PositionedCandidate {
+          node: pos_child,
+          source,
+          static_position,
+          query_parent_id,
+          implicit_anchor_box_id,
+        } in positioned_children
+        {
+          let original_style = pos_child.style.clone();
+          if trace_positioned.contains(&pos_child.id) {
+            eprintln!(
                         "[block-positioned-layout] parent_id={} child_id={} padding_rect=({:.1},{:.1},{:.1},{:.1})",
                         parent.id,
                         pos_child.id,
@@ -2890,269 +2952,276 @@ impl BlockFormattingContext {
                         padding_rect.width(),
                         padding_rect.height()
                     );
-        }
-        let cb = match source {
-          ContainingBlockSource::ParentPadding => parent_padding_cb,
-          ContainingBlockSource::Explicit(cb) => cb,
-        };
-        let (anchors_for_cb, positioning_cb, needs_physical_conversion) =
-          if cb == parent_padding_cb {
-            match (anchor_index_physical.as_ref(), parent_padding_cb_physical) {
-              (Some(index), Some(physical_cb)) => (Some(index), physical_cb, true),
-              _ => (Some(&anchor_index), cb, false),
-            }
-          } else {
-            (Some(&anchor_index), cb, false)
+          }
+          let cb = match source {
+            ContainingBlockSource::ParentPadding => parent_padding_cb,
+            ContainingBlockSource::Explicit(cb) => cb,
           };
-        let factory = factory_for_cb(cb);
-        // Layout the child as if it were in normal flow to obtain its intrinsic size.
-        let mut static_style = pos_child.style.clone();
-        {
-          let s = Arc::make_mut(&mut static_style);
-          s.position = Position::Relative;
-          s.top = crate::style::types::InsetValue::Auto;
-          s.right = crate::style::types::InsetValue::Auto;
-          s.bottom = crate::style::types::InsetValue::Auto;
-          s.left = crate::style::types::InsetValue::Auto;
-        }
-
-        let fc_type = pos_child
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        let fc = factory.get(fc_type);
-        let height_available = cb.block_percentage_base();
-        let child_height_space = height_available
-          .map(AvailableSpace::Definite)
-          .unwrap_or(AvailableSpace::Indefinite);
-        let child_constraints = LayoutConstraints::new(
-          AvailableSpace::Definite(padding_size.width),
-          child_height_space,
-        );
-
-        // Resolve positioned style against the containing block.
-        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
-          query_parent_box_id: Some(query_parent_id),
-          implicit_anchor_box_id,
-        };
-        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
-          &pos_child.style,
-          &positioning_cb,
-          self.viewport_size,
-          &self.font_context,
-          anchors_for_cb,
-          anchor_query,
-        );
-
-        // When both insets are specified and the corresponding size is `auto`, the absolute
-        // positioning algorithm resolves a definite used size from the constraint equation.
-        //
-        // Even if that used size matches the initial "static" layout size (e.g. because floats
-        // stretch the box to the same height), descendants still need the definite size as the
-        // percentage base for `height:100%`/`width:100%`. Force a relayout pass with the computed
-        // used border-box size so percentage resolution is spec-correct.
-        let relayout_for_definite_insets = (positioned_style.width.is_auto()
-          && !positioned_style.left.is_auto()
-          && !positioned_style.right.is_auto())
-          || (positioned_style.height.is_auto()
-            && !positioned_style.top.is_auto()
-            && !positioned_style.bottom.is_auto());
-
-        let mut static_pos = static_position.unwrap_or(Point::ZERO);
-        if cb == parent_padding_cb {
-          static_pos = Point::new(
-            static_pos.x + computed_width.padding_left,
-            static_pos.y + padding_top,
-          );
-        } else {
-          // Static positions are recorded in this block's content coordinate space. When the
-          // positioned containing block is an inherited one (e.g. viewport), rebase the static
-          // position so it's relative to the containing block origin.
-          let origin = positioning_cb.origin();
-          static_pos = Point::new(static_pos.x - origin.x, static_pos.y - origin.y);
-        }
-        if needs_physical_conversion {
-          static_pos = logical_rect_to_physical_full(
-            Rect::new(static_pos, Size::new(0.0, 0.0)),
-            padding_size.width,
-            padding_size.height,
-            style.writing_mode,
-            style.direction,
-          )
-          .origin;
-        }
-        let is_replaced = pos_child.is_replaced();
-        let needs_inline_intrinsics = (positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced))
-          || original_style.width_keyword.is_some()
-          || original_style.min_width_keyword.is_some()
-          || original_style.max_width_keyword.is_some();
-        let needs_block_intrinsics = (positioned_style.height.is_auto()
-          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()))
-          || original_style.height_keyword.is_some()
-          || original_style.min_height_keyword.is_some()
-          || original_style.max_height_keyword.is_some();
-        // When `top/bottom/height` are all `auto`, CSS2.1 sizes the abspos box based on its normal
-        // flow height (i.e. content height). In this case, block intrinsic probes (min/max-content)
-        // are unnecessary and can be actively harmful: intrinsic probes run under intrinsic inline
-        // constraints and may not match the final used inline size (e.g. `width: 100%`), leading to
-        // an oversized block-size. That in turn affects `justify-content` in flex containers and
-        // shifts content vertically (e.g. github.com's hero CTA).
-        let skip_block_intrinsics = positioned_style.height.is_auto()
-          && positioned_style.top.is_auto()
-          && positioned_style.bottom.is_auto()
-          && original_style.height_keyword.is_none()
-          && original_style.min_height_keyword.is_none()
-          && original_style.max_height_keyword.is_none();
-        let (
-          mut child_fragment,
-          preferred_min_inline,
-          preferred_inline,
-          preferred_min_block,
-          preferred_block,
-        ) = if pos_child.id != 0 {
-          crate::layout::style_override::with_style_override(
-            pos_child.id,
-            static_style.clone(),
-            || {
-              let child_fragment = fc.layout(&pos_child, &child_constraints)?;
-              let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-                match fc.compute_intrinsic_inline_sizes(&pos_child) {
-                  Ok((min, max)) => (Some(min), Some(max)),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => {
-                    let min = match fc
-                      .compute_intrinsic_inline_size(&pos_child, IntrinsicSizingMode::MinContent)
-                    {
-                      Ok(value) => Some(value),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                    let max = match fc
-                      .compute_intrinsic_inline_size(&pos_child, IntrinsicSizingMode::MaxContent)
-                    {
-                      Ok(value) => Some(value),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                    (min, max)
-                  }
-                }
-              } else {
-                (None, None)
-              };
-              let preferred_min_block = if needs_block_intrinsics && !skip_block_intrinsics {
-                match fc.compute_intrinsic_block_size(&pos_child, IntrinsicSizingMode::MinContent) {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                }
-              } else {
-                None
-              };
-              let preferred_block = if needs_block_intrinsics && !skip_block_intrinsics {
-                match fc.compute_intrinsic_block_size(&pos_child, IntrinsicSizingMode::MaxContent) {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                }
-              } else {
-                None
-              };
-              Ok((
-                child_fragment,
-                preferred_min_inline,
-                preferred_inline,
-                preferred_min_block,
-                preferred_block,
-              ))
-            },
-          )?
-        } else {
-          let mut layout_child = pos_child.clone();
-          layout_child.style = static_style.clone();
-          let child_fragment = fc.layout(&layout_child, &child_constraints)?;
-          let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-            match fc.compute_intrinsic_inline_sizes(&layout_child) {
-              Ok((min, max)) => (Some(min), Some(max)),
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => {
-                let min = match fc
-                  .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MinContent)
-                {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                };
-                let max = match fc
-                  .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MaxContent)
-                {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                };
-                (min, max)
+          let (anchors_for_cb, positioning_cb, needs_physical_conversion) =
+            if cb == parent_padding_cb {
+              match (anchor_index_physical.as_ref(), parent_padding_cb_physical) {
+                (Some(index), Some(physical_cb)) => (Some(index), physical_cb, true),
+                _ => (Some(&anchor_index), cb, false),
               }
-            }
-          } else {
-            (None, None)
+            } else {
+              (Some(&anchor_index), cb, false)
+            };
+          let factory = factory_for_cb(cb);
+          // Layout the child as if it were in normal flow to obtain its intrinsic size.
+          let mut static_style = pos_child.style.clone();
+          {
+            let s = Arc::make_mut(&mut static_style);
+            s.position = Position::Relative;
+            s.top = crate::style::types::InsetValue::Auto;
+            s.right = crate::style::types::InsetValue::Auto;
+            s.bottom = crate::style::types::InsetValue::Auto;
+            s.left = crate::style::types::InsetValue::Auto;
+          }
+
+          let fc_type = pos_child
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          let fc = factory.get(fc_type);
+          let height_available = cb.block_percentage_base();
+          let child_height_space = height_available
+            .map(AvailableSpace::Definite)
+            .unwrap_or(AvailableSpace::Indefinite);
+          let child_constraints = LayoutConstraints::new(
+            AvailableSpace::Definite(padding_size.width),
+            child_height_space,
+          );
+
+          // Resolve positioned style against the containing block.
+          let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+            query_parent_box_id: Some(query_parent_id),
+            implicit_anchor_box_id,
           };
-          let preferred_min_block = if needs_block_intrinsics && !skip_block_intrinsics {
-            match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent) {
-              Ok(value) => Some(value),
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => None,
-            }
+          let positioned_style =
+            crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
+              &pos_child.style,
+              &positioning_cb,
+              self.viewport_size,
+              &self.font_context,
+              anchors_for_cb,
+              anchor_query,
+            );
+
+          // When both insets are specified and the corresponding size is `auto`, the absolute
+          // positioning algorithm resolves a definite used size from the constraint equation.
+          //
+          // Even if that used size matches the initial "static" layout size (e.g. because floats
+          // stretch the box to the same height), descendants still need the definite size as the
+          // percentage base for `height:100%`/`width:100%`. Force a relayout pass with the computed
+          // used border-box size so percentage resolution is spec-correct.
+          let relayout_for_definite_insets = (positioned_style.width.is_auto()
+            && !positioned_style.left.is_auto()
+            && !positioned_style.right.is_auto())
+            || (positioned_style.height.is_auto()
+              && !positioned_style.top.is_auto()
+              && !positioned_style.bottom.is_auto());
+
+          let mut static_pos = static_position.unwrap_or(Point::ZERO);
+          if cb == parent_padding_cb {
+            static_pos = Point::new(
+              static_pos.x + computed_width.padding_left,
+              static_pos.y + padding_top,
+            );
           } else {
-            None
-          };
-          let preferred_block = if needs_block_intrinsics && !skip_block_intrinsics {
-            match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent) {
-              Ok(value) => Some(value),
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => None,
-            }
-          } else {
-            None
-          };
-          (
-            child_fragment,
+            // Static positions are recorded in this block's content coordinate space. When the
+            // positioned containing block is an inherited one (e.g. viewport), rebase the static
+            // position so it's relative to the containing block origin.
+            let origin = positioning_cb.origin();
+            static_pos = Point::new(static_pos.x - origin.x, static_pos.y - origin.y);
+          }
+          if needs_physical_conversion {
+            static_pos = logical_rect_to_physical_full(
+              Rect::new(static_pos, Size::new(0.0, 0.0)),
+              padding_size.width,
+              padding_size.height,
+              style.writing_mode,
+              style.direction,
+            )
+            .origin;
+          }
+          let is_replaced = pos_child.is_replaced();
+          let needs_inline_intrinsics = (positioned_style.width.is_auto()
+            && (positioned_style.left.is_auto()
+              || positioned_style.right.is_auto()
+              || is_replaced))
+            || original_style.width_keyword.is_some()
+            || original_style.min_width_keyword.is_some()
+            || original_style.max_width_keyword.is_some();
+          let needs_block_intrinsics = (positioned_style.height.is_auto()
+            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()))
+            || original_style.height_keyword.is_some()
+            || original_style.min_height_keyword.is_some()
+            || original_style.max_height_keyword.is_some();
+          // When `top/bottom/height` are all `auto`, CSS2.1 sizes the abspos box based on its normal
+          // flow height (i.e. content height). In this case, block intrinsic probes (min/max-content)
+          // are unnecessary and can be actively harmful: intrinsic probes run under intrinsic inline
+          // constraints and may not match the final used inline size (e.g. `width: 100%`), leading to
+          // an oversized block-size. That in turn affects `justify-content` in flex containers and
+          // shifts content vertically (e.g. github.com's hero CTA).
+          let skip_block_intrinsics = positioned_style.height.is_auto()
+            && positioned_style.top.is_auto()
+            && positioned_style.bottom.is_auto()
+            && original_style.height_keyword.is_none()
+            && original_style.min_height_keyword.is_none()
+            && original_style.max_height_keyword.is_none();
+          let (
+            mut child_fragment,
             preferred_min_inline,
             preferred_inline,
             preferred_min_block,
             preferred_block,
-          )
-        };
+          ) = if pos_child.id != 0 {
+            crate::layout::style_override::with_style_override(
+              pos_child.id,
+              static_style.clone(),
+              || {
+                let child_fragment = fc.layout(&pos_child, &child_constraints)?;
+                let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
+                  match fc.compute_intrinsic_inline_sizes(&pos_child) {
+                    Ok((min, max)) => (Some(min), Some(max)),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => {
+                      let min = match fc
+                        .compute_intrinsic_inline_size(&pos_child, IntrinsicSizingMode::MinContent)
+                      {
+                        Ok(value) => Some(value),
+                        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                        Err(_) => None,
+                      };
+                      let max = match fc
+                        .compute_intrinsic_inline_size(&pos_child, IntrinsicSizingMode::MaxContent)
+                      {
+                        Ok(value) => Some(value),
+                        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                        Err(_) => None,
+                      };
+                      (min, max)
+                    }
+                  }
+                } else {
+                  (None, None)
+                };
+                let preferred_min_block = if needs_block_intrinsics && !skip_block_intrinsics {
+                  match fc.compute_intrinsic_block_size(&pos_child, IntrinsicSizingMode::MinContent)
+                  {
+                    Ok(value) => Some(value),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  }
+                } else {
+                  None
+                };
+                let preferred_block = if needs_block_intrinsics && !skip_block_intrinsics {
+                  match fc.compute_intrinsic_block_size(&pos_child, IntrinsicSizingMode::MaxContent)
+                  {
+                    Ok(value) => Some(value),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  }
+                } else {
+                  None
+                };
+                Ok((
+                  child_fragment,
+                  preferred_min_inline,
+                  preferred_inline,
+                  preferred_min_block,
+                  preferred_block,
+                ))
+              },
+            )?
+          } else {
+            let mut layout_child = pos_child.clone();
+            layout_child.style = static_style.clone();
+            let child_fragment = fc.layout(&layout_child, &child_constraints)?;
+            let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
+              match fc.compute_intrinsic_inline_sizes(&layout_child) {
+                Ok((min, max)) => (Some(min), Some(max)),
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => {
+                  let min = match fc
+                    .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MinContent)
+                  {
+                    Ok(value) => Some(value),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  };
+                  let max = match fc
+                    .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MaxContent)
+                  {
+                    Ok(value) => Some(value),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  };
+                  (min, max)
+                }
+              }
+            } else {
+              (None, None)
+            };
+            let preferred_min_block = if needs_block_intrinsics && !skip_block_intrinsics {
+              match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent)
+              {
+                Ok(value) => Some(value),
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => None,
+              }
+            } else {
+              None
+            };
+            let preferred_block = if needs_block_intrinsics && !skip_block_intrinsics {
+              match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent)
+              {
+                Ok(value) => Some(value),
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => None,
+              }
+            } else {
+              None
+            };
+            (
+              child_fragment,
+              preferred_min_inline,
+              preferred_inline,
+              preferred_min_block,
+              preferred_block,
+            )
+          };
 
-        let actual_horizontal = positioned_style.padding.left
-          + positioned_style.padding.right
-          + positioned_style.border_width.left
-          + positioned_style.border_width.right;
-        let actual_vertical = positioned_style.padding.top
-          + positioned_style.padding.bottom
-          + positioned_style.border_width.top
-          + positioned_style.border_width.bottom;
-        let content_offset = Point::new(
-          positioned_style.border_width.left + positioned_style.padding.left,
-          positioned_style.border_width.top + positioned_style.padding.top,
-        );
-        let (intrinsic_horizontal, intrinsic_vertical) =
-          crate::layout::absolute_positioning::intrinsic_edge_sizes(
-            &original_style,
-            self.viewport_size,
-            &self.font_context,
+          let actual_horizontal = positioned_style.padding.left
+            + positioned_style.padding.right
+            + positioned_style.border_width.left
+            + positioned_style.border_width.right;
+          let actual_vertical = positioned_style.padding.top
+            + positioned_style.padding.bottom
+            + positioned_style.border_width.top
+            + positioned_style.border_width.bottom;
+          let content_offset = Point::new(
+            positioned_style.border_width.left + positioned_style.padding.left,
+            positioned_style.border_width.top + positioned_style.padding.top,
           );
-        let preferred_min_inline =
-          preferred_min_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
-        let preferred_inline = preferred_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
-        let preferred_min_block = preferred_min_block.map(|v| (v - intrinsic_vertical).max(0.0));
-        let preferred_block = preferred_block.map(|v| (v - intrinsic_vertical).max(0.0));
-        let intrinsic_size = Size::new(
-          (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
-          (child_fragment.bounds.size.height - actual_vertical).max(0.0),
-        );
+          let (intrinsic_horizontal, intrinsic_vertical) =
+            crate::layout::absolute_positioning::intrinsic_edge_sizes(
+              &original_style,
+              self.viewport_size,
+              &self.font_context,
+            );
+          let preferred_min_inline =
+            preferred_min_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+          let preferred_inline = preferred_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+          let preferred_min_block = preferred_min_block.map(|v| (v - intrinsic_vertical).max(0.0));
+          let preferred_block = preferred_block.map(|v| (v - intrinsic_vertical).max(0.0));
+          let intrinsic_size = Size::new(
+            (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
+            (child_fragment.bounds.size.height - actual_vertical).max(0.0),
+          );
 
-        if trace_positioned.contains(&pos_child.id) {
-          eprintln!(
+          if trace_positioned.contains(&pos_child.id) {
+            eprintln!(
             "[block-positioned-intrinsics] child_id={} fc={:?} static_pos=({:.1},{:.1}) child_constraints=({:?},{:?}) static_layout_border_box=({:.1},{:.1}) intrinsic_size=({:.1},{:.1}) pref_min_inline={:?} pref_inline={:?} pref_min_block={:?} pref_block={:?}",
             pos_child.id,
             fc_type,
@@ -3169,114 +3238,27 @@ impl BlockFormattingContext {
             preferred_min_block,
             preferred_block,
           );
-        }
+          }
 
-        let mut input = crate::layout::absolute_positioning::AbsoluteLayoutInput::new(
-          positioned_style,
-          intrinsic_size,
-          static_pos,
-        );
-        input.is_replaced = is_replaced;
-        input.preferred_min_inline_size = preferred_min_inline;
-        input.preferred_inline_size = preferred_inline;
-        input.preferred_min_block_size = preferred_min_block;
-        input.preferred_block_size = preferred_block;
-        let supports_used_border_box = matches!(
-          fc_type,
-          FormattingContextType::Block
-            | FormattingContextType::Flex
-            | FormattingContextType::Grid
-            | FormattingContextType::Inline
-        );
-
-        let (layout_positioned_style, mut result) =
-          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
-            &abs,
-            &input,
-            &original_style,
-            &positioning_cb,
-            self.viewport_size,
-            &self.font_context,
-            anchors_for_cb,
-            anchor_query,
-          )?;
-        let mut border_size_physical = Size::new(
-          result.size.width + actual_horizontal,
-          result.size.height + actual_vertical,
-        );
-        let mut border_origin_physical = Point::new(
-          result.position.x - content_offset.x,
-          result.position.y - content_offset.y,
-        );
-        let (mut border_origin, mut border_size) = if needs_physical_conversion {
-          let border_rect = Rect::new(border_origin_physical, border_size_physical);
-          let logical_rect = physical_rect_to_logical_full(
-            border_rect,
-            box_width,
-            box_height,
-            style.writing_mode,
-            style.direction,
+          let mut input = crate::layout::absolute_positioning::AbsoluteLayoutInput::new(
+            positioned_style,
+            intrinsic_size,
+            static_pos,
           );
-          (logical_rect.origin, logical_rect.size)
-        } else {
-          (border_origin_physical, border_size_physical)
-        };
+          input.is_replaced = is_replaced;
+          input.preferred_min_inline_size = preferred_min_inline;
+          input.preferred_inline_size = preferred_inline;
+          input.preferred_min_block_size = preferred_min_block;
+          input.preferred_block_size = preferred_block;
+          let supports_used_border_box = matches!(
+            fc_type,
+            FormattingContextType::Block
+              | FormattingContextType::Flex
+              | FormattingContextType::Grid
+              | FormattingContextType::Inline
+          );
 
-        // When `height:auto` is content-based, the intrinsic height depends on the *used* width.
-        // For abspos boxes this used width may be clamped by `max-width` (Discord's `.home_clyde`),
-        // so remeasure intrinsic height at the resolved width before computing the final Y offset.
-        if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
-          &layout_positioned_style,
-          input.is_replaced,
-        ) && (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-        {
-          let measure_constraints = child_constraints
-            .with_width(AvailableSpace::Definite(border_size.width))
-            .with_height(AvailableSpace::Indefinite)
-            .with_used_border_box_size(Some(border_size.width), None);
-
-          child_fragment = if pos_child.id != 0 {
-            if supports_used_border_box {
-              crate::layout::style_override::with_style_override(
-                pos_child.id,
-                static_style.clone(),
-                || fc.layout(&pos_child, &measure_constraints),
-              )?
-            } else {
-              let mut measure_style = static_style.clone();
-              {
-                let s = Arc::make_mut(&mut measure_style);
-                s.width = Some(crate::style::values::Length::px(border_size.width));
-                s.width_keyword = None;
-                s.min_width_keyword = None;
-                s.max_width_keyword = None;
-              }
-              crate::layout::style_override::with_style_override(pos_child.id, measure_style, || {
-                fc.layout(&pos_child, &measure_constraints)
-              })?
-            }
-          } else {
-            let mut relayout_child = pos_child.clone();
-            if supports_used_border_box {
-              relayout_child.style = static_style.clone();
-            } else {
-              let mut measure_style = static_style.clone();
-              {
-                let s = Arc::make_mut(&mut measure_style);
-                s.width = Some(crate::style::values::Length::px(border_size.width));
-                s.width_keyword = None;
-                s.min_width_keyword = None;
-                s.max_width_keyword = None;
-              }
-              relayout_child.style = measure_style;
-            }
-            fc.layout(&relayout_child, &measure_constraints)?
-          };
-
-          input.intrinsic_size.height =
-            (child_fragment.bounds.size.height - actual_vertical).max(0.0);
-
-          let (_, rerun_result) =
+          let (layout_positioned_style, mut result) =
             crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
               &abs,
               &input,
@@ -3287,16 +3269,15 @@ impl BlockFormattingContext {
               anchors_for_cb,
               anchor_query,
             )?;
-          result = rerun_result;
-          border_size_physical = Size::new(
+          let mut border_size_physical = Size::new(
             result.size.width + actual_horizontal,
             result.size.height + actual_vertical,
           );
-          border_origin_physical = Point::new(
+          let mut border_origin_physical = Point::new(
             result.position.x - content_offset.x,
             result.position.y - content_offset.y,
           );
-          (border_origin, border_size) = if needs_physical_conversion {
+          let (mut border_origin, mut border_size) = if needs_physical_conversion {
             let border_rect = Rect::new(border_origin_physical, border_size_physical);
             let logical_rect = physical_rect_to_logical_full(
               border_rect,
@@ -3309,85 +3290,175 @@ impl BlockFormattingContext {
           } else {
             (border_origin_physical, border_size_physical)
           };
-        }
-        let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
-          || relayout_for_definite_insets;
-        if needs_relayout {
-          let relayout_constraints = child_constraints
-            .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
-          if pos_child.id != 0 {
-            if supports_used_border_box {
-              child_fragment = crate::layout::style_override::with_style_override(
-                pos_child.id,
-                static_style.clone(),
-                || fc.layout(&pos_child, &relayout_constraints),
-              )?;
-            } else {
-              let mut relayout_style = static_style.clone();
-              {
-                let s = Arc::make_mut(&mut relayout_style);
-                s.width = Some(crate::style::values::Length::px(border_size.width));
-                s.height = Some(crate::style::values::Length::px(border_size.height));
-                s.width_keyword = None;
-                s.height_keyword = None;
-                s.min_width_keyword = None;
-                s.max_width_keyword = None;
-                s.min_height_keyword = None;
-                s.max_height_keyword = None;
+
+          // When `height:auto` is content-based, the intrinsic height depends on the *used* width.
+          // For abspos boxes this used width may be clamped by `max-width` (Discord's `.home_clyde`),
+          // so remeasure intrinsic height at the resolved width before computing the final Y offset.
+          if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
+            &layout_positioned_style,
+            input.is_replaced,
+          ) && (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+          {
+            let measure_constraints = child_constraints
+              .with_width(AvailableSpace::Definite(border_size.width))
+              .with_height(AvailableSpace::Indefinite)
+              .with_used_border_box_size(Some(border_size.width), None);
+
+            child_fragment = if pos_child.id != 0 {
+              if supports_used_border_box {
+                crate::layout::style_override::with_style_override(
+                  pos_child.id,
+                  static_style.clone(),
+                  || fc.layout(&pos_child, &measure_constraints),
+                )?
+              } else {
+                let mut measure_style = static_style.clone();
+                {
+                  let s = Arc::make_mut(&mut measure_style);
+                  s.width = Some(crate::style::values::Length::px(border_size.width));
+                  s.width_keyword = None;
+                  s.min_width_keyword = None;
+                  s.max_width_keyword = None;
+                }
+                crate::layout::style_override::with_style_override(
+                  pos_child.id,
+                  measure_style,
+                  || fc.layout(&pos_child, &measure_constraints),
+                )?
               }
-              child_fragment = crate::layout::style_override::with_style_override(
-                pos_child.id,
-                relayout_style,
-                || fc.layout(&pos_child, &relayout_constraints),
-              )?;
-            }
-          } else {
-            let mut relayout_child = pos_child.clone();
-            if supports_used_border_box {
-              relayout_child.style = static_style.clone();
             } else {
-              let mut relayout_style = static_style.clone();
-              {
-                let s = Arc::make_mut(&mut relayout_style);
-                s.width = Some(crate::style::values::Length::px(border_size.width));
-                s.height = Some(crate::style::values::Length::px(border_size.height));
-                s.width_keyword = None;
-                s.height_keyword = None;
-                s.min_width_keyword = None;
-                s.max_width_keyword = None;
-                s.min_height_keyword = None;
-                s.max_height_keyword = None;
+              let mut relayout_child = pos_child.clone();
+              if supports_used_border_box {
+                relayout_child.style = static_style.clone();
+              } else {
+                let mut measure_style = static_style.clone();
+                {
+                  let s = Arc::make_mut(&mut measure_style);
+                  s.width = Some(crate::style::values::Length::px(border_size.width));
+                  s.width_keyword = None;
+                  s.min_width_keyword = None;
+                  s.max_width_keyword = None;
+                }
+                relayout_child.style = measure_style;
               }
-              relayout_child.style = relayout_style;
-            }
-            child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
+              fc.layout(&relayout_child, &measure_constraints)?
+            };
+
+            input.intrinsic_size.height =
+              (child_fragment.bounds.size.height - actual_vertical).max(0.0);
+
+            let (_, rerun_result) =
+              crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+                &abs,
+                &input,
+                &original_style,
+                &positioning_cb,
+                self.viewport_size,
+                &self.font_context,
+                anchors_for_cb,
+                anchor_query,
+              )?;
+            result = rerun_result;
+            border_size_physical = Size::new(
+              result.size.width + actual_horizontal,
+              result.size.height + actual_vertical,
+            );
+            border_origin_physical = Point::new(
+              result.position.x - content_offset.x,
+              result.position.y - content_offset.y,
+            );
+            (border_origin, border_size) = if needs_physical_conversion {
+              let border_rect = Rect::new(border_origin_physical, border_size_physical);
+              let logical_rect = physical_rect_to_logical_full(
+                border_rect,
+                box_width,
+                box_height,
+                style.writing_mode,
+                style.direction,
+              );
+              (logical_rect.origin, logical_rect.size)
+            } else {
+              (border_origin_physical, border_size_physical)
+            };
           }
-        }
-        child_fragment.bounds = Rect::new(border_origin, border_size);
-        // Child fragments are translated from the block's content coordinate space into the
-        // fragment-local (border-box) coordinate space via `content_origin` above.
-        //
-        // Keep out-of-flow positioned descendants consistent. When the positioned containing block
-        // is *not* this element's own padding box (i.e. it's inherited from an ancestor), the
-        // computed fragment position is still expressed in the content coordinate space and must
-        // be translated alongside in-flow fragments.
-        //
-        // Viewport-fixed fragments are stored in absolute viewport coordinates, and positioned
-        // elements whose containing block is this element's padding box are already computed in the
-        // border-box coordinate space, so neither should be translated here.
-        if cb != viewport_cb
-          && cb != parent_padding_cb
-          && (content_origin.x != 0.0 || content_origin.y != 0.0)
-        {
-          child_fragment.translate_root_in_place(content_origin);
-        }
-        child_fragment.style = Some(original_style);
-        if trace_positioned.contains(&pos_child.id) {
-          let (text_count, total) = count_text_fragments(&child_fragment);
-          let mut snippets = Vec::new();
-          collect_first_texts(&child_fragment, &mut snippets, 3);
-          eprintln!(
+          let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+            || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+            || relayout_for_definite_insets;
+          if needs_relayout {
+            let relayout_constraints = child_constraints
+              .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
+            if pos_child.id != 0 {
+              if supports_used_border_box {
+                child_fragment = crate::layout::style_override::with_style_override(
+                  pos_child.id,
+                  static_style.clone(),
+                  || fc.layout(&pos_child, &relayout_constraints),
+                )?;
+              } else {
+                let mut relayout_style = static_style.clone();
+                {
+                  let s = Arc::make_mut(&mut relayout_style);
+                  s.width = Some(crate::style::values::Length::px(border_size.width));
+                  s.height = Some(crate::style::values::Length::px(border_size.height));
+                  s.width_keyword = None;
+                  s.height_keyword = None;
+                  s.min_width_keyword = None;
+                  s.max_width_keyword = None;
+                  s.min_height_keyword = None;
+                  s.max_height_keyword = None;
+                }
+                child_fragment = crate::layout::style_override::with_style_override(
+                  pos_child.id,
+                  relayout_style,
+                  || fc.layout(&pos_child, &relayout_constraints),
+                )?;
+              }
+            } else {
+              let mut relayout_child = pos_child.clone();
+              if supports_used_border_box {
+                relayout_child.style = static_style.clone();
+              } else {
+                let mut relayout_style = static_style.clone();
+                {
+                  let s = Arc::make_mut(&mut relayout_style);
+                  s.width = Some(crate::style::values::Length::px(border_size.width));
+                  s.height = Some(crate::style::values::Length::px(border_size.height));
+                  s.width_keyword = None;
+                  s.height_keyword = None;
+                  s.min_width_keyword = None;
+                  s.max_width_keyword = None;
+                  s.min_height_keyword = None;
+                  s.max_height_keyword = None;
+                }
+                relayout_child.style = relayout_style;
+              }
+              child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
+            }
+          }
+          child_fragment.bounds = Rect::new(border_origin, border_size);
+          // Child fragments are translated from the block's content coordinate space into the
+          // fragment-local (border-box) coordinate space via `content_origin` above.
+          //
+          // Keep out-of-flow positioned descendants consistent. When the positioned containing block
+          // is *not* this element's own padding box (i.e. it's inherited from an ancestor), the
+          // computed fragment position is still expressed in the content coordinate space and must
+          // be translated alongside in-flow fragments.
+          //
+          // Viewport-fixed fragments are stored in absolute viewport coordinates, and positioned
+          // elements whose containing block is this element's padding box are already computed in the
+          // border-box coordinate space, so neither should be translated here.
+          if cb != viewport_cb
+            && cb != parent_padding_cb
+            && (content_origin.x != 0.0 || content_origin.y != 0.0)
+          {
+            child_fragment.translate_root_in_place(content_origin);
+          }
+          child_fragment.style = Some(original_style);
+          if trace_positioned.contains(&pos_child.id) {
+            let (text_count, total) = count_text_fragments(&child_fragment);
+            let mut snippets = Vec::new();
+            collect_first_texts(&child_fragment, &mut snippets, 3);
+            eprintln!(
                         "[block-positioned-placed] child_id={} pos=({:.1},{:.1}) size=({:.1},{:.1}) texts={}/{} first_texts={:?}",
                         pos_child.id,
                         child_fragment.bounds.x(),
@@ -3398,75 +3469,75 @@ impl BlockFormattingContext {
                         total,
                         snippets
                     );
+          }
+          child_fragments.push(child_fragment);
         }
-        child_fragments.push(child_fragment);
       }
-    }
 
-    // Fragment bounds are stored in the coordinate system of the parent fragment. When a child
-    // establishes an orthogonal writing mode, its logical inline/block sizes swap relative to the
-    // parent's axes; map through physical space so in-flow layout and fragmentation observe the
-    // correct block progression extents.
-    let child_block_is_horizontal = block_axis_is_horizontal(style.writing_mode);
-    let (phys_w, phys_h) = if child_block_is_horizontal {
-      (box_height, box_width)
-    } else {
-      (box_width, box_height)
-    };
-    let parent_block_is_horizontal = block_axis_is_horizontal(parent.style.writing_mode);
-    let (inline_size_in_parent, block_size_in_parent) = if parent_block_is_horizontal {
-      (phys_h, phys_w)
-    } else {
-      (phys_w, phys_h)
-    };
-    let bounds = Rect::from_xywh(
-      child_border_origin.x,
-      box_y,
-      inline_size_in_parent,
-      block_size_in_parent,
-    );
-
-    let mut fragment = FragmentNode::new_with_style(
-      bounds,
-      crate::tree::fragment_tree::FragmentContent::Block {
-        box_id: Some(child.id),
-      },
-      child_fragments,
-      style_arc.clone(),
-    );
-    fragment.block_metadata = Some(BlockFragmentMetadata {
-      margin_top,
-      margin_bottom,
-      ..BlockFragmentMetadata::default()
-    });
-    if let Some(info) = column_info {
-      fragment.fragmentation = Some(info.clone());
-      // Keep logical bounds aligned with the physical multi-column fragment geometry so
-      // pagination uses the clipped height rather than the unfragmented flow height.
-      fragment.logical_override = Some(fragment.bounds);
-    }
-
-    if !skip_contents {
-      // Remember the laid out content-box size so skipped-content placeholder sizing can reuse it
-      // in subsequent layout passes (`contain-intrinsic-size: auto`).
-      let remembered = if block_axis_is_horizontal(style.writing_mode) {
-        Size::new(height, computed_width.content_width)
+      // Fragment bounds are stored in the coordinate system of the parent fragment. When a child
+      // establishes an orthogonal writing mode, its logical inline/block sizes swap relative to the
+      // parent's axes; map through physical space so in-flow layout and fragmentation observe the
+      // correct block progression extents.
+      let child_block_is_horizontal = block_axis_is_horizontal(style.writing_mode);
+      let (phys_w, phys_h) = if child_block_is_horizontal {
+        (box_height, box_width)
       } else {
-        Size::new(computed_width.content_width, height)
+        (box_width, box_height)
       };
-      remembered_size_cache_store(child, remembered);
-    }
+      let parent_block_is_horizontal = block_axis_is_horizontal(parent.style.writing_mode);
+      let (inline_size_in_parent, block_size_in_parent) = if parent_block_is_horizontal {
+        (phys_h, phys_w)
+      } else {
+        (phys_w, phys_h)
+      };
+      let bounds = Rect::from_xywh(
+        child_border_origin.x,
+        box_y,
+        inline_size_in_parent,
+        block_size_in_parent,
+      );
 
-    self.maybe_attach_footnote_anchor(
-      child,
-      containing_width,
-      nearest_positioned_cb,
-      nearest_fixed_cb,
-      &mut fragment,
-    )?;
+      let mut fragment = FragmentNode::new_with_style(
+        bounds,
+        crate::tree::fragment_tree::FragmentContent::Block {
+          box_id: Some(child.id),
+        },
+        child_fragments,
+        style_arc.clone(),
+      );
+      fragment.block_metadata = Some(BlockFragmentMetadata {
+        margin_top,
+        margin_bottom,
+        ..BlockFragmentMetadata::default()
+      });
+      if let Some(info) = column_info {
+        fragment.fragmentation = Some(info.clone());
+        // Keep logical bounds aligned with the physical multi-column fragment geometry so
+        // pagination uses the clipped height rather than the unfragmented flow height.
+        fragment.logical_override = Some(fragment.bounds);
+      }
 
-    fragment.scrollbar_reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
-    return Ok(fragment);
+      if !skip_contents {
+        // Remember the laid out content-box size so skipped-content placeholder sizing can reuse it
+        // in subsequent layout passes (`contain-intrinsic-size: auto`).
+        let remembered = if block_axis_is_horizontal(style.writing_mode) {
+          Size::new(height, computed_width.content_width)
+        } else {
+          Size::new(computed_width.content_width, height)
+        };
+        remembered_size_cache_store(child, remembered);
+      }
+
+      self.maybe_attach_footnote_anchor(
+        child,
+        containing_width,
+        nearest_positioned_cb,
+        nearest_fixed_cb,
+        &mut fragment,
+      )?;
+
+      fragment.scrollbar_reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
+      return Ok(fragment);
     }
 
     let style_override = crate::layout::style_override::style_override_for(child.id);
@@ -3840,11 +3911,13 @@ impl BlockFormattingContext {
           .style
           .as_deref()
           .is_some_and(|style| matches!(style.position, Position::Fixed));
-        let needs_cancel = (is_abs && !has_abs_cb_here)
-          || (is_fixed && external_fixed_cb && !has_fixed_cb_here);
+        let needs_cancel =
+          (is_abs && !has_abs_cb_here) || (is_fixed && external_fixed_cb && !has_fixed_cb_here);
         if needs_cancel {
           child.bounds = child.bounds.translate(cancel);
-          child.logical_override = child.logical_override.map(|logical| logical.translate(cancel));
+          child.logical_override = child
+            .logical_override
+            .map(|logical| logical.translate(cancel));
           // The entire subtree under this out-of-flow fragment inherits the cancelled translation,
           // so avoid double-applying it to descendants.
           continue;
@@ -4298,22 +4371,17 @@ impl BlockFormattingContext {
       // normal descendants would.
       let base_factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
       let mut factory = base_factory.translated_for_child(bounds.origin);
-      if style.establishes_abs_containing_block()
-        && padding_cb != factory.nearest_positioned_cb()
-      {
+      if style.establishes_abs_containing_block() && padding_cb != factory.nearest_positioned_cb() {
         factory = factory.with_positioned_cb(padding_cb);
       }
-      if style.establishes_fixed_containing_block()
-        && padding_cb != factory.nearest_fixed_cb()
-      {
+      if style.establishes_fixed_containing_block() && padding_cb != factory.nearest_fixed_cb() {
         factory = factory.with_fixed_cb(padding_cb);
       }
-      for positioned_child in child.children.iter().filter(|desc| {
-        desc
-          .style
-          .position
-          .is_absolutely_positioned()
-      }) {
+      for positioned_child in child
+        .children
+        .iter()
+        .filter(|desc| desc.style.position.is_absolutely_positioned())
+      {
         let original_style = positioned_child.style.clone();
         let mut layout_child = positioned_child.clone();
         let mut child_style = layout_child.style.clone();
@@ -4338,24 +4406,24 @@ impl BlockFormattingContext {
         };
         let child_constraints = LayoutConstraints::new(
           AvailableSpace::Definite(cb.rect.size.width),
-          cb
-            .block_percentage_base()
+          cb.block_percentage_base()
             .map(AvailableSpace::Definite)
             .unwrap_or(AvailableSpace::Indefinite),
         );
         let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
         let implicit_anchor_box_id = positioned_child.implicit_anchor_box_id;
-        let mut positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
-          &original_style,
-          &cb,
-          self.viewport_size,
-          &self.font_context,
-          None,
-          crate::layout::anchor_positioning::AnchorQueryContext {
-            query_parent_box_id: Some(child.id),
-            implicit_anchor_box_id,
-          },
-        );
+        let mut positioned_style =
+          crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
+            &original_style,
+            &cb,
+            self.viewport_size,
+            &self.font_context,
+            None,
+            crate::layout::anchor_positioning::AnchorQueryContext {
+              query_parent_box_id: Some(child.id),
+              implicit_anchor_box_id,
+            },
+          );
         positioned_style.width_keyword = original_style.width_keyword;
         positioned_style.min_width_keyword = original_style.min_width_keyword;
         positioned_style.max_width_keyword = original_style.max_width_keyword;
@@ -4617,7 +4685,9 @@ impl BlockFormattingContext {
           continue;
         }
         if node.style.float.is_floating() {
-          if let Some(side) = resolve_float_side(node.style.float, style.writing_mode, style.direction) {
+          if let Some(side) =
+            resolve_float_side(node.style.float, style.writing_mode, style.direction)
+          {
             match side {
               FloatSide::Left => seen_left = true,
               FloatSide::Right => seen_right = true,
@@ -4674,22 +4744,10 @@ impl BlockFormattingContext {
               || !style.used_border_right_width().is_zero()
               || !style.used_border_bottom_width().is_zero()
               || !style.used_border_left_width().is_zero()
-              || style
-                .margin_top
-                .as_ref()
-                .is_some_and(|m| !m.is_zero())
-              || style
-                .margin_right
-                .as_ref()
-                .is_some_and(|m| !m.is_zero())
-              || style
-                .margin_bottom
-                .as_ref()
-                .is_some_and(|m| !m.is_zero())
-              || style
-                .margin_left
-                .as_ref()
-                .is_some_and(|m| !m.is_zero())
+              || style.margin_top.as_ref().is_some_and(|m| !m.is_zero())
+              || style.margin_right.as_ref().is_some_and(|m| !m.is_zero())
+              || style.margin_bottom.as_ref().is_some_and(|m| !m.is_zero())
+              || style.margin_left.as_ref().is_some_and(|m| !m.is_zero())
               || node.formatting_context().is_some();
 
             if has_edges {
@@ -4707,11 +4765,11 @@ impl BlockFormattingContext {
 
     let is_ignorable_whitespace = |child: &BoxNode| -> bool {
       if matches!(&child.box_type, BoxType::Text(text_box)
-        if trim_ascii_whitespace(&text_box.text).is_empty()
-          && !matches!(
-            child.style.white_space,
-            crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
-          ))
+      if trim_ascii_whitespace(&text_box.text).is_empty()
+        && !matches!(
+          child.style.white_space,
+          crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
+        ))
       {
         return true;
       }
@@ -4777,7 +4835,9 @@ impl BlockFormattingContext {
         if child.style.float.is_floating()
           && !matches!(child.style.position, Position::Absolute | Position::Fixed)
         {
-          if let Some(side) = resolve_float_side(child.style.float, style.writing_mode, style.direction) {
+          if let Some(side) =
+            resolve_float_side(child.style.float, style.writing_mode, style.direction)
+          {
             match side {
               FloatSide::Left => seen_left_float = true,
               FloatSide::Right => seen_right_float = true,
@@ -4793,7 +4853,8 @@ impl BlockFormattingContext {
         // Clearance (from `clear`) breaks margin adjoining, so parent/first-child margin collapsing
         // must not tunnel past floats into a cleared block (CSS 2.1 §9.5.2 / §8.3.1).
         if seen_left_float || seen_right_float {
-          let clear_side = resolve_clear_side(child.style.clear, style.writing_mode, style.direction);
+          let clear_side =
+            resolve_clear_side(child.style.clear, style.writing_mode, style.direction);
           let clears_seen_float = (clear_side.clears_left() && seen_left_float)
             || (clear_side.clears_right() && seen_right_float);
           if clears_seen_float {
@@ -5163,8 +5224,9 @@ impl BlockFormattingContext {
     let has_external_float_ctx = external_float_ctx.is_some();
     // Flex items establish a new block formatting context for their contents, which prevents
     // parent/child margin collapsing and isolates floats from the outside.
-    let owns_float_ctx =
-      !has_external_float_ctx || establishes_bfc(&parent.style) || parent_is_independent_context_root;
+    let owns_float_ctx = !has_external_float_ctx
+      || establishes_bfc(&parent.style)
+      || parent_is_independent_context_root;
     let mut local_float_ctx = FloatContext::new(containing_width);
     let float_base_x = if owns_float_ctx {
       0.0
@@ -5316,7 +5378,10 @@ impl BlockFormattingContext {
         nearest_positioned_cb.inline_percentage_base(),
         nearest_positioned_cb.block_percentage_base(),
       )
-      .with_writing_mode_and_direction(nearest_positioned_cb.writing_mode, nearest_positioned_cb.direction)
+      .with_writing_mode_and_direction(
+        nearest_positioned_cb.writing_mode,
+        nearest_positioned_cb.direction,
+      )
     } else {
       *nearest_positioned_cb
     };
@@ -5356,37 +5421,36 @@ impl BlockFormattingContext {
       CollapsedMarginMode::Normal
     };
 
-    let layout_in_flow_block_child =
-      |child: &BoxNode,
-       margin_ctx: &mut MarginCollapseContext,
-       current_y: f32,
-       float_ctx_ref: &mut FloatContext|
-       -> Result<(FragmentNode, f32), LayoutError> {
-        let trace_child = !trace_boxes.is_empty() && trace_boxes.contains(&child.id);
-        let trace_start = trace_child.then(Instant::now);
-        if trace_child {
-          eprintln!(
-            "[trace-margins-start] parent_id={} child_id={} children={}",
-            parent.id,
-            child.id,
-            child.children.len()
-          );
-        }
-        let child_margins =
-          child_layout_ctx.collapsed_block_margins(child, containing_width, child_margin_mode);
-        if let Some(start) = trace_start {
-          eprintln!(
-            "[trace-margins-end] parent_id={} child_id={} elapsed_ms={} margins={:?}",
-            parent.id,
-            child.id,
-            start.elapsed().as_millis(),
-            child_margins
-          );
-        }
-        let at_start_before = margin_ctx.is_at_start();
-        let pending_margin = margin_ctx.pending_collapsible_margin();
-        if !trace_boxes.is_empty() && trace_boxes.contains(&child.id) {
-          eprintln!(
+    let layout_in_flow_block_child = |child: &BoxNode,
+                                      margin_ctx: &mut MarginCollapseContext,
+                                      current_y: f32,
+                                      float_ctx_ref: &mut FloatContext|
+     -> Result<(FragmentNode, f32), LayoutError> {
+      let trace_child = !trace_boxes.is_empty() && trace_boxes.contains(&child.id);
+      let trace_start = trace_child.then(Instant::now);
+      if trace_child {
+        eprintln!(
+          "[trace-margins-start] parent_id={} child_id={} children={}",
+          parent.id,
+          child.id,
+          child.children.len()
+        );
+      }
+      let child_margins =
+        child_layout_ctx.collapsed_block_margins(child, containing_width, child_margin_mode);
+      if let Some(start) = trace_start {
+        eprintln!(
+          "[trace-margins-end] parent_id={} child_id={} elapsed_ms={} margins={:?}",
+          parent.id,
+          child.id,
+          start.elapsed().as_millis(),
+          child_margins
+        );
+      }
+      let at_start_before = margin_ctx.is_at_start();
+      let pending_margin = margin_ctx.pending_collapsible_margin();
+      if !trace_boxes.is_empty() && trace_boxes.contains(&child.id) {
+        eprintln!(
             "[trace-box-margins] id={} pending={} child_top={} child_bottom={} collapsible_through={} at_start={} collapse_with_parent_top={}",
             child.id,
             pending_margin,
@@ -5396,89 +5460,90 @@ impl BlockFormattingContext {
             at_start_before,
             collapse_with_parent_top
           );
-        }
-        let margin_edge_y = current_y + pending_margin.resolve();
-        let clear_side =
-          resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction);
-        // `clearance` is a *delta* in the block axis, so it is invariant under the translation
-        // between this formatting context's coordinate space and an ancestor float context.
-        //
-        // When `clear: none`, `FloatContext::compute_clearance` returns the input `y` directly.
-        // Converting that result back into local coordinates via `y - float_base_y` can introduce
-        // tiny positive rounding errors (from catastrophic cancellation) that would incorrectly be
-        // treated as "has clearance", breaking sibling margin collapsing.
-        let clearance = if clear_side.is_clearing() {
-          float_ctx_ref.clearance_amount(float_base_y + margin_edge_y, clear_side)
-        } else {
-          0.0
-        };
+      }
+      let margin_edge_y = current_y + pending_margin.resolve();
+      let clear_side = resolve_clear_side(
+        child.style.clear,
+        parent.style.writing_mode,
+        parent.style.direction,
+      );
+      // `clearance` is a *delta* in the block axis, so it is invariant under the translation
+      // between this formatting context's coordinate space and an ancestor float context.
+      //
+      // When `clear: none`, `FloatContext::compute_clearance` returns the input `y` directly.
+      // Converting that result back into local coordinates via `y - float_base_y` can introduce
+      // tiny positive rounding errors (from catastrophic cancellation) that would incorrectly be
+      // treated as "has clearance", breaking sibling margin collapsing.
+      let clearance = if clear_side.is_clearing() {
+        float_ctx_ref.clearance_amount(float_base_y + margin_edge_y, clear_side)
+      } else {
+        0.0
+      };
 
-        let flow_box_y = if clearance > 0.0 {
-          // Clearance is added above the top margin edge and breaks margin adjoining.
-          margin_ctx.mark_content_encountered();
-          let (offset, _) = margin_ctx.process_child_with_clearance(
-            clearance,
-            child_margins.top,
-            child_margins.bottom,
-            child_margins.collapsible_through,
-          );
-          current_y + offset
-        } else if collapse_with_parent_top
-          && at_start_before
-          && !child_margins.collapsible_through
-        {
-          // Parent/first-child margin collapsing is represented by the parent's own collapsed
-          // margins. Discard any leading collapsible-through margins and place the first
-          // non-empty child at the block start.
-          margin_ctx.consume_pending();
-          margin_ctx.push_collapsible_margin(child_margins.bottom);
-          current_y
-        } else {
-          let (offset, _) = margin_ctx.process_child_margins(
-            child_margins.top,
-            child_margins.bottom,
-            child_margins.collapsible_through,
-          );
-          current_y + offset
-        };
+      let flow_box_y = if clearance > 0.0 {
+        // Clearance is added above the top margin edge and breaks margin adjoining.
+        margin_ctx.mark_content_encountered();
+        let (offset, _) = margin_ctx.process_child_with_clearance(
+          clearance,
+          child_margins.top,
+          child_margins.bottom,
+          child_margins.collapsible_through,
+        );
+        current_y + offset
+      } else if collapse_with_parent_top && at_start_before && !child_margins.collapsible_through {
+        // Parent/first-child margin collapsing is represented by the parent's own collapsed
+        // margins. Discard any leading collapsible-through margins and place the first
+        // non-empty child at the block start.
+        margin_ctx.consume_pending();
+        margin_ctx.push_collapsible_margin(child_margins.bottom);
+        current_y
+      } else {
+        let (offset, _) = margin_ctx.process_child_margins(
+          child_margins.top,
+          child_margins.bottom,
+          child_margins.collapsible_through,
+        );
+        current_y + offset
+      };
 
-        // For boxes that are "collapsed through" (their block-start and block-end margins are
-        // adjoining), CSS defines the position of their block-start border edge for the purposes
-        // of laying out descendants.
-        //
-        // In particular: when the box is not participating in parent/first-child margin
-        // collapsing, its block-start border edge is defined as if it had a non-zero block-end
-        // border (CSS Box 3 §4.3 “collapsed through” border edge position). This ensures that
-        // out-of-flow descendants (floats/abspos) are positioned after the collapsed sibling margin
-        // chain, even though the box itself is invisible in the block layout cursor.
-        let layout_box_y = if child_margins.collapsible_through && clearance == 0.0 && !at_start_before {
+      // For boxes that are "collapsed through" (their block-start and block-end margins are
+      // adjoining), CSS defines the position of their block-start border edge for the purposes
+      // of laying out descendants.
+      //
+      // In particular: when the box is not participating in parent/first-child margin
+      // collapsing, its block-start border edge is defined as if it had a non-zero block-end
+      // border (CSS Box 3 §4.3 “collapsed through” border edge position). This ensures that
+      // out-of-flow descendants (floats/abspos) are positioned after the collapsed sibling margin
+      // chain, even though the box itself is invisible in the block layout cursor.
+      let layout_box_y =
+        if child_margins.collapsible_through && clearance == 0.0 && !at_start_before {
           let collapsed_top = pending_margin.collapse_with(child_margins.top).resolve();
           current_y + collapsed_top
         } else {
           flow_box_y
         };
 
-        let fragment = child_layout_ctx.layout_block_child(
-          parent,
-          child,
-          containing_width,
-          constraints,
-          layout_box_y,
-          nearest_positioned_cb,
-          nearest_fixed_cb,
-          Some(&mut *float_ctx_ref),
-          float_base_x,
-          float_base_y,
-          paint_viewport,
-        )?;
-        let block_extent = if child_margins.collapsible_through {
-          0.0
-        } else {
-          fragment.bounds.height()
-        };
-        let next_y = flow_box_y + block_extent;
-        Ok((fragment, next_y))
+      let fragment = child_layout_ctx.layout_block_child(
+        parent,
+        child,
+        containing_width,
+        constraints,
+        layout_box_y,
+        nearest_positioned_cb,
+        nearest_fixed_cb,
+        Some(&mut *float_ctx_ref),
+        float_base_x,
+        float_base_y,
+        paint_viewport,
+      )?;
+      let block_extent = if child_margins.collapsible_through {
+        0.0
+      } else {
+        fragment.bounds.height()
       };
+      let next_y = flow_box_y + block_extent;
+      Ok((fragment, next_y))
+    };
 
     // Flushes buffered inline-level siblings by creating an inline formatting context wrapper.
     //
@@ -5499,9 +5564,9 @@ impl BlockFormattingContext {
                                deadline_counter: &mut usize,
                                positioned_children: &mut Vec<PositionedCandidate>|
      -> Result<Option<f32>, LayoutError> {
-        if buffer.is_empty() {
-          return Ok(None);
-        }
+      if buffer.is_empty() {
+        return Ok(None);
+      }
 
       // Collapsible whitespace that is the *only* in-flow content should not generate an empty
       // line box (CSS 2.1 §9.4.2: line boxes are created only when there are inline-level boxes).
@@ -5562,9 +5627,9 @@ impl BlockFormattingContext {
       // display type is inline-level. We still defer those to the inline formatting context for
       // float-aware static-position anchoring, so they must not trigger this "block content in the
       // inline buffer" fallback.
-      let has_block = buffer.iter().any(|b| {
-        !is_out_of_flow(b) && b.is_block_level() && !b.style.float.is_floating()
-      });
+      let has_block = buffer
+        .iter()
+        .any(|b| !is_out_of_flow(b) && b.is_block_level() && !b.style.float.is_floating());
       let all_whitespace = buffer.iter().all(|b| match &b.box_type {
         BoxType::Text(text) => trim_ascii_whitespace(&text.text).is_empty(),
         _ => false,
@@ -6235,7 +6300,11 @@ impl BlockFormattingContext {
         // Honor clearance against existing floats for this float's placement only.
         float_cursor_y += float_ctx.clearance_amount(
           float_base_y + float_cursor_y,
-          resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction),
+          resolve_clear_side(
+            child.style.clear,
+            parent.style.writing_mode,
+            parent.style.direction,
+          ),
         );
 
         let percentage_base = containing_width;
@@ -6283,40 +6352,40 @@ impl BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         let child_bfc = BlockFormattingContext::with_factory(factory.clone());
-        let (preferred_min_content, preferred_content) =
-          if fc_type == FormattingContextType::Block {
-            match child_bfc.compute_intrinsic_inline_sizes_internal(child, true, false) {
-              Ok(values) => values,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => {
-                let preferred_content =
-                  match child_bfc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
-                  {
-                    Ok(value) => value,
-                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                    Err(_) => 0.0,
-                  };
-                (0.0, preferred_content)
-              }
+        let (preferred_min_content, preferred_content) = if fc_type == FormattingContextType::Block
+        {
+          match child_bfc.compute_intrinsic_inline_sizes_internal(child, true, false) {
+            Ok(values) => values,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => {
+              let preferred_content = match child_bfc
+                .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
+              {
+                Ok(value) => value,
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => 0.0,
+              };
+              (0.0, preferred_content)
             }
-          } else {
-            let fc = factory.get(fc_type);
-            match fc.compute_intrinsic_inline_sizes(child) {
-              Ok(values) => values,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => {
-                // Preserve legacy semantics for non-timeout intrinsic sizing failures: treat
-                // the min-content width as 0 but still attempt the max-content measurement.
-                let preferred_content =
-                  match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent) {
-                    Ok(value) => value,
-                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                    Err(_) => 0.0,
-                  };
-                (0.0, preferred_content)
-              }
+          }
+        } else {
+          let fc = factory.get(fc_type);
+          match fc.compute_intrinsic_inline_sizes(child) {
+            Ok(values) => values,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => {
+              // Preserve legacy semantics for non-timeout intrinsic sizing failures: treat
+              // the min-content width as 0 but still attempt the max-content measurement.
+              let preferred_content =
+                match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent) {
+                  Ok(value) => value,
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => 0.0,
+                };
+              (0.0, preferred_content)
             }
-          };
+          }
+        };
 
         let edges_base0 = horizontal_padding_and_borders(
           &child.style,
@@ -6392,13 +6461,16 @@ impl BlockFormattingContext {
                         self.viewport_size,
                         root_font_metrics,
                       );
-                      let resolved_border =
-                        border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                      let resolved_border = border_size_from_box_sizing(
+                        resolved,
+                        horizontal_edges,
+                        child.style.box_sizing,
+                      );
                       intrinsic_max.min(intrinsic_min.max(resolved_border))
                     } else {
                       intrinsic_max.min(available.max(intrinsic_min))
                     }
-                }
+                  }
                   CalcSizeBasis::Length(len) => {
                     let specified = resolve_length_for_width(
                       len,
@@ -6418,7 +6490,9 @@ impl BlockFormattingContext {
                   BoxSizing::BorderBox => basis_border,
                 };
                 crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-                  .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+                  .and_then(|expr_sum| {
+                    crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+                  })
                   .map(|expr_len| {
                     let resolved_specified = resolve_length_for_width(
                       expr_len,
@@ -6481,8 +6555,11 @@ impl BlockFormattingContext {
                       self.viewport_size,
                       root_font_metrics,
                     );
-                    let resolved_border =
-                      border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                    let resolved_border = border_size_from_box_sizing(
+                      resolved,
+                      horizontal_edges,
+                      child.style.box_sizing,
+                    );
                     intrinsic_max.min(intrinsic_min.max(resolved_border))
                   } else {
                     intrinsic_max.min(available.max(intrinsic_min))
@@ -6507,7 +6584,9 @@ impl BlockFormattingContext {
                 BoxSizing::BorderBox => basis_border,
               };
               crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-                .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+                .and_then(|expr_sum| {
+                  crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+                })
                 .map(|expr_len| {
                   let resolved_specified = resolve_length_for_width(
                     expr_len,
@@ -6586,8 +6665,11 @@ impl BlockFormattingContext {
                       self.viewport_size,
                       root_font_metrics,
                     );
-                    let resolved_border =
-                      border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                    let resolved_border = border_size_from_box_sizing(
+                      resolved,
+                      horizontal_edges,
+                      child.style.box_sizing,
+                    );
                     intrinsic_max.min(intrinsic_min.max(resolved_border))
                   } else {
                     intrinsic_max.min(available.max(intrinsic_min))
@@ -6612,7 +6694,9 @@ impl BlockFormattingContext {
                 BoxSizing::BorderBox => basis_border,
               };
               crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-                .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+                .and_then(|expr_sum| {
+                  crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+                })
                 .map(|expr_len| {
                   let resolved_specified = resolve_length_for_width(
                     expr_len,
@@ -6730,14 +6814,17 @@ impl BlockFormattingContext {
         let box_width = used_border_box;
         let float_height = margin_top + fragment.bounds.height() + margin_bottom;
 
-        let side =
-          match resolve_float_side(child.style.float, parent.style.writing_mode, parent.style.direction) {
-            Some(side) => side,
-            None => {
-              debug_assert!(false, "expected floating side for box_id={}", child.id);
-              FloatSide::Left
-            }
-          };
+        let side = match resolve_float_side(
+          child.style.float,
+          parent.style.writing_mode,
+          parent.style.direction,
+        ) {
+          Some(side) => side,
+          None => {
+            debug_assert!(false, "expected floating side for box_id={}", child.id);
+            FloatSide::Left
+          }
+        };
 
         let (fx, fy) = float_ctx.compute_float_position_in_containing_block(
           side,
@@ -6914,16 +7001,16 @@ impl BlockFormattingContext {
             &mut positioned_children,
           )?;
           inline_buffer.clear();
-           let (fragment, next_y) =
-             layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
-           content_height_before_last_cursor = content_height;
-           content_height = content_height.max(next_y);
-           current_y = next_y;
-           let mut fragment = fragment;
-           if child.style.position.is_relative() {
-             let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
-               &child.style,
-               &relative_cb,
+          let (fragment, next_y) =
+            layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
+          content_height_before_last_cursor = content_height;
+          content_height = content_height.max(next_y);
+          current_y = next_y;
+          let mut fragment = fragment;
+          if child.style.position.is_relative() {
+            let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
+              &child.style,
+              &relative_cb,
               self.viewport_size,
               &self.font_context,
             );
@@ -7259,10 +7346,7 @@ impl BlockFormattingContext {
         column_height = hint;
       }
     }
-    if matches!(
-      column_fill,
-      ColumnFill::Balance | ColumnFill::BalanceAll
-    )
+    if matches!(column_fill, ColumnFill::Balance | ColumnFill::BalanceAll)
       && fragmentainer_hint.is_none()
       && column_height.is_finite()
       && column_height > 0.0
@@ -7335,7 +7419,11 @@ impl BlockFormattingContext {
     const PAGE_OFFSET_EPSILON: f32 = 0.01;
     let (_offset_in_page, first_set_height) = if fragmented_context {
       let abs_offset = crate::layout::formatting_context::fragmentainer_block_offset_hint();
-      let abs_offset = if abs_offset.is_finite() { abs_offset } else { 0.0 };
+      let abs_offset = if abs_offset.is_finite() {
+        abs_offset
+      } else {
+        0.0
+      };
       let mut offset_in_page = abs_offset.rem_euclid(page_size);
       if !offset_in_page.is_finite() {
         offset_in_page = 0.0;
@@ -7564,10 +7652,7 @@ impl BlockFormattingContext {
     };
     let mut fragment_count = boundaries.len().saturating_sub(1);
     if fragmentainer_hint.is_none()
-      && matches!(
-        column_fill,
-        ColumnFill::Balance | ColumnFill::BalanceAll
-      )
+      && matches!(column_fill, ColumnFill::Balance | ColumnFill::BalanceAll)
       && fragment_count == column_count
     {
       let balanced = analyzer.balanced_boundaries(column_count, column_height, total_extent)?;
@@ -7651,10 +7736,7 @@ impl BlockFormattingContext {
     // leaving whitespace at the bottom of shorter columns rather than filling sequentially.
     if fragmentainer_hint.is_some()
       && matches!(available_block, AvailableSpace::Indefinite)
-      && matches!(
-        column_fill,
-        ColumnFill::Balance | ColumnFill::BalanceAll
-      )
+      && matches!(column_fill, ColumnFill::Balance | ColumnFill::BalanceAll)
       && column_count > 1
     {
       let base_boundaries = boundaries;
@@ -7750,7 +7832,10 @@ impl BlockFormattingContext {
             false,
             None,
           );
-          let content_extent = set_analyzer.content_extent().max(0.0).min(set_content_total);
+          let content_extent = set_analyzer
+            .content_extent()
+            .max(0.0)
+            .min(set_content_total);
           if content_extent <= 0.0 {
             for _ in 0..column_count {
               balanced_boundaries.push(set_end);
@@ -7881,23 +7966,27 @@ impl BlockFormattingContext {
     let mut promoted_break_iter = promoted_set_start_slices.iter().peekable();
     let push_promoted_marker =
       |fragments: &mut Vec<FragmentNode>, slice_idx: usize, side: Option<PageSide>| {
-      let set_index = slice_idx / column_count;
-      let offset = axes.block_offset(set_offset(set_index));
-      let bounds = Rect::from_xywh(offset.x, offset.y, 0.0, 0.0);
-      let mut marker_style = ComputedStyle::default();
-      marker_style.display = Display::Block;
-      marker_style.writing_mode = writing_mode;
-      marker_style.direction = direction;
-      // The marker represents a forced column-set boundary. Use `break-after` so the forced break
-      // is anchored to the marker's own position rather than the end edge of the preceding column,
-      // which may be shorter than the fragmentainer height in paged multi-column layout.
-      marker_style.break_after = match side {
-        Some(PageSide::Left) => crate::style::types::BreakBetween::Left,
-        Some(PageSide::Right) => crate::style::types::BreakBetween::Right,
-        None => crate::style::types::BreakBetween::Page,
+        let set_index = slice_idx / column_count;
+        let offset = axes.block_offset(set_offset(set_index));
+        let bounds = Rect::from_xywh(offset.x, offset.y, 0.0, 0.0);
+        let mut marker_style = ComputedStyle::default();
+        marker_style.display = Display::Block;
+        marker_style.writing_mode = writing_mode;
+        marker_style.direction = direction;
+        // The marker represents a forced column-set boundary. Use `break-after` so the forced break
+        // is anchored to the marker's own position rather than the end edge of the preceding column,
+        // which may be shorter than the fragmentainer height in paged multi-column layout.
+        marker_style.break_after = match side {
+          Some(PageSide::Left) => crate::style::types::BreakBetween::Left,
+          Some(PageSide::Right) => crate::style::types::BreakBetween::Right,
+          None => crate::style::types::BreakBetween::Page,
+        };
+        fragments.push(FragmentNode::new_block_styled(
+          bounds,
+          Vec::new(),
+          Arc::new(marker_style),
+        ));
       };
-      fragments.push(FragmentNode::new_block_styled(bounds, Vec::new(), Arc::new(marker_style)));
-    };
     for (index, window) in boundaries.windows(2).enumerate() {
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut deadline_counter, 32, RenderStage::Layout)
@@ -7950,7 +8039,11 @@ impl BlockFormattingContext {
         } else {
           index
         };
-        let set = if fragmented_context { index / column_count } else { 0 };
+        let set = if fragmented_context {
+          index / column_count
+        } else {
+          0
+        };
         propagate_fragmentainer_columns(&mut clipped, set, col);
         let offset = axes
           .inline_offset(col as f32 * stride)
@@ -7992,10 +8085,17 @@ impl BlockFormattingContext {
           } else {
             frag_index
           };
-          let set = if fragmented_context { frag_index / column_count } else { 0 };
+          let set = if fragmented_context {
+            frag_index / column_count
+          } else {
+            0
+          };
           let mut translated = pos;
-          let column_delta =
-            if inline_positive { col as f32 * stride } else { -(col as f32 * stride) };
+          let column_delta = if inline_positive {
+            col as f32 * stride
+          } else {
+            -(col as f32 * stride)
+          };
           let block_delta = set_offset(set) - start;
           translated.x += column_delta;
           translated.y += block_delta;
@@ -8019,7 +8119,11 @@ impl BlockFormattingContext {
       {
         return Err(LayoutError::Timeout { elapsed });
       }
-      let set = if fragmented_context { idx / column_count } else { 0 };
+      let set = if fragmented_context {
+        idx / column_count
+      } else {
+        0
+      };
       if set < set_heights.len() {
         set_heights[set] = set_heights[set].max(height);
       }
@@ -8260,7 +8364,11 @@ impl BlockFormattingContext {
     }
 
     let base_offset = crate::layout::formatting_context::fragmentainer_block_offset_hint();
-    let base_offset = if base_offset.is_finite() { base_offset } else { 0.0 };
+    let base_offset = if base_offset.is_finite() {
+      base_offset
+    } else {
+      0.0
+    };
     let mut fragments = Vec::new();
     let mut positioned_children = Vec::new();
     let mut physical_offset = 0.0;
@@ -8396,10 +8504,7 @@ impl std::fmt::Debug for BlockFormattingContext {
 }
 
 fn has_percentage_sizing_hint(style: &ComputedStyle) -> bool {
-  style
-    .width
-    .as_ref()
-    .is_some_and(|len| len.has_percentage())
+  style.width.as_ref().is_some_and(|len| len.has_percentage())
     || style
       .height
       .as_ref()
@@ -8717,7 +8822,11 @@ impl BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         let (child_min, child_max) = if fc_type == FormattingContextType::Block {
-          self.compute_intrinsic_inline_sizes_internal(child, include_float_children, allow_cache)?
+          self.compute_intrinsic_inline_sizes_internal(
+            child,
+            include_float_children,
+            allow_cache,
+          )?
         } else {
           factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
         };
@@ -8778,7 +8887,11 @@ impl BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         let (child_min, child_max) = if fc_type == FormattingContextType::Block {
-          self.compute_intrinsic_inline_sizes_internal(child, include_float_children, allow_cache)?
+          self.compute_intrinsic_inline_sizes_internal(
+            child,
+            include_float_children,
+            allow_cache,
+          )?
         } else {
           factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
         };
@@ -8941,181 +9054,189 @@ impl FormattingContext for BlockFormattingContext {
     constraints: &LayoutConstraints,
   ) -> Result<FragmentNode, LayoutError> {
     if crate::layout::auto_scrollbars::should_bypass(box_node) {
-    let _profile = layout_timer(LayoutKind::Block);
-    if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
-      return Err(LayoutError::Timeout { elapsed });
-    }
-    let style_override = crate::layout::style_override::style_override_for(box_node.id);
-    if let Some(cached) = layout_cache_lookup(
-      box_node,
-      FormattingContextType::Block,
-      constraints,
-      self.factory.viewport_scroll(),
-      self.viewport_size,
-      self.nearest_positioned_cb,
-      self.nearest_fixed_cb,
-    ) {
-      return Ok(cached);
-    }
-    let style = style_override.as_ref().unwrap_or(&box_node.style);
-    let base_paint_viewport =
-      paint_viewport_for(style.writing_mode, style.direction, self.viewport_size);
-    let toggles = crate::debug::runtime::runtime_toggles();
-    let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
-    let root_font_metrics = self.factory.root_font_metrics();
-    let _inline_positive = inline_axis_positive(style.writing_mode, style.direction);
-    let _block_positive = block_axis_positive(style.writing_mode);
-    let inline_space = if inline_is_horizontal {
-      constraints.available_width
-    } else {
-      constraints.available_height
-    };
-    let inline_viewport = if inline_is_horizontal {
-      self.viewport_size.width
-    } else {
-      self.viewport_size.height
-    };
-    let log_skinny = toggles.truthy("FASTR_LOG_SKINNY_FLEX");
-    let inline_percentage_base = match inline_space {
-      AvailableSpace::Definite(_) => {
-        let base = if inline_is_horizontal {
-          constraints
-            .inline_percentage_base
-            .or_else(|| constraints.width())
-        } else {
-          constraints.height()
-        };
-        let viewport_inline = if inline_is_horizontal {
-          self.viewport_size.width
-        } else {
-          self.viewport_size.height
-        };
-        base.unwrap_or(viewport_inline)
+      let _profile = layout_timer(LayoutKind::Block);
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
       }
-      AvailableSpace::MinContent | AvailableSpace::MaxContent | AvailableSpace::Indefinite => {
-        constraints.inline_percentage_base.unwrap_or(0.0)
+      let style_override = crate::layout::style_override::style_override_for(box_node.id);
+      if let Some(cached) = layout_cache_lookup(
+        box_node,
+        FormattingContextType::Block,
+        constraints,
+        self.factory.viewport_scroll(),
+        self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
+      ) {
+        return Ok(cached);
       }
-    };
-    // When the containing block inline size is intrinsic/indefinite (min-/max-content probes),
-    // percentage widths behave as `auto` per CSS sizing. Strip percentage width/min/max hints
-    // so intrinsic sizing does not resolve them against an unrelated base (e.g., viewport).
-    let use_percent_as_auto = matches!(
-      inline_space,
-      AvailableSpace::MinContent | AvailableSpace::MaxContent | AvailableSpace::Indefinite
-    );
-    let style_for_width_owned: Option<Arc<ComputedStyle>> = use_percent_as_auto.then(|| {
-      let mut owned = style.clone();
-      {
-        let s = Arc::make_mut(&mut owned);
-        if matches!(s.width, Some(len) if len.unit.is_percentage())
-          || s
-            .width_keyword
-            .is_some_and(|keyword| keyword.has_percentage())
-        {
-          s.width = None;
-          s.width_keyword = None;
-        }
-        if matches!(s.min_width, Some(len) if len.unit.is_percentage())
-          || s
-            .min_width_keyword
-            .is_some_and(|keyword| keyword.has_percentage())
-        {
-          s.min_width = None;
-          s.min_width_keyword = None;
-        }
-        if matches!(s.max_width, Some(len) if len.unit.is_percentage())
-          || s
-            .max_width_keyword
-            .is_some_and(|keyword| keyword.has_percentage())
-        {
-          s.max_width = None;
-          s.max_width_keyword = None;
-        }
-      }
-      owned
-    });
-    let style_for_width: &ComputedStyle = style_for_width_owned
-      .as_deref()
-      .unwrap_or_else(|| style.as_ref());
-
-    // When available width is indefinite/max-content, try to derive a reasonable containing
-    // width from the element's own sizing hints (max-width/width/min-width) before falling
-    // back to the viewport. The base for percentages must be the parent’s containing width
-    // (the constraint) rather than the viewport; otherwise centered/narrow wrappers (e.g.,
-    // 400px max-width zones) inflate to 1200px during intrinsic probes.
-    let preferred_containing_width = |percentage_base: f32| {
-      let resolve = |len: &Length| {
-        resolve_length_for_width(
-          *len,
-          percentage_base,
-          style,
-          &self.font_context,
-          self.viewport_size,
-          root_font_metrics,
-        )
-      };
-      style
-        .max_width
-        .as_ref()
-        .map(resolve)
-        .or_else(|| style.width.as_ref().map(resolve))
-        .or_else(|| style.min_width.as_ref().map(resolve))
-    };
-
-    // Replaced elements laid out as standalone formatting contexts: compute their used size
-    // directly instead of running the block width algorithm (which would treat the specified
-    // width as the used content width without honoring max-width).
-    if let BoxType::Replaced(replaced_box) = &box_node.box_type {
-      let mut containing_width = inline_percentage_base;
-      if containing_width <= 1.0
-        && constraints.used_border_box_width.is_none()
-        && !self.suppress_near_zero_width_viewport_fallback
-      {
-        let width_is_absolute = style
-          .width
-          .as_ref()
-          .map(|l| l.unit.is_absolute())
-          .unwrap_or(false);
-        if !width_is_absolute {
-          containing_width = self.viewport_size.width;
-        }
-      }
-      let containing_height = if inline_is_horizontal {
-        // Prefer the explicit block percentage base so replaced elements with percentage heights
-        // can resolve against a definite containing-block size even when the block axis available
-        // space is indefinite (e.g. `aspect-ratio` auto heights).
-        constraints.block_percentage_base.or_else(|| constraints.height())
+      let style = style_override.as_ref().unwrap_or(&box_node.style);
+      let base_paint_viewport =
+        paint_viewport_for(style.writing_mode, style.direction, self.viewport_size);
+      let toggles = crate::debug::runtime::runtime_toggles();
+      let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
+      let root_font_metrics = self.factory.root_font_metrics();
+      let _inline_positive = inline_axis_positive(style.writing_mode, style.direction);
+      let _block_positive = block_axis_positive(style.writing_mode);
+      let inline_space = if inline_is_horizontal {
+        constraints.available_width
       } else {
-        constraints.block_percentage_base.or_else(|| constraints.width())
+        constraints.available_height
       };
-      let percentage_base = Some(crate::geometry::Size::new(
-        containing_width,
-        containing_height.unwrap_or(f32::NAN),
-      ));
-      // `compute_replaced_size` returns the used content-box size and already accounts for min/max
-      // constraints while interpreting `box-sizing`. Avoid reapplying min/max clamps here.
-      //
-      // When we're performing intrinsic/indefinite probes, percentage-based width constraints behave
-      // as `auto` (CSS Sizing). Use the `style_for_width` variant that strips percentage
-      // width/min/max hints so `max-width: 100%` doesn't incorrectly clamp replaced elements to 0
-      // when the containing block inline size is unknown (e.g. intrinsic block-size probes for
-      // absolutely positioned replaced elements).
-      let used_size =
-        compute_replaced_size(style_for_width, replaced_box, percentage_base, self.viewport_size);
-      {
-        let toggles = crate::debug::runtime::runtime_toggles();
-        if toggles.truthy("FASTR_LOG_REPLACED_SIZES") {
-          let matches_filter = toggles
-            .usize_list("FASTR_LOG_REPLACED_SIZE_IDS")
-            .map(|ids| ids.contains(&box_node.id))
-            .unwrap_or(true);
-          if matches_filter {
-            let selector = box_node
-              .debug_info
-              .as_ref()
-              .map(|d| d.to_selector())
-              .unwrap_or_else(|| "<anon>".to_string());
-            eprintln!(
+      let inline_viewport = if inline_is_horizontal {
+        self.viewport_size.width
+      } else {
+        self.viewport_size.height
+      };
+      let log_skinny = toggles.truthy("FASTR_LOG_SKINNY_FLEX");
+      let inline_percentage_base = match inline_space {
+        AvailableSpace::Definite(_) => {
+          let base = if inline_is_horizontal {
+            constraints
+              .inline_percentage_base
+              .or_else(|| constraints.width())
+          } else {
+            constraints.height()
+          };
+          let viewport_inline = if inline_is_horizontal {
+            self.viewport_size.width
+          } else {
+            self.viewport_size.height
+          };
+          base.unwrap_or(viewport_inline)
+        }
+        AvailableSpace::MinContent | AvailableSpace::MaxContent | AvailableSpace::Indefinite => {
+          constraints.inline_percentage_base.unwrap_or(0.0)
+        }
+      };
+      // When the containing block inline size is intrinsic/indefinite (min-/max-content probes),
+      // percentage widths behave as `auto` per CSS sizing. Strip percentage width/min/max hints
+      // so intrinsic sizing does not resolve them against an unrelated base (e.g., viewport).
+      let use_percent_as_auto = matches!(
+        inline_space,
+        AvailableSpace::MinContent | AvailableSpace::MaxContent | AvailableSpace::Indefinite
+      );
+      let style_for_width_owned: Option<Arc<ComputedStyle>> = use_percent_as_auto.then(|| {
+        let mut owned = style.clone();
+        {
+          let s = Arc::make_mut(&mut owned);
+          if matches!(s.width, Some(len) if len.unit.is_percentage())
+            || s
+              .width_keyword
+              .is_some_and(|keyword| keyword.has_percentage())
+          {
+            s.width = None;
+            s.width_keyword = None;
+          }
+          if matches!(s.min_width, Some(len) if len.unit.is_percentage())
+            || s
+              .min_width_keyword
+              .is_some_and(|keyword| keyword.has_percentage())
+          {
+            s.min_width = None;
+            s.min_width_keyword = None;
+          }
+          if matches!(s.max_width, Some(len) if len.unit.is_percentage())
+            || s
+              .max_width_keyword
+              .is_some_and(|keyword| keyword.has_percentage())
+          {
+            s.max_width = None;
+            s.max_width_keyword = None;
+          }
+        }
+        owned
+      });
+      let style_for_width: &ComputedStyle = style_for_width_owned
+        .as_deref()
+        .unwrap_or_else(|| style.as_ref());
+
+      // When available width is indefinite/max-content, try to derive a reasonable containing
+      // width from the element's own sizing hints (max-width/width/min-width) before falling
+      // back to the viewport. The base for percentages must be the parent’s containing width
+      // (the constraint) rather than the viewport; otherwise centered/narrow wrappers (e.g.,
+      // 400px max-width zones) inflate to 1200px during intrinsic probes.
+      let preferred_containing_width = |percentage_base: f32| {
+        let resolve = |len: &Length| {
+          resolve_length_for_width(
+            *len,
+            percentage_base,
+            style,
+            &self.font_context,
+            self.viewport_size,
+            root_font_metrics,
+          )
+        };
+        style
+          .max_width
+          .as_ref()
+          .map(resolve)
+          .or_else(|| style.width.as_ref().map(resolve))
+          .or_else(|| style.min_width.as_ref().map(resolve))
+      };
+
+      // Replaced elements laid out as standalone formatting contexts: compute their used size
+      // directly instead of running the block width algorithm (which would treat the specified
+      // width as the used content width without honoring max-width).
+      if let BoxType::Replaced(replaced_box) = &box_node.box_type {
+        let mut containing_width = inline_percentage_base;
+        if containing_width <= 1.0
+          && constraints.used_border_box_width.is_none()
+          && !self.suppress_near_zero_width_viewport_fallback
+        {
+          let width_is_absolute = style
+            .width
+            .as_ref()
+            .map(|l| l.unit.is_absolute())
+            .unwrap_or(false);
+          if !width_is_absolute {
+            containing_width = self.viewport_size.width;
+          }
+        }
+        let containing_height = if inline_is_horizontal {
+          // Prefer the explicit block percentage base so replaced elements with percentage heights
+          // can resolve against a definite containing-block size even when the block axis available
+          // space is indefinite (e.g. `aspect-ratio` auto heights).
+          constraints
+            .block_percentage_base
+            .or_else(|| constraints.height())
+        } else {
+          constraints
+            .block_percentage_base
+            .or_else(|| constraints.width())
+        };
+        let percentage_base = Some(crate::geometry::Size::new(
+          containing_width,
+          containing_height.unwrap_or(f32::NAN),
+        ));
+        // `compute_replaced_size` returns the used content-box size and already accounts for min/max
+        // constraints while interpreting `box-sizing`. Avoid reapplying min/max clamps here.
+        //
+        // When we're performing intrinsic/indefinite probes, percentage-based width constraints behave
+        // as `auto` (CSS Sizing). Use the `style_for_width` variant that strips percentage
+        // width/min/max hints so `max-width: 100%` doesn't incorrectly clamp replaced elements to 0
+        // when the containing block inline size is unknown (e.g. intrinsic block-size probes for
+        // absolutely positioned replaced elements).
+        let used_size = compute_replaced_size(
+          style_for_width,
+          replaced_box,
+          percentage_base,
+          self.viewport_size,
+        );
+        {
+          let toggles = crate::debug::runtime::runtime_toggles();
+          if toggles.truthy("FASTR_LOG_REPLACED_SIZES") {
+            let matches_filter = toggles
+              .usize_list("FASTR_LOG_REPLACED_SIZE_IDS")
+              .map(|ids| ids.contains(&box_node.id))
+              .unwrap_or(true);
+            if matches_filter {
+              let selector = box_node
+                .debug_info
+                .as_ref()
+                .map(|d| d.to_selector())
+                .unwrap_or_else(|| "<anon>".to_string());
+              eprintln!(
               "[replaced-size] id={} selector={} replaced={:?} intrinsic_size={:?} intrinsic_ratio={:?} no_intrinsic_ratio={} style_width={:?} style_height={:?} style_min_w={:?} style_max_w={:?} sizing_width={:?} sizing_height={:?} sizing_min_w={:?} sizing_max_w={:?} min_h={:?} max_h={:?} width_kw={:?} height_kw={:?} aspect_ratio={:?} percentage_base={:?} used_size=({:.2},{:.2})",
               box_node.id,
               selector,
@@ -9140,135 +9261,135 @@ impl FormattingContext for BlockFormattingContext {
               used_size.width,
               used_size.height
             );
+            }
           }
         }
+        if log_skinny && containing_width <= 1.0 {
+          let selector = box_node
+            .debug_info
+            .as_ref()
+            .map(|d| d.to_selector())
+            .unwrap_or_else(|| "<anon>".to_string());
+          eprintln!(
+                    "[skinny-block-constraint] id={} selector={} replaced containing_w={:.2} used_w={:.2} min_w={:?} max_w={:?}",
+                    box_node.id, selector, containing_width, used_size.width, style.min_width, style.max_width
+                );
+        }
+        // `compute_replaced_size` returns a content-box size. Fragment bounds are border-box sized,
+        // so include padding and border edges here; absolute positioning and container query sizing
+        // both expect border-box fragment geometry.
+        let root_font_metrics = self.factory.root_font_metrics();
+        let inline_edges = if inline_is_horizontal {
+          horizontal_padding_and_borders(
+            style,
+            containing_width,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          )
+        } else {
+          vertical_padding_and_borders(
+            style,
+            containing_width,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          )
+        };
+        let block_edges = if inline_is_horizontal {
+          vertical_padding_and_borders(
+            style,
+            containing_width,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          )
+        } else {
+          horizontal_padding_and_borders(
+            style,
+            containing_width,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          )
+        };
+
+        let used_inline = if inline_is_horizontal {
+          used_size.width
+        } else {
+          used_size.height
+        };
+        let used_block = if inline_is_horizontal {
+          used_size.height
+        } else {
+          used_size.width
+        };
+        let bounds = Rect::new(
+          Point::new(0.0, 0.0),
+          Size::new(
+            (used_inline + inline_edges).max(0.0),
+            (used_block + block_edges).max(0.0),
+          ),
+        );
+        let fragment = FragmentNode::new_with_style(
+          bounds,
+          crate::tree::fragment_tree::FragmentContent::Replaced {
+            replaced_type: replaced_box.replaced_type.clone(),
+            box_id: Some(box_node.id),
+          },
+          vec![],
+          box_node.style.clone(),
+        );
+        let converted = convert_fragment_axes(
+          fragment,
+          bounds.width(),
+          bounds.height(),
+          style.writing_mode,
+          style.direction,
+        );
+        return Ok(converted);
       }
-      if log_skinny && containing_width <= 1.0 {
+
+      let intrinsic_width_mode = matches!(
+        inline_space,
+        AvailableSpace::MaxContent | AvailableSpace::MinContent | AvailableSpace::Indefinite
+      );
+      let mut containing_width = match inline_space {
+        AvailableSpace::Definite(w) => w,
+        // In-flow blocks use the containing block’s inline size; shrink-to-fit contexts should
+        // feed a definite width in constraints. When the available width is indefinite/max/min
+        // content, prefer the element’s own sizing hints (resolved against the parent
+        // containing width when known) before falling back to the viewport.
+        AvailableSpace::MaxContent | AvailableSpace::MinContent | AvailableSpace::Indefinite => {
+          preferred_containing_width(inline_percentage_base).unwrap_or(inline_percentage_base)
+        }
+      };
+      let used_border_box_inline = if inline_is_horizontal {
+        constraints.used_border_box_width
+      } else {
+        constraints.used_border_box_height
+      };
+      if containing_width <= 1.0
+        && !intrinsic_width_mode
+        && used_border_box_inline.is_none()
+        && !self.suppress_near_zero_width_viewport_fallback
+      {
+        let width_is_absolute = style
+          .width
+          .as_ref()
+          .map(|l| l.unit.is_absolute())
+          .unwrap_or(false);
+        if !width_is_absolute {
+          containing_width = inline_viewport;
+        }
+      }
+      if toggles.truthy("FASTR_LOG_SMALL_BLOCK") && containing_width < 150.0 {
         let selector = box_node
           .debug_info
           .as_ref()
           .map(|d| d.to_selector())
-          .unwrap_or_else(|| "<anon>".to_string());
+          .unwrap_or_else(|| "<anonymous>".to_string());
         eprintln!(
-                    "[skinny-block-constraint] id={} selector={} replaced containing_w={:.2} used_w={:.2} min_w={:?} max_w={:?}",
-                    box_node.id, selector, containing_width, used_size.width, style.min_width, style.max_width
-                );
-      }
-      // `compute_replaced_size` returns a content-box size. Fragment bounds are border-box sized,
-      // so include padding and border edges here; absolute positioning and container query sizing
-      // both expect border-box fragment geometry.
-      let root_font_metrics = self.factory.root_font_metrics();
-      let inline_edges = if inline_is_horizontal {
-        horizontal_padding_and_borders(
-          style,
-          containing_width,
-          self.viewport_size,
-          &self.font_context,
-          root_font_metrics,
-        )
-      } else {
-        vertical_padding_and_borders(
-          style,
-          containing_width,
-          self.viewport_size,
-          &self.font_context,
-          root_font_metrics,
-        )
-      };
-      let block_edges = if inline_is_horizontal {
-        vertical_padding_and_borders(
-          style,
-          containing_width,
-          self.viewport_size,
-          &self.font_context,
-          root_font_metrics,
-        )
-      } else {
-        horizontal_padding_and_borders(
-          style,
-          containing_width,
-          self.viewport_size,
-          &self.font_context,
-          root_font_metrics,
-        )
-      };
-
-      let used_inline = if inline_is_horizontal {
-        used_size.width
-      } else {
-        used_size.height
-      };
-      let used_block = if inline_is_horizontal {
-        used_size.height
-      } else {
-        used_size.width
-      };
-      let bounds = Rect::new(
-        Point::new(0.0, 0.0),
-        Size::new(
-          (used_inline + inline_edges).max(0.0),
-          (used_block + block_edges).max(0.0),
-        ),
-      );
-      let fragment = FragmentNode::new_with_style(
-        bounds,
-        crate::tree::fragment_tree::FragmentContent::Replaced {
-          replaced_type: replaced_box.replaced_type.clone(),
-          box_id: Some(box_node.id),
-        },
-        vec![],
-        box_node.style.clone(),
-      );
-      let converted = convert_fragment_axes(
-        fragment,
-        bounds.width(),
-        bounds.height(),
-        style.writing_mode,
-        style.direction,
-      );
-      return Ok(converted);
-    }
-
-    let intrinsic_width_mode = matches!(
-      inline_space,
-      AvailableSpace::MaxContent | AvailableSpace::MinContent | AvailableSpace::Indefinite
-    );
-    let mut containing_width = match inline_space {
-      AvailableSpace::Definite(w) => w,
-      // In-flow blocks use the containing block’s inline size; shrink-to-fit contexts should
-      // feed a definite width in constraints. When the available width is indefinite/max/min
-      // content, prefer the element’s own sizing hints (resolved against the parent
-      // containing width when known) before falling back to the viewport.
-      AvailableSpace::MaxContent | AvailableSpace::MinContent | AvailableSpace::Indefinite => {
-        preferred_containing_width(inline_percentage_base).unwrap_or(inline_percentage_base)
-      }
-    };
-    let used_border_box_inline = if inline_is_horizontal {
-      constraints.used_border_box_width
-    } else {
-      constraints.used_border_box_height
-    };
-    if containing_width <= 1.0
-      && !intrinsic_width_mode
-      && used_border_box_inline.is_none()
-      && !self.suppress_near_zero_width_viewport_fallback
-    {
-      let width_is_absolute = style
-        .width
-        .as_ref()
-        .map(|l| l.unit.is_absolute())
-        .unwrap_or(false);
-      if !width_is_absolute {
-        containing_width = inline_viewport;
-      }
-    }
-    if toggles.truthy("FASTR_LOG_SMALL_BLOCK") && containing_width < 150.0 {
-      let selector = box_node
-        .debug_info
-        .as_ref()
-        .map(|d| d.to_selector())
-        .unwrap_or_else(|| "<anonymous>".to_string());
-      eprintln!(
                 "[block-small] id={} selector={} containing_w={:.1} avail_w={:?} width_decl={:?} min_w={:?} max_w={:?}",
                 box_node.id,
                 selector,
@@ -9278,335 +9399,336 @@ impl FormattingContext for BlockFormattingContext {
                 style.min_width,
                 style.max_width,
             );
-    }
-    let containing_height = if inline_is_horizontal {
-      constraints.height()
-    } else {
-      constraints.width()
-    };
-    // For flex items, prefer the max-content contribution instead of filling the available
-    // width when width is auto (CSS Flexbox §4.5: auto main size uses the max-content size).
-    // This avoids the block constraint equation forcing auto margins/auto widths to span the
-    // containing block during flex item hypothetical sizing.
-    let flex_pref_border = if self.flex_item_mode
-      && style_for_width.width.is_none()
-      && style_for_width.width_keyword.is_none()
-    {
-      let intrinsic_mode = match constraints.available_width {
-        AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
-        _ => IntrinsicSizingMode::MaxContent,
-      };
-      Some(self.compute_intrinsic_inline_size(box_node, intrinsic_mode)?)
-    } else {
-      None
-    };
-
-    let inline_sides = inline_axis_sides(style);
-    let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
-
-    let mut computed_width = compute_block_width(
-      style_for_width,
-      containing_width,
-      self.viewport_size,
-      root_font_metrics,
-      inline_sides,
-      inline_positive,
-      &self.font_context,
-    );
-    let width_auto = style_for_width.width.is_none() && style_for_width.width_keyword.is_none();
-    let inline_edges = computed_width.border_left
-      + computed_width.padding_left
-      + computed_width.padding_right
-      + computed_width.border_right;
-    let available_inline_border_box = (containing_width
-      - resolve_margin_side(
-        style,
-        inline_sides.0,
-        containing_width,
-        &self.font_context,
-        self.viewport_size,
-        root_font_metrics,
-      )
-      - resolve_margin_side(
-        style,
-        inline_sides.1,
-        containing_width,
-        &self.font_context,
-        self.viewport_size,
-        root_font_metrics,
-      ))
-    .max(0.0);
-
-    let available_content_for_fit = (available_inline_border_box - inline_edges).max(0.0);
-    let mut intrinsic_content_sizes = None;
-    if style_for_width.width.is_none() && style_for_width.width_keyword.is_some() {
-      let keyword = style_for_width.width_keyword.unwrap();
-      let fc_type = box_node
-        .formatting_context()
-        .unwrap_or(FormattingContextType::Block);
-      let (min_content, max_content) = self.intrinsic_inline_content_sizes_for_sizing_keywords(
-        box_node,
-        fc_type,
-        &self.factory,
-      )?;
-      intrinsic_content_sizes = Some((min_content, max_content));
-      let keyword_content = self.resolve_intrinsic_size_keyword_to_content_width(
-        keyword,
-        min_content,
-        max_content,
-        available_content_for_fit,
-        containing_width,
-        style_for_width,
-        inline_edges,
-      );
-      if self.flex_item_mode {
-        computed_width.content_width = keyword_content;
+      }
+      let containing_height = if inline_is_horizontal {
+        constraints.height()
       } else {
-        let specified_width = match style_for_width.box_sizing {
-          crate::style::types::BoxSizing::ContentBox => keyword_content,
-          crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges,
+        constraints.width()
+      };
+      // For flex items, prefer the max-content contribution instead of filling the available
+      // width when width is auto (CSS Flexbox §4.5: auto main size uses the max-content size).
+      // This avoids the block constraint equation forcing auto margins/auto widths to span the
+      // containing block during flex item hypothetical sizing.
+      let flex_pref_border = if self.flex_item_mode
+        && style_for_width.width.is_none()
+        && style_for_width.width_keyword.is_none()
+      {
+        let intrinsic_mode = match constraints.available_width {
+          AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
+          _ => IntrinsicSizingMode::MaxContent,
         };
-        let mut width_style = style_for_width_owned
-          .as_ref()
-          .cloned()
-          .unwrap_or_else(|| style.clone());
-        {
-          let s = Arc::make_mut(&mut width_style);
-          s.width = Some(Length::px(specified_width));
-          s.width_keyword = None;
-        }
-        computed_width = compute_block_width(
-          &width_style,
+        Some(self.compute_intrinsic_inline_size(box_node, intrinsic_mode)?)
+      } else {
+        None
+      };
+
+      let inline_sides = inline_axis_sides(style);
+      let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
+
+      let mut computed_width = compute_block_width(
+        style_for_width,
+        containing_width,
+        self.viewport_size,
+        root_font_metrics,
+        inline_sides,
+        inline_positive,
+        &self.font_context,
+      );
+      let width_auto = style_for_width.width.is_none() && style_for_width.width_keyword.is_none();
+      let inline_edges = computed_width.border_left
+        + computed_width.padding_left
+        + computed_width.padding_right
+        + computed_width.border_right;
+      let available_inline_border_box = (containing_width
+        - resolve_margin_side(
+          style,
+          inline_sides.0,
           containing_width,
+          &self.font_context,
           self.viewport_size,
           root_font_metrics,
-          inline_sides,
-          inline_positive,
+        )
+        - resolve_margin_side(
+          style,
+          inline_sides.1,
+          containing_width,
           &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        ))
+      .max(0.0);
+
+      let available_content_for_fit = (available_inline_border_box - inline_edges).max(0.0);
+      let mut intrinsic_content_sizes = None;
+      if style_for_width.width.is_none() && style_for_width.width_keyword.is_some() {
+        let keyword = style_for_width.width_keyword.unwrap();
+        let fc_type = box_node
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let (min_content, max_content) = self.intrinsic_inline_content_sizes_for_sizing_keywords(
+          box_node,
+          fc_type,
+          &self.factory,
+        )?;
+        intrinsic_content_sizes = Some((min_content, max_content));
+        let keyword_content = self.resolve_intrinsic_size_keyword_to_content_width(
+          keyword,
+          min_content,
+          max_content,
+          available_content_for_fit,
+          containing_width,
+          style_for_width,
+          inline_edges,
         );
-      }  
-    }
+        if self.flex_item_mode {
+          computed_width.content_width = keyword_content;
+        } else {
+          let specified_width = match style_for_width.box_sizing {
+            crate::style::types::BoxSizing::ContentBox => keyword_content,
+            crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges,
+          };
+          let mut width_style = style_for_width_owned
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| style.clone());
+          {
+            let s = Arc::make_mut(&mut width_style);
+            s.width = Some(Length::px(specified_width));
+            s.width_keyword = None;
+          }
+          computed_width = compute_block_width(
+            &width_style,
+            containing_width,
+            self.viewport_size,
+            root_font_metrics,
+            inline_sides,
+            inline_positive,
+            &self.font_context,
+          );
+        }
+      }
 
-    if style.shrink_to_fit_inline_size && width_auto {
-      let log_shrink = toggles.truthy("FASTR_LOG_SHRINK_TO_FIT");
+      if style.shrink_to_fit_inline_size && width_auto {
+        let log_shrink = toggles.truthy("FASTR_LOG_SHRINK_TO_FIT");
 
-      let fc_type = box_node
-        .formatting_context()
-        .unwrap_or(FormattingContextType::Block);
-      let (preferred_min_content, preferred_content) = if fc_type == FormattingContextType::Block {
-        self.compute_intrinsic_inline_sizes(box_node)?
+        let fc_type = box_node
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let (preferred_min_content, preferred_content) = if fc_type == FormattingContextType::Block
+        {
+          self.compute_intrinsic_inline_sizes(box_node)?
+        } else {
+          let fc = self.factory.get(fc_type);
+          fc.compute_intrinsic_inline_sizes(box_node)?
+        };
+
+        let edges_base0 = inline_axis_padding_and_borders(
+          style,
+          0.0,
+          self.viewport_size,
+          &self.font_context,
+          root_font_metrics,
+        );
+        let preferred_min =
+          rebase_intrinsic_border_box_size(preferred_min_content, edges_base0, inline_edges);
+        let preferred =
+          rebase_intrinsic_border_box_size(preferred_content, edges_base0, inline_edges);
+        let shrink_border_box = preferred.min(available_inline_border_box.max(preferred_min));
+        let shrink_content = (shrink_border_box - inline_edges).max(0.0);
+        if log_shrink {
+          let selector = box_node
+            .debug_info
+            .as_ref()
+            .map(|d| d.to_selector())
+            .unwrap_or_else(|| "<anon>".to_string());
+          eprintln!(
+                    "[shrink-to-fit] id={} selector={} preferred_min={:.1} preferred={:.1} available={:.1} content={:.1} edges={:.1}",
+                    box_node.id, selector, preferred_min, preferred, available_inline_border_box, shrink_content, inline_edges
+                );
+        }
+        let (margin_left, margin_right) = recompute_margins_for_width(
+          style,
+          containing_width,
+          shrink_content,
+          computed_width.border_left,
+          computed_width.padding_left,
+          computed_width.padding_right,
+          computed_width.border_right,
+          self.viewport_size,
+          &self.font_context,
+          root_font_metrics,
+        );
+        computed_width.content_width = shrink_content;
+        computed_width.margin_left = margin_left;
+        computed_width.margin_right = margin_right;
+      }
+      // When asked for intrinsic max-/min-content sizes, override the constraint equation with
+      // the corresponding intrinsic inline size so flex/inline shrink-to-fit measurements don't
+      // default to the full containing block width.
+      if matches!(
+        constraints.available_width,
+        AvailableSpace::MinContent | AvailableSpace::MaxContent
+      ) {
+        let intrinsic_mode = match constraints.available_width {
+          AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
+          _ => IntrinsicSizingMode::MaxContent,
+        };
+        match self.compute_intrinsic_inline_size(box_node, intrinsic_mode) {
+          Ok(intrinsic_border) => {
+            let edges_base0 = inline_axis_padding_and_borders(
+              style,
+              0.0,
+              self.viewport_size,
+              &self.font_context,
+              root_font_metrics,
+            );
+            let intrinsic_border =
+              rebase_intrinsic_border_box_size(intrinsic_border, edges_base0, inline_edges);
+            let intrinsic_content = (intrinsic_border - inline_edges).max(0.0);
+            computed_width.content_width = intrinsic_content;
+          }
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => {}
+        }
+      }
+      let horizontal_edges = computed_width.border_left
+        + computed_width.padding_left
+        + computed_width.padding_right
+        + computed_width.border_right;
+      if let Some(pref_border) = flex_pref_border {
+        let edges_base0 = inline_axis_padding_and_borders(
+          style,
+          0.0,
+          self.viewport_size,
+          &self.font_context,
+          root_font_metrics,
+        );
+        let pref_border =
+          rebase_intrinsic_border_box_size(pref_border, edges_base0, horizontal_edges);
+        let pref_content = (pref_border - horizontal_edges).max(0.0);
+        computed_width.content_width = pref_content;
+      }
+      let min_width = if let Some(keyword) = style_for_width.min_width_keyword {
+        if intrinsic_content_sizes.is_none() {
+          let fc_type = box_node
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          intrinsic_content_sizes = Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(
+            box_node,
+            fc_type,
+            &self.factory,
+          )?);
+        }
+        let (min_content, max_content) = intrinsic_content_sizes.unwrap();
+        self.resolve_intrinsic_size_keyword_to_content_width(
+          keyword,
+          min_content,
+          max_content,
+          available_content_for_fit,
+          containing_width,
+          style_for_width,
+          horizontal_edges,
+        )
       } else {
-        let fc = self.factory.get(fc_type);
-        fc.compute_intrinsic_inline_sizes(box_node)?
+        style_for_width
+          .min_width
+          .as_ref()
+          .map(|l| {
+            resolve_length_for_width(
+              *l,
+              containing_width,
+              style_for_width,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            )
+          })
+          .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
+          .unwrap_or(0.0)
+      };
+      let reserved_vertical_gutter =
+        if style.box_sizing == crate::style::types::BoxSizing::ContentBox {
+          let reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
+          (reservation.left + reservation.right).max(0.0)
+        } else {
+          0.0
+        };
+      let min_width = if reserved_vertical_gutter > 0.0
+        && style_for_width.min_width_keyword.is_none()
+        && style_for_width.min_width.is_some()
+      {
+        (min_width - reserved_vertical_gutter).max(0.0)
+      } else {
+        min_width
       };
 
-      let edges_base0 = inline_axis_padding_and_borders(
-        style,
-        0.0,
-        self.viewport_size,
-        &self.font_context,
-        root_font_metrics,
-      );
-      let preferred_min =
-        rebase_intrinsic_border_box_size(preferred_min_content, edges_base0, inline_edges);
-      let preferred =
-        rebase_intrinsic_border_box_size(preferred_content, edges_base0, inline_edges);
-      let shrink_border_box = preferred.min(available_inline_border_box.max(preferred_min));
-      let shrink_content = (shrink_border_box - inline_edges).max(0.0);
-      if log_shrink {
+      let max_width = if let Some(keyword) = style_for_width.max_width_keyword {
+        if intrinsic_content_sizes.is_none() {
+          let fc_type = box_node
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          intrinsic_content_sizes = Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(
+            box_node,
+            fc_type,
+            &self.factory,
+          )?);
+        }
+        let (min_content, max_content) = intrinsic_content_sizes.unwrap();
+        self.resolve_intrinsic_size_keyword_to_content_width(
+          keyword,
+          min_content,
+          max_content,
+          available_content_for_fit,
+          containing_width,
+          style_for_width,
+          horizontal_edges,
+        )
+      } else {
+        style_for_width
+          .max_width
+          .as_ref()
+          .and_then(|l| {
+            let percentage_base = containing_width.is_finite().then_some(containing_width);
+            resolve_length_with_percentage_metrics(
+              *l,
+              percentage_base,
+              self.viewport_size,
+              style_for_width.font_size,
+              style_for_width.root_font_size,
+              Some(style_for_width),
+              Some(&self.font_context),
+            )
+          })
+          .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
+          .unwrap_or(f32::INFINITY)
+      };
+      let max_width = if reserved_vertical_gutter > 0.0
+        && style_for_width.max_width_keyword.is_none()
+        && style_for_width.max_width.is_some()
+        && max_width.is_finite()
+      {
+        (max_width - reserved_vertical_gutter).max(0.0)
+      } else {
+        max_width
+      };
+
+      // CSS 2.1 §10.4: if the computed min-width exceeds max-width, max-width is set to min-width.
+      let max_width = if max_width.is_finite() && max_width < min_width {
+        min_width
+      } else {
+        max_width
+      };
+
+      let clamped_content_width =
+        crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
+      let log_wide_block = toggles.truthy("FASTR_LOG_WIDE_FLEX");
+      if log_wide_block && computed_width.content_width > self.viewport_size.width + 0.5 {
         let selector = box_node
           .debug_info
           .as_ref()
           .map(|d| d.to_selector())
-          .unwrap_or_else(|| "<anon>".to_string());
+          .unwrap_or_else(|| "<anonymous>".to_string());
         eprintln!(
-                    "[shrink-to-fit] id={} selector={} preferred_min={:.1} preferred={:.1} available={:.1} content={:.1} edges={:.1}",
-                    box_node.id, selector, preferred_min, preferred, available_inline_border_box, shrink_content, inline_edges
-                );
-      }
-      let (margin_left, margin_right) = recompute_margins_for_width(
-        style,
-        containing_width,
-        shrink_content,
-        computed_width.border_left,
-        computed_width.padding_left,
-        computed_width.padding_right,
-        computed_width.border_right,
-        self.viewport_size,
-        &self.font_context,
-        root_font_metrics,
-      );
-      computed_width.content_width = shrink_content;
-      computed_width.margin_left = margin_left;
-      computed_width.margin_right = margin_right;
-    }
-    // When asked for intrinsic max-/min-content sizes, override the constraint equation with
-    // the corresponding intrinsic inline size so flex/inline shrink-to-fit measurements don't
-    // default to the full containing block width.
-    if matches!(
-      constraints.available_width,
-      AvailableSpace::MinContent | AvailableSpace::MaxContent
-    ) {
-      let intrinsic_mode = match constraints.available_width {
-        AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
-        _ => IntrinsicSizingMode::MaxContent,
-      };
-      match self.compute_intrinsic_inline_size(box_node, intrinsic_mode) {
-        Ok(intrinsic_border) => {
-          let edges_base0 = inline_axis_padding_and_borders(
-            style,
-            0.0,
-            self.viewport_size,
-            &self.font_context,
-            root_font_metrics,
-          );
-          let intrinsic_border =
-            rebase_intrinsic_border_box_size(intrinsic_border, edges_base0, inline_edges);
-          let intrinsic_content = (intrinsic_border - inline_edges).max(0.0);
-          computed_width.content_width = intrinsic_content;
-        }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
-      }
-    }
-    let horizontal_edges = computed_width.border_left
-      + computed_width.padding_left
-      + computed_width.padding_right
-      + computed_width.border_right;
-      if let Some(pref_border) = flex_pref_border {
-      let edges_base0 = inline_axis_padding_and_borders(
-        style,
-        0.0,
-        self.viewport_size,
-        &self.font_context,
-        root_font_metrics,
-      );
-      let pref_border =
-        rebase_intrinsic_border_box_size(pref_border, edges_base0, horizontal_edges);
-      let pref_content = (pref_border - horizontal_edges).max(0.0);
-      computed_width.content_width = pref_content;
-    }
-    let min_width = if let Some(keyword) = style_for_width.min_width_keyword {
-      if intrinsic_content_sizes.is_none() {
-        let fc_type = box_node
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        intrinsic_content_sizes = Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(
-          box_node,
-          fc_type,
-          &self.factory,
-        )?);
-      }
-      let (min_content, max_content) = intrinsic_content_sizes.unwrap();
-      self.resolve_intrinsic_size_keyword_to_content_width(
-        keyword,
-        min_content,
-        max_content,
-        available_content_for_fit,
-        containing_width,
-        style_for_width,
-        horizontal_edges,
-      )
-    } else {
-      style_for_width
-        .min_width
-        .as_ref()
-        .map(|l| {
-          resolve_length_for_width(
-            *l,
-            containing_width,
-            style_for_width,
-            &self.font_context,
-            self.viewport_size,
-            root_font_metrics,
-          )
-        })
-        .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
-        .unwrap_or(0.0)
-    };
-    let reserved_vertical_gutter =
-      if style.box_sizing == crate::style::types::BoxSizing::ContentBox {
-        let reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
-        (reservation.left + reservation.right).max(0.0)
-      } else {
-        0.0
-      };
-    let min_width = if reserved_vertical_gutter > 0.0
-      && style_for_width.min_width_keyword.is_none()
-      && style_for_width.min_width.is_some()
-    {
-      (min_width - reserved_vertical_gutter).max(0.0)
-    } else {
-      min_width
-    };
-
-    let max_width = if let Some(keyword) = style_for_width.max_width_keyword {
-      if intrinsic_content_sizes.is_none() {
-        let fc_type = box_node
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        intrinsic_content_sizes = Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(
-          box_node,
-          fc_type,
-          &self.factory,
-        )?);
-      }
-      let (min_content, max_content) = intrinsic_content_sizes.unwrap();
-      self.resolve_intrinsic_size_keyword_to_content_width(
-        keyword,
-        min_content,
-        max_content,
-        available_content_for_fit,
-        containing_width,
-        style_for_width,
-        horizontal_edges,
-      )
-    } else {
-      style_for_width
-        .max_width
-        .as_ref()
-        .and_then(|l| {
-          let percentage_base = containing_width.is_finite().then_some(containing_width);
-          resolve_length_with_percentage_metrics(
-            *l,
-            percentage_base,
-            self.viewport_size,
-            style_for_width.font_size,
-            style_for_width.root_font_size,
-            Some(style_for_width),
-            Some(&self.font_context),
-          )
-        })
-        .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
-        .unwrap_or(f32::INFINITY)
-    };
-    let max_width = if reserved_vertical_gutter > 0.0
-      && style_for_width.max_width_keyword.is_none()
-      && style_for_width.max_width.is_some()
-      && max_width.is_finite()
-    {
-      (max_width - reserved_vertical_gutter).max(0.0)
-    } else {
-      max_width
-    };
-
-    // CSS 2.1 §10.4: if the computed min-width exceeds max-width, max-width is set to min-width.
-    let max_width = if max_width.is_finite() && max_width < min_width {
-      min_width
-    } else {
-      max_width
-    };
-
-    let clamped_content_width =
-      crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
-    let log_wide_block = toggles.truthy("FASTR_LOG_WIDE_FLEX");
-    if log_wide_block && computed_width.content_width > self.viewport_size.width + 0.5 {
-      let selector = box_node
-        .debug_info
-        .as_ref()
-        .map(|d| d.to_selector())
-        .unwrap_or_else(|| "<anonymous>".to_string());
-      eprintln!(
                 "[block-wide] box_id={:?} selector={} display={:?} containing={:.1} content_w={:.1} total_w={:.1} width={:?} min_w={:?} max_w={:?} viewport_w={:.1} avail_w={:?} margins=({:.1},{:.1})",
                 box_node.id,
                 selector,
@@ -9622,343 +9744,315 @@ impl FormattingContext for BlockFormattingContext {
                 computed_width.margin_left,
                 computed_width.margin_right,
             );
-    }
-    if self.flex_item_mode {
-      // Flex items use their specified margins when computing hypothetical sizes; auto
-      // margins resolve to 0 instead of being rebalanced to satisfy the block constraint
-      // equation. Keep the clamped content width but avoid recomputing margins.
-      computed_width.content_width = clamped_content_width;
-      let resolved_ml = style
-        .margin_left
-        .as_ref()
-        .map(|l| {
-          resolve_length_for_width(
-            *l,
-            containing_width,
-            style,
-            &self.font_context,
-            self.viewport_size,
-            root_font_metrics,
-          )
-        })
-        .unwrap_or(0.0);
-      let resolved_mr = style
-        .margin_right
-        .as_ref()
-        .map(|l| {
-          resolve_length_for_width(
-            *l,
-            containing_width,
-            style,
-            &self.font_context,
-            self.viewport_size,
-            root_font_metrics,
-          )
-        })
-        .unwrap_or(0.0);
-      computed_width.margin_left = resolved_ml;
-      computed_width.margin_right = resolved_mr;
-    } else {
-      if clamped_content_width != computed_width.content_width {
-        let (margin_left, margin_right) = recompute_margins_for_width(
-          style,
-          containing_width,
-          clamped_content_width,
-          computed_width.border_left,
-          computed_width.padding_left,
-          computed_width.padding_right,
-          computed_width.border_right,
-          self.viewport_size,
-          &self.font_context,
-          root_font_metrics,
-        );
-        computed_width.content_width = clamped_content_width;
-        computed_width.margin_left = margin_left;
-        computed_width.margin_right = margin_right;
       }
-    }
-
-    // The parent formatting context may have already resolved a definite used border-box inline
-    // size for this box (e.g. flex/grid items after Taffy sizing). In that case the final used
-    // size must be treated as authoritative, even when the box has an authored inline-size
-    // (notably percentages): the used size can differ after flexing, and re-resolving percentage
-    // widths against the item’s own used size can cause descendants to be laid out at the wrong
-    // width.
-    let used_border_box_inline = if inline_is_horizontal {
-      constraints.used_border_box_width
-    } else {
-      constraints.used_border_box_height
-    };
-    if let Some(used_border_box) = used_border_box_inline {
-      let used_content = (used_border_box - horizontal_edges).max(0.0);
       if self.flex_item_mode {
-        computed_width.content_width = used_content;
+        // Flex items use their specified margins when computing hypothetical sizes; auto
+        // margins resolve to 0 instead of being rebalanced to satisfy the block constraint
+        // equation. Keep the clamped content width but avoid recomputing margins.
+        computed_width.content_width = clamped_content_width;
+        let resolved_ml = style
+          .margin_left
+          .as_ref()
+          .map(|l| {
+            resolve_length_for_width(
+              *l,
+              containing_width,
+              style,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            )
+          })
+          .unwrap_or(0.0);
+        let resolved_mr = style
+          .margin_right
+          .as_ref()
+          .map(|l| {
+            resolve_length_for_width(
+              *l,
+              containing_width,
+              style,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            )
+          })
+          .unwrap_or(0.0);
+        computed_width.margin_left = resolved_ml;
+        computed_width.margin_right = resolved_mr;
       } else {
-        let (margin_left, margin_right) = recompute_margins_for_width(
-          style,
-          containing_width,
-          used_content,
-          computed_width.border_left,
-          computed_width.padding_left,
-          computed_width.padding_right,
-          computed_width.border_right,
-          self.viewport_size,
-          &self.font_context,
-          root_font_metrics,
-        );
-        computed_width.content_width = used_content;
-        computed_width.margin_left = margin_left;
-        computed_width.margin_right = margin_right;
-      }
-    }
-
-    let border_top = resolve_length_for_width(
-      style.used_border_top_width(),
-      containing_width,
-      style,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    let border_bottom = resolve_length_for_width(
-      style.used_border_bottom_width(),
-      containing_width,
-      style,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    let mut padding_top = resolve_length_for_width(
-      style.padding_top,
-      containing_width,
-      style,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    let mut padding_bottom = resolve_length_for_width(
-      style.padding_bottom,
-      containing_width,
-      style,
-      &self.font_context,
-      self.viewport_size,
-      root_font_metrics,
-    );
-    // Reserve space for a horizontal scrollbar when requested by `scrollbar-gutter: stable`.
-    let reserve_horizontal_gutter = style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_x,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-      );
-    let mut reserved_horizontal_gutter = 0.0;
-    if reserve_horizontal_gutter {
-      let gutter = resolve_scrollbar_width(style);
-      if gutter > 0.0 {
-        if style.scrollbar_gutter.both_edges {
-          padding_top += gutter;
-          reserved_horizontal_gutter += gutter;
+        if clamped_content_width != computed_width.content_width {
+          let (margin_left, margin_right) = recompute_margins_for_width(
+            style,
+            containing_width,
+            clamped_content_width,
+            computed_width.border_left,
+            computed_width.padding_left,
+            computed_width.padding_right,
+            computed_width.border_right,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          );
+          computed_width.content_width = clamped_content_width;
+          computed_width.margin_left = margin_left;
+          computed_width.margin_right = margin_right;
         }
-        padding_bottom += gutter;
-        reserved_horizontal_gutter += gutter;
       }
-    }
-    let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
-    // Block-axis sizing uses physical `width`/`height` depending on writing mode.
-    let block_length = if inline_is_horizontal { style.height } else { style.width };
-    let block_keyword = if inline_is_horizontal {
-      style.height_keyword
-    } else {
-      style.width_keyword
-    };
-    // CSS Sizing L3: min-/max-content block-size is equivalent to max-content block-size for block
-    // containers / inline boxes, so `block-size: min-content|max-content` behaves like `auto`.
-    let block_keyword = match block_keyword {
-      Some(crate::style::types::IntrinsicSizeKeyword::MinContent)
-      | Some(crate::style::types::IntrinsicSizeKeyword::MaxContent) => None,
-      other => other,
-    };
-    let min_block_keyword = if inline_is_horizontal {
-      style.min_height_keyword
-    } else {
-      style.min_width_keyword
-    };
-    let max_block_keyword = if inline_is_horizontal {
-      style.max_height_keyword
-    } else {
-      style.max_width_keyword
-    };
-    let block_keyword_is_content_based = inline_is_horizontal
-      && matches!(
-        block_keyword,
-        Some(IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent)
-      );
-    let margin_top = style
-      .margin_top
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          containing_width,
-          style,
-          &self.font_context,
-          self.viewport_size,
-          root_font_metrics,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_bottom = style
-      .margin_bottom
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          containing_width,
-          style,
-          &self.font_context,
-          self.viewport_size,
-          root_font_metrics,
-        )
-      })
-      .unwrap_or(0.0);
-    let available_block_border_box = containing_height
-      .map(|h| (h - margin_top - margin_bottom).max(0.0))
-      .unwrap_or(f32::INFINITY);
-
-    let intrinsic_block_sizes = if (block_keyword.is_some() && !block_keyword_is_content_based)
-      || min_block_keyword.is_some()
-      || max_block_keyword.is_some()
-    {
-      let fc_type = box_node
-        .formatting_context()
-        .unwrap_or(FormattingContextType::Block);
-      let (min_base0, max_base0) = if fc_type == FormattingContextType::Block {
-        compute_intrinsic_block_sizes_without_block_size_constraints(self, box_node)?
+      // The parent formatting context may have already resolved a definite used border-box inline
+      // size for this box (e.g. flex/grid items after Taffy sizing). In that case the final used
+      // size must be treated as authoritative, even when the box has an authored inline-size
+      // (notably percentages): the used size can differ after flexing, and re-resolving percentage
+      // widths against the item’s own used size can cause descendants to be laid out at the wrong
+      // width.
+      let used_border_box_inline = if inline_is_horizontal {
+        constraints.used_border_box_width
       } else {
-        let fc = self.factory.get(fc_type);
-        compute_intrinsic_block_sizes_without_block_size_constraints(fc.as_ref(), box_node)?
+        constraints.used_border_box_height
       };
+      if let Some(used_border_box) = used_border_box_inline {
+        let used_content = (used_border_box - horizontal_edges).max(0.0);
+        if self.flex_item_mode {
+          computed_width.content_width = used_content;
+        } else {
+          let (margin_left, margin_right) = recompute_margins_for_width(
+            style,
+            containing_width,
+            used_content,
+            computed_width.border_left,
+            computed_width.padding_left,
+            computed_width.padding_right,
+            computed_width.border_right,
+            self.viewport_size,
+            &self.font_context,
+            root_font_metrics,
+          );
+          computed_width.content_width = used_content;
+          computed_width.margin_left = margin_left;
+          computed_width.margin_right = margin_right;
+        }
+      }
 
-      let border_top_base0 = resolve_length_for_width(
+      let border_top = resolve_length_for_width(
         style.used_border_top_width(),
-        0.0,
+        containing_width,
         style,
         &self.font_context,
         self.viewport_size,
         root_font_metrics,
       );
-      let border_bottom_base0 = resolve_length_for_width(
+      let border_bottom = resolve_length_for_width(
         style.used_border_bottom_width(),
-        0.0,
+        containing_width,
         style,
         &self.font_context,
         self.viewport_size,
         root_font_metrics,
       );
-      let mut padding_top_base0 = resolve_length_for_width(
+      let mut padding_top = resolve_length_for_width(
         style.padding_top,
-        0.0,
+        containing_width,
         style,
         &self.font_context,
         self.viewport_size,
         root_font_metrics,
       );
-      let mut padding_bottom_base0 = resolve_length_for_width(
+      let mut padding_bottom = resolve_length_for_width(
         style.padding_bottom,
-        0.0,
+        containing_width,
         style,
         &self.font_context,
         self.viewport_size,
         root_font_metrics,
       );
+      // Reserve space for a horizontal scrollbar when requested by `scrollbar-gutter: stable`.
+      let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+        && matches!(
+          style.overflow_x,
+          Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+        );
+      let mut reserved_horizontal_gutter = 0.0;
       if reserve_horizontal_gutter {
         let gutter = resolve_scrollbar_width(style);
-        if style.scrollbar_gutter.both_edges {
-          padding_top_base0 += gutter;
+        if gutter > 0.0 {
+          if style.scrollbar_gutter.both_edges {
+            padding_top += gutter;
+            reserved_horizontal_gutter += gutter;
+          }
+          padding_bottom += gutter;
+          reserved_horizontal_gutter += gutter;
         }
-        padding_bottom_base0 += gutter;
       }
-      let vertical_edges_base0 =
-        border_top_base0 + padding_top_base0 + padding_bottom_base0 + border_bottom_base0;
-      Some((
-        rebase_intrinsic_border_box_size(min_base0, vertical_edges_base0, vertical_edges),
-        rebase_intrinsic_border_box_size(max_base0, vertical_edges_base0, vertical_edges),
-      ))
-    } else {
-      None
-    };
+      let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
-    let mut resolved_height = block_length
-      .and_then(|h| {
-        resolve_length_with_percentage_metrics_and_root_font_metrics(
-          h,
-          containing_height,
+      // Block-axis sizing uses physical `width`/`height` depending on writing mode.
+      let block_length = if inline_is_horizontal {
+        style.height
+      } else {
+        style.width
+      };
+      let block_keyword = if inline_is_horizontal {
+        style.height_keyword
+      } else {
+        style.width_keyword
+      };
+      // CSS Sizing L3: min-/max-content block-size is equivalent to max-content block-size for block
+      // containers / inline boxes, so `block-size: min-content|max-content` behaves like `auto`.
+      let block_keyword = match block_keyword {
+        Some(crate::style::types::IntrinsicSizeKeyword::MinContent)
+        | Some(crate::style::types::IntrinsicSizeKeyword::MaxContent) => None,
+        other => other,
+      };
+      let min_block_keyword = if inline_is_horizontal {
+        style.min_height_keyword
+      } else {
+        style.min_width_keyword
+      };
+      let max_block_keyword = if inline_is_horizontal {
+        style.max_height_keyword
+      } else {
+        style.max_width_keyword
+      };
+      let block_keyword_is_content_based = inline_is_horizontal
+        && matches!(
+          block_keyword,
+          Some(IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent)
+        );
+      let margin_top = style
+        .margin_top
+        .as_ref()
+        .map(|l| {
+          resolve_length_for_width(
+            *l,
+            containing_width,
+            style,
+            &self.font_context,
+            self.viewport_size,
+            root_font_metrics,
+          )
+        })
+        .unwrap_or(0.0);
+      let margin_bottom = style
+        .margin_bottom
+        .as_ref()
+        .map(|l| {
+          resolve_length_for_width(
+            *l,
+            containing_width,
+            style,
+            &self.font_context,
+            self.viewport_size,
+            root_font_metrics,
+          )
+        })
+        .unwrap_or(0.0);
+      let available_block_border_box = containing_height
+        .map(|h| (h - margin_top - margin_bottom).max(0.0))
+        .unwrap_or(f32::INFINITY);
+
+      let intrinsic_block_sizes = if (block_keyword.is_some() && !block_keyword_is_content_based)
+        || min_block_keyword.is_some()
+        || max_block_keyword.is_some()
+      {
+        let fc_type = box_node
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let (min_base0, max_base0) = if fc_type == FormattingContextType::Block {
+          compute_intrinsic_block_sizes_without_block_size_constraints(self, box_node)?
+        } else {
+          let fc = self.factory.get(fc_type);
+          compute_intrinsic_block_sizes_without_block_size_constraints(fc.as_ref(), box_node)?
+        };
+
+        let border_top_base0 = resolve_length_for_width(
+          style.used_border_top_width(),
+          0.0,
+          style,
+          &self.font_context,
           self.viewport_size,
-          style.font_size,
-          style.root_font_size,
-          Some(style),
-          Some(&self.font_context),
-          self.factory.root_font_metrics(),
-        )
-      })
-      .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
-    // Like `layout_block_child`, track whether the block-size should establish a definite
-    // percentage base for in-flow descendants (CSS2.1 §10.5).
-    let mut block_size_definite_for_percentages = resolved_height.is_some();
-    if reserved_horizontal_gutter > 0.0
-      && block_length.is_some()
-      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
-    {
-      resolved_height = resolved_height.map(|h| (h - reserved_horizontal_gutter).max(0.0));
-    }
-    if let Some(height_keyword) = block_keyword {
-      if !block_keyword_is_content_based {
-        let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
-        let used_border_box = match height_keyword {
-          crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
-          crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
-          crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
-            if available_block_border_box.is_finite() {
-              available_block_border_box
-            } else {
-              intrinsic_max
-            }
-          },
-          crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-            let basis_border = match limit {
-              Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
-                limit,
-                containing_height,
-                self.viewport_size,
-                style.font_size,
-                style.root_font_size,
-                Some(style),
-                Some(&self.font_context),
-                self.factory.root_font_metrics(),
-              )
-              .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-              .unwrap_or(f32::INFINITY),
-              None => available_block_border_box,
-            };
-            crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-          },
-          crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
-          use crate::style::types::BoxSizing;
-          use crate::style::types::CalcSizeBasis;
-          let basis_border = match calc.basis {
-            CalcSizeBasis::Auto => intrinsic_max,
-            CalcSizeBasis::MinContent => intrinsic_min,
-            CalcSizeBasis::MaxContent => intrinsic_max,
-            CalcSizeBasis::FillAvailable => {
+          root_font_metrics,
+        );
+        let border_bottom_base0 = resolve_length_for_width(
+          style.used_border_bottom_width(),
+          0.0,
+          style,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+        let mut padding_top_base0 = resolve_length_for_width(
+          style.padding_top,
+          0.0,
+          style,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+        let mut padding_bottom_base0 = resolve_length_for_width(
+          style.padding_bottom,
+          0.0,
+          style,
+          &self.font_context,
+          self.viewport_size,
+          root_font_metrics,
+        );
+        if reserve_horizontal_gutter {
+          let gutter = resolve_scrollbar_width(style);
+          if style.scrollbar_gutter.both_edges {
+            padding_top_base0 += gutter;
+          }
+          padding_bottom_base0 += gutter;
+        }
+        let vertical_edges_base0 =
+          border_top_base0 + padding_top_base0 + padding_bottom_base0 + border_bottom_base0;
+        Some((
+          rebase_intrinsic_border_box_size(min_base0, vertical_edges_base0, vertical_edges),
+          rebase_intrinsic_border_box_size(max_base0, vertical_edges_base0, vertical_edges),
+        ))
+      } else {
+        None
+      };
+
+      let mut resolved_height = block_length
+        .and_then(|h| {
+          resolve_length_with_percentage_metrics_and_root_font_metrics(
+            h,
+            containing_height,
+            self.viewport_size,
+            style.font_size,
+            style.root_font_size,
+            Some(style),
+            Some(&self.font_context),
+            self.factory.root_font_metrics(),
+          )
+        })
+        .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+      // Like `layout_block_child`, track whether the block-size should establish a definite
+      // percentage base for in-flow descendants (CSS2.1 §10.5).
+      let mut block_size_definite_for_percentages = resolved_height.is_some();
+      if reserved_horizontal_gutter > 0.0
+        && block_length.is_some()
+        && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+      {
+        resolved_height = resolved_height.map(|h| (h - reserved_horizontal_gutter).max(0.0));
+      }
+      if let Some(height_keyword) = block_keyword {
+        if !block_keyword_is_content_based {
+          let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
+          let used_border_box = match height_keyword {
+            crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
+            crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+            crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
               if available_block_border_box.is_finite() {
                 available_block_border_box
               } else {
                 intrinsic_max
               }
             }
-            CalcSizeBasis::FitContent { limit } => {
+            crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
               let basis_border = match limit {
-                Some(limit) => resolve_length_with_percentage_metrics(
+                Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
                   limit,
                   containing_height,
                   self.viewport_size,
@@ -9966,317 +10060,385 @@ impl FormattingContext for BlockFormattingContext {
                   style.root_font_size,
                   Some(style),
                   Some(&self.font_context),
+                  self.factory.root_font_metrics(),
                 )
-                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+                .map(|resolved| {
+                  border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                })
                 .unwrap_or(f32::INFINITY),
                 None => available_block_border_box,
               };
               crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
             }
-            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
-              len,
-              containing_height,
-              self.viewport_size,
-              style.font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(intrinsic_max),
-          }
-          .max(0.0);
-          let basis_content = (basis_border - vertical_edges).max(0.0);
-          let basis_specified = match style.box_sizing {
-            BoxSizing::ContentBox => basis_content,
-            BoxSizing::BorderBox => basis_border,
-          };
-          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-            .and_then(|expr_len| {
-              resolve_length_with_percentage_metrics(
-                expr_len,
-                containing_height,
-                self.viewport_size,
-                style.font_size,
-                style.root_font_size,
-                Some(style),
-                Some(&self.font_context),
-              )
-            })
-            .map(|resolved_specified| {
-              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
-            })
-            .unwrap_or(basis_border)
-          }
-        };
-        resolved_height = Some((used_border_box - vertical_edges).max(0.0));
-        block_size_definite_for_percentages = matches!(
-          height_keyword,
-          crate::style::types::IntrinsicSizeKeyword::FillAvailable
-        ) && available_block_border_box.is_finite();
-      }
-    }
-    // Like the inline axis override above, honor a parent-resolved used border-box block size even
-    // when the authored height is non-auto.
-    //
-    // Keep track of the pre-override height so we can decide whether the forced used size should
-    // establish a definite block percentage base for descendants (see `block_percentage_base`
-    // below).
-    let resolved_height_before_used_border_box = resolved_height;
-    let used_border_box = if inline_is_horizontal {
-      constraints.used_border_box_height
-    } else {
-      constraints.used_border_box_width
-    };
-    if let Some(used_border_box) = used_border_box {
-      resolved_height = Some((used_border_box - vertical_edges).max(0.0));
-      if constraints.used_border_box_size_forces_block_percentage_base {
-        block_size_definite_for_percentages = true;
-      }
-    }
-    let resolved_height_base = block_size_definite_for_percentages
-      .then(|| resolved_height.filter(|h| h.is_finite()).map(|h| h.max(0.0)))
-      .flatten();
-    let child_height_space = resolved_height_base
-      .map(|h| AvailableSpace::Definite(h.max(0.0)))
-      .unwrap_or(AvailableSpace::Indefinite);
-
-    let block_percentage_base = if constraints.used_border_box_size_forces_block_percentage_base {
-      resolved_height_base
-    } else {
-      block_size_definite_for_percentages
-        .then(|| {
-          resolved_height_before_used_border_box
-            .filter(|h| h.is_finite())
-            .map(|h| h.max(0.0))
-        })
-        .flatten()
-    };
-    let child_constraints = if inline_is_horizontal {
-      LayoutConstraints::new(
-        AvailableSpace::Definite(computed_width.content_width),
-        child_height_space,
-      )
-    } else {
-      LayoutConstraints::new(
-        child_height_space,
-        AvailableSpace::Definite(computed_width.content_width),
-      )
-    }
-    .with_inline_percentage_base(Some(computed_width.content_width))
-    .with_block_percentage_base(block_percentage_base);
-
-    let content_origin = Point::new(
-      computed_width.border_left + computed_width.padding_left,
-      border_top + padding_top,
-    );
-    // Like `layout_block_child`, `BlockFormattingContext::layout` runs layout in the block's
-    // content coordinate space (0,0 at the content edge) and translates fragments into border-box
-    // coordinates before returning. Containing blocks for positioned descendants must therefore be
-    // expressed in content coordinates as well: the padding edge is at (-padding_start, -padding_block_start).
-    let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
-    let content_height_base = resolved_height.unwrap_or(0.0).max(0.0);
-    let padding_size = Size::new(
-      computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
-      content_height_base + padding_top + padding_bottom,
-    );
-    let cb_block_base = resolved_height.map(|h| h.max(0.0) + padding_top + padding_bottom);
-    let establishes_positioned_cb = style.establishes_abs_containing_block();
-    let establishes_fixed_cb = style.establishes_fixed_containing_block();
-    let should_relayout_abspos_descendants_for_cb_height = establishes_positioned_cb
-      && cb_block_base.is_none()
-      && has_abspos_descendant_needing_used_cb_height(box_node);
-    let nearest_cb = if establishes_positioned_cb {
-      ContainingBlock::with_viewport_and_bases(
-        Rect::new(padding_origin, padding_size),
-        self.viewport_size,
-        Some(padding_size.width),
-        cb_block_base,
-      )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction)
-    } else {
-      self.nearest_positioned_cb
-    };
-    let nearest_fixed_cb = if establishes_fixed_cb {
-      ContainingBlock::with_viewport_and_bases(
-        Rect::new(padding_origin, padding_size),
-        self.viewport_size,
-        Some(padding_size.width),
-        cb_block_base,
-      )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction)
-    } else {
-      self.nearest_fixed_cb
-    };
-
-    let mut child_ctx = self.clone();
-    child_ctx.flex_item_mode = false;
-    child_ctx.independent_context_root_mode = false;
-    child_ctx.independent_context_root_id =
-      (self.flex_item_mode || self.independent_context_root_mode).then_some(box_node.id);
-    child_ctx.nearest_positioned_cb = nearest_cb;
-    child_ctx.nearest_fixed_cb = nearest_fixed_cb;
-    if nearest_cb != self.nearest_positioned_cb || nearest_fixed_cb != self.nearest_fixed_cb {
-      if nearest_cb != self.nearest_positioned_cb {
-        child_ctx.factory = child_ctx.factory.with_positioned_cb(nearest_cb);
-      }
-      if nearest_fixed_cb != self.nearest_fixed_cb {
-        child_ctx.factory = child_ctx.factory.with_fixed_cb(nearest_fixed_cb);
-      }
-      child_ctx.intrinsic_inline_fc =
-        Arc::new(InlineFormattingContext::with_factory(child_ctx.factory.clone()));
-    }
-    let mut paint_viewport = base_paint_viewport;
-    // The viewport rectangle is expressed in the formatting context's coordinate space. When this
-    // block formatting context is nested inside another formatting context, the caller translates
-    // the factory's `viewport_scroll` so it already accounts for the nested origin.
-    let scroll = self.factory.viewport_scroll();
-    if scroll.x.is_finite() && scroll.y.is_finite() {
-      let (scroll_inline, scroll_block) = if inline_is_horizontal {
-        (scroll.x, scroll.y)
-      } else {
-        (scroll.y, scroll.x)
-      };
-      paint_viewport = paint_viewport.translate(Point::new(scroll_inline, scroll_block));
-    }
-    // Layout uses the block's content box coordinate space; translate the viewport into that
-    // coordinate system so culling decisions stay relative to `box_y`/`margin_left` placement.
-    let viewport_content_origin = Point::new(
-      computed_width.margin_left + content_origin.x,
-      content_origin.y,
-    );
-    paint_viewport = paint_viewport.translate(Point::new(
-      -viewport_content_origin.x,
-      -viewport_content_origin.y,
-    ));
-    let use_columns = Self::is_multicol_container(style);
-    let skip_contents = match style.content_visibility {
-      crate::style::types::ContentVisibility::Hidden => true,
-      crate::style::types::ContentVisibility::Auto => {
-        let activation_margin = toggles
-          .f64("FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX")
-          .unwrap_or(0.0)
-          .max(0.0) as f32;
-        let viewport = if activation_margin > 0.0 {
-          paint_viewport.inflate(activation_margin)
-        } else {
-          paint_viewport
-        };
-
-        let box_width = computed_width.border_box_width();
-        let box_width = if box_width.is_finite() {
-          box_width.max(0.0)
-        } else {
-          0.0
-        };
-
-        let estimated_border_box_block_size = resolved_height
-          .filter(|h| h.is_finite())
-          .map(|h| h.max(0.0))
-          .or_else(|| {
-            let axis_is_width = block_axis_is_horizontal(style.writing_mode);
-            let axis = if axis_is_width {
-              style.contain_intrinsic_width
-            } else {
-              style.contain_intrinsic_height
-            };
-            axis
-              .auto
-              .then(|| {
-                remembered_size_cache_lookup(box_node).map(|size| {
-                  if axis_is_width {
-                    size.width
+            crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+              use crate::style::types::BoxSizing;
+              use crate::style::types::CalcSizeBasis;
+              let basis_border = match calc.basis {
+                CalcSizeBasis::Auto => intrinsic_max,
+                CalcSizeBasis::MinContent => intrinsic_min,
+                CalcSizeBasis::MaxContent => intrinsic_max,
+                CalcSizeBasis::FillAvailable => {
+                  if available_block_border_box.is_finite() {
+                    available_block_border_box
                   } else {
-                    size.height
+                    intrinsic_max
                   }
-                })
-              })
-              .flatten()
-              .filter(|v| v.is_finite())
-              .map(|v| v.max(0.0))
-              .or_else(|| {
-                axis
-                  .length
-                  .and_then(|l| {
-                    resolve_length_with_percentage_metrics_and_root_font_metrics(
-                      l,
+                }
+                CalcSizeBasis::FitContent { limit } => {
+                  let basis_border = match limit {
+                    Some(limit) => resolve_length_with_percentage_metrics(
+                      limit,
                       containing_height,
                       self.viewport_size,
                       style.font_size,
                       style.root_font_size,
                       Some(style),
                       Some(&self.font_context),
-                      self.factory.root_font_metrics(),
                     )
-                  })
-                  .map(|v| v.max(0.0))
-              })
-          })
-          .and_then(|content_estimate| {
-            let border_box = content_estimate + vertical_edges;
-            border_box.is_finite().then_some(border_box.max(0.0))
-          });
-
-        if let Some(block_size) = estimated_border_box_block_size {
-          let border_box =
-            Rect::from_xywh(-content_origin.x, -content_origin.y, box_width, block_size);
-          !viewport.intersects(border_box)
-        } else {
-          false
+                    .map(|resolved| {
+                      border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                    })
+                    .unwrap_or(f32::INFINITY),
+                    None => available_block_border_box,
+                  };
+                  crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+                }
+                CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+                  len,
+                  containing_height,
+                  self.viewport_size,
+                  style.font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+                .map(|resolved| {
+                  border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                })
+                .unwrap_or(intrinsic_max),
+              }
+              .max(0.0);
+              let basis_content = (basis_border - vertical_edges).max(0.0);
+              let basis_specified = match style.box_sizing {
+                BoxSizing::ContentBox => basis_content,
+                BoxSizing::BorderBox => basis_border,
+              };
+              crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+                .and_then(|expr_sum| {
+                  crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+                })
+                .and_then(|expr_len| {
+                  resolve_length_with_percentage_metrics(
+                    expr_len,
+                    containing_height,
+                    self.viewport_size,
+                    style.font_size,
+                    style.root_font_size,
+                    Some(style),
+                    Some(&self.font_context),
+                  )
+                })
+                .map(|resolved_specified| {
+                  border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing)
+                    .max(0.0)
+                })
+                .unwrap_or(basis_border)
+            }
+          };
+          resolved_height = Some((used_border_box - vertical_edges).max(0.0));
+          block_size_definite_for_percentages = matches!(
+            height_keyword,
+            crate::style::types::IntrinsicSizeKeyword::FillAvailable
+          ) && available_block_border_box.is_finite();
         }
       }
-      crate::style::types::ContentVisibility::Visible => false,
-    };
-    let layout_contents = |ctx: &BlockFormattingContext,
-                           nearest_cb: &ContainingBlock,
-                           nearest_fixed_cb: &ContainingBlock|
-     -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>, Option<FragmentationInfo>), LayoutError> {
-      let (mut child_fragments, mut content_height, positioned_children, column_info) =
-        if skip_contents {
-          (Vec::new(), 0.0, Vec::new(), None)
-        } else if use_columns {
-          let (frags, height, positioned, info) = ctx.layout_multicolumn(
-            box_node,
-            &child_constraints,
-            nearest_cb,
-            nearest_fixed_cb,
-            computed_width.content_width,
-            paint_viewport,
-          )?;
-          (frags, height, positioned, info)
-        } else {
-          let (frags, height, positioned) = ctx.layout_children(
-            box_node,
-            &child_constraints,
-            nearest_cb,
-            nearest_fixed_cb,
-            paint_viewport,
-          )?;
-          (frags, height, positioned, None)
-        };
+      // Like the inline axis override above, honor a parent-resolved used border-box block size even
+      // when the authored height is non-auto.
+      //
+      // Keep track of the pre-override height so we can decide whether the forced used size should
+      // establish a definite block percentage base for descendants (see `block_percentage_base`
+      // below).
+      let resolved_height_before_used_border_box = resolved_height;
+      let used_border_box = if inline_is_horizontal {
+        constraints.used_border_box_height
+      } else {
+        constraints.used_border_box_width
+      };
+      if let Some(used_border_box) = used_border_box {
+        resolved_height = Some((used_border_box - vertical_edges).max(0.0));
+        if constraints.used_border_box_size_forces_block_percentage_base {
+          block_size_definite_for_percentages = true;
+        }
+      }
+      let resolved_height_base = block_size_definite_for_percentages
+        .then(|| {
+          resolved_height
+            .filter(|h| h.is_finite())
+            .map(|h| h.max(0.0))
+        })
+        .flatten();
+      let child_height_space = resolved_height_base
+        .map(|h| AvailableSpace::Definite(h.max(0.0)))
+        .unwrap_or(AvailableSpace::Indefinite);
 
-      if skip_contents || style.containment.size {
-        let axis_is_width = block_axis_is_horizontal(style.writing_mode);
-        let axis = if axis_is_width {
-          style.contain_intrinsic_width
-        } else {
-          style.contain_intrinsic_height
-        };
-        let remembered = axis
-          .auto
+      let block_percentage_base = if constraints.used_border_box_size_forces_block_percentage_base {
+        resolved_height_base
+      } else {
+        block_size_definite_for_percentages
           .then(|| {
-            remembered_size_cache_lookup(box_node).map(|size| {
-              if axis_is_width {
-                size.width
-              } else {
-                size.height
-              }
-            })
+            resolved_height_before_used_border_box
+              .filter(|h| h.is_finite())
+              .map(|h| h.max(0.0))
           })
-          .flatten();
-        let resolved = if axis.auto {
-          remembered.or_else(|| {
+          .flatten()
+      };
+      let child_constraints = if inline_is_horizontal {
+        LayoutConstraints::new(
+          AvailableSpace::Definite(computed_width.content_width),
+          child_height_space,
+        )
+      } else {
+        LayoutConstraints::new(
+          child_height_space,
+          AvailableSpace::Definite(computed_width.content_width),
+        )
+      }
+      .with_inline_percentage_base(Some(computed_width.content_width))
+      .with_block_percentage_base(block_percentage_base);
+
+      let content_origin = Point::new(
+        computed_width.border_left + computed_width.padding_left,
+        border_top + padding_top,
+      );
+      // Like `layout_block_child`, `BlockFormattingContext::layout` runs layout in the block's
+      // content coordinate space (0,0 at the content edge) and translates fragments into border-box
+      // coordinates before returning. Containing blocks for positioned descendants must therefore be
+      // expressed in content coordinates as well: the padding edge is at (-padding_start, -padding_block_start).
+      let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
+      let content_height_base = resolved_height.unwrap_or(0.0).max(0.0);
+      let padding_size = Size::new(
+        computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
+        content_height_base + padding_top + padding_bottom,
+      );
+      let cb_block_base = resolved_height.map(|h| h.max(0.0) + padding_top + padding_bottom);
+      let establishes_positioned_cb = style.establishes_abs_containing_block();
+      let establishes_fixed_cb = style.establishes_fixed_containing_block();
+      let should_relayout_abspos_descendants_for_cb_height = establishes_positioned_cb
+        && cb_block_base.is_none()
+        && has_abspos_descendant_needing_used_cb_height(box_node);
+      let nearest_cb = if establishes_positioned_cb {
+        ContainingBlock::with_viewport_and_bases(
+          Rect::new(padding_origin, padding_size),
+          self.viewport_size,
+          Some(padding_size.width),
+          cb_block_base,
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction)
+      } else {
+        self.nearest_positioned_cb
+      };
+      let nearest_fixed_cb = if establishes_fixed_cb {
+        ContainingBlock::with_viewport_and_bases(
+          Rect::new(padding_origin, padding_size),
+          self.viewport_size,
+          Some(padding_size.width),
+          cb_block_base,
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction)
+      } else {
+        self.nearest_fixed_cb
+      };
+
+      let mut child_ctx = self.clone();
+      child_ctx.flex_item_mode = false;
+      child_ctx.independent_context_root_mode = false;
+      child_ctx.independent_context_root_id =
+        (self.flex_item_mode || self.independent_context_root_mode).then_some(box_node.id);
+      child_ctx.nearest_positioned_cb = nearest_cb;
+      child_ctx.nearest_fixed_cb = nearest_fixed_cb;
+      if nearest_cb != self.nearest_positioned_cb || nearest_fixed_cb != self.nearest_fixed_cb {
+        if nearest_cb != self.nearest_positioned_cb {
+          child_ctx.factory = child_ctx.factory.with_positioned_cb(nearest_cb);
+        }
+        if nearest_fixed_cb != self.nearest_fixed_cb {
+          child_ctx.factory = child_ctx.factory.with_fixed_cb(nearest_fixed_cb);
+        }
+        child_ctx.intrinsic_inline_fc = Arc::new(InlineFormattingContext::with_factory(
+          child_ctx.factory.clone(),
+        ));
+      }
+      let mut paint_viewport = base_paint_viewport;
+      // The viewport rectangle is expressed in the formatting context's coordinate space. When this
+      // block formatting context is nested inside another formatting context, the caller translates
+      // the factory's `viewport_scroll` so it already accounts for the nested origin.
+      let scroll = self.factory.viewport_scroll();
+      if scroll.x.is_finite() && scroll.y.is_finite() {
+        let (scroll_inline, scroll_block) = if inline_is_horizontal {
+          (scroll.x, scroll.y)
+        } else {
+          (scroll.y, scroll.x)
+        };
+        paint_viewport = paint_viewport.translate(Point::new(scroll_inline, scroll_block));
+      }
+      // Layout uses the block's content box coordinate space; translate the viewport into that
+      // coordinate system so culling decisions stay relative to `box_y`/`margin_left` placement.
+      let viewport_content_origin = Point::new(
+        computed_width.margin_left + content_origin.x,
+        content_origin.y,
+      );
+      paint_viewport = paint_viewport.translate(Point::new(
+        -viewport_content_origin.x,
+        -viewport_content_origin.y,
+      ));
+      let use_columns = Self::is_multicol_container(style);
+      let skip_contents = match style.content_visibility {
+        crate::style::types::ContentVisibility::Hidden => true,
+        crate::style::types::ContentVisibility::Auto => {
+          let activation_margin = toggles
+            .f64("FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX")
+            .unwrap_or(0.0)
+            .max(0.0) as f32;
+          let viewport = if activation_margin > 0.0 {
+            paint_viewport.inflate(activation_margin)
+          } else {
+            paint_viewport
+          };
+
+          let box_width = computed_width.border_box_width();
+          let box_width = if box_width.is_finite() {
+            box_width.max(0.0)
+          } else {
+            0.0
+          };
+
+          let estimated_border_box_block_size = resolved_height
+            .filter(|h| h.is_finite())
+            .map(|h| h.max(0.0))
+            .or_else(|| {
+              let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+              let axis = if axis_is_width {
+                style.contain_intrinsic_width
+              } else {
+                style.contain_intrinsic_height
+              };
+              axis
+                .auto
+                .then(|| {
+                  remembered_size_cache_lookup(box_node).map(|size| {
+                    if axis_is_width {
+                      size.width
+                    } else {
+                      size.height
+                    }
+                  })
+                })
+                .flatten()
+                .filter(|v| v.is_finite())
+                .map(|v| v.max(0.0))
+                .or_else(|| {
+                  axis
+                    .length
+                    .and_then(|l| {
+                      resolve_length_with_percentage_metrics_and_root_font_metrics(
+                        l,
+                        containing_height,
+                        self.viewport_size,
+                        style.font_size,
+                        style.root_font_size,
+                        Some(style),
+                        Some(&self.font_context),
+                        self.factory.root_font_metrics(),
+                      )
+                    })
+                    .map(|v| v.max(0.0))
+                })
+            })
+            .and_then(|content_estimate| {
+              let border_box = content_estimate + vertical_edges;
+              border_box.is_finite().then_some(border_box.max(0.0))
+            });
+
+          if let Some(block_size) = estimated_border_box_block_size {
+            let border_box =
+              Rect::from_xywh(-content_origin.x, -content_origin.y, box_width, block_size);
+            !viewport.intersects(border_box)
+          } else {
+            false
+          }
+        }
+        crate::style::types::ContentVisibility::Visible => false,
+      };
+      let layout_contents = |ctx: &BlockFormattingContext,
+                             nearest_cb: &ContainingBlock,
+                             nearest_fixed_cb: &ContainingBlock|
+       -> Result<
+        (
+          Vec<FragmentNode>,
+          f32,
+          Vec<PositionedCandidate>,
+          Option<FragmentationInfo>,
+        ),
+        LayoutError,
+      > {
+        let (mut child_fragments, mut content_height, positioned_children, column_info) =
+          if skip_contents {
+            (Vec::new(), 0.0, Vec::new(), None)
+          } else if use_columns {
+            let (frags, height, positioned, info) = ctx.layout_multicolumn(
+              box_node,
+              &child_constraints,
+              nearest_cb,
+              nearest_fixed_cb,
+              computed_width.content_width,
+              paint_viewport,
+            )?;
+            (frags, height, positioned, info)
+          } else {
+            let (frags, height, positioned) = ctx.layout_children(
+              box_node,
+              &child_constraints,
+              nearest_cb,
+              nearest_fixed_cb,
+              paint_viewport,
+            )?;
+            (frags, height, positioned, None)
+          };
+
+        if skip_contents || style.containment.size {
+          let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+          let axis = if axis_is_width {
+            style.contain_intrinsic_width
+          } else {
+            style.contain_intrinsic_height
+          };
+          let remembered = axis
+            .auto
+            .then(|| {
+              remembered_size_cache_lookup(box_node).map(|size| {
+                if axis_is_width {
+                  size.width
+                } else {
+                  size.height
+                }
+              })
+            })
+            .flatten();
+          let resolved = if axis.auto {
+            remembered.or_else(|| {
+              axis.length.and_then(|l| {
+                resolve_length_with_percentage_metrics_and_root_font_metrics(
+                  l,
+                  containing_height,
+                  self.viewport_size,
+                  style.font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                  self.factory.root_font_metrics(),
+                )
+              })
+            })
+          } else {
             axis.length.and_then(|l| {
               resolve_length_with_percentage_metrics_and_root_font_metrics(
                 l,
@@ -10289,207 +10451,182 @@ impl FormattingContext for BlockFormattingContext {
                 self.factory.root_font_metrics(),
               )
             })
-          })
-        } else {
-          axis.length.and_then(|l| {
-            resolve_length_with_percentage_metrics_and_root_font_metrics(
-              l,
-              containing_height,
-              self.viewport_size,
-              style.font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-              self.factory.root_font_metrics(),
-            )
-          })
-        };
-        let mut value = resolved.unwrap_or(0.0);
-        if !value.is_finite() {
-          value = 0.0;
+          };
+          let mut value = resolved.unwrap_or(0.0);
+          if !value.is_finite() {
+            value = 0.0;
+          }
+          content_height = value.max(0.0);
         }
-        content_height = value.max(0.0);
-      }
 
-      // HTML fieldset/legend layout (approximation):
-      //
-      // The HTML rendering model positions the first `<legend>` element child on the fieldset
-      // border and wraps the remaining children in a "fieldset content" box. To approximate this in
-      // a CSS-centric block formatting context we:
-      // - Keep the anonymous fieldset content box in normal flow.
-      // - Pull the legend upward so it overlaps the fieldset border.
-      // - Pull the content box upward so it does not reserve the legend's full block-size, while
-      //   still avoiding overlap with the legend's lower half.
-      if let Some((fieldset_content_id, legend_id)) = {
-        let mut content_id: Option<usize> = None;
-        let mut legend_id: Option<usize> = None;
-        for child in &box_node.children {
-          if matches!(
-            &child.box_type,
-            BoxType::Anonymous(anon) if anon.anonymous_type == AnonymousType::FieldsetContent
-          ) {
-            content_id = Some(child.id);
-            continue;
-          }
-          if child.style.shrink_to_fit_inline_size && legend_id.is_none() {
-            legend_id = Some(child.id);
-          }
-        }
-        content_id.map(|content_id| (content_id, legend_id))
-      } {
-        if let Some(legend_id) = legend_id {
-          let mut legend_idx: Option<usize> = None;
-          let mut content_idx: Option<usize> = None;
-          for (idx, frag) in child_fragments.iter().enumerate() {
-            let FragmentContent::Block { box_id: Some(id) } = frag.content else {
+        // HTML fieldset/legend layout (approximation):
+        //
+        // The HTML rendering model positions the first `<legend>` element child on the fieldset
+        // border and wraps the remaining children in a "fieldset content" box. To approximate this in
+        // a CSS-centric block formatting context we:
+        // - Keep the anonymous fieldset content box in normal flow.
+        // - Pull the legend upward so it overlaps the fieldset border.
+        // - Pull the content box upward so it does not reserve the legend's full block-size, while
+        //   still avoiding overlap with the legend's lower half.
+        if let Some((fieldset_content_id, legend_id)) = {
+          let mut content_id: Option<usize> = None;
+          let mut legend_id: Option<usize> = None;
+          for child in &box_node.children {
+            if matches!(
+              &child.box_type,
+              BoxType::Anonymous(anon) if anon.anonymous_type == AnonymousType::FieldsetContent
+            ) {
+              content_id = Some(child.id);
               continue;
+            }
+            if child.style.shrink_to_fit_inline_size && legend_id.is_none() {
+              legend_id = Some(child.id);
+            }
+          }
+          content_id.map(|content_id| (content_id, legend_id))
+        } {
+          if let Some(legend_id) = legend_id {
+            let mut legend_idx: Option<usize> = None;
+            let mut content_idx: Option<usize> = None;
+            for (idx, frag) in child_fragments.iter().enumerate() {
+              let FragmentContent::Block { box_id: Some(id) } = frag.content else {
+                continue;
+              };
+              if id == legend_id {
+                legend_idx = Some(idx);
+              } else if id == fieldset_content_id {
+                content_idx = Some(idx);
+              }
+              if legend_idx.is_some() && content_idx.is_some() {
+                break;
+              }
+            }
+
+            if let (Some(legend_idx), Some(content_idx)) = (legend_idx, content_idx) {
+              let legend_block_size = child_fragments[legend_idx].bounds.height().max(0.0);
+              let legend_half_block = legend_block_size * 0.5;
+
+              // Desired legend placement in the fieldset's border box coordinate space: center it on
+              // the block-start border edge so it straddles the border line.
+              let legend_border_y = border_top - legend_half_block;
+              let legend_content_y = legend_border_y - content_origin.y;
+
+              // Place the content box at the normal content origin unless the legend's lower half would
+              // overlap it.
+              let content_border_y = border_top + padding_top.max(legend_half_block);
+              let content_content_y = content_border_y - content_origin.y;
+
+              let legend_delta = legend_content_y - child_fragments[legend_idx].bounds.y();
+              let content_delta = content_content_y - child_fragments[content_idx].bounds.y();
+              if legend_delta.is_finite() {
+                child_fragments[legend_idx].translate_root_in_place(Point::new(0.0, legend_delta));
+              }
+              if content_delta.is_finite() {
+                child_fragments[content_idx]
+                  .translate_root_in_place(Point::new(0.0, content_delta));
+              }
+
+              // Recompute the flow block-size after repositioning so the legend does not artificially
+              // increase the fieldset's auto height.
+              let mut max_end = 0.0f32;
+              for frag in &child_fragments {
+                let end = frag.bounds.y() + frag.bounds.height();
+                if end.is_finite() {
+                  max_end = max_end.max(end.max(0.0));
+                }
+              }
+              content_height = max_end;
+            }
+          }
+        }
+
+        // Child fragments are produced in the block's content coordinate space (0,0 at the content
+        // box). Translate them into the fragment's local coordinate space (border box) so padding and
+        // borders correctly offset in-flow content.
+        if content_origin.x != 0.0 || content_origin.y != 0.0 {
+          for fragment in child_fragments.iter_mut() {
+            fragment.translate_root_in_place(content_origin);
+          }
+        }
+
+        Ok((
+          child_fragments,
+          content_height,
+          positioned_children,
+          column_info,
+        ))
+      };
+
+      let (mut child_fragments, content_height, mut positioned_children, mut column_info) =
+        layout_contents(&child_ctx, &nearest_cb, &nearest_fixed_cb)?;
+
+      let min_height = if let Some(keyword) = style.min_height_keyword {
+        let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
+        let min_border = match keyword {
+          crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
+          crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+          crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+            if available_block_border_box.is_finite() {
+              available_block_border_box
+            } else {
+              intrinsic_max
+            }
+          }
+          crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
+            let basis_border = match limit {
+              Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
+                limit,
+                containing_height,
+                self.viewport_size,
+                style.font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+                self.factory.root_font_metrics(),
+              )
+              .map(|resolved| {
+                border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+              })
+              .unwrap_or(f32::INFINITY),
+              None => available_block_border_box,
             };
-            if id == legend_id {
-              legend_idx = Some(idx);
-            } else if id == fieldset_content_id {
-              content_idx = Some(idx);
-            }
-            if legend_idx.is_some() && content_idx.is_some() {
-              break;
-            }
+            crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
           }
-
-          if let (Some(legend_idx), Some(content_idx)) = (legend_idx, content_idx) {
-            let legend_block_size = child_fragments[legend_idx].bounds.height().max(0.0);
-            let legend_half_block = legend_block_size * 0.5;
-
-            // Desired legend placement in the fieldset's border box coordinate space: center it on
-            // the block-start border edge so it straddles the border line.
-            let legend_border_y = border_top - legend_half_block;
-            let legend_content_y = legend_border_y - content_origin.y;
-
-            // Place the content box at the normal content origin unless the legend's lower half would
-            // overlap it.
-            let content_border_y = border_top + padding_top.max(legend_half_block);
-            let content_content_y = content_border_y - content_origin.y;
-
-            let legend_delta = legend_content_y - child_fragments[legend_idx].bounds.y();
-            let content_delta = content_content_y - child_fragments[content_idx].bounds.y();
-            if legend_delta.is_finite() {
-              child_fragments[legend_idx].translate_root_in_place(Point::new(0.0, legend_delta));
-            }
-            if content_delta.is_finite() {
-              child_fragments[content_idx].translate_root_in_place(Point::new(0.0, content_delta));
-            }
-
-            // Recompute the flow block-size after repositioning so the legend does not artificially
-            // increase the fieldset's auto height.
-            let mut max_end = 0.0f32;
-            for frag in &child_fragments {
-              let end = frag.bounds.y() + frag.bounds.height();
-              if end.is_finite() {
-                max_end = max_end.max(end.max(0.0));
+          crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+            use crate::style::types::BoxSizing;
+            use crate::style::types::CalcSizeBasis;
+            let basis_border = match calc.basis {
+              CalcSizeBasis::Auto => intrinsic_max,
+              CalcSizeBasis::MinContent => intrinsic_min,
+              CalcSizeBasis::MaxContent => intrinsic_max,
+              CalcSizeBasis::FillAvailable => {
+                if available_block_border_box.is_finite() {
+                  available_block_border_box
+                } else {
+                  intrinsic_max
+                }
               }
-            }
-            content_height = max_end;
-          }
-        }
-      }
-
-      // Child fragments are produced in the block's content coordinate space (0,0 at the content
-      // box). Translate them into the fragment's local coordinate space (border box) so padding and
-      // borders correctly offset in-flow content.
-      if content_origin.x != 0.0 || content_origin.y != 0.0 {
-        for fragment in child_fragments.iter_mut() {
-          fragment.translate_root_in_place(content_origin);
-        }
-      }
-
-      Ok((child_fragments, content_height, positioned_children, column_info))
-    };
-
-    let (mut child_fragments, content_height, mut positioned_children, mut column_info) =
-      layout_contents(&child_ctx, &nearest_cb, &nearest_fixed_cb)?;
-
-    let min_height = if let Some(keyword) = style.min_height_keyword {
-      let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
-      let min_border = match keyword {
-        crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
-        crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
-        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
-          if available_block_border_box.is_finite() {
-            available_block_border_box
-          } else {
-            intrinsic_max
-          }
-        }
-        crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          let basis_border = match limit {
-            Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
-              limit,
-              containing_height,
-              self.viewport_size,
-              style.font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-              self.factory.root_font_metrics(),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(f32::INFINITY),
-            None => available_block_border_box,
-          };
-          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-        }
-        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
-          use crate::style::types::BoxSizing;
-          use crate::style::types::CalcSizeBasis;
-          let basis_border = match calc.basis {
-            CalcSizeBasis::Auto => intrinsic_max,
-            CalcSizeBasis::MinContent => intrinsic_min,
-            CalcSizeBasis::MaxContent => intrinsic_max,
-            CalcSizeBasis::FillAvailable => {
-              if available_block_border_box.is_finite() {
-                available_block_border_box
-              } else {
-                intrinsic_max
+              CalcSizeBasis::FitContent { limit } => {
+                let basis_border = match limit {
+                  Some(limit) => resolve_length_with_percentage_metrics(
+                    limit,
+                    containing_height,
+                    self.viewport_size,
+                    style.font_size,
+                    style.root_font_size,
+                    Some(style),
+                    Some(&self.font_context),
+                  )
+                  .map(|resolved| {
+                    border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                  })
+                  .unwrap_or(f32::INFINITY),
+                  None => available_block_border_box,
+                };
+                crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
               }
-            }
-            CalcSizeBasis::FitContent { limit } => {
-              let basis_border = match limit {
-                Some(limit) => resolve_length_with_percentage_metrics(
-                  limit,
-                  containing_height,
-                  self.viewport_size,
-                  style.font_size,
-                  style.root_font_size,
-                  Some(style),
-                  Some(&self.font_context),
-                )
-                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-                .unwrap_or(f32::INFINITY),
-                None => available_block_border_box,
-              };
-              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-            }
-            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
-              len,
-              containing_height,
-              self.viewport_size,
-              style.font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(intrinsic_max),
-          }
-          .max(0.0);
-          let basis_content = (basis_border - vertical_edges).max(0.0);
-          let basis_specified = match style.box_sizing {
-            BoxSizing::ContentBox => basis_content,
-            BoxSizing::BorderBox => basis_border,
-          };
-          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-            .and_then(|expr_len| {
-              resolve_length_with_percentage_metrics(
-                expr_len,
+              CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+                len,
                 containing_height,
                 self.viewport_size,
                 style.font_size,
@@ -10497,90 +10634,24 @@ impl FormattingContext for BlockFormattingContext {
                 Some(style),
                 Some(&self.font_context),
               )
-            })
-            .map(|resolved_specified| {
-              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
-            })
-            .unwrap_or(basis_border)
-        }
-      };
-      (min_border - vertical_edges).max(0.0)
-    } else {
-      style
-        .min_height
-        .as_ref()
-        .and_then(|l| {
-          resolve_length_with_percentage_metrics_and_root_font_metrics(
-            *l,
-            containing_height,
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-            Some(style),
-            Some(&self.font_context),
-            self.factory.root_font_metrics(),
-          )
-        })
-        .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
-        .unwrap_or(0.0)
-    };
-    let min_height = if reserved_horizontal_gutter > 0.0
-      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
-      && style.min_height_keyword.is_none()
-      && style.min_height.is_some()
-    {
-      (min_height - reserved_horizontal_gutter).max(0.0)
-    } else {
-      min_height
-    };
-    let max_height = if let Some(keyword) = style.max_height_keyword {
-      let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
-      let max_border = match keyword {
-        crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
-        crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
-        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
-          if available_block_border_box.is_finite() {
-            available_block_border_box
-          } else {
-            intrinsic_max
-          }
-        }
-        crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          let basis_border = match limit {
-            Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
-              limit,
-              containing_height,
-              self.viewport_size,
-              style.font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-              self.factory.root_font_metrics(),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(f32::INFINITY),
-            None => available_block_border_box,
-          };
-          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-        }
-        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
-          use crate::style::types::BoxSizing;
-          use crate::style::types::CalcSizeBasis;
-          let basis_border = match calc.basis {
-            CalcSizeBasis::Auto => intrinsic_max,
-            CalcSizeBasis::MinContent => intrinsic_min,
-            CalcSizeBasis::MaxContent => intrinsic_max,
-            CalcSizeBasis::FillAvailable => {
-              if available_block_border_box.is_finite() {
-                available_block_border_box
-              } else {
-                intrinsic_max
-              }
+              .map(|resolved| {
+                border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+              })
+              .unwrap_or(intrinsic_max),
             }
-            CalcSizeBasis::FitContent { limit } => {
-              let basis_border = match limit {
-                Some(limit) => resolve_length_with_percentage_metrics(
-                  limit,
+            .max(0.0);
+            let basis_content = (basis_border - vertical_edges).max(0.0);
+            let basis_specified = match style.box_sizing {
+              BoxSizing::ContentBox => basis_content,
+              BoxSizing::BorderBox => basis_border,
+            };
+            crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+              .and_then(|expr_sum| {
+                crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+              })
+              .and_then(|expr_len| {
+                resolve_length_with_percentage_metrics(
+                  expr_len,
                   containing_height,
                   self.viewport_size,
                   style.font_size,
@@ -10588,638 +10659,670 @@ impl FormattingContext for BlockFormattingContext {
                   Some(style),
                   Some(&self.font_context),
                 )
-                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-                .unwrap_or(f32::INFINITY),
-                None => available_block_border_box,
-              };
-              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-            }
-            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
-              len,
+              })
+              .map(|resolved_specified| {
+                border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing)
+                  .max(0.0)
+              })
+              .unwrap_or(basis_border)
+          }
+        };
+        (min_border - vertical_edges).max(0.0)
+      } else {
+        style
+          .min_height
+          .as_ref()
+          .and_then(|l| {
+            resolve_length_with_percentage_metrics_and_root_font_metrics(
+              *l,
               containing_height,
               self.viewport_size,
               style.font_size,
               style.root_font_size,
               Some(style),
               Some(&self.font_context),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(intrinsic_max),
-          }
-          .max(0.0);
-          let basis_content = (basis_border - vertical_edges).max(0.0);
-          let basis_specified = match style.box_sizing {
-            BoxSizing::ContentBox => basis_content,
-            BoxSizing::BorderBox => basis_border,
-          };
-          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
-            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-            .and_then(|expr_len| {
-              resolve_length_with_percentage_metrics(
-                expr_len,
-                containing_height,
-                self.viewport_size,
-                style.font_size,
-                style.root_font_size,
-                Some(style),
-                Some(&self.font_context),
-              )
-            })
-            .map(|resolved_specified| {
-              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
-            })
-            .unwrap_or(basis_border)
-        }
-      };
-      (max_border - vertical_edges).max(0.0)
-    } else {
-      style
-        .max_height
-        .as_ref()
-        .and_then(|l| {
-          resolve_length_with_percentage_metrics_and_root_font_metrics(
-            *l,
-            containing_height,
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-            Some(style),
-            Some(&self.font_context),
-            self.factory.root_font_metrics(),
-          )
-        })
-        .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
-        .unwrap_or(f32::INFINITY)
-    };
-    let max_height = if reserved_horizontal_gutter > 0.0
-      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
-      && style.max_height_keyword.is_none()
-      && style.max_height.is_some()
-      && max_height.is_finite()
-    {
-      (max_height - reserved_horizontal_gutter).max(0.0)
-    } else {
-      max_height
-    };
-
-    let max_height = if max_height.is_finite() && max_height < min_height {
-      min_height
-    } else {
-      max_height
-    };
-    let height = crate::layout::utils::clamp_with_order(
-      resolved_height.unwrap_or(content_height),
-      min_height,
-      max_height,
-    );
-
-    if should_relayout_abspos_descendants_for_cb_height && !skip_contents {
-      // Absolutely positioned descendants can use percentage block-sizes/insets that resolve
-      // against the *used* padding box height of their containing block (CSS 2.1 §10.5/§10.6.4),
-      // even when the containing block itself is `height:auto`. The used height isn't known until
-      // after in-flow layout, but inline formatting contexts lay out their positioned descendants
-      // during the main flow pass. Re-run child layout with an updated containing block height so
-      // nested abspos descendants see the correct percentage basis and constraint-equation inputs.
-
-      let used_padding_size = Size::new(padding_size.width, height + padding_top + padding_bottom);
-      let used_cb_block_base = Some(used_padding_size.height);
-      let relayout_nearest_cb = if establishes_positioned_cb {
-        ContainingBlock::with_viewport_and_bases(
-          Rect::new(padding_origin, used_padding_size),
-          self.viewport_size,
-          Some(used_padding_size.width),
-          used_cb_block_base,
-        )
-      } else {
-        nearest_cb
-      };
-      let relayout_nearest_fixed_cb = if establishes_fixed_cb {
-        ContainingBlock::with_viewport_and_bases(
-          Rect::new(padding_origin, used_padding_size),
-          self.viewport_size,
-          Some(used_padding_size.width),
-          used_cb_block_base,
-        )
-      } else {
-        nearest_fixed_cb
-      };
-
-      let mut relayout_ctx = child_ctx.clone();
-      relayout_ctx.nearest_positioned_cb = relayout_nearest_cb;
-      relayout_ctx.nearest_fixed_cb = relayout_nearest_fixed_cb;
-      if relayout_nearest_cb != child_ctx.nearest_positioned_cb
-        || relayout_nearest_fixed_cb != child_ctx.nearest_fixed_cb
-      {
-        if relayout_nearest_cb != child_ctx.nearest_positioned_cb {
-          relayout_ctx.factory = relayout_ctx.factory.with_positioned_cb(relayout_nearest_cb);
-        }
-        if relayout_nearest_fixed_cb != child_ctx.nearest_fixed_cb {
-          relayout_ctx.factory = relayout_ctx.factory.with_fixed_cb(relayout_nearest_fixed_cb);
-        }
-        relayout_ctx.intrinsic_inline_fc =
-          Arc::new(InlineFormattingContext::with_factory(relayout_ctx.factory.clone()));
-      }
-
-      let (frags, _relayout_height, positioned, info) =
-        layout_contents(&relayout_ctx, &relayout_nearest_cb, &relayout_nearest_fixed_cb)?;
-      child_fragments = frags;
-      positioned_children = positioned;
-      column_info = info;
-    }
-
-    if !skip_contents {
-      let remembered = if block_axis_is_horizontal(style.writing_mode) {
-        Size::new(height, computed_width.content_width)
-      } else {
-        Size::new(computed_width.content_width, height)
-      };
-      remembered_size_cache_store(box_node, remembered);
-    }
-
-    let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
-    // For root/layout entry points, keep fragment bounds scoped to the border box so margins
-    // don’t inflate measured sizes (e.g., when flex items are measured via a block FC). The
-    // margin space stays outside the fragment’s local coordinates, matching the child layout
-    // path in `layout_block_child`.
-    let box_width = computed_width.border_box_width();
-
-    // Layout out-of-flow positioned children against this block's padding box (CSS 2.1 §10.1).
-    //
-    // `child_fragments` have already been translated into the border-box coordinate space above, so
-    // keep the containing block in that same coordinate space (origin at the padding edge).
-    let padding_origin = Point::new(computed_width.border_left, border_top);
-    let padding_size = Size::new(
-      computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
-      height + padding_top + padding_bottom,
-    );
-    let padding_rect = Rect::new(padding_origin, padding_size);
-
-    if !positioned_children.is_empty() {
-      let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
-        self.font_context.clone(),
-      );
-      // `child_fragments` are already in this block's border-box coordinate space, so build the
-      // anchor index from them directly. Out-of-flow positioned boxes are also placed in this same
-      // coordinate space (with the padding edge at `padding_origin`).
-      let mut anchor_index =
-        crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
-          child_fragments.as_slice(),
-          box_node.id,
-          &style.anchor_scope,
-          self.viewport_size,
-        );
-      // Allow descendants to anchor against the containing block element itself.
-      anchor_index.insert_names_for_box(
-        box_node.id,
-        &style.anchor_names,
-        crate::layout::anchor_positioning::AnchorBox {
-          rect: Rect::from_xywh(0.0, 0.0, box_width, box_height),
-          writing_mode: style.writing_mode,
-          direction: style.direction,
-        },
-      );
-      let mut anchor_index_physical = None;
-      let mut parent_padding_cb_physical = None;
-      let needs_physical_coordinate_space =
-        block_axis_is_horizontal(style.writing_mode) || !inline_axis_positive(style.writing_mode, style.direction);
-      if needs_physical_coordinate_space {
-        let physical_children: Vec<_> = child_fragments
-          .iter()
-          .cloned()
-          .map(|fragment| {
-            convert_fragment_axes(
-              fragment,
-              box_width,
-              box_height,
-              style.writing_mode,
-              style.direction,
+              self.factory.root_font_metrics(),
             )
           })
-          .collect();
-        let mut physical_index =
+          .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
+          .unwrap_or(0.0)
+      };
+      let min_height = if reserved_horizontal_gutter > 0.0
+        && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+        && style.min_height_keyword.is_none()
+        && style.min_height.is_some()
+      {
+        (min_height - reserved_horizontal_gutter).max(0.0)
+      } else {
+        min_height
+      };
+      let max_height = if let Some(keyword) = style.max_height_keyword {
+        let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
+        let max_border = match keyword {
+          crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
+          crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+          crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+            if available_block_border_box.is_finite() {
+              available_block_border_box
+            } else {
+              intrinsic_max
+            }
+          }
+          crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
+            let basis_border = match limit {
+              Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
+                limit,
+                containing_height,
+                self.viewport_size,
+                style.font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+                self.factory.root_font_metrics(),
+              )
+              .map(|resolved| {
+                border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+              })
+              .unwrap_or(f32::INFINITY),
+              None => available_block_border_box,
+            };
+            crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+          }
+          crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+            use crate::style::types::BoxSizing;
+            use crate::style::types::CalcSizeBasis;
+            let basis_border = match calc.basis {
+              CalcSizeBasis::Auto => intrinsic_max,
+              CalcSizeBasis::MinContent => intrinsic_min,
+              CalcSizeBasis::MaxContent => intrinsic_max,
+              CalcSizeBasis::FillAvailable => {
+                if available_block_border_box.is_finite() {
+                  available_block_border_box
+                } else {
+                  intrinsic_max
+                }
+              }
+              CalcSizeBasis::FitContent { limit } => {
+                let basis_border = match limit {
+                  Some(limit) => resolve_length_with_percentage_metrics(
+                    limit,
+                    containing_height,
+                    self.viewport_size,
+                    style.font_size,
+                    style.root_font_size,
+                    Some(style),
+                    Some(&self.font_context),
+                  )
+                  .map(|resolved| {
+                    border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+                  })
+                  .unwrap_or(f32::INFINITY),
+                  None => available_block_border_box,
+                };
+                crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+              }
+              CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+                len,
+                containing_height,
+                self.viewport_size,
+                style.font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+              )
+              .map(|resolved| {
+                border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing)
+              })
+              .unwrap_or(intrinsic_max),
+            }
+            .max(0.0);
+            let basis_content = (basis_border - vertical_edges).max(0.0);
+            let basis_specified = match style.box_sizing {
+              BoxSizing::ContentBox => basis_content,
+              BoxSizing::BorderBox => basis_border,
+            };
+            crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+              .and_then(|expr_sum| {
+                crate::css::properties::parse_length(&format!("calc({expr_sum})"))
+              })
+              .and_then(|expr_len| {
+                resolve_length_with_percentage_metrics(
+                  expr_len,
+                  containing_height,
+                  self.viewport_size,
+                  style.font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+              })
+              .map(|resolved_specified| {
+                border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing)
+                  .max(0.0)
+              })
+              .unwrap_or(basis_border)
+          }
+        };
+        (max_border - vertical_edges).max(0.0)
+      } else {
+        style
+          .max_height
+          .as_ref()
+          .and_then(|l| {
+            resolve_length_with_percentage_metrics_and_root_font_metrics(
+              *l,
+              containing_height,
+              self.viewport_size,
+              style.font_size,
+              style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
+              self.factory.root_font_metrics(),
+            )
+          })
+          .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
+          .unwrap_or(f32::INFINITY)
+      };
+      let max_height = if reserved_horizontal_gutter > 0.0
+        && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+        && style.max_height_keyword.is_none()
+        && style.max_height.is_some()
+        && max_height.is_finite()
+      {
+        (max_height - reserved_horizontal_gutter).max(0.0)
+      } else {
+        max_height
+      };
+
+      let max_height = if max_height.is_finite() && max_height < min_height {
+        min_height
+      } else {
+        max_height
+      };
+      let height = crate::layout::utils::clamp_with_order(
+        resolved_height.unwrap_or(content_height),
+        min_height,
+        max_height,
+      );
+
+      if should_relayout_abspos_descendants_for_cb_height && !skip_contents {
+        // Absolutely positioned descendants can use percentage block-sizes/insets that resolve
+        // against the *used* padding box height of their containing block (CSS 2.1 §10.5/§10.6.4),
+        // even when the containing block itself is `height:auto`. The used height isn't known until
+        // after in-flow layout, but inline formatting contexts lay out their positioned descendants
+        // during the main flow pass. Re-run child layout with an updated containing block height so
+        // nested abspos descendants see the correct percentage basis and constraint-equation inputs.
+
+        let used_padding_size =
+          Size::new(padding_size.width, height + padding_top + padding_bottom);
+        let used_cb_block_base = Some(used_padding_size.height);
+        let relayout_nearest_cb = if establishes_positioned_cb {
+          ContainingBlock::with_viewport_and_bases(
+            Rect::new(padding_origin, used_padding_size),
+            self.viewport_size,
+            Some(used_padding_size.width),
+            used_cb_block_base,
+          )
+        } else {
+          nearest_cb
+        };
+        let relayout_nearest_fixed_cb = if establishes_fixed_cb {
+          ContainingBlock::with_viewport_and_bases(
+            Rect::new(padding_origin, used_padding_size),
+            self.viewport_size,
+            Some(used_padding_size.width),
+            used_cb_block_base,
+          )
+        } else {
+          nearest_fixed_cb
+        };
+
+        let mut relayout_ctx = child_ctx.clone();
+        relayout_ctx.nearest_positioned_cb = relayout_nearest_cb;
+        relayout_ctx.nearest_fixed_cb = relayout_nearest_fixed_cb;
+        if relayout_nearest_cb != child_ctx.nearest_positioned_cb
+          || relayout_nearest_fixed_cb != child_ctx.nearest_fixed_cb
+        {
+          if relayout_nearest_cb != child_ctx.nearest_positioned_cb {
+            relayout_ctx.factory = relayout_ctx.factory.with_positioned_cb(relayout_nearest_cb);
+          }
+          if relayout_nearest_fixed_cb != child_ctx.nearest_fixed_cb {
+            relayout_ctx.factory = relayout_ctx
+              .factory
+              .with_fixed_cb(relayout_nearest_fixed_cb);
+          }
+          relayout_ctx.intrinsic_inline_fc = Arc::new(InlineFormattingContext::with_factory(
+            relayout_ctx.factory.clone(),
+          ));
+        }
+
+        let (frags, _relayout_height, positioned, info) = layout_contents(
+          &relayout_ctx,
+          &relayout_nearest_cb,
+          &relayout_nearest_fixed_cb,
+        )?;
+        child_fragments = frags;
+        positioned_children = positioned;
+        column_info = info;
+      }
+
+      if !skip_contents {
+        let remembered = if block_axis_is_horizontal(style.writing_mode) {
+          Size::new(height, computed_width.content_width)
+        } else {
+          Size::new(computed_width.content_width, height)
+        };
+        remembered_size_cache_store(box_node, remembered);
+      }
+
+      let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
+      // For root/layout entry points, keep fragment bounds scoped to the border box so margins
+      // don’t inflate measured sizes (e.g., when flex items are measured via a block FC). The
+      // margin space stays outside the fragment’s local coordinates, matching the child layout
+      // path in `layout_block_child`.
+      let box_width = computed_width.border_box_width();
+
+      // Layout out-of-flow positioned children against this block's padding box (CSS 2.1 §10.1).
+      //
+      // `child_fragments` have already been translated into the border-box coordinate space above, so
+      // keep the containing block in that same coordinate space (origin at the padding edge).
+      let padding_origin = Point::new(computed_width.border_left, border_top);
+      let padding_size = Size::new(
+        computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
+        height + padding_top + padding_bottom,
+      );
+      let padding_rect = Rect::new(padding_origin, padding_size);
+
+      if !positioned_children.is_empty() {
+        let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
+          self.font_context.clone(),
+        );
+        // `child_fragments` are already in this block's border-box coordinate space, so build the
+        // anchor index from them directly. Out-of-flow positioned boxes are also placed in this same
+        // coordinate space (with the padding edge at `padding_origin`).
+        let mut anchor_index =
           crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
-            physical_children.as_slice(),
+            child_fragments.as_slice(),
             box_node.id,
             &style.anchor_scope,
             self.viewport_size,
           );
-        physical_index.insert_names_for_box(
+        // Allow descendants to anchor against the containing block element itself.
+        anchor_index.insert_names_for_box(
           box_node.id,
           &style.anchor_names,
           crate::layout::anchor_positioning::AnchorBox {
-            rect: Rect::new(
-              Point::ZERO,
-              if block_axis_is_horizontal(style.writing_mode) {
-                Size::new(box_height, box_width)
-              } else {
-                Size::new(box_width, box_height)
-              },
-            ),
+            rect: Rect::from_xywh(0.0, 0.0, box_width, box_height),
             writing_mode: style.writing_mode,
             direction: style.direction,
           },
         );
-        anchor_index_physical = Some(physical_index);
-
-        let padding_rect_physical = logical_rect_to_physical_full(
-          padding_rect,
-          box_width,
-          box_height,
-          style.writing_mode,
-          style.direction,
-        );
-        parent_padding_cb_physical = Some(ContainingBlock::with_viewport_and_bases(
-          padding_rect_physical,
-          self.viewport_size,
-          Some(padding_rect_physical.size.width),
-          Some(padding_rect_physical.size.height),
-        ).with_writing_mode_and_direction(style.writing_mode, style.direction));
-      }
-      let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
-        padding_rect,
-        self.viewport_size,
-        Some(padding_size.width),
-        Some(padding_size.height),
-      )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction);
-      let base_factory = self.factory.clone();
-      let viewport_cb = ContainingBlock::viewport(self.viewport_size);
-      let abs_factory = if parent_padding_cb == base_factory.nearest_positioned_cb() {
-        base_factory.clone()
-      } else {
-        base_factory.with_positioned_cb(parent_padding_cb)
-      };
-      let fixed_factory = if viewport_cb == parent_padding_cb {
-        abs_factory.clone()
-      } else if viewport_cb == base_factory.nearest_positioned_cb() {
-        base_factory.clone()
-      } else {
-        base_factory.with_positioned_cb(viewport_cb)
-      };
-      let factory_for_cb = |cb: ContainingBlock| -> &FormattingContextFactory {
-        if cb == parent_padding_cb {
-          &abs_factory
-        } else if cb == viewport_cb {
-          &fixed_factory
-        } else {
-          &base_factory
-        }
-      };
-
-      let trace_positioned = trace_positioned_ids();
-      for PositionedCandidate {
-        node: child,
-        source,
-        static_position,
-        query_parent_id,
-        implicit_anchor_box_id,
-      } in positioned_children
-      {
-        let original_style = child.style.clone();
-        let cb = match source {
-          ContainingBlockSource::ParentPadding => parent_padding_cb,
-          ContainingBlockSource::Explicit(cb) => cb,
-        };
-        let (anchors_for_cb, positioning_cb, needs_physical_conversion) =
-          if cb == parent_padding_cb {
-            match (anchor_index_physical.as_ref(), parent_padding_cb_physical) {
-              (Some(index), Some(physical_cb)) => (Some(index), physical_cb, true),
-              _ => (Some(&anchor_index), cb, false),
-            }
-          } else {
-            (Some(&anchor_index), cb, false)
-          };
-        let factory = factory_for_cb(cb);
-        // Layout the child as if it were in normal flow to obtain its intrinsic size.
-        let mut static_style = child.style.clone();
-        {
-          let s = Arc::make_mut(&mut static_style);
-          s.position = Position::Relative;
-          s.top = crate::style::types::InsetValue::Auto;
-          s.right = crate::style::types::InsetValue::Auto;
-          s.bottom = crate::style::types::InsetValue::Auto;
-          s.left = crate::style::types::InsetValue::Auto;
-        }
-
-        let fc_type = child
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        let fc = factory.get(fc_type);
-        let child_height_space = cb
-          .block_percentage_base()
-          .map(AvailableSpace::Definite)
-          .unwrap_or(AvailableSpace::Indefinite);
-        let child_constraints = LayoutConstraints::new(
-          AvailableSpace::Definite(padding_size.width),
-          child_height_space,
-        );
-
-        // Resolve positioned style against the containing block.
-        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
-          query_parent_box_id: Some(query_parent_id),
-          implicit_anchor_box_id,
-        };
-        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
-          &original_style,
-          &positioning_cb,
-          self.viewport_size,
-          &self.font_context,
-          anchors_for_cb,
-          anchor_query,
-        );
-
-        let relayout_for_definite_insets = (positioned_style.width.is_auto()
-          && !positioned_style.left.is_auto()
-          && !positioned_style.right.is_auto())
-          || (positioned_style.height.is_auto()
-            && !positioned_style.top.is_auto()
-            && !positioned_style.bottom.is_auto());
-
-        let mut static_pos = static_position.unwrap_or(Point::ZERO);
-        if cb == parent_padding_cb {
-          static_pos = Point::new(
-            static_pos.x + computed_width.padding_left,
-            static_pos.y + padding_top,
-          );
-        } else {
-          // Static positions are recorded in this block's content coordinate space. When the
-          // positioned containing block is an inherited one (e.g. viewport), rebase the static
-          // position so it's relative to the containing block origin.
-          let origin = positioning_cb.origin();
-          static_pos = Point::new(static_pos.x - origin.x, static_pos.y - origin.y);
-        }
-        if needs_physical_conversion {
-          static_pos = logical_rect_to_physical_full(
-            Rect::new(static_pos, Size::new(0.0, 0.0)),
-            padding_size.width,
-            padding_size.height,
-            style.writing_mode,
-            style.direction,
-          )
-          .origin;
-        }
-        let is_replaced = child.is_replaced();
-        let needs_inline_intrinsics = (positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced))
-          || original_style.width_keyword.is_some()
-          || original_style.min_width_keyword.is_some()
-          || original_style.max_width_keyword.is_some();
-        let needs_block_intrinsics = (positioned_style.height.is_auto()
-          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()))
-          || original_style.height_keyword.is_some()
-          || original_style.min_height_keyword.is_some()
-          || original_style.max_height_keyword.is_some();
-        let (
-          mut child_fragment,
-          preferred_min_inline,
-          preferred_inline,
-          preferred_min_block,
-          preferred_block,
-        ) = if child.id != 0 {
-          crate::layout::style_override::with_style_override(
-            child.id,
-            static_style.clone(),
-            || {
-              let child_fragment = fc.layout(&child, &child_constraints)?;
-              let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-                match fc.compute_intrinsic_inline_sizes(&child) {
-                  Ok((min, max)) => (Some(min), Some(max)),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => {
-                    let min = match fc
-                      .compute_intrinsic_inline_size(&child, IntrinsicSizingMode::MinContent)
-                    {
-                      Ok(value) => Some(value),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                    let max = match fc
-                      .compute_intrinsic_inline_size(&child, IntrinsicSizingMode::MaxContent)
-                    {
-                      Ok(value) => Some(value),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                    (min, max)
-                  }
-                }
-              } else {
-                (None, None)
-              };
-              let preferred_min_block = if needs_block_intrinsics {
-                match fc.compute_intrinsic_block_size(&child, IntrinsicSizingMode::MinContent) {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                }
-              } else {
-                None
-              };
-              let preferred_block = if needs_block_intrinsics {
-                match fc.compute_intrinsic_block_size(&child, IntrinsicSizingMode::MaxContent) {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                }
-              } else {
-                None
-              };
-              Ok((
-                child_fragment,
-                preferred_min_inline,
-                preferred_inline,
-                preferred_min_block,
-                preferred_block,
-              ))
+        let mut anchor_index_physical = None;
+        let mut parent_padding_cb_physical = None;
+        let needs_physical_coordinate_space = block_axis_is_horizontal(style.writing_mode)
+          || !inline_axis_positive(style.writing_mode, style.direction);
+        if needs_physical_coordinate_space {
+          let physical_children: Vec<_> = child_fragments
+            .iter()
+            .cloned()
+            .map(|fragment| {
+              convert_fragment_axes(
+                fragment,
+                box_width,
+                box_height,
+                style.writing_mode,
+                style.direction,
+              )
+            })
+            .collect();
+          let mut physical_index =
+            crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+              physical_children.as_slice(),
+              box_node.id,
+              &style.anchor_scope,
+              self.viewport_size,
+            );
+          physical_index.insert_names_for_box(
+            box_node.id,
+            &style.anchor_names,
+            crate::layout::anchor_positioning::AnchorBox {
+              rect: Rect::new(
+                Point::ZERO,
+                if block_axis_is_horizontal(style.writing_mode) {
+                  Size::new(box_height, box_width)
+                } else {
+                  Size::new(box_width, box_height)
+                },
+              ),
+              writing_mode: style.writing_mode,
+              direction: style.direction,
             },
-          )?
-        } else {
-          let mut layout_child = child.clone();
-          layout_child.style = static_style.clone();
-          let child_fragment = fc.layout(&layout_child, &child_constraints)?;
-          let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-            match fc.compute_intrinsic_inline_sizes(&layout_child) {
-              Ok((min, max)) => (Some(min), Some(max)),
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => {
-                let min = match fc
-                  .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MinContent)
-                {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                };
-                let max = match fc
-                  .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MaxContent)
-                {
-                  Ok(value) => Some(value),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                };
-                (min, max)
-              }
-            }
-          } else {
-            (None, None)
-          };
-          let preferred_min_block = if needs_block_intrinsics {
-            match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent) {
-              Ok(value) => Some(value),
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => None,
-            }
-          } else {
-            None
-          };
-          let preferred_block = if needs_block_intrinsics {
-            match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent) {
-              Ok(value) => Some(value),
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => None,
-            }
-          } else {
-            None
-          };
-          (
-            child_fragment,
-            preferred_min_inline,
-            preferred_inline,
-            preferred_min_block,
-            preferred_block,
-          )
-        };
-
-        let actual_horizontal = positioned_style.padding.left
-          + positioned_style.padding.right
-          + positioned_style.border_width.left
-          + positioned_style.border_width.right;
-        let actual_vertical = positioned_style.padding.top
-          + positioned_style.padding.bottom
-          + positioned_style.border_width.top
-          + positioned_style.border_width.bottom;
-        let content_offset = Point::new(
-          positioned_style.border_width.left + positioned_style.padding.left,
-          positioned_style.border_width.top + positioned_style.padding.top,
-        );
-        let (intrinsic_horizontal, intrinsic_vertical) =
-          crate::layout::absolute_positioning::intrinsic_edge_sizes(
-            &original_style,
-            self.viewport_size,
-            &self.font_context,
           );
-        let preferred_min_inline =
-          preferred_min_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
-        let preferred_inline = preferred_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
-        let preferred_min_block = preferred_min_block.map(|v| (v - intrinsic_vertical).max(0.0));
-        let preferred_block = preferred_block.map(|v| (v - intrinsic_vertical).max(0.0));
-        let intrinsic_size = Size::new(
-          (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
-          (child_fragment.bounds.size.height - actual_vertical).max(0.0),
-        );
+          anchor_index_physical = Some(physical_index);
 
-        let mut input = crate::layout::absolute_positioning::AbsoluteLayoutInput::new(
-          positioned_style,
-          intrinsic_size,
-          static_pos,
-        );
-        input.is_replaced = is_replaced;
-        input.preferred_min_inline_size = preferred_min_inline;
-        input.preferred_inline_size = preferred_inline;
-        input.preferred_min_block_size = preferred_min_block;
-        input.preferred_block_size = preferred_block;
-        let supports_used_border_box = matches!(
-          fc_type,
-          FormattingContextType::Block
-            | FormattingContextType::Flex
-            | FormattingContextType::Grid
-            | FormattingContextType::Inline
-        );
-
-        let (layout_positioned_style, mut result) =
-          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
-            &abs,
-            &input,
-            &original_style,
-            &positioning_cb,
-            self.viewport_size,
-            &self.font_context,
-            anchors_for_cb,
-            anchor_query,
-          )?;
-        let mut border_size_physical = Size::new(
-          result.size.width + actual_horizontal,
-          result.size.height + actual_vertical,
-        );
-        let mut border_origin_physical = Point::new(
-          result.position.x - content_offset.x,
-          result.position.y - content_offset.y,
-        );
-        let (mut border_origin, mut border_size) = if needs_physical_conversion {
-          let border_rect = Rect::new(border_origin_physical, border_size_physical);
-          let logical_rect = physical_rect_to_logical_full(
-            border_rect,
+          let padding_rect_physical = logical_rect_to_physical_full(
+            padding_rect,
             box_width,
             box_height,
             style.writing_mode,
             style.direction,
           );
-          (logical_rect.origin, logical_rect.size)
+          parent_padding_cb_physical = Some(
+            ContainingBlock::with_viewport_and_bases(
+              padding_rect_physical,
+              self.viewport_size,
+              Some(padding_rect_physical.size.width),
+              Some(padding_rect_physical.size.height),
+            )
+            .with_writing_mode_and_direction(style.writing_mode, style.direction),
+          );
+        }
+        let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
+          padding_rect,
+          self.viewport_size,
+          Some(padding_size.width),
+          Some(padding_size.height),
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction);
+        let base_factory = self.factory.clone();
+        let viewport_cb = ContainingBlock::viewport(self.viewport_size);
+        let abs_factory = if parent_padding_cb == base_factory.nearest_positioned_cb() {
+          base_factory.clone()
         } else {
-          (border_origin_physical, border_size_physical)
+          base_factory.with_positioned_cb(parent_padding_cb)
+        };
+        let fixed_factory = if viewport_cb == parent_padding_cb {
+          abs_factory.clone()
+        } else if viewport_cb == base_factory.nearest_positioned_cb() {
+          base_factory.clone()
+        } else {
+          base_factory.with_positioned_cb(viewport_cb)
+        };
+        let factory_for_cb = |cb: ContainingBlock| -> &FormattingContextFactory {
+          if cb == parent_padding_cb {
+            &abs_factory
+          } else if cb == viewport_cb {
+            &fixed_factory
+          } else {
+            &base_factory
+          }
         };
 
-        if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
-          &layout_positioned_style,
-          input.is_replaced,
-        ) && (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+        let trace_positioned = trace_positioned_ids();
+        for PositionedCandidate {
+          node: child,
+          source,
+          static_position,
+          query_parent_id,
+          implicit_anchor_box_id,
+        } in positioned_children
         {
-          let measure_constraints = child_constraints
-            .with_width(AvailableSpace::Definite(border_size.width))
-            .with_height(AvailableSpace::Indefinite)
-            .with_used_border_box_size(Some(border_size.width), None);
+          let original_style = child.style.clone();
+          let cb = match source {
+            ContainingBlockSource::ParentPadding => parent_padding_cb,
+            ContainingBlockSource::Explicit(cb) => cb,
+          };
+          let (anchors_for_cb, positioning_cb, needs_physical_conversion) =
+            if cb == parent_padding_cb {
+              match (anchor_index_physical.as_ref(), parent_padding_cb_physical) {
+                (Some(index), Some(physical_cb)) => (Some(index), physical_cb, true),
+                _ => (Some(&anchor_index), cb, false),
+              }
+            } else {
+              (Some(&anchor_index), cb, false)
+            };
+          let factory = factory_for_cb(cb);
+          // Layout the child as if it were in normal flow to obtain its intrinsic size.
+          let mut static_style = child.style.clone();
+          {
+            let s = Arc::make_mut(&mut static_style);
+            s.position = Position::Relative;
+            s.top = crate::style::types::InsetValue::Auto;
+            s.right = crate::style::types::InsetValue::Auto;
+            s.bottom = crate::style::types::InsetValue::Auto;
+            s.left = crate::style::types::InsetValue::Auto;
+          }
 
-          child_fragment = if child.id != 0 {
-            if supports_used_border_box {
-              crate::layout::style_override::with_style_override(
-                child.id,
-                static_style.clone(),
-                || fc.layout(&child, &measure_constraints),
-              )?
-            } else {
-              let mut measure_style = static_style.clone();
-              {
-                let s = Arc::make_mut(&mut measure_style);
-                s.width = Some(crate::style::values::Length::px(border_size.width));
-                s.width_keyword = None;
-                s.min_width_keyword = None;
-                s.max_width_keyword = None;
-              }
-              crate::layout::style_override::with_style_override(child.id, measure_style, || {
-                fc.layout(&child, &measure_constraints)
-              })?
-            }
+          let fc_type = child
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          let fc = factory.get(fc_type);
+          let child_height_space = cb
+            .block_percentage_base()
+            .map(AvailableSpace::Definite)
+            .unwrap_or(AvailableSpace::Indefinite);
+          let child_constraints = LayoutConstraints::new(
+            AvailableSpace::Definite(padding_size.width),
+            child_height_space,
+          );
+
+          // Resolve positioned style against the containing block.
+          let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+            query_parent_box_id: Some(query_parent_id),
+            implicit_anchor_box_id,
+          };
+          let positioned_style =
+            crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
+              &original_style,
+              &positioning_cb,
+              self.viewport_size,
+              &self.font_context,
+              anchors_for_cb,
+              anchor_query,
+            );
+
+          let relayout_for_definite_insets = (positioned_style.width.is_auto()
+            && !positioned_style.left.is_auto()
+            && !positioned_style.right.is_auto())
+            || (positioned_style.height.is_auto()
+              && !positioned_style.top.is_auto()
+              && !positioned_style.bottom.is_auto());
+
+          let mut static_pos = static_position.unwrap_or(Point::ZERO);
+          if cb == parent_padding_cb {
+            static_pos = Point::new(
+              static_pos.x + computed_width.padding_left,
+              static_pos.y + padding_top,
+            );
           } else {
-            let mut relayout_child = child.clone();
-            if supports_used_border_box {
-              relayout_child.style = static_style.clone();
-            } else {
-              let mut measure_style = static_style.clone();
-              {
-                let s = Arc::make_mut(&mut measure_style);
-                s.width = Some(crate::style::values::Length::px(border_size.width));
-                s.width_keyword = None;
-                s.min_width_keyword = None;
-                s.max_width_keyword = None;
+            // Static positions are recorded in this block's content coordinate space. When the
+            // positioned containing block is an inherited one (e.g. viewport), rebase the static
+            // position so it's relative to the containing block origin.
+            let origin = positioning_cb.origin();
+            static_pos = Point::new(static_pos.x - origin.x, static_pos.y - origin.y);
+          }
+          if needs_physical_conversion {
+            static_pos = logical_rect_to_physical_full(
+              Rect::new(static_pos, Size::new(0.0, 0.0)),
+              padding_size.width,
+              padding_size.height,
+              style.writing_mode,
+              style.direction,
+            )
+            .origin;
+          }
+          let is_replaced = child.is_replaced();
+          let needs_inline_intrinsics = (positioned_style.width.is_auto()
+            && (positioned_style.left.is_auto()
+              || positioned_style.right.is_auto()
+              || is_replaced))
+            || original_style.width_keyword.is_some()
+            || original_style.min_width_keyword.is_some()
+            || original_style.max_width_keyword.is_some();
+          let needs_block_intrinsics = (positioned_style.height.is_auto()
+            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()))
+            || original_style.height_keyword.is_some()
+            || original_style.min_height_keyword.is_some()
+            || original_style.max_height_keyword.is_some();
+          let (
+            mut child_fragment,
+            preferred_min_inline,
+            preferred_inline,
+            preferred_min_block,
+            preferred_block,
+          ) = if child.id != 0 {
+            crate::layout::style_override::with_style_override(
+              child.id,
+              static_style.clone(),
+              || {
+                let child_fragment = fc.layout(&child, &child_constraints)?;
+                let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
+                  match fc.compute_intrinsic_inline_sizes(&child) {
+                    Ok((min, max)) => (Some(min), Some(max)),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => {
+                      let min = match fc
+                        .compute_intrinsic_inline_size(&child, IntrinsicSizingMode::MinContent)
+                      {
+                        Ok(value) => Some(value),
+                        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                        Err(_) => None,
+                      };
+                      let max = match fc
+                        .compute_intrinsic_inline_size(&child, IntrinsicSizingMode::MaxContent)
+                      {
+                        Ok(value) => Some(value),
+                        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                        Err(_) => None,
+                      };
+                      (min, max)
+                    }
+                  }
+                } else {
+                  (None, None)
+                };
+                let preferred_min_block = if needs_block_intrinsics {
+                  match fc.compute_intrinsic_block_size(&child, IntrinsicSizingMode::MinContent) {
+                    Ok(value) => Some(value),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  }
+                } else {
+                  None
+                };
+                let preferred_block = if needs_block_intrinsics {
+                  match fc.compute_intrinsic_block_size(&child, IntrinsicSizingMode::MaxContent) {
+                    Ok(value) => Some(value),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  }
+                } else {
+                  None
+                };
+                Ok((
+                  child_fragment,
+                  preferred_min_inline,
+                  preferred_inline,
+                  preferred_min_block,
+                  preferred_block,
+                ))
+              },
+            )?
+          } else {
+            let mut layout_child = child.clone();
+            layout_child.style = static_style.clone();
+            let child_fragment = fc.layout(&layout_child, &child_constraints)?;
+            let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
+              match fc.compute_intrinsic_inline_sizes(&layout_child) {
+                Ok((min, max)) => (Some(min), Some(max)),
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => {
+                  let min = match fc
+                    .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MinContent)
+                  {
+                    Ok(value) => Some(value),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  };
+                  let max = match fc
+                    .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MaxContent)
+                  {
+                    Ok(value) => Some(value),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  };
+                  (min, max)
+                }
               }
-              relayout_child.style = measure_style;
-            }
-            fc.layout(&relayout_child, &measure_constraints)?
+            } else {
+              (None, None)
+            };
+            let preferred_min_block = if needs_block_intrinsics {
+              match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent)
+              {
+                Ok(value) => Some(value),
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => None,
+              }
+            } else {
+              None
+            };
+            let preferred_block = if needs_block_intrinsics {
+              match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent)
+              {
+                Ok(value) => Some(value),
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => None,
+              }
+            } else {
+              None
+            };
+            (
+              child_fragment,
+              preferred_min_inline,
+              preferred_inline,
+              preferred_min_block,
+              preferred_block,
+            )
           };
 
-          input.intrinsic_size.height =
-            (child_fragment.bounds.size.height - actual_vertical).max(0.0);
+          let actual_horizontal = positioned_style.padding.left
+            + positioned_style.padding.right
+            + positioned_style.border_width.left
+            + positioned_style.border_width.right;
+          let actual_vertical = positioned_style.padding.top
+            + positioned_style.padding.bottom
+            + positioned_style.border_width.top
+            + positioned_style.border_width.bottom;
+          let content_offset = Point::new(
+            positioned_style.border_width.left + positioned_style.padding.left,
+            positioned_style.border_width.top + positioned_style.padding.top,
+          );
+          let (intrinsic_horizontal, intrinsic_vertical) =
+            crate::layout::absolute_positioning::intrinsic_edge_sizes(
+              &original_style,
+              self.viewport_size,
+              &self.font_context,
+            );
+          let preferred_min_inline =
+            preferred_min_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+          let preferred_inline = preferred_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+          let preferred_min_block = preferred_min_block.map(|v| (v - intrinsic_vertical).max(0.0));
+          let preferred_block = preferred_block.map(|v| (v - intrinsic_vertical).max(0.0));
+          let intrinsic_size = Size::new(
+            (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
+            (child_fragment.bounds.size.height - actual_vertical).max(0.0),
+          );
 
-          let (_, rerun_result) =
+          let mut input = crate::layout::absolute_positioning::AbsoluteLayoutInput::new(
+            positioned_style,
+            intrinsic_size,
+            static_pos,
+          );
+          input.is_replaced = is_replaced;
+          input.preferred_min_inline_size = preferred_min_inline;
+          input.preferred_inline_size = preferred_inline;
+          input.preferred_min_block_size = preferred_min_block;
+          input.preferred_block_size = preferred_block;
+          let supports_used_border_box = matches!(
+            fc_type,
+            FormattingContextType::Block
+              | FormattingContextType::Flex
+              | FormattingContextType::Grid
+              | FormattingContextType::Inline
+          );
+
+          let (layout_positioned_style, mut result) =
             crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
               &abs,
               &input,
@@ -11230,16 +11333,15 @@ impl FormattingContext for BlockFormattingContext {
               anchors_for_cb,
               anchor_query,
             )?;
-          result = rerun_result;
-          border_size_physical = Size::new(
+          let mut border_size_physical = Size::new(
             result.size.width + actual_horizontal,
             result.size.height + actual_vertical,
           );
-          border_origin_physical = Point::new(
+          let mut border_origin_physical = Point::new(
             result.position.x - content_offset.x,
             result.position.y - content_offset.y,
           );
-          (border_origin, border_size) = if needs_physical_conversion {
+          let (mut border_origin, mut border_size) = if needs_physical_conversion {
             let border_rect = Rect::new(border_origin_physical, border_size_physical);
             let logical_rect = physical_rect_to_logical_full(
               border_rect,
@@ -11252,76 +11354,161 @@ impl FormattingContext for BlockFormattingContext {
           } else {
             (border_origin_physical, border_size_physical)
           };
-        }
-        let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
-          || relayout_for_definite_insets;
-        if needs_relayout {
-          let relayout_constraints = child_constraints
-            .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
-          if child.id != 0 {
-            if supports_used_border_box {
-              child_fragment = crate::layout::style_override::with_style_override(
-                child.id,
-                static_style.clone(),
-                || fc.layout(&child, &relayout_constraints),
-              )?;
-            } else {
-              let mut relayout_style = static_style.clone();
-              {
-                let s = Arc::make_mut(&mut relayout_style);
-                s.width = Some(crate::style::values::Length::px(border_size.width));
-                s.height = Some(crate::style::values::Length::px(border_size.height));
-                s.width_keyword = None;
-                s.height_keyword = None;
-                s.min_width_keyword = None;
-                s.max_width_keyword = None;
-                s.min_height_keyword = None;
-                s.max_height_keyword = None;
+
+          if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
+            &layout_positioned_style,
+            input.is_replaced,
+          ) && (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+          {
+            let measure_constraints = child_constraints
+              .with_width(AvailableSpace::Definite(border_size.width))
+              .with_height(AvailableSpace::Indefinite)
+              .with_used_border_box_size(Some(border_size.width), None);
+
+            child_fragment = if child.id != 0 {
+              if supports_used_border_box {
+                crate::layout::style_override::with_style_override(
+                  child.id,
+                  static_style.clone(),
+                  || fc.layout(&child, &measure_constraints),
+                )?
+              } else {
+                let mut measure_style = static_style.clone();
+                {
+                  let s = Arc::make_mut(&mut measure_style);
+                  s.width = Some(crate::style::values::Length::px(border_size.width));
+                  s.width_keyword = None;
+                  s.min_width_keyword = None;
+                  s.max_width_keyword = None;
+                }
+                crate::layout::style_override::with_style_override(child.id, measure_style, || {
+                  fc.layout(&child, &measure_constraints)
+                })?
               }
-              child_fragment = crate::layout::style_override::with_style_override(
-                child.id,
-                relayout_style,
-                || fc.layout(&child, &relayout_constraints),
-              )?;
-            }
-          } else {
-            let mut relayout_child = child.clone();
-            if supports_used_border_box {
-              relayout_child.style = static_style.clone();
             } else {
-              let mut relayout_style = static_style.clone();
-              {
-                let s = Arc::make_mut(&mut relayout_style);
-                s.width = Some(crate::style::values::Length::px(border_size.width));
-                s.height = Some(crate::style::values::Length::px(border_size.height));
-                s.width_keyword = None;
-                s.height_keyword = None;
-                s.min_width_keyword = None;
-                s.max_width_keyword = None;
-                s.min_height_keyword = None;
-                s.max_height_keyword = None;
+              let mut relayout_child = child.clone();
+              if supports_used_border_box {
+                relayout_child.style = static_style.clone();
+              } else {
+                let mut measure_style = static_style.clone();
+                {
+                  let s = Arc::make_mut(&mut measure_style);
+                  s.width = Some(crate::style::values::Length::px(border_size.width));
+                  s.width_keyword = None;
+                  s.min_width_keyword = None;
+                  s.max_width_keyword = None;
+                }
+                relayout_child.style = measure_style;
               }
-              relayout_child.style = relayout_style;
-            }
-            child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
+              fc.layout(&relayout_child, &measure_constraints)?
+            };
+
+            input.intrinsic_size.height =
+              (child_fragment.bounds.size.height - actual_vertical).max(0.0);
+
+            let (_, rerun_result) =
+              crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+                &abs,
+                &input,
+                &original_style,
+                &positioning_cb,
+                self.viewport_size,
+                &self.font_context,
+                anchors_for_cb,
+                anchor_query,
+              )?;
+            result = rerun_result;
+            border_size_physical = Size::new(
+              result.size.width + actual_horizontal,
+              result.size.height + actual_vertical,
+            );
+            border_origin_physical = Point::new(
+              result.position.x - content_offset.x,
+              result.position.y - content_offset.y,
+            );
+            (border_origin, border_size) = if needs_physical_conversion {
+              let border_rect = Rect::new(border_origin_physical, border_size_physical);
+              let logical_rect = physical_rect_to_logical_full(
+                border_rect,
+                box_width,
+                box_height,
+                style.writing_mode,
+                style.direction,
+              );
+              (logical_rect.origin, logical_rect.size)
+            } else {
+              (border_origin_physical, border_size_physical)
+            };
           }
-        }
-        child_fragment.bounds = Rect::new(border_origin, border_size);
-        // Match `layout_block_child`: translate positioned fragments that are still expressed in
-        // the content coordinate space alongside in-flow fragments. See the comment at the
-        // equivalent site above for the reasoning behind excluding viewport-fixed fragments and
-        // elements positioned against this element's own padding box.
-        if cb != viewport_cb
-          && cb != parent_padding_cb
-          && (content_origin.x != 0.0 || content_origin.y != 0.0)
-        {
-          child_fragment.translate_root_in_place(content_origin);
-        }
-        child_fragment.style = Some(original_style);
-        if trace_positioned.contains(&child.id) {
-          let (text_count, total) = count_text_fragments(&child_fragment);
-          eprintln!(
+          let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+            || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+            || relayout_for_definite_insets;
+          if needs_relayout {
+            let relayout_constraints = child_constraints
+              .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
+            if child.id != 0 {
+              if supports_used_border_box {
+                child_fragment = crate::layout::style_override::with_style_override(
+                  child.id,
+                  static_style.clone(),
+                  || fc.layout(&child, &relayout_constraints),
+                )?;
+              } else {
+                let mut relayout_style = static_style.clone();
+                {
+                  let s = Arc::make_mut(&mut relayout_style);
+                  s.width = Some(crate::style::values::Length::px(border_size.width));
+                  s.height = Some(crate::style::values::Length::px(border_size.height));
+                  s.width_keyword = None;
+                  s.height_keyword = None;
+                  s.min_width_keyword = None;
+                  s.max_width_keyword = None;
+                  s.min_height_keyword = None;
+                  s.max_height_keyword = None;
+                }
+                child_fragment = crate::layout::style_override::with_style_override(
+                  child.id,
+                  relayout_style,
+                  || fc.layout(&child, &relayout_constraints),
+                )?;
+              }
+            } else {
+              let mut relayout_child = child.clone();
+              if supports_used_border_box {
+                relayout_child.style = static_style.clone();
+              } else {
+                let mut relayout_style = static_style.clone();
+                {
+                  let s = Arc::make_mut(&mut relayout_style);
+                  s.width = Some(crate::style::values::Length::px(border_size.width));
+                  s.height = Some(crate::style::values::Length::px(border_size.height));
+                  s.width_keyword = None;
+                  s.height_keyword = None;
+                  s.min_width_keyword = None;
+                  s.max_width_keyword = None;
+                  s.min_height_keyword = None;
+                  s.max_height_keyword = None;
+                }
+                relayout_child.style = relayout_style;
+              }
+              child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
+            }
+          }
+          child_fragment.bounds = Rect::new(border_origin, border_size);
+          // Match `layout_block_child`: translate positioned fragments that are still expressed in
+          // the content coordinate space alongside in-flow fragments. See the comment at the
+          // equivalent site above for the reasoning behind excluding viewport-fixed fragments and
+          // elements positioned against this element's own padding box.
+          if cb != viewport_cb
+            && cb != parent_padding_cb
+            && (content_origin.x != 0.0 || content_origin.y != 0.0)
+          {
+            child_fragment.translate_root_in_place(content_origin);
+          }
+          child_fragment.style = Some(original_style);
+          if trace_positioned.contains(&child.id) {
+            let (text_count, total) = count_text_fragments(&child_fragment);
+            eprintln!(
                         "[block-positioned-placed] child_id={} pos=({:.1},{:.1}) size=({:.1},{:.1}) texts={}/{}",
                         child.id,
                         child_fragment.bounds.x(),
@@ -11331,83 +11518,83 @@ impl FormattingContext for BlockFormattingContext {
                         text_count,
                         total
                     );
+          }
+          child_fragments.push(child_fragment);
         }
-        child_fragments.push(child_fragment);
       }
-    }
 
-    let bounds = Rect::from_xywh(computed_width.margin_left, 0.0, box_width, box_height);
+      let bounds = Rect::from_xywh(computed_width.margin_left, 0.0, box_width, box_height);
 
-    let mut fragment = FragmentNode::new_with_style(
-      bounds,
-      crate::tree::fragment_tree::FragmentContent::Block {
-        box_id: Some(box_node.id),
-      },
-      child_fragments,
-      box_node.style.clone(),
-    );
-    if let Some(info) = column_info {
-      fragment.fragmentation = Some(info.clone());
-      // Keep logical bounds aligned with the physical multi-column fragment geometry so
-      // pagination uses the clipped height rather than the unfragmented flow height.
-      fragment.logical_override = Some(fragment.bounds);
-    }
-
-    // Apply relative positioning after normal flow layout (CSS 2.1 §9.4.3).
-    if style.position.is_relative() {
-      let (cb_width, cb_height, inline_base, block_base) = if inline_is_horizontal {
-        (
-          constraints.width().unwrap_or(0.0),
-          constraints.height().unwrap_or(0.0),
-          constraints.width(),
-          constraints.height(),
-        )
-      } else {
-        (
-          constraints.height().unwrap_or(0.0),
-          constraints.width().unwrap_or(0.0),
-          constraints.height(),
-          constraints.width(),
-        )
-      };
-      let containing_block = ContainingBlock::with_viewport_and_bases(
-        Rect::new(Point::ZERO, Size::new(cb_width, cb_height)),
-        self.viewport_size,
-        inline_base,
-        block_base,
-      )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction);
-      let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
-        style,
-        &containing_block,
-        self.viewport_size,
-        &self.font_context,
+      let mut fragment = FragmentNode::new_with_style(
+        bounds,
+        crate::tree::fragment_tree::FragmentContent::Block {
+          box_id: Some(box_node.id),
+        },
+        child_fragments,
+        box_node.style.clone(),
       );
-      fragment = PositionedLayout::with_font_context(self.font_context.clone())
-        .apply_relative_positioning(&fragment, &positioned_style, &containing_block)?;
-    }
+      if let Some(info) = column_info {
+        fragment.fragmentation = Some(info.clone());
+        // Keep logical bounds aligned with the physical multi-column fragment geometry so
+        // pagination uses the clipped height rather than the unfragmented flow height.
+        fragment.logical_override = Some(fragment.bounds);
+      }
 
-    fragment.scrollbar_reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
-    let converted = convert_fragment_axes(
-      fragment,
-      box_width,
-      box_height,
-      style.writing_mode,
-      style.direction,
-    );
+      // Apply relative positioning after normal flow layout (CSS 2.1 §9.4.3).
+      if style.position.is_relative() {
+        let (cb_width, cb_height, inline_base, block_base) = if inline_is_horizontal {
+          (
+            constraints.width().unwrap_or(0.0),
+            constraints.height().unwrap_or(0.0),
+            constraints.width(),
+            constraints.height(),
+          )
+        } else {
+          (
+            constraints.height().unwrap_or(0.0),
+            constraints.width().unwrap_or(0.0),
+            constraints.height(),
+            constraints.width(),
+          )
+        };
+        let containing_block = ContainingBlock::with_viewport_and_bases(
+          Rect::new(Point::ZERO, Size::new(cb_width, cb_height)),
+          self.viewport_size,
+          inline_base,
+          block_base,
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction);
+        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
+          style,
+          &containing_block,
+          self.viewport_size,
+          &self.font_context,
+        );
+        fragment = PositionedLayout::with_font_context(self.font_context.clone())
+          .apply_relative_positioning(&fragment, &positioned_style, &containing_block)?;
+      }
 
-    layout_cache_store(
-      box_node,
-      FormattingContextType::Block,
-      constraints,
-      &converted,
-      self.factory.viewport_scroll(),
-      self.viewport_size,
-      self.nearest_positioned_cb,
-      self.nearest_fixed_cb,
-    );
+      fragment.scrollbar_reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
+      let converted = convert_fragment_axes(
+        fragment,
+        box_width,
+        box_height,
+        style.writing_mode,
+        style.direction,
+      );
 
-    return Ok(converted);
+      layout_cache_store(
+        box_node,
+        FormattingContextType::Block,
+        constraints,
+        &converted,
+        self.factory.viewport_scroll(),
+        self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
+      );
+
+      return Ok(converted);
     }
 
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
@@ -11418,7 +11605,9 @@ impl FormattingContext for BlockFormattingContext {
       || (!matches!(base_style.overflow_x, Overflow::Auto)
         && !matches!(base_style.overflow_y, Overflow::Auto))
     {
-      return crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints));
+      return crate::layout::auto_scrollbars::with_bypass(box_node, || {
+        self.layout(box_node, constraints)
+      });
     }
 
     let containing_width = constraints
@@ -11433,20 +11622,32 @@ impl FormattingContext for BlockFormattingContext {
       let mut overridden = false;
       {
         let s = Arc::make_mut(&mut override_style);
-        if force_x && matches!(base_style.overflow_x, Overflow::Auto) && !base_style.scrollbar_gutter.stable {
+        if force_x
+          && matches!(base_style.overflow_x, Overflow::Auto)
+          && !base_style.scrollbar_gutter.stable
+        {
           s.overflow_x = Overflow::Scroll;
           overridden = true;
         }
-        if force_y && matches!(base_style.overflow_y, Overflow::Auto) && !base_style.scrollbar_gutter.stable {
+        if force_y
+          && matches!(base_style.overflow_y, Overflow::Auto)
+          && !base_style.scrollbar_gutter.stable
+        {
           s.overflow_y = Overflow::Scroll;
           overridden = true;
         }
       }
 
       let fragment = if overridden && box_node.id != 0 {
-        crate::layout::style_override::with_style_override(box_node.id, override_style.clone(), || {
-          crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints))
-        })
+        crate::layout::style_override::with_style_override(
+          box_node.id,
+          override_style.clone(),
+          || {
+            crate::layout::auto_scrollbars::with_bypass(box_node, || {
+              self.layout(box_node, constraints)
+            })
+          },
+        )
       } else if overridden {
         let mut cloned = box_node.clone();
         cloned.style = override_style.clone();
@@ -11462,10 +11663,14 @@ impl FormattingContext for BlockFormattingContext {
         self.viewport_size,
         Some(&self.font_context),
       );
-      let need_x =
-        gutter > 0.0 && matches!(base_style.overflow_x, Overflow::Auto) && !base_style.scrollbar_gutter.stable && overflow_x;
-      let need_y =
-        gutter > 0.0 && matches!(base_style.overflow_y, Overflow::Auto) && !base_style.scrollbar_gutter.stable && overflow_y;
+      let need_x = gutter > 0.0
+        && matches!(base_style.overflow_x, Overflow::Auto)
+        && !base_style.scrollbar_gutter.stable
+        && overflow_x;
+      let need_y = gutter > 0.0
+        && matches!(base_style.overflow_y, Overflow::Auto)
+        && !base_style.scrollbar_gutter.stable
+        && overflow_y;
 
       last = Some(fragment);
       if need_x == force_x && need_y == force_y {
@@ -11477,7 +11682,9 @@ impl FormattingContext for BlockFormattingContext {
 
     let Some(last) = last else {
       debug_assert!(false, "at least one layout pass");
-      return Err(LayoutError::MissingContext("block layout produced no fragments".to_string()));
+      return Err(LayoutError::MissingContext(
+        "block layout produced no fragments".to_string(),
+      ));
     };
     Ok(last)
   }
@@ -11512,7 +11719,13 @@ impl FormattingContext for BlockFormattingContext {
         root_font_metrics,
       )
     } else {
-      vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context, root_font_metrics)
+      vertical_padding_and_borders(
+        style,
+        0.0,
+        self.viewport_size,
+        &self.font_context,
+        root_font_metrics,
+      )
     };
     // Honor specified sizes in the inline axis that resolve without a containing block.
     let specified_inline = if inline_is_horizontal {
@@ -12030,7 +12243,9 @@ impl FormattingContext for BlockFormattingContext {
     }
 
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
-    let style: &ComputedStyle = style_override.as_deref().unwrap_or_else(|| box_node.style.as_ref());
+    let style: &ComputedStyle = style_override
+      .as_deref()
+      .unwrap_or_else(|| box_node.style.as_ref());
     let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
 
     let intrinsic_inline = self.compute_intrinsic_inline_size(box_node, mode)?.max(0.0);
@@ -12044,9 +12259,15 @@ impl FormattingContext for BlockFormattingContext {
     // 2) installing a temporary style override that resolves padding/margin percentages against a
     //    0px base so they don't pick up that definite inline constraint.
     let mut constraints = if inline_is_horizontal {
-      LayoutConstraints::new(AvailableSpace::Definite(intrinsic_inline), AvailableSpace::Indefinite)
+      LayoutConstraints::new(
+        AvailableSpace::Definite(intrinsic_inline),
+        AvailableSpace::Indefinite,
+      )
     } else {
-      LayoutConstraints::new(AvailableSpace::Indefinite, AvailableSpace::Definite(intrinsic_inline))
+      LayoutConstraints::new(
+        AvailableSpace::Indefinite,
+        AvailableSpace::Definite(intrinsic_inline),
+      )
     };
     // Block layout contains a "near-zero width" safeguard that falls back to the viewport size in
     // order to keep percentage sizing usable when flex/grid measurement passes a collapsed
@@ -12066,31 +12287,39 @@ impl FormattingContext for BlockFormattingContext {
       // Layout uses the containing block inline size for resolving all padding percentages (even
       // for `padding-top`/`padding-bottom`). For intrinsic probes, that base is unknown, so resolve
       // against 0px and store the resulting absolute lengths in the override.
-      let (padding_left, padding_right, padding_top, padding_bottom, margin_left, margin_right, margin_top, margin_bottom) =
-        {
-          let style_ref: &ComputedStyle = &*s;
-          let root_font_metrics = self.factory.root_font_metrics();
-          let resolve0 = |len: Length| {
-            resolve_length_for_width(
-              len,
-              0.0,
-              style_ref,
-              &self.font_context,
-              self.viewport_size,
-              root_font_metrics,
-            )
-          };
-          (
-            Length::px(resolve0(style_ref.padding_left)),
-            Length::px(resolve0(style_ref.padding_right)),
-            Length::px(resolve0(style_ref.padding_top)),
-            Length::px(resolve0(style_ref.padding_bottom)),
-            style_ref.margin_left.map(|m| Length::px(resolve0(m))),
-            style_ref.margin_right.map(|m| Length::px(resolve0(m))),
-            style_ref.margin_top.map(|m| Length::px(resolve0(m))),
-            style_ref.margin_bottom.map(|m| Length::px(resolve0(m))),
+      let (
+        padding_left,
+        padding_right,
+        padding_top,
+        padding_bottom,
+        margin_left,
+        margin_right,
+        margin_top,
+        margin_bottom,
+      ) = {
+        let style_ref: &ComputedStyle = &*s;
+        let root_font_metrics = self.factory.root_font_metrics();
+        let resolve0 = |len: Length| {
+          resolve_length_for_width(
+            len,
+            0.0,
+            style_ref,
+            &self.font_context,
+            self.viewport_size,
+            root_font_metrics,
           )
         };
+        (
+          Length::px(resolve0(style_ref.padding_left)),
+          Length::px(resolve0(style_ref.padding_right)),
+          Length::px(resolve0(style_ref.padding_top)),
+          Length::px(resolve0(style_ref.padding_bottom)),
+          style_ref.margin_left.map(|m| Length::px(resolve0(m))),
+          style_ref.margin_right.map(|m| Length::px(resolve0(m))),
+          style_ref.margin_top.map(|m| Length::px(resolve0(m))),
+          style_ref.margin_bottom.map(|m| Length::px(resolve0(m))),
+        )
+      };
       s.padding_left = padding_left;
       s.padding_right = padding_right;
       s.padding_top = padding_top;
@@ -12281,8 +12510,16 @@ fn convert_fragment_axes_in_place(
   // fragment's own writing mode.
   let phys_w = fragment.bounds.width();
   let phys_h = fragment.bounds.height();
-  let child_inline = if block_axis_is_horizontal(style_wm) { phys_h } else { phys_w };
-  let child_block = if block_axis_is_horizontal(style_wm) { phys_w } else { phys_h };
+  let child_inline = if block_axis_is_horizontal(style_wm) {
+    phys_h
+  } else {
+    phys_w
+  };
+  let child_block = if block_axis_is_horizontal(style_wm) {
+    phys_w
+  } else {
+    phys_h
+  };
   fragment.scroll_overflow = logical_rect_to_physical(
     fragment.scroll_overflow,
     child_inline,
@@ -12299,11 +12536,27 @@ fn convert_fragment_axes_in_place(
     let logical = fragment.scrollbar_reservation;
     fragment.scrollbar_reservation = crate::tree::fragment_tree::ScrollbarReservation {
       // Physical x axis corresponds to the logical block axis in vertical writing modes.
-      left: if block_positive { logical.top } else { logical.bottom },
-      right: if block_positive { logical.bottom } else { logical.top },
+      left: if block_positive {
+        logical.top
+      } else {
+        logical.bottom
+      },
+      right: if block_positive {
+        logical.bottom
+      } else {
+        logical.top
+      },
       // Physical y axis corresponds to the logical inline axis.
-      top: if inline_positive { logical.left } else { logical.right },
-      bottom: if inline_positive { logical.right } else { logical.left },
+      top: if inline_positive {
+        logical.left
+      } else {
+        logical.right
+      },
+      bottom: if inline_positive {
+        logical.right
+      } else {
+        logical.left
+      },
     };
   }
 
@@ -12359,8 +12612,16 @@ fn unconvert_fragment_axes_in_place(
   let phys_w = fragment.bounds.width();
   let phys_h = fragment.bounds.height();
 
-  let inline_size = if parent_block_is_horizontal { phys_h } else { phys_w };
-  let block_size = if parent_block_is_horizontal { phys_w } else { phys_h };
+  let inline_size = if parent_block_is_horizontal {
+    phys_h
+  } else {
+    phys_w
+  };
+  let block_size = if parent_block_is_horizontal {
+    phys_w
+  } else {
+    phys_h
+  };
 
   let logical_block_start = if parent_block_is_horizontal {
     if parent_block_positive {
@@ -12386,15 +12647,27 @@ fn unconvert_fragment_axes_in_place(
     parent_physical_width - phys_x - inline_size
   };
 
-  fragment.bounds =
-    Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size);
+  fragment.bounds = Rect::from_xywh(
+    logical_inline_start,
+    logical_block_start,
+    inline_size,
+    block_size,
+  );
   if let Some(logical) = fragment.logical_override {
     let phys_x = logical.x();
     let phys_y = logical.y();
     let phys_w = logical.width();
     let phys_h = logical.height();
-    let inline_size = if parent_block_is_horizontal { phys_h } else { phys_w };
-    let block_size = if parent_block_is_horizontal { phys_w } else { phys_h };
+    let inline_size = if parent_block_is_horizontal {
+      phys_h
+    } else {
+      phys_w
+    };
+    let block_size = if parent_block_is_horizontal {
+      phys_w
+    } else {
+      phys_h
+    };
     let logical_block_start = if parent_block_is_horizontal {
       if parent_block_positive {
         phys_x
@@ -12435,8 +12708,16 @@ fn unconvert_fragment_axes_in_place(
     .as_ref()
     .map(|s| s.direction)
     .unwrap_or(parent_direction);
-  let child_inline = if block_axis_is_horizontal(style_wm) { phys_h } else { phys_w };
-  let child_block = if block_axis_is_horizontal(style_wm) { phys_w } else { phys_h };
+  let child_inline = if block_axis_is_horizontal(style_wm) {
+    phys_h
+  } else {
+    phys_w
+  };
+  let child_block = if block_axis_is_horizontal(style_wm) {
+    phys_w
+  } else {
+    phys_h
+  };
   fragment.scroll_overflow = physical_rect_to_logical(
     fragment.scroll_overflow,
     child_inline,
@@ -12451,11 +12732,27 @@ fn unconvert_fragment_axes_in_place(
     let physical = fragment.scrollbar_reservation;
     fragment.scrollbar_reservation = crate::tree::fragment_tree::ScrollbarReservation {
       // Logical inline axis maps to physical y.
-      left: if inline_positive { physical.top } else { physical.bottom },
-      right: if inline_positive { physical.bottom } else { physical.top },
+      left: if inline_positive {
+        physical.top
+      } else {
+        physical.bottom
+      },
+      right: if inline_positive {
+        physical.bottom
+      } else {
+        physical.top
+      },
       // Logical block axis maps to physical x.
-      top: if block_positive { physical.left } else { physical.right },
-      bottom: if block_positive { physical.right } else { physical.left },
+      top: if block_positive {
+        physical.left
+      } else {
+        physical.right
+      },
+      bottom: if block_positive {
+        physical.right
+      } else {
+        physical.left
+      },
     };
   }
   for child in fragment.children_mut() {
@@ -12622,7 +12919,12 @@ fn physical_rect_to_logical_full(
       parent_physical_height - rect.y() - inline_size
     };
 
-    Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size)
+    Rect::from_xywh(
+      logical_inline_start,
+      logical_block_start,
+      inline_size,
+      block_size,
+    )
   } else {
     let inline_size = rect.width();
     let block_size = rect.height();
@@ -12638,7 +12940,12 @@ fn physical_rect_to_logical_full(
       parent_physical_height - rect.y() - block_size
     };
 
-    Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size)
+    Rect::from_xywh(
+      logical_inline_start,
+      logical_block_start,
+      inline_size,
+      block_size,
+    )
   }
 }
 
@@ -12701,7 +13008,12 @@ pub(crate) fn physical_rect_to_logical(
     parent_inline_size - rect.y() - inline_size
   };
 
-  Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size)
+  Rect::from_xywh(
+    logical_inline_start,
+    logical_block_start,
+    inline_size,
+    block_size,
+  )
 }
 /// Checks if a box is out of normal flow (absolute/fixed positioned or float)
 fn is_out_of_flow(box_node: &BoxNode) -> bool {
@@ -12905,9 +13217,21 @@ fn inline_axis_padding_and_borders(
   root_font_metrics: Option<RootFontMetrics>,
 ) -> f32 {
   if inline_axis_is_horizontal(style.writing_mode) {
-    horizontal_padding_and_borders(style, percentage_base, viewport, font_context, root_font_metrics)
+    horizontal_padding_and_borders(
+      style,
+      percentage_base,
+      viewport,
+      font_context,
+      root_font_metrics,
+    )
   } else {
-    vertical_padding_and_borders(style, percentage_base, viewport, font_context, root_font_metrics)
+    vertical_padding_and_borders(
+      style,
+      percentage_base,
+      viewport,
+      font_context,
+      root_font_metrics,
+    )
   }
 }
 
@@ -12956,7 +13280,9 @@ fn compute_intrinsic_block_sizes_without_block_size_constraints(
   };
 
   if box_node.id != 0 {
-    crate::layout::style_override::with_style_override(box_node.id, probe_style, || compute(box_node))
+    crate::layout::style_override::with_style_override(box_node.id, probe_style, || {
+      compute(box_node)
+    })
   } else {
     let mut cloned = box_node.clone();
     cloned.style = probe_style;
@@ -13036,7 +13362,16 @@ fn resolve_margin_side(
     PhysicalSide::Left => style.margin_left,
   };
   length
-    .map(|l| resolve_length_for_width(l, percentage_base, style, font_context, viewport, root_font_metrics))
+    .map(|l| {
+      resolve_length_for_width(
+        l,
+        percentage_base,
+        style,
+        font_context,
+        viewport,
+        root_font_metrics,
+      )
+    })
     .unwrap_or(0.0)
 }
 
@@ -13054,7 +13389,14 @@ fn resolve_padding_side(
     PhysicalSide::Bottom => style.padding_bottom,
     PhysicalSide::Left => style.padding_left,
   };
-  resolve_length_for_width(length, percentage_base, style, font_context, viewport, root_font_metrics)
+  resolve_length_for_width(
+    length,
+    percentage_base,
+    style,
+    font_context,
+    viewport,
+    root_font_metrics,
+  )
 }
 
 fn resolve_border_side(
@@ -13071,7 +13413,14 @@ fn resolve_border_side(
     PhysicalSide::Bottom => style.used_border_bottom_width(),
     PhysicalSide::Left => style.used_border_left_width(),
   };
-  resolve_length_for_width(length, percentage_base, style, font_context, viewport, root_font_metrics)
+  resolve_length_for_width(
+    length,
+    percentage_base,
+    style,
+    font_context,
+    viewport,
+    root_font_metrics,
+  )
 }
 #[cfg(test)]
 mod tests {
@@ -13210,14 +13559,12 @@ mod tests {
     clear_style.clear = Clear::Both;
     clear_style.margin_top = Some(Length::px(20.0));
 
-    let mut spacer = BoxNode::new_block(
-      Arc::new(spacer_style),
-      FormattingContextType::Block,
-      vec![],
-    );
+    let mut spacer =
+      BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
     spacer.id = 2;
 
-    let mut float_child = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+    let mut float_child =
+      BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
     float_child.id = 4;
 
     let mut float_wrapper = BoxNode::new_block(
@@ -13227,11 +13574,8 @@ mod tests {
     );
     float_wrapper.id = 3;
 
-    let mut clear_block = BoxNode::new_block(
-      Arc::new(clear_style),
-      FormattingContextType::Block,
-      vec![],
-    );
+    let mut clear_block =
+      BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
     clear_block.id = 5;
 
     let mut parent = BoxNode::new_block(
@@ -13386,7 +13730,9 @@ mod tests {
     parent.id = 1;
 
     let constraints = LayoutConstraints::definite(200.0, 200.0);
-    let fragment = bfc.layout(&parent, &constraints).expect("layout should succeed");
+    let fragment = bfc
+      .layout(&parent, &constraints)
+      .expect("layout should succeed");
 
     let float_fragment = find_block_fragment(&fragment, 2).expect("float fragment");
     let ordered_children = float_fragment
@@ -14018,7 +14364,11 @@ mod tests {
     let constraints =
       LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
 
-    let node = BoxNode::new_block(Arc::new(style.clone()), FormattingContextType::Block, vec![]);
+    let node = BoxNode::new_block(
+      Arc::new(style.clone()),
+      FormattingContextType::Block,
+      vec![],
+    );
     let fragment = fc.layout(&node, &constraints).unwrap();
     assert!((fragment.bounds.height() - 0.0).abs() < 0.01);
 
@@ -14526,7 +14876,12 @@ mod tests {
 
     for (id, x, y, w, h) in expected {
       let hits = fragments_with_id(&fragment, id);
-      assert_eq!(hits.len(), 1, "expected exactly one fragment for box_id={}", id);
+      assert_eq!(
+        hits.len(),
+        1,
+        "expected exactly one fragment for box_id={}",
+        id
+      );
       let frag = hits[0];
       assert!(
         (frag.bounds.x() - x).abs() < 0.1,
@@ -14977,7 +15332,8 @@ mod tests {
       percent_fragment.bounds.height()
     );
 
-    let inline_block_fragment = find_fragment_by_box_id(&fragment, 4).expect("inline-block fragment");
+    let inline_block_fragment =
+      find_fragment_by_box_id(&fragment, 4).expect("inline-block fragment");
     assert!(
       (inline_block_fragment.bounds.height() - 100.0).abs() < 0.1,
       "expected inline-block height:100% to resolve against definite containing height; got {}",
@@ -15112,7 +15468,12 @@ mod tests {
     let float_fragment = fragment
       .children
       .iter()
-      .find(|child| child.style.as_ref().is_some_and(|style| style.float.is_floating()))
+      .find(|child| {
+        child
+          .style
+          .as_ref()
+          .is_some_and(|style| style.float.is_floating())
+      })
       .expect("float fragment");
 
     assert!(
@@ -15162,7 +15523,12 @@ mod tests {
     let float_fragment = fragment
       .children
       .iter()
-      .find(|child| child.style.as_ref().is_some_and(|style| style.float.is_floating()))
+      .find(|child| {
+        child
+          .style
+          .as_ref()
+          .is_some_and(|style| style.float.is_floating())
+      })
       .expect("float fragment");
 
     assert!(
@@ -15388,7 +15754,9 @@ mod tests {
     );
     parent.id = 1;
 
-    let (min, max) = bfc.compute_intrinsic_inline_sizes(&parent).expect("intrinsic widths");
+    let (min, max) = bfc
+      .compute_intrinsic_inline_sizes(&parent)
+      .expect("intrinsic widths");
     assert!(
       min >= 50.0 - 0.01,
       "min-content should include float width (expected >= 50, got {min})"
@@ -15411,7 +15779,8 @@ mod tests {
     float_style.width_keyword = None;
     float_style.height_keyword = None;
     float_style.margin_right = Some(Length::px(10.0));
-    let float_node = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+    let float_node =
+      BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
 
     // Use a child that establishes a BFC (`display: table` does so) and is narrow enough to fit in
     // the space to the right of the float.
@@ -15437,7 +15806,13 @@ mod tests {
     let table_fragment = fragment
       .children
       .iter()
-      .find(|child| child.style.as_ref().map(|s| s.display == Display::Table).unwrap_or(false))
+      .find(|child| {
+        child
+          .style
+          .as_ref()
+          .map(|s| s.display == Display::Table)
+          .unwrap_or(false)
+      })
       .expect("table fragment");
 
     assert!(
@@ -15529,8 +15904,11 @@ mod tests {
 
     let mut empty_block_style = ComputedStyle::default();
     empty_block_style.display = Display::Block;
-    let mut empty_block =
-      BoxNode::new_block(Arc::new(empty_block_style), FormattingContextType::Block, vec![inline]);
+    let mut empty_block = BoxNode::new_block(
+      Arc::new(empty_block_style),
+      FormattingContextType::Block,
+      vec![inline],
+    );
     empty_block.id = 3;
 
     let mut child_style = ComputedStyle::default();
@@ -15564,7 +15942,8 @@ mod tests {
 
     let fragment = fc.layout(&root, &constraints).expect("layout");
     let parent_fragment = find_block_fragment(&fragment, 2).expect("parent fragment");
-    let empty_block_fragment = find_block_fragment(parent_fragment, 3).expect("empty block fragment");
+    let empty_block_fragment =
+      find_block_fragment(parent_fragment, 3).expect("empty block fragment");
     assert!(
       empty_block_fragment.bounds.height() <= 0.01,
       "expected the whitespace-only block to have no in-flow block-size (h={})",
@@ -15998,7 +16377,10 @@ mod tests {
     node.id = 1234;
 
     let (min, max) = bfc.compute_intrinsic_inline_sizes(&node).unwrap();
-    assert!((min - 0.0).abs() < 0.001, "expected min-content 0, got {min}");
+    assert!(
+      (min - 0.0).abs() < 0.001,
+      "expected min-content 0, got {min}"
+    );
     assert!(
       (max - 200.0).abs() < 0.001,
       "expected max-content 200, got {max}"
@@ -16138,11 +16520,7 @@ mod tests {
     outer_style.height = Some(Length::px(60.0));
     outer_style.width_keyword = None;
     outer_style.height_keyword = None;
-    let mut outer = BoxNode::new_block(
-      Arc::new(outer_style),
-      FormattingContextType::Block,
-      vec![],
-    );
+    let mut outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![]);
     outer.id = 4;
 
     let mut body_style = ComputedStyle::default();
@@ -16237,8 +16615,11 @@ mod tests {
 
     let mut body_style = ComputedStyle::default();
     body_style.display = Display::Block;
-    let mut body =
-      BoxNode::new_block(Arc::new(body_style), FormattingContextType::Block, vec![outer]);
+    let mut body = BoxNode::new_block(
+      Arc::new(body_style),
+      FormattingContextType::Block,
+      vec![outer],
+    );
     body.id = 2;
 
     let mut root_style = ComputedStyle::default();

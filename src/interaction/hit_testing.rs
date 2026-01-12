@@ -14,7 +14,10 @@ use super::hit_test::{hit_test_dom, HitTestResult};
 ///
 /// Note: viewport scroll is not applied here; callers should translate the input point by
 /// `scroll.viewport` (or use [`hit_test_dom_viewport_point`]).
-pub fn fragment_tree_with_scroll(fragment_tree: &FragmentTree, scroll: &ScrollState) -> FragmentTree {
+pub fn fragment_tree_with_scroll(
+  fragment_tree: &FragmentTree,
+  scroll: &ScrollState,
+) -> FragmentTree {
   let mut tree = fragment_tree.clone();
   crate::scroll::apply_scroll_offsets(&mut tree, scroll);
   tree
@@ -43,5 +46,9 @@ pub fn hit_test_dom_viewport_point(
   scroll: &ScrollState,
   viewport_point_css: Point,
 ) -> Option<HitTestResult> {
-  hit_test_dom_with_scroll(prepared, scroll, viewport_point_css.translate(scroll.viewport))
+  hit_test_dom_with_scroll(
+    prepared,
+    scroll,
+    viewport_point_css.translate(scroll.viewport),
+  )
 }

@@ -59,7 +59,8 @@ pub fn load_combined_webidl(
       .collect();
     entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     for path in entries {
-      let src = std::fs::read_to_string(&path).with_context(|| format!("read override {}", path.display()))?;
+      let src = std::fs::read_to_string(&path)
+        .with_context(|| format!("read override {}", path.display()))?;
       parts.push(src);
     }
   }

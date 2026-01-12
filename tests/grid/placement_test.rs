@@ -41,8 +41,20 @@ fn grid_column_longhand_inherit_preserves_other_side() {
   let base = ComputedStyle::default();
 
   let mut parent = ComputedStyle::default();
-  apply_declaration(&mut parent, &decl("grid-column-start", "2"), &base, 16.0, 16.0);
-  apply_declaration(&mut parent, &decl("grid-column-end", "4"), &base, 16.0, 16.0);
+  apply_declaration(
+    &mut parent,
+    &decl("grid-column-start", "2"),
+    &base,
+    16.0,
+    16.0,
+  );
+  apply_declaration(
+    &mut parent,
+    &decl("grid-column-end", "4"),
+    &base,
+    16.0,
+    16.0,
+  );
 
   let mut child = ComputedStyle::default();
   apply_declaration(&mut child, &decl("grid-column-end", "3"), &base, 16.0, 16.0);
@@ -56,7 +68,13 @@ fn grid_column_longhand_inherit_preserves_other_side() {
   assert_eq!(child.grid_column_raw.as_deref(), Some("2 / 3"));
 
   let mut child2 = ComputedStyle::default();
-  apply_declaration(&mut child2, &decl("grid-column-start", "1"), &base, 16.0, 16.0);
+  apply_declaration(
+    &mut child2,
+    &decl("grid-column-start", "1"),
+    &base,
+    16.0,
+    16.0,
+  );
   apply_declaration(
     &mut child2,
     &decl("grid-column-end", "inherit"),
@@ -136,8 +154,20 @@ fn grid_row_start_end_numeric_places_item_in_second_row() {
   let mut footer_style = ComputedStyle::default();
   footer_style.display = Display::Block;
   footer_style.height = Some(Length::px(10.0));
-  apply_declaration(&mut footer_style, &decl("grid-row-start", "2"), &base, 16.0, 16.0);
-  apply_declaration(&mut footer_style, &decl("grid-row-end", "3"), &base, 16.0, 16.0);
+  apply_declaration(
+    &mut footer_style,
+    &decl("grid-row-start", "2"),
+    &base,
+    16.0,
+    16.0,
+  );
+  apply_declaration(
+    &mut footer_style,
+    &decl("grid-row-end", "3"),
+    &base,
+    16.0,
+    16.0,
+  );
 
   let mut wrap = BoxNode::new_block(Arc::new(wrap_style), FormattingContextType::Block, vec![]);
   wrap.id = 1;
@@ -156,7 +186,9 @@ fn grid_row_start_end_numeric_places_item_in_second_row() {
     fastrender::AvailableSpace::Definite(100.0),
     fastrender::AvailableSpace::Indefinite,
   );
-  let fragment = fc.layout(&grid, &constraints).expect("grid layout succeeds");
+  let fragment = fc
+    .layout(&grid, &constraints)
+    .expect("grid layout succeeds");
 
   assert_eq!(fragment.children.len(), 2);
   let placements = fragment
@@ -182,12 +214,22 @@ fn grid_row_start_end_numeric_places_item_in_second_row() {
   let wrap_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.content, fastrender::tree::fragment_tree::FragmentContent::Block { box_id: Some(1) }))
+    .find(|child| {
+      matches!(
+        child.content,
+        fastrender::tree::fragment_tree::FragmentContent::Block { box_id: Some(1) }
+      )
+    })
     .expect("wrap fragment");
   let footer_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.content, fastrender::tree::fragment_tree::FragmentContent::Block { box_id: Some(2) }))
+    .find(|child| {
+      matches!(
+        child.content,
+        fastrender::tree::fragment_tree::FragmentContent::Block { box_id: Some(2) }
+      )
+    })
     .expect("footer fragment");
 
   assert_approx(wrap_fragment.bounds.y(), 0.0, "wrap y");
@@ -298,10 +340,20 @@ fn grid_row_start_named_area_name_resolves_to_area_start_line() {
 
   let mut item_style = ComputedStyle::default();
   item_style.display = Display::Block;
-  apply_declaration(&mut item_style, &decl("grid-row-start", "b"), &base, 16.0, 16.0);
+  apply_declaration(
+    &mut item_style,
+    &decl("grid-row-start", "b"),
+    &base,
+    16.0,
+    16.0,
+  );
 
   let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
-  let grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc
@@ -310,7 +362,11 @@ fn grid_row_start_named_area_name_resolves_to_area_start_line() {
 
   assert_eq!(fragment.children.len(), 1);
   let placed = &fragment.children[0];
-  assert_approx(placed.bounds.y(), 10.0, "row-start aligned to area b start (row 2)");
+  assert_approx(
+    placed.bounds.y(),
+    10.0,
+    "row-start aligned to area b start (row 2)",
+  );
   assert_approx(placed.bounds.height(), 20.0, "row height");
 }
 
@@ -355,7 +411,11 @@ fn grid_column_start_named_area_name_resolves_to_area_start_line() {
   );
 
   let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
-  let grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc
@@ -417,13 +477,7 @@ fn grid_area_span_expands_implicit_tracks_and_includes_gaps() {
     16.0,
     16.0,
   );
-  apply_declaration(
-    &mut grid_style,
-    &decl("row-gap", "3px"),
-    &base,
-    16.0,
-    16.0,
-  );
+  apply_declaration(&mut grid_style, &decl("row-gap", "3px"), &base, 16.0, 16.0);
 
   let mut item_style = ComputedStyle::default();
   item_style.display = Display::Block;
@@ -436,7 +490,11 @@ fn grid_area_span_expands_implicit_tracks_and_includes_gaps() {
   );
 
   let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
-  let grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc
@@ -511,13 +569,7 @@ fn grid_area_span_with_center_justify_content_respects_gaps() {
     16.0,
     16.0,
   );
-  apply_declaration(
-    &mut grid_style,
-    &decl("row-gap", "3px"),
-    &base,
-    16.0,
-    16.0,
-  );
+  apply_declaration(&mut grid_style, &decl("row-gap", "3px"), &base, 16.0, 16.0);
 
   let mut item_style = ComputedStyle::default();
   item_style.display = Display::Block;
@@ -530,7 +582,11 @@ fn grid_area_span_with_center_justify_content_respects_gaps() {
   );
 
   let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
-  let grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc

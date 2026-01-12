@@ -67,7 +67,11 @@ fn google_like_document_fragment_flow() {
   let parent_children = doc.children(parent).unwrap();
   assert_eq!(parent_children, &[b, i]);
 
-  assert_eq!(doc.children(fragment).unwrap().len(), 0, "fragment should be empty");
+  assert_eq!(
+    doc.children(fragment).unwrap().len(),
+    0,
+    "fragment should be empty"
+  );
 }
 
 #[test]
@@ -85,4 +89,3 @@ fn outer_html_includes_script_text_unescaped() {
     "<div><script>if (a < b) c();</script></div>"
   );
 }
-

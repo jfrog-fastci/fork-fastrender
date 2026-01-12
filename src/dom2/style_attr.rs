@@ -55,4 +55,3 @@ pub(super) fn serialize_style_attribute(decls: &BTreeMap<String, String>) -> Str
   }
   out
 }
-

@@ -1,5 +1,8 @@
-use crate::dom::HTML_NAMESPACE;
+use crate::css::encoding::decode_css_bytes_cow;
+use crate::css::parser::parse_stylesheet_with_media;
+use crate::css::types::CssImportLoader;
 use crate::debug::trace::TraceHandle;
+use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
@@ -7,23 +10,20 @@ use crate::html::content_security_policy::CspPolicy;
 use crate::html::document_write::with_active_streaming_parser;
 use crate::html::encoding::decode_html_bytes;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
-use crate::resource::ResourceFetcher;
-use crate::js::{
-  CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
-  DocumentReadyState, DocumentWriteState, DomHost, EventLoop, JsDomEvents, JsExecutionOptions,
-  HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork, LoadBlockerKind,
-  LocationNavigationRequest, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason,
-  ScriptBlockExecutor, ScriptBlockingStyleSheetSet, ScriptElementSpec, ScriptOrchestrator, ScriptType,
-  TaskSource,
-};
 use crate::js::html_script_scheduler::ScriptEventKind;
 use crate::js::script_encoding::decode_classic_script_bytes;
-use crate::css::encoding::decode_css_bytes_cow;
-use crate::css::parser::parse_stylesheet_with_media;
-use crate::css::types::CssImportLoader;
-use crate::render_control::{DeadlineGuard, RenderDeadline};
-use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
+use crate::js::{
+  CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
+  DocumentReadyState, DocumentWriteState, DomHost, EventLoop, HtmlScriptId, HtmlScriptScheduler,
+  HtmlScriptSchedulerAction, HtmlScriptWork, JsDomEvents, JsExecutionOptions, LoadBlockerKind,
+  LocationNavigationRequest, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
+  RunUntilIdleStopReason, ScriptBlockExecutor, ScriptBlockingStyleSheetSet, ScriptElementSpec,
+  ScriptOrchestrator, ScriptType, TaskSource,
+};
+use crate::render_control::{DeadlineGuard, RenderDeadline};
+use crate::resource::ResourceFetcher;
+use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
 use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
 use crate::web::events::{Event, EventInit, EventTargetId};
@@ -39,7 +39,9 @@ use std::sync::{Arc, Mutex};
 use selectors::context::QuirksMode;
 use url::Url;
 
-use super::{BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason};
+use super::{
+  BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason,
+};
 
 const MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE: &str =
   "module graph fetching is not supported by this BrowserTabJsExecutor";
@@ -199,9 +201,7 @@ pub trait BrowserTabJsExecutor {
   /// listener registrations in the document's [`crate::web::events::EventListenerRegistry`], it
   /// should also provide an [`crate::web::events::EventListenerInvoker`] so Rust-driven event
   /// dispatch (e.g. user interaction) can call the corresponding JS callbacks.
-  fn event_listener_invoker(
-    &self,
-  ) -> Option<Box<dyn crate::web::events::EventListenerInvoker>> {
+  fn event_listener_invoker(&self) -> Option<Box<dyn crate::web::events::EventListenerInvoker>> {
     None
   }
 }
@@ -513,7 +513,8 @@ impl BrowserTabHost {
     &mut self,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
-    self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))?;
+    self
+      .with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))?;
     // Allow the executor to observe Promise-job side effects that only become visible after the
     // microtask queue is drained (e.g. module evaluation promises for top-level await).
     let (executor, document) = (&mut self.executor, &mut self.document);
@@ -556,18 +557,23 @@ impl BrowserTabHost {
   ) -> Result<bool> {
     let dom: &crate::dom2::Document = self.document.dom();
     let event_invoker = &mut self.event_invoker;
-    if let Some(invoker) = event_invoker
-      .as_any_mut()
-      .and_then(|any| any.downcast_mut::<crate::js::window_realm::WindowRealmDomEventListenerInvoker<Self>>())
-    {
+    if let Some(invoker) = event_invoker.as_any_mut().and_then(|any| {
+      any.downcast_mut::<crate::js::window_realm::WindowRealmDomEventListenerInvoker<Self>>()
+    }) {
       return invoker.with_event_loop(event_loop, |invoker| {
         crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
           .map_err(|err| Error::Other(err.to_string()))
       });
     }
 
-    crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), event_invoker.as_mut())
-      .map_err(|err| Error::Other(err.to_string()))
+    crate::web::events::dispatch_event(
+      target,
+      &mut event,
+      dom,
+      dom.events(),
+      event_invoker.as_mut(),
+    )
+    .map_err(|err| Error::Other(err.to_string()))
   }
 
   fn dispatch_script_event(&mut self, script_node_id: NodeId, type_: &str) -> Result<()> {
@@ -580,7 +586,8 @@ impl BrowserTabHost {
       },
     );
     event.is_trusted = true;
-    let _default_not_prevented = self.dispatch_dom_event(EventTargetId::Node(script_node_id), event)?;
+    let _default_not_prevented =
+      self.dispatch_dom_event(EventTargetId::Node(script_node_id), event)?;
     Ok(())
   }
 
@@ -599,8 +606,11 @@ impl BrowserTabHost {
       },
     );
     event.is_trusted = true;
-    let _default_not_prevented =
-      self.dispatch_dom_event_in_event_loop(EventTargetId::Node(script_node_id), event, event_loop)?;
+    let _default_not_prevented = self.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(script_node_id),
+      event,
+      event_loop,
+    )?;
     Ok(())
   }
 
@@ -655,7 +665,9 @@ impl BrowserTabHost {
     self.document_referrer_policy = document_referrer_policy;
     self.pending_navigation = None;
     self.pending_navigation_deadline = None;
-    self.executor.on_navigation_committed(self.document_url.as_deref());
+    self
+      .executor
+      .on_navigation_committed(self.document_url.as_deref());
     // Mirror the renderer's view of the active CSP policy (populated when navigating to a URL).
     // HTML-string entry points may overwrite this with `<meta http-equiv="Content-Security-Policy">`
     // extraction before scripts run.
@@ -670,7 +682,9 @@ impl BrowserTabHost {
     self.lifecycle = DocumentLifecycle::new();
     self.last_dynamic_script_discovery_generation = 0;
     self.document_write_state.reset_for_navigation();
-    self.document_write_state.update_limits(self.js_execution_options);
+    self
+      .document_write_state
+      .update_limits(self.js_execution_options);
     self.script_blocking_stylesheets = ScriptBlockingStyleSheetSet::new();
     self.stylesheet_keys_by_node.clear();
     self.next_stylesheet_key = 0;
@@ -749,7 +763,10 @@ impl BrowserTabHost {
     }
     req = req.with_referrer_policy(self.document_referrer_policy);
     let resource = fetcher.fetch_with_request(req)?;
-    let final_url = resource.final_url.clone().unwrap_or_else(|| url.to_string());
+    let final_url = resource
+      .final_url
+      .clone()
+      .unwrap_or_else(|| url.to_string());
 
     let css = decode_css_bytes_cow(&resource.bytes, resource.content_type.as_deref());
     let ctx = &self.stylesheet_media_context;
@@ -931,7 +948,9 @@ impl BrowserTabHost {
       }
     }
 
-    if self.script_blocking_stylesheets.len() >= self.js_execution_options.max_pending_blocking_stylesheets {
+    if self.script_blocking_stylesheets.len()
+      >= self.js_execution_options.max_pending_blocking_stylesheets
+    {
       return Err(Error::Other(format!(
         "Exceeded max_pending_blocking_stylesheets (len={}, limit={})",
         self.script_blocking_stylesheets.len(),
@@ -948,7 +967,9 @@ impl BrowserTabHost {
 
     let queued = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
       let load_result = host.load_stylesheet_and_imports(&url);
-      let removed = host.script_blocking_stylesheets.unregister_blocking_stylesheet(key);
+      let removed = host
+        .script_blocking_stylesheets
+        .unregister_blocking_stylesheet(key);
       if inserted && removed {
         host
           .lifecycle
@@ -972,7 +993,9 @@ impl BrowserTabHost {
     if let Err(err) = queued {
       // If we cannot queue the networking task, do not leave script/blocking + load/lifecycle
       // tracking state wedged.
-      self.script_blocking_stylesheets.unregister_blocking_stylesheet(key);
+      self
+        .script_blocking_stylesheets
+        .unregister_blocking_stylesheet(key);
       self.stylesheet_keys_by_node.remove(&link_node_id);
       return Err(err);
     }
@@ -997,12 +1020,12 @@ impl BrowserTabHost {
       };
       (doc.clone_with_events(), state.parser.current_base_url())
     };
- 
+
     self.mutate_dom(|dom| {
       *dom = snapshot;
       ((), true)
     });
- 
+
     self.base_url = base_url;
     self
       .executor
@@ -1014,17 +1037,17 @@ impl BrowserTabHost {
         None => renderer.clear_base_url(),
       }
     }
- 
+
     state.host_snapshot_committed = true;
     state.last_synced_host_dom_generation = self.document.dom_mutation_generation();
     Ok(())
   }
- 
+
   fn sync_host_dom_to_streaming_parser(&mut self, state: &mut StreamingParseState) -> Result<()> {
     if !state.host_snapshot_committed {
       return Ok(());
     }
- 
+
     let updated = self.dom().clone_with_events();
     let Some(mut doc) = state.parser.document_mut() else {
       return Err(Error::Other(
@@ -1035,8 +1058,11 @@ impl BrowserTabHost {
     state.last_synced_host_dom_generation = self.document.dom_mutation_generation();
     Ok(())
   }
- 
-  fn parse_until_blocked(&mut self, event_loop: &mut EventLoop<Self>) -> Result<ParseUntilBlockedResult> {
+
+  fn parse_until_blocked(
+    &mut self,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<ParseUntilBlockedResult> {
     const INPUT_CHUNK_BYTES: usize = 8 * 1024;
 
     if self.streaming_parse_in_progress {
@@ -1063,7 +1089,8 @@ impl BrowserTabHost {
       }
     }
     self.streaming_parse_in_progress = true;
-    let _parse_guard = StreamingParseInProgressGuard(&mut self.streaming_parse_in_progress as *mut bool);
+    let _parse_guard =
+      StreamingParseInProgressGuard(&mut self.streaming_parse_in_progress as *mut bool);
 
     // Ensure any render deadline configured for streaming parsing remains active even when parsing
     // is resumed via event-loop tasks (e.g. after script-blocking stylesheets load).
@@ -1087,9 +1114,12 @@ impl BrowserTabHost {
       BudgetExhausted,
       YieldedForAsyncScriptInterleaving,
     }
- 
+
     let outcome = (|| -> Result<Outcome> {
-      let mut remaining = self.js_execution_options.dom_parse_budget.max_pump_iterations;
+      let mut remaining = self
+        .js_execution_options
+        .dom_parse_budget
+        .max_pump_iterations;
       while remaining > 0 {
         // Flush any `document.write` / `document.writeln` data that was buffered during script
         // execution (or tasks) into the parser input stream before continuing.
@@ -1100,7 +1130,7 @@ impl BrowserTabHost {
         if !pending.is_empty() {
           state.parser.push_front_str(&pending);
         }
- 
+
         // If a parser-blocking script was delayed because there were pending script-blocking
         // stylesheets, retry execution now that we are resuming parsing.
         if let Some(pending) = self.pending_parser_blocking_script.take() {
@@ -1292,7 +1322,7 @@ impl BrowserTabHost {
               script,
               &base,
             );
- 
+
             // HTML: "prepare the script element" can return early without executing the script
             // (e.g. unsupported `type`, empty inline script). In that case, the spec clears the
             // "parser document" internal slot (and may set force-async) so future mutations/insertion
@@ -1361,7 +1391,7 @@ impl BrowserTabHost {
               self.sync_host_dom_to_streaming_parser(&mut state)?;
               return Ok(Outcome::Blocked);
             }
- 
+
             // Sync any DOM mutations from the executed script back into the streaming parser's live
             // DOM before resuming parsing.
             self.sync_host_dom_to_streaming_parser(&mut state)?;
@@ -1525,7 +1555,8 @@ impl BrowserTabHost {
 
           let is_head = tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace);
           next_in_head = in_head || is_head;
-          let is_template = tag_name.eq_ignore_ascii_case("template") && is_html_namespace(namespace);
+          let is_template =
+            tag_name.eq_ignore_ascii_case("template") && is_html_namespace(namespace);
           next_in_template = in_template || is_template;
           next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
         }
@@ -1554,7 +1585,12 @@ impl BrowserTabHost {
 
       // Push children in reverse so we traverse left-to-right in document order.
       for &child in node.children.iter().rev() {
-        stack.push((child, next_in_head, next_in_foreign_namespace, next_in_template));
+        stack.push((
+          child,
+          next_in_head,
+          next_in_foreign_namespace,
+          next_in_template,
+        ));
       }
     }
 
@@ -1681,7 +1717,12 @@ impl BrowserTabHost {
 
         // Push children in reverse so we traverse left-to-right in document order.
         for &child in node.children.iter().rev() {
-          stack.push((child, next_in_head, next_in_foreign_namespace, next_in_template));
+          stack.push((
+            child,
+            next_in_head,
+            next_in_foreign_namespace,
+            next_in_template,
+          ));
         }
       }
 
@@ -1690,7 +1731,12 @@ impl BrowserTabHost {
 
     for (node_id, spec) in discovered {
       let base_url_at_discovery = spec.base_url.clone();
-      self.register_and_schedule_dynamic_script(node_id, spec, base_url_at_discovery, event_loop)?;
+      self.register_and_schedule_dynamic_script(
+        node_id,
+        spec,
+        base_url_at_discovery,
+        event_loop,
+      )?;
     }
 
     Ok(())
@@ -1748,7 +1794,9 @@ impl BrowserTabHost {
     }
 
     fn trim_ascii_whitespace(value: &str) -> &str {
-      value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+      value.trim_matches(|c: char| {
+        matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+      })
     }
 
     let nonce_attr = self
@@ -1813,9 +1861,10 @@ impl BrowserTabHost {
 
     let spec_for_table = spec.clone();
     let nomodule_blocked = spec_for_table.is_suppressed_by_nomodule(&self.js_execution_options);
-    let discovered = self
-      .scheduler
-      .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
+    let discovered =
+      self
+        .scheduler
+        .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
     if discovered.actions.is_empty() {
       // Most of the time an empty action list means the script should be ignored (e.g. unknown type
       // or `nomodule` suppression). However, parser-inserted *inline* module scripts are deferred by
@@ -1835,7 +1884,10 @@ impl BrowserTabHost {
       ScriptType::Classic => {
         spec_for_table.parser_inserted
           && spec_for_table.src_attr_present
-          && spec_for_table.src.as_deref().is_some_and(|src| !src.is_empty())
+          && spec_for_table
+            .src
+            .as_deref()
+            .is_some_and(|src| !src.is_empty())
           && spec_for_table.defer_attr
           && !spec_for_table.async_attr
           && !nomodule_blocked
@@ -1912,8 +1964,7 @@ impl BrowserTabHost {
     if matches!(
       spec_for_table.script_type,
       ScriptType::Classic | ScriptType::Module | ScriptType::ImportMap
-    )
-      && !spec_for_table.src_attr_present
+    ) && !spec_for_table.src_attr_present
     {
       self
         .js_execution_options
@@ -2012,7 +2063,10 @@ impl BrowserTabHost {
         } => {
           let entry = self.scripts.get(&script_id).cloned();
 
-          let should_checkpoint = matches!(work, HtmlScriptWork::Classic { .. } | HtmlScriptWork::Module { .. });
+          let should_checkpoint = matches!(
+            work,
+            HtmlScriptWork::Classic { .. } | HtmlScriptWork::Module { .. }
+          );
 
           let source_text = match work {
             HtmlScriptWork::Classic { source_text } => {
@@ -2133,7 +2187,9 @@ impl BrowserTabHost {
           match exec_result {
             Ok(()) => {
               if let Some(entry) = entry {
-                if entry.spec.src_attr_present && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty()) {
+                if entry.spec.src_attr_present
+                  && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty())
+                {
                   self.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
                 }
               }
@@ -2267,7 +2323,9 @@ impl BrowserTabHost {
             match result {
               Ok(()) => {
                 if let Some(entry) = entry {
-                  if entry.spec.src_attr_present && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty()) {
+                  if entry.spec.src_attr_present
+                    && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty())
+                  {
                     host.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
                   }
                 }
@@ -2391,30 +2449,31 @@ impl BrowserTabHost {
           document_write_state,
           ..
         } = host;
-        let result = crate::js::with_document_write_state(document_write_state, || match script_type {
-          ScriptType::Classic => executor.execute_classic_script(
-            self.source_text,
-            self.spec,
-            current_script,
-            document.as_mut(),
-            self.event_loop,
-          ),
-          ScriptType::Module => executor.execute_module_script(
-            self.source_text,
-            self.spec,
-            current_script,
-            document.as_mut(),
-            self.event_loop,
-          ),
-          ScriptType::ImportMap => executor.execute_import_map_script(
-            self.source_text,
-            self.spec,
-            current_script,
-            document.as_mut(),
-            self.event_loop,
-          ),
-          ScriptType::Unknown => Ok(()),
-        });
+        let result =
+          crate::js::with_document_write_state(document_write_state, || match script_type {
+            ScriptType::Classic => executor.execute_classic_script(
+              self.source_text,
+              self.spec,
+              current_script,
+              document.as_mut(),
+              self.event_loop,
+            ),
+            ScriptType::Module => executor.execute_module_script(
+              self.source_text,
+              self.spec,
+              current_script,
+              document.as_mut(),
+              self.event_loop,
+            ),
+            ScriptType::ImportMap => executor.execute_import_map_script(
+              self.source_text,
+              self.spec,
+              current_script,
+              document.as_mut(),
+              self.event_loop,
+            ),
+            ScriptType::Unknown => Ok(()),
+          });
         if let Some(req) = executor.take_navigation_request() {
           *pending_navigation = Some(req);
           *pending_navigation_deadline =
@@ -2637,7 +2696,9 @@ impl BrowserTabHost {
                   .scripts
                   .get(&script_id)
                   .map(|entry| entry.node_id)
-                  .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
+                  .ok_or_else(|| {
+                    Error::Other("internal error: missing script entry".to_string())
+                  })?;
                 host.dispatch_script_event_in_event_loop(node_id, "error", event_loop)?;
                 host.finish_script_execution(script_id, event_loop)?;
               }
@@ -2659,7 +2720,9 @@ impl BrowserTabHost {
       }
 
       let result = {
-        let BrowserTabHost { executor, document, .. } = host;
+        let BrowserTabHost {
+          executor, document, ..
+        } = host;
         executor.fetch_module_graph(&spec, Arc::clone(&fetcher), document.as_mut(), event_loop)
       };
       match result {
@@ -2682,7 +2745,7 @@ impl BrowserTabHost {
             host.dispatch_script_event_in_event_loop(node_id, "error", event_loop)?;
             host.finish_script_execution(script_id, event_loop)?;
           }
- 
+
           // Uncaught module graph errors should not abort parsing/task scheduling (browser
           // behavior). Still propagate host-level render timeouts/cancellation.
           if matches!(err, Error::Render(_)) {
@@ -2716,7 +2779,9 @@ impl BrowserTabHost {
             .and_then(crate::resource::origin_from_url)
         });
       fn trim_ascii_whitespace(value: &str) -> &str {
-        value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+        value.trim_matches(|c: char| {
+          matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+        })
       }
       let nonce_attr = self
         .scripts
@@ -2741,16 +2806,14 @@ impl BrowserTabHost {
       }
     }
 
-    let is_blocking = self
-      .scripts
-      .get(&script_id)
-      .is_some_and(|entry| {
-        entry.spec.parser_inserted && entry.spec.script_type == ScriptType::Classic
-          && entry.spec.src_attr_present
-          && !entry.spec.async_attr
-          && !entry.spec.defer_attr
-          && !entry.spec.force_async
-      });
+    let is_blocking = self.scripts.get(&script_id).is_some_and(|entry| {
+      entry.spec.parser_inserted
+        && entry.spec.script_type == ScriptType::Classic
+        && entry.spec.src_attr_present
+        && !entry.spec.async_attr
+        && !entry.spec.defer_attr
+        && !entry.spec.force_async
+    });
 
     if is_blocking {
       let _script_node_id = self
@@ -2778,33 +2841,32 @@ impl BrowserTabHost {
       return Ok(());
     }
 
-    let is_fast_async = self
-      .scripts
-      .get(&script_id)
-      .is_some_and(|entry| {
-        if !self.streaming_parse_active {
-          return false;
-        }
-        let spec = &entry.spec;
-        if spec.script_type != ScriptType::Classic || !spec.src_attr_present {
-          return false;
-        }
-        if !(spec.async_attr || spec.force_async) {
-          return false;
-        }
-        // In-memory sources and `file:` URLs are effectively instantaneous. Fetch them synchronously
-        // so the queued execution task observes a lower global event-loop sequence number than the
-        // parse-resume task scheduled after yielding at the script boundary.
-        if self
-          .external_script_sources
-          .lock()
-          .unwrap_or_else(|poisoned| poisoned.into_inner())
-          .contains_key(&url)
-        {
-          return true;
-        }
-        Url::parse(&url).ok().is_some_and(|parsed| parsed.scheme() == "file")
-      });
+    let is_fast_async = self.scripts.get(&script_id).is_some_and(|entry| {
+      if !self.streaming_parse_active {
+        return false;
+      }
+      let spec = &entry.spec;
+      if spec.script_type != ScriptType::Classic || !spec.src_attr_present {
+        return false;
+      }
+      if !(spec.async_attr || spec.force_async) {
+        return false;
+      }
+      // In-memory sources and `file:` URLs are effectively instantaneous. Fetch them synchronously
+      // so the queued execution task observes a lower global event-loop sequence number than the
+      // parse-resume task scheduled after yielding at the script boundary.
+      if self
+        .external_script_sources
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&url)
+      {
+        return true;
+      }
+      Url::parse(&url)
+        .ok()
+        .is_some_and(|parsed| parsed.scheme() == "file")
+    });
 
     if is_fast_async {
       match self.fetch_script_source(script_id, &url, destination) {
@@ -2881,7 +2943,11 @@ impl BrowserTabHost {
     // controls the *credentials mode* ("anonymous" vs "use-credentials"). For classic scripts, CORS
     // mode is enabled only when the attribute is present.
     let cors_mode = match spec.script_type {
-      ScriptType::Module => Some(spec.crossorigin.unwrap_or(crate::resource::CorsMode::Anonymous)),
+      ScriptType::Module => Some(
+        spec
+          .crossorigin
+          .unwrap_or(crate::resource::CorsMode::Anonymous),
+      ),
       _ => spec.crossorigin,
     };
     span.arg_str(
@@ -2929,9 +2995,10 @@ impl BrowserTabHost {
       })?;
 
       if cors_mode.is_none() {
-        if let (Some(doc_origin), Some(target_origin)) =
-          (self.document_origin.as_ref(), crate::resource::origin_from_url(url))
-        {
+        if let (Some(doc_origin), Some(target_origin)) = (
+          self.document_origin.as_ref(),
+          crate::resource::origin_from_url(url),
+        ) {
           if !doc_origin.same_origin(&target_origin) {
             return Err(Error::Other(format!(
               "SRI blocked script {url}: cross-origin integrity requires a CORS-enabled fetch (missing crossorigin attribute)"
@@ -2953,7 +3020,9 @@ impl BrowserTabHost {
     if let Some(origin) = self.document_origin.as_ref() {
       req = req.with_client_origin(origin);
     }
-    let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
+    let effective_referrer_policy = spec
+      .referrer_policy
+      .unwrap_or(self.document_referrer_policy);
     req = req.with_referrer_policy(effective_referrer_policy);
     if let Some(cors_mode) = cors_mode {
       req = req.with_credentials_mode(cors_mode.credentials_mode());
@@ -2980,9 +3049,8 @@ impl BrowserTabHost {
         &format!("source=external url={url}"),
       )?;
       if let Some(integrity) = integrity {
-        crate::js::sri::verify_integrity(source.as_bytes(), integrity).map_err(|message| {
-          Error::Other(format!("SRI blocked script {url}: {message}"))
-        })?;
+        crate::js::sri::verify_integrity(source.as_bytes(), integrity)
+          .map_err(|message| Error::Other(format!("SRI blocked script {url}: {message}")))?;
       }
       return Ok(source);
     }
@@ -2992,10 +3060,9 @@ impl BrowserTabHost {
     let max_fetch = self.js_execution_options.max_script_bytes.saturating_add(1);
     let resource = fetcher.fetch_partial_with_request(req, max_fetch)?;
     span.arg_u64("bytes", resource.bytes.len() as u64);
-    self.js_execution_options.check_script_source_bytes(
-      resource.bytes.len(),
-      &format!("source=external url={url}"),
-    )?;
+    self
+      .js_execution_options
+      .check_script_source_bytes(resource.bytes.len(), &format!("source=external url={url}"))?;
 
     crate::resource::ensure_http_success(&resource, url)?;
     crate::resource::ensure_script_mime_sane(&resource, url)?;
@@ -3010,9 +3077,8 @@ impl BrowserTabHost {
       }
     }
     if let Some(integrity) = integrity {
-      crate::js::sri::verify_integrity(&resource.bytes, integrity).map_err(|message| {
-        Error::Other(format!("SRI blocked script {url}: {message}"))
-      })?;
+      crate::js::sri::verify_integrity(&resource.bytes, integrity)
+        .map_err(|message| Error::Other(format!("SRI blocked script {url}: {message}")))?;
     }
 
     let fallback_encoding = self
@@ -3107,7 +3173,9 @@ impl DocumentLifecycleHost for BrowserTabHost {
       self.dispatch_lifecycle_event(event_loop, EventTargetId::Document, event)?;
     }
 
-    self.document_lifecycle_mut().parsing_completed(event_loop)?;
+    self
+      .document_lifecycle_mut()
+      .parsing_completed(event_loop)?;
 
     // If parsing completion is signalled from outside an event-loop task turn, perform a microtask
     // checkpoint immediately *only* when we are not currently executing JS.
@@ -3171,9 +3239,13 @@ impl DocumentLifecycleHost for BrowserTabHost {
 
 impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut crate::js::WindowRealm) {
-    let BrowserTabHost { document, executor, .. } = self;
+    let BrowserTabHost {
+      document, executor, ..
+    } = self;
     let Some(realm) = executor.window_realm_mut() else {
-      panic!("BrowserTabHost does not have an active vm-js WindowRealm for timer/microtask callbacks");
+      panic!(
+        "BrowserTabHost does not have an active vm-js WindowRealm for timer/microtask callbacks"
+      );
     };
     (document.as_mut(), realm)
   }
@@ -3201,8 +3273,11 @@ impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost 
       },
     );
     event.is_trusted = true;
-    let _default_not_prevented = self
-      .dispatch_dom_event_in_event_loop(EventTargetId::Node(script).normalize(), event, event_loop)?;
+    let _default_not_prevented = self.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(script).normalize(),
+      event,
+      event_loop,
+    )?;
     Ok(())
   }
 }
@@ -3416,9 +3491,8 @@ impl BrowserTab {
     let deadline = crate::render_control::root_deadline()
       .filter(|deadline| deadline.is_enabled())
       .or_else(|| {
-        (options.timeout.is_some() || options.cancel_callback.is_some()).then(|| {
-          RenderDeadline::new(options.timeout, options.cancel_callback.clone())
-        })
+        (options.timeout.is_some() || options.cancel_callback.is_some())
+          .then(|| RenderDeadline::new(options.timeout, options.cancel_callback.clone()))
       });
 
     self.host.streaming_parse = Some(StreamingParseState {
@@ -3493,7 +3567,12 @@ impl BrowserTab {
   where
     E: BrowserTabJsExecutor + 'static,
   {
-    Self::from_html_with_js_execution_options(html, options, executor, JsExecutionOptions::default())
+    Self::from_html_with_js_execution_options(
+      html,
+      options,
+      executor,
+      JsExecutionOptions::default(),
+    )
   }
 
   pub fn from_html_with_event_loop<E>(
@@ -3531,7 +3610,8 @@ impl BrowserTab {
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
     let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
       .then(super::SharedRenderDiagnostics::new);
-    let external_script_sources: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let external_script_sources: Arc<Mutex<HashMap<String, String>>> =
+      Arc::new(Mutex::new(HashMap::new()));
     let inner_fetcher: Arc<dyn ResourceFetcher> = Arc::new(crate::resource::HttpFetcher::new());
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
       overrides: Arc::clone(&external_script_sources),
@@ -3576,14 +3656,19 @@ impl BrowserTab {
     let root_deadline_is_enabled =
       crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
     let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
-      RenderDeadline::new(options_for_parse.timeout, options_for_parse.cancel_callback.clone())
+      RenderDeadline::new(
+        options_for_parse.timeout,
+        options_for_parse.cancel_callback.clone(),
+      )
     });
     let _deadline_guard = deadline
       .as_ref()
       .map(|deadline| DeadlineGuard::install(Some(deadline)));
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
-    tab.host.reset_scripting_state(None, document_referrer_policy)?;
+    tab
+      .host
+      .reset_scripting_state(None, document_referrer_policy)?;
     let mut parse_options = options_for_parse.clone();
     if root_deadline_is_enabled {
       // Avoid installing a nested deadline: the outer root deadline already enforces the render
@@ -3610,8 +3695,15 @@ impl BrowserTab {
   /// This is primarily used by CLI tools and other embeddings that want to configure the renderer
   /// (fetcher, runtime toggles, etc) before enabling JS execution via `BrowserTab`, without having
   /// to manually instantiate a `VmJsBrowserTabExecutor`.
-  pub fn with_renderer_and_vmjs(renderer: super::FastRender, options: RenderOptions) -> Result<Self> {
-    Self::with_renderer_and_vmjs_and_js_execution_options(renderer, options, JsExecutionOptions::default())
+  pub fn with_renderer_and_vmjs(
+    renderer: super::FastRender,
+    options: RenderOptions,
+  ) -> Result<Self> {
+    Self::with_renderer_and_vmjs_and_js_execution_options(
+      renderer,
+      options,
+      JsExecutionOptions::default(),
+    )
   }
 
   /// Like [`BrowserTab::with_renderer_and_vmjs`], but allows overriding JavaScript execution budgets.
@@ -3713,7 +3805,8 @@ impl BrowserTab {
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
     let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
       .then(super::SharedRenderDiagnostics::new);
-    let external_script_sources: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let external_script_sources: Arc<Mutex<HashMap<String, String>>> =
+      Arc::new(Mutex::new(HashMap::new()));
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
       overrides: Arc::clone(&external_script_sources),
       inner: fetcher,
@@ -3751,7 +3844,11 @@ impl BrowserTab {
 
     // Configure the renderer's document URL hint up-front so any non-script fetches (stylesheets,
     // images, etc) see consistent referrer/origin context during parsing.
-    tab.host.document.renderer_mut().set_document_url(document_url);
+    tab
+      .host
+      .document
+      .renderer_mut()
+      .set_document_url(document_url);
 
     let options_for_parse = options.clone();
     // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
@@ -3762,7 +3859,10 @@ impl BrowserTab {
     let root_deadline_is_enabled =
       crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
     let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
-      RenderDeadline::new(options_for_parse.timeout, options_for_parse.cancel_callback.clone())
+      RenderDeadline::new(
+        options_for_parse.timeout,
+        options_for_parse.cancel_callback.clone(),
+      )
     });
     let _deadline_guard = deadline
       .as_ref()
@@ -3780,11 +3880,8 @@ impl BrowserTab {
       parse_options.timeout = None;
       parse_options.cancel_callback = None;
     }
-    let base_url = tab.parse_html_streaming_and_schedule_scripts(
-      html,
-      Some(document_url),
-      &parse_options,
-    )?;
+    let base_url =
+      tab.parse_html_streaming_and_schedule_scripts(html, Some(document_url), &parse_options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
       tab.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
     } else {
@@ -3816,7 +3913,8 @@ impl BrowserTab {
 
     // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
-    let external_script_sources: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let external_script_sources: Arc<Mutex<HashMap<String, String>>> =
+      Arc::new(Mutex::new(HashMap::new()));
     let inner_fetcher: Arc<dyn ResourceFetcher> = Arc::new(crate::resource::HttpFetcher::new());
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
       overrides: Arc::clone(&external_script_sources),
@@ -3860,14 +3958,19 @@ impl BrowserTab {
     let root_deadline_is_enabled =
       crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
     let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
-      RenderDeadline::new(options_for_parse.timeout, options_for_parse.cancel_callback.clone())
+      RenderDeadline::new(
+        options_for_parse.timeout,
+        options_for_parse.cancel_callback.clone(),
+      )
     });
     let _deadline_guard = deadline
       .as_ref()
       .map(|deadline| DeadlineGuard::install(Some(deadline)));
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
-    tab.host.reset_scripting_state(None, document_referrer_policy)?;
+    tab
+      .host
+      .reset_scripting_state(None, document_referrer_policy)?;
     let mut parse_options = options_for_parse.clone();
     if root_deadline_is_enabled {
       // Avoid installing a nested deadline: the outer root deadline already enforces the render
@@ -3897,9 +4000,7 @@ impl BrowserTab {
   /// Register an in-memory HTML payload that can be navigated to by URL (including via
   /// `window.location`-driven navigations).
   pub fn register_html_source(&mut self, url: impl Into<String>, html: impl Into<String>) {
-    self
-      .host
-      .register_html_source(url.into(), html.into());
+    self.host.register_html_source(url.into(), html.into());
   }
 
   pub fn set_event_listener_invoker(
@@ -3917,7 +4018,10 @@ impl BrowserTab {
   }
 
   pub fn diagnostics_snapshot(&self) -> Option<super::RenderDiagnostics> {
-    self.diagnostics.as_ref().map(|diag| diag.clone().into_inner())
+    self
+      .diagnostics
+      .as_ref()
+      .map(|diag| diag.clone().into_inner())
   }
 
   pub fn navigate_to_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
@@ -3942,7 +4046,10 @@ impl BrowserTab {
     let root_deadline_is_enabled =
       crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
     let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
-      RenderDeadline::new(options_for_parse.timeout, options_for_parse.cancel_callback.clone())
+      RenderDeadline::new(
+        options_for_parse.timeout,
+        options_for_parse.cancel_callback.clone(),
+      )
     });
     let _deadline_guard = deadline
       .as_ref()
@@ -4048,7 +4155,8 @@ impl BrowserTab {
           let final_url = target_url.clone();
           let header_csp = None;
           let document_referrer_policy =
-            crate::html::referrer_policy::extract_referrer_policy_from_html(&html).unwrap_or_default();
+            crate::html::referrer_policy::extract_referrer_policy_from_html(&html)
+              .unwrap_or_default();
           (final_url, html, header_csp, document_referrer_policy)
         } else {
           let resource = {
@@ -4098,10 +4206,10 @@ impl BrowserTab {
       // Replace the document DOM with an empty tree before streaming in the new navigation HTML.
       // This ensures scripts observe a partially-built DOM (not the previous navigation's tree).
       let options_for_parse = options.clone();
-      self
-        .host
-        .document
-        .reset_with_dom(Document::new(QuirksMode::NoQuirks), options_for_parse.clone());
+      self.host.document.reset_with_dom(
+        Document::new(QuirksMode::NoQuirks),
+        options_for_parse.clone(),
+      );
       self.reset_event_loop();
       self.host.trace = self.trace.clone();
       self
@@ -4215,7 +4323,11 @@ impl BrowserTab {
     );
     event.is_trusted = true;
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
-    host.dispatch_dom_event_in_event_loop(EventTargetId::Node(node_id).normalize(), event, event_loop)
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
   }
 
   /// Dispatch a trusted `submit` DOM event to `node_id`.
@@ -4232,7 +4344,11 @@ impl BrowserTab {
     );
     event.is_trusted = true;
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
-    host.dispatch_dom_event_in_event_loop(EventTargetId::Node(node_id).normalize(), event, event_loop)
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
   }
 
   /// Simulate a user click on `node_id` and return the resolved navigation target URL if the
@@ -4244,7 +4360,9 @@ impl BrowserTab {
   ///   when** the click event's default was not prevented.
   pub fn resolve_navigation_for_click(&mut self, node_id: NodeId) -> Result<Option<String>> {
     fn trim_ascii_whitespace(value: &str) -> &str {
-      value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+      value.trim_matches(|c: char| {
+        matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+      })
     }
 
     fn is_javascript_url(href: &str) -> bool {
@@ -4263,7 +4381,9 @@ impl BrowserTab {
           ..
         } = &node.kind
         {
-          if tag_name.eq_ignore_ascii_case("a") && (namespace.is_empty() || namespace == HTML_NAMESPACE) {
+          if tag_name.eq_ignore_ascii_case("a")
+            && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+          {
             if let Ok(Some(href)) = dom.get_attribute(current, "href") {
               let href = trim_ascii_whitespace(&href);
               if !href.is_empty() && !is_javascript_url(href) {
@@ -4315,7 +4435,11 @@ impl BrowserTab {
   /// Dispatch a user `click` event and, if not canceled, navigate to the clicked link's target.
   ///
   /// Returns `true` if the click triggered a navigation.
-  pub fn dispatch_click_and_follow_link(&mut self, node_id: NodeId, options: RenderOptions) -> Result<bool> {
+  pub fn dispatch_click_and_follow_link(
+    &mut self,
+    node_id: NodeId,
+    options: RenderOptions,
+  ) -> Result<bool> {
     let Some(url) = self.resolve_navigation_for_click(node_id)? else {
       return Ok(false);
     };
@@ -4360,11 +4484,16 @@ impl BrowserTab {
     self.host.js_execution_options = options;
     self.host.scheduler.set_options(options);
     self.host.document_write_state.update_limits(options);
-    self.event_loop.set_queue_limits(options.event_loop_queue_limits);
+    self
+      .event_loop
+      .set_queue_limits(options.event_loop_queue_limits);
   }
 
   pub fn run_until_stable(&mut self, max_frames: usize) -> Result<RunUntilStableOutcome> {
-    self.run_until_stable_with_run_limits(self.host.js_execution_options.event_loop_run_limits, max_frames)
+    self.run_until_stable_with_run_limits(
+      self.host.js_execution_options.event_loop_run_limits,
+      max_frames,
+    )
   }
 
   pub fn run_until_stable_with_run_limits(
@@ -4640,7 +4769,9 @@ impl BrowserTab {
   /// This allows deferred scripts to be queued once parsing reaches EOF.
   pub(crate) fn on_parsing_completed(&mut self) -> Result<()> {
     let actions = self.host.scheduler.parsing_completed()?;
-    self.host.apply_scheduler_actions(actions, &mut self.event_loop)?;
+    self
+      .host
+      .apply_scheduler_actions(actions, &mut self.event_loop)?;
     self.host.notify_parsing_completed(&mut self.event_loop)?;
     Ok(())
   }
@@ -4649,9 +4780,12 @@ impl BrowserTab {
     let discovered = self.host.discover_scripts_best_effort(document_url);
     for (node_id, spec) in discovered {
       let base_url_at_discovery = spec.base_url.clone();
-      self
-        .host
-        .register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut self.event_loop)?;
+      self.host.register_and_schedule_script(
+        node_id,
+        spec,
+        base_url_at_discovery,
+        &mut self.event_loop,
+      )?;
       if self.host.pending_navigation.is_some() {
         return Ok(());
       }
@@ -4679,7 +4813,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     }
 
     if let NodeKind::Element {
-      tag_name, namespace, ..
+      tag_name,
+      namespace,
+      ..
     } = &node.kind
     {
       if tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace) {
@@ -4709,12 +4845,17 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 
     let mut next_in_foreign_namespace = in_foreign_namespace;
     if let NodeKind::Element {
-      tag_name, namespace, ..
+      tag_name,
+      namespace,
+      ..
     } = &node.kind
     {
       next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
 
-      if !in_foreign_namespace && tag_name.eq_ignore_ascii_case("meta") && is_html_namespace(namespace) {
+      if !in_foreign_namespace
+        && tag_name.eq_ignore_ascii_case("meta")
+        && is_html_namespace(namespace)
+      {
         let name_attr = dom.get_attribute(id, "name").ok().flatten();
         if name_attr
           .map(|name| name.eq_ignore_ascii_case("referrer"))
@@ -4743,10 +4884,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 }
 
 #[cfg(test)]
-  mod tests {
-    use super::*;
- 
-    use crate::api::FastRender;
+mod tests {
+  use super::*;
+
+  use crate::api::FastRender;
   use crate::js::window_timers::{event_loop_mut_from_hooks, VmJsEventLoopHooks};
   use crate::js::{WindowRealm, WindowRealmConfig, WindowRealmHost};
   use crate::resource::{FetchedResource, ResourceFetcher};
@@ -4757,7 +4898,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex, OnceLock};
 
-  use vm_js::{GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm, VmError, VmHost, VmHostHooks};
+  use vm_js::{
+    GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm, VmError, VmHost,
+    VmHostHooks,
+  };
 
   use tempfile::tempdir;
   use url::Url;
@@ -4772,8 +4916,15 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   }
 
   impl EventListenerInvoker for RecordingInvoker {
-    fn invoke(&mut self, _listener_id: ListenerId, event: &mut Event) -> std::result::Result<(), DomError> {
-      assert!(event.is_trusted, "expected host-dispatched events to be trusted");
+    fn invoke(
+      &mut self,
+      _listener_id: ListenerId,
+      event: &mut Event,
+    ) -> std::result::Result<(), DomError> {
+      assert!(
+        event.is_trusted,
+        "expected host-dispatched events to be trusted"
+      );
       self.log.borrow_mut().push(event.type_.clone());
       Ok(())
     }
@@ -4792,10 +4943,7 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       _document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
-      self
-        .log
-        .borrow_mut()
-        .push(format!("script:{script_text}"));
+      self.log.borrow_mut().push(format!("script:{script_text}"));
       let log = Rc::clone(&self.log);
       let name = script_text.to_string();
       event_loop.queue_microtask(move |_host, _event_loop| {
@@ -4813,10 +4961,7 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       _document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
-      self
-        .log
-        .borrow_mut()
-        .push(format!("module:{script_text}"));
+      self.log.borrow_mut().push(format!("module:{script_text}"));
       let log = Rc::clone(&self.log);
       let name = script_text.to_string();
       event_loop.queue_microtask(move |_host, _event_loop| {
@@ -4858,7 +5003,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     {
       let BrowserTab { host, .. } = &mut tab;
       let Some(realm) = host.executor.window_realm_mut() else {
-        return Err(Error::Other("expected vm-js WindowRealm to be active".to_string()));
+        return Err(Error::Other(
+          "expected vm-js WindowRealm to be active".to_string(),
+        ));
       };
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       // WindowRealm installs handcrafted URLSearchParams by default; delete it first so the
@@ -4866,8 +5013,12 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       {
         let mut scope = heap.scope();
         let global = realm_ref.global_object();
-        scope.push_root(Value::Object(global)).expect("push root global");
-        let key_s = scope.alloc_string("URLSearchParams").expect("alloc URLSearchParams key");
+        scope
+          .push_root(Value::Object(global))
+          .expect("push root global");
+        let key_s = scope
+          .alloc_string("URLSearchParams")
+          .expect("alloc URLSearchParams key");
         scope
           .push_root(Value::String(key_s))
           .expect("push root URLSearchParams key");
@@ -4881,7 +5032,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     }
 
     {
-      let BrowserTab { host, event_loop, .. } = &mut tab;
+      let BrowserTab {
+        host, event_loop, ..
+      } = &mut tab;
       let spec = ScriptElementSpec {
         base_url: host.base_url.clone(),
         src: None,
@@ -4912,7 +5065,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     let got = {
       let BrowserTab { host, .. } = &mut tab;
       let Some(realm) = host.executor.window_realm_mut() else {
-        return Err(Error::Other("expected vm-js WindowRealm to be active".to_string()));
+        return Err(Error::Other(
+          "expected vm-js WindowRealm to be active".to_string(),
+        ));
       };
       let (_vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
@@ -4931,9 +5086,15 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
         .expect("get __got")
         .unwrap_or(Value::Undefined);
       let Value::String(s) = value else {
-        return Err(Error::Other(format!("expected __got to be a string, got {value:?}")));
+        return Err(Error::Other(format!(
+          "expected __got to be a string, got {value:?}"
+        )));
       };
-      scope.heap().get_string(s).expect("get string").to_utf8_lossy()
+      scope
+        .heap()
+        .get_string(s)
+        .expect("get string")
+        .to_utf8_lossy()
     };
 
     assert_eq!(got, "1");
@@ -4977,7 +5138,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 
     impl ResourceFetcher for DestinationRecordingFetcher {
       fn fetch(&self, _url: &str) -> Result<FetchedResource> {
-        Err(Error::Other("unexpected call to ResourceFetcher::fetch".to_string()))
+        Err(Error::Other(
+          "unexpected call to ResourceFetcher::fetch".to_string(),
+        ))
       }
 
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
@@ -4993,8 +5156,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
           "https://example.com/m.js" => "M",
           _ => "",
         };
-        let mut res =
-          FetchedResource::new(body.as_bytes().to_vec(), Some("application/javascript".to_string()));
+        let mut res = FetchedResource::new(
+          body.as_bytes().to_vec(),
+          Some("application/javascript".to_string()),
+        );
         // Mirror HTTP fetches so downstream validations (status/CORS) remain deterministic.
         res.status = Some(200);
         res.final_url = Some(req.url.to_string());
@@ -5048,9 +5213,18 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     assert_eq!(
       calls,
       vec![
-        ("https://example.com/a.js".to_string(), FetchDestination::Script),
-        ("https://example.com/b.js".to_string(), FetchDestination::ScriptCors),
-        ("https://example.com/m.js".to_string(), FetchDestination::ScriptCors),
+        (
+          "https://example.com/a.js".to_string(),
+          FetchDestination::Script
+        ),
+        (
+          "https://example.com/b.js".to_string(),
+          FetchDestination::ScriptCors
+        ),
+        (
+          "https://example.com/m.js".to_string(),
+          FetchDestination::ScriptCors
+        ),
       ]
     );
     Ok(())
@@ -5066,7 +5240,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
         Err(Error::Other(format!("fetch blocked in test for {url}")))
       }
 
-      fn fetch_with_request(&self, req: crate::resource::FetchRequest<'_>) -> Result<FetchedResource> {
+      fn fetch_with_request(
+        &self,
+        req: crate::resource::FetchRequest<'_>,
+      ) -> Result<FetchedResource> {
         self.fetch(req.url)
       }
     }
@@ -5162,8 +5339,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     }
 
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let document =
-      BrowserDocumentDom2::from_html("<!doctype html><html><body></body></html>", RenderOptions::default())?;
+    let document = BrowserDocumentDom2::from_html(
+      "<!doctype html><html><body></body></html>",
+      RenderOptions::default(),
+    )?;
     let mut host = BrowserTabHost::new(
       document,
       Box::new(LoggingExecutor {
@@ -5218,7 +5397,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
           id_b = Some(*id);
         }
       }
-      (id_a.expect("missing script_id for a.js"), id_b.expect("missing script_id for b.js"))
+      (
+        id_a.expect("missing script_id for a.js"),
+        id_b.expect("missing script_id for b.js"),
+      )
     };
 
     // Complete fetch for B first. When `force_async=true` is plumbed through, scripts behave like
@@ -5266,9 +5448,14 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   impl crate::resource::ResourceFetcher for ScriptSourceFetcher {
     fn fetch(&self, url: &str) -> Result<crate::resource::FetchedResource> {
       self.calls.fetch_add(1, Ordering::Relaxed);
-      let map = self.sources.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let map = self
+        .sources
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       let bytes = map.get(url).cloned().ok_or_else(|| {
-        Error::Other(format!("ScriptSourceFetcher has no source registered for url={url}"))
+        Error::Other(format!(
+          "ScriptSourceFetcher has no source registered for url={url}"
+        ))
       })?;
       Ok(crate::resource::FetchedResource::new(
         bytes,
@@ -5276,7 +5463,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       ))
     }
 
-    fn fetch_with_request(&self, req: crate::resource::FetchRequest<'_>) -> Result<crate::resource::FetchedResource> {
+    fn fetch_with_request(
+      &self,
+      req: crate::resource::FetchRequest<'_>,
+    ) -> Result<crate::resource::FetchedResource> {
       self.fetch(req.url)
     }
   }
@@ -5301,7 +5491,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     Ok((host, EventLoop::new()))
   }
 
-  fn build_host(html: &str, log: Rc<RefCell<Vec<String>>>) -> Result<(BrowserTabHost, EventLoop<BrowserTabHost>)> {
+  fn build_host(
+    html: &str,
+    log: Rc<RefCell<Vec<String>>>,
+  ) -> Result<(BrowserTabHost, EventLoop<BrowserTabHost>)> {
     build_host_with_options(html, log, JsExecutionOptions::default())
   }
 
@@ -5367,10 +5560,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 
   impl WindowRealmExecutor {
     fn new(log: Rc<RefCell<Vec<String>>>) -> Result<Self> {
-      let realm =
-        WindowRealm::new(WindowRealmConfig::new("https://example.com/")).map_err(|err| {
-          Error::Other(format!("failed to create WindowRealm: {err}"))
-        })?;
+      let realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+        .map_err(|err| Error::Other(format!("failed to create WindowRealm: {err}")))?;
       Ok(Self { realm, log })
     }
   }
@@ -5384,10 +5575,7 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
-      self
-        .log
-        .borrow_mut()
-        .push(format!("script:{script_text}"));
+      self.log.borrow_mut().push(format!("script:{script_text}"));
       let host_ctx: &mut dyn VmHost = document;
       let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
       hooks.set_event_loop(event_loop);
@@ -5479,7 +5667,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   }
 
   #[test]
-  fn script_load_event_runs_after_microtask_checkpoint_for_blocking_external_script() -> Result<()> {
+  fn script_load_event_runs_after_microtask_checkpoint_for_blocking_external_script() -> Result<()>
+  {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let (mut host, mut event_loop) = build_host("<script src=a.js></script>", Rc::clone(&log))?;
     host.register_external_script_source("a.js".to_string(), "A".to_string());
@@ -5519,7 +5708,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   #[test]
   fn script_load_event_runs_after_microtask_checkpoint_for_async_external_script() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let (mut host, mut event_loop) = build_host("<script async src=a.js></script>", Rc::clone(&log))?;
+    let (mut host, mut event_loop) =
+      build_host("<script async src=a.js></script>", Rc::clone(&log))?;
     host.register_external_script_source("a.js".to_string(), "A".to_string());
 
     host.set_event_invoker(Box::new(RecordingInvoker {
@@ -5595,7 +5785,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     };
     let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let mut host = BrowserTabHost::new(
-      BrowserDocumentDom2::from_html("<script src=a.js></script><script>B</script>", RenderOptions::default())?,
+      BrowserDocumentDom2::from_html(
+        "<script src=a.js></script><script>B</script>",
+        RenderOptions::default(),
+      )?,
       Box::new(LoggingExecutor {
         log: Rc::clone(&script_log),
       }),
@@ -5698,9 +5891,7 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   fn external_script_integrity_mismatch_dispatches_error_and_skips_execution() -> Result<()> {
     let source = "A";
     let wrong = sri_sha256_token(b"other");
-    let html = format!(
-      r#"<script src="a.js" integrity="{wrong}"></script><script>B</script>"#
-    );
+    let html = format!(r#"<script src="a.js" integrity="{wrong}"></script><script>B</script>"#);
     let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
     host.register_external_script_source("a.js".to_string(), source.to_string());
@@ -5789,9 +5980,7 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   fn external_script_integrity_rejects_oversized_integrity_attribute() -> Result<()> {
     let source = "A";
     let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
-    let html = format!(
-      r#"<script src="a.js" integrity="{integrity}"></script><script>B</script>"#
-    );
+    let html = format!(r#"<script src="a.js" integrity="{integrity}"></script><script>B</script>"#);
     let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
     host.register_external_script_source("a.js".to_string(), source.to_string());
@@ -5841,8 +6030,7 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   #[test]
   fn external_script_integrity_with_only_unsupported_algorithms_is_rejected() -> Result<()> {
     let source = "A";
-    let html =
-      r#"<script src="a.js" integrity="sha512-deadbeef"></script><script>B</script>"#;
+    let html = r#"<script src="a.js" integrity="sha512-deadbeef"></script><script>B</script>"#;
     let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let (mut host, mut event_loop) = build_host(html, Rc::clone(&script_log))?;
     host.register_external_script_source("a.js".to_string(), source.to_string());
@@ -5898,7 +6086,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     );
     let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
-    host.reset_scripting_state(Some("https://example.com/doc.html".to_string()), ReferrerPolicy::default())?;
+    host.reset_scripting_state(
+      Some("https://example.com/doc.html".to_string()),
+      ReferrerPolicy::default(),
+    )?;
     host.register_external_script_source("https://other.com/a.js".to_string(), source.to_string());
 
     let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -5952,7 +6143,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     );
     let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
-    host.reset_scripting_state(Some("https://example.com/doc.html".to_string()), ReferrerPolicy::default())?;
+    host.reset_scripting_state(
+      Some("https://example.com/doc.html".to_string()),
+      ReferrerPolicy::default(),
+    )?;
     host.register_external_script_source("https://other.com/a.js".to_string(), source.to_string());
 
     let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -5986,12 +6180,7 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       "expected error listener to be inserted"
     );
 
-    host.register_and_schedule_script(
-      node_id,
-      spec,
-      base_url_at_discovery,
-      &mut event_loop,
-    )?;
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
 
     assert_eq!(&*event_log.borrow(), &["load".to_string()]);
     assert_eq!(
@@ -6041,7 +6230,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 
     let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let mut host = BrowserTabHost::new(
-      BrowserDocumentDom2::from_html("<script>bad</script><script>ok</script>", RenderOptions::default())?,
+      BrowserDocumentDom2::from_html(
+        "<script>bad</script><script>ok</script>",
+        RenderOptions::default(),
+      )?,
       Box::new(ErroringExecutor {
         log: Rc::clone(&script_log),
       }),
@@ -6083,7 +6275,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     )?;
 
     assert_eq!(&*event_log.borrow(), &["error".to_string()]);
-    assert_eq!(&*script_log.borrow(), &["bad".to_string(), "ok".to_string()]);
+    assert_eq!(
+      &*script_log.borrow(),
+      &["bad".to_string(), "ok".to_string()]
+    );
     Ok(())
   }
 
@@ -6108,7 +6303,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   #[test]
   fn fetch_script_source_honors_script_charset_attribute() -> Result<()> {
     let url = "https://example.com/test.js";
-    let bytes = encoding_rs::SHIFT_JIS.encode("console.log('デ')").0.into_owned();
+    let bytes = encoding_rs::SHIFT_JIS
+      .encode("console.log('デ')")
+      .0
+      .into_owned();
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SingleResourceFetcher {
       url: url.to_string(),
       bytes: Arc::new(bytes),
@@ -6140,9 +6338,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     // Insert the script into the host's scheduler tables without triggering fetch/execution, then
     // call `fetch_script_source` directly so this test doesn't depend on JS execution plumbing.
     let spec_for_table = spec.clone();
-    let discovered = host
-      .scheduler
-      .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
+    let discovered =
+      host
+        .scheduler
+        .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
     host.scripts.insert(
       discovered.id,
       ScriptEntry {
@@ -6195,7 +6394,12 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     );
 
     let mut event_loop = EventLoop::new();
-    host.register_and_schedule_script(node_id, spec.clone(), spec.base_url.clone(), &mut event_loop)?;
+    host.register_and_schedule_script(
+      node_id,
+      spec.clone(),
+      spec.base_url.clone(),
+      &mut event_loop,
+    )?;
 
     // `QueueScriptEventTask` dispatches as an element task, so run the event loop.
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -6211,7 +6415,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       ..JsExecutionOptions::default()
     };
     let mut host = BrowserTabHost::new(
-      BrowserDocumentDom2::from_html("<script type=\"module\" src></script>", RenderOptions::default())?,
+      BrowserDocumentDom2::from_html(
+        "<script type=\"module\" src></script>",
+        RenderOptions::default(),
+      )?,
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
       js_options,
@@ -6235,7 +6442,12 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     );
 
     let mut event_loop = EventLoop::new();
-    host.register_and_schedule_script(node_id, spec.clone(), spec.base_url.clone(), &mut event_loop)?;
+    host.register_and_schedule_script(
+      node_id,
+      spec.clone(),
+      spec.base_url.clone(),
+      &mut event_loop,
+    )?;
 
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
@@ -6250,7 +6462,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       ..JsExecutionOptions::default()
     };
     let mut host = BrowserTabHost::new(
-      BrowserDocumentDom2::from_html("<script type=\"importmap\" src></script>", RenderOptions::default())?,
+      BrowserDocumentDom2::from_html(
+        "<script type=\"importmap\" src></script>",
+        RenderOptions::default(),
+      )?,
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
       js_options,
@@ -6274,7 +6489,12 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     );
 
     let mut event_loop = EventLoop::new();
-    host.register_and_schedule_script(node_id, spec.clone(), spec.base_url.clone(), &mut event_loop)?;
+    host.register_and_schedule_script(
+      node_id,
+      spec.clone(),
+      spec.base_url.clone(),
+      &mut event_loop,
+    )?;
 
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
@@ -6287,7 +6507,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     // Browsers without module support treat `type="importmap"` as an unknown script type, so `src`
     // must not dispatch an error event.
     let mut host = BrowserTabHost::new(
-      BrowserDocumentDom2::from_html("<script type=\"importmap\" src></script>", RenderOptions::default())?,
+      BrowserDocumentDom2::from_html(
+        "<script type=\"importmap\" src></script>",
+        RenderOptions::default(),
+      )?,
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
       JsExecutionOptions::default(),
@@ -6311,7 +6534,12 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     );
 
     let mut event_loop = EventLoop::new();
-    host.register_and_schedule_script(node_id, spec.clone(), spec.base_url.clone(), &mut event_loop)?;
+    host.register_and_schedule_script(
+      node_id,
+      spec.clone(),
+      spec.base_url.clone(),
+      &mut event_loop,
+    )?;
 
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
@@ -6406,17 +6634,25 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     // otherwise parse to completion in a single parse slice. This keeps deterministic fixtures
     // aligned with browser behavior (async scripts can execute mid-parse when they load quickly).
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let executor = TestExecutor { log: Rc::clone(&log) };
+    let executor = TestExecutor {
+      log: Rc::clone(&log),
+    };
     let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
 
-    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    tab
+      .host
+      .reset_scripting_state(None, ReferrerPolicy::default())?;
     tab.register_script_source("https://example.com/a.js", "A");
 
     let html = "<!doctype html><html><body>\
       <script async src=\"https://example.com/a.js\"></script>\
       <script>B</script>\
       </body></html>";
-    let _ = tab.parse_html_streaming_and_schedule_scripts(html, Some("https://example.com/"), &RenderOptions::default())?;
+    let _ = tab.parse_html_streaming_and_schedule_scripts(
+      html,
+      Some("https://example.com/"),
+      &RenderOptions::default(),
+    )?;
 
     // `parse_html_streaming_and_schedule_scripts` runs the event loop once when it yields for async
     // script interleaving during navigations (document URL is provided). The async script should
@@ -6553,7 +6789,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     let _tab = BrowserTab::from_html(
       "<!doctype html><script>noop</script>",
       RenderOptions::default(),
-      RecordingExecutor { seen: Rc::clone(&seen) },
+      RecordingExecutor {
+        seen: Rc::clone(&seen),
+      },
     )?;
 
     assert_eq!(
@@ -6600,7 +6838,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
 
     // Reset scripting state so parsing new HTML will schedule/execute scripts.
-    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    tab
+      .host
+      .reset_scripting_state(None, ReferrerPolicy::default())?;
 
     tab.event_loop.queue_microtask({
       let log = Rc::clone(&log);
@@ -6612,7 +6852,11 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 
     // Simulate re-entrant parsing while already in JS execution (e.g. future document.write).
     let outer_guard = JsExecutionGuard::enter(&tab.host.js_execution_depth);
-    let _ = tab.parse_html_streaming_and_schedule_scripts("<script>A</script>", None, &RenderOptions::default())?;
+    let _ = tab.parse_html_streaming_and_schedule_scripts(
+      "<script>A</script>",
+      None,
+      &RenderOptions::default(),
+    )?;
 
     // No checkpoint should have run at the script boundary while the JS stack is non-empty.
     assert_eq!(&*log.borrow(), &["script:A".to_string()]);
@@ -6632,16 +6876,24 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   }
 
   #[test]
-  fn empty_parser_inserted_script_can_execute_after_later_text_mutation_via_best_effort_scheduling() -> Result<()> {
+  fn empty_parser_inserted_script_can_execute_after_later_text_mutation_via_best_effort_scheduling(
+  ) -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let (mut host, mut event_loop) =
-      build_host("<!doctype html><html><body><script id=s></script></body></html>", Rc::clone(&log))?;
+    let (mut host, mut event_loop) = build_host(
+      "<!doctype html><html><body><script id=s></script></body></html>",
+      Rc::clone(&log),
+    )?;
 
     let mut discovered = host.discover_scripts_best_effort(None);
     assert_eq!(discovered.len(), 1);
     let (script, spec) = discovered.pop().unwrap();
 
-    host.register_and_schedule_script(script, spec.clone(), spec.base_url.clone(), &mut event_loop)?;
+    host.register_and_schedule_script(
+      script,
+      spec.clone(),
+      spec.base_url.clone(),
+      &mut event_loop,
+    )?;
 
     // Empty parser-inserted scripts must not execute during preparation.
     assert!(log.borrow().is_empty());
@@ -6680,7 +6932,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   #[test]
   fn empty_parser_inserted_script_can_execute_after_later_text_mutation() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let executor = TestExecutor { log: Rc::clone(&log) };
+    let executor = TestExecutor {
+      log: Rc::clone(&log),
+    };
     let mut tab = BrowserTab::from_html(
       "<!doctype html><html><body><script id=s></script></body></html>",
       RenderOptions::default(),
@@ -6729,9 +6983,12 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   }
 
   #[test]
-  fn unsupported_type_parser_inserted_script_can_execute_after_type_and_children_mutation() -> Result<()> {
+  fn unsupported_type_parser_inserted_script_can_execute_after_type_and_children_mutation(
+  ) -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let executor = TestExecutor { log: Rc::clone(&log) };
+    let executor = TestExecutor {
+      log: Rc::clone(&log),
+    };
     let mut tab = BrowserTab::from_html(
       "<!doctype html><html><body><script type=\"text/plain\" id=s>A</script></body></html>",
       RenderOptions::default(),
@@ -6758,7 +7015,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 
     // Mutate the element to become a classic script and change its children, then discover/execute.
     tab.host.mutate_dom(|dom| {
-      dom.remove_attribute(script, "type").expect("remove_attribute");
+      dom
+        .remove_attribute(script, "type")
+        .expect("remove_attribute");
       let text = dom.create_text("B");
       dom.append_child(script, text).expect("append_child");
       ((), true)
@@ -6777,7 +7036,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
   }
 
   #[test]
-  fn empty_parser_inserted_script_sets_force_async_for_later_external_script_execution() -> Result<()> {
+  fn empty_parser_inserted_script_sets_force_async_for_later_external_script_execution(
+  ) -> Result<()> {
     struct LoggingExecutor {
       log: Rc<RefCell<Vec<String>>>,
     }
@@ -6808,7 +7068,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     }
 
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let executor = LoggingExecutor { log: Rc::clone(&log) };
+    let executor = LoggingExecutor {
+      log: Rc::clone(&log),
+    };
 
     // Parse an empty parser-inserted script. It should not execute, but it should clear the parser
     // document slot and set force-async so it behaves like a dynamically inserted script if mutated
@@ -6840,14 +7102,24 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
         .expect("set_attribute");
 
       let script_b = dom.create_element("script", "");
-      dom.set_attribute(script_b, "async", "").expect("set_attribute");
-      dom.remove_attribute(script_b, "async").expect("remove_attribute");
-      dom.set_attribute(script_b, "src", "b.js").expect("set_attribute");
+      dom
+        .set_attribute(script_b, "async", "")
+        .expect("set_attribute");
+      dom
+        .remove_attribute(script_b, "async")
+        .expect("remove_attribute");
+      dom
+        .set_attribute(script_b, "src", "b.js")
+        .expect("set_attribute");
       dom.append_child(body, script_b).expect("append_child");
       (script_b, true)
     });
     assert!(
-      !tab.host.dom().has_attribute(script_b, "async").unwrap_or(false),
+      !tab
+        .host
+        .dom()
+        .has_attribute(script_b, "async")
+        .unwrap_or(false),
       "expected `async` attribute to be removed"
     );
     assert!(
@@ -6869,12 +7141,16 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
           id_b = Some(*id);
         }
       }
-      (id_a.expect("missing script_id for a.js"), id_b.expect("missing script_id for b.js"))
+      (
+        id_a.expect("missing script_id for a.js"),
+        id_b.expect("missing script_id for b.js"),
+      )
     };
 
     // Verify the discovered specs match the internal-slot state.
     assert!(
-      tab.host
+      tab
+        .host
         .scripts
         .get(&id_a)
         .expect("missing script entry for a.js")
@@ -6883,7 +7159,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       "expected force_async to be propagated for previously-failed parser-inserted script"
     );
     assert!(
-      !tab.host
+      !tab
+        .host
         .scripts
         .get(&id_b)
         .expect("missing script entry for b.js")
@@ -6898,12 +7175,16 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       .host
       .scheduler
       .classic_fetch_completed(id_b, "B".to_string())?;
-    tab.host.apply_scheduler_actions(actions_b, &mut tab.event_loop)?;
+    tab
+      .host
+      .apply_scheduler_actions(actions_b, &mut tab.event_loop)?;
     let actions_a = tab
       .host
       .scheduler
       .classic_fetch_completed(id_a, "A".to_string())?;
-    tab.host.apply_scheduler_actions(actions_a, &mut tab.event_loop)?;
+    tab
+      .host
+      .apply_scheduler_actions(actions_a, &mut tab.event_loop)?;
 
     tab
       .event_loop
@@ -6986,7 +7267,11 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     let slots = scope.heap().get_function_native_slots(callee)?;
     let id = match slots.get(0).copied().unwrap_or(Value::Undefined) {
       Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => n as u64,
-      _ => return Err(VmError::TypeError("__queueMicrotaskTest missing hook id slot")),
+      _ => {
+        return Err(VmError::TypeError(
+          "__queueMicrotaskTest missing hook id slot",
+        ))
+      }
     };
 
     let counter = queue_microtask_hooks()
@@ -6994,7 +7279,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .get(&id)
       .cloned()
-      .ok_or(VmError::TypeError("__queueMicrotaskTest hook id not registered"))?;
+      .ok_or(VmError::TypeError(
+        "__queueMicrotaskTest hook id not registered",
+      ))?;
 
     let Some(event_loop) = event_loop_mut_from_hooks::<BrowserTabHost>(hooks) else {
       return Err(VmError::TypeError(
@@ -7011,7 +7298,10 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     Ok(Value::Undefined)
   }
 
-  fn alloc_key(scope: &mut vm_js::Scope<'_>, name: &str) -> std::result::Result<PropertyKey, VmError> {
+  fn alloc_key(
+    scope: &mut vm_js::Scope<'_>,
+    name: &str,
+  ) -> std::result::Result<PropertyKey, VmError> {
     let s = scope.alloc_string(name)?;
     scope.push_root(Value::String(s))?;
     Ok(PropertyKey::from_string(s))
@@ -7033,13 +7323,19 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     tab
       .event_loop
       .set_microtask_checkpoint_hook(Some(microtask_checkpoint_counting_hook));
-    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    tab
+      .host
+      .reset_scripting_state(None, ReferrerPolicy::default())?;
 
     // Use a small budget that still reaches the first `</script>` boundary in the initial parse
     // call (first pump requests input, second pump yields the script boundary).
     tab.host.js_execution_options.dom_parse_budget = crate::js::ParseBudget::new(2);
 
-    let _ = tab.parse_html_streaming_and_schedule_scripts("<script>A</script>", None, &RenderOptions::default())?;
+    let _ = tab.parse_html_streaming_and_schedule_scripts(
+      "<script>A</script>",
+      None,
+      &RenderOptions::default(),
+    )?;
 
     assert_eq!(
       counter.load(Ordering::SeqCst),
@@ -7058,7 +7354,11 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     _this: Value,
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    if host.as_any_mut().downcast_mut::<BrowserDocumentDom2>().is_some() {
+    if host
+      .as_any_mut()
+      .downcast_mut::<BrowserDocumentDom2>()
+      .is_some()
+    {
       Ok(Value::Bool(true))
     } else {
       Err(VmError::TypeError(
@@ -7109,7 +7409,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     // Create a clickable target node.
     let button_id = tab.host.mutate_dom(|dom| {
       let button = dom.create_element("button", "");
-      dom.set_attribute(button, "id", "btn").expect("set_attribute");
+      dom
+        .set_attribute(button, "id", "btn")
+        .expect("set_attribute");
       let body = dom.body().expect("expected <body>");
       dom.append_child(body, button).expect("append_child");
       (button, true)
@@ -7156,7 +7458,9 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       .executor
       .window_realm_mut()
       .expect("vm-js executor should expose a WindowRealm");
-    let ok = realm.exec_script("globalThis.__host_ok").map_err(|err| Error::Other(err.to_string()))?;
+    let ok = realm
+      .exec_script("globalThis.__host_ok")
+      .map_err(|err| Error::Other(err.to_string()))?;
     assert!(matches!(ok, Value::Bool(true)));
     Ok(())
   }
@@ -7178,14 +7482,11 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     let func = scope.alloc_native_function_with_slots(call_id, None, name, 0, &slots)?;
     scope
       .heap_mut()
-      .object_set_prototype(func, Some(realm_ref.intrinsics().function_prototype()))
-      ?;
+      .object_set_prototype(func, Some(realm_ref.intrinsics().function_prototype()))?;
     scope.push_root(Value::Object(func))?;
 
     let key = alloc_key(&mut scope, "__queueMicrotaskTest")?;
-    scope
-      .define_property(global, key, data_desc(Value::Object(func)))
-      ?;
+    scope.define_property(global, key, data_desc(Value::Object(func)))?;
 
     Ok(())
   }
@@ -7208,10 +7509,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       if self.realm.is_some() {
         return Ok(());
       }
-      let mut realm = WindowRealm::new(
-        WindowRealmConfig::new("https://example.com/"),
-      )
-      .map_err(|err| Error::Other(err.to_string()))?;
+      let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+        .map_err(|err| Error::Other(err.to_string()))?;
       install_queue_microtask_test_global(&mut realm, self.microtask_hook_id)
         .map_err(|err| Error::Other(err.to_string()))?;
       self.realm = Some(realm);
@@ -7279,9 +7578,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
         "composed": event.composed,
       })
       .to_string();
-      let source = format!(
-        "(function(){{const e=new Event({type_lit},{init_lit});{dispatch_expr}}})();",
-      );
+      let source =
+        format!("(function(){{const e=new Event({type_lit},{init_lit});{dispatch_expr}}})();",);
 
       let host_ctx: &mut dyn VmHost = document;
       let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
@@ -7302,7 +7600,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 
   #[test]
   fn vm_js_document_ready_state_tracks_document_lifecycle_transitions() -> Result<()> {
-    let document = BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
     let mut host = BrowserTabHost::new(
       document,
       Box::new(NoopExecutor::default()),
@@ -7314,8 +7613,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       .map_err(|err| Error::Other(err.to_string()))?;
 
     let mut eval_ready_state = |host: &mut BrowserTabHost,
-                               event_loop: &mut EventLoop<BrowserTabHost>,
-                               realm: &mut WindowRealm|
+                                event_loop: &mut EventLoop<BrowserTabHost>,
+                                realm: &mut WindowRealm|
      -> Result<String> {
       let host_ctx: &mut dyn VmHost = host.document.as_mut();
       let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
@@ -7372,7 +7671,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
       id: microtask_hook_id,
     };
 
-    let document = BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
     let executor = VmJsLifecycleExecutor::new(microtask_hook_id);
     let mut host = BrowserTabHost::new(
       document,
@@ -7383,7 +7683,8 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
     let mut event_loop = EventLoop::<BrowserTabHost>::new();
 
     // Register a JS listener that queues a microtask via the test-only native helper.
-    let setup_script = "document.addEventListener('readystatechange', () => { __queueMicrotaskTest(); });";
+    let setup_script =
+      "document.addEventListener('readystatechange', () => { __queueMicrotaskTest(); });";
     let spec = ScriptElementSpec {
       base_url: Some("https://example.com/".to_string()),
       src: None,
@@ -7493,7 +7794,11 @@ html, body { margin: 0; padding: 0; }
     let options = RenderOptions::new().with_viewport(64, 64);
     let mut tab = BrowserTab::from_html(html, options, executor)?;
 
-    assert_eq!(log.borrow().len(), 1, "expected exactly one script execution");
+    assert_eq!(
+      log.borrow().len(),
+      1,
+      "expected exactly one script execution"
+    );
 
     let doc = tab.dom();
     let body = doc.body().expect("missing <body>");
@@ -7516,8 +7821,14 @@ html, body { margin: 0; padding: 0; }
       3,
       "expected <body> to have <script>, injected <div>, and following <div>"
     );
-    assert_eq!(element_children[1], injected, "expected injected node after <script>");
-    assert_eq!(element_children[2], after, "expected #after node after injected markup");
+    assert_eq!(
+      element_children[1], injected,
+      "expected injected node after <script>"
+    );
+    assert_eq!(
+      element_children[2], after,
+      "expected #after node after injected markup"
+    );
 
     let pixmap = tab.render_frame()?;
     assert_eq!(rgba_at(&pixmap, 32, 32), [255, 0, 0, 255]);
@@ -7534,7 +7845,11 @@ document.write('<div id="b"></div>');
 </script><div id="after"></div></body></html>"#;
     let mut tab = BrowserTab::from_html(html, RenderOptions::default(), executor)?;
 
-    assert_eq!(log.borrow().len(), 1, "expected exactly one script execution");
+    assert_eq!(
+      log.borrow().len(),
+      1,
+      "expected exactly one script execution"
+    );
 
     let doc = tab.dom();
     let body = doc.body().expect("missing <body>");
@@ -7555,9 +7870,19 @@ document.write('<div id="b"></div>');
       .copied()
       .filter(|&id| matches!(doc.node(id).kind, NodeKind::Element { .. }))
       .collect();
-    assert_eq!(element_children.len(), 4, "expected 4 element children in <body>");
-    assert_eq!(element_children[1], a, "expected #a to be first injected element");
-    assert_eq!(element_children[2], b, "expected #b to be second injected element");
+    assert_eq!(
+      element_children.len(),
+      4,
+      "expected 4 element children in <body>"
+    );
+    assert_eq!(
+      element_children[1], a,
+      "expected #a to be first injected element"
+    );
+    assert_eq!(
+      element_children[2], b,
+      "expected #b to be second injected element"
+    );
     assert_eq!(
       element_children[3], after,
       "expected following markup to appear after injected elements"
@@ -7574,7 +7899,11 @@ document.writeln('<div id="x"></div>');
 </script><div id="after"></div></body></html>"#;
     let mut tab = BrowserTab::from_html(html, RenderOptions::default(), executor)?;
 
-    assert_eq!(log.borrow().len(), 1, "expected exactly one script execution");
+    assert_eq!(
+      log.borrow().len(),
+      1,
+      "expected exactly one script execution"
+    );
 
     let doc = tab.dom();
     let body = doc.body().expect("missing <body>");
@@ -7592,7 +7921,11 @@ document.writeln('<div id="x"></div>');
       .copied()
       .filter(|&id| matches!(doc.node(id).kind, NodeKind::Element { .. }))
       .collect();
-    assert_eq!(element_children.len(), 3, "expected 3 element children in <body>");
+    assert_eq!(
+      element_children.len(),
+      3,
+      "expected 3 element children in <body>"
+    );
     assert_eq!(element_children[1], injected);
     assert_eq!(element_children[2], after);
     Ok(())
@@ -7688,8 +8021,8 @@ html, body { margin: 0; padding: 0; }
   fn exec_vm_js_dom_script(tab: &mut BrowserTab, source: &str) -> Result<()> {
     // Execute DOM shim script with the real `BrowserDocumentDom2` as the active `VmHost` context so
     // native bindings mutate the host DOM and route invalidations through `DomHost::mutate_dom`.
-    let mut realm =
-      WindowRealm::new(WindowRealmConfig::new("https://example.com/")).map_err(|err| Error::Other(err.to_string()))?;
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+      .map_err(|err| Error::Other(err.to_string()))?;
 
     let (host, event_loop) = (&mut tab.host, &mut tab.event_loop);
     let host_ctx: &mut dyn VmHost = host.document.as_mut();
@@ -7870,15 +8203,12 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
-  fn parser_inserted_external_script_waits_for_script_blocking_stylesheet_and_imports() -> Result<()> {
+  fn parser_inserted_external_script_waits_for_script_blocking_stylesheet_and_imports() -> Result<()>
+  {
     let temp = tempdir().map_err(Error::Io)?;
-    std::fs::write(temp.path().join("imported.css"), "body { color: red; }")
+    std::fs::write(temp.path().join("imported.css"), "body { color: red; }").map_err(Error::Io)?;
+    std::fs::write(temp.path().join("style.css"), r#"@import "imported.css";"#)
       .map_err(Error::Io)?;
-    std::fs::write(
-      temp.path().join("style.css"),
-      r#"@import "imported.css";"#,
-    )
-    .map_err(Error::Io)?;
     std::fs::write(temp.path().join("script.js"), "SCRIPT").map_err(Error::Io)?;
 
     let document_url = Url::from_file_path(temp.path().join("index.html"))
@@ -8015,7 +8345,10 @@ html, body { margin: 0; padding: 0; }
   #[test]
   fn async_script_executes_even_with_pending_script_blocking_stylesheet() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let (mut host, mut event_loop) = build_host("<script async src=\"https://example.com/a.js\"></script>", Rc::clone(&log))?;
+    let (mut host, mut event_loop) = build_host(
+      "<script async src=\"https://example.com/a.js\"></script>",
+      Rc::clone(&log),
+    )?;
 
     // Simulate a streaming parse context so any accidental stylesheet-gating logic that only
     // applies while parsing would be exercised here.
@@ -8033,9 +8366,12 @@ html, body { margin: 0; padding: 0; }
     host.streaming_parse_active = true;
 
     // Simulate a pending script-blocking stylesheet. Async scripts must not be delayed by this.
-    host.script_blocking_stylesheets.register_blocking_stylesheet(0);
+    host
+      .script_blocking_stylesheets
+      .register_blocking_stylesheet(0);
 
-    host.register_external_script_source("https://example.com/a.js".to_string(), "ASYNC".to_string());
+    host
+      .register_external_script_source("https://example.com/a.js".to_string(), "ASYNC".to_string());
 
     let mut discovered = host.discover_scripts_best_effort(None);
     assert_eq!(discovered.len(), 1);
@@ -8043,7 +8379,8 @@ html, body { margin: 0; padding: 0; }
     let base_url_at_discovery = spec.base_url.clone();
     host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
 
-    let _ = event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
+    let _ =
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
 
     assert!(
       log.borrow().iter().any(|line| line == "script:ASYNC"),
@@ -8146,10 +8483,9 @@ html, body { margin: 0; padding: 0; }
         let dom = document.dom();
         let has_before = dom.get_element_by_id("before").is_some();
         let has_after = dom.get_element_by_id("after").is_some();
-        self
-          .log
-          .borrow_mut()
-          .push(format!("{script_text}:before={has_before} after={has_after}"));
+        self.log.borrow_mut().push(format!(
+          "{script_text}:before={has_before} after={has_after}"
+        ));
         Ok(())
       }
 
@@ -8166,7 +8502,9 @@ html, body { margin: 0; padding: 0; }
     }
 
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let executor = DomSnapshotExecutor { log: Rc::clone(&log) };
+    let executor = DomSnapshotExecutor {
+      log: Rc::clone(&log),
+    };
     let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
 
     let dir = tempdir().map_err(Error::Io)?;
@@ -8236,7 +8574,9 @@ html, body { margin: 0; padding: 0; }
     }
 
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let executor = SpecLoggingExecutor { log: Rc::clone(&log) };
+    let executor = SpecLoggingExecutor {
+      log: Rc::clone(&log),
+    };
     let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
 
     // The `<base>` element appears between two parser-inserted scripts. The first script must run
@@ -8397,7 +8737,7 @@ html, body { margin: 0; padding: 0; }
       target_url: String,
       pending: Option<LocationNavigationRequest>,
     }
- 
+
     impl BrowserTabJsExecutor for NavigationRequestExecutor {
       fn execute_classic_script(
         &mut self,
@@ -8538,7 +8878,10 @@ html, body { margin: 0; padding: 0; }
     tab.navigate_to_url(page1_url, RenderOptions::default())?;
 
     assert_eq!(tab.history.len(), 2);
-    assert_eq!(tab.history.current().map(|e| e.url.as_str()), Some(page2_url));
+    assert_eq!(
+      tab.history.current().map(|e| e.url.as_str()),
+      Some(page2_url)
+    );
     let mut history = tab.history.clone();
     assert_eq!(
       history.go_back().map(|e| e.url.as_str()),
@@ -8608,8 +8951,14 @@ html, body { margin: 0; padding: 0; }
     tab.navigate_to_url(page1_url, RenderOptions::default())?;
 
     assert_eq!(tab.history.len(), 1);
-    assert_eq!(tab.history.current().map(|e| e.url.as_str()), Some(page2_url));
-    assert!(!tab.history.can_go_back(), "expected replace to not push history");
+    assert_eq!(
+      tab.history.current().map(|e| e.url.as_str()),
+      Some(page2_url)
+    );
+    assert!(
+      !tab.history.can_go_back(),
+      "expected replace to not push history"
+    );
     Ok(())
   }
 
@@ -8626,7 +8975,10 @@ html, body { margin: 0; padding: 0; }
     tab.navigate_to_url(page1_url, RenderOptions::default())?;
 
     assert_eq!(tab.history.len(), 1);
-    assert_eq!(tab.history.current().map(|e| e.url.as_str()), Some(page1_url));
+    assert_eq!(
+      tab.history.current().map(|e| e.url.as_str()),
+      Some(page1_url)
+    );
 
     // Simulate a script-triggered `location.replace(page2_url)` during the event loop.
     tab.host.pending_navigation = Some(LocationNavigationRequest {
@@ -8636,7 +8988,10 @@ html, body { margin: 0; padding: 0; }
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
     assert_eq!(tab.history.len(), 1);
-    assert_eq!(tab.history.current().map(|e| e.url.as_str()), Some(page2_url));
+    assert_eq!(
+      tab.history.current().map(|e| e.url.as_str()),
+      Some(page2_url)
+    );
     Ok(())
   }
 
@@ -8644,21 +8999,21 @@ html, body { margin: 0; padding: 0; }
   fn navigate_to_url_timeout_spans_script_redirect_chain() -> Result<()> {
     use crate::error::{RenderError, RenderStage};
     use std::time::Duration;
- 
+
     struct SlowMapFetcher {
       pages: HashMap<String, String>,
       delay: Duration,
     }
- 
+
     impl ResourceFetcher for SlowMapFetcher {
       fn fetch(&self, url: &str) -> Result<FetchedResource> {
         self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
       }
- 
+
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
         std::thread::sleep(self.delay);
         crate::render_control::check_active(RenderStage::DomParse).map_err(Error::Render)?;
- 
+
         let html = self.pages.get(req.url).ok_or_else(|| {
           Error::Other(format!("no test response registered for URL {}", req.url))
         })?;
@@ -8669,7 +9024,7 @@ html, body { margin: 0; padding: 0; }
         ))
       }
     }
- 
+
     struct RedirectExecutor {
       redirects: Vec<String>,
       next: usize,
@@ -8707,17 +9062,17 @@ html, body { margin: 0; padding: 0; }
       ) -> Result<()> {
         self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
- 
+
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
         self.pending.take()
       }
     }
- 
+
     let url1 = "https://example.com/one".to_string();
     let url2 = "https://example.com/two".to_string();
     let url3 = "https://example.com/three".to_string();
     let url4 = "https://example.com/four".to_string();
- 
+
     let mut pages = HashMap::<String, String>::new();
     pages.insert(
       url1.clone(),
@@ -8735,7 +9090,7 @@ html, body { margin: 0; padding: 0; }
       url4.clone(),
       "<!doctype html><html><body><div id=done></div></body></html>".to_string(),
     );
- 
+
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SlowMapFetcher {
       pages,
       delay: Duration::from_millis(15),
@@ -8766,14 +9121,14 @@ html, body { margin: 0; padding: 0; }
       pending_frame: None,
       history: TabHistory::new(),
     };
- 
+
     let err = tab
       .navigate_to_url(
         &url1,
         RenderOptions::default().with_timeout(Some(Duration::from_millis(50))),
       )
       .expect_err("expected deadline to apply across redirect chain");
- 
+
     match err {
       Error::Render(RenderError::Timeout {
         stage: RenderStage::DomParse,
@@ -8781,7 +9136,7 @@ html, body { margin: 0; padding: 0; }
       }) => {}
       other => panic!("expected dom_parse timeout, got {other:?}"),
     }
- 
+
     Ok(())
   }
 
@@ -9165,9 +9520,7 @@ html, body { margin: 0; padding: 0; }
       "<!doctype html><html><head><link rel=\"stylesheet\" href=\"{style_url}\"></head><body><script>NAVIGATE</script></body></html>"
     );
 
-    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SlowStyleFetcher {
-      url: style_url,
-    });
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SlowStyleFetcher { url: style_url });
     let executor = SleepyNavigateExecutor {
       target_url: target_url.clone(),
       pending: None,
@@ -9236,8 +9589,7 @@ html, body { margin: 0; padding: 0; }
   #[test]
   fn non_matching_media_stylesheet_does_not_block_script() -> Result<()> {
     let temp = tempdir().map_err(Error::Io)?;
-    std::fs::write(temp.path().join("print.css"), "body { color: green; }")
-      .map_err(Error::Io)?;
+    std::fs::write(temp.path().join("print.css"), "body { color: green; }").map_err(Error::Io)?;
     std::fs::write(temp.path().join("script.js"), "SCRIPT").map_err(Error::Io)?;
 
     let document_url = Url::from_file_path(temp.path().join("index.html"))
@@ -9299,12 +9651,21 @@ html, body { margin: 0; padding: 0; }
   #[test]
   fn csp_blocks_external_script_fetch_and_execution() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let fetcher = Arc::new(ScriptSourceFetcher::new(&[("https://evil.com/a.js", "EVIL")]));
+    let fetcher = Arc::new(ScriptSourceFetcher::new(&[(
+      "https://evil.com/a.js",
+      "EVIL",
+    )]));
     let fetcher_for_renderer: Arc<dyn crate::resource::ResourceFetcher> = fetcher.clone();
-    let (mut host, mut event_loop) =
-      build_host_with_fetcher("<script src=\"https://evil.com/a.js\"></script>", Rc::clone(&log), fetcher_for_renderer)?;
+    let (mut host, mut event_loop) = build_host_with_fetcher(
+      "<script src=\"https://evil.com/a.js\"></script>",
+      Rc::clone(&log),
+      fetcher_for_renderer,
+    )?;
 
-    host.reset_scripting_state(Some("https://example.com/".to_string()), ReferrerPolicy::default())?;
+    host.reset_scripting_state(
+      Some("https://example.com/".to_string()),
+      ReferrerPolicy::default(),
+    )?;
     host.csp = CspPolicy::from_values(["script-src 'self'"]);
 
     let scripts = host.discover_scripts_best_effort(Some("https://example.com/"));
@@ -9327,10 +9688,16 @@ html, body { margin: 0; padding: 0; }
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let fetcher = Arc::new(ScriptSourceFetcher::new(&[("https://evil.com/a.js", "OK")]));
     let fetcher_for_renderer: Arc<dyn crate::resource::ResourceFetcher> = fetcher.clone();
-    let (mut host, mut event_loop) =
-      build_host_with_fetcher("<script src=\"https://evil.com/a.js\"></script>", Rc::clone(&log), fetcher_for_renderer)?;
+    let (mut host, mut event_loop) = build_host_with_fetcher(
+      "<script src=\"https://evil.com/a.js\"></script>",
+      Rc::clone(&log),
+      fetcher_for_renderer,
+    )?;
 
-    host.reset_scripting_state(Some("https://example.com/".to_string()), ReferrerPolicy::default())?;
+    host.reset_scripting_state(
+      Some("https://example.com/".to_string()),
+      ReferrerPolicy::default(),
+    )?;
     host.csp = CspPolicy::from_values(["script-src https:"]);
 
     let scripts = host.discover_scripts_best_effort(Some("https://example.com/"));
@@ -9387,16 +9754,21 @@ html, body { margin: 0; padding: 0; }
         Ok(Value::Undefined)
       })
       .map_err(|err: VmError| Error::Other(err.to_string()))?;
-    host
-      .js_events
-      .add_js_event_listener(target, type_, callback, AddEventListenerOptions::default())?;
+    host.js_events.add_js_event_listener(
+      target,
+      type_,
+      callback,
+      AddEventListenerOptions::default(),
+    )?;
     Ok(())
   }
 
   #[test]
-  fn lifecycle_events_are_observable_via_js_listeners_and_ordered_with_deferred_scripts() -> Result<()> {
+  fn lifecycle_events_are_observable_via_js_listeners_and_ordered_with_deferred_scripts(
+  ) -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let (mut host, mut event_loop) = build_host("<script defer src=\"d.js\"></script>", Rc::clone(&log))?;
+    let (mut host, mut event_loop) =
+      build_host("<script defer src=\"d.js\"></script>", Rc::clone(&log))?;
     host.register_external_script_source("d.js".to_string(), "D".to_string());
 
     add_js_event_listener_log(
@@ -9413,7 +9785,13 @@ html, body { margin: 0; padding: 0; }
       "dom",
       Rc::clone(&log),
     )?;
-    add_js_event_listener_log(&mut host, EventTargetId::Window, "load", "load", Rc::clone(&log))?;
+    add_js_event_listener_log(
+      &mut host,
+      EventTargetId::Window,
+      "load",
+      "load",
+      Rc::clone(&log),
+    )?;
 
     assert_eq!(host.dom().ready_state(), DocumentReadyState::Loading);
 
@@ -9497,17 +9875,20 @@ html, body { margin: 0; padding: 0; }
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-module-ran")
+      dom
+        .get_attribute(body, "data-module-ran")
         .expect("get_attribute should succeed"),
       Some("1")
     );
     assert_eq!(
-      dom.get_attribute(body, "data-current-script-null")
+      dom
+        .get_attribute(body, "data-current-script-null")
         .expect("get_attribute should succeed"),
       Some("1")
     );
     assert_eq!(
-      dom.get_attribute(body, "data-top-level-this-undefined")
+      dom
+        .get_attribute(body, "data-top-level-this-undefined")
         .expect("get_attribute should succeed"),
       Some("1")
     );
@@ -9535,7 +9916,8 @@ html, body { margin: 0; padding: 0; }
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-tla")
+      dom
+        .get_attribute(body, "data-tla")
         .expect("get_attribute should succeed"),
       Some("1")
     );
@@ -9566,7 +9948,8 @@ html, body { margin: 0; padding: 0; }
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-never")
+      dom
+        .get_attribute(body, "data-never")
         .expect("get_attribute should succeed"),
       None
     );
@@ -9578,10 +9961,9 @@ html, body { margin: 0; padding: 0; }
       .clone()
       .into_inner();
     assert!(
-      diagnostics
-        .js_exceptions
-        .iter()
-        .any(|exc| exc.message.contains("asynchronous module loading/evaluation is not supported")),
+      diagnostics.js_exceptions.iter().any(|exc| exc
+        .message
+        .contains("asynchronous module loading/evaluation is not supported")),
       "expected async module evaluation failure to be reported, got js_exceptions={:?}",
       diagnostics.js_exceptions
     );
@@ -9630,12 +10012,14 @@ html, body { margin: 0; padding: 0; }
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-entry-url")
+      dom
+        .get_attribute(body, "data-entry-url")
         .expect("get_attribute should succeed"),
       Some(entry_url.as_str())
     );
     assert_eq!(
-      dom.get_attribute(body, "data-dep-url")
+      dom
+        .get_attribute(body, "data-dep-url")
         .expect("get_attribute should succeed"),
       Some(dep_url.as_str())
     );
@@ -9703,7 +10087,8 @@ html, body { margin: 0; padding: 0; }
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-dynamic-import")
+      dom
+        .get_attribute(body, "data-dynamic-import")
         .expect("get_attribute should succeed"),
       Some("123")
     );
@@ -9739,7 +10124,8 @@ html, body { margin: 0; padding: 0; }
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-microtask-dynamic-import")
+      dom
+        .get_attribute(body, "data-microtask-dynamic-import")
         .expect("get_attribute should succeed"),
       Some("456")
     );
@@ -9773,7 +10159,8 @@ html, body { margin: 0; padding: 0; }
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-importmap")
+      dom
+        .get_attribute(body, "data-importmap")
         .expect("get_attribute should succeed"),
       Some("123")
     );
@@ -9820,7 +10207,10 @@ second.textContent = `import { marker } from "/direct.js";
 document.body.setAttribute("data-marker", marker);`;
 document.body.appendChild(second);"#,
     );
-    tab.register_script_source("https://example.com/direct.js", r#"export const marker = "direct";"#);
+    tab.register_script_source(
+      "https://example.com/direct.js",
+      r#"export const marker = "direct";"#,
+    );
     tab.register_script_source(
       "https://example.com/changed.js",
       r#"export const marker = "changed";"#,
@@ -9832,7 +10222,8 @@ document.body.appendChild(second);"#,
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-marker")
+      dom
+        .get_attribute(body, "data-marker")
         .expect("get_attribute should succeed"),
       Some("direct")
     );
@@ -9864,7 +10255,8 @@ document.body.appendChild(second);"#,
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-value")
+      dom
+        .get_attribute(body, "data-value")
         .expect("get_attribute should succeed"),
       Some("42")
     );
@@ -9893,10 +10285,7 @@ document.body.appendChild(second);"#,
       );
       root.insert("imports".to_string(), serde_json::Value::Object(imports));
       let mut integrity_map = serde_json::Map::new();
-      integrity_map.insert(
-        module_url.clone(),
-        serde_json::Value::String(integrity),
-      );
+      integrity_map.insert(module_url.clone(), serde_json::Value::String(integrity));
       root.insert(
         "integrity".to_string(),
         serde_json::Value::Object(integrity_map),
@@ -9925,7 +10314,8 @@ document.body.appendChild(second);"#,
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-integrity")
+      dom
+        .get_attribute(body, "data-integrity")
         .expect("get_attribute should succeed"),
       Some("123")
     );
@@ -9948,7 +10338,10 @@ document.body.appendChild(second);"#,
           .ok_or_else(|| Error::Other(format!("missing fetcher entry for {url}")))
       }
 
-      fn fetch_with_request(&self, req: crate::resource::FetchRequest<'_>) -> Result<FetchedResource> {
+      fn fetch_with_request(
+        &self,
+        req: crate::resource::FetchRequest<'_>,
+      ) -> Result<FetchedResource> {
         self.fetch(req.url)
       }
     }
@@ -10005,7 +10398,8 @@ document.body.appendChild(second);"#,
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-importmap")
+      dom
+        .get_attribute(body, "data-importmap")
         .expect("get_attribute should succeed"),
       Some("1"),
       "expected module script to run after resolving bare specifier via import map"
@@ -10034,10 +10428,7 @@ document.body.appendChild(second);"#,
       );
       root.insert("imports".to_string(), serde_json::Value::Object(imports));
       let mut integrity_map = serde_json::Map::new();
-      integrity_map.insert(
-        module_url.clone(),
-        serde_json::Value::String(integrity),
-      );
+      integrity_map.insert(module_url.clone(), serde_json::Value::String(integrity));
       root.insert(
         "integrity".to_string(),
         serde_json::Value::Object(integrity_map),
@@ -10066,7 +10457,8 @@ document.body.appendChild(second);"#,
     let dom = tab.dom();
     let body = dom.body().expect("body should exist");
     assert_eq!(
-      dom.get_attribute(body, "data-integrity")
+      dom
+        .get_attribute(body, "data-integrity")
         .expect("get_attribute should succeed"),
       None
     );

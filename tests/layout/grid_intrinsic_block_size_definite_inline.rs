@@ -68,7 +68,10 @@ fn grid_intrinsic_block_size_probes_use_definite_inline_size() {
     .expect("grid layout");
 
   assert_eq!(fragment.children.len(), 1);
-  assert_approx(fragment.children[0].bounds.height(), 40.0, "grid item height");
+  assert_approx(
+    fragment.children[0].bounds.height(),
+    40.0,
+    "grid item height",
+  );
   assert_approx(fragment.bounds.height(), 40.0, "grid height");
 }
-

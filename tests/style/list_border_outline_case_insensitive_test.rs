@@ -66,4 +66,3 @@ fn list_border_outline_and_flex_keywords_are_ascii_case_insensitive() {
   assert_eq!(flex.styles.flex_shrink, 1.0);
   assert_eq!(flex.styles.flex_basis, FlexBasis::Auto);
 }
-

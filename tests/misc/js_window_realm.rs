@@ -1,26 +1,35 @@
 use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
-use fastrender::js::{
-  EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator,
-  ScriptType, TaskSource, VirtualClock, WindowFetchEnv, WindowHost, WindowHostState, WindowRealm,
-  WindowRealmConfig, WindowRealmHost,
-};
 use fastrender::js::window_timers::VmJsEventLoopHooks;
-use fastrender::resource::{
-  FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
+use fastrender::js::{
+  EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor,
+  ScriptOrchestrator, ScriptType, TaskSource, VirtualClock, WindowFetchEnv, WindowHost,
+  WindowHostState, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
-use fastrender::resource::web_fetch::WebFetchLimits;
 use fastrender::render_control;
+use fastrender::resource::web_fetch::WebFetchLimits;
+use fastrender::resource::{
+  FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, HttpRequest,
+  ResourceFetcher,
+};
 use fastrender::{Error, Result};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use vm_js::{Heap, Job, PropertyKey, RealmId, Scope, TerminationReason, Value, Vm, VmError, VmHost, VmHostHooks};
+use vm_js::{
+  Heap, Job, PropertyKey, RealmId, Scope, TerminationReason, Value, Vm, VmError, VmHost,
+  VmHostHooks,
+};
 
 const ASSERT_VM_HOST_FN_NAME: &str = "__fastrender_assert_vm_host";
 
-fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(event_loop: &mut EventLoop<Host>) {
-  fn drain<Host: WindowRealmHost>(host: &mut Host, _event_loop: &mut EventLoop<Host>) -> Result<()> {
+fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(
+  event_loop: &mut EventLoop<Host>,
+) {
+  fn drain<Host: WindowRealmHost>(
+    host: &mut Host,
+    _event_loop: &mut EventLoop<Host>,
+  ) -> Result<()> {
     let realm = host.window_realm();
     realm
       .perform_microtask_checkpoint()
@@ -282,11 +291,15 @@ fn document_host_state_is_threaded_through_window_entry_points() -> Result<()> {
     Ok(())
   }
 
-  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(
-    InMemoryFetcher::default().with_response("https://example.com/x", Vec::new(), 200),
-  );
+  let fetcher: Arc<dyn ResourceFetcher> =
+    Arc::new(InMemoryFetcher::default().with_response("https://example.com/x", Vec::new(), 200));
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_fetcher_and_options(dom, "https://example.com/", fetcher, js_opts_for_test())?;
+  let mut host = WindowHost::new_with_fetcher_and_options(
+    dom,
+    "https://example.com/",
+    fetcher,
+    js_opts_for_test(),
+  )?;
   install_host_ctx_tick(&mut host)?;
 
   host.exec_script(
@@ -302,7 +315,10 @@ ping();
   host.exec_script("requestAnimationFrame(ping);")?;
   host.exec_script("fetch(\"https://example.com/x\").then(ping);")?;
 
-  assert_eq!(host.run_until_idle(RunLimits::unbounded())?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    host.run_until_idle(RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
 
   // `run_until_idle` intentionally does not run animation frames. Queue an explicit task that runs
   // one frame turn so the callback fires.
@@ -310,7 +326,10 @@ ping();
     let _ = event_loop.run_animation_frame(host)?;
     Ok(())
   })?;
-  assert_eq!(host.run_until_idle(RunLimits::unbounded())?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    host.run_until_idle(RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
 
   let count = host.exec_script("globalThis.__count")?;
   let Value::Number(n) = count else {
@@ -342,9 +361,15 @@ fn inline_script_text(dom: &Dom2Document, script: NodeId) -> String {
     .collect::<String>()
 }
 
-fn get_current_script(vm: &mut Vm, heap: &mut Heap, document_obj: vm_js::GcObject) -> Result<Value> {
+fn get_current_script(
+  vm: &mut Vm,
+  heap: &mut Heap,
+  document_obj: vm_js::GcObject,
+) -> Result<Value> {
   let mut scope = heap.scope();
-  let key_s = scope.alloc_string("currentScript").map_err(|e| Error::Other(e.to_string()))?;
+  let key_s = scope
+    .alloc_string("currentScript")
+    .map_err(|e| Error::Other(e.to_string()))?;
   scope
     .push_root(Value::String(key_s))
     .map_err(|e| Error::Other(e.to_string()))?;
@@ -353,11 +378,7 @@ fn get_current_script(vm: &mut Vm, heap: &mut Heap, document_obj: vm_js::GcObjec
     .map_err(|e| Error::Other(e.to_string()))
 }
 
-fn get_wrapper_node_id(
-  vm: &mut Vm,
-  heap: &mut Heap,
-  wrapper: vm_js::GcObject,
-) -> Result<usize> {
+fn get_wrapper_node_id(vm: &mut Vm, heap: &mut Heap, wrapper: vm_js::GcObject) -> Result<usize> {
   let mut scope = heap.scope();
   let key_s = scope
     .alloc_string("__fastrender_node_id")
@@ -370,7 +391,9 @@ fn get_wrapper_node_id(
     .get(&mut scope, wrapper, key)
     .map_err(|e| Error::Other(e.to_string()))?;
   let Value::Number(n) = value else {
-    return Err(Error::Other("expected __fastrender_node_id to be a number".to_string()));
+    return Err(Error::Other(
+      "expected __fastrender_node_id to be a number".to_string(),
+    ));
   };
   Ok(n as usize)
 }
@@ -378,8 +401,9 @@ fn get_wrapper_node_id(
 #[test]
 fn window_self_and_document_url_are_exposed() -> Result<()> {
   let url = "https://example.com/";
-  let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
+      .map_err(|e| Error::Other(e.to_string()))?;
 
   let global = realm.global_object();
   let (_vm, heap) = realm.vm_and_heap_mut();
@@ -403,7 +427,8 @@ fn window_self_and_document_url_are_exposed() -> Result<()> {
 #[test]
 fn document_base_uri_falls_back_to_document_url() -> Result<()> {
   let url = "https://example.com/";
-  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm =
+    WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
   // Simulate an embedder that has not yet installed a base URL (or cleared it while navigating).
   realm.set_base_url(None);
@@ -420,7 +445,8 @@ fn document_base_uri_falls_back_to_document_url() -> Result<()> {
 #[test]
 fn document_default_view_points_at_window() -> Result<()> {
   let url = "https://example.com/";
-  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm =
+    WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
   let ok = realm
     .exec_script("document.defaultView === window && document.defaultView === self")
@@ -433,7 +459,8 @@ fn document_default_view_points_at_window() -> Result<()> {
 #[test]
 fn document_charset_properties_are_exposed() -> Result<()> {
   let url = "https://example.com/";
-  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm =
+    WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
   let value = realm
     .exec_script("document.characterSet + '|' + document.charset + '|' + document.inputEncoding")
@@ -447,10 +474,13 @@ fn document_charset_properties_are_exposed() -> Result<()> {
 #[test]
 fn document_title_is_exposed_and_writable() -> Result<()> {
   let url = "https://example.com/";
-  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm =
+    WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
   let ok = realm
-    .exec_script("document.title === '' && (document.title = 'hello') && document.title === 'hello'")
+    .exec_script(
+      "document.title === '' && (document.title = 'hello') && document.title === 'hello'",
+    )
     .map_err(|e| Error::Other(e.to_string()))?;
 
   assert_eq!(ok, Value::Bool(true));
@@ -523,12 +553,7 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
     assert_eq!(value, Value::Null);
   }
 
-  orchestrator.execute_script_element(
-    &mut host,
-    scripts[0],
-    ScriptType::Classic,
-    &mut executor,
-  )?;
+  orchestrator.execute_script_element(&mut host, scripts[0], ScriptType::Classic, &mut executor)?;
   {
     let (vm_host, realm) = host.vm_host_and_window_realm();
     let mut hooks = NoopHostHooks::default();
@@ -538,12 +563,7 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
     assert_eq!(value, Value::Null);
   }
 
-  orchestrator.execute_script_element(
-    &mut host,
-    scripts[1],
-    ScriptType::Classic,
-    &mut executor,
-  )?;
+  orchestrator.execute_script_element(&mut host, scripts[1], ScriptType::Classic, &mut executor)?;
   {
     let (vm_host, realm) = host.vm_host_and_window_realm();
     let mut hooks = NoopHostHooks::default();
@@ -562,9 +582,11 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
 #[test]
 fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
-  let mut realm =
-    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("https://example.com/"),
+    js_opts_for_test(),
+  )
+  .map_err(|e| Error::Other(e.to_string()))?;
 
   let err = {
     let global = realm.global_object();
@@ -585,7 +607,9 @@ fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
       panic!("expected location to be an object");
     };
 
-    let href_key_s = scope.alloc_string("href").map_err(|e| Error::Other(e.to_string()))?;
+    let href_key_s = scope
+      .alloc_string("href")
+      .map_err(|e| Error::Other(e.to_string()))?;
     scope
       .push_root(Value::String(href_key_s))
       .map_err(|e| Error::Other(e.to_string()))?;
@@ -597,7 +621,13 @@ fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
     let new_value = Value::String(new_url_s);
 
     scope
-      .ordinary_set(vm, location_obj, href_key, new_value, Value::Object(location_obj))
+      .ordinary_set(
+        vm,
+        location_obj,
+        href_key,
+        new_value,
+        Value::Object(location_obj),
+      )
       .expect_err("expected location.href setter to interrupt execution")
   };
   assert!(
@@ -619,9 +649,11 @@ fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
 
 #[test]
 fn location_assign_and_replace_request_navigation() -> Result<()> {
-  let mut realm =
-    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("https://example.com/"),
+    js_opts_for_test(),
+  )
+  .map_err(|e| Error::Other(e.to_string()))?;
 
   let err = realm
     .exec_script("location.assign('/a')")
@@ -655,9 +687,11 @@ fn location_assign_and_replace_request_navigation() -> Result<()> {
 
 #[test]
 fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
-  let mut realm =
-    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("https://example.com/"),
+    js_opts_for_test(),
+  )
+  .map_err(|e| Error::Other(e.to_string()))?;
 
   let err = realm
     .exec_script("location = '/a'")
@@ -727,8 +761,9 @@ fn history_push_state_updates_location_without_navigation() -> Result<()> {
 #[test]
 fn js_execution_can_observe_window_globals() -> Result<()> {
   let url = "https://example.com/path";
-  let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
+      .map_err(|e| Error::Other(e.to_string()))?;
 
   let value = realm
     .exec_script("window === globalThis && self === window && top === window && parent === window")
@@ -749,8 +784,9 @@ fn js_execution_can_observe_window_globals() -> Result<()> {
 
 #[test]
 fn event_loop_microtask_checkpoint_uses_dom_shim_hooks() -> Result<()> {
-  let renderer_dom =
-    fastrender::dom::parse_html("<!doctype html><html><head></head><body><div id=t></div></body></html>")?;
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><head></head><body><div id=t></div></body></html>",
+  )?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
@@ -1395,7 +1431,10 @@ try {
     let mut scope = heap.scope();
     let name = get_data_prop(&mut scope, global, "__err_name");
     let msg = get_data_prop(&mut scope, global, "__err_msg");
-    (get_string(scope.heap(), name), get_string(scope.heap(), msg))
+    (
+      get_string(scope.heap(), name),
+      get_string(scope.heap(), msg),
+    )
   };
   assert_eq!(name, "TypeError");
   assert_eq!(msg, "Illegal invocation");
@@ -1541,11 +1580,19 @@ __sig.addEventListener('abort', () => { globalThis.__events++; });
     let global = window.global_object();
     let (_vm, heap) = window.vm_and_heap_mut();
     let mut scope = heap.scope();
-    assert_eq!(get_data_prop(&mut scope, global, "__events"), Value::Number(0.0));
+    assert_eq!(
+      get_data_prop(&mut scope, global, "__events"),
+      Value::Number(0.0)
+    );
     let Value::Object(sig) = get_data_prop(&mut scope, global, "__sig") else {
-      return Err(Error::Other("expected AbortSignal.timeout to return an object".to_string()));
+      return Err(Error::Other(
+        "expected AbortSignal.timeout to return an object".to_string(),
+      ));
     };
-    assert_eq!(get_data_prop(&mut scope, sig, "aborted"), Value::Bool(false));
+    assert_eq!(
+      get_data_prop(&mut scope, sig, "aborted"),
+      Value::Bool(false)
+    );
   }
 
   // Advance deterministic time so the timeout becomes due.
@@ -1566,7 +1613,9 @@ __sig.addEventListener('abort', () => { globalThis.__events++; });
     };
     let aborted = get_data_prop(&mut scope, sig, "aborted");
     let Value::Object(reason) = get_data_prop(&mut scope, sig, "reason") else {
-      return Err(Error::Other("expected AbortSignal.reason to be an object".to_string()));
+      return Err(Error::Other(
+        "expected AbortSignal.reason to be an object".to_string(),
+      ));
     };
     let reason_name_value = get_data_prop(&mut scope, reason, "name");
     let reason_name = get_string(scope.heap(), reason_name_value);
@@ -1619,7 +1668,9 @@ globalThis.__same_reason = (s.reason === c2.signal.reason);
     };
     let aborted = get_data_prop(&mut scope, sig, "aborted");
     let Value::Object(reason) = get_data_prop(&mut scope, sig, "reason") else {
-      return Err(Error::Other("expected AbortSignal.any composite reason to be an object".to_string()));
+      return Err(Error::Other(
+        "expected AbortSignal.any composite reason to be an object".to_string(),
+      ));
     };
     let reason_name_value = get_data_prop(&mut scope, reason, "name");
     let reason_name = get_string(scope.heap(), reason_name_value);
@@ -1848,7 +1899,10 @@ Promise.any([Promise.reject("x"), Promise.reject("y")]).then(
     let mut scope = heap.scope();
     let name = get_data_prop(&mut scope, global, "__err_name");
     let err0 = get_data_prop(&mut scope, global, "__err0");
-    (get_string(scope.heap(), name), get_string(scope.heap(), err0))
+    (
+      get_string(scope.heap(), name),
+      get_string(scope.heap(), err0),
+    )
   };
 
   assert_eq!(name, "AggregateError");
@@ -2126,7 +2180,10 @@ Promise.any([]).then(
     let mut scope = heap.scope();
     let name = get_data_prop(&mut scope, global, "__name");
     let errors_len = get_data_prop(&mut scope, global, "__errors_len");
-    (get_string(scope.heap(), name), get_string(scope.heap(), errors_len))
+    (
+      get_string(scope.heap(), name),
+      get_string(scope.heap(), errors_len),
+    )
   };
   assert_eq!(name, "AggregateError");
   assert_eq!(errors_len, "0");
@@ -2164,8 +2221,9 @@ Promise.race([]).then(
 #[test]
 fn location_url_components_are_exposed_to_js_execution() -> Result<()> {
   let url = "https://example.com:8080/path/to/page?query=1#hash";
-  let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
+      .map_err(|e| Error::Other(e.to_string()))?;
 
   let value = realm
     .exec_script(
@@ -2629,21 +2687,14 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
   let mut orchestrator = ScriptOrchestrator::new();
   let mut executor = JsExecutor::default();
 
-  orchestrator.execute_script_element(
-    &mut host,
-    scripts[0],
-    ScriptType::Classic,
-    &mut executor,
-  )?;
-  orchestrator.execute_script_element(
-    &mut host,
-    scripts[1],
-    ScriptType::Classic,
-    &mut executor,
-  )?;
+  orchestrator.execute_script_element(&mut host, scripts[0], ScriptType::Classic, &mut executor)?;
+  orchestrator.execute_script_element(&mut host, scripts[1], ScriptType::Classic, &mut executor)?;
 
   assert_eq!(executor.wrapper_identity_ok, vec![true, true]);
-  assert_eq!(executor.observed, vec![scripts[0].index(), scripts[1].index()]);
+  assert_eq!(
+    executor.observed,
+    vec![scripts[0].index(), scripts[1].index()]
+  );
   Ok(())
 }
 
@@ -2855,7 +2906,9 @@ fn parse_and_exec_streaming_html(
 
         // Update the JS realm's base URL so `fetch("rel")` uses the document base URL at the time
         // the script runs.
-        host.window_mut().set_base_url(base_url_at_this_point.clone());
+        host
+          .window_mut()
+          .set_base_url(base_url_at_this_point.clone());
         host.exec_script_with_name_in_event_loop(event_loop, "<inline script>", source_text)?;
       }
       StreamingParserYield::NeedMoreInput => {
@@ -2876,9 +2929,8 @@ fn parse_and_exec_streaming_html(
 
 #[test]
 fn fetch_resolves_relative_url_against_document_base_href() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://ex/base/a", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://ex/base/a", b"ok", 200));
   let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://ex/doc.html",
@@ -2994,9 +3046,8 @@ fn fetch_base_url_updates_between_scripts() -> Result<()> {
 
 #[test]
 fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/x", b"hello", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/x", b"hello", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -3048,9 +3099,8 @@ fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
 
 #[test]
 fn window_fetch_forwards_request_headers() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -3088,9 +3138,8 @@ fn window_fetch_forwards_request_headers() -> Result<()> {
 
 #[test]
 fn window_fetch_accepts_request_object_input() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   let mut host = host_state_with_fetcher(
@@ -3127,9 +3176,8 @@ fn window_fetch_accepts_request_object_input() -> Result<()> {
 
 #[test]
 fn window_request_constructor_clones_request_input() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   let mut host = host_state_with_fetcher(
@@ -3168,9 +3216,8 @@ fn window_request_constructor_clones_request_input() -> Result<()> {
 
 #[test]
 fn window_fetch_forwards_request_body() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/submit", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/submit", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   let mut host = host_state_with_fetcher(
@@ -3204,9 +3251,8 @@ fn window_fetch_forwards_request_body() -> Result<()> {
 
 #[test]
 fn window_fetch_forwards_request_body_from_request_object() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/submit", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/submit", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   let mut host = host_state_with_fetcher(
@@ -3241,9 +3287,8 @@ fn window_fetch_forwards_request_body_from_request_object() -> Result<()> {
 
 #[test]
 fn window_fetch_forwards_request_credentials_mode() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/creds", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/creds", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   let mut host = host_state_with_fetcher(
@@ -3277,9 +3322,8 @@ fn window_fetch_forwards_request_credentials_mode() -> Result<()> {
 
 #[test]
 fn window_fetch_forwards_request_credentials_mode_from_request_object() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/creds", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/creds", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   let mut host = host_state_with_fetcher(
@@ -3314,9 +3358,11 @@ fn window_fetch_forwards_request_credentials_mode_from_request_object() -> Resul
 
 #[test]
 fn window_fetch_response_json_parses_body() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/json", br#"{"ok": true}"#, 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(InMemoryFetcher::new().with_response(
+    "https://example.com/json",
+    br#"{"ok": true}"#,
+    200,
+  ));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -3358,9 +3404,11 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
 
 #[test]
 fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/bytes", b"\x00\x01\x02\xff", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(InMemoryFetcher::new().with_response(
+    "https://example.com/bytes",
+    b"\x00\x01\x02\xff",
+    200,
+  ));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -3501,9 +3549,11 @@ fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
 
 #[test]
 fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/once-bytes", b"\x00\x01\x02\xff", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(InMemoryFetcher::new().with_response(
+    "https://example.com/once-bytes",
+    b"\x00\x01\x02\xff",
+    200,
+  ));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -3552,11 +3602,7 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
     let first_len = get_data_prop(&mut scope, global, "__ab_first_len");
     let first0 = get_data_prop(&mut scope, global, "__ab_first0");
     let second_err = get_data_prop(&mut scope, global, "__ab_second_err");
-    (
-      first_len,
-      first0,
-      get_string(scope.heap(), second_err),
-    )
+    (first_len, first0, get_string(scope.heap(), second_err))
   };
 
   assert_eq!(first_len, Value::Number(4.0));
@@ -3567,9 +3613,11 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
 
 #[test]
 fn array_buffer_and_uint8_array_basic_semantics() -> Result<()> {
-  let mut realm =
-    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
-    .map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("https://example.com/"),
+    js_opts_for_test(),
+  )
+  .map_err(|e| Error::Other(e.to_string()))?;
 
   let res = realm.exec_script(
     r#"
@@ -3729,9 +3777,8 @@ fn array_buffer_and_uint8_array_basic_semantics() -> Result<()> {
 
 #[test]
 fn window_fetch_rejects_on_cors_failure() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://other.example/res", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://other.example/res", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -3775,9 +3822,8 @@ fn window_fetch_rejects_on_cors_failure() -> Result<()> {
 
 #[test]
 fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://client.example/large", b"abcd", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://client.example/large", b"abcd", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<FetchOnlyHost>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -3850,7 +3896,10 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
     scope.push_root(Value::Object(global)).unwrap();
     let name = get_data_prop(&mut scope, global, "__size_err_name");
     let msg = get_data_prop(&mut scope, global, "__size_err_msg");
-    (get_string(scope.heap(), name), get_string(scope.heap(), msg))
+    (
+      get_string(scope.heap(), name),
+      get_string(scope.heap(), msg),
+    )
   };
   assert_eq!(name, "TypeError");
   assert!(
@@ -3862,9 +3911,8 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
 
 #[test]
 fn window_fetch_response_text_rejects_second_consumption() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/once-text", b"hello", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/once-text", b"hello", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -3927,9 +3975,8 @@ fn window_fetch_response_text_rejects_second_consumption() -> Result<()> {
 
 #[test]
 fn window_fetch_accepts_request_object() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/headers2", b"ok", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/headers2", b"ok", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
@@ -4063,9 +4110,8 @@ fn window_response_clone_throws_when_body_used() -> Result<()> {
 
 #[test]
 fn window_xhr_supports_sync_send_and_with_credentials() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/data", b"hello", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/data", b"hello", 200));
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
   let mut host = host_state_with_fetcher(
@@ -4121,9 +4167,8 @@ fn window_xhr_supports_sync_send_and_with_credentials() -> Result<()> {
 
 #[test]
 fn window_xhr_open_undefined_async_defaults_to_true() -> Result<()> {
-  let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/data", b"hello", 200),
-  );
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/data", b"hello", 200));
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);

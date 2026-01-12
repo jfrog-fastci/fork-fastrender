@@ -1,7 +1,9 @@
 use base64::Engine as _;
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::{EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementSpec};
-use fastrender::{BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result};
+use fastrender::{
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result,
+};
 use std::sync::{Arc, Mutex};
 
 use super::support::ExecutorWithWindow;
@@ -111,7 +113,9 @@ impl BrowserTabJsExecutor for LoggingExecutor {
 #[test]
 fn browser_tab_navigate_to_url_uses_streaming_parser_and_script_scheduling() -> Result<()> {
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
-  let executor = LoggingExecutor { log: Arc::clone(&log) };
+  let executor = LoggingExecutor {
+    log: Arc::clone(&log),
+  };
   let options = RenderOptions::default();
 
   // Start from an empty tab so we can exercise URL navigation code paths.
@@ -165,7 +169,9 @@ fn browser_tab_navigate_to_url_uses_streaming_parser_and_script_scheduling() -> 
 #[test]
 fn browser_tab_async_script_executes_before_parse_completes() -> Result<()> {
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
-  let executor = LoggingExecutor { log: Arc::clone(&log) };
+  let executor = LoggingExecutor {
+    log: Arc::clone(&log),
+  };
   let options = RenderOptions::default();
 
   // Use a large `<!-- ... -->` comment so the default parse budget (64 pump iterations) exhausts
@@ -205,7 +211,9 @@ fn browser_tab_async_script_executes_before_parse_completes() -> Result<()> {
 #[test]
 fn browser_tab_async_script_mutation_persists_across_parse_slices() -> Result<()> {
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
-  let executor = LoggingExecutor { log: Arc::clone(&log) };
+  let executor = LoggingExecutor {
+    log: Arc::clone(&log),
+  };
   let options = RenderOptions::default();
 
   let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
@@ -243,7 +251,10 @@ fn browser_tab_async_script_mutation_persists_across_parse_slices() -> Result<()
 
   assert!(has_element_by_id(tab.dom(), "after"));
   let head = tab.dom().head().expect("expected head element after parse");
-  assert_eq!(tab.dom().get_attribute(head, "data-from-async").unwrap(), Some("1"));
+  assert_eq!(
+    tab.dom().get_attribute(head, "data-from-async").unwrap(),
+    Some("1")
+  );
 
   Ok(())
 }

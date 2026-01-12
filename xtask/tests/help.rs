@@ -50,10 +50,7 @@ fn js_help_lists_subcommands() {
     .output()
     .expect("run xtask js --help");
 
-  assert!(
-    output.status.success(),
-    "js help should exit successfully"
-  );
+  assert!(output.status.success(), "js help should exit successfully");
 
   let stdout = String::from_utf8_lossy(&output.stdout);
   assert!(
@@ -171,7 +168,9 @@ fn js_wpt_dom_smoke_sync_pass_reports_pass() {
   let raw = std::fs::read_to_string(&report_path).expect("read report");
   let json: serde_json::Value = serde_json::from_str(&raw).expect("parse report JSON");
 
-  let results = json["results"].as_array().expect("results should be an array");
+  let results = json["results"]
+    .as_array()
+    .expect("results should be an array");
   assert_eq!(results.len(), 1, "expected exactly one filtered result");
   assert_eq!(results[0]["id"], "smoke/sync-pass.html");
   assert_eq!(results[0]["outcome"], "passed");

@@ -253,16 +253,16 @@ impl From<DiffMetrics> for MetricsSummary {
       max_channel_diff: metrics.max_channel_diff,
       dimension_mismatch,
       perceptual_region,
-      first_mismatch: metrics
-        .first_mismatch
-        .and_then(|(x, y)| {
-          metrics.first_mismatch_rgba.map(|(after_rgba, before_rgba)| FirstMismatchSummary {
+      first_mismatch: metrics.first_mismatch.and_then(|(x, y)| {
+        metrics
+          .first_mismatch_rgba
+          .map(|(after_rgba, before_rgba)| FirstMismatchSummary {
             x,
             y,
             before_rgba,
             after_rgba,
           })
-        }),
+      }),
     }
   }
 }

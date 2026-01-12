@@ -88,11 +88,7 @@ fn subgrid_abspos_static_position_inherits_autorepeat_named_lines() {
   );
   subgrid.id = 1;
 
-  let parent = BoxNode::new_block(
-    parent_style,
-    FormattingContextType::Grid,
-    vec![subgrid],
-  );
+  let parent = BoxNode::new_block(parent_style, FormattingContextType::Grid, vec![subgrid]);
 
   let fragment = fc
     .layout(&parent, &LayoutConstraints::definite(80.0, 20.0))

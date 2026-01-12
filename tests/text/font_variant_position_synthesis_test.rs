@@ -5,7 +5,7 @@ use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_loader::FontContext;
 use fastrender::text::pipeline::{assign_fonts, Direction, ItemizedRun, Script};
 use fastrender::ComputedStyle;
-use rustybuzz::{Feature, Face as HbFace, UnicodeBuffer};
+use rustybuzz::{Face as HbFace, Feature, UnicodeBuffer};
 use ttf_parser::Tag;
 
 const NOTO_SANS_FONT: &[u8] = include_bytes!("../fixtures/fonts/NotoSans-subset.ttf");
@@ -43,12 +43,15 @@ fn feature_affects_char(face: &HbFace<'_>, tag: [u8; 4], ch: char) -> bool {
     .iter()
     .zip(feature_infos)
     .any(|(base, feature)| base.glyph_id != feature.glyph_id)
-    || base_positions.iter().zip(feature_positions).any(|(base, feature)| {
-      base.x_advance != feature.x_advance
-        || base.y_advance != feature.y_advance
-        || base.x_offset != feature.x_offset
-        || base.y_offset != feature.y_offset
-    })
+    || base_positions
+      .iter()
+      .zip(feature_positions)
+      .any(|(base, feature)| {
+        base.x_advance != feature.x_advance
+          || base.y_advance != feature.y_advance
+          || base.x_offset != feature.x_offset
+          || base.y_offset != feature.y_offset
+      })
 }
 
 fn feature_value(run: &fastrender::text::pipeline::FontRun, tag: [u8; 4]) -> Option<u32> {

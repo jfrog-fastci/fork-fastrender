@@ -56,9 +56,17 @@ fn flex_wrap_vertical_rl_stacks_lines_from_right_to_left() {
   container_style.width_keyword = None;
   container_style.height_keyword = None;
 
-  let mut child1 = BoxNode::new_block(fixed_block(10.0, 20.0), FormattingContextType::Block, vec![]);
+  let mut child1 = BoxNode::new_block(
+    fixed_block(10.0, 20.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   child1.id = 1;
-  let mut child2 = BoxNode::new_block(fixed_block(10.0, 20.0), FormattingContextType::Block, vec![]);
+  let mut child2 = BoxNode::new_block(
+    fixed_block(10.0, 20.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   child2.id = 2;
 
   let container = BoxNode::new_block(
@@ -113,9 +121,17 @@ fn flex_wrap_reverse_vertical_rl_stacks_lines_left_to_right() {
   container_style.width_keyword = None;
   container_style.height_keyword = None;
 
-  let mut child1 = BoxNode::new_block(fixed_block(10.0, 20.0), FormattingContextType::Block, vec![]);
+  let mut child1 = BoxNode::new_block(
+    fixed_block(10.0, 20.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   child1.id = 1;
-  let mut child2 = BoxNode::new_block(fixed_block(10.0, 20.0), FormattingContextType::Block, vec![]);
+  let mut child2 = BoxNode::new_block(
+    fixed_block(10.0, 20.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   child2.id = 2;
 
   let container = BoxNode::new_block(

@@ -135,8 +135,14 @@ fn aria_labelledby_and_describedby_relations_resolve_and_dedupe() {
 
   let target = find_by_id(&tree, "target").expect("target node");
   let relations = target.relations.as_ref().expect("relations");
-  assert_eq!(relations.labelled_by, vec!["l1".to_string(), "l2".to_string()]);
-  assert_eq!(relations.described_by, vec!["d1".to_string(), "d2".to_string()]);
+  assert_eq!(
+    relations.labelled_by,
+    vec!["l1".to_string(), "l2".to_string()]
+  );
+  assert_eq!(
+    relations.described_by,
+    vec!["d1".to_string(), "d2".to_string()]
+  );
 }
 
 #[test]

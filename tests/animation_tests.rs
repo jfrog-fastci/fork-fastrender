@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use fastrender::animation::{
   apply_animations, axis_scroll_state, sample_keyframes, scroll_timeline_progress,
-  view_timeline_progress,
-  AnimatedValue,
+  view_timeline_progress, AnimatedValue,
 };
 use fastrender::api::FastRender;
 use fastrender::css::parser::parse_stylesheet;
@@ -19,10 +18,10 @@ use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
   AnimationFillMode, AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize,
-  BackgroundSizeComponent, BasicShape, BorderStyle, ClipComponent, FilterFunction, OutlineColor,
-  OutlineStyle, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller,
-  TimelineAxis, TimelineOffset, TransformOrigin, TransitionTimingFunction, ViewTimeline,
-  ViewTimelinePhase, WritingMode, Direction,
+  BackgroundSizeComponent, BasicShape, BorderStyle, ClipComponent, Direction, FilterFunction,
+  OutlineColor, OutlineStyle, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
+  ScrollTimelineScroller, TimelineAxis, TimelineOffset, TransformOrigin, TransitionTimingFunction,
+  ViewTimeline, ViewTimelinePhase, WritingMode,
 };
 use fastrender::Rgba;
 use fastrender::{
@@ -345,19 +344,29 @@ fn view_timeline_progress_entry_keyword_uses_contain_boundary_for_small_targets(
   let target_end = 200.0;
   let view_size = 100.0;
 
-  let progress0 = view_timeline_progress(&timeline, target_start, target_end, view_size, 50.0, &range)
-    .unwrap();
+  let progress0 =
+    view_timeline_progress(&timeline, target_start, target_end, view_size, 50.0, &range).unwrap();
   let progress_mid =
     view_timeline_progress(&timeline, target_start, target_end, view_size, 75.0, &range).unwrap();
-  let progress_end =
-    view_timeline_progress(&timeline, target_start, target_end, view_size, 100.0, &range).unwrap();
+  let progress_end = view_timeline_progress(
+    &timeline,
+    target_start,
+    target_end,
+    view_size,
+    100.0,
+    &range,
+  )
+  .unwrap();
 
   assert!((progress0 - 0.0).abs() < 1e-6, "progress0={progress0}");
   assert!(
     (progress_mid - 0.5).abs() < 1e-6,
     "progress_mid={progress_mid}"
   );
-  assert!((progress_end - 1.0).abs() < 1e-6, "progress_end={progress_end}");
+  assert!(
+    (progress_end - 1.0).abs() < 1e-6,
+    "progress_end={progress_end}"
+  );
 }
 
 #[test]
@@ -373,10 +382,19 @@ fn view_timeline_progress_exit_100_percent_maps_to_cover_end() {
   let view_size = 100.0;
   let exit_edge = 200.0;
 
-  let progress_end =
-    view_timeline_progress(&timeline, target_start, target_end, view_size, exit_edge, &range)
-      .unwrap();
-  assert!((progress_end - 1.0).abs() < 1e-6, "progress_end={progress_end}");
+  let progress_end = view_timeline_progress(
+    &timeline,
+    target_start,
+    target_end,
+    view_size,
+    exit_edge,
+    &range,
+  )
+  .unwrap();
+  assert!(
+    (progress_end - 1.0).abs() < 1e-6,
+    "progress_end={progress_end}"
+  );
 }
 
 #[test]
@@ -1641,7 +1659,8 @@ fn scroll_timeline_progress_is_reversed_for_rtl_inline_axis() {
     200.0,
     100.0,
   );
-  let progress0 = scroll_timeline_progress(&timeline, pos0, scroll_range, view_size, &range).unwrap();
+  let progress0 =
+    scroll_timeline_progress(&timeline, pos0, scroll_range, view_size, &range).unwrap();
   assert!((progress0 - 1.0).abs() < 1e-6, "progress0={progress0}");
 
   let (pos_end, scroll_range, view_size) = axis_scroll_state(
@@ -1657,7 +1676,10 @@ fn scroll_timeline_progress_is_reversed_for_rtl_inline_axis() {
   );
   let progress_end =
     scroll_timeline_progress(&timeline, pos_end, scroll_range, view_size, &range).unwrap();
-  assert!((progress_end - 0.0).abs() < 1e-6, "progress_end={progress_end}");
+  assert!(
+    (progress_end - 0.0).abs() < 1e-6,
+    "progress_end={progress_end}"
+  );
 }
 
 #[test]
@@ -1665,10 +1687,7 @@ fn view_timeline_progress_is_reversed_for_rtl_inline_axis() {
   let sheet = parse_stylesheet("@keyframes fade { from { opacity: 0; } to { opacity: 1; } }")
     .expect("stylesheet");
   let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
-  let rule = keyframes
-    .into_iter()
-    .next()
-    .expect("fade keyframes");
+  let rule = keyframes.into_iter().next().expect("fade keyframes");
 
   let mut root_style = ComputedStyle::default();
   root_style.direction = Direction::Rtl;
@@ -1692,8 +1711,10 @@ fn view_timeline_progress_is_reversed_for_rtl_inline_axis() {
     let spacer = FragmentNode::new_block(Rect::from_xywh(150.0, 0.0, 50.0, 100.0), vec![]);
 
     // Make the root content wider than the viewport so `scroll_x` affects view timeline progress.
-    let mut root =
-      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![target, spacer]);
+    let mut root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![target, spacer],
+    );
     root.style = Some(Arc::new(root_style.clone()));
     let mut tree = FragmentTree::new(root);
     tree.keyframes.insert("fade".to_string(), rule.clone());
@@ -1728,10 +1749,7 @@ fn view_timeline_progress_is_reversed_for_vertical_rl_block_axis() {
   let sheet = parse_stylesheet("@keyframes fade { from { opacity: 0; } to { opacity: 1; } }")
     .expect("stylesheet");
   let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
-  let rule = keyframes
-    .into_iter()
-    .next()
-    .expect("fade keyframes");
+  let rule = keyframes.into_iter().next().expect("fade keyframes");
 
   let mut root_style = ComputedStyle::default();
   root_style.direction = Direction::Ltr;
@@ -1754,8 +1772,10 @@ fn view_timeline_progress_is_reversed_for_vertical_rl_block_axis() {
     target.style = Some(Arc::new(target_style.clone()));
     let spacer = FragmentNode::new_block(Rect::from_xywh(150.0, 0.0, 50.0, 100.0), vec![]);
 
-    let mut root =
-      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![target, spacer]);
+    let mut root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![target, spacer],
+    );
     root.style = Some(Arc::new(root_style.clone()));
     let mut tree = FragmentTree::new(root);
     tree.keyframes.insert("fade".to_string(), rule.clone());
@@ -1786,10 +1806,7 @@ fn view_timeline_progress_is_reversed_for_vertical_writing_mode_rtl_inline_axis(
   let sheet = parse_stylesheet("@keyframes fade { from { opacity: 0; } to { opacity: 1; } }")
     .expect("stylesheet");
   let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
-  let rule = keyframes
-    .into_iter()
-    .next()
-    .expect("fade keyframes");
+  let rule = keyframes.into_iter().next().expect("fade keyframes");
 
   let mut root_style = ComputedStyle::default();
   root_style.direction = Direction::Rtl;
@@ -1812,8 +1829,10 @@ fn view_timeline_progress_is_reversed_for_vertical_writing_mode_rtl_inline_axis(
     target.style = Some(Arc::new(target_style.clone()));
     let spacer = FragmentNode::new_block(Rect::from_xywh(0.0, 150.0, 50.0, 50.0), vec![]);
 
-    let mut root =
-      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![target, spacer]);
+    let mut root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![target, spacer],
+    );
     root.style = Some(Arc::new(root_style.clone()));
     let mut tree = FragmentTree::new(root);
     tree.keyframes.insert("fade".to_string(), rule.clone());

@@ -92,7 +92,10 @@ fn vertical_align_middle_affects_inline_replaced_metrics_inside_inline_box() {
   else {
     panic!("expected BASE fragment to be a line");
   };
-  let FragmentContent::Line { baseline: mid_baseline } = mid_line.content else {
+  let FragmentContent::Line {
+    baseline: mid_baseline,
+  } = mid_line.content
+  else {
     panic!("expected MID fragment to be a line");
   };
 

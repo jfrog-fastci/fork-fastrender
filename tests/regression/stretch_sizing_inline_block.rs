@@ -48,4 +48,3 @@ fn stretch_keyword_sizes_inline_block_to_available_width() {
   let red_bbox = find_exact_color_bbox(&pixmap, red).expect("expected red pixels to be painted");
   assert_eq!(red_bbox, (0, 0, 49, 9), "unexpected red bbox: {red_bbox:?}");
 }
-

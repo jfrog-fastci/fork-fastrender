@@ -3,11 +3,12 @@ use std::path::Path;
 
 use xtask::webidl::resolve::ExposureTarget;
 use xtask::webidl_bindings_codegen::{
-  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend, WebIdlBindingsCodegenConfig,
-  WebIdlBindingsGenerationMode,
+  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend,
+  WebIdlBindingsCodegenConfig, WebIdlBindingsGenerationMode,
 };
 
-const EXPECTED: &str = include_str!("goldens/webidl_bindings_codegen_attributes_and_constants_expected.rs");
+const EXPECTED: &str =
+  include_str!("goldens/webidl_bindings_codegen_attributes_and_constants_expected.rs");
 
 #[test]
 fn generated_webidl_bindings_include_attributes_and_constants() {
@@ -43,7 +44,10 @@ fn generated_webidl_bindings_include_attributes_and_constants() {
   )
   .unwrap();
 
-  assert_eq!(out, EXPECTED, "expected generated output to match golden snapshot");
+  assert_eq!(
+    out, EXPECTED,
+    "expected generated output to match golden snapshot"
+  );
 
   assert!(
     out.contains("define_attribute_accessor(proto_foo, \"size\""),

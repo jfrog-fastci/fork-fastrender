@@ -23,12 +23,16 @@ fn legacy_bindings_contain_url_origin_getters() {
   let worker_bindings = &legacy_bindings[worker_start..];
 
   assert_eq!(
-    window_bindings.matches("fn u_r_l_get_attribute_origin").count(),
+    window_bindings
+      .matches("fn u_r_l_get_attribute_origin")
+      .count(),
     1,
     "expected legacy window bindings to define exactly one u_r_l_get_attribute_origin wrapper"
   );
   assert_eq!(
-    worker_bindings.matches("fn u_r_l_get_attribute_origin").count(),
+    worker_bindings
+      .matches("fn u_r_l_get_attribute_origin")
+      .count(),
     1,
     "expected legacy worker bindings to define exactly one u_r_l_get_attribute_origin wrapper"
   );
@@ -58,4 +62,3 @@ fn legacy_bindings_contain_url_origin_getters() {
     "expected legacy worker bindings to install URL.origin getter exactly once"
   );
 }
-

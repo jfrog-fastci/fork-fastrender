@@ -231,4 +231,3 @@ fn transition_behavior_initial_resets_to_normal() {
     vec![TransitionBehavior::Normal].into()
   );
 }
-

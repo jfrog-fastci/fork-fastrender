@@ -80,4 +80,3 @@ fn inline_box_can_fragment_mid_line_instead_of_forcing_break_before() {
     "expected first line to include text from the `<span>`, got: {lines:?}"
   );
 }
-

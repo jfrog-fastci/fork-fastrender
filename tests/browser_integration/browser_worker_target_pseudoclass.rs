@@ -4,7 +4,10 @@ use super::support;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use std::time::Duration;
 
-fn next_navigation_committed(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> WorkerToUi {
+fn next_navigation_committed(
+  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> WorkerToUi {
   support::recv_for_tab(rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
     matches!(
       msg,

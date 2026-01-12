@@ -116,4 +116,3 @@ fn text_keyword_values_are_ascii_case_insensitive() {
   assert_eq!(invalid.styles.vertical_align, VerticalAlign::Baseline);
   assert!(!invalid.styles.vertical_align_specified);
 }
-

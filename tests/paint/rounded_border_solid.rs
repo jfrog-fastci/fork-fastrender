@@ -1,6 +1,5 @@
 use super::util::{
-  create_stacking_context_bounds_renderer,
-  create_stacking_context_bounds_renderer_legacy,
+  create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
 };
 
 fn assert_rounded_border_paints_corner_arc(pixmap: &tiny_skia::Pixmap) {
@@ -16,7 +15,10 @@ fn assert_rounded_border_paints_corner_arc(pixmap: &tiny_skia::Pixmap) {
 
   let left_edge = pixmap.pixel(2, 10).expect("left edge pixel");
   assert!(
-    left_edge.red() < 30 && left_edge.green() < 30 && left_edge.blue() < 30 && left_edge.alpha() > 200,
+    left_edge.red() < 30
+      && left_edge.green() < 30
+      && left_edge.blue() < 30
+      && left_edge.alpha() > 200,
     "expected left edge border to be painted, got rgba({}, {}, {}, {})",
     left_edge.red(),
     left_edge.green(),

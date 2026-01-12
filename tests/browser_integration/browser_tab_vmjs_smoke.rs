@@ -29,7 +29,9 @@ fn browser_tab_vmjs_smoke_runs_inline_script_and_mutates_dom() -> Result<()> {
   );
 
   let dom: &Document = tab.dom();
-  let body = dom.body().ok_or_else(|| Error::Other("expected document.body to exist".to_string()))?;
+  let body = dom
+    .body()
+    .ok_or_else(|| Error::Other("expected document.body to exist".to_string()))?;
   let value = dom
     .get_attribute(body, "data-ok")
     .map_err(|e| Error::Other(e.to_string()))?;

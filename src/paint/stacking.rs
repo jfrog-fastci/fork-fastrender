@@ -1747,9 +1747,12 @@ where
         clip_stack.push(link);
       })
       .is_some();
-    let backface_pushed = style
-      .as_deref()
-      .is_some_and(|style| matches!(style.backface_visibility, crate::style::types::BackfaceVisibility::Hidden));
+    let backface_pushed = style.as_deref().is_some_and(|style| {
+      matches!(
+        style.backface_visibility,
+        crate::style::types::BackfaceVisibility::Hidden
+      )
+    });
     if backface_pushed {
       *backface_depth += 1;
     }
@@ -2069,9 +2072,12 @@ where
         clip_stack.push(link);
       })
       .is_some();
-    let backface_pushed = style
-      .as_deref()
-      .is_some_and(|style| matches!(style.backface_visibility, crate::style::types::BackfaceVisibility::Hidden));
+    let backface_pushed = style.as_deref().is_some_and(|style| {
+      matches!(
+        style.backface_visibility,
+        crate::style::types::BackfaceVisibility::Hidden
+      )
+    });
     if backface_pushed {
       *backface_depth += 1;
     }

@@ -794,10 +794,9 @@ fn clear_dir(path: &Path) -> Result<()> {
 
 fn cargo_bin_executable(repo_root: &Path, bin: &str, debug: bool) -> PathBuf {
   let profile_dir = if debug { "debug" } else { "release" };
-  crate::cargo_target_dir(repo_root).join(profile_dir).join(format!(
-    "{bin}{}",
-    std::env::consts::EXE_SUFFIX
-  ))
+  crate::cargo_target_dir(repo_root)
+    .join(profile_dir)
+    .join(format!("{bin}{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn render_fixtures_executable(repo_root: &Path, debug: bool) -> PathBuf {

@@ -6,9 +6,9 @@ use fastrender::style::types::Direction;
 use fastrender::style::types::TextTransform;
 use fastrender::style::values::Length;
 use fastrender::ComputedStyle;
+use fastrender::FormattingContext;
 use fastrender::Rgba;
 use fastrender::{BoxNode, FormattingContextType};
-use fastrender::FormattingContext;
 use std::sync::Arc;
 
 fn find_first_line<'a>(
@@ -44,7 +44,10 @@ fn collect_texts<'a>(fragment: &'a fastrender::FragmentNode, out: &mut Vec<(&'a 
   }
 }
 
-fn collect_text_fragments<'a>(fragment: &'a fastrender::FragmentNode, out: &mut Vec<&'a fastrender::FragmentNode>) {
+fn collect_text_fragments<'a>(
+  fragment: &'a fastrender::FragmentNode,
+  out: &mut Vec<&'a fastrender::FragmentNode>,
+) {
   if matches!(fragment.content, fastrender::FragmentContent::Text { .. }) {
     out.push(fragment);
   }
@@ -212,11 +215,15 @@ fn first_letter_float_creates_separate_fragment() {
     .layout(&container, &LayoutConstraints::definite_width(180.0))
     .expect("inline layout");
 
-  let float_fragment = find_fragment_with_background(&fragment, first_letter_style.background_color)
-    .expect("float fragment for first-letter");
+  let float_fragment =
+    find_fragment_with_background(&fragment, first_letter_style.background_color)
+      .expect("float fragment for first-letter");
   assert!(float_fragment.bounds.width() > 0.0);
 
   let mut texts = Vec::new();
   collect_text_fragments(&fragment, &mut texts);
-  assert!(texts.len() > 1, "float should not discard remaining inline text");
+  assert!(
+    texts.len() > 1,
+    "float should not discard remaining inline text"
+  );
 }

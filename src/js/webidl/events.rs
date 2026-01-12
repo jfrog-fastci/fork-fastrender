@@ -8,11 +8,11 @@ use vm_js::{PropertyKey, RootId, Value, VmError};
 use crate::dom2;
 use crate::error::{Error, Result};
 use crate::js::vm_error_format;
-use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 use crate::web::events::{
   dispatch_event, AddEventListenerOptions, DomError as EventsDomError, Event, EventListenerInvoker,
   EventListenerRegistry, EventPhase, EventTargetId, ListenerId,
 };
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
 /// A JS function value that can be registered as a DOM event listener.
 ///
@@ -193,7 +193,7 @@ impl EventWrapper {
       keys.stop_immediate_propagation,
       stop_immediate,
       false,
-      )?;
+    )?;
 
     let return_value_getter = {
       let active = active_events.clone();
@@ -325,7 +325,12 @@ impl EventWrapper {
       true,
     )?;
     rt.define_data_property(obj, self.keys.composed, Value::Bool(event.composed), true)?;
-    rt.define_data_property(obj, self.keys.time_stamp, Value::Number(event.time_stamp), true)?;
+    rt.define_data_property(
+      obj,
+      self.keys.time_stamp,
+      Value::Number(event.time_stamp),
+      true,
+    )?;
 
     let target = self.js_value_for_target(event.target);
     rt.define_data_property(obj, self.keys.target, target, true)?;
@@ -341,7 +346,12 @@ impl EventWrapper {
       true,
     )?;
 
-    rt.define_data_property(obj, self.keys.is_trusted, Value::Bool(event.is_trusted), true)?;
+    rt.define_data_property(
+      obj,
+      self.keys.is_trusted,
+      Value::Bool(event.is_trusted),
+      true,
+    )?;
 
     Ok(obj)
   }
@@ -616,7 +626,9 @@ impl EventListenerInvoker for JsDomEvents {
     //   with `this = listener`.
     let call = if self.runtime.is_callable(entry.callback) {
       let this_arg = self.event_wrapper.js_value_for_target(event.current_target);
-      self.runtime.call_function(entry.callback, this_arg, &[js_event])
+      self
+        .runtime
+        .call_function(entry.callback, this_arg, &[js_event])
     } else if self.runtime.is_object(entry.callback) {
       // Root the event object while we look up and call handleEvent, since `get_method` may
       // allocate and trigger a GC.
@@ -624,7 +636,8 @@ impl EventListenerInvoker for JsDomEvents {
         let event_root = self.runtime.heap_mut().add_root(js_event)?;
         let res = (|| {
           let handle_event_key = self.runtime.property_key_from_str("handleEvent")?;
-          let Some(handle_event) = self.runtime.get_method(entry.callback, handle_event_key)? else {
+          let Some(handle_event) = self.runtime.get_method(entry.callback, handle_event_key)?
+          else {
             return Err(self.runtime.throw_type_error(
               "Callback interface object is missing a callable handleEvent method",
             ));
@@ -637,9 +650,11 @@ impl EventListenerInvoker for JsDomEvents {
         res
       })()
     } else {
-      Err(self
-        .runtime
-        .throw_type_error("Event listener is not callable and not an object"))
+      Err(
+        self
+          .runtime
+          .throw_type_error("Event listener is not callable and not an object"),
+      )
     };
 
     // Drop JS roots for listeners that are no longer registered (including `once` listeners, which

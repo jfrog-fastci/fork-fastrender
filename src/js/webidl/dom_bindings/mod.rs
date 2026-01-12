@@ -10,8 +10,8 @@
 
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{self, NodeId, NodeKind};
-use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::bindings::DomExceptionClass;
+use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::orchestrator::CurrentScriptState;
 use crate::resource::ResourceFetcher;
 use crate::web::events;
@@ -187,7 +187,9 @@ impl DomJsRealm {
       .insert(document_node_id, WeakGcObject::from(document_obj));
 
     // Attach `document` on the global object.
-    define_data_property_str(&mut rt, window, "document", document, /* enumerable */ false)?;
+    define_data_property_str(
+      &mut rt, window, "document", document, /* enumerable */ false,
+    )?;
 
     // Constructors (MVP: mostly non-constructable stubs).
     install_constructors(
@@ -412,13 +414,12 @@ impl DomJsRealm {
         .map_err(|e| events::DomError::new(format!("{e:?}")))?;
 
         if rt.is_callable(callback) {
-          rt
-            .call_function(callback, current_target_wrapper, &[self.event_value])
+          rt.call_function(callback, current_target_wrapper, &[self.event_value])
             .map_err(|e| events::DomError::new(format!("{e:?}")))?;
         } else {
           // Support callback objects with a `handleEvent` method.
-          let handle_event_key = prop_key_str(rt, "handleEvent")
-            .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+          let handle_event_key =
+            prop_key_str(rt, "handleEvent").map_err(|e| events::DomError::new(format!("{e:?}")))?;
           let handle_event = rt
             .get(callback, handle_event_key)
             .map_err(|e| events::DomError::new(format!("{e:?}")))?;
@@ -427,8 +428,7 @@ impl DomJsRealm {
               "EventTarget listener callback has no callable handleEvent",
             ));
           }
-          rt
-            .call_function(handle_event, callback, &[self.event_value])
+          rt.call_function(handle_event, callback, &[self.event_value])
             .map_err(|e| events::DomError::new(format!("{e:?}")))?;
         }
         Ok(())
@@ -513,12 +513,7 @@ fn define_data_property_str(
   rt.define_data_property(obj, key, value, enumerable)
 }
 
-fn define_method(
-  rt: &mut VmJsRuntime,
-  proto: Value,
-  name: &str,
-  f: Value,
-) -> Result<(), VmError> {
+fn define_method(rt: &mut VmJsRuntime, proto: Value, name: &str, f: Value) -> Result<(), VmError> {
   define_data_property_str(rt, proto, name, f, /* enumerable */ false)
 }
 
@@ -581,9 +576,7 @@ fn direct_child_nodes(dom: &dom2::Document, parent: NodeId) -> Result<Vec<NodeId
       .children(parent)?
       .iter()
       .copied()
-      .filter(|&child| {
-        child.index() < dom.nodes_len() && dom.node(child).parent == Some(parent)
-      })
+      .filter(|&child| child.index() < dom.nodes_len() && dom.node(child).parent == Some(parent))
       .collect(),
   )
 }
@@ -670,7 +663,11 @@ fn maybe_refresh_cached_child_nodes(
   Ok(())
 }
 
-fn set_text_content(dom: &mut dom2::Document, node: NodeId, value: &str) -> Result<(), dom2::DomError> {
+fn set_text_content(
+  dom: &mut dom2::Document,
+  node: NodeId,
+  value: &str,
+) -> Result<(), dom2::DomError> {
   match &mut dom.node_mut(node).kind {
     NodeKind::Text { content } | NodeKind::Comment { content } => {
       content.clear();
@@ -754,7 +751,10 @@ pub(crate) fn throw_dom_error(
   throw_dom_exception(rt, dom_exception_proto, name, name)
 }
 
-fn parse_add_event_listener_options(rt: &mut VmJsRuntime, options: Value) -> Result<events::AddEventListenerOptions, VmError> {
+fn parse_add_event_listener_options(
+  rt: &mut VmJsRuntime,
+  options: Value,
+) -> Result<events::AddEventListenerOptions, VmError> {
   if matches!(options, Value::Undefined) {
     return Ok(events::AddEventListenerOptions::default());
   }
@@ -941,7 +941,10 @@ fn with_event<R>(
 }
 
 fn value_needs_gc_root(value: &Value) -> bool {
-  matches!(*value, Value::String(_) | Value::Symbol(_) | Value::Object(_))
+  matches!(
+    *value,
+    Value::String(_) | Value::Symbol(_) | Value::Object(_)
+  )
 }
 
 fn set_event_detail_root(
@@ -1025,10 +1028,9 @@ fn wrap_node(
         prototypes.document,
         PlatformObjectKind::Document { node_id },
       ),
-      NodeKind::Element { .. } | NodeKind::Slot { .. } => (
-        prototypes.element,
-        PlatformObjectKind::Node { node_id },
-      ),
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {
+        (prototypes.element, PlatformObjectKind::Node { node_id })
+      }
       NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => (
         prototypes.document_fragment,
         PlatformObjectKind::Node { node_id },
@@ -1086,17 +1088,27 @@ fn install_constructors(
   //
   // Reuse the realm's `DOMException.prototype` so any DOMException objects thrown from either
   // selector APIs or `dom2::DomError` mapping share the same prototype chain.
-  let dom_exception = DomExceptionClass::install_with_prototype(rt, global, prototypes.dom_exception)?;
+  let dom_exception =
+    DomExceptionClass::install_with_prototype(rt, global, prototypes.dom_exception)?;
 
   // EventTarget / Node / Element / Document constructors: non-constructable stubs.
-  let event_target_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "EventTarget"))?;
+  let event_target_ctor =
+    rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "EventTarget"))?;
   let node_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "Node"))?;
   let document_fragment_ctor =
     rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "DocumentFragment"))?;
-  let element_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "Element"))?;
-  let document_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "Document"))?;
+  let element_ctor =
+    rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "Element"))?;
+  let document_ctor =
+    rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "Document"))?;
 
-  define_data_property_str(rt, event_target_ctor, "prototype", prototypes.event_target, false)?;
+  define_data_property_str(
+    rt,
+    event_target_ctor,
+    "prototype",
+    prototypes.event_target,
+    false,
+  )?;
   define_data_property_str(rt, node_ctor, "prototype", prototypes.node, false)?;
   define_data_property_str(
     rt,
@@ -1110,7 +1122,13 @@ fn install_constructors(
 
   define_data_property_str(rt, global, "EventTarget", event_target_ctor, false)?;
   define_data_property_str(rt, global, "Node", node_ctor, false)?;
-  define_data_property_str(rt, global, "DocumentFragment", document_fragment_ctor, false)?;
+  define_data_property_str(
+    rt,
+    global,
+    "DocumentFragment",
+    document_fragment_ctor,
+    false,
+  )?;
   define_data_property_str(rt, global, "Element", element_ctor, false)?;
   define_data_property_str(rt, global, "Document", document_ctor, false)?;
 
@@ -1121,8 +1139,20 @@ fn install_constructors(
   define_data_property_str(rt, node_ctor, "ELEMENT_NODE", Value::Number(1.0), false)?;
   define_data_property_str(rt, node_ctor, "ATTRIBUTE_NODE", Value::Number(2.0), false)?;
   define_data_property_str(rt, node_ctor, "TEXT_NODE", Value::Number(3.0), false)?;
-  define_data_property_str(rt, node_ctor, "CDATA_SECTION_NODE", Value::Number(4.0), false)?;
-  define_data_property_str(rt, node_ctor, "ENTITY_REFERENCE_NODE", Value::Number(5.0), false)?;
+  define_data_property_str(
+    rt,
+    node_ctor,
+    "CDATA_SECTION_NODE",
+    Value::Number(4.0),
+    false,
+  )?;
+  define_data_property_str(
+    rt,
+    node_ctor,
+    "ENTITY_REFERENCE_NODE",
+    Value::Number(5.0),
+    false,
+  )?;
   define_data_property_str(rt, node_ctor, "ENTITY_NODE", Value::Number(6.0), false)?;
   define_data_property_str(
     rt,
@@ -1133,8 +1163,20 @@ fn install_constructors(
   )?;
   define_data_property_str(rt, node_ctor, "COMMENT_NODE", Value::Number(8.0), false)?;
   define_data_property_str(rt, node_ctor, "DOCUMENT_NODE", Value::Number(9.0), false)?;
-  define_data_property_str(rt, node_ctor, "DOCUMENT_TYPE_NODE", Value::Number(10.0), false)?;
-  define_data_property_str(rt, node_ctor, "DOCUMENT_FRAGMENT_NODE", Value::Number(11.0), false)?;
+  define_data_property_str(
+    rt,
+    node_ctor,
+    "DOCUMENT_TYPE_NODE",
+    Value::Number(10.0),
+    false,
+  )?;
+  define_data_property_str(
+    rt,
+    node_ctor,
+    "DOCUMENT_FRAGMENT_NODE",
+    Value::Number(11.0),
+    false,
+  )?;
   define_data_property_str(rt, node_ctor, "NOTATION_NODE", Value::Number(12.0), false)?;
 
   // Event constructor: produces a platform-backed Event object.
@@ -1179,9 +1221,10 @@ fn install_constructors(
           "alloc_object_value must return an object",
         ));
       };
-      platform_objects
-        .borrow_mut()
-        .insert(WeakGcObject::from(obj_handle), PlatformObjectKind::Event { event_id });
+      platform_objects.borrow_mut().insert(
+        WeakGcObject::from(obj_handle),
+        PlatformObjectKind::Event { event_id },
+      );
       Ok(obj)
     })?
   };
@@ -1244,13 +1287,20 @@ fn install_constructors(
           "alloc_object_value must return an object",
         ));
       };
-      platform_objects
-        .borrow_mut()
-        .insert(WeakGcObject::from(obj_handle), PlatformObjectKind::Event { event_id });
+      platform_objects.borrow_mut().insert(
+        WeakGcObject::from(obj_handle),
+        PlatformObjectKind::Event { event_id },
+      );
       Ok(obj)
     })?
   };
-  define_data_property_str(rt, custom_event_ctor, "prototype", custom_event_proto, false)?;
+  define_data_property_str(
+    rt,
+    custom_event_ctor,
+    "prototype",
+    custom_event_proto,
+    false,
+  )?;
   define_data_property_str(rt, global, "CustomEvent", custom_event_ctor, false)?;
 
   // EventTarget.prototype
@@ -1268,7 +1318,8 @@ fn install_constructors(
         return Ok(Value::Undefined);
       };
 
-      let options = parse_add_event_listener_options(rt, args.get(2).copied().unwrap_or(Value::Undefined))?;
+      let options =
+        parse_add_event_listener_options(rt, args.get(2).copied().unwrap_or(Value::Undefined))?;
 
       {
         let mut callbacks = listener_callbacks_for_add.borrow_mut();
@@ -1301,10 +1352,15 @@ fn install_constructors(
         return Ok(Value::Undefined);
       };
 
-      let capture = parse_event_listener_capture(rt, args.get(2).copied().unwrap_or(Value::Undefined))?;
-      let removed = event_listeners_for_remove.remove_event_listener(target, &type_, listener_id, capture);
+      let capture =
+        parse_event_listener_capture(rt, args.get(2).copied().unwrap_or(Value::Undefined))?;
+      let removed =
+        event_listeners_for_remove.remove_event_listener(target, &type_, listener_id, capture);
       if removed && !event_listeners_for_remove.contains_listener_id(listener_id) {
-        if let Some(entry) = listener_callbacks_for_remove.borrow_mut().remove(&listener_id) {
+        if let Some(entry) = listener_callbacks_for_remove
+          .borrow_mut()
+          .remove(&listener_id)
+        {
           rt.heap_mut().remove_root(entry.callback_root);
         }
       }
@@ -1387,8 +1443,7 @@ fn install_constructors(
           .map_err(|e| events::DomError::new(format!("{e:?}")))?;
 
           if rt.is_callable(callback) {
-            rt
-              .call_function(callback, current_target_wrapper, &[self.event_value])
+            rt.call_function(callback, current_target_wrapper, &[self.event_value])
               .map_err(|e| events::DomError::new(format!("{e:?}")))?;
           } else {
             // Support callback objects with a `handleEvent` method.
@@ -1402,8 +1457,7 @@ fn install_constructors(
                 "EventTarget listener callback has no callable handleEvent",
               ));
             }
-            rt
-              .call_function(handle_event, callback, &[self.event_value])
+            rt.call_function(handle_event, callback, &[self.event_value])
               .map_err(|e| events::DomError::new(format!("{e:?}")))?;
           }
           Ok(())
@@ -1431,7 +1485,9 @@ fn install_constructors(
         // invocation without tripping RefCell reentrancy.
         {
           let ptr = NonNull::from(&mut event);
-          active_events_for_dispatch.borrow_mut().insert(event_id, ptr);
+          active_events_for_dispatch
+            .borrow_mut()
+            .insert(event_id, ptr);
         }
         let _active_guard = ActiveEventGuard {
           active: active_events_for_dispatch.clone(),
@@ -1933,7 +1989,13 @@ fn install_constructors(
         None => Ok(Value::Null),
       }
     })?;
-    define_accessor(rt, prototypes.node, "parentNode", parent_node_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "parentNode",
+      parent_node_get,
+      Value::Undefined,
+    )?;
 
     // parentElement
     let dom_for_parent_element = dom.clone();
@@ -2002,7 +2064,13 @@ fn install_constructors(
       )?;
       Ok(arr)
     })?;
-    define_accessor(rt, prototypes.node, "childNodes", child_nodes_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "childNodes",
+      child_nodes_get,
+      Value::Undefined,
+    )?;
 
     // hasChildNodes
     let dom_for_has_child_nodes = dom.clone();
@@ -2057,15 +2125,13 @@ fn install_constructors(
           Some(PlatformObjectKind::Document { node_id }) => *node_id,
           Some(PlatformObjectKind::Node { node_id }) => *node_id,
           _ => {
-            return Err(rt.throw_type_error(
-              "contains: argument must be a Node (or null/undefined)",
-            ))
+            return Err(
+              rt.throw_type_error("contains: argument must be a Node (or null/undefined)"),
+            )
           }
         },
         _ => {
-          return Err(rt.throw_type_error(
-            "contains: argument must be a Node (or null/undefined)",
-          ))
+          return Err(rt.throw_type_error("contains: argument must be a Node (or null/undefined)"))
         }
       };
 
@@ -2117,7 +2183,13 @@ fn install_constructors(
       }
       Ok(arr)
     })?;
-    define_accessor(rt, prototypes.node, "children", children_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "children",
+      children_get,
+      Value::Undefined,
+    )?;
 
     // childElementCount
     let dom_for_child_element_count = dom.clone();
@@ -2218,16 +2290,12 @@ fn install_constructors(
       let Some(pos) = siblings.iter().position(|&id| id == node_id) else {
         return Ok(Value::Null);
       };
-      let prev = siblings
-        .into_iter()
-        .take(pos)
-        .rev()
-        .find(|&id| {
-          matches!(
-            dom_ref.node(id).kind,
-            NodeKind::Element { .. } | NodeKind::Slot { .. }
-          )
-        });
+      let prev = siblings.into_iter().take(pos).rev().find(|&id| {
+        matches!(
+          dom_ref.node(id).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      });
       match prev {
         Some(id) => wrap_node(
           rt,
@@ -2317,7 +2385,13 @@ fn install_constructors(
         None => Ok(Value::Null),
       }
     })?;
-    define_accessor(rt, prototypes.node, "firstChild", first_child_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "firstChild",
+      first_child_get,
+      Value::Undefined,
+    )?;
 
     // lastChild
     let dom_for_last = dom.clone();
@@ -2344,7 +2418,13 @@ fn install_constructors(
         None => Ok(Value::Null),
       }
     })?;
-    define_accessor(rt, prototypes.node, "lastChild", last_child_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "lastChild",
+      last_child_get,
+      Value::Undefined,
+    )?;
 
     // previousSibling
     let dom_for_prev = dom.clone();
@@ -2361,7 +2441,10 @@ fn install_constructors(
       let Some(pos) = siblings.iter().position(|&id| id == node_id) else {
         return Ok(Value::Null);
       };
-      let prev = pos.checked_sub(1).and_then(|idx| siblings.get(idx)).copied();
+      let prev = pos
+        .checked_sub(1)
+        .and_then(|idx| siblings.get(idx))
+        .copied();
       match prev {
         Some(id) => wrap_node(
           rt,
@@ -2376,7 +2459,13 @@ fn install_constructors(
         None => Ok(Value::Null),
       }
     })?;
-    define_accessor(rt, prototypes.node, "previousSibling", prev_sibling_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "previousSibling",
+      prev_sibling_get,
+      Value::Undefined,
+    )?;
 
     // nextSibling
     let dom_for_next = dom.clone();
@@ -2408,7 +2497,13 @@ fn install_constructors(
         None => Ok(Value::Null),
       }
     })?;
-    define_accessor(rt, prototypes.node, "nextSibling", next_sibling_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "nextSibling",
+      next_sibling_get,
+      Value::Undefined,
+    )?;
 
     // nodeType
     let dom_for_node_type = dom.clone();
@@ -2427,7 +2522,13 @@ fn install_constructors(
       };
       Ok(Value::Number(node_type as f64))
     })?;
-    define_accessor(rt, prototypes.node, "nodeType", node_type_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "nodeType",
+      node_type_get,
+      Value::Undefined,
+    )?;
 
     // nodeName
     let dom_for_node_name = dom.clone();
@@ -2438,7 +2539,11 @@ fn install_constructors(
       let name = match &dom_ref.node(node_id).kind {
         NodeKind::Document { .. } => "#document".to_string(),
         NodeKind::Doctype { name, .. } => name.clone(),
-        NodeKind::Element { tag_name, namespace, .. } => {
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } => {
           if is_html_namespace(namespace) {
             tag_name.to_ascii_uppercase()
           } else {
@@ -2455,11 +2560,19 @@ fn install_constructors(
         NodeKind::Text { .. } => "#text".to_string(),
         NodeKind::Comment { .. } => "#comment".to_string(),
         NodeKind::ProcessingInstruction { target, .. } => target.clone(),
-        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
+        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
+          "#document-fragment".to_string()
+        }
       };
       rt.alloc_string_value(&name)
     })?;
-    define_accessor(rt, prototypes.node, "nodeName", node_name_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "nodeName",
+      node_name_get,
+      Value::Undefined,
+    )?;
 
     // nodeValue
     let dom_for_node_value_get = dom.clone();
@@ -2501,7 +2614,13 @@ fn install_constructors(
       }
       Ok(Value::Undefined)
     })?;
-    define_accessor(rt, prototypes.node, "nodeValue", node_value_get, node_value_set)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "nodeValue",
+      node_value_get,
+      node_value_set,
+    )?;
 
     // textContent
     let dom_for_text_content_get = dom.clone();
@@ -2543,7 +2662,13 @@ fn install_constructors(
       Ok(Value::Undefined)
     })?;
 
-    define_accessor(rt, prototypes.node, "textContent", text_content_get, text_content_set)?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "textContent",
+      text_content_get,
+      text_content_set,
+    )?;
 
     // ownerDocument
     let dom_for_owner = dom.clone();
@@ -2610,7 +2735,11 @@ fn install_constructors(
     let platform_objects_for_is_connected = platform_objects.clone();
     let is_connected_get = rt.alloc_function_value(move |rt, this, _args| {
       let node_id = extract_node_id(rt, &platform_objects_for_is_connected, this)?;
-      Ok(Value::Bool(dom_for_is_connected.borrow().is_connected_for_scripting(node_id)))
+      Ok(Value::Bool(
+        dom_for_is_connected
+          .borrow()
+          .is_connected_for_scripting(node_id),
+      ))
     })?;
     define_accessor(
       rt,
@@ -2632,7 +2761,11 @@ fn install_constructors(
       let node_id = extract_node_id(rt, &platform_objects_for_tag_name, this)?;
       let dom_ref = dom_for_tag_name.borrow();
       let name = match &dom_ref.node(node_id).kind {
-        NodeKind::Element { tag_name, namespace, .. } => {
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } => {
           if is_html_namespace(namespace) {
             tag_name.to_ascii_uppercase()
           } else {
@@ -2650,7 +2783,13 @@ fn install_constructors(
       };
       rt.alloc_string_value(&name)
     })?;
-    define_accessor(rt, prototypes.element, "tagName", tag_name_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.element,
+      "tagName",
+      tag_name_get,
+      Value::Undefined,
+    )?;
 
     // innerText (MVP: textContent-like semantics)
     let dom_for_inner_text_get = dom.clone();
@@ -2700,7 +2839,13 @@ fn install_constructors(
       )?;
       Ok(Value::Undefined)
     })?;
-    define_accessor(rt, prototypes.element, "innerText", inner_text_get, inner_text_set)?;
+    define_accessor(
+      rt,
+      prototypes.element,
+      "innerText",
+      inner_text_get,
+      inner_text_set,
+    )?;
 
     // innerHTML
     let dom_for_inner_html_get = dom.clone();
@@ -2748,7 +2893,13 @@ fn install_constructors(
       )?;
       Ok(Value::Undefined)
     })?;
-    define_accessor(rt, prototypes.element, "innerHTML", inner_html_get, inner_html_set)?;
+    define_accessor(
+      rt,
+      prototypes.element,
+      "innerHTML",
+      inner_html_get,
+      inner_html_set,
+    )?;
 
     // outerHTML
     let dom_for_outer_html_get = dom.clone();
@@ -2802,7 +2953,13 @@ fn install_constructors(
       }
       Ok(Value::Undefined)
     })?;
-    define_accessor(rt, prototypes.element, "outerHTML", outer_html_get, outer_html_set)?;
+    define_accessor(
+      rt,
+      prototypes.element,
+      "outerHTML",
+      outer_html_get,
+      outer_html_set,
+    )?;
 
     let dom_for_get_attribute = dom.clone();
     let platform_objects_for_get_attribute = platform_objects.clone();
@@ -2816,7 +2973,8 @@ fn install_constructors(
       }
       match dom_ref
         .get_attribute(node_id, &name)
-        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))? {
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?
+      {
         Some(v) => rt.alloc_string_value(v),
         None => Ok(Value::Null),
       }
@@ -2942,7 +3100,10 @@ fn install_constructors(
         }
       }
       let selectors = to_rust_string(rt, args[0])?;
-      let matched = match dom_for_matches.borrow_mut().matches_selector(node_id, &selectors) {
+      let matched = match dom_for_matches
+        .borrow_mut()
+        .matches_selector(node_id, &selectors)
+      {
         Ok(v) => v,
         Err(err) => {
           let exc = dom_ex_for_matches.from_dom_exception(rt, &err)?;
@@ -3125,7 +3286,12 @@ fn install_constructors(
       rt.heap_mut().remove_root(arr_root);
       res
     })?;
-    define_method(rt, prototypes.element, "querySelectorAll", query_selector_all)?;
+    define_method(
+      rt,
+      prototypes.element,
+      "querySelectorAll",
+      query_selector_all,
+    )?;
   }
 
   // Document.prototype
@@ -3180,7 +3346,9 @@ fn install_constructors(
       let value = args.get(0).copied().unwrap_or(Value::Undefined);
       let s = rt.to_string(value)?;
       let Value::String(s) = s else {
-        return Err(VmError::InvariantViolation("to_string must return a string value"));
+        return Err(VmError::InvariantViolation(
+          "to_string must return a string value",
+        ));
       };
       let js_s = rt.heap().get_string(s)?;
       if js_s.as_code_units().len() > MAX_COOKIE_STRING_BYTES {
@@ -3228,7 +3396,9 @@ fn install_constructors(
         event_id,
         event.detail,
       )?;
-      events_map_for_create_event.borrow_mut().insert(event_id, event);
+      events_map_for_create_event
+        .borrow_mut()
+        .insert(event_id, event);
 
       let obj = rt.alloc_object_value()?;
       // Keep wrapper objects alive even when only referenced from Rust-side tables.
@@ -3348,7 +3518,10 @@ fn install_constructors(
     let get_by_id = rt.alloc_function_value(move |rt, this, args| {
       let doc_id = extract_document_id(rt, &platform_objects_for_get_by_id, this)?;
       let id = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
-      match dom_for_get_by_id.borrow().get_element_by_id_from(doc_id, &id) {
+      match dom_for_get_by_id
+        .borrow()
+        .get_element_by_id_from(doc_id, &id)
+      {
         Some(node_id) => wrap_node(
           rt,
           &dom_for_get_by_id,
@@ -3452,7 +3625,12 @@ fn install_constructors(
       rt.heap_mut().remove_root(arr_root);
       res
     })?;
-    define_method(rt, prototypes.document, "querySelectorAll", query_selector_all)?;
+    define_method(
+      rt,
+      prototypes.document,
+      "querySelectorAll",
+      query_selector_all,
+    )?;
 
     let dom_for_doc_el = dom.clone();
     let platform_objects_for_doc_el = platform_objects.clone();
@@ -3591,7 +3769,13 @@ fn install_constructors(
       )?;
       Ok(Value::Bool(bubbles))
     })?;
-    define_accessor(rt, prototypes.event, "bubbles", bubbles_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.event,
+      "bubbles",
+      bubbles_get,
+      Value::Undefined,
+    )?;
 
     let platform_objects_for_cancelable = platform_objects.clone();
     let events_map_for_cancelable = events_map.clone();
@@ -3607,7 +3791,13 @@ fn install_constructors(
       )?;
       Ok(Value::Bool(cancelable))
     })?;
-    define_accessor(rt, prototypes.event, "cancelable", cancelable_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.event,
+      "cancelable",
+      cancelable_get,
+      Value::Undefined,
+    )?;
 
     let platform_objects_for_default_prevented = platform_objects.clone();
     let events_map_for_default_prevented = events_map.clone();
@@ -3651,7 +3841,13 @@ fn install_constructors(
       };
       Ok(Value::Number(phase))
     })?;
-    define_accessor(rt, prototypes.event, "eventPhase", event_phase_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.event,
+      "eventPhase",
+      event_phase_get,
+      Value::Undefined,
+    )?;
 
     let platform_objects_for_target = platform_objects.clone();
     let events_map_for_target = events_map.clone();
@@ -3726,9 +3922,15 @@ fn install_constructors(
     let active_events_for_stop = active_events.clone();
     let stop_propagation = rt.alloc_function_value(move |rt, this, _args| {
       let event_id = extract_event_id(rt, &platform_objects_for_stop, this)?;
-      with_event(rt, &active_events_for_stop, &events_map_for_stop, event_id, |event| {
-        event.stop_propagation();
-      })?;
+      with_event(
+        rt,
+        &active_events_for_stop,
+        &events_map_for_stop,
+        event_id,
+        |event| {
+          event.stop_propagation();
+        },
+      )?;
       Ok(Value::Undefined)
     })?;
     define_method(rt, prototypes.event, "stopPropagation", stop_propagation)?;
@@ -3744,12 +3946,17 @@ fn install_constructors(
         &events_map_for_stop_immediate,
         event_id,
         |event| {
-        event.stop_immediate_propagation();
+          event.stop_immediate_propagation();
         },
       )?;
       Ok(Value::Undefined)
     })?;
-    define_method(rt, prototypes.event, "stopImmediatePropagation", stop_immediate)?;
+    define_method(
+      rt,
+      prototypes.event,
+      "stopImmediatePropagation",
+      stop_immediate,
+    )?;
 
     let platform_objects_for_prevent = platform_objects.clone();
     let events_map_for_prevent = events_map.clone();
@@ -3762,7 +3969,7 @@ fn install_constructors(
         &events_map_for_prevent,
         event_id,
         |event| {
-        event.prevent_default();
+          event.prevent_default();
         },
       )?;
       Ok(Value::Undefined)
@@ -3807,7 +4014,13 @@ fn install_constructors(
       )?;
       Ok(detail)
     })?;
-    define_accessor(rt, prototypes.custom_event, "detail", detail_get, Value::Undefined)?;
+    define_accessor(
+      rt,
+      prototypes.custom_event,
+      "detail",
+      detail_get,
+      Value::Undefined,
+    )?;
 
     let platform_objects_for_init_custom = platform_objects.clone();
     let events_map_for_init_custom = events_map.clone();
@@ -3839,7 +4052,12 @@ fn install_constructors(
       )?;
       Ok(Value::Undefined)
     })?;
-    define_method(rt, prototypes.custom_event, "initCustomEvent", init_custom_event)?;
+    define_method(
+      rt,
+      prototypes.custom_event,
+      "initCustomEvent",
+      init_custom_event,
+    )?;
   }
 
   Ok(())
@@ -3873,7 +4091,10 @@ mod tests {
 
   impl CookieRecordingFetcher {
     fn cookie_header(&self) -> String {
-      let lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let lock = self
+        .cookies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       lock
         .iter()
         .map(|(name, value)| format!("{name}={value}"))
@@ -3907,7 +4128,10 @@ mod tests {
         return;
       }
 
-      let mut lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let mut lock = self
+        .cookies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       if let Some(existing) = lock.iter_mut().find(|(n, _)| n == name) {
         existing.1 = value.to_string();
       } else {
@@ -4064,7 +4288,10 @@ mod tests {
     let dom = realm.dom.borrow();
     assert_eq!(dom.node(dom.root()).children.len(), 1);
     let child = dom.node(dom.root()).children[0];
-    assert!(matches!(dom.node(child).kind, NodeKind::Element { .. } | NodeKind::Slot { .. }));
+    assert!(matches!(
+      dom.node(child).kind,
+      NodeKind::Element { .. } | NodeKind::Slot { .. }
+    ));
   }
 
   #[test]
@@ -4086,7 +4313,10 @@ mod tests {
       .unwrap();
 
     let node_type_key = pk(&mut realm.rt, "nodeType");
-    assert_eq!(realm.rt.get(comment, node_type_key).unwrap(), Value::Number(8.0));
+    assert_eq!(
+      realm.rt.get(comment, node_type_key).unwrap(),
+      Value::Number(8.0)
+    );
 
     let node_name_key = pk(&mut realm.rt, "nodeName");
     let node_name = realm.rt.get(comment, node_name_key).unwrap();
@@ -4111,7 +4341,10 @@ mod tests {
       .rt
       .get(document, create_fragment_key)
       .expect("Document.createDocumentFragment should exist");
-    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+    let fragment = realm
+      .rt
+      .call_function(create_fragment, document, &[])
+      .unwrap();
     let Value::Object(fragment_obj) = fragment else {
       panic!("expected DocumentFragment to be an object");
     };
@@ -4325,7 +4558,10 @@ mod tests {
     let create_fragment = realm.rt.get(document, create_fragment_key).unwrap();
     let append_child_key = pk(&mut realm.rt, "appendChild");
 
-    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+    let fragment = realm
+      .rt
+      .call_function(create_fragment, document, &[])
+      .unwrap();
     let span_tag = realm.rt.alloc_string_value("span").unwrap();
     let span = realm
       .rt
@@ -4469,10 +4705,7 @@ mod tests {
 
     let append_child_key = pk(&mut realm.rt, "appendChild");
     let div_append = realm.rt.get(div, append_child_key).unwrap();
-    realm
-      .rt
-      .call_function(div_append, div, &[span])
-      .unwrap();
+    realm.rt.call_function(div_append, div, &[span]).unwrap();
 
     let has_child_nodes_key = pk(&mut realm.rt, "hasChildNodes");
     let has_child_nodes = realm.rt.get(div, has_child_nodes_key).unwrap();
@@ -4601,7 +4834,10 @@ mod tests {
 
     let marker_value = realm.rt.alloc_string_value("marker").unwrap();
     let dom_exception_ctor_key = pk(&mut realm.rt, "DOMException");
-    let dom_exception_ctor = realm.rt.get(realm.window(), dom_exception_ctor_key).unwrap();
+    let dom_exception_ctor = realm
+      .rt
+      .get(realm.window(), dom_exception_ctor_key)
+      .unwrap();
     let dom_exception_proto_key = pk(&mut realm.rt, "prototype");
     let dom_exception_proto = realm
       .rt
@@ -4662,11 +4898,7 @@ mod tests {
     let div_tag = realm.rt.alloc_string_value("div").unwrap();
     let el = realm
       .rt
-      .call_function(
-        create_element,
-        document,
-        &[div_tag],
-      )
+      .call_function(create_element, document, &[div_tag])
       .unwrap();
 
     let set_attribute_key = pk(&mut realm.rt, "setAttribute");
@@ -4675,14 +4907,7 @@ mod tests {
     let x_str = realm.rt.alloc_string_value("x").unwrap();
     realm
       .rt
-      .call_function(
-        set_attribute,
-        el,
-        &[
-          id_str,
-          x_str,
-        ],
-      )
+      .call_function(set_attribute, el, &[id_str, x_str])
       .unwrap();
 
     let get_attribute_key = pk(&mut realm.rt, "getAttribute");
@@ -4706,11 +4931,7 @@ mod tests {
     let div_tag = realm.rt.alloc_string_value("div").unwrap();
     let el = realm
       .rt
-      .call_function(
-        create_element,
-        document,
-        &[div_tag],
-      )
+      .call_function(create_element, document, &[div_tag])
       .unwrap();
 
     let set_attribute_key = pk(&mut realm.rt, "setAttribute");
@@ -4719,14 +4940,7 @@ mod tests {
     let x_str = realm.rt.alloc_string_value("x").unwrap();
     realm
       .rt
-      .call_function(
-        set_attribute,
-        el,
-        &[
-          id_str,
-          x_str,
-        ],
-      )
+      .call_function(set_attribute, el, &[id_str, x_str])
       .unwrap();
 
     let append_child_key = pk(&mut realm.rt, "appendChild");
@@ -4741,11 +4955,7 @@ mod tests {
     let x_str2 = realm.rt.alloc_string_value("x").unwrap();
     let found = realm
       .rt
-      .call_function(
-        get_element_by_id,
-        document,
-        &[x_str2],
-      )
+      .call_function(get_element_by_id, document, &[x_str2])
       .unwrap();
 
     assert_eq!(found, el, "wrapper identity should be preserved");
@@ -4791,10 +5001,7 @@ mod tests {
       .unwrap();
 
     // Build: document -> div.x -> span.x
-    realm
-      .rt
-      .call_function(append_child, div, &[span])
-      .unwrap();
+    realm.rt.call_function(append_child, div, &[span]).unwrap();
     realm
       .rt
       .call_function(append_child, document, &[div])
@@ -4831,7 +5038,10 @@ mod tests {
       .rt
       .call_function(el_query_selector, div, &[sel_scope])
       .unwrap();
-    assert_eq!(scope_found, div, "Element.querySelector(:scope) should return self");
+    assert_eq!(
+      scope_found, div,
+      "Element.querySelector(:scope) should return self"
+    );
 
     let el_query_selector_all_key = pk(&mut realm.rt, "querySelectorAll");
     let el_query_selector_all = realm.rt.get(div, el_query_selector_all_key).unwrap();
@@ -4881,10 +5091,7 @@ mod tests {
       .call_function(create_element, document, &[span_tag])
       .unwrap();
 
-    realm
-      .rt
-      .call_function(append_child, div, &[span])
-      .unwrap();
+    realm.rt.call_function(append_child, div, &[span]).unwrap();
     realm
       .rt
       .call_function(append_child, document, &[div])
@@ -5055,7 +5262,10 @@ mod tests {
       realm.rt.get(b, previous_element_sibling_key).unwrap(),
       Value::Null
     );
-    assert_eq!(realm.rt.get(b, next_element_sibling_key).unwrap(), Value::Null);
+    assert_eq!(
+      realm.rt.get(b, next_element_sibling_key).unwrap(),
+      Value::Null
+    );
   }
 
   #[test]
@@ -5099,9 +5309,15 @@ mod tests {
 
     let length_key = pk(&mut realm.rt, "length");
     let idx0 = pk(&mut realm.rt, "0");
-    assert_eq!(realm.rt.get(nodes_a, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(
+      realm.rt.get(nodes_a, length_key).unwrap(),
+      Value::Number(1.0)
+    );
     assert_eq!(realm.rt.get(nodes_a, idx0).unwrap(), child);
-    assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(0.0));
+    assert_eq!(
+      realm.rt.get(nodes_b, length_key).unwrap(),
+      Value::Number(0.0)
+    );
 
     // Move `child` from parent_a to parent_b via insertBefore(child, null).
     let insert_before_key = pk(&mut realm.rt, "insertBefore");
@@ -5113,8 +5329,14 @@ mod tests {
     assert_eq!(inserted, child);
 
     // Both cached NodeLists should update in place.
-    assert_eq!(realm.rt.get(nodes_a, length_key).unwrap(), Value::Number(0.0));
-    assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(
+      realm.rt.get(nodes_a, length_key).unwrap(),
+      Value::Number(0.0)
+    );
+    assert_eq!(
+      realm.rt.get(nodes_b, length_key).unwrap(),
+      Value::Number(1.0)
+    );
     assert_eq!(realm.rt.get(nodes_b, idx0).unwrap(), child);
 
     // Create a new node under parent_a and then move it into parent_b via replaceChild.
@@ -5127,7 +5349,10 @@ mod tests {
       .rt
       .call_function(append_a, parent_a, &[replacement])
       .unwrap();
-    assert_eq!(realm.rt.get(nodes_a, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(
+      realm.rt.get(nodes_a, length_key).unwrap(),
+      Value::Number(1.0)
+    );
     assert_eq!(realm.rt.get(nodes_a, idx0).unwrap(), replacement);
 
     let replace_child_key = pk(&mut realm.rt, "replaceChild");
@@ -5138,15 +5363,24 @@ mod tests {
       .unwrap();
     assert_eq!(replaced, child);
 
-    assert_eq!(realm.rt.get(nodes_a, length_key).unwrap(), Value::Number(0.0));
-    assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(
+      realm.rt.get(nodes_a, length_key).unwrap(),
+      Value::Number(0.0)
+    );
+    assert_eq!(
+      realm.rt.get(nodes_b, length_key).unwrap(),
+      Value::Number(1.0)
+    );
     assert_eq!(realm.rt.get(nodes_b, idx0).unwrap(), replacement);
 
     // remove() should update the parent's cached NodeList as well.
     let remove_key = pk(&mut realm.rt, "remove");
     let remove = realm.rt.get(replacement, remove_key).unwrap();
     realm.rt.call_function(remove, replacement, &[]).unwrap();
-    assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(0.0));
+    assert_eq!(
+      realm.rt.get(nodes_b, length_key).unwrap(),
+      Value::Number(0.0)
+    );
   }
 
   #[test]
@@ -5245,8 +5479,14 @@ mod tests {
       .call_function(create_element, document, &[span_tag])
       .unwrap();
     let append_child_frag = realm.rt.get(frag, append_child_key).unwrap();
-    realm.rt.call_function(append_child_frag, frag, &[x]).unwrap();
-    realm.rt.call_function(append_child_frag, frag, &[y]).unwrap();
+    realm
+      .rt
+      .call_function(append_child_frag, frag, &[x])
+      .unwrap();
+    realm
+      .rt
+      .call_function(append_child_frag, frag, &[y])
+      .unwrap();
 
     let frag_nodes = realm.rt.get(frag, child_nodes_key).unwrap();
     assert_eq!(
@@ -5296,7 +5536,11 @@ mod tests {
     let type_x = realm.rt.alloc_string_value("x").unwrap();
     realm
       .rt
-      .call_function(init_event, event, &[type_x, Value::Bool(true), Value::Bool(true)])
+      .call_function(
+        init_event,
+        event,
+        &[type_x, Value::Bool(true), Value::Bool(true)],
+      )
       .unwrap();
 
     let type_key = pk(&mut realm.rt, "type");
@@ -5334,12 +5578,20 @@ mod tests {
       .call_function(
         init_custom,
         event,
-        &[type_x, Value::Bool(true), Value::Bool(true), Value::Number(123.0)],
+        &[
+          type_x,
+          Value::Bool(true),
+          Value::Bool(true),
+          Value::Number(123.0),
+        ],
       )
       .unwrap();
 
     let detail_key = pk(&mut realm.rt, "detail");
-    assert_eq!(realm.rt.get(event, detail_key).unwrap(), Value::Number(123.0));
+    assert_eq!(
+      realm.rt.get(event, detail_key).unwrap(),
+      Value::Number(123.0)
+    );
   }
 
   #[test]
@@ -5359,7 +5611,10 @@ mod tests {
       .call_function(ctor, Value::Undefined, &[type_x, init_num])
       .unwrap();
     let detail_key = pk(&mut realm.rt, "detail");
-    assert_eq!(realm.rt.get(ev_num, detail_key).unwrap(), Value::Number(1.0));
+    assert_eq!(
+      realm.rt.get(ev_num, detail_key).unwrap(),
+      Value::Number(1.0)
+    );
 
     // Object `detail` should survive a GC cycle even if it is not referenced from JS, since the
     // platform-backed Event table is not traced.
@@ -5423,11 +5678,7 @@ mod tests {
     let div_tag = realm.rt.alloc_string_value("div").unwrap();
     let target = realm
       .rt
-      .call_function(
-        create_element,
-        document,
-        &[div_tag],
-      )
+      .call_function(create_element, document, &[div_tag])
       .unwrap();
     let append_child_key = pk(&mut realm.rt, "appendChild");
     let append_child = realm.rt.get(document, append_child_key).unwrap();
@@ -5445,11 +5696,7 @@ mod tests {
     let x_type = realm.rt.alloc_string_value("x").unwrap();
     let event = realm
       .rt
-      .call_function(
-        event_ctor,
-        Value::Undefined,
-        &[x_type, init],
-      )
+      .call_function(event_ctor, Value::Undefined, &[x_type, init])
       .unwrap();
 
     // Record observed event phases for capture vs bubble listeners.
@@ -5480,15 +5727,7 @@ mod tests {
     let x_type2 = realm.rt.alloc_string_value("x").unwrap();
     realm
       .rt
-      .call_function(
-        add,
-        document,
-        &[
-          x_type2,
-          capture_cb,
-          Value::Bool(true),
-        ],
-      )
+      .call_function(add, document, &[x_type2, capture_cb, Value::Bool(true)])
       .unwrap();
 
     // Add a bubbling listener on document that calls preventDefault (phase = Bubbling).
@@ -5516,32 +5755,29 @@ mod tests {
     let x_type3 = realm.rt.alloc_string_value("x").unwrap();
     realm
       .rt
-      .call_function(
-        add,
-        document,
-        &[
-          x_type3,
-          bubble_cb,
-          Value::Undefined,
-        ],
-      )
+      .call_function(add, document, &[x_type3, bubble_cb, Value::Undefined])
       .unwrap();
 
     // Dispatch at the target.
     let dispatch_key = pk(&mut realm.rt, "dispatchEvent");
     let dispatch = realm.rt.get(target, dispatch_key).unwrap();
-    let dispatched = realm
-      .rt
-      .call_function(dispatch, target, &[event])
-      .unwrap();
+    let dispatched = realm.rt.call_function(dispatch, target, &[event]).unwrap();
     assert_eq!(
       dispatched,
       Value::Bool(false),
       "dispatchEvent should return false when canceled"
     );
 
-    assert_eq!(capture_phase_seen.get(), 1, "capturing listener should observe phase=1");
-    assert_eq!(bubble_phase_seen.get(), 3, "bubbling listener should observe phase=3");
+    assert_eq!(
+      capture_phase_seen.get(),
+      1,
+      "capturing listener should observe phase=1"
+    );
+    assert_eq!(
+      bubble_phase_seen.get(),
+      3,
+      "bubbling listener should observe phase=3"
+    );
   }
 
   #[test]
@@ -5574,7 +5810,10 @@ mod tests {
     let handle_event = realm
       .rt
       .alloc_function_value(move |rt, this, args| {
-        assert_eq!(this, expected_this, "handleEvent must be invoked with this=callback object");
+        assert_eq!(
+          this, expected_this,
+          "handleEvent must be invoked with this=callback object"
+        );
         assert_eq!(args.len(), 1, "handleEvent must receive the Event argument");
         let event = args[0];
         let current_target_key = pk(rt, "currentTarget");
@@ -5587,7 +5826,14 @@ mod tests {
         Ok(Value::Undefined)
       })
       .unwrap();
-    define_data_property_str(&mut realm.rt, callback_obj, "handleEvent", handle_event, true).unwrap();
+    define_data_property_str(
+      &mut realm.rt,
+      callback_obj,
+      "handleEvent",
+      handle_event,
+      true,
+    )
+    .unwrap();
 
     let add_key = pk(&mut realm.rt, "addEventListener");
     let add = realm.rt.get(target, add_key).unwrap();
@@ -5607,10 +5853,7 @@ mod tests {
 
     let dispatch_key = pk(&mut realm.rt, "dispatchEvent");
     let dispatch = realm.rt.get(target, dispatch_key).unwrap();
-    let dispatched = realm
-      .rt
-      .call_function(dispatch, target, &[event])
-      .unwrap();
+    let dispatched = realm.rt.call_function(dispatch, target, &[event]).unwrap();
     assert_eq!(dispatched, Value::Bool(true));
     assert_eq!(called.get(), 1);
   }
@@ -5648,7 +5891,12 @@ mod tests {
     let keep_alive_key = pk(&mut realm.rt, "__fastrender_test_keep_alive");
     realm
       .rt
-      .define_data_property(realm.window(), keep_alive_key, target, /* enumerable */ true)
+      .define_data_property(
+        realm.window(),
+        keep_alive_key,
+        target,
+        /* enumerable */ true,
+      )
       .unwrap();
 
     let calls = Rc::new(Cell::new(0u32));
@@ -5690,10 +5938,7 @@ mod tests {
 
     let dispatch_key = pk(&mut realm.rt, "dispatchEvent");
     let dispatch = realm.rt.get(target, dispatch_key).unwrap();
-    let dispatched = realm
-      .rt
-      .call_function(dispatch, target, &[event])
-      .unwrap();
+    let dispatched = realm.rt.call_function(dispatch, target, &[event]).unwrap();
     assert_eq!(dispatched, Value::Bool(true));
     assert_eq!(calls.get(), 1);
 
@@ -5706,10 +5951,7 @@ mod tests {
     assert!(cb_weak.upgrade(realm.rt.heap()).is_none());
 
     // Dispatching again should not invoke the callback.
-    let dispatched_again = realm
-      .rt
-      .call_function(dispatch, target, &[event])
-      .unwrap();
+    let dispatched_again = realm.rt.call_function(dispatch, target, &[event]).unwrap();
     assert_eq!(dispatched_again, Value::Bool(true));
     assert_eq!(calls.get(), 1);
     realm.rt.heap_mut().remove_root(event_root);
@@ -5832,7 +6074,10 @@ mod tests {
       .rt
       .call_function(create_element, document, &[html_tag])
       .unwrap();
-    realm.rt.call_function(append_child, document, &[html]).unwrap();
+    realm
+      .rt
+      .call_function(append_child, document, &[html])
+      .unwrap();
 
     let head_tag = realm.rt.alloc_string_value("head").unwrap();
     let head = realm
@@ -5921,12 +6166,18 @@ mod tests {
       .call_function(document_clone, document, &[Value::Bool(false)])
       .unwrap();
     assert_ne!(shallow_doc, document);
-    assert_eq!(realm.rt.get(shallow_doc, parent_node_key).unwrap(), Value::Null);
+    assert_eq!(
+      realm.rt.get(shallow_doc, parent_node_key).unwrap(),
+      Value::Null
+    );
     assert_eq!(
       realm.rt.get(shallow_doc, is_connected_key).unwrap(),
       Value::Bool(false)
     );
-    assert_eq!(realm.rt.get(shallow_doc, first_child_key).unwrap(), Value::Null);
+    assert_eq!(
+      realm.rt.get(shallow_doc, first_child_key).unwrap(),
+      Value::Null
+    );
     let document_element_key = pk(&mut realm.rt, "documentElement");
     assert_eq!(
       realm.rt.get(shallow_doc, document_element_key).unwrap(),
@@ -5939,7 +6190,10 @@ mod tests {
       .call_function(document_clone, document, &[Value::Bool(true)])
       .unwrap();
     assert_ne!(deep_doc, document);
-    assert_eq!(realm.rt.get(deep_doc, parent_node_key).unwrap(), Value::Null);
+    assert_eq!(
+      realm.rt.get(deep_doc, parent_node_key).unwrap(),
+      Value::Null
+    );
     assert_eq!(
       realm.rt.get(deep_doc, is_connected_key).unwrap(),
       Value::Bool(false)
@@ -6008,7 +6262,10 @@ mod tests {
     let node_type_key = pk(&mut realm.rt, "nodeType");
     let node_name_key = pk(&mut realm.rt, "nodeName");
 
-    assert_eq!(realm.rt.get(document, node_type_key).unwrap(), Value::Number(9.0));
+    assert_eq!(
+      realm.rt.get(document, node_type_key).unwrap(),
+      Value::Number(9.0)
+    );
     let doc_name = realm.rt.get(document, node_name_key).unwrap();
     assert_eq!(as_str(&realm.rt, doc_name), "#document");
 
@@ -6019,7 +6276,10 @@ mod tests {
       .rt
       .call_function(create_element, document, &[div_tag])
       .unwrap();
-    assert_eq!(realm.rt.get(div, node_type_key).unwrap(), Value::Number(1.0));
+    assert_eq!(
+      realm.rt.get(div, node_type_key).unwrap(),
+      Value::Number(1.0)
+    );
     let div_name = realm.rt.get(div, node_name_key).unwrap();
     assert_eq!(as_str(&realm.rt, div_name), "DIV");
 
@@ -6030,13 +6290,19 @@ mod tests {
       .rt
       .call_function(create_text, document, &[hello])
       .unwrap();
-    assert_eq!(realm.rt.get(text, node_type_key).unwrap(), Value::Number(3.0));
+    assert_eq!(
+      realm.rt.get(text, node_type_key).unwrap(),
+      Value::Number(3.0)
+    );
     let text_name = realm.rt.get(text, node_name_key).unwrap();
     assert_eq!(as_str(&realm.rt, text_name), "#text");
 
     let create_fragment_key = pk(&mut realm.rt, "createDocumentFragment");
     let create_fragment = realm.rt.get(document, create_fragment_key).unwrap();
-    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+    let fragment = realm
+      .rt
+      .call_function(create_fragment, document, &[])
+      .unwrap();
     assert_eq!(
       realm.rt.get(fragment, node_type_key).unwrap(),
       Value::Number(11.0)
@@ -6113,7 +6379,10 @@ mod tests {
     assert_eq!(as_str(&realm.rt, got_tag), "DIV");
 
     // Non-HTML namespaces should not be uppercased.
-    let svg_id = realm.dom.borrow_mut().create_element("svg", crate::dom::SVG_NAMESPACE);
+    let svg_id = realm
+      .dom
+      .borrow_mut()
+      .create_element("svg", crate::dom::SVG_NAMESPACE);
     let svg = realm.wrap_node(svg_id).unwrap();
     let got_tag = realm.rt.get(svg, tag_name_key).unwrap();
     assert_eq!(as_str(&realm.rt, got_tag), "svg");
@@ -6198,7 +6467,10 @@ mod tests {
 
     // `<template>` behaves like it has no children (its contents subtree is inert).
     let first_child_key = pk(&mut realm.rt, "firstChild");
-    assert_eq!(realm.rt.get(template, first_child_key).unwrap(), Value::Null);
+    assert_eq!(
+      realm.rt.get(template, first_child_key).unwrap(),
+      Value::Null
+    );
 
     let child_nodes_key = pk(&mut realm.rt, "childNodes");
     let nodes = realm.rt.get(template, child_nodes_key).unwrap();
@@ -6213,12 +6485,18 @@ mod tests {
     let contains_key = pk(&mut realm.rt, "contains");
     let contains = realm.rt.get(template, contains_key).unwrap();
     assert_eq!(
-      realm.rt.call_function(contains, template, &[child]).unwrap(),
+      realm
+        .rt
+        .call_function(contains, template, &[child])
+        .unwrap(),
       Value::Bool(false)
     );
     let contains_doc = realm.rt.get(document, contains_key).unwrap();
     assert_eq!(
-      realm.rt.call_function(contains_doc, document, &[child]).unwrap(),
+      realm
+        .rt
+        .call_function(contains_doc, document, &[child])
+        .unwrap(),
       Value::Bool(false)
     );
   }
@@ -6233,8 +6511,14 @@ mod tests {
     let is_connected_key = pk(&mut realm.rt, "isConnected");
 
     // Document.ownerDocument is null, but the document itself is always connected.
-    assert_eq!(realm.rt.get(document, owner_document_key).unwrap(), Value::Null);
-    assert_eq!(realm.rt.get(document, is_connected_key).unwrap(), Value::Bool(true));
+    assert_eq!(
+      realm.rt.get(document, owner_document_key).unwrap(),
+      Value::Null
+    );
+    assert_eq!(
+      realm.rt.get(document, is_connected_key).unwrap(),
+      Value::Bool(true)
+    );
 
     let create_element_key = pk(&mut realm.rt, "createElement");
     let create_element = realm.rt.get(document, create_element_key).unwrap();
@@ -6246,7 +6530,10 @@ mod tests {
 
     // Newly-created nodes are detached.
     assert_eq!(realm.rt.get(div, owner_document_key).unwrap(), document);
-    assert_eq!(realm.rt.get(div, is_connected_key).unwrap(), Value::Bool(false));
+    assert_eq!(
+      realm.rt.get(div, is_connected_key).unwrap(),
+      Value::Bool(false)
+    );
 
     // Appending connects the subtree.
     let append_child_key = pk(&mut realm.rt, "appendChild");
@@ -6255,7 +6542,10 @@ mod tests {
       .rt
       .call_function(append_child, document, &[div])
       .unwrap();
-    assert_eq!(realm.rt.get(div, is_connected_key).unwrap(), Value::Bool(true));
+    assert_eq!(
+      realm.rt.get(div, is_connected_key).unwrap(),
+      Value::Bool(true)
+    );
   }
 
   #[test]
@@ -6287,7 +6577,10 @@ mod tests {
       .unwrap();
 
     let div_append_child = realm.rt.get(div, append_child_key).unwrap();
-    realm.rt.call_function(div_append_child, div, &[span]).unwrap();
+    realm
+      .rt
+      .call_function(div_append_child, div, &[span])
+      .unwrap();
 
     let div_contains = realm.rt.get(div, contains_key).unwrap();
     assert_eq!(
@@ -6359,7 +6652,10 @@ mod tests {
 
     let div_has_child_nodes = realm.rt.get(div, has_child_nodes_key).unwrap();
     assert_eq!(
-      realm.rt.call_function(div_has_child_nodes, div, &[]).unwrap(),
+      realm
+        .rt
+        .call_function(div_has_child_nodes, div, &[])
+        .unwrap(),
       Value::Bool(false)
     );
 
@@ -6370,7 +6666,10 @@ mod tests {
       .unwrap();
 
     assert_eq!(
-      realm.rt.call_function(div_has_child_nodes, div, &[]).unwrap(),
+      realm
+        .rt
+        .call_function(div_has_child_nodes, div, &[])
+        .unwrap(),
       Value::Bool(true)
     );
 
@@ -6380,7 +6679,10 @@ mod tests {
       .call_function(div_remove_child, div, &[span])
       .unwrap();
     assert_eq!(
-      realm.rt.call_function(div_has_child_nodes, div, &[]).unwrap(),
+      realm
+        .rt
+        .call_function(div_has_child_nodes, div, &[])
+        .unwrap(),
       Value::Bool(false)
     );
   }
@@ -6403,7 +6705,10 @@ mod tests {
       .call_function(create_element, document, &[div_tag])
       .unwrap();
 
-    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+    let fragment = realm
+      .rt
+      .call_function(create_fragment, document, &[])
+      .unwrap();
 
     let a_tag = realm.rt.alloc_string_value("a").unwrap();
     let a = realm
@@ -6433,8 +6738,7 @@ mod tests {
       .unwrap();
 
     let parent_id = extract_node_id(&mut realm.rt, &realm.platform_objects, parent).unwrap();
-    let fragment_id =
-      extract_node_id(&mut realm.rt, &realm.platform_objects, fragment).unwrap();
+    let fragment_id = extract_node_id(&mut realm.rt, &realm.platform_objects, fragment).unwrap();
     let a_id = extract_node_id(&mut realm.rt, &realm.platform_objects, a).unwrap();
     let b_id = extract_node_id(&mut realm.rt, &realm.platform_objects, b).unwrap();
 
@@ -6466,7 +6770,10 @@ mod tests {
     let create_fragment = realm.rt.get(document, create_fragment_key).unwrap();
     let append_child_key = pk(&mut realm.rt, "appendChild");
 
-    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+    let fragment = realm
+      .rt
+      .call_function(create_fragment, document, &[])
+      .unwrap();
 
     let a_tag = realm.rt.alloc_string_value("a").unwrap();
     let a = realm
@@ -6507,8 +6814,7 @@ mod tests {
     assert_eq!(as_str(&realm.rt, marker), "marker");
 
     let document_id = extract_node_id(&mut realm.rt, &realm.platform_objects, document).unwrap();
-    let fragment_id =
-      extract_node_id(&mut realm.rt, &realm.platform_objects, fragment).unwrap();
+    let fragment_id = extract_node_id(&mut realm.rt, &realm.platform_objects, fragment).unwrap();
     let a_id = extract_node_id(&mut realm.rt, &realm.platform_objects, a).unwrap();
     let b_id = extract_node_id(&mut realm.rt, &realm.platform_objects, b).unwrap();
 

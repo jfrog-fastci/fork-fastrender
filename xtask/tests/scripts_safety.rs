@@ -25,14 +25,13 @@ fn heredoc_delimiter(line: &str) -> Option<String> {
     // explicitly.
     Regex::new(r#"<<-?\s*(?:'([A-Za-z0-9_]+)'|"([A-Za-z0-9_]+)"|([A-Za-z0-9_]+))"#).unwrap()
   });
-  re.captures(line)
-    .and_then(|caps| {
-      caps
-        .get(1)
-        .or_else(|| caps.get(2))
-        .or_else(|| caps.get(3))
-        .map(|m| m.as_str().to_string())
-    })
+  re.captures(line).and_then(|caps| {
+    caps
+      .get(1)
+      .or_else(|| caps.get(2))
+      .or_else(|| caps.get(3))
+      .map(|m| m.as_str().to_string())
+  })
 }
 
 #[test]

@@ -1,8 +1,7 @@
 use crate::runtime::{
-  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, NativeHostFunction,
-  WebIdlBindingsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
+  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime,
+  NativeHostFunction, WebIdlBindingsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
 };
-use webidl_vm_js::{CallbackHandle, CallbackKind};
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::num::IntErrorKind;
@@ -12,6 +11,7 @@ use vm_js::{
   GcObject, GcString, GcSymbol, Heap, HeapLimits, JsBigInt, NativeFunctionId, PropertyDescriptor,
   PropertyKey, PropertyKind, Value, VmError, WeakGcObject,
 };
+use webidl_vm_js::{CallbackHandle, CallbackKind};
 
 mod ecma_webidl;
 
@@ -29,7 +29,8 @@ fn is_ecma_whitespace(c: char) -> bool {
       | '\u{0020}' // Space
       | '\u{00A0}' // No-break space
       | '\u{1680}' // Ogham space mark
-      | '\u{2000}'..='\u{200A}' // En quad..hair space
+      | '\u{2000}'
+      ..='\u{200A}' // En quad..hair space
       | '\u{2028}' // Line separator
       | '\u{2029}' // Paragraph separator
       | '\u{202F}' // Narrow no-break space
@@ -437,7 +438,11 @@ impl VmJsRuntime {
   }
 
   pub fn implements_interface(&self, v: Value, interface: &str) -> bool {
-    <Self as WebIdlHooks<Value>>::implements_interface(self, v, crate::interface_id_from_name(interface))
+    <Self as WebIdlHooks<Value>>::implements_interface(
+      self,
+      v,
+      crate::interface_id_from_name(interface),
+    )
   }
 
   pub fn set_prototype(&mut self, obj: Value, proto: Option<Value>) -> Result<(), VmError> {
@@ -932,7 +937,10 @@ impl VmJsRuntime {
     let message = match self.heap.symbol_description(symbol_data) {
       Some(handle) => match self.heap.get_string(handle) {
         Ok(s) if s.len_code_units() <= MAX_DESC_CODE_UNITS => {
-          format!("Cannot convert a Symbol({}) value to a number", s.to_utf8_lossy())
+          format!(
+            "Cannot convert a Symbol({}) value to a number",
+            s.to_utf8_lossy()
+          )
         }
         _ => "Cannot convert a Symbol value to a number".to_string(),
       },
@@ -946,7 +954,10 @@ impl VmJsRuntime {
     let message = match self.heap.symbol_description(symbol_data) {
       Some(handle) => match self.heap.get_string(handle) {
         Ok(s) if s.len_code_units() <= MAX_DESC_CODE_UNITS => {
-          format!("Cannot convert a Symbol({}) value to a string", s.to_utf8_lossy())
+          format!(
+            "Cannot convert a Symbol({}) value to a string",
+            s.to_utf8_lossy()
+          )
         }
         _ => "Cannot convert a Symbol value to a string".to_string(),
       },
@@ -1665,7 +1676,9 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
     configurable: bool,
   ) -> Result<(), VmError> {
     let Value::Object(obj) = obj else {
-      return Err(self.throw_type_error("define_data_property_with_attrs: receiver is not an object"));
+      return Err(
+        self.throw_type_error("define_data_property_with_attrs: receiver is not an object"),
+      );
     };
 
     let desc = PropertyDescriptor {
@@ -1746,9 +1759,9 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
 
     let handle_event_key = self.property_key_from_str("handleEvent")?;
     if self.get_method(value, handle_event_key)?.is_none() {
-      return Err(self.throw_type_error(
-        "Callback interface object is missing a callable handleEvent method",
-      ));
+      return Err(
+        self.throw_type_error("Callback interface object is missing a callable handleEvent method"),
+      );
     }
 
     CallbackHandle::new(self.heap_mut(), CallbackKind::Interface, value, None)
@@ -1962,9 +1975,7 @@ mod tests {
   #[test]
   fn to_object_bigint_allocates_wrapper() {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
-    let obj = rt
-      .to_object(Value::BigInt(JsBigInt::from_u128(7)))
-      .unwrap();
+    let obj = rt.to_object(Value::BigInt(JsBigInt::from_u128(7))).unwrap();
     assert!(matches!(obj, Value::Object(_)));
 
     let s = rt.to_string(obj).unwrap();
@@ -2302,10 +2313,18 @@ mod tests {
     let c = crate::interface_id_from_name("C");
 
     let obj = rt.alloc_platform_object_value("A", &["B"], 1).unwrap();
-    assert!(crate::runtime::WebIdlJsRuntime::is_platform_object(&rt, obj));
-    assert!(crate::runtime::WebIdlJsRuntime::implements_interface(&rt, obj, a));
-    assert!(crate::runtime::WebIdlJsRuntime::implements_interface(&rt, obj, b));
-    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(&rt, obj, c));
+    assert!(crate::runtime::WebIdlJsRuntime::is_platform_object(
+      &rt, obj
+    ));
+    assert!(crate::runtime::WebIdlJsRuntime::implements_interface(
+      &rt, obj, a
+    ));
+    assert!(crate::runtime::WebIdlJsRuntime::implements_interface(
+      &rt, obj, b
+    ));
+    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(
+      &rt, obj, c
+    ));
   }
 
   #[test]
@@ -2315,17 +2334,29 @@ mod tests {
     let iface = crate::interface_id_from_name("A");
 
     let obj = rt.alloc_object_value().unwrap();
-    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(&rt, obj));
-    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(&rt, obj, iface));
+    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(
+      &rt, obj
+    ));
+    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(
+      &rt, obj, iface
+    ));
 
     let string_obj = rt.alloc_string_object_value("hi").unwrap();
-    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(&rt, string_obj));
-    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(&rt, string_obj, iface));
+    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(
+      &rt, string_obj
+    ));
+    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(
+      &rt, string_obj, iface
+    ));
 
     let func_obj = rt
       .alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))
       .unwrap();
-    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(&rt, func_obj));
-    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(&rt, func_obj, iface));
+    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(
+      &rt, func_obj
+    ));
+    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(
+      &rt, func_obj, iface
+    ));
   }
 }

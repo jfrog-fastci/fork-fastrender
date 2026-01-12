@@ -81,7 +81,9 @@ fn percent_height_resolves_with_definite_block_percentage_base() {
   .with_block_percentage_base(Some(100.0));
 
   let fc = FlexFormattingContext::new();
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   assert!(
     (fragment.bounds.height() - 100.0).abs() < 0.5,
@@ -89,4 +91,3 @@ fn percent_height_resolves_with_definite_block_percentage_base() {
     fragment.bounds.height()
   );
 }
-

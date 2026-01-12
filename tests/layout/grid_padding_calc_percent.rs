@@ -7,8 +7,8 @@ use fastrender::style::types::GridTrack;
 use fastrender::style::values::CalcLength;
 use fastrender::style::values::Length;
 use fastrender::style::values::LengthUnit;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::ComputedStyle;
 use std::sync::Arc;
 
@@ -54,8 +54,11 @@ fn grid_container_padding_calc_with_percentage_resolves_against_containing_block
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let mut grid =
-    BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![child]);
+  let mut grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
   grid.id = 100;
 
   let fc = GridFormattingContext::new();
@@ -70,4 +73,3 @@ fn grid_container_padding_calc_with_percentage_resolves_against_containing_block
     child_frag.bounds.x()
   );
 }
-

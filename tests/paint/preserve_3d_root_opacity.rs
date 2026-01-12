@@ -76,4 +76,3 @@ fn preserve_3d_root_opacity_applies_to_composited_scene() {
   );
   assert_eq!(pixel.alpha(), 255);
 }
-

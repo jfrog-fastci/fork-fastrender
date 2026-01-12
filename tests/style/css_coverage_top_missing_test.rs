@@ -4,7 +4,9 @@ use fastrender::dom;
 use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
-use fastrender::style::types::{AlignContent, AlignItems, FlexBasis, FlexWrap, JustifyContent, TextAlign};
+use fastrender::style::types::{
+  AlignContent, AlignItems, FlexBasis, FlexWrap, JustifyContent, TextAlign,
+};
 use fastrender::style::values::Length;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
@@ -27,10 +29,7 @@ fn styled_root(html: &str) -> StyledNode {
   apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0))
 }
 
-fn styles_for_first(
-  html: &str,
-  tag: &str,
-) -> std::sync::Arc<fastrender::style::ComputedStyle> {
+fn styles_for_first(html: &str, tag: &str) -> std::sync::Arc<fastrender::style::ComputedStyle> {
   let styled = styled_root(html);
   find_first(&styled, tag)
     .unwrap_or_else(|| panic!("expected to find <{tag}>"))
@@ -76,7 +75,8 @@ fn ms_flex_pack_distribute_maps_to_space_around() {
 
 #[test]
 fn ms_flex_pack_left_maps_to_flex_start() {
-  let (div, _span) = styles_for_div_and_span(r#"<div style="display:flex;-ms-flex-pack:left"><span></span></div>"#);
+  let (div, _span) =
+    styles_for_div_and_span(r#"<div style="display:flex;-ms-flex-pack:left"><span></span></div>"#);
   assert_eq!(div.justify_content, JustifyContent::FlexStart);
 }
 
@@ -115,16 +115,25 @@ fn ms_flex_line_pack_left_maps_to_align_content_flex_start() {
 
 #[test]
 fn align_content_left_and_right_are_accepted_as_legacy_aliases() {
-  let div_left = styles_for_first(r#"<div style="display:flex;align-content:left"></div>"#, "div");
+  let div_left = styles_for_first(
+    r#"<div style="display:flex;align-content:left"></div>"#,
+    "div",
+  );
   assert_eq!(div_left.align_content, AlignContent::Start);
 
-  let div_right = styles_for_first(r#"<div style="display:flex;align-content:right"></div>"#, "div");
+  let div_right = styles_for_first(
+    r#"<div style="display:flex;align-content:right"></div>"#,
+    "div",
+  );
   assert_eq!(div_right.align_content, AlignContent::End);
 }
 
 #[test]
 fn ms_flex_wrap_aliases_map_to_flex_wrap() {
-  let div_wrap = styles_for_first(r#"<div style="display:flex;-ms-flex-wrap:wrap"></div>"#, "div");
+  let div_wrap = styles_for_first(
+    r#"<div style="display:flex;-ms-flex-wrap:wrap"></div>"#,
+    "div",
+  );
   assert_eq!(div_wrap.flex_wrap, FlexWrap::Wrap);
 
   // `none` is the legacy IE10 spelling for `nowrap`. Ensure it can override earlier declarations.
@@ -199,20 +208,29 @@ fn ms_grid_span_properties_can_appear_before_start() {
 
 #[test]
 fn justify_content_right_is_accepted_as_legacy_alias() {
-  let div = styles_for_first(r#"<div style="display:flex;justify-content:right"></div>"#, "div");
+  let div = styles_for_first(
+    r#"<div style="display:flex;justify-content:right"></div>"#,
+    "div",
+  );
   assert_eq!(div.justify_content, JustifyContent::End);
 }
 
 #[test]
 fn justify_content_stretch_is_supported() {
-  let div = styles_for_first(r#"<div style="display:grid;justify-content:stretch"></div>"#, "div");
+  let div = styles_for_first(
+    r#"<div style="display:grid;justify-content:stretch"></div>"#,
+    "div",
+  );
   assert_eq!(div.justify_content, JustifyContent::Stretch);
 }
 
 #[test]
 fn supports_border_color_shorthand_multiple_values() {
   assert!(supports_declaration("border-color", "red green blue"));
-  assert!(!supports_declaration("border-color", "red green blue black orange"));
+  assert!(!supports_declaration(
+    "border-color",
+    "red green blue black orange"
+  ));
 }
 
 #[test]
@@ -228,7 +246,8 @@ fn supports_text_align_webkit_match_parent_alias() {
 
 #[test]
 fn text_align_webkit_match_parent_resolves_like_match_parent() {
-  let html = r#"<div style="text-align:end"><span style="text-align:-webkit-match-parent"></span></div>"#;
+  let html =
+    r#"<div style="text-align:end"><span style="text-align:-webkit-match-parent"></span></div>"#;
   let styled = styled_root(html);
   let div = find_first(&styled, "div").expect("div");
   let span = find_first(div, "span").expect("span");

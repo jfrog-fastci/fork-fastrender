@@ -133,4 +133,3 @@ fn radio_group_is_scoped_by_form_owner() {
     "inline"
   );
 }
-

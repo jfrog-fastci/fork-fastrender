@@ -133,4 +133,3 @@ fn aria_owns_ignores_hidden_targets() {
   assert_eq!(count_by_id(&tree, "inert"), 0);
   assert_eq!(count_by_id(&tree, "csshidden"), 0);
 }
-

@@ -7,8 +7,8 @@ use url::Url;
 
 use super::limits::ImportMapLimits;
 use super::types::{
-  code_unit_cmp, ImportMap, ImportMapError, ImportMapParseResult, ImportMapWarning, ImportMapWarningKind,
-  ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap,
+  code_unit_cmp, ImportMap, ImportMapError, ImportMapParseResult, ImportMapWarning,
+  ImportMapWarningKind, ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap,
 };
 
 const LIMIT_EXCEEDED_ERROR_PREFIX: &str = "__fastrender_import_map_limit_exceeded__:";
@@ -206,7 +206,9 @@ impl<'de> DeserializeSeed<'de> for JsonStringOrOtherSeed<'_> {
   where
     D: Deserializer<'de>,
   {
-    deserializer.deserialize_any(JsonStringOrOtherVisitor { limits: self.limits })
+    deserializer.deserialize_any(JsonStringOrOtherVisitor {
+      limits: self.limits,
+    })
   }
 }
 
@@ -356,7 +358,9 @@ impl<'de> Visitor<'de> for StringMapOrOtherVisitor<'_> {
 
       self.counter.bump_total_entries(self.limits)?;
 
-      let value = map.next_value_seed(JsonStringOrOtherSeed { limits: self.limits })?;
+      let value = map.next_value_seed(JsonStringOrOtherSeed {
+        limits: self.limits,
+      })?;
       entries.push((key, value));
     }
     Ok(JsonObjectOrOther::Object(entries))
@@ -553,7 +557,9 @@ fn normalize_specifier_key(
   warnings: &mut Vec<ImportMapWarning>,
 ) -> Option<String> {
   if specifier_key.is_empty() {
-    warnings.push(ImportMapWarning::new(ImportMapWarningKind::EmptySpecifierKey));
+    warnings.push(ImportMapWarning::new(
+      ImportMapWarningKind::EmptySpecifierKey,
+    ));
     return None;
   }
 
@@ -572,7 +578,8 @@ fn sort_and_normalize_module_specifier_map(
   let mut normalized: HashMap<String, Option<Url>> = HashMap::new();
 
   for (specifier_key, value) in original_map {
-    let Some(normalized_specifier_key) = normalize_specifier_key(specifier_key, base_url, warnings) else {
+    let Some(normalized_specifier_key) = normalize_specifier_key(specifier_key, base_url, warnings)
+    else {
       continue;
     };
 
@@ -587,10 +594,12 @@ fn sort_and_normalize_module_specifier_map(
     };
 
     let Some(address_url) = resolve_import_map_address(address, base_url) else {
-      warnings.push(ImportMapWarning::new(ImportMapWarningKind::AddressInvalid {
-        specifier_key: specifier_key.clone(),
-        address: address.clone(),
-      }));
+      warnings.push(ImportMapWarning::new(
+        ImportMapWarningKind::AddressInvalid {
+          specifier_key: specifier_key.clone(),
+          address: address.clone(),
+        },
+      ));
       normalized.insert(normalized_specifier_key, None);
       continue;
     };
@@ -716,9 +725,12 @@ pub fn parse_import_map_string_with_limits(
 
   let mut de = serde_json::Deserializer::from_str(input);
   let mut counter = ImportMapEntryCounter::default();
-  let top_level = ImportMapTopLevelSeed { limits, counter: &mut counter }
-    .deserialize(&mut de)
-    .map_err(serde_json_error_to_import_map_error)?;
+  let top_level = ImportMapTopLevelSeed {
+    limits,
+    counter: &mut counter,
+  }
+  .deserialize(&mut de)
+  .map_err(serde_json_error_to_import_map_error)?;
   de.end().map_err(serde_json_error_to_import_map_error)?;
 
   let ParsedTopLevel::Object(parsed) = top_level else {

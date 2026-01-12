@@ -108,10 +108,7 @@ fn svg_filter_kernel_outset_css(
         }
       }
       FilterPrimitive::DropShadow {
-        dx,
-        dy,
-        std_dev,
-        ..
+        dx, dy, std_dev, ..
       } => {
         let (sx, sy) = resolve_pair(*std_dev);
         let sx = if sx.is_finite() { sx.abs() } else { 0.0 };
@@ -206,12 +203,10 @@ fn svg_filter_kernel_outset_css(
         pad_y = pad_y.max(filter_region_h);
       }
       FilterPrimitive::DiffuseLighting {
-        kernel_unit_length,
-        ..
+        kernel_unit_length, ..
       }
       | FilterPrimitive::SpecularLighting {
-        kernel_unit_length,
-        ..
+        kernel_unit_length, ..
       } => {
         // Lighting primitives sample the surface alpha at +/- kernelUnitLength (see
         // `surface_normal` in `svg_filter.rs`).
@@ -708,10 +703,7 @@ mod tests {
     let bbox = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
     let (l, t, r, b) = compute_filter_outset(&filters, bbox, 1.0);
     assert!(
-      l >= 20.0 - 0.01
-        && r >= 20.0 - 0.01
-        && t >= 20.0 - 0.01
-        && b >= 20.0 - 0.01,
+      l >= 20.0 - 0.01 && r >= 20.0 - 0.01 && t >= 20.0 - 0.01 && b >= 20.0 - 0.01,
       "expected displacement map to contribute >=20px padding, got {l},{t},{r},{b}"
     );
   }

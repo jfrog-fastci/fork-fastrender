@@ -49,7 +49,9 @@ fn wait_for_navigation_committed_and_frame(
         } if msg_tab == tab_id && url == expected_url => {
           panic!("navigation failed for {url}: {error}");
         }
-        WorkerToUi::FrameReady { tab_id: msg_tab, .. } if committed && msg_tab == tab_id => return,
+        WorkerToUi::FrameReady {
+          tab_id: msg_tab, ..
+        } if committed && msg_tab == tab_id => return,
         _ => {}
       },
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -67,9 +69,7 @@ fn about_pages_render_and_have_titles() {
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab, None))
-    .expect("create tab");
+  ui_tx.send(create_tab_msg(tab, None)).expect("create tab");
 
   for (url, title) in [
     ("about:newtab", "New Tab"),
@@ -78,7 +78,11 @@ fn about_pages_render_and_have_titles() {
     ("about:gpu", "GPU"),
   ] {
     ui_tx
-      .send(navigate_msg(tab, url.to_string(), NavigationReason::TypedUrl))
+      .send(navigate_msg(
+        tab,
+        url.to_string(),
+        NavigationReason::TypedUrl,
+      ))
       .unwrap_or_else(|_| panic!("navigate to {url}"));
     wait_for_navigation_committed_and_frame(&ui_rx, tab, url, title, TIMEOUT);
   }
@@ -86,4 +90,3 @@ fn about_pages_render_and_have_titles() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

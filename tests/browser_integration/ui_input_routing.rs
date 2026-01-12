@@ -1,9 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::absolute_bounds_for_box_id;
+use fastrender::interaction::dom_index::DomIndex;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId,
+  UiToWorker, WorkerToUi,
 };
 use fastrender::ui::BrowserTabController;
 use fastrender::{BoxNode, BoxTree, Point, Result, Rgba};
@@ -17,7 +18,10 @@ fn extract_frame(messages: Vec<WorkerToUi>) -> Option<RenderedFrame> {
   })
 }
 
-fn find_element_by_id<'a>(dom: &'a fastrender::dom::DomNode, element_id: &str) -> Option<&'a fastrender::dom::DomNode> {
+fn find_element_by_id<'a>(
+  dom: &'a fastrender::dom::DomNode,
+  element_id: &str,
+) -> Option<&'a fastrender::dom::DomNode> {
   let mut stack = vec![dom];
   while let Some(node) = stack.pop() {
     if node.get_attribute_ref("id") == Some(element_id) {
@@ -105,19 +109,13 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
   )?;
 
   // Initial paint.
-  let frame0 = extract_frame(controller.handle_message(request_repaint(
-    tab_id,
-    RepaintReason::Explicit,
-  ))?)
-  .expect("expected initial FrameReady");
+  let frame0 =
+    extract_frame(controller.handle_message(request_repaint(tab_id, RepaintReason::Explicit))?)
+      .expect("expected initial FrameReady");
   let baseline_bytes = frame0.pixmap.data().to_vec();
 
   // Click checkbox (down+up).
-  let _ = controller.handle_message(pointer_down(
-    tab_id,
-    (15.0, 15.0),
-    PointerButton::Primary,
-  ))?;
+  let _ = controller.handle_message(pointer_down(tab_id, (15.0, 15.0), PointerButton::Primary))?;
   let frame_after_checkbox = extract_frame(controller.handle_message(pointer_up(
     tab_id,
     (15.0, 15.0),
@@ -137,16 +135,8 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
   );
 
   // Focus input and type into it.
-  let _ = controller.handle_message(pointer_down(
-    tab_id,
-    (15.0, 50.0),
-    PointerButton::Primary,
-  ))?;
-  let _ = controller.handle_message(pointer_up(
-    tab_id,
-    (15.0, 50.0),
-    PointerButton::Primary,
-  ))?;
+  let _ = controller.handle_message(pointer_down(tab_id, (15.0, 50.0), PointerButton::Primary))?;
+  let _ = controller.handle_message(pointer_up(tab_id, (15.0, 50.0), PointerButton::Primary))?;
   let _ = controller.handle_message(text_input(tab_id, "hi"))?;
   let input = find_element_by_id(controller.document().dom(), "text").expect("text input element");
   assert_eq!(input.get_attribute_ref("value"), Some("hi"));
@@ -161,7 +151,8 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
     box_id_for_styled_node(prepared.box_tree(), scroller_dom_id)
   };
 
-  let scroll_msgs = controller.handle_message(scroll_msg(tab_id, (0.0, 40.0), Some((15.0, 110.0))))?;
+  let scroll_msgs =
+    controller.handle_message(scroll_msg(tab_id, (0.0, 40.0), Some((15.0, 110.0))))?;
   assert!(
     scroll_msgs
       .iter()
@@ -194,20 +185,16 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
     .expect("expected anchor scroll target to resolve")
   };
 
-  let nav_msgs = controller.handle_message(pointer_down(
-    tab_id,
-    (15.0, 75.0),
-    PointerButton::Primary,
-  ))?;
+  let nav_msgs =
+    controller.handle_message(pointer_down(tab_id, (15.0, 75.0), PointerButton::Primary))?;
   assert!(
-    nav_msgs.iter().any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
+    nav_msgs
+      .iter()
+      .any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
     "expected pointer down to repaint active state"
   );
-  let nav_msgs = controller.handle_message(pointer_up(
-    tab_id,
-    (15.0, 75.0),
-    PointerButton::Primary,
-  ))?;
+  let nav_msgs =
+    controller.handle_message(pointer_up(tab_id, (15.0, 75.0), PointerButton::Primary))?;
   assert!(
     nav_msgs
       .iter()
@@ -447,7 +434,11 @@ fn browser_tab_controller_select_dropdown_popup_opens_and_selects() -> Result<()
     *got_select_node_id, select_node_id,
     "expected dropdown open message to reference clicked select node"
   );
-  assert_eq!(control.items.len(), 2, "expected two option rows in SelectControl");
+  assert_eq!(
+    control.items.len(),
+    2,
+    "expected two option rows in SelectControl"
+  );
   assert!(
     anchor_css.origin.x.is_finite()
       && anchor_css.origin.y.is_finite()
@@ -463,7 +454,9 @@ fn browser_tab_controller_select_dropdown_popup_opens_and_selects() -> Result<()
     option_node_id: option2_node_id,
   })?;
   assert!(
-    choose_msgs.iter().any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
+    choose_msgs
+      .iter()
+      .any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
     "expected FrameReady after selecting an option"
   );
 
@@ -500,11 +493,9 @@ fn browser_tab_controller_navigation_reuses_renderer_instance() -> Result<()> {
     1.0,
   )?;
 
-  let frame0 = extract_frame(controller.handle_message(request_repaint(
-    tab_id,
-    RepaintReason::Explicit,
-  ))?)
-  .expect("expected initial FrameReady");
+  let frame0 =
+    extract_frame(controller.handle_message(request_repaint(tab_id, RepaintReason::Explicit))?)
+      .expect("expected initial FrameReady");
   assert_eq!(
     support::rgba_at(&frame0.pixmap, 0, 0),
     [17, 34, 51, 255],

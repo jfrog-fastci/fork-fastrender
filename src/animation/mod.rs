@@ -5,15 +5,14 @@
 //! and self contained so it can be reused by layout/paint and tests without
 //! wiring a full animation engine.
 
-pub mod timing;
 mod state_store;
+pub mod timing;
 
 pub use state_store::AnimationStateStore;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use smallvec::SmallVec;
 use crate::css::types::{
   BoxShadow, Keyframe, KeyframeSelector, KeyframesRule, PropertyValue, RotateValue, ScaleValue,
   TextShadow, TranslateValue,
@@ -83,6 +82,7 @@ use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use rustc_hash::FxHashSet;
+use smallvec::SmallVec;
 use std::mem::discriminant;
 use std::sync::{Arc, OnceLock};
 
@@ -385,13 +385,7 @@ fn finalize_registered_custom_properties_for_var_substitution(
     (height, width)
   };
   crate::style::cascade::finalize_registered_custom_properties_with_bases(
-    style,
-    viewport,
-    None,
-    width,
-    height,
-    inline,
-    block,
+    style, viewport, None, width, height, inline, block,
   );
 }
 
@@ -733,7 +727,10 @@ fn filter_identity_like(filter: &ResolvedFilter) -> Option<ResolvedFilter> {
   })
 }
 
-fn add_resolved_filter_list(a: &[ResolvedFilter], b: &[ResolvedFilter]) -> Option<Vec<ResolvedFilter>> {
+fn add_resolved_filter_list(
+  a: &[ResolvedFilter],
+  b: &[ResolvedFilter],
+) -> Option<Vec<ResolvedFilter>> {
   let max_len = a.len().max(b.len());
   let mut out = Vec::with_capacity(max_len);
   for idx in 0..max_len {
@@ -891,14 +888,22 @@ fn accumulate_resolved_filter_list(
         let delta = end - start;
         ResolvedFilter::Brightness((cur + iter * delta).max(0.0))
       }
-      (ResolvedFilter::Contrast(cur), ResolvedFilter::Contrast(start), ResolvedFilter::Contrast(end)) => {
+      (
+        ResolvedFilter::Contrast(cur),
+        ResolvedFilter::Contrast(start),
+        ResolvedFilter::Contrast(end),
+      ) => {
         if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
           return None;
         }
         let delta = end - start;
         ResolvedFilter::Contrast((cur + iter * delta).max(0.0))
       }
-      (ResolvedFilter::Grayscale(cur), ResolvedFilter::Grayscale(start), ResolvedFilter::Grayscale(end)) => {
+      (
+        ResolvedFilter::Grayscale(cur),
+        ResolvedFilter::Grayscale(start),
+        ResolvedFilter::Grayscale(end),
+      ) => {
         if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
           return None;
         }
@@ -912,7 +917,11 @@ fn accumulate_resolved_filter_list(
         let delta = end - start;
         ResolvedFilter::Sepia((cur + iter * delta).clamp(0.0, 1.0))
       }
-      (ResolvedFilter::Saturate(cur), ResolvedFilter::Saturate(start), ResolvedFilter::Saturate(end)) => {
+      (
+        ResolvedFilter::Saturate(cur),
+        ResolvedFilter::Saturate(start),
+        ResolvedFilter::Saturate(end),
+      ) => {
         if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
           return None;
         }
@@ -937,7 +946,11 @@ fn accumulate_resolved_filter_list(
         let delta = end - start;
         ResolvedFilter::Invert((cur + iter * delta).clamp(0.0, 1.0))
       }
-      (ResolvedFilter::Opacity(cur), ResolvedFilter::Opacity(start), ResolvedFilter::Opacity(end)) => {
+      (
+        ResolvedFilter::Opacity(cur),
+        ResolvedFilter::Opacity(start),
+        ResolvedFilter::Opacity(end),
+      ) => {
         if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
           return None;
         }
@@ -1339,10 +1352,13 @@ fn clip_path_reference_box_sizes(
   let padding_top = resolve_length_px(&style.padding_top, Some(padding_percent_base), style, ctx);
   let padding_right =
     resolve_length_px(&style.padding_right, Some(padding_percent_base), style, ctx);
-  let padding_bottom =
-    resolve_length_px(&style.padding_bottom, Some(padding_percent_base), style, ctx);
-  let padding_left =
-    resolve_length_px(&style.padding_left, Some(padding_percent_base), style, ctx);
+  let padding_bottom = resolve_length_px(
+    &style.padding_bottom,
+    Some(padding_percent_base),
+    style,
+    ctx,
+  );
+  let padding_left = resolve_length_px(&style.padding_left, Some(padding_percent_base), style, ctx);
 
   let margin_percent_base = border_box.width;
   let resolve_margin = |value: &Option<Length>| -> f32 {
@@ -1434,12 +1450,27 @@ fn resolve_clip_path(
                 y: Length::px(resolve_length_px(&r.top_right.y, Some(height), style, ctx)),
               },
               BorderCornerRadius {
-                x: Length::px(resolve_length_px(&r.bottom_right.x, Some(width), style, ctx)),
-                y: Length::px(resolve_length_px(&r.bottom_right.y, Some(height), style, ctx)),
+                x: Length::px(resolve_length_px(
+                  &r.bottom_right.x,
+                  Some(width),
+                  style,
+                  ctx,
+                )),
+                y: Length::px(resolve_length_px(
+                  &r.bottom_right.y,
+                  Some(height),
+                  style,
+                  ctx,
+                )),
               },
               BorderCornerRadius {
                 x: Length::px(resolve_length_px(&r.bottom_left.x, Some(width), style, ctx)),
-                y: Length::px(resolve_length_px(&r.bottom_left.y, Some(height), style, ctx)),
+                y: Length::px(resolve_length_px(
+                  &r.bottom_left.y,
+                  Some(height),
+                  style,
+                  ctx,
+                )),
               },
             ])
           });
@@ -1455,9 +1486,10 @@ fn resolve_clip_path(
         BasicShape::Circle { radius, position } => {
           let width = reference_size.width;
           let height = reference_size.height;
-          let resolved_pos = resolve_background_positions_for_size(&[*position], reference_size, style, ctx)
-            .into_iter()
-            .next()?;
+          let resolved_pos =
+            resolve_background_positions_for_size(&[*position], reference_size, style, ctx)
+              .into_iter()
+              .next()?;
           let cx = resolved_pos.x.alignment * width + resolved_pos.x.offset;
           let cy = resolved_pos.y.alignment * height + resolved_pos.y.offset;
           if !(cx.is_finite() && cy.is_finite()) {
@@ -1477,9 +1509,10 @@ fn resolve_clip_path(
         } => {
           let width = reference_size.width;
           let height = reference_size.height;
-          let resolved_pos = resolve_background_positions_for_size(&[*position], reference_size, style, ctx)
-            .into_iter()
-            .next()?;
+          let resolved_pos =
+            resolve_background_positions_for_size(&[*position], reference_size, style, ctx)
+              .into_iter()
+              .next()?;
           let cx = resolved_pos.x.alignment * width + resolved_pos.x.offset;
           let cy = resolved_pos.y.alignment * height + resolved_pos.y.offset;
           if !(cx.is_finite() && cy.is_finite()) {
@@ -1526,8 +1559,14 @@ const CLIP_PATH_PATH_DEADLINE_STRIDE: usize = 256;
 
 #[derive(Debug, Clone)]
 enum CanonicalSvgPathSegment {
-  MoveTo { x: f32, y: f32 },
-  LineTo { x: f32, y: f32 },
+  MoveTo {
+    x: f32,
+    y: f32,
+  },
+  LineTo {
+    x: f32,
+    y: f32,
+  },
   CurveTo {
     x1: f32,
     y1: f32,
@@ -1536,7 +1575,12 @@ enum CanonicalSvgPathSegment {
     x: f32,
     y: f32,
   },
-  Quadratic { x1: f32, y1: f32, x: f32, y: f32 },
+  Quadratic {
+    x1: f32,
+    y1: f32,
+    x: f32,
+    y: f32,
+  },
   ClosePath,
 }
 
@@ -1875,18 +1919,20 @@ fn interpolate_svg_path_data(a: &str, b: &str, t: f32) -> Option<Arc<str>> {
   let mut out = Vec::with_capacity(a_segments.len());
   for (sa, sb) in a_segments.iter().zip(b_segments.iter()) {
     let seg = match (sa, sb) {
-      (CanonicalSvgPathSegment::MoveTo { x: ax, y: ay }, CanonicalSvgPathSegment::MoveTo { x: bx, y: by }) => {
-        CanonicalSvgPathSegment::MoveTo {
-          x: lerp(*ax, *bx, t),
-          y: lerp(*ay, *by, t),
-        }
-      }
-      (CanonicalSvgPathSegment::LineTo { x: ax, y: ay }, CanonicalSvgPathSegment::LineTo { x: bx, y: by }) => {
-        CanonicalSvgPathSegment::LineTo {
-          x: lerp(*ax, *bx, t),
-          y: lerp(*ay, *by, t),
-        }
-      }
+      (
+        CanonicalSvgPathSegment::MoveTo { x: ax, y: ay },
+        CanonicalSvgPathSegment::MoveTo { x: bx, y: by },
+      ) => CanonicalSvgPathSegment::MoveTo {
+        x: lerp(*ax, *bx, t),
+        y: lerp(*ay, *by, t),
+      },
+      (
+        CanonicalSvgPathSegment::LineTo { x: ax, y: ay },
+        CanonicalSvgPathSegment::LineTo { x: bx, y: by },
+      ) => CanonicalSvgPathSegment::LineTo {
+        x: lerp(*ax, *bx, t),
+        y: lerp(*ay, *by, t),
+      },
       (
         CanonicalSvgPathSegment::CurveTo {
           x1: ax1,
@@ -1952,7 +1998,13 @@ fn interpolate_svg_path_data(a: &str, b: &str, t: f32) -> Option<Arc<str>> {
         x,
         y,
       } => {
-        if !(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite() && x.is_finite() && y.is_finite()) {
+        if !(x1.is_finite()
+          && y1.is_finite()
+          && x2.is_finite()
+          && y2.is_finite()
+          && x.is_finite()
+          && y.is_finite())
+        {
           return None;
         }
       }
@@ -4980,13 +5032,21 @@ fn expanded_properties_for_keyframe_sampling(property: &str) -> Option<&'static 
     "border-left-color",
   ];
   const BORDER_TOP: [&str; 3] = ["border-top-width", "border-top-style", "border-top-color"];
-  const BORDER_RIGHT: [&str; 3] = ["border-right-width", "border-right-style", "border-right-color"];
+  const BORDER_RIGHT: [&str; 3] = [
+    "border-right-width",
+    "border-right-style",
+    "border-right-color",
+  ];
   const BORDER_BOTTOM: [&str; 3] = [
     "border-bottom-width",
     "border-bottom-style",
     "border-bottom-color",
   ];
-  const BORDER_LEFT: [&str; 3] = ["border-left-width", "border-left-style", "border-left-color"];
+  const BORDER_LEFT: [&str; 3] = [
+    "border-left-width",
+    "border-left-style",
+    "border-left-color",
+  ];
   const BORDER_RADIUS: [&str; 4] = [
     "border-top-left-radius",
     "border-top-right-radius",
@@ -5212,8 +5272,7 @@ fn sample_keyframes_with_default_timing(
         to_style.custom_property_registry.get(prop),
       ) {
         (Some(from_rule), Some(to_rule))
-          if from_rule.syntax == to_rule.syntax
-            && !from_rule.syntax.is_universal() =>
+          if from_rule.syntax == to_rule.syntax && !from_rule.syntax.is_universal() =>
         {
           true
         }
@@ -5278,7 +5337,10 @@ pub fn apply_animated_properties(
   }
 }
 
-fn apply_animated_properties_ordered(style: &mut ComputedStyle, values: &[(String, AnimatedValue)]) {
+fn apply_animated_properties_ordered(
+  style: &mut ComputedStyle,
+  values: &[(String, AnimatedValue)],
+) {
   for (name, value) in values {
     if let Some(interpolator) = interpolator_for(name) {
       (interpolator.apply)(style, value);
@@ -6036,9 +6098,9 @@ fn accumulate_iteration_value(
       let rs = resolved_filters_from_functions(start);
       let re = resolved_filters_from_functions(end);
       let accumulated = accumulate_resolved_filter_list(&rc, &rs, &re, iteration)?;
-      Some(AnimatedValue::BackdropFilter(resolved_filters_to_functions(
-        &accumulated,
-      )))
+      Some(AnimatedValue::BackdropFilter(
+        resolved_filters_to_functions(&accumulated),
+      ))
     }
     (
       AnimatedValue::Translate(cur),
@@ -7759,23 +7821,24 @@ fn apply_animations_to_node_scoped(
       finalize_registered_custom_properties_for_var_substitution(child_style, viewport_size);
       child_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
       if child_style.color_is_inherited {
-        child_style.recompute_current_color_dependent_properties(parent_for_children, viewport_size);
+        child_style
+          .recompute_current_color_dependent_properties(parent_for_children, viewport_size);
       }
     }
     let child_offset = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
-      apply_animations_to_node_scoped(
-        child,
-        child_offset,
-        viewport,
-        Some(parent_for_children),
-        root_context,
-        scroll_state,
-        keyframes,
-        apply_ctx,
-        scope,
-        ancestor_scroll_containers,
-        child_plan,
-      );
+    apply_animations_to_node_scoped(
+      child,
+      child_offset,
+      viewport,
+      Some(parent_for_children),
+      root_context,
+      scroll_state,
+      keyframes,
+      apply_ctx,
+      scope,
+      ancestor_scroll_containers,
+      child_plan,
+    );
   }
   debug_assert!(
     child_plans.next().is_none(),
@@ -7795,10 +7858,8 @@ fn apply_animations_to_node_scoped(
       finalize_registered_custom_properties_for_var_substitution(snapshot_style, viewport_size);
       snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
       if snapshot_style.color_is_inherited {
-        snapshot_style.recompute_current_color_dependent_properties(
-          parent_for_children,
-          viewport_size,
-        );
+        snapshot_style
+          .recompute_current_color_dependent_properties(parent_for_children, viewport_size);
       }
     }
     let snapshot_offset = Point::new(
@@ -8152,7 +8213,11 @@ fn expand_transition_property_name<'a>(name: &'a str) -> SmallVec<[&'a str; 12]>
       "border-bottom-color",
       "border-bottom-style",
     ],
-    "border-left" => smallvec::smallvec!["border-left-width", "border-left-color", "border-left-style"],
+    "border-left" => smallvec::smallvec![
+      "border-left-width",
+      "border-left-color",
+      "border-left-style"
+    ],
     "border-color" => smallvec::smallvec![
       "border-top-color",
       "border-right-color",
@@ -8405,8 +8470,7 @@ fn transition_value_for_custom_property_with_duration_override(
     style.custom_property_registry.get(name),
   ) {
     (Some(from_rule), Some(to_rule))
-      if from_rule.syntax == to_rule.syntax
-        && !from_rule.syntax.is_universal() =>
+      if from_rule.syntax == to_rule.syntax && !from_rule.syntax.is_universal() =>
     {
       true
     }
@@ -8595,8 +8659,9 @@ fn apply_transitions_to_fragment(
           TransitionBehavior::Normal,
         );
         let allow_discrete = matches!(behavior, TransitionBehavior::AllowDiscrete);
-        let duration_override_ms =
-          duration_overrides_ms.and_then(|map| map.get(name_str)).copied();
+        let duration_override_ms = duration_overrides_ms
+          .and_then(|map| map.get(name_str))
+          .copied();
 
         if name_str.starts_with("--") {
           let value = transition_value_for_custom_property_with_duration_override(
@@ -8823,7 +8888,8 @@ fn apply_transition_state_to_fragment(
         }
         snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport);
         if snapshot_style.color_is_inherited {
-          snapshot_style.recompute_current_color_dependent_properties(parent_for_children, viewport);
+          snapshot_style
+            .recompute_current_color_dependent_properties(parent_for_children, viewport);
         }
       }
       apply_transition_state_to_fragment(
@@ -8876,11 +8942,7 @@ fn apply_transition_state_to_fragment(
               .unwrap_or_else(|| "box_id=<none>".to_string());
             eprintln!(
               "[transition] {} property={} progress={:.3} delay_ms={:.1} duration_ms={:.1}",
-              identifier,
-              name,
-              sample.progress,
-              sample.delay_ms,
-              sample.duration_ms
+              identifier, name, sample.progress, sample.delay_ms, sample.duration_ms
             );
           }
         }
@@ -9321,41 +9383,54 @@ mod tests {
       tree
     };
 
-    let sample = |store: &mut AnimationStateStore,
-                  play_state: AnimationPlayState,
-                  time_ms: u64|
-     -> f32 {
-      let mut tree = tree_with_play_state(play_state);
-      apply_animations_with_state(
-        &mut tree,
-        &ScrollState::default(),
-        Duration::from_millis(time_ms),
-        store,
-      );
-      tree.root.children[0]
-        .style
-        .as_ref()
-        .expect("animated style present")
-        .opacity
-    };
+    let sample =
+      |store: &mut AnimationStateStore, play_state: AnimationPlayState, time_ms: u64| -> f32 {
+        let mut tree = tree_with_play_state(play_state);
+        apply_animations_with_state(
+          &mut tree,
+          &ScrollState::default(),
+          Duration::from_millis(time_ms),
+          store,
+        );
+        tree.root.children[0]
+          .style
+          .as_ref()
+          .expect("animated style present")
+          .opacity
+      };
 
     let opacity_0 = sample(&mut store, AnimationPlayState::Running, 0);
     assert!((opacity_0 - 0.0).abs() < 1e-6, "opacity_0={opacity_0}");
 
     let opacity_500 = sample(&mut store, AnimationPlayState::Running, 500);
-    assert!((opacity_500 - 0.5).abs() < 1e-3, "opacity_500={opacity_500}");
+    assert!(
+      (opacity_500 - 0.5).abs() < 1e-3,
+      "opacity_500={opacity_500}"
+    );
 
     let opacity_600 = sample(&mut store, AnimationPlayState::Paused, 600);
-    assert!((opacity_600 - 0.6).abs() < 1e-3, "opacity_600={opacity_600}");
+    assert!(
+      (opacity_600 - 0.6).abs() < 1e-3,
+      "opacity_600={opacity_600}"
+    );
 
     let opacity_900 = sample(&mut store, AnimationPlayState::Paused, 900);
-    assert!((opacity_900 - 0.6).abs() < 1e-3, "opacity_900={opacity_900}");
+    assert!(
+      (opacity_900 - 0.6).abs() < 1e-3,
+      "opacity_900={opacity_900}"
+    );
 
     let opacity_1000 = sample(&mut store, AnimationPlayState::Running, 1000);
-    assert!((opacity_1000 - 0.6).abs() < 1e-3, "opacity_1000={opacity_1000}");
+    assert!(
+      (opacity_1000 - 0.6).abs() < 1e-3,
+      "opacity_1000={opacity_1000}"
+    );
 
     let opacity_1100 = sample(&mut store, AnimationPlayState::Running, 1100);
-    assert!((opacity_1100 - 0.7).abs() < 1e-3, "opacity_1100={opacity_1100}");
+    assert!(
+      (opacity_1100 - 0.7).abs() < 1e-3,
+      "opacity_1100={opacity_1100}"
+    );
   }
 
   #[test]
@@ -10512,7 +10587,11 @@ mod tests {
     );
     assert_eq!(
       expand_transition_property_name("border-left").as_slice(),
-      &["border-left-width", "border-left-color", "border-left-style"]
+      &[
+        "border-left-width",
+        "border-left-color",
+        "border-left-style"
+      ]
     );
     assert_eq!(
       expand_transition_property_name("border-color").as_slice(),
@@ -10554,7 +10633,10 @@ mod tests {
       expand_transition_property_name("outline").as_slice(),
       &["outline-color", "outline-style", "outline-width"]
     );
-    assert_eq!(expand_transition_property_name("opacity").as_slice(), &["opacity"]);
+    assert_eq!(
+      expand_transition_property_name("opacity").as_slice(),
+      &["opacity"]
+    );
     assert_eq!(
       expand_transition_property_name("not-a-real-prop").as_slice(),
       &["not-a-real-prop"]
@@ -10650,7 +10732,8 @@ mod tests {
   }
 
   #[test]
-  fn transition_value_for_property_zero_duration_with_positive_delay_holds_start_value_until_delay_elapses() {
+  fn transition_value_for_property_zero_duration_with_positive_delay_holds_start_value_until_delay_elapses(
+  ) {
     let mut start_style = ComputedStyle::default();
     start_style.opacity = 0.0;
 
@@ -10713,8 +10796,8 @@ mod tests {
   }
 
   #[test]
-  fn transition_value_for_custom_property_zero_duration_with_positive_delay_holds_start_value_until_delay_elapses()
-  {
+  fn transition_value_for_custom_property_zero_duration_with_positive_delay_holds_start_value_until_delay_elapses(
+  ) {
     let mut start_style = ComputedStyle::default();
     start_style.custom_properties.insert(
       Arc::from("--x"),
@@ -10788,7 +10871,8 @@ mod tests {
     };
 
     let mut style = ComputedStyle::default();
-    style.transition_properties = vec![TransitionProperty::Name("border-radius".to_string())].into();
+    style.transition_properties =
+      vec![TransitionProperty::Name("border-radius".to_string())].into();
     style.transition_durations = vec![1000.0].into();
     style.transition_delays = vec![0.0].into();
     style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
@@ -10894,8 +10978,12 @@ mod tests {
     );
 
     // The `border-color` entry is last, so it should own the expanded longhands.
-    for side in ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"]
-    {
+    for side in [
+      "border-top-color",
+      "border-right-color",
+      "border-bottom-color",
+      "border-left-color",
+    ] {
       let idx = pairs
         .iter()
         .find(|(name, _)| *name == side)
@@ -11193,7 +11281,11 @@ mod tests {
       "expected shorthands to be expanded away"
     );
 
-    for name in ["border-left-width", "border-left-color", "border-left-style"] {
+    for name in [
+      "border-left-width",
+      "border-left-color",
+      "border-left-style",
+    ] {
       let idx = pairs
         .iter()
         .find(|(candidate, _)| *candidate == name)
@@ -11293,7 +11385,10 @@ mod tests {
       .expect("border-right-width present")
       .1;
 
-    assert_eq!(top_width_idx, 1, "border-top-width should be owned by border-top");
+    assert_eq!(
+      top_width_idx, 1,
+      "border-top-width should be owned by border-top"
+    );
     assert_eq!(
       right_width_idx, 0,
       "border-right-width should still be owned by border"
@@ -11347,25 +11442,21 @@ mod tests {
   #[test]
   fn transition_pairs_all_sorts_custom_properties_deterministically() {
     let mut start_style = ComputedStyle::default();
-    start_style.custom_properties.insert(
-      Arc::from("--b"),
-      CustomPropertyValue::new("1", None),
-    );
-    start_style.custom_properties.insert(
-      Arc::from("--a"),
-      CustomPropertyValue::new("1", None),
-    );
+    start_style
+      .custom_properties
+      .insert(Arc::from("--b"), CustomPropertyValue::new("1", None));
+    start_style
+      .custom_properties
+      .insert(Arc::from("--a"), CustomPropertyValue::new("1", None));
 
     let mut style = ComputedStyle::default();
     style.transition_properties = vec![TransitionProperty::All].into();
-    style.custom_properties.insert(
-      Arc::from("--a"),
-      CustomPropertyValue::new("2", None),
-    );
-    style.custom_properties.insert(
-      Arc::from("--b"),
-      CustomPropertyValue::new("2", None),
-    );
+    style
+      .custom_properties
+      .insert(Arc::from("--a"), CustomPropertyValue::new("2", None));
+    style
+      .custom_properties
+      .insert(Arc::from("--b"), CustomPropertyValue::new("2", None));
 
     let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
       .expect("transition pairs");

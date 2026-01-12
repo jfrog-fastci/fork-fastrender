@@ -206,10 +206,14 @@ impl webidl::JsRuntime for VmJsRuntime {
   fn well_known_symbol(&mut self, sym: WellKnownSymbol) -> Result<Self::Symbol, Self::Error> {
     let key = match sym {
       WellKnownSymbol::Iterator => <Self as LegacyWebIdlJsRuntime>::symbol_iterator(self)?,
-      WellKnownSymbol::AsyncIterator => <Self as LegacyWebIdlJsRuntime>::symbol_async_iterator(self)?,
+      WellKnownSymbol::AsyncIterator => {
+        <Self as LegacyWebIdlJsRuntime>::symbol_async_iterator(self)?
+      }
     };
     let VmPropertyKey::Symbol(sym) = key else {
-      return Err(VmError::InvariantViolation("well_known_symbol did not return a symbol key"));
+      return Err(VmError::InvariantViolation(
+        "well_known_symbol did not return a symbol key",
+      ));
     };
     Ok(sym)
   }
@@ -221,12 +225,9 @@ impl webidl::JsRuntime for VmJsRuntime {
     };
 
     let iter_sym = self.well_known_symbol(WellKnownSymbol::Iterator)?;
-    let method = <Self as webidl::JsRuntime>::get_method(
-      self,
-      obj,
-      WebIdlPropertyKey::Symbol(iter_sym),
-    )?
-    .ok_or_else(|| self.type_error("GetIterator: object is not iterable"))?;
+    let method =
+      <Self as webidl::JsRuntime>::get_method(self, obj, WebIdlPropertyKey::Symbol(iter_sym))?
+        .ok_or_else(|| self.type_error("GetIterator: object is not iterable"))?;
     <Self as webidl::JsRuntime>::get_iterator_from_method(self, obj, method)
   }
 
@@ -257,10 +258,12 @@ impl webidl::JsRuntime for VmJsRuntime {
 
       rt.with_stack_roots([Value::Object(record_obj), iterator, next], |rt| {
         let key_iter = <Self as LegacyJsRuntime>::property_key_from_str(rt, ITER_REC_ITERATOR)?;
-        rt.heap.create_data_property_or_throw(record_obj, key_iter, iterator)?;
+        rt.heap
+          .create_data_property_or_throw(record_obj, key_iter, iterator)?;
 
         let key_next = <Self as LegacyJsRuntime>::property_key_from_str(rt, ITER_REC_NEXT)?;
-        rt.heap.create_data_property_or_throw(record_obj, key_next, next)?;
+        rt.heap
+          .create_data_property_or_throw(record_obj, key_next, next)?;
 
         let key_done = <Self as LegacyJsRuntime>::property_key_from_str(rt, ITER_REC_DONE)?;
         rt.heap
@@ -317,7 +320,8 @@ impl webidl::JsRuntime for VmJsRuntime {
           let done = <Self as LegacyJsRuntime>::to_boolean(rt, done_value)?;
           if done {
             // iterator_record.done = true
-            let record_done_key = <Self as LegacyJsRuntime>::property_key_from_str(rt, ITER_REC_DONE)?;
+            let record_done_key =
+              <Self as LegacyJsRuntime>::property_key_from_str(rt, ITER_REC_DONE)?;
             rt.heap.object_set_existing_data_property_value(
               iterator,
               &record_done_key,

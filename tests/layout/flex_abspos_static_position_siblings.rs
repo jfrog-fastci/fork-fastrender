@@ -53,7 +53,12 @@ fn abspos_x(fragment: &fastrender::tree::fragment_tree::FragmentNode) -> f32 {
   fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute fragment present")
     .bounds
     .x()
@@ -63,7 +68,12 @@ fn abspos_x_by_order(fragment: &fastrender::tree::fragment_tree::FragmentNode, o
   fragment
     .children
     .iter()
-    .filter(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .filter(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .find(|child| child.style.as_ref().is_some_and(|s| s.order == order))
     .unwrap_or_else(|| {
       let debug_orders: Vec<i32> = fragment

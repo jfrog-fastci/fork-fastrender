@@ -1,20 +1,20 @@
 use std::any::Any;
 use std::collections::BTreeMap;
- 
+
 use vm_js::{
   GcObject, Heap, HeapLimits, Job, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
- 
+
+use webidl_vm_js::bindings_runtime::{to_int32_f64, to_uint32_f64};
 use webidl_vm_js::bindings_runtime::{
   BindingValue, BindingsHost, BindingsRuntime, DataPropertyAttributes, WebHostBindingsVm,
 };
 use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost, WebIdlBindingsHostSlot};
-use webidl_vm_js::bindings_runtime::{to_int32_f64, to_uint32_f64};
- 
+
 struct HooksWithBindingsHost {
   slot: WebIdlBindingsHostSlot,
 }
- 
+
 impl HooksWithBindingsHost {
   fn new(host: &mut dyn WebIdlBindingsHost) -> Self {
     Self {
@@ -22,7 +22,7 @@ impl HooksWithBindingsHost {
     }
   }
 }
-  
+
 impl VmHostHooks for HooksWithBindingsHost {
   fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
 
@@ -71,7 +71,9 @@ impl WebHostBindingsVm for TestHost {
     _overload: usize,
     _args: Vec<BindingValue>,
   ) -> Result<BindingValue, VmError> {
-    Err(VmError::Unimplemented("constructor dispatch not used in this test"))
+    Err(VmError::Unimplemented(
+      "constructor dispatch not used in this test",
+    ))
   }
 }
 
@@ -85,7 +87,15 @@ fn generated_like_call_handler(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let host = host_from_hooks(hooks)?;
-  host.call_operation(vm, scope, Some(this), "TestInterface", "testOperation", 0, args)
+  host.call_operation(
+    vm,
+    scope,
+    Some(this),
+    "TestInterface",
+    "testOperation",
+    0,
+    args,
+  )
 }
 
 #[test]
@@ -135,7 +145,7 @@ fn can_install_and_call_generated_like_operation() -> Result<(), VmError> {
   let arg1 = Value::String(arg1_s);
 
   let out = vm.call_with_host(&mut scope, &mut hooks, callee, this, &[arg0, arg1])?;
- 
+
   // Drop the host wrapper before inspecting `host_impl`.
   drop(bindings_host);
 
@@ -155,7 +165,10 @@ fn can_install_and_call_generated_like_operation() -> Result<(), VmError> {
   let Value::Object(arr) = out else {
     return Err(VmError::TypeError("expected array object return value"));
   };
-  assert_eq!(scope.object_get_prototype(arr)?, Some(intr.array_prototype()));
+  assert_eq!(
+    scope.object_get_prototype(arr)?,
+    Some(intr.array_prototype())
+  );
 
   // length === 3
   let len_key = vm_js::PropertyKey::from_string(scope.alloc_string("length")?);

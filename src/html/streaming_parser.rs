@@ -111,45 +111,45 @@ impl StreamingHtmlParser {
           // The HTML script preparation algorithm early-outs when the script element is not
           // connected, so these should not block parsing. Filter them out here so callers only see
           // pause points that actually require script scheduling/execution.
-           let should_yield = if let Some(mut doc) = self.document_mut() {
-             if doc.is_connected_for_scripting(script) {
-               // Ensure declarative shadow roots are attached before any connected script executes.
-                //
-                // `dom::parse_html` (legacy parser) attaches declarative shadow roots post-parse. For
-                // streaming parsing with script execution, we need scripts to observe the promoted tree
-                // shape once the relevant `<template shadowroot=...>` markup has been parsed.
-                //
-                // Only run this promotion when the yielded script is connected for scripting; scripts
-                // inside inert `<template>` contents must remain inert, and promoting while still
-                // parsing inside a template could invalidate html5ever's template state.
-                doc.attach_shadow_roots();
-                true
-              } else {
-                if let NodeKind::Element {
-                  tag_name,
-                  namespace,
-                  ..
-                } = &doc.node(script).kind
+          let should_yield = if let Some(mut doc) = self.document_mut() {
+            if doc.is_connected_for_scripting(script) {
+              // Ensure declarative shadow roots are attached before any connected script executes.
+              //
+              // `dom::parse_html` (legacy parser) attaches declarative shadow roots post-parse. For
+              // streaming parsing with script execution, we need scripts to observe the promoted tree
+              // shape once the relevant `<template shadowroot=...>` markup has been parsed.
+              //
+              // Only run this promotion when the yielded script is connected for scripting; scripts
+              // inside inert `<template>` contents must remain inert, and promoting while still
+              // parsing inside a template could invalidate html5ever's template state.
+              doc.attach_shadow_roots();
+              true
+            } else {
+              if let NodeKind::Element {
+                tag_name,
+                namespace,
+                ..
+              } = &doc.node(script).kind
+              {
+                if tag_name.eq_ignore_ascii_case("script")
+                  && (namespace.is_empty() || namespace == HTML_NAMESPACE)
                 {
-                  if tag_name.eq_ignore_ascii_case("script")
-                    && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-                  {
-                    let parser_document = doc.node(script).script_parser_document;
-                    doc.node_mut(script).script_parser_document = false;
-                    if parser_document && !doc.has_attribute(script, "async").unwrap_or(false) {
-                      doc.node_mut(script).script_force_async = true;
-                    }
+                  let parser_document = doc.node(script).script_parser_document;
+                  doc.node_mut(script).script_parser_document = false;
+                  if parser_document && !doc.has_attribute(script, "async").unwrap_or(false) {
+                    doc.node_mut(script).script_force_async = true;
                   }
                 }
-                false
               }
-            } else {
-              debug_assert!(
-                false,
-                "StreamingHtmlParser yielded a script without an active DOM sink"
-              );
-              true
-            };
+              false
+            }
+          } else {
+            debug_assert!(
+              false,
+              "StreamingHtmlParser yielded a script without an active DOM sink"
+            );
+            true
+          };
 
           if should_yield {
             return Ok(StreamingParserYield::Script {
@@ -256,7 +256,12 @@ mod tests {
       .children
       .iter()
       .copied()
-      .filter(|&id| matches!(doc.node(id).kind, NodeKind::Element { .. } | NodeKind::Slot { .. }))
+      .filter(|&id| {
+        matches!(
+          doc.node(id).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      })
       .collect()
   }
 
@@ -309,17 +314,15 @@ mod tests {
 
   #[test]
   fn yields_two_scripts_in_document_order_then_finishes() {
-    let (scripts, _doc) = run_incremental(&[
-      "<!doctype html><script>a</script><p>x</p><script>b</script>",
-    ]);
+    let (scripts, _doc) =
+      run_incremental(&["<!doctype html><script>a</script><p>x</p><script>b</script>"]);
     assert_eq!(scripts, vec!["a".to_string(), "b".to_string()]);
   }
 
   #[test]
   fn chunked_input_yields_identical_scripts() {
-    let (scripts_full, _doc_full) = run_incremental(&[
-      "<!doctype html><script>a</script><p>x</p><script>b</script>",
-    ]);
+    let (scripts_full, _doc_full) =
+      run_incremental(&["<!doctype html><script>a</script><p>x</p><script>b</script>"]);
 
     let (scripts_chunked, _doc_chunked) = run_incremental(&[
       "<!doctype html><scr",
@@ -334,7 +337,8 @@ mod tests {
   #[test]
   fn scripts_inside_inert_templates_do_not_yield_pause_points() {
     let mut parser = StreamingHtmlParser::new(None);
-    parser.push_str("<!doctype html><template><script>inert</script></template><script>live</script>");
+    parser
+      .push_str("<!doctype html><template><script>inert</script></template><script>live</script>");
 
     match parser.pump().unwrap() {
       StreamingParserYield::Script { script, .. } => {
@@ -455,7 +459,10 @@ mod tests {
         ..
       } => {
         assert_eq!(base_url_at_this_point.as_deref(), Some("https://ex/base/"));
-        assert_eq!(parser.current_base_url().as_deref(), Some("https://ex/base/"));
+        assert_eq!(
+          parser.current_base_url().as_deref(),
+          Some("https://ex/base/")
+        );
       }
       other => panic!("expected Script yield, got {other:?}"),
     }
@@ -497,7 +504,8 @@ mod tests {
 
   #[test]
   fn script_before_base_href_uses_document_url() {
-    let html = r#"<!doctype html><head><script src="a.js"></script><base href="https://ex/base/"></head>"#;
+    let html =
+      r#"<!doctype html><head><script src="a.js"></script><base href="https://ex/base/"></head>"#;
     let specs = parse_and_collect_script_specs(html, Some("https://ex/doc.html"));
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].base_url.as_deref(), Some("https://ex/doc.html"));
@@ -506,7 +514,8 @@ mod tests {
 
   #[test]
   fn script_before_base_href_without_document_url_keeps_relative_src() {
-    let html = r#"<!doctype html><head><script src="a.js"></script><base href="https://ex/base/"></head>"#;
+    let html =
+      r#"<!doctype html><head><script src="a.js"></script><base href="https://ex/base/"></head>"#;
     let specs = parse_and_collect_script_specs(html, None);
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].base_url, None);
@@ -515,7 +524,8 @@ mod tests {
 
   #[test]
   fn script_after_base_href_uses_base_url() {
-    let html = r#"<!doctype html><head><base href="https://ex/base/"><script src="a.js"></script></head>"#;
+    let html =
+      r#"<!doctype html><head><base href="https://ex/base/"><script src="a.js"></script></head>"#;
     let specs = parse_and_collect_script_specs(html, Some("https://ex/doc.html"));
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].base_url.as_deref(), Some("https://ex/base/"));
@@ -659,7 +669,9 @@ mod tests {
         let doc = parser
           .document()
           .expect("document should be available while parsing");
-        let host = doc.get_element_by_id("host").expect("expected host element");
+        let host = doc
+          .get_element_by_id("host")
+          .expect("expected host element");
         let first_child = *doc
           .node(host)
           .children
@@ -689,7 +701,9 @@ mod tests {
       other => panic!("expected Finished, got {other:?}"),
     };
 
-    let host = document.get_element_by_id("host").expect("expected host element");
+    let host = document
+      .get_element_by_id("host")
+      .expect("expected host element");
     let first_child = *document
       .node(host)
       .children

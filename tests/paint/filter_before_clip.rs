@@ -53,4 +53,3 @@ fn filter_source_is_not_clipped_by_overflow_hidden_ancestor() {
     edge
   );
 }
-

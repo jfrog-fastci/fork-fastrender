@@ -37,7 +37,8 @@ pub fn resolve_url(input: &str, base_url: Option<&str>) -> Result<String, UrlRes
     return Err(UrlResolveError::RelativeUrlWithoutBase);
   }
 
-  let url = Url::parse_without_diagnostics(input, base_url, limits).map_err(UrlResolveError::Url)?;
+  let url =
+    Url::parse_without_diagnostics(input, base_url, limits).map_err(UrlResolveError::Url)?;
 
   url.href().map_err(UrlResolveError::Url)
 }

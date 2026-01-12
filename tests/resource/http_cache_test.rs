@@ -1,8 +1,8 @@
+use crate::test_support;
 use fastrender::render_control::{with_deadline, RenderDeadline};
 use fastrender::resource::{CachingFetcher, CachingFetcherConfig, HttpFetcher, ResourcePolicy};
 use fastrender::ResourceFetcher;
 use httpdate::fmt_http_date;
-use crate::test_support;
 use std::io;
 use std::io::Read;
 use std::io::Write;

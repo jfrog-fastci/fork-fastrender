@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, path::Path};
 
-use xtask::webidl::{extract_webidl_blocks_from_bikeshed, parse_webidl, ExtendedAttribute};
 use xtask::webidl::resolve::resolve_webidl_world;
+use xtask::webidl::{extract_webidl_blocks_from_bikeshed, parse_webidl, ExtendedAttribute};
 
 fn has_ext_attr_value(attrs: &[ExtendedAttribute], name: &str, value: &str) -> bool {
   attrs
@@ -59,7 +59,8 @@ fn webidl_url_surface() {
     url.ext_attrs
   );
 
-  let url_member_names: BTreeSet<String> = url.members.iter().filter_map(|m| m.name.clone()).collect();
+  let url_member_names: BTreeSet<String> =
+    url.members.iter().filter_map(|m| m.name.clone()).collect();
   for expected in [
     "constructor",
     "parse",
@@ -145,4 +146,3 @@ fn webidl_url_surface() {
     "expected URLSearchParams to contain a `stringifier;` member"
   );
 }
-

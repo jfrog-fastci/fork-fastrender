@@ -44,4 +44,3 @@ fn solid_rounded_border_snaps_axis_aligned_edges() {
     "expected pixel inside border to remain the element background"
   );
 }
-

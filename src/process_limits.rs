@@ -73,10 +73,8 @@ fn apply_address_space_limit_mb_linux(limit_mb: u64) -> Result<(), AddressSpaceL
     .try_into()
     .map_err(|_| AddressSpaceLimitError::InvalidLimit { limit_mb })?;
 
-  let (_cur, max) =
-    get_address_space_limit_raw().map_err(|source| AddressSpaceLimitError::GetRlimitFailed {
-      source,
-    })?;
+  let (_cur, max) = get_address_space_limit_raw()
+    .map_err(|source| AddressSpaceLimitError::GetRlimitFailed { source })?;
 
   // If the process is already constrained by an OS-level maximum (e.g. prlimit/cgroups),
   // enforce the minimum of the requested ceiling and the inherited hard max. This ensures we
@@ -146,11 +144,16 @@ mod tests {
         AddressSpaceLimitStatus::Applied,
         "expected limit to be applied"
       );
-      let (cur, max) =
-        get_address_space_limit_bytes().expect("read rlimit after applying limit");
+      let (cur, max) = get_address_space_limit_bytes().expect("read rlimit after applying limit");
       let expected = desired_mb * BYTES_PER_MIB;
-      assert_eq!(cur, expected, "expected RLIMIT_AS.cur to match requested cap");
-      assert_eq!(max, expected, "expected RLIMIT_AS.max to match requested cap");
+      assert_eq!(
+        cur, expected,
+        "expected RLIMIT_AS.cur to match requested cap"
+      );
+      assert_eq!(
+        max, expected,
+        "expected RLIMIT_AS.max to match requested cap"
+      );
       return;
     }
 

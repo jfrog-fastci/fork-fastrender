@@ -11,8 +11,7 @@ const NOTO_SANS_FONT: &[u8] = include_bytes!("../fixtures/fonts/NotoSans-subset.
 #[test]
 fn all_small_caps_uses_native_features_when_available() {
   let mut db = FontDatabase::empty();
-  db
-    .load_font_data(NOTO_SANS_FONT.to_vec())
+  db.load_font_data(NOTO_SANS_FONT.to_vec())
     .expect("fixture font should load");
   db.refresh_generic_fallbacks();
   let ctx = FontContext::with_database(Arc::new(db));
@@ -25,7 +24,11 @@ fn all_small_caps_uses_native_features_when_available() {
 
   let pipeline = ShapingPipeline::new();
   let runs = pipeline.shape("Abc", &style, &ctx).expect("shape text");
-  assert_eq!(runs.len(), 1, "native small-caps support should not split runs");
+  assert_eq!(
+    runs.len(),
+    1,
+    "native small-caps support should not split runs"
+  );
   let run = &runs[0];
   assert_eq!(
     run.text, "Abc",
@@ -36,4 +39,3 @@ fn all_small_caps_uses_native_features_when_available() {
     "native small-caps support should keep the original font size"
   );
 }
-

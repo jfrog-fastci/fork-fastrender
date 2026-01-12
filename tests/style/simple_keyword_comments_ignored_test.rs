@@ -24,7 +24,9 @@ fn styled(html: &str, tag: &str) -> StyledNode {
   let dom = dom::parse_html(html).unwrap();
   let stylesheet = parse_stylesheet("").unwrap();
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
-  find_first(&styled, tag).unwrap_or_else(|| panic!("{tag}")).clone()
+  find_first(&styled, tag)
+    .unwrap_or_else(|| panic!("{tag}"))
+    .clone()
 }
 
 #[test]
@@ -56,4 +58,3 @@ fn comments_cannot_split_identifiers_into_new_keywords() {
   );
   assert!(matches!(ol.styles.list_style_type, ListStyleType::Square));
 }
-

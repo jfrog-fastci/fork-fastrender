@@ -141,7 +141,10 @@ mod tests {
     assert_eq!(spec.base_url.as_deref(), Some(document_url));
     assert_eq!(spec.src.as_deref(), Some("https://ex/a.js"));
     assert!(spec.parser_inserted);
-    assert!(!spec.force_async, "parser-inserted scripts must have force_async=false");
+    assert!(
+      !spec.force_async,
+      "parser-inserted scripts must have force_async=false"
+    );
   }
 
   #[test]
@@ -178,7 +181,9 @@ mod tests {
       while let Some(id) = stack.pop() {
         let node = doc.node(id);
         if let crate::dom2::NodeKind::Element {
-          tag_name, namespace, ..
+          tag_name,
+          namespace,
+          ..
         } = &node.kind
         {
           if tag_name.eq_ignore_ascii_case("script")

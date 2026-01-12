@@ -69,4 +69,3 @@ fn inline_replaced_percent_height_in_auto_height_container_computes_to_auto() {
     expected
   );
 }
-

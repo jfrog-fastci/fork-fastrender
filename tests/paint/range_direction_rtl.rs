@@ -1,4 +1,6 @@
-use super::util::{create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy};
+use super::util::{
+  create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
+};
 use tiny_skia::Pixmap;
 
 fn rgba_at(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
@@ -9,7 +11,10 @@ fn rgba_at(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 fn assert_is_track_gray(rgba: (u8, u8, u8, u8), msg: &str) {
   let (r, g, b, a) = rgba;
   assert!(
-    a > 240 && (r as i32 - 200).abs() <= 15 && (g as i32 - 200).abs() <= 15 && (b as i32 - 200).abs() <= 15,
+    a > 240
+      && (r as i32 - 200).abs() <= 15
+      && (g as i32 - 200).abs() <= 15
+      && (b as i32 - 200).abs() <= 15,
     "{msg}: expected gray track, got rgba=({r},{g},{b},{a})"
   );
 }
@@ -24,7 +29,9 @@ fn assert_is_green(rgba: (u8, u8, u8, u8), msg: &str) {
 
 fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
   let mut dl = create_stacking_context_bounds_renderer();
-  let dl_pixmap = dl.render_html(html, width, height).expect("render display_list");
+  let dl_pixmap = dl
+    .render_html(html, width, height)
+    .expect("render display_list");
 
   let mut legacy = create_stacking_context_bounds_renderer_legacy();
   let legacy_pixmap = legacy
@@ -79,4 +86,3 @@ fn range_paints_fill_from_right_in_rtl() {
     );
   }
 }
-

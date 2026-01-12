@@ -1,8 +1,8 @@
+use fastrender::debug::snapshot::snapshot_dom;
 use fastrender::dom::{
   compute_slot_assignment_with_ids, enumerate_dom_ids, parse_html, DomNode, DomNodeType,
   ShadowRootMode,
 };
-use fastrender::debug::snapshot::snapshot_dom;
 use fastrender::error::{Error, RenderError, RenderStage};
 use fastrender::render_control::{with_deadline, RenderDeadline};
 use std::collections::HashMap;
@@ -211,7 +211,11 @@ fn declarative_shadow_dom_is_not_attached_for_invalid_shadow_host() {
     find_shadow_root(host).is_none(),
     "invalid hosts (e.g. <select>) must not promote declarative shadow roots"
   );
-  assert_eq!(count_shadow_roots(&dom), 0, "no shadow roots should be attached");
+  assert_eq!(
+    count_shadow_roots(&dom),
+    0,
+    "no shadow roots should be attached"
+  );
 }
 
 #[test]
@@ -229,7 +233,11 @@ fn declarative_shadow_dom_is_not_attached_for_invalid_shadow_host_shadowrootmode
     find_shadow_root(host).is_none(),
     "invalid hosts (e.g. <select>) must not promote declarative shadow roots"
   );
-  assert_eq!(count_shadow_roots(&dom), 0, "no shadow roots should be attached");
+  assert_eq!(
+    count_shadow_roots(&dom),
+    0,
+    "no shadow roots should be attached"
+  );
 }
 
 #[test]
@@ -695,7 +703,10 @@ fn dom2_parser_preserves_declarative_shadow_dom_snapshot_semantics() {
     let mut seen: HashSet<fastrender::dom2::NodeId> = HashSet::new();
     let mut stack = vec![dom2_doc.root()];
     while let Some(id) = stack.pop() {
-      assert!(seen.insert(id), "node appears multiple times in the tree: {id:?}");
+      assert!(
+        seen.insert(id),
+        "node appears multiple times in the tree: {id:?}"
+      );
       let node = dom2_doc.node(id);
       for &child in &node.children {
         let child_node = dom2_doc.node(child);
@@ -721,10 +732,17 @@ fn dom2_parser_preserves_declarative_shadow_dom_snapshot_semantics() {
     .iter()
     .filter(|child| matches!(child.node_type, DomNodeType::ShadowRoot { .. }))
     .collect();
-  assert_eq!(shadow_roots.len(), 1, "only the first shadowroot template is promoted");
+  assert_eq!(
+    shadow_roots.len(),
+    1,
+    "only the first shadowroot template is promoted"
+  );
 
   assert!(
-    host.children.first().is_some_and(|n| matches!(n.node_type, DomNodeType::ShadowRoot { .. })),
+    host
+      .children
+      .first()
+      .is_some_and(|n| matches!(n.node_type, DomNodeType::ShadowRoot { .. })),
     "shadow root must be the first child of the host"
   );
 
@@ -734,7 +752,8 @@ fn dom2_parser_preserves_declarative_shadow_dom_snapshot_semantics() {
     "nested declarative shadow roots inside the promoted template must attach"
   );
 
-  let unused_shadow_host = find_by_id(&dom2_snapshot.dom, "unused-shadow-host").expect("unused shadow host");
+  let unused_shadow_host =
+    find_by_id(&dom2_snapshot.dom, "unused-shadow-host").expect("unused shadow host");
   assert!(
     find_shadow_root(unused_shadow_host).is_none(),
     "nested shadow roots inside inert declarative templates must not attach"

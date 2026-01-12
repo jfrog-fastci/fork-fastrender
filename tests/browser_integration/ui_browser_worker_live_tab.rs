@@ -87,7 +87,9 @@ fn tick_does_not_repaint_clean_tab() {
 
   let msgs = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
   assert!(
-    !msgs.iter().any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
+    !msgs
+      .iter()
+      .any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
     "expected no FrameReady after tick on a clean tab, got:\n{}",
     support::format_messages(&msgs)
   );

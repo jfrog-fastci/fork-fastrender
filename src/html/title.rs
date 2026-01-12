@@ -220,7 +220,8 @@ mod tests {
     .unwrap();
     assert_eq!(find_document_title(&dom), Some("Good".to_string()));
 
-    let dom = parse_html("<html><head><template><title>Bad</title></template></head></html>").unwrap();
+    let dom =
+      parse_html("<html><head><template><title>Bad</title></template></head></html>").unwrap();
     assert_eq!(find_document_title(&dom), None);
   }
 

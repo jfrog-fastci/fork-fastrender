@@ -108,8 +108,10 @@ fn supports_modifier_skips_import_when_false() {
 
 #[test]
 fn import_layer_participates_in_layer_ordering() {
-  let loader =
-    MapImportLoader::new().with("https://example.com/color.css", "#t { color: rgb(1, 2, 3); }");
+  let loader = MapImportLoader::new().with(
+    "https://example.com/color.css",
+    "#t { color: rgb(1, 2, 3); }",
+  );
   let target = styled_target(
     r#"
       @import "color.css" layer(a);
@@ -123,8 +125,10 @@ fn import_layer_participates_in_layer_ordering() {
 
 #[test]
 fn anonymous_import_layer_stays_below_later_layers() {
-  let loader =
-    MapImportLoader::new().with("https://example.com/color.css", "#t { color: rgb(1, 2, 3); }");
+  let loader = MapImportLoader::new().with(
+    "https://example.com/color.css",
+    "#t { color: rgb(1, 2, 3); }",
+  );
   let target = styled_target(
     r#"
       @import "color.css" layer;
@@ -138,8 +142,10 @@ fn anonymous_import_layer_stays_below_later_layers() {
 
 #[test]
 fn import_modifiers_are_order_insensitive() {
-  let loader =
-    MapImportLoader::new().with("https://example.com/color.css", "#t { color: rgb(1, 2, 3); }");
+  let loader = MapImportLoader::new().with(
+    "https://example.com/color.css",
+    "#t { color: rgb(1, 2, 3); }",
+  );
   let target = styled_target(
     r#"
       @import "color.css" supports((display: grid)) layer(a);

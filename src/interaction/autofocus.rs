@@ -173,4 +173,3 @@ pub fn interaction_state_for_autofocus(dom: &DomNode) -> Option<InteractionState
     ..InteractionState::default()
   })
 }
-

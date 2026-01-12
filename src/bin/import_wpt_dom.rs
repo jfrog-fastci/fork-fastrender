@@ -274,7 +274,11 @@ fn collect_dom_test_files(
   Ok(())
 }
 
-fn import_entrypoint(config: &ImportConfig, src_path: &Path, summary: &mut ImportSummary) -> Result<()> {
+fn import_entrypoint(
+  config: &ImportConfig,
+  src_path: &Path,
+  summary: &mut ImportSummary,
+) -> Result<()> {
   ensure_within_root(src_path, &config.wpt_root)?;
   let relative = src_path
     .strip_prefix(&config.wpt_root)
@@ -331,7 +335,12 @@ fn sync_harness(config: &ImportConfig, summary: &mut ImportSummary) -> Result<()
   // `resources/` output dir so the corpus root stays self-describing.
   let commit = read_wpt_git_commit(&config.wpt_root)?;
   let commit_file = upstream_commit_file_path(config);
-  write_file(&commit_file, format!("{commit}\n").as_bytes(), config, summary)?;
+  write_file(
+    &commit_file,
+    format!("{commit}\n").as_bytes(),
+    config,
+    summary,
+  )?;
   Ok(())
 }
 
@@ -395,12 +404,13 @@ fn rewrite_and_copy(
 
   match file_kind(src_path) {
     FileKind::Html => {
-      let content = fs::read_to_string(src_path)
-        .map_err(|e| if e.kind() == io::ErrorKind::InvalidData {
+      let content = fs::read_to_string(src_path).map_err(|e| {
+        if e.kind() == io::ErrorKind::InvalidData {
           ImportError::InvalidUtf8(src_path.to_path_buf())
         } else {
           ImportError::Io(src_path.to_path_buf(), e)
-        })?;
+        }
+      })?;
       let (rewritten, refs) = rewrite_html(config, &url_path, &content)?;
       validate_offline(dest_path, FileKind::Html, &rewritten)?;
       if config.strict_offline {
@@ -410,12 +420,13 @@ fn rewrite_and_copy(
       Ok(refs)
     }
     FileKind::Js => {
-      let content = fs::read_to_string(src_path)
-        .map_err(|e| if e.kind() == io::ErrorKind::InvalidData {
+      let content = fs::read_to_string(src_path).map_err(|e| {
+        if e.kind() == io::ErrorKind::InvalidData {
           ImportError::InvalidUtf8(src_path.to_path_buf())
         } else {
           ImportError::Io(src_path.to_path_buf(), e)
-        })?;
+        }
+      })?;
       let (rewritten, refs) = rewrite_js(config, &url_path, &content)?;
       validate_offline(dest_path, FileKind::Js, &rewritten)?;
       if config.strict_offline {
@@ -425,12 +436,13 @@ fn rewrite_and_copy(
       Ok(refs)
     }
     FileKind::Css => {
-      let content = fs::read_to_string(src_path)
-        .map_err(|e| if e.kind() == io::ErrorKind::InvalidData {
+      let content = fs::read_to_string(src_path).map_err(|e| {
+        if e.kind() == io::ErrorKind::InvalidData {
           ImportError::InvalidUtf8(src_path.to_path_buf())
         } else {
           ImportError::Io(src_path.to_path_buf(), e)
-        })?;
+        }
+      })?;
       let (rewritten, refs) = rewrite_css(config, &url_path, &content)?;
       validate_offline(dest_path, FileKind::Css, &rewritten)?;
       if config.strict_offline {
@@ -447,7 +459,11 @@ fn rewrite_and_copy(
   }
 }
 
-fn rewrite_html(config: &ImportConfig, base_url_path: &str, content: &str) -> Result<(String, Vec<Reference>)> {
+fn rewrite_html(
+  config: &ImportConfig,
+  base_url_path: &str,
+  content: &str,
+) -> Result<(String, Vec<Reference>)> {
   let mut references = Vec::new();
   let mut seen = HashSet::new();
 
@@ -492,7 +508,11 @@ fn rewrite_html(config: &ImportConfig, base_url_path: &str, content: &str) -> Re
   Ok((rewritten, references))
 }
 
-fn rewrite_js(config: &ImportConfig, base_url_path: &str, content: &str) -> Result<(String, Vec<Reference>)> {
+fn rewrite_js(
+  config: &ImportConfig,
+  base_url_path: &str,
+  content: &str,
+) -> Result<(String, Vec<Reference>)> {
   let mut references = Vec::new();
   let mut seen = HashSet::new();
 
@@ -528,7 +548,11 @@ fn rewrite_js(config: &ImportConfig, base_url_path: &str, content: &str) -> Resu
   Ok((rewritten, references))
 }
 
-fn rewrite_css(config: &ImportConfig, base_url_path: &str, content: &str) -> Result<(String, Vec<Reference>)> {
+fn rewrite_css(
+  config: &ImportConfig,
+  base_url_path: &str,
+  content: &str,
+) -> Result<(String, Vec<Reference>)> {
   let mut references = Vec::new();
   let mut seen = HashSet::new();
 
@@ -563,7 +587,9 @@ fn rewrite_css(config: &ImportConfig, base_url_path: &str, content: &str) -> Res
 
 fn compile_regex(label: &str, pattern: &str) -> Result<Regex> {
   Regex::new(pattern).map_err(|e| {
-    ImportError::Message(format!("internal error: failed to compile {label} regex: {e}"))
+    ImportError::Message(format!(
+      "internal error: failed to compile {label} regex: {e}"
+    ))
   })
 }
 
@@ -779,7 +805,8 @@ fn resolve_reference(
   // If this is a WPT-origin URL, rewrite it to an origin-absolute path (and treat it as a local
   // reference). Otherwise, leave it alone and (depending on validation) fail later.
   let mut rewrite_to_path: Option<(String, String)> = None;
-  if trimmed.starts_with("http://") || trimmed.starts_with("https://") || trimmed.starts_with("//") {
+  if trimmed.starts_with("http://") || trimmed.starts_with("https://") || trimmed.starts_with("//")
+  {
     if let Some((path, suffix)) = map_wpt_absolute_origin(trimmed) {
       rewrite_to_path = Some((path, suffix));
     } else {
@@ -828,11 +855,12 @@ fn resolve_reference(
     ensure_within_root(&dest_path, &config.out_dir)?;
   }
 
-  let should_copy = if is_harness_resource(&resolved_path) && !config.sync_harness && dest_path.exists() {
-    false
-  } else {
-    true
-  };
+  let should_copy =
+    if is_harness_resource(&resolved_path) && !config.sync_harness && dest_path.exists() {
+      false
+    } else {
+      true
+    };
 
   let new_value = if let Some((path, suffix)) = rewrite_to_path {
     format!("{path}{suffix}")
@@ -919,7 +947,11 @@ fn resolve_relative_url_path(base_url_path: &str, relative: &str) -> String {
 
 fn base_url_dir(url_path: &str) -> String {
   // url_path is expected to be an absolute path like `/dom/nodes/test.html` or `/resources/a/b.js`.
-  let url_path = if url_path.starts_with('/') { url_path } else { "/" };
+  let url_path = if url_path.starts_with('/') {
+    url_path
+  } else {
+    "/"
+  };
   match url_path.rsplit_once('/') {
     Some(("", _)) => "/".to_string(),
     Some((dir, _)) => format!("{dir}/"),
@@ -937,7 +969,10 @@ enum FileKind {
 
 fn file_kind(path: &Path) -> FileKind {
   let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-  if file_name.ends_with(".window.js") || file_name.ends_with(".any.js") || file_name.ends_with(".js") {
+  if file_name.ends_with(".window.js")
+    || file_name.ends_with(".any.js")
+    || file_name.ends_with(".js")
+  {
     return FileKind::Js;
   }
   match path
@@ -1137,12 +1172,18 @@ fn find_network_urls_strict(content: &str) -> Result<Vec<String>> {
     // URL contains `http://` (e.g. SVG namespaces).
     let mut spans = Vec::new();
 
-    let double_quoted =
-      compile_regex("data url span double quoted", r#"(?is)"(?P<url>data:[^"]*)""#)?;
-    let single_quoted =
-      compile_regex("data url span single quoted", r#"(?is)'(?P<url>data:[^']*)'"#)?;
-    let css_url_unquoted =
-      compile_regex("data url span css url()", r#"(?is)url\(\s*(?P<url>data:[^)]*)\)"#)?;
+    let double_quoted = compile_regex(
+      "data url span double quoted",
+      r#"(?is)"(?P<url>data:[^"]*)""#,
+    )?;
+    let single_quoted = compile_regex(
+      "data url span single quoted",
+      r#"(?is)'(?P<url>data:[^']*)'"#,
+    )?;
+    let css_url_unquoted = compile_regex(
+      "data url span css url()",
+      r#"(?is)url\(\s*(?P<url>data:[^)]*)\)"#,
+    )?;
 
     for caps in double_quoted.captures_iter(content) {
       if let Some(m) = caps.name("url") {
@@ -1165,7 +1206,9 @@ fn find_network_urls_strict(content: &str) -> Result<Vec<String>> {
   }
 
   fn is_within_data_url(data_spans: &[std::ops::Range<usize>], idx: usize) -> bool {
-    data_spans.iter().any(|span| idx >= span.start && idx < span.end)
+    data_spans
+      .iter()
+      .any(|span| idx >= span.start && idx < span.end)
   }
 
   let mut urls = Vec::new();
@@ -1173,8 +1216,7 @@ fn find_network_urls_strict(content: &str) -> Result<Vec<String>> {
     "strict offline http url",
     r#"(?i)https?://[^\s"'<>)]{1,200}"#,
   )?;
-  let scheme_re =
-    compile_regex("strict offline scheme url", r#"(?i)//[^\s"'<>)]{1,200}"#)?;
+  let scheme_re = compile_regex("strict offline scheme url", r#"(?i)//[^\s"'<>)]{1,200}"#)?;
 
   let data_spans = data_url_spans(content)?;
   let content_bytes = content.as_bytes();
@@ -1203,7 +1245,12 @@ fn find_network_urls_strict(content: &str) -> Result<Vec<String>> {
   Ok(urls)
 }
 
-fn write_file(dest_path: &Path, data: &[u8], config: &ImportConfig, summary: &mut ImportSummary) -> Result<()> {
+fn write_file(
+  dest_path: &Path,
+  data: &[u8],
+  config: &ImportConfig,
+  summary: &mut ImportSummary,
+) -> Result<()> {
   let existed_before = dest_path.exists();
 
   if existed_before {

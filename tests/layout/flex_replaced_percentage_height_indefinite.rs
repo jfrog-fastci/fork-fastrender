@@ -45,8 +45,11 @@ fn flex_replaced_percentage_height_is_auto_when_container_height_is_indefinite()
       // The container has a definite available height, but an auto used height. Percent heights on
       // descendants must behave like `auto` (CSS2.1 §10.6.2), allowing `aspect-ratio` to determine
       // the replaced element's used height.
-      &LayoutConstraints::new(AvailableSpace::Definite(500.0), AvailableSpace::Definite(500.0))
-        .with_used_border_box_size(Some(200.0), None),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(500.0),
+        AvailableSpace::Definite(500.0),
+      )
+      .with_used_border_box_size(Some(200.0), None),
     )
     .expect("layout should succeed");
 
@@ -66,4 +69,3 @@ fn flex_replaced_percentage_height_is_auto_when_container_height_is_indefinite()
     expected_height
   );
 }
-

@@ -91,8 +91,7 @@ fn grid_measured_fragment_reuse_cancels_out_of_flow_descendant_translation() {
   "#;
 
   let tree = layout_html(&mut renderer, html, 200, 200);
-  let overlay_bounds =
-    find_block_bounds_for_text(&tree.root, "OVERLAY").expect("find overlay");
+  let overlay_bounds = find_block_bounds_for_text(&tree.root, "OVERLAY").expect("find overlay");
 
   assert!(
     (overlay_bounds.x() - 0.0).abs() <= EPS,

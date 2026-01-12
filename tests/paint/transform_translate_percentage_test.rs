@@ -35,4 +35,3 @@ fn transform_translate_percentage_hides_box_offscreen() {
   assert_eq!(pixel(&pixmap, 0, 25), [255, 255, 255, 255]);
   assert_eq!(pixel(&pixmap, 50, 25), [255, 255, 255, 255]);
 }
-

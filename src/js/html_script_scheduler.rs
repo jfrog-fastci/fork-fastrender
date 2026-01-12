@@ -41,9 +41,16 @@ pub enum ScriptEventKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HtmlScriptWork {
-  Classic { source_text: Option<String> },
-  Module { source_text: Option<String> },
-  ImportMap { source_text: String, base_url: Option<String> },
+  Classic {
+    source_text: Option<String>,
+  },
+  Module {
+    source_text: Option<String>,
+  },
+  ImportMap {
+    source_text: String,
+    base_url: Option<String>,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +96,10 @@ pub enum HtmlScriptSchedulerAction<NodeId> {
   /// Block parsing until the referenced script has executed.
   ///
   /// This is emitted for parser-blocking external classic scripts (no `async`/`defer`).
-  BlockParserUntilExecuted { script_id: HtmlScriptId, node_id: NodeId },
+  BlockParserUntilExecuted {
+    script_id: HtmlScriptId,
+    node_id: NodeId,
+  },
   /// Execute a script immediately (synchronously in the caller's stack).
   ///
   /// The orchestrator must perform a microtask checkpoint immediately after execution.
@@ -251,13 +261,17 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
     //
     // In this mode, `nomodule` classic scripts should still execute.
     if !self.modules_supported
-      && matches!(element.script_type, ScriptType::Module | ScriptType::ImportMap)
+      && matches!(
+        element.script_type,
+        ScriptType::Module | ScriptType::ImportMap
+      )
     {
       return Ok(HtmlDiscoveredScript { id, actions });
     }
 
     // `nomodule` only applies to classic scripts when modules are supported.
-    if element.script_type == ScriptType::Classic && element.nomodule_attr && self.modules_supported {
+    if element.script_type == ScriptType::Classic && element.nomodule_attr && self.modules_supported
+    {
       return Ok(HtmlDiscoveredScript { id, actions });
     }
 
@@ -274,7 +288,9 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
           return Ok(HtmlDiscoveredScript { id, actions });
         }
 
-        let base_url = base_url_at_discovery.clone().or_else(|| element.base_url.clone());
+        let base_url = base_url_at_discovery
+          .clone()
+          .or_else(|| element.base_url.clone());
         let work = HtmlScriptWork::ImportMap {
           source_text: element.inline_text,
           base_url,
@@ -430,7 +446,9 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
         }
 
         // Inline module script.
-        let base_url = base_url_at_discovery.clone().or_else(|| element.base_url.clone());
+        let base_url = base_url_at_discovery
+          .clone()
+          .or_else(|| element.base_url.clone());
 
         if mode == ScheduleMode::OrderedAsap {
           self.ordered_asap.push(id);
@@ -475,7 +493,10 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
   }
 
   /// Notify the scheduler that a previously requested classic external script fetch failed.
-  pub fn classic_fetch_failed(&mut self, script_id: HtmlScriptId) -> Result<Vec<HtmlScriptSchedulerAction<NodeId>>> {
+  pub fn classic_fetch_failed(
+    &mut self,
+    script_id: HtmlScriptId,
+  ) -> Result<Vec<HtmlScriptSchedulerAction<NodeId>>> {
     self.classic_fetch_finished(script_id, None)
   }
 
@@ -523,7 +544,10 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
   }
 
   /// Notify the scheduler that a previously requested module graph fetch failed.
-  pub fn module_graph_failed(&mut self, script_id: HtmlScriptId) -> Result<Vec<HtmlScriptSchedulerAction<NodeId>>> {
+  pub fn module_graph_failed(
+    &mut self,
+    script_id: HtmlScriptId,
+  ) -> Result<Vec<HtmlScriptSchedulerAction<NodeId>>> {
     self.module_graph_finished(script_id, None)
   }
 
@@ -756,7 +780,11 @@ mod state_machine_tests {
     log: Vec<String>,
   }
 
-  fn execute_fake_work(host: &mut Host, event_loop: &mut EventLoop<Host>, work: &HtmlScriptWork) -> Result<()> {
+  fn execute_fake_work(
+    host: &mut Host,
+    event_loop: &mut EventLoop<Host>,
+    work: &HtmlScriptWork,
+  ) -> Result<()> {
     let label = match work {
       HtmlScriptWork::Classic { source_text } => {
         let body = source_text.as_deref().unwrap_or("<null>");
@@ -778,7 +806,12 @@ mod state_machine_tests {
     Ok(())
   }
 
-  fn classic_external(src: &str, async_attr: bool, defer_attr: bool, parser_inserted: bool) -> ScriptElementSpec {
+  fn classic_external(
+    src: &str,
+    async_attr: bool,
+    defer_attr: bool,
+    parser_inserted: bool,
+  ) -> ScriptElementSpec {
     ScriptElementSpec {
       base_url: None,
       src: Some(src.to_string()),
@@ -899,7 +932,13 @@ mod state_machine_tests {
     event_loop: EventLoop<Host>,
     host: Host,
 
-    started_classic_fetches: Vec<(HtmlScriptId, u32, String, FetchDestination, FetchCredentialsMode)>,
+    started_classic_fetches: Vec<(
+      HtmlScriptId,
+      u32,
+      String,
+      FetchDestination,
+      FetchCredentialsMode,
+    )>,
     started_module_fetches: Vec<(HtmlScriptId, u32, String, FetchDestination, usize)>,
     started_inline_module_fetches: Vec<(HtmlScriptId, u32, String, usize)>,
 
@@ -933,9 +972,13 @@ mod state_machine_tests {
             destination,
             credentials_mode,
           } => {
-            self
-              .started_classic_fetches
-              .push((script_id, node_id, url, destination, credentials_mode));
+            self.started_classic_fetches.push((
+              script_id,
+              node_id,
+              url,
+              destination,
+              credentials_mode,
+            ));
           }
           HtmlScriptSchedulerAction::StartModuleGraphFetch {
             script_id,
@@ -944,9 +987,13 @@ mod state_machine_tests {
             destination,
             element: _,
           } => {
-            self
-              .started_module_fetches
-              .push((script_id, node_id, url, destination, self.import_map_version));
+            self.started_module_fetches.push((
+              script_id,
+              node_id,
+              url,
+              destination,
+              self.import_map_version,
+            ));
           }
           HtmlScriptSchedulerAction::StartInlineModuleGraphFetch {
             script_id,
@@ -955,9 +1002,12 @@ mod state_machine_tests {
             base_url: _,
             element: _,
           } => {
-            self
-              .started_inline_module_fetches
-              .push((script_id, node_id, source_text, self.import_map_version));
+            self.started_inline_module_fetches.push((
+              script_id,
+              node_id,
+              source_text,
+              self.import_map_version,
+            ));
           }
           HtmlScriptSchedulerAction::BlockParserUntilExecuted { .. } => {
             // These state-machine tests do not model parser pausing; legacy `ScriptScheduler` tests
@@ -1000,9 +1050,9 @@ mod state_machine_tests {
     }
 
     fn discover(&mut self, element: ScriptElementSpec) -> Result<HtmlScriptId> {
-      let discovered = self
-        .scheduler
-        .discovered_script(element, /* node_id */ 1, /* base_url_at_discovery */ None)?;
+      let discovered = self.scheduler.discovered_script(
+        element, /* node_id */ 1, /* base_url_at_discovery */ None,
+      )?;
       let id = discovered.id;
       self.apply_actions(discovered.actions)?;
       Ok(id)
@@ -1036,11 +1086,16 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn parser_inserted_deferred_module_scripts_execute_after_parsing_completed_in_order() -> Result<()> {
+  fn parser_inserted_deferred_module_scripts_execute_after_parsing_completed_in_order() -> Result<()>
+  {
     let mut h = Harness::new();
 
-    let m1 = h.discover(module_external("m1.js", /* async */ false, /* parser_inserted */ true))?;
-    let m2 = h.discover(module_external("m2.js", /* async */ false, /* parser_inserted */ true))?;
+    let m1 = h.discover(module_external(
+      "m1.js", /* async */ false, /* parser_inserted */ true,
+    ))?;
+    let m2 = h.discover(module_external(
+      "m2.js", /* async */ false, /* parser_inserted */ true,
+    ))?;
 
     // Complete out-of-order before parsing completes.
     h.module_graph_complete(m2, "2")?;
@@ -1068,7 +1123,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn async_module_script_queues_task_on_graph_ready_without_waiting_for_parsing_completed() -> Result<()> {
+  fn async_module_script_queues_task_on_graph_ready_without_waiting_for_parsing_completed(
+  ) -> Result<()> {
     let mut h = Harness::new();
 
     // A parser-inserted, non-async module script is deferred by default.
@@ -1079,7 +1135,9 @@ mod state_machine_tests {
     ))?;
 
     // An async module script should run ASAP once its graph is ready, even before parsing completes.
-    let async_id = h.discover(module_external("async.js", /* async */ true, /* parser_inserted */ true))?;
+    let async_id = h.discover(module_external(
+      "async.js", /* async */ true, /* parser_inserted */ true,
+    ))?;
     h.module_graph_complete(async_id, "9")?;
     h.run_event_loop()?;
 
@@ -1115,14 +1173,10 @@ mod state_machine_tests {
     let mut h = Harness::new();
 
     let m1 = h.discover(module_external(
-      "dyn1.js",
-      /* async */ false,
-      /* parser_inserted */ false,
+      "dyn1.js", /* async */ false, /* parser_inserted */ false,
     ))?;
     let m2 = h.discover(module_external(
-      "dyn2.js",
-      /* async */ false,
-      /* parser_inserted */ false,
+      "dyn2.js", /* async */ false, /* parser_inserted */ false,
     ))?;
 
     // Complete out of order: m2 ready before m1.
@@ -1153,15 +1207,11 @@ mod state_machine_tests {
     let mut h = Harness::new();
 
     let m1 = h.discover(module_external_with_force_async(
-      "dyn1.js",
-      /* async */ false,
-      /* force_async */ true,
+      "dyn1.js", /* async */ false, /* force_async */ true,
       /* parser_inserted */ false,
     ))?;
     let m2 = h.discover(module_external_with_force_async(
-      "dyn2.js",
-      /* async */ false,
-      /* force_async */ true,
+      "dyn2.js", /* async */ false, /* force_async */ true,
       /* parser_inserted */ false,
     ))?;
 
@@ -1193,16 +1243,10 @@ mod state_machine_tests {
     let mut h = Harness::new();
 
     let c1 = h.discover(classic_external(
-      "c1.js",
-      /* async */ false,
-      /* defer */ false,
-      /* parser_inserted */ false,
+      "c1.js", /* async */ false, /* defer */ false, /* parser_inserted */ false,
     ))?;
     let c2 = h.discover(classic_external(
-      "c2.js",
-      /* async */ false,
-      /* defer */ false,
-      /* parser_inserted */ false,
+      "c2.js", /* async */ false, /* defer */ false, /* parser_inserted */ false,
     ))?;
 
     // Complete out of order: c2 finishes first.
@@ -1229,7 +1273,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn import_map_executes_synchronously_at_discovery_and_is_visible_to_later_module_fetch() -> Result<()> {
+  fn import_map_executes_synchronously_at_discovery_and_is_visible_to_later_module_fetch(
+  ) -> Result<()> {
     let mut h = Harness::new();
 
     // Import map must execute synchronously at discovery.
@@ -1245,7 +1290,11 @@ mod state_machine_tests {
 
     // A later module script should observe the updated import map state when starting its graph
     // fetch (represented here by our harness recording the version at StartInlineModuleGraphFetch).
-    let _m = h.discover(module_inline("export {}", /* async */ false, /* parser_inserted */ true))?;
+    let _m = h.discover(module_inline(
+      "export {}",
+      /* async */ false,
+      /* parser_inserted */ true,
+    ))?;
     assert_eq!(h.started_inline_module_fetches.len(), 1);
     assert_eq!(h.started_inline_module_fetches[0].3, 1);
     Ok(())
@@ -1263,7 +1312,10 @@ mod state_machine_tests {
     ))?;
     assert_eq!(h.started_classic_fetches.len(), 1);
     assert_eq!(h.started_classic_fetches[0].3, FetchDestination::Script);
-    assert_eq!(h.started_classic_fetches[0].4, FetchCredentialsMode::Include);
+    assert_eq!(
+      h.started_classic_fetches[0].4,
+      FetchCredentialsMode::Include
+    );
 
     let mut classic_cors = classic_external(
       "classic_cors.js",
@@ -1275,7 +1327,10 @@ mod state_machine_tests {
     let _classic_cors_id = h.discover(classic_cors)?;
     assert_eq!(h.started_classic_fetches.len(), 2);
     assert_eq!(h.started_classic_fetches[1].3, FetchDestination::ScriptCors);
-    assert_eq!(h.started_classic_fetches[1].4, FetchCredentialsMode::SameOrigin);
+    assert_eq!(
+      h.started_classic_fetches[1].4,
+      FetchCredentialsMode::SameOrigin
+    );
 
     let mut classic_use_credentials = classic_external(
       "classic_use_credentials.js",
@@ -1287,12 +1342,13 @@ mod state_machine_tests {
     let _classic_use_credentials_id = h.discover(classic_use_credentials)?;
     assert_eq!(h.started_classic_fetches.len(), 3);
     assert_eq!(h.started_classic_fetches[2].3, FetchDestination::ScriptCors);
-    assert_eq!(h.started_classic_fetches[2].4, FetchCredentialsMode::Include);
+    assert_eq!(
+      h.started_classic_fetches[2].4,
+      FetchCredentialsMode::Include
+    );
 
     let _module = h.discover(module_external(
-      "mod.js",
-      /* async */ false,
-      /* parser_inserted */ true,
+      "mod.js", /* async */ false, /* parser_inserted */ true,
     ))?;
     assert_eq!(h.started_module_fetches.len(), 1);
     assert_eq!(h.started_module_fetches[0].3, FetchDestination::ScriptCors);
@@ -1308,7 +1364,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn nomodule_external_classic_script_does_not_start_fetch_when_modules_are_supported() -> Result<()> {
+  fn nomodule_external_classic_script_does_not_start_fetch_when_modules_are_supported() -> Result<()>
+  {
     let mut h = Harness::new_with_modules_supported(true);
     let mut spec = classic_external(
       "legacy.js",
@@ -1344,9 +1401,7 @@ mod state_machine_tests {
   fn module_scripts_are_ignored_when_modules_are_not_supported() -> Result<()> {
     let mut h = Harness::new_with_modules_supported(false);
     h.discover(module_external(
-      "m.js",
-      /* async */ false,
-      /* parser_inserted */ true,
+      "m.js", /* async */ false, /* parser_inserted */ true,
     ))?;
     h.discover(module_inline(
       "export const x = 1;",
@@ -1399,7 +1454,9 @@ mod state_machine_tests {
   #[test]
   fn nomodule_does_not_block_module_scripts() -> Result<()> {
     let mut h = Harness::new_with_modules_supported(true);
-    let mut spec = module_external("mod.js", /* async */ false, /* parser_inserted */ true);
+    let mut spec = module_external(
+      "mod.js", /* async */ false, /* parser_inserted */ true,
+    );
     spec.nomodule_attr = true;
     let id = h.discover(spec)?;
     assert_eq!(

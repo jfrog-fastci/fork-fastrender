@@ -141,7 +141,9 @@ fn objects_use_toprimitive_for_addition_and_equality() {
   let mut rt = new_runtime();
 
   // Ordinary objects stringify to "[object Object]" when coerced.
-  let value = rt.exec_script(r#"({}) + 'x' === '[object Object]x'"#).unwrap();
+  let value = rt
+    .exec_script(r#"({}) + 'x' === '[object Object]x'"#)
+    .unwrap();
   assert_eq!(value, Value::Bool(true));
 
   let value = rt.exec_script(r#"({}) == '[object Object]'"#).unwrap();

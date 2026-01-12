@@ -40,4 +40,3 @@ fn grid_container_width_calc_with_percentage_resolves_against_containing_block_w
     fragment.bounds.width()
   );
 }
-

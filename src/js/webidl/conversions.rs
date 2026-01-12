@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use crate::js::bindings::BindingValue;
 use super::WebIdlBindingsRuntime;
+use crate::js::bindings::BindingValue;
 
 pub use webidl::IntegerConversionAttrs;
 
@@ -67,62 +67,64 @@ where
     rt.with_stack_roots(&[obj], |rt| {
       let keys = rt.own_property_keys(obj)?;
 
-       // Root string keys returned by `OwnPropertyKeys` for the duration of the conversion.
-       //
-       // `vm-js` can synthesize index keys (e.g. for String objects). Those strings are not
-       // reachable from `obj` and would be collected unless they are treated as stack roots while
-       // we iterate.
-       //
-       // Note: this intentionally skips Symbol keys here (the WebIDL record algorithm only
-       // performs `PropertyKeyToString` after confirming the property is enumerable, so
-       // non-enumerable symbol properties should not throw).
-       let mut key_roots: Vec<R::JsValue> = Vec::with_capacity(keys.len());
-       for key in &keys {
-         if rt.property_key_is_symbol(*key) {
-           continue;
-         }
-         key_roots.push(rt.property_key_to_js_string(*key)?);
-       }
+      // Root string keys returned by `OwnPropertyKeys` for the duration of the conversion.
+      //
+      // `vm-js` can synthesize index keys (e.g. for String objects). Those strings are not
+      // reachable from `obj` and would be collected unless they are treated as stack roots while
+      // we iterate.
+      //
+      // Note: this intentionally skips Symbol keys here (the WebIDL record algorithm only
+      // performs `PropertyKeyToString` after confirming the property is enumerable, so
+      // non-enumerable symbol properties should not throw).
+      let mut key_roots: Vec<R::JsValue> = Vec::with_capacity(keys.len());
+      for key in &keys {
+        if rt.property_key_is_symbol(*key) {
+          continue;
+        }
+        key_roots.push(rt.property_key_to_js_string(*key)?);
+      }
 
-       let mut entries: Vec<(String, BindingValue<R::JsValue>)> = Vec::new();
-       let mut index_by_key: HashMap<String, usize> = HashMap::new();
+      let mut entries: Vec<(String, BindingValue<R::JsValue>)> = Vec::new();
+      let mut index_by_key: HashMap<String, usize> = HashMap::new();
 
-       rt.with_stack_roots(&key_roots, |rt| {
-         for key in keys {
-           let Some(desc) = rt.get_own_property(obj, key)? else {
-             continue;
-           };
-           if !desc.enumerable {
-             continue;
-           }
+      rt.with_stack_roots(&key_roots, |rt| {
+        for key in keys {
+          let Some(desc) = rt.get_own_property(obj, key)? else {
+            continue;
+          };
+          if !desc.enumerable {
+            continue;
+          }
 
-           // WebIDL record conversion uses `PropertyKeyToString` / `ToString` on property keys:
-           // attempting to convert a Symbol key must throw a TypeError. (Non-enumerable properties
-           // have already been skipped above.)
-           let js_key = rt.property_key_to_js_string(key)?;
-           let typed_key = rt.js_string_to_rust_string(js_key)?;
+          // WebIDL record conversion uses `PropertyKeyToString` / `ToString` on property keys:
+          // attempting to convert a Symbol key must throw a TypeError. (Non-enumerable properties
+          // have already been skipped above.)
+          let js_key = rt.property_key_to_js_string(key)?;
+          let typed_key = rt.js_string_to_rust_string(js_key)?;
 
-           // Enforce the record entry count limit on *new* keys.
-           if !index_by_key.contains_key(&typed_key) && entries.len() >= rt.limits().max_record_entries {
-             return Err(rt.throw_range_error("record exceeds maximum entry count"));
-           }
+          // Enforce the record entry count limit on *new* keys.
+          if !index_by_key.contains_key(&typed_key)
+            && entries.len() >= rt.limits().max_record_entries
+          {
+            return Err(rt.throw_range_error("record exceeds maximum entry count"));
+          }
 
-           let typed_value = rt.with_stack_roots(&[js_key], |rt| {
-             let prop_value = rt.get(host, obj, key)?;
-             rt.with_stack_roots(&[prop_value], |rt| convert_value(rt, host, prop_value))
-           })?;
-           if let Some(idx) = index_by_key.get(&typed_key).copied() {
-             entries[idx].1 = typed_value;
-           } else {
-             index_by_key.insert(typed_key.clone(), entries.len());
-             entries.push((typed_key, typed_value));
-           }
-         }
+          let typed_value = rt.with_stack_roots(&[js_key], |rt| {
+            let prop_value = rt.get(host, obj, key)?;
+            rt.with_stack_roots(&[prop_value], |rt| convert_value(rt, host, prop_value))
+          })?;
+          if let Some(idx) = index_by_key.get(&typed_key).copied() {
+            entries[idx].1 = typed_value;
+          } else {
+            index_by_key.insert(typed_key.clone(), entries.len());
+            entries.push((typed_key, typed_value));
+          }
+        }
 
-         Ok(BindingValue::Record(entries))
-       })
-     })
-   })
+        Ok(BindingValue::Record(entries))
+      })
+    })
+  })
 }
 
 /// Convert an ECMAScript value to an IDL `byte`.
@@ -138,7 +140,8 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = webidl::convert_to_int(n, 8, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
+  let v =
+    webidl::convert_to_int(n, 8, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as i8)
 }
 
@@ -155,7 +158,8 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = webidl::convert_to_int(n, 8, false, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
+  let v = webidl::convert_to_int(n, 8, false, attrs)
+    .map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as u8)
 }
 
@@ -172,7 +176,8 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = webidl::convert_to_int(n, 16, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
+  let v = webidl::convert_to_int(n, 16, true, attrs)
+    .map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as i16)
 }
 
@@ -189,7 +194,8 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = webidl::convert_to_int(n, 16, false, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
+  let v = webidl::convert_to_int(n, 16, false, attrs)
+    .map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as u16)
 }
 
@@ -206,7 +212,8 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = webidl::convert_to_int(n, 32, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
+  let v = webidl::convert_to_int(n, 32, true, attrs)
+    .map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as i32)
 }
 
@@ -223,7 +230,8 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = webidl::convert_to_int(n, 32, false, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
+  let v = webidl::convert_to_int(n, 32, false, attrs)
+    .map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as u32)
 }
 
@@ -240,7 +248,8 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = webidl::convert_to_int(n, 64, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
+  let v = webidl::convert_to_int(n, 64, true, attrs)
+    .map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as i64)
 }
 
@@ -257,7 +266,8 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = webidl::convert_to_int(n, 64, false, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
+  let v = webidl::convert_to_int(n, 64, false, attrs)
+    .map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as u64)
 }
 
@@ -338,10 +348,7 @@ where
 /// Spec: <https://webidl.spec.whatwg.org/#es-callback-interface>
 ///
 /// MVP behaviour: validate that `value` is an object and return it.
-pub fn to_callback_interface<Host, R>(
-  rt: &mut R,
-  value: R::JsValue,
-) -> Result<R::JsValue, R::Error>
+pub fn to_callback_interface<Host, R>(rt: &mut R, value: R::JsValue) -> Result<R::JsValue, R::Error>
 where
   R: WebIdlBindingsRuntime<Host>,
 {
@@ -442,18 +449,32 @@ mod tests {
 
     let obj = rt.alloc_object_value().unwrap();
     let a_key = rt.property_key_from_str("a").unwrap();
-    webidl_js_runtime::JsRuntime::define_data_property(&mut rt, obj, a_key, Value::Number(1.0), true)
-      .unwrap();
+    webidl_js_runtime::JsRuntime::define_data_property(
+      &mut rt,
+      obj,
+      a_key,
+      Value::Number(1.0),
+      true,
+    )
+    .unwrap();
 
     // WebIDL record conversion uses `PropertyKeyToString` / `ToString` on enumerable keys,
     // so enumerable symbol keys must throw a TypeError.
     let sym_key =
       <VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(&mut rt).unwrap();
-    webidl_js_runtime::JsRuntime::define_data_property(&mut rt, obj, sym_key, Value::Number(2.0), true)
-      .unwrap();
+    webidl_js_runtime::JsRuntime::define_data_property(
+      &mut rt,
+      obj,
+      sym_key,
+      Value::Number(2.0),
+      true,
+    )
+    .unwrap();
 
     let err = to_record::<(), _, _>(&mut rt, &mut host, obj, |rt, _host, v| {
-      Ok(BindingValue::Number(webidl_js_runtime::JsRuntime::to_number(rt, v)?))
+      Ok(BindingValue::Number(
+        webidl_js_runtime::JsRuntime::to_number(rt, v)?,
+      ))
     })
     .unwrap_err();
 
@@ -525,9 +546,16 @@ mod tests {
 
     let err = to_long::<(), _>(&mut rt, &mut host, Value::Number(f64::NAN), attrs).unwrap_err();
     assert_range_error(&mut rt, err);
-    let err = to_long::<(), _>(&mut rt, &mut host, Value::Number(f64::INFINITY), attrs).unwrap_err();
+    let err =
+      to_long::<(), _>(&mut rt, &mut host, Value::Number(f64::INFINITY), attrs).unwrap_err();
     assert_range_error(&mut rt, err);
-    let err = to_long::<(), _>(&mut rt, &mut host, Value::Number((i32::MAX as f64) + 1.0), attrs).unwrap_err();
+    let err = to_long::<(), _>(
+      &mut rt,
+      &mut host,
+      Value::Number((i32::MAX as f64) + 1.0),
+      attrs,
+    )
+    .unwrap_err();
     assert_range_error(&mut rt, err);
   }
 

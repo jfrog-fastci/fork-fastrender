@@ -69,7 +69,10 @@ fn main() {
   for result in &results {
     if result.status.is_failure() {
       failed = true;
-      eprintln!("{} failed with status {:?}", result.metadata.id, result.status);
+      eprintln!(
+        "{} failed with status {:?}",
+        result.metadata.id, result.status
+      );
       if let Some(msg) = result.message.as_deref() {
         eprintln!("  {msg}");
       }
@@ -80,4 +83,3 @@ fn main() {
     std::process::exit(1);
   }
 }
-

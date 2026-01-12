@@ -98,7 +98,10 @@ impl InputMapping {
     let css_per_point = self.css_per_point()?;
 
     let local_points = pos_points - self.image_rect_points.min;
-    let mut pos_css = Vec2::new(local_points.x * css_per_point.x, local_points.y * css_per_point.y);
+    let mut pos_css = Vec2::new(
+      local_points.x * css_per_point.x,
+      local_points.y * css_per_point.y,
+    );
 
     let viewport_css = self.viewport_css_f32();
     pos_css.x = pos_css.x.clamp(0.0, viewport_css.x);
@@ -344,9 +347,7 @@ mod tests {
     let mapping = InputMapping::new(image_rect, (800, 600));
 
     let rect_points = mapping
-      .rect_css_to_rect_points_clamped(crate::geometry::Rect::from_xywh(
-        100.0, 50.0, 200.0, 100.0,
-      ))
+      .rect_css_to_rect_points_clamped(crate::geometry::Rect::from_xywh(100.0, 50.0, 200.0, 100.0))
       .expect("rect_css_to_rect_points_clamped");
 
     // Drawn at 0.5 scale means 1 point = 2 CSS px.

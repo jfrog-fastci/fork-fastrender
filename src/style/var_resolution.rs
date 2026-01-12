@@ -8,8 +8,8 @@ use crate::css::properties::{parse_length, parse_property_value_after_var_resolu
 use crate::css::types::PropertyValue;
 use crate::dom::DomNode;
 use crate::geometry::Size;
-use crate::style::custom_property_store::CustomPropertyStore;
 use crate::style::color::Color;
+use crate::style::custom_property_store::CustomPropertyStore;
 use crate::style::media::{ColorScheme, MediaContext, MediaQuery};
 use cssparser::ParseError;
 use cssparser::ParseErrorKind;
@@ -1153,7 +1153,8 @@ fn parse_if_function<'a, 'i, 't>(
 where
   'a: 'i,
 {
-  let branches = parse_if_branches(parser).map_err(|_| VarResolutionResult::InvalidSyntax("if".into()))?;
+  let branches =
+    parse_if_branches(parser).map_err(|_| VarResolutionResult::InvalidSyntax("if".into()))?;
   if branches.is_empty() {
     return Err(VarResolutionResult::InvalidSyntax("if".into()));
   }
@@ -1162,14 +1163,9 @@ where
   for branch in &branches {
     match branch.condition.as_deref() {
       Some(cond) => {
-        let cond_resolved = resolve_value_tokens(
-          cond,
-          custom_properties,
-          stack,
-          depth + 1,
-          property_name,
-        )
-        .map_err(|err| err)?;
+        let cond_resolved =
+          resolve_value_tokens(cond, custom_properties, stack, depth + 1, property_name)
+            .map_err(|err| err)?;
         if eval_if_condition(&cond_resolved) {
           selected = Some(branch.value.as_str());
           break;
@@ -1271,7 +1267,13 @@ where
   if contains_ascii_case_insensitive_substitution_call(&attr_value)
     || (attr_value.as_bytes().contains(&b'\\') && attr_value.as_bytes().contains(&b'('))
   {
-    match resolve_value_tokens(&attr_value, custom_properties, stack, depth + 1, property_name) {
+    match resolve_value_tokens(
+      &attr_value,
+      custom_properties,
+      stack,
+      depth + 1,
+      property_name,
+    ) {
       Ok(resolved) => attr_value = resolved,
       Err(_) => {
         if let Some(fallback_text) = fallback_value.as_deref() {
@@ -1284,7 +1286,9 @@ where
 
   let resolved = match ty.as_deref().map(trim_css_whitespace) {
     None | Some("") => Some(serialize_css_string_token(&attr_value)),
-    Some(raw_ty) if raw_ty.eq_ignore_ascii_case("string") => Some(serialize_css_string_token(&attr_value)),
+    Some(raw_ty) if raw_ty.eq_ignore_ascii_case("string") => {
+      Some(serialize_css_string_token(&attr_value))
+    }
     Some(raw_ty) => resolve_typed_attr_value(&attr_value, raw_ty),
   };
 
@@ -1425,11 +1429,10 @@ fn resolve_typed_attr_value(attr_value: &str, ty: &str) -> Option<String> {
     "number" => crate::css::properties::parse_function_number(attr_value)
       .filter(|v| v.is_finite())
       .map(|_| attr_value.to_string()),
-    "integer" => attr_value
-      .parse::<i32>()
+    "integer" => attr_value.parse::<i32>().ok().map(|v| v.to_string()),
+    "color" => Color::parse(attr_value)
       .ok()
-      .map(|v| v.to_string()),
-    "color" => Color::parse(attr_value).ok().map(|_| attr_value.to_string()),
+      .map(|_| attr_value.to_string()),
     "url" => {
       if attr_value.is_empty() {
         return None;
@@ -1443,7 +1446,11 @@ fn resolve_typed_attr_value(attr_value: &str, ty: &str) -> Option<String> {
       //
       // Note: our property-value parser unescapes CSS escapes inside `url(...)`, so the stored URL
       // string matches the original attribute value.
-      let quote = if !attr_value.contains('\'') { '\'' } else { '"' };
+      let quote = if !attr_value.contains('\'') {
+        '\''
+      } else {
+        '"'
+      };
       let mut out = String::with_capacity(attr_value.len() + 6);
       out.push_str("url(");
       out.push(quote);
@@ -1577,13 +1584,23 @@ fn parse_if_branches<'i, 't>(
         if !saw_colon {
           return Err(parser.new_custom_error(()));
         }
-        flush_branch(parser, &mut branches, &mut condition, &mut value, &mut saw_colon)?;
+        flush_branch(
+          parser,
+          &mut branches,
+          &mut condition,
+          &mut value,
+          &mut saw_colon,
+        )?;
       }
       Token::Colon if !saw_colon => {
         saw_colon = true;
       }
       Token::Function(name) => {
-        let target = if saw_colon { &mut value } else { &mut condition };
+        let target = if saw_colon {
+          &mut value
+        } else {
+          &mut condition
+        };
         push_css_with_token_splice_boundary(target, name.as_ref());
         target.push('(');
         let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
@@ -1591,34 +1608,56 @@ fn parse_if_branches<'i, 't>(
         target.push(')');
       }
       Token::ParenthesisBlock => {
-        let target = if saw_colon { &mut value } else { &mut condition };
+        let target = if saw_colon {
+          &mut value
+        } else {
+          &mut condition
+        };
         push_css_with_token_splice_boundary(target, "(");
         let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
         target.push_str(&nested);
         target.push(')');
       }
       Token::SquareBracketBlock => {
-        let target = if saw_colon { &mut value } else { &mut condition };
+        let target = if saw_colon {
+          &mut value
+        } else {
+          &mut condition
+        };
         push_css_with_token_splice_boundary(target, "[");
         let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
         target.push_str(&nested);
         target.push(']');
       }
       Token::CurlyBracketBlock => {
-        let target = if saw_colon { &mut value } else { &mut condition };
+        let target = if saw_colon {
+          &mut value
+        } else {
+          &mut condition
+        };
         push_css_with_token_splice_boundary(target, "{");
         let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
         target.push_str(&nested);
         target.push('}');
       }
       other => {
-        let target = if saw_colon { &mut value } else { &mut condition };
+        let target = if saw_colon {
+          &mut value
+        } else {
+          &mut condition
+        };
         push_token_to_css(target, &other);
       }
     }
   }
 
-  flush_branch(parser, &mut branches, &mut condition, &mut value, &mut saw_colon)?;
+  flush_branch(
+    parser,
+    &mut branches,
+    &mut condition,
+    &mut value,
+    &mut saw_colon,
+  )?;
 
   if branches.iter().all(|b| b.condition.is_none()) {
     // Reject `if(<else-value>)` since it's indistinguishable from authoring the else value
@@ -1629,9 +1668,7 @@ fn parse_if_branches<'i, 't>(
   Ok(branches)
 }
 
-fn stringify_tokens<'i, 't, E>(
-  parser: &mut Parser<'i, 't>,
-) -> Result<String, ParseError<'i, E>> {
+fn stringify_tokens<'i, 't, E>(parser: &mut Parser<'i, 't>) -> Result<String, ParseError<'i, E>> {
   let mut output = String::new();
   while let Ok(token) = parser.next_including_whitespace_and_comments() {
     match token {
@@ -1749,10 +1786,7 @@ fn parse_if_term<'i, 't>(parser: &mut Parser<'i, 't>) -> Result<bool, ParseError
   }
 }
 
-fn eval_if_test_function<'i>(
-  name: &str,
-  args: &str,
-) -> Result<bool, ParseError<'i, ()>> {
+fn eval_if_test_function<'i>(name: &str, args: &str) -> Result<bool, ParseError<'i, ()>> {
   let args = trim_css_whitespace(args);
   if name.eq_ignore_ascii_case("media") {
     let viewport = current_viewport().unwrap_or(Size::new(0.0, 0.0));
@@ -1803,11 +1837,11 @@ fn resolve_variable_reference<'a>(
       depth + 1,
       property_name,
     )
-      .map(Cow::Owned)
-      .map_err(|err| match err {
-        VarResolutionResult::NotFound(_) => VarResolutionResult::NotFound(name.to_string()),
-        other => other,
-      })
+    .map(Cow::Owned)
+    .map_err(|err| match err {
+      VarResolutionResult::NotFound(_) => VarResolutionResult::NotFound(name.to_string()),
+      other => other,
+    })
   };
 
   if stack.iter().any(|n| n == name) {
@@ -1846,7 +1880,8 @@ fn resolve_variable_reference<'a>(
           property_name,
         )
       } else {
-        resolve_value_tokens(raw, custom_properties, stack, depth + 1, property_name).map(Cow::Owned)
+        resolve_value_tokens(raw, custom_properties, stack, depth + 1, property_name)
+          .map(Cow::Owned)
       }
     } else {
       resolve_value_tokens(raw, custom_properties, stack, depth + 1, property_name).map(Cow::Owned)
@@ -1986,14 +2021,14 @@ fn contains_var_or_if_substitution_function_via_cssparser(value: &str) -> bool {
   contains_var_or_if_substitution_function_in_parser(&mut parser)
 }
 
-fn contains_var_or_if_substitution_function_in_parser<'i, 't>(
-  parser: &mut Parser<'i, 't>,
-) -> bool {
+fn contains_var_or_if_substitution_function_in_parser<'i, 't>(parser: &mut Parser<'i, 't>) -> bool {
   let mut found = false;
 
   while let Ok(token) = parser.next_including_whitespace_and_comments() {
     match token {
-      Token::Function(name) if name.eq_ignore_ascii_case("var") || name.eq_ignore_ascii_case("if") => {
+      Token::Function(name)
+        if name.eq_ignore_ascii_case("var") || name.eq_ignore_ascii_case("if") =>
+      {
         found = true;
         let _ = parser.parse_nested_block(|nested| {
           Ok::<_, ParseError<'i, ()>>(contains_var_or_if_substitution_function_in_parser(nested))
@@ -2811,9 +2846,8 @@ mod tests {
   #[test]
   fn resolves_var_in_transform_calc_product_percentages() {
     let props = make_props(&[("--direction-multiplier", "1")]);
-    let value = PropertyValue::Keyword(
-      "translateX(calc(var(--direction-multiplier,1) * -100%))".to_string(),
-    );
+    let value =
+      PropertyValue::Keyword("translateX(calc(var(--direction-multiplier,1) * -100%))".to_string());
     let resolved = resolve_var_for_property(&value, &props, "transform");
 
     let VarResolutionResult::Resolved { value, css_text } = resolved else {
@@ -2837,7 +2871,10 @@ mod tests {
           "expected translateX(-100%), got {transforms:?}"
         );
       }
-      other => panic!("expected parsed transform value, got {other:?} (css_text={:?})", css_text.as_ref()),
+      other => panic!(
+        "expected parsed transform value, got {other:?} (css_text={:?})",
+        css_text.as_ref()
+      ),
     }
   }
 

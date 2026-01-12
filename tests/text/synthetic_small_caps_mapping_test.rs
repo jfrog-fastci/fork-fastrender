@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use fastrender::style::types::FontVariantCaps;
+use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_db::FontStyle;
 use fastrender::text::font_db::FontWeight;
-use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_loader::FontContext;
 use fastrender::text::pipeline::ShapingPipeline;
 use fastrender::ComputedStyle;
@@ -14,8 +14,7 @@ const NOTO_SANS_FONT: &[u8] = include_bytes!("../fixtures/fonts/NotoSans-subset.
 #[test]
 fn synthetic_small_caps_preserves_original_byte_ranges() {
   let mut db = FontDatabase::empty();
-  db
-    .load_font_data(DEJAVU_SANS_FONT.to_vec())
+  db.load_font_data(DEJAVU_SANS_FONT.to_vec())
     .expect("fixture font should load");
   db.refresh_generic_fallbacks();
   let ctx = FontContext::with_database(Arc::new(db));
@@ -45,7 +44,8 @@ fn synthetic_small_caps_preserves_original_byte_ranges() {
     "text byte length should match run byte range"
   );
   assert!(
-    run.glyphs
+    run
+      .glyphs
       .iter()
       .all(|glyph| (glyph.cluster as usize) < run.text.len()),
     "glyph clusters should remain within the run text"
@@ -55,8 +55,7 @@ fn synthetic_small_caps_preserves_original_byte_ranges() {
 #[test]
 fn synthetic_small_caps_uppercase_expansion_keeps_runs_mapped_to_original_text() {
   let mut db = FontDatabase::empty();
-  db
-    .load_font_data(DEJAVU_SANS_FONT.to_vec())
+  db.load_font_data(DEJAVU_SANS_FONT.to_vec())
     .expect("fixture font should load");
   db.load_font_data(NOTO_SANS_FONT.to_vec())
     .expect("fixture font should load");
@@ -108,13 +107,18 @@ fn synthetic_small_caps_uppercase_expansion_keeps_runs_mapped_to_original_text()
 
   for run in &runs {
     assert_eq!(run.start, 0, "run should map to start of original text");
-    assert_eq!(run.end, text.len(), "run should map to end of original text");
+    assert_eq!(
+      run.end,
+      text.len(),
+      "run should map to end of original text"
+    );
     assert_eq!(
       run.text, text,
       "synthetic small-caps should preserve the original text slice"
     );
     assert!(
-      run.glyphs
+      run
+        .glyphs
         .iter()
         .all(|glyph| (glyph.cluster as usize) < run.text.len()),
       "glyph clusters should remain within the run text"

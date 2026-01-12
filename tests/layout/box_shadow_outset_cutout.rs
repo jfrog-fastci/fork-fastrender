@@ -41,4 +41,3 @@ fn outset_box_shadow_does_not_fill_box_interior() {
     "expected box interior to stay white, got rgba=({r},{g},{b},{a})"
   );
 }
-

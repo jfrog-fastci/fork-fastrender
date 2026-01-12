@@ -43,8 +43,16 @@ fn flex_item_width_calc_percentage_resolves_against_container_inner_width() {
     Arc::new(container_style),
     FormattingContextType::Flex,
     vec![
-      BoxNode::new_block(Arc::new(sidebar_style), FormattingContextType::Block, vec![]),
-      BoxNode::new_block(Arc::new(content_style), FormattingContextType::Block, vec![]),
+      BoxNode::new_block(
+        Arc::new(sidebar_style),
+        FormattingContextType::Block,
+        vec![],
+      ),
+      BoxNode::new_block(
+        Arc::new(content_style),
+        FormattingContextType::Block,
+        vec![],
+      ),
     ],
   );
 
@@ -53,7 +61,10 @@ fn flex_item_width_calc_percentage_resolves_against_container_inner_width() {
   let fragment = fc
     .layout(
       &container,
-      &LayoutConstraints::new(AvailableSpace::Definite(container_width), AvailableSpace::Indefinite),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(container_width),
+        AvailableSpace::Indefinite,
+      ),
     )
     .expect("layout should succeed");
 

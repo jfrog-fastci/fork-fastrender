@@ -52,14 +52,12 @@ fn build_tree(descendant_writing_mode: WritingMode) -> FragmentNode {
   styled_child_style.writing_mode = descendant_writing_mode;
   let styled_child_style = Arc::new(styled_child_style);
 
-  let mut styled_child = FragmentNode::new_block_with_id(
-    Rect::from_xywh(100.0, 0.0, 20.0, 70.0),
-    1,
-    vec![],
-  );
+  let mut styled_child =
+    FragmentNode::new_block_with_id(Rect::from_xywh(100.0, 0.0, 20.0, 70.0), 1, vec![]);
   styled_child.style = Some(styled_child_style);
 
-  let plain_child = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 70.0, 20.0, 70.0), 2, vec![]);
+  let plain_child =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 70.0, 20.0, 70.0), 2, vec![]);
 
   FragmentNode::new_block(
     Rect::from_xywh(0.0, 0.0, 200.0, 140.0),
@@ -89,8 +87,7 @@ fn fragmentation_axis_is_invariant_to_descendant_writing_mode() {
   .expect("boundary resolution succeeds");
   assert_f32_vec_close(&boundaries_horizontal, &boundaries_vertical_rl);
 
-  let fragments_horizontal =
-    fragment_tree(&horizontal, &options).expect("fragmentation succeeds");
+  let fragments_horizontal = fragment_tree(&horizontal, &options).expect("fragmentation succeeds");
   let fragments_vertical_rl =
     fragment_tree(&vertical_rl, &options).expect("fragmentation succeeds");
   assert_eq!(fragments_horizontal.len(), fragments_vertical_rl.len());

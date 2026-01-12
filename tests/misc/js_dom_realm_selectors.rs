@@ -1,7 +1,7 @@
 use fastrender::dom::parse_html;
 use fastrender::dom2::Document as Dom2Document;
-use fastrender::js::DomJsRealm;
 use fastrender::js::webidl::legacy::VmJsRuntime;
+use fastrender::js::DomJsRealm;
 use vm_js::{Value, VmError};
 use webidl_js_runtime::JsRuntime as _;
 
@@ -46,7 +46,10 @@ fn dom_realm_query_selector_and_query_selector_all_return_wrapped_nodes() -> Res
   let outer_a = call_method(rt, document, "querySelector", &[sel_outer])?;
   let sel_outer = rt.alloc_string_value("#outer")?;
   let outer_b = call_method(rt, document, "querySelector", &[sel_outer])?;
-  assert_eq!(outer_a, outer_b, "wrapper identity should be stable for the same NodeId");
+  assert_eq!(
+    outer_a, outer_b,
+    "wrapper identity should be stable for the same NodeId"
+  );
 
   let attr_id = rt.alloc_string_value("id")?;
   let outer_id = call_method(rt, outer_a, "getAttribute", &[attr_id])?;

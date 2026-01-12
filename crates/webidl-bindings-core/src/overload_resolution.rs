@@ -37,9 +37,8 @@ pub fn throw_no_matching_overload<R: WebIdlJsRuntime>(
   candidates.sort();
   candidates.dedup();
 
-  let mut message = format!(
-    "No matching overload for {operation_name} with {provided_argc} arguments."
-  );
+  let mut message =
+    format!("No matching overload for {operation_name} with {provided_argc} arguments.");
   if !candidates.is_empty() {
     message.push_str("\nCandidates:");
     for cand in candidates {
@@ -207,9 +206,11 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
   // - with a variadic overload present, the effective overload set expands up to max(maxarg, n)
   let n = args.len();
   let max_declared = overloads.iter().map(|o| o.args.len()).max().unwrap_or(0);
-  let has_variadic = overloads
-    .iter()
-    .any(|o| o.args.last().is_some_and(|a| a.optionality == Optionality::Variadic));
+  let has_variadic = overloads.iter().any(|o| {
+    o.args
+      .last()
+      .is_some_and(|a| a.optionality == Optionality::Variadic)
+  });
   let maxarg = if has_variadic {
     std::cmp::max(max_declared, n)
   } else {
@@ -269,7 +270,10 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
     let optionality = entries[0].optionality_list[i];
 
     if optionality.is_optional() && is_undefined(rt, v)? {
-      if let Some(default) = overloads[entries[0].overload_index].args[i].default.as_ref() {
+      if let Some(default) = overloads[entries[0].overload_index].args[i]
+        .default
+        .as_ref()
+      {
         values.push(ConvertedArgument::Value(convert_default(rt, &ty, default)?));
       } else {
         values.push(ConvertedArgument::Missing);
@@ -294,7 +298,9 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
     }
     // 12.3 nullable/dictionary special-case.
     else if matches!(null_or_undefined(rt, v)?, Some(_))
-      && entries.iter().any(|e| type_matches_nullable_dictionary(&e.type_list[i]))
+      && entries
+        .iter()
+        .any(|e| type_matches_nullable_dictionary(&e.type_list[i]))
     {
       entries.retain(|e| type_matches_nullable_dictionary(&e.type_list[i]));
     }
@@ -342,7 +348,11 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
       entries.retain(|e| type_matches_callable(rt, &e.type_list[i], v));
     }
     // 12.9 async sequence special-case.
-    else if rt.is_object(v) && entries.iter().any(|e| type_matches_async_sequence(&e.type_list[i])) {
+    else if rt.is_object(v)
+      && entries
+        .iter()
+        .any(|e| type_matches_async_sequence(&e.type_list[i]))
+    {
       let has_string_type = entries.iter().any(|e| type_matches_string(&e.type_list[i]));
       let skip_async_sequence = rt.is_string_object(v) && has_string_type;
 
@@ -359,7 +369,11 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
       }
     }
     // 12.10 sequence special-case.
-    else if rt.is_object(v) && entries.iter().any(|e| type_matches_sequence(&e.type_list[i])) {
+    else if rt.is_object(v)
+      && entries
+        .iter()
+        .any(|e| type_matches_sequence(&e.type_list[i]))
+    {
       let iter_key = rt.symbol_iterator()?;
       let m = rt.get_method(v, iter_key)?;
       if let Some(method_value) = m {
@@ -376,11 +390,19 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
       entries.retain(|e| type_matches_object_or_dictionary_like(&e.type_list[i]));
     }
     // 12.12 boolean special-case.
-    else if rt.is_boolean(v) && entries.iter().any(|e| type_matches_boolean(&e.type_list[i])) {
+    else if rt.is_boolean(v)
+      && entries
+        .iter()
+        .any(|e| type_matches_boolean(&e.type_list[i]))
+    {
       entries.retain(|e| type_matches_boolean(&e.type_list[i]));
     }
     // 12.13 number special-case.
-    else if rt.is_number(v) && entries.iter().any(|e| type_matches_numeric(&e.type_list[i])) {
+    else if rt.is_number(v)
+      && entries
+        .iter()
+        .any(|e| type_matches_numeric(&e.type_list[i]))
+    {
       entries.retain(|e| type_matches_numeric(&e.type_list[i]));
     }
     // 12.14 bigint special-case.
@@ -392,11 +414,17 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
       entries.retain(|e| type_matches_string(&e.type_list[i]));
     }
     // 12.16 numeric fallthrough.
-    else if entries.iter().any(|e| type_matches_numeric(&e.type_list[i])) {
+    else if entries
+      .iter()
+      .any(|e| type_matches_numeric(&e.type_list[i]))
+    {
       entries.retain(|e| type_matches_numeric(&e.type_list[i]));
     }
     // 12.17 boolean fallthrough.
-    else if entries.iter().any(|e| type_matches_boolean(&e.type_list[i])) {
+    else if entries
+      .iter()
+      .any(|e| type_matches_boolean(&e.type_list[i]))
+    {
       entries.retain(|e| type_matches_boolean(&e.type_list[i]));
     }
     // 12.18 bigint fallthrough.
@@ -443,7 +471,11 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
   // sequence-like members, conversion will happen in step 14 via the union conversion algorithm.
   if (i as isize) == d {
     if let Some(method_value) = method {
-      if let Some(elem_ty) = selected_entry.type_list.get(i).and_then(sequence_element_type) {
+      if let Some(elem_ty) = selected_entry
+        .type_list
+        .get(i)
+        .and_then(sequence_element_type)
+      {
         let v = args[i];
         let seq = create_sequence_from_iterable(rt, elem_ty, v, method_value)?;
         values.push(ConvertedArgument::Value(seq));
@@ -474,7 +506,9 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
   while i < selected_overload.args.len() {
     let arg = &selected_overload.args[i];
     if let Some(default) = arg.default.as_ref() {
-      values.push(ConvertedArgument::Value(convert_default(rt, &arg.ty, default)?));
+      values.push(ConvertedArgument::Value(convert_default(
+        rt, &arg.ty, default,
+      )?));
     } else if arg.optionality != Optionality::Variadic {
       values.push(ConvertedArgument::Missing);
     }
@@ -507,7 +541,11 @@ fn effective_entry_for_argcount(
   if argcount == 0 {
     // Only include the empty effective entry if the overload can be called with 0 arguments (all
     // arguments are optional/variadic and thus trimmed).
-    if declared.is_empty() || declared.iter().all(|a| a.optionality.is_optional_for_trimming()) {
+    if declared.is_empty()
+      || declared
+        .iter()
+        .all(|a| a.optionality.is_optional_for_trimming())
+    {
       return Some(EffectiveEntry {
         overload_index,
         type_list: Vec::new(),
@@ -577,7 +615,10 @@ fn effective_entry_for_argcount(
 }
 
 fn precomputed_distinguishing_index(overloads: &[OverloadSig], argcount: usize) -> Option<usize> {
-  let first = overloads.first()?.distinguishing_arg_index_by_arg_count.as_ref()?;
+  let first = overloads
+    .first()?
+    .distinguishing_arg_index_by_arg_count
+    .as_ref()?;
   let (_, d) = first.iter().find(|(n, _d)| *n == argcount)?;
   Some(*d)
 }
@@ -684,14 +725,20 @@ fn are_distinguishable(a: &IdlType, b: &IdlType) -> bool {
     return !has_annotation(callback, TypeAnnotation::LegacyTreatNonObjectAsNull);
   }
 
-  if (ca == DistinguishabilityCategory::AsyncSequence && cb == DistinguishabilityCategory::SequenceLike)
-    || (ca == DistinguishabilityCategory::SequenceLike && cb == DistinguishabilityCategory::AsyncSequence)
+  if (ca == DistinguishabilityCategory::AsyncSequence
+    && cb == DistinguishabilityCategory::SequenceLike)
+    || (ca == DistinguishabilityCategory::SequenceLike
+      && cb == DistinguishabilityCategory::AsyncSequence)
   {
     return false;
   }
 
   if ca == DistinguishabilityCategory::Object || cb == DistinguishabilityCategory::Object {
-    let other = if ca == DistinguishabilityCategory::Object { cb } else { ca };
+    let other = if ca == DistinguishabilityCategory::Object {
+      cb
+    } else {
+      ca
+    };
     return matches!(
       other,
       DistinguishabilityCategory::Undefined
@@ -704,8 +751,10 @@ fn are_distinguishable(a: &IdlType, b: &IdlType) -> bool {
   }
 
   // Undefined vs dictionary-like is blank in the table.
-  if (ca == DistinguishabilityCategory::Undefined && cb == DistinguishabilityCategory::DictionaryLike)
-    || (ca == DistinguishabilityCategory::DictionaryLike && cb == DistinguishabilityCategory::Undefined)
+  if (ca == DistinguishabilityCategory::Undefined
+    && cb == DistinguishabilityCategory::DictionaryLike)
+    || (ca == DistinguishabilityCategory::DictionaryLike
+      && cb == DistinguishabilityCategory::Undefined)
   {
     return false;
   }
@@ -1058,9 +1107,9 @@ fn convert_js_to_idl_inner<R: WebIdlJsRuntime>(
         }
       }
       if out_attrs.clamp && out_attrs.enforce_range {
-        return Err(rt.throw_type_error(
-          "[Clamp] and [EnforceRange] cannot both apply to the same type",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp] and [EnforceRange] cannot both apply to the same type"),
+        );
       }
       convert_js_to_idl_inner(rt, inner, value, out_attrs)
     }
@@ -1114,9 +1163,9 @@ fn convert_js_to_idl_inner<R: WebIdlJsRuntime>(
     IdlType::FrozenArray(_)
     | IdlType::AsyncSequence(_)
     | IdlType::Record(_, _)
-    | IdlType::Promise(_) => Err(rt.throw_type_error(
-      "conversion for this WebIDL type is not implemented yet",
-    )),
+    | IdlType::Promise(_) => {
+      Err(rt.throw_type_error("conversion for this WebIDL type is not implemented yet"))
+    }
   }
 }
 
@@ -1131,9 +1180,9 @@ fn convert_named<R: WebIdlJsRuntime>(
         return Err(rt.throw_type_error("value is not a platform object"));
       }
       if !rt.implements_interface(value, crate::interface_id_from_name(&named.name)) {
-        return Err(rt.throw_type_error(
-          "platform object does not implement the required interface",
-        ));
+        return Err(
+          rt.throw_type_error("platform object does not implement the required interface"),
+        );
       }
       Ok(WebIdlValue::JsValue(value))
     }
@@ -1165,9 +1214,9 @@ fn convert_named<R: WebIdlJsRuntime>(
       Ok(WebIdlValue::JsValue(value))
     }
     NamedTypeKind::Enum => Ok(WebIdlValue::Enum(rt.to_string(value)?)),
-    NamedTypeKind::Typedef | NamedTypeKind::Unresolved => Err(rt.throw_type_error(
-      "typedefs must be resolved before conversion",
-    )),
+    NamedTypeKind::Typedef | NamedTypeKind::Unresolved => {
+      Err(rt.throw_type_error("typedefs must be resolved before conversion"))
+    }
   }
 }
 
@@ -1219,7 +1268,10 @@ fn convert_union<R: WebIdlJsRuntime>(
         value: Box::new(WebIdlValue::JsValue(value)),
       });
     }
-    if types.iter().any(|t| matches!(t.innermost_type(), IdlType::Object)) {
+    if types
+      .iter()
+      .any(|t| matches!(t.innermost_type(), IdlType::Object))
+    {
       return Ok(WebIdlValue::Union {
         member_ty: Box::new(IdlType::Object),
         value: Box::new(WebIdlValue::JsValue(value)),
@@ -1229,7 +1281,10 @@ fn convert_union<R: WebIdlJsRuntime>(
 
   // Numbers/bool/bigint dispatch.
   if rt.is_boolean(value) {
-    if types.iter().any(|t| matches!(t.innermost_type(), IdlType::Boolean)) {
+    if types
+      .iter()
+      .any(|t| matches!(t.innermost_type(), IdlType::Boolean))
+    {
       let out = convert_js_to_idl(rt, &IdlType::Boolean, value)?;
       return Ok(WebIdlValue::Union {
         member_ty: Box::new(IdlType::Boolean),
@@ -1250,7 +1305,10 @@ fn convert_union<R: WebIdlJsRuntime>(
     }
   }
   if rt.is_bigint(value) {
-    if types.iter().any(|t| matches!(t.innermost_type(), IdlType::BigInt)) {
+    if types
+      .iter()
+      .any(|t| matches!(t.innermost_type(), IdlType::BigInt))
+    {
       let out = convert_js_to_idl(rt, &IdlType::BigInt, value)?;
       return Ok(WebIdlValue::Union {
         member_ty: Box::new(IdlType::BigInt),
@@ -1294,21 +1352,21 @@ fn convert_numeric<R: WebIdlJsRuntime>(
     NumericType::Short => Ok(WebIdlValue::Short(
       convert_to_int(rt, value, 16, true, attrs)? as i16,
     )),
-    NumericType::UnsignedShort => Ok(WebIdlValue::UnsignedShort(
-      convert_to_int(rt, value, 16, false, attrs)? as u16,
-    )),
+    NumericType::UnsignedShort => Ok(WebIdlValue::UnsignedShort(convert_to_int(
+      rt, value, 16, false, attrs,
+    )? as u16)),
     NumericType::Long => Ok(WebIdlValue::Long(
       convert_to_int(rt, value, 32, true, attrs)? as i32,
     )),
-    NumericType::UnsignedLong => Ok(WebIdlValue::UnsignedLong(
-      convert_to_int(rt, value, 32, false, attrs)? as u32,
-    )),
+    NumericType::UnsignedLong => Ok(WebIdlValue::UnsignedLong(convert_to_int(
+      rt, value, 32, false, attrs,
+    )? as u32)),
     NumericType::LongLong => Ok(WebIdlValue::LongLong(
       convert_to_int(rt, value, 64, true, attrs)? as i64,
     )),
-    NumericType::UnsignedLongLong => Ok(WebIdlValue::UnsignedLongLong(
-      convert_to_int(rt, value, 64, false, attrs)? as u64,
-    )),
+    NumericType::UnsignedLongLong => Ok(WebIdlValue::UnsignedLongLong(convert_to_int(
+      rt, value, 64, false, attrs,
+    )? as u64)),
     NumericType::Float => convert_float(rt, value, false),
     NumericType::UnrestrictedFloat => convert_float(rt, value, true),
     NumericType::Double => convert_double(rt, value, false),
@@ -1353,15 +1411,11 @@ fn convert_to_int<R: WebIdlJsRuntime>(
 
   if attrs.enforce_range {
     if x.is_nan() || x.is_infinite() {
-      return Err(rt.throw_range_error(
-        "EnforceRange integer conversion cannot be NaN/Infinity",
-      ));
+      return Err(rt.throw_range_error("EnforceRange integer conversion cannot be NaN/Infinity"));
     }
     x = integer_part(x);
     if x < lower_bound || x > upper_bound {
-      return Err(rt.throw_range_error(
-        "integer value is outside EnforceRange bounds",
-      ));
+      return Err(rt.throw_range_error("integer value is outside EnforceRange bounds"));
     }
     return Ok(x);
   }
@@ -1393,7 +1447,11 @@ fn convert_to_int<R: WebIdlJsRuntime>(
 
 fn integer_part(n: f64) -> f64 {
   let r = n.abs().floor();
-  if n < 0.0 { -r } else { r }
+  if n < 0.0 {
+    -r
+  } else {
+    r
+  }
 }
 
 fn round_ties_even(n: f64) -> f64 {
@@ -1407,7 +1465,11 @@ fn round_ties_even(n: f64) -> f64 {
   }
   // Exactly halfway between two integers.
   let floor_int = floor as i64;
-  if floor_int % 2 == 0 { floor } else { floor + 1.0 }
+  if floor_int % 2 == 0 {
+    floor
+  } else {
+    floor + 1.0
+  }
 }
 
 fn convert_float<R: WebIdlJsRuntime>(
@@ -1566,7 +1628,9 @@ fn format_idl_type(ty: &IdlType) -> String {
           TypeAnnotation::Clamp => out.push_str("[Clamp] "),
           TypeAnnotation::EnforceRange => out.push_str("[EnforceRange] "),
           TypeAnnotation::LegacyNullToEmptyString => out.push_str("[LegacyNullToEmptyString] "),
-          TypeAnnotation::LegacyTreatNonObjectAsNull => out.push_str("[LegacyTreatNonObjectAsNull] "),
+          TypeAnnotation::LegacyTreatNonObjectAsNull => {
+            out.push_str("[LegacyTreatNonObjectAsNull] ")
+          }
           _ => {}
         }
       }

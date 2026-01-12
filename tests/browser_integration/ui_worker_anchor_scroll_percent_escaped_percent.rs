@@ -56,7 +56,11 @@ fn navigation_with_percent_encoded_percent_fragment_scrolls_to_target() {
     .expect("viewport");
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .expect("navigate");
 
   let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {

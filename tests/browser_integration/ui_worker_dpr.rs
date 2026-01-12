@@ -9,11 +9,7 @@ use std::time::{Duration, Instant};
 // Under parallel test load, render worker threads can take a while to produce the first frame.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(20);
 
-fn recv_frame_ready(
-  rx: &Receiver<WorkerToUi>,
-  tab_id: TabId,
-  timeout: Duration,
-) -> RenderedFrame {
+fn recv_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> RenderedFrame {
   let deadline = Instant::now() + timeout;
   loop {
     let now = Instant::now();

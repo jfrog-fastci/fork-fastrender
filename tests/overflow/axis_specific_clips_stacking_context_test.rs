@@ -71,4 +71,3 @@ fn overflow_x_clip_y_visible_clips_only_x_for_promoted_stacking_context() {
   // Vertical overflow remains visible.
   assert_eq!(pixel(&pixmap, 4, 7), (255, 0, 0, 255));
 }
-

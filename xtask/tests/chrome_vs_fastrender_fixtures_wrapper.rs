@@ -20,7 +20,9 @@ fn make_executable(_path: &Path) {}
 #[cfg(unix)]
 fn make_non_executable(path: &Path) {
   use std::os::unix::fs::PermissionsExt;
-  let mut perms = fs::metadata(path).expect("stat stub executable").permissions();
+  let mut perms = fs::metadata(path)
+    .expect("stat stub executable")
+    .permissions();
   perms.set_mode(0o644);
   fs::set_permissions(path, perms).expect("chmod stub executable");
 }

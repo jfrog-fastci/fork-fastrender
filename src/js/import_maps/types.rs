@@ -192,19 +192,12 @@ impl ResolvedModuleSetIndex {
     );
     let scope_prefix_ends_with_slash = scope_prefix.ends_with('/');
     let start = self.base_url_index.partition_point(|idx| {
-      self.records[*idx]
-        .serialized_base_url
-        .as_deref()
-        .unwrap()
-        < scope_prefix
+      self.records[*idx].serialized_base_url.as_deref().unwrap() < scope_prefix
     });
     self.base_url_index[start..]
       .iter()
       .take_while(move |idx| {
-        let base_url = self.records[**idx]
-          .serialized_base_url
-          .as_deref()
-          .unwrap();
+        let base_url = self.records[**idx].serialized_base_url.as_deref().unwrap();
         if scope_prefix_ends_with_slash {
           base_url.starts_with(scope_prefix)
         } else {
@@ -327,7 +320,10 @@ impl ModuleSpecifierMap {
   ///
   /// Returns the previous value for `key`, if any.
   pub fn insert(&mut self, key: String, value: Option<Url>) -> Option<Option<Url>> {
-    match self.entries.binary_search_by(|(k, _)| code_unit_cmp(&key, k)) {
+    match self
+      .entries
+      .binary_search_by(|(k, _)| code_unit_cmp(&key, k))
+    {
       Ok(idx) => Some(std::mem::replace(&mut self.entries[idx].1, value)),
       Err(idx) => {
         self.entries.insert(idx, (key, value));
@@ -338,7 +334,10 @@ impl ModuleSpecifierMap {
 
   /// Remove an entry, if it exists, preserving sort order.
   pub fn remove(&mut self, key: &str) -> Option<Option<Url>> {
-    match self.entries.binary_search_by(|(k, _)| code_unit_cmp(key, k)) {
+    match self
+      .entries
+      .binary_search_by(|(k, _)| code_unit_cmp(key, k))
+    {
       Ok(idx) => Some(self.entries.remove(idx).1),
       Err(_) => None,
     }
@@ -444,7 +443,11 @@ impl ModuleIntegrityMap {
   }
 
   pub fn get(&self, key: &str) -> Option<&str> {
-    self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    self
+      .entries
+      .iter()
+      .find(|(k, _)| k == key)
+      .map(|(_, v)| v.as_str())
   }
 
   /// Insert or replace an integrity entry.
@@ -509,14 +512,30 @@ impl ImportMapWarning {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportMapWarningKind {
-  UnknownTopLevelKey { key: String },
+  UnknownTopLevelKey {
+    key: String,
+  },
   EmptySpecifierKey,
-  AddressNotString { specifier_key: String },
-  AddressInvalid { specifier_key: String, address: String },
-  TrailingSlashMismatch { specifier_key: String, address: String },
-  ScopePrefixNotParseable { prefix: String },
-  IntegrityKeyFailedToResolve { key: String },
-  IntegrityValueNotString { key: String },
+  AddressNotString {
+    specifier_key: String,
+  },
+  AddressInvalid {
+    specifier_key: String,
+    address: String,
+  },
+  TrailingSlashMismatch {
+    specifier_key: String,
+    address: String,
+  },
+  ScopePrefixNotParseable {
+    prefix: String,
+  },
+  IntegrityKeyFailedToResolve {
+    key: String,
+  },
+  IntegrityValueNotString {
+    key: String,
+  },
 }
 
 pub(crate) fn code_unit_cmp(a: &str, b: &str) -> Ordering {

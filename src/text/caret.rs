@@ -77,7 +77,10 @@ fn run_visual_positions(runs: &[ShapedRun]) -> Vec<RunVisualPosition<'_>> {
   let mut pen_x = 0.0f32;
   let mut out = Vec::with_capacity(runs.len());
   for run in runs {
-    out.push(RunVisualPosition { run, start_x: pen_x });
+    out.push(RunVisualPosition {
+      run,
+      start_x: pen_x,
+    });
     pen_x += run_advance(run);
   }
   out
@@ -89,9 +92,17 @@ fn x_within_run_for_local_byte(run: &ShapedRun, local_byte: usize) -> f32 {
 
   if run.glyphs.is_empty() {
     let x = if run.direction.is_rtl() {
-      if local_byte == 0 { advance } else { 0.0 }
+      if local_byte == 0 {
+        advance
+      } else {
+        0.0
+      }
     } else {
-      if local_byte == 0 { 0.0 } else { advance }
+      if local_byte == 0 {
+        0.0
+      } else {
+        advance
+      }
     };
     return clamp_f32(x, 0.0, advance);
   }
@@ -352,7 +363,11 @@ fn x_for_byte_in_run(run: &ShapedRun, target_byte: usize) -> f32 {
 /// The returned stops are ordered in the same visual order as the shaped runs: left-to-right in
 /// physical x coordinates. Stops can share the same `char_idx` when a logical boundary has two
 /// distinct visual positions (split caret).
-pub fn caret_stops_for_runs(text: &str, runs: &[ShapedRun], fallback_advance: f32) -> Vec<CaretStop> {
+pub fn caret_stops_for_runs(
+  text: &str,
+  runs: &[ShapedRun],
+  fallback_advance: f32,
+) -> Vec<CaretStop> {
   let boundaries = char_boundary_byte_offsets(text);
   let char_count = boundaries.len().saturating_sub(1);
   if char_count == 0 {
@@ -454,7 +469,11 @@ pub fn caret_stops_for_runs(text: &str, runs: &[ShapedRun], fallback_advance: f3
 /// This prefers an exact `(char_idx, affinity)` match. If none exists (e.g. callers provide a
 /// default affinity at a boundary that only has an upstream stop), it falls back to a downstream
 /// stop, then to the first stop with the same `char_idx`.
-pub fn caret_stop_index(stops: &[CaretStop], char_idx: usize, affinity: CaretAffinity) -> Option<usize> {
+pub fn caret_stop_index(
+  stops: &[CaretStop],
+  char_idx: usize,
+  affinity: CaretAffinity,
+) -> Option<usize> {
   if stops.is_empty() {
     return None;
   }
@@ -479,7 +498,11 @@ pub fn caret_stop_index(stops: &[CaretStop], char_idx: usize, affinity: CaretAff
 }
 
 /// Resolve an x coordinate for the given caret position.
-pub fn caret_x_for_position(stops: &[CaretStop], char_idx: usize, affinity: CaretAffinity) -> Option<f32> {
+pub fn caret_x_for_position(
+  stops: &[CaretStop],
+  char_idx: usize,
+  affinity: CaretAffinity,
+) -> Option<f32> {
   let idx = caret_stop_index(stops, char_idx, affinity)?;
   Some(stops[idx].x)
 }
@@ -628,7 +651,9 @@ mod tests {
     let text = "ABC אבג";
     let style = ComputedStyle::default();
     let ctx = FontContext::new();
-    let runs = ShapingPipeline::new().shape(text, &style, &ctx).expect("shape");
+    let runs = ShapingPipeline::new()
+      .shape(text, &style, &ctx)
+      .expect("shape");
     let stops = caret_stops_for_runs(text, &runs, 0.0);
 
     let split: Vec<&CaretStop> = stops.iter().filter(|s| s.char_idx == 4).collect();
@@ -655,7 +680,9 @@ mod tests {
     let text = "ABC אבג";
     let style = ComputedStyle::default();
     let ctx = FontContext::new();
-    let runs = ShapingPipeline::new().shape(text, &style, &ctx).expect("shape");
+    let runs = ShapingPipeline::new()
+      .shape(text, &style, &ctx)
+      .expect("shape");
     let stops = caret_stops_for_runs(text, &runs, 0.0);
 
     let indices: Vec<usize> = stops
@@ -664,7 +691,10 @@ mod tests {
       .filter(|(_, s)| s.char_idx == 4)
       .map(|(idx, _)| idx)
       .collect();
-    assert!(indices.len() >= 2, "expected at least two stops for char_idx=4");
+    assert!(
+      indices.len() >= 2,
+      "expected at least two stops for char_idx=4"
+    );
 
     // Starting from the leftmost stop at char_idx=4, walk forward until we reach another stop with
     // the same logical boundary. This mirrors ArrowRight repeatedly stepping through visual stops.
@@ -693,7 +723,14 @@ mod tests {
     // - "אבג" => 3..text.len()
     let ltr = run(text, 0, 3, Direction::LeftToRight, 1.0, vec![0, 1, 2]);
     // Simulate HarfBuzz output for RTL: glyph order reversed (clusters descending in bytes).
-    let rtl = run(text, 3, text.len(), Direction::RightToLeft, 1.0, vec![4, 2, 0]);
+    let rtl = run(
+      text,
+      3,
+      text.len(),
+      Direction::RightToLeft,
+      1.0,
+      vec![4, 2, 0],
+    );
     let runs = vec![ltr, rtl];
     let stops = caret_stops_for_runs(text, &runs, 0.0);
 

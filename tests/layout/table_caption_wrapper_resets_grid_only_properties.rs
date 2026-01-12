@@ -21,7 +21,10 @@ fn find_table_wrapper_with_caption<'a>(node: &'a FragmentNode) -> Option<&'a Fra
   {
     return Some(node);
   }
-  node.children.iter().find_map(find_table_wrapper_with_caption)
+  node
+    .children
+    .iter()
+    .find_map(find_table_wrapper_with_caption)
 }
 
 #[test]
@@ -70,7 +73,12 @@ fn table_caption_wrapper_resets_grid_only_properties() {
   let grid = wrapper
     .children
     .iter()
-    .find(|child| child.style.as_ref().is_some_and(|s| is_table_like(s.display)))
+    .find(|child| {
+      child
+        .style
+        .as_ref()
+        .is_some_and(|s| is_table_like(s.display))
+    })
     .expect("table grid fragment");
   let grid_style = grid.style.as_ref().expect("grid style");
   assert!((grid_style.padding_left.to_px() - 12.0).abs() < 0.01);
@@ -78,4 +86,3 @@ fn table_caption_wrapper_resets_grid_only_properties() {
   assert_eq!(grid_style.overflow_y, Overflow::Hidden);
   assert_eq!(grid_style.outline_style, OutlineStyle::Solid);
 }
-

@@ -161,8 +161,5 @@ fn disabled_associated_controls_do_not_affect_form_validity() {
   let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
-  assert_eq!(
-    display(find_by_id(&styled, "f").expect("form#f")),
-    "inline"
-  );
+  assert_eq!(display(find_by_id(&styled, "f").expect("form#f")), "inline");
 }

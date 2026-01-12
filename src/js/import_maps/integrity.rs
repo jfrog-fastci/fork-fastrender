@@ -11,4 +11,3 @@ pub fn resolve_module_integrity_metadata<'a>(state: &'a ImportMapState, url: &Ur
   // `Url::as_str()` for lookup purposes.
   state.import_map.integrity.get(url.as_str()).unwrap_or("")
 }
-

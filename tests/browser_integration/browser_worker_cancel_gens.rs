@@ -97,7 +97,9 @@ fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
     match worker.rx.recv_timeout(Duration::from_millis(50)) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::NavigationStarted { tab_id: got, url } if *got == tab_id && url == &heavy_url => {
+          WorkerToUi::NavigationStarted { tab_id: got, url }
+            if *got == tab_id && url == &heavy_url =>
+          {
             saw_started = true;
           }
           WorkerToUi::Stage { tab_id: got, .. } if *got == tab_id && saw_started => {
@@ -141,7 +143,9 @@ fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
     match worker.rx.recv_timeout(Duration::from_millis(50)) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::NavigationCommitted { tab_id: got, url, .. } if *got == tab_id => {
+          WorkerToUi::NavigationCommitted {
+            tab_id: got, url, ..
+          } if *got == tab_id => {
             last_committed = Some(url.clone());
             if url == &light_url {
               saw_light_commit = true;
@@ -150,7 +154,9 @@ fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
               saw_heavy_commit = true;
             }
           }
-          WorkerToUi::NavigationFailed { tab_id: got, url, .. } if *got == tab_id => {
+          WorkerToUi::NavigationFailed {
+            tab_id: got, url, ..
+          } if *got == tab_id => {
             last_committed = Some(url.clone());
           }
           WorkerToUi::FrameReady { tab_id: got, .. } if *got == tab_id => {

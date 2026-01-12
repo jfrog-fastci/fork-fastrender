@@ -1,6 +1,5 @@
 use super::util::{
-  create_stacking_context_bounds_renderer,
-  create_stacking_context_bounds_renderer_legacy,
+  create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
 };
 
 fn assert_border_triangle_is_not_rect(pixmap: &tiny_skia::Pixmap) {

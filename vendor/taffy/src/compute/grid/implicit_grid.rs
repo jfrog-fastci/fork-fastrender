@@ -1,7 +1,7 @@
 //! This module is not required for spec compliance, but is used as a performance optimisation
 //! to reduce the number of allocations required when creating a grid.
-use crate::geometry::Line;
 use crate::geometry::InBothAbsAxis;
+use crate::geometry::Line;
 use crate::style::{GenericGridPlacement, GridPlacement};
 use crate::tree::NodeId;
 use crate::{CheapCloneStr, GridItemStyle};
@@ -26,13 +26,12 @@ pub(crate) fn compute_grid_size_estimate<'a, S: GridItemStyle + 'a>(
 ) -> (TrackCounts, TrackCounts) {
   // Iterate over children, producing an estimate of the min and max grid lines (in origin-zero coordinates where)
   // along with the span of each item
-  let (col_min, col_max, col_max_span, row_min, row_max, row_max_span) =
-    get_known_child_positions(
-      child_styles_iter,
-      explicit_col_count,
-      explicit_row_count,
-      get_child_subgrid_auto_span,
-    );
+  let (col_min, col_max, col_max_span, row_min, row_max, row_max_span) = get_known_child_positions(
+    child_styles_iter,
+    explicit_col_count,
+    explicit_row_count,
+    get_child_subgrid_auto_span,
+  );
 
   // Compute *track* count estimates for each axis from:
   //   - The explicit track counts
@@ -257,8 +256,8 @@ mod tests {
     use super::super::compute_grid_size_estimate;
     use crate::compute::grid::util::test_helpers::*;
     use crate::geometry::InBothAbsAxis;
-    use crate::tree::NodeId;
     use crate::style_helpers::*;
+    use crate::tree::NodeId;
 
     #[test]
     fn explicit_grid_sizing_with_children() {
@@ -272,15 +271,13 @@ mod tests {
         .iter()
         .enumerate()
         .map(|(idx, style)| (NodeId::from(idx), style));
-      let (inline, block) = compute_grid_size_estimate(
-        explicit_col_count,
-        explicit_row_count,
-        child_styles,
-        |_| InBothAbsAxis {
-          horizontal: None,
-          vertical: None,
-        },
-      );
+      let (inline, block) =
+        compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles, |_| {
+          InBothAbsAxis {
+            horizontal: None,
+            vertical: None,
+          }
+        });
       assert_eq!(inline.negative_implicit, 0);
       assert_eq!(inline.explicit, explicit_col_count);
       assert_eq!(inline.positive_implicit, 0);
@@ -301,15 +298,13 @@ mod tests {
         .iter()
         .enumerate()
         .map(|(idx, style)| (NodeId::from(idx), style));
-      let (inline, block) = compute_grid_size_estimate(
-        explicit_col_count,
-        explicit_row_count,
-        child_styles,
-        |_| InBothAbsAxis {
-          horizontal: None,
-          vertical: None,
-        },
-      );
+      let (inline, block) =
+        compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles, |_| {
+          InBothAbsAxis {
+            horizontal: None,
+            vertical: None,
+          }
+        });
       assert_eq!(inline.negative_implicit, 1);
       assert_eq!(inline.explicit, explicit_col_count);
       assert_eq!(inline.positive_implicit, 0);

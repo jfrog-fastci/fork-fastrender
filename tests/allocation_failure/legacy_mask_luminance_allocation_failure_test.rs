@@ -1,3 +1,4 @@
+use super::{fail_nth_allocation, failed_allocs, lock_allocator, start_counting, stop_counting};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use fastrender::debug::runtime::RuntimeToggles;
@@ -7,15 +8,17 @@ use image::ColorType;
 use image::ImageEncoder;
 use std::collections::HashMap;
 use std::mem;
-use super::{
-  fail_nth_allocation, failed_allocs, lock_allocator, start_counting, stop_counting,
-};
 
 fn make_black_png_data_url(width: u32, height: u32) -> String {
   let img = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
   let mut bytes = Vec::new();
   PngEncoder::new(&mut bytes)
-    .write_image(img.as_raw(), img.width(), img.height(), ColorType::Rgba8.into())
+    .write_image(
+      img.as_raw(),
+      img.width(),
+      img.height(),
+      ColorType::Rgba8.into(),
+    )
     .expect("encode png");
   format!("data:image/png;base64,{}", STANDARD.encode(bytes))
 }

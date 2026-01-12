@@ -46,9 +46,9 @@
 //! ```
 
 use super::compare::compare_images;
+use super::compare::load_png_from_bytes;
 use super::compare::CompareConfig;
 use super::compare::ImageDiff;
-use super::compare::load_png_from_bytes;
 use fastrender::FastRender;
 use fastrender::FastRenderConfig;
 use fastrender::FontConfig;

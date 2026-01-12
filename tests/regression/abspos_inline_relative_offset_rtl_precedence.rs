@@ -59,4 +59,3 @@ fn relative_inline_offset_rtl_prefers_right_over_left() {
   // The positioned ancestor's relative offset must be included in the absolute containing block.
   assert_eq!(green_bbox, (20, 55, 29, 64));
 }
-

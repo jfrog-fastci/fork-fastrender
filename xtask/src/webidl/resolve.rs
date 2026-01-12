@@ -10,11 +10,12 @@
 //!      mixin members to the end of the target interface.
 //! - Interface mixins / dictionaries follow the same "primary then partials appended" rule.
 
-use super::{
-  ExtendedAttribute, ParsedCallback, ParsedDefinition, ParsedDictionary, ParsedEnum, ParsedIncludes,
-  ParsedInterface, ParsedInterfaceMixin, ParsedMember, ParsedTypedef, ParsedWebIdlWorld,
-};
 use super::{ast::IdlType, parse_idl_type};
+use super::{
+  ExtendedAttribute, ParsedCallback, ParsedDefinition, ParsedDictionary, ParsedEnum,
+  ParsedIncludes, ParsedInterface, ParsedInterfaceMixin, ParsedMember, ParsedTypedef,
+  ParsedWebIdlWorld,
+};
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use std::collections::{BTreeMap, BTreeSet};
@@ -96,11 +97,7 @@ impl ResolvedWebIdlWorld {
         .with_context(|| format!("unknown typedef `{name}`"))?;
 
       if !ctx.in_progress.insert(name.to_string()) {
-        let start = ctx
-          .stack
-          .iter()
-          .position(|n| n == name)
-          .unwrap_or(0);
+        let start = ctx.stack.iter().position(|n| n == name).unwrap_or(0);
         let mut cycle: Vec<String> = ctx.stack[start..].to_vec();
         cycle.push(name.to_string());
         bail!("typedef cycle detected: {}", cycle.join(" -> "));
@@ -108,8 +105,8 @@ impl ResolvedWebIdlWorld {
 
       ctx.stack.push(name.to_string());
 
-      let parsed =
-        parse_idl_type(&td.type_).with_context(|| format!("parse typedef `{name}` = `{}`", td.type_))?;
+      let parsed = parse_idl_type(&td.type_)
+        .with_context(|| format!("parse typedef `{name}` = `{}`", td.type_))?;
 
       // Canonicalize the typedef body, recursively expanding any referenced typedefs.
       let resolved = parsed.canonicalize_with(&mut |ref_name| {
@@ -141,7 +138,9 @@ impl ResolvedWebIdlWorld {
     }
 
     let mut out = self.clone();
-    out.interfaces.retain(|_, iface| iface.exposure.matches(target));
+    out
+      .interfaces
+      .retain(|_, iface| iface.exposure.matches(target));
     for iface in out.interfaces.values_mut() {
       iface.members.retain(|m| m.exposure.matches(target));
     }
@@ -269,7 +268,9 @@ pub fn resolve_webidl_world(parsed: &ParsedWebIdlWorld) -> ResolvedWebIdlWorld {
             .or_default()
             .push(iface.clone());
         } else {
-          primary_interfaces.entry(iface.name.clone()).or_insert(iface.clone());
+          primary_interfaces
+            .entry(iface.name.clone())
+            .or_insert(iface.clone());
         }
       }
       ParsedDefinition::InterfaceMixin(mixin) => {
@@ -279,7 +280,9 @@ pub fn resolve_webidl_world(parsed: &ParsedWebIdlWorld) -> ResolvedWebIdlWorld {
             .or_default()
             .push(mixin.clone());
         } else {
-          primary_mixins.entry(mixin.name.clone()).or_insert(mixin.clone());
+          primary_mixins
+            .entry(mixin.name.clone())
+            .or_insert(mixin.clone());
         }
       }
       ParsedDefinition::Includes(i) => includes.push(i.clone()),
@@ -290,7 +293,9 @@ pub fn resolve_webidl_world(parsed: &ParsedWebIdlWorld) -> ResolvedWebIdlWorld {
             .or_default()
             .push(dict.clone());
         } else {
-          primary_dicts.entry(dict.name.clone()).or_insert(dict.clone());
+          primary_dicts
+            .entry(dict.name.clone())
+            .or_insert(dict.clone());
         }
       }
       ParsedDefinition::Enum(e) => {
@@ -402,13 +407,22 @@ fn resolve_mixins(
 
     if let Some(base) = primary.get(&name) {
       ext_attrs.extend(base.ext_attrs.clone());
-      members.extend(base.members.iter().map(|m| to_resolved_iface_member(m, &Exposure::Unknown)));
+      members.extend(
+        base
+          .members
+          .iter()
+          .map(|m| to_resolved_iface_member(m, &Exposure::Unknown)),
+      );
     }
 
     if let Some(ps) = partials.remove(&name) {
       for p in ps {
         ext_attrs.extend(p.ext_attrs);
-        members.extend(p.members.iter().map(|m| to_resolved_iface_member(m, &Exposure::Unknown)));
+        members.extend(
+          p.members
+            .iter()
+            .map(|m| to_resolved_iface_member(m, &Exposure::Unknown)),
+        );
       }
     }
     dedupe_resolved_interface_members(&mut members);
@@ -444,7 +458,12 @@ fn resolve_interfaces(
       inherits = base.inherits.clone();
       callback = base.callback;
       ext_attrs.extend(base.ext_attrs.clone());
-      members.extend(base.members.iter().map(|m| to_resolved_iface_member(m, &Exposure::Unknown)));
+      members.extend(
+        base
+          .members
+          .iter()
+          .map(|m| to_resolved_iface_member(m, &Exposure::Unknown)),
+      );
     }
 
     if let Some(ps) = partials.remove(&name) {
@@ -454,7 +473,11 @@ fn resolve_interfaces(
         }
         callback |= p.callback;
         ext_attrs.extend(p.ext_attrs);
-        members.extend(p.members.iter().map(|m| to_resolved_iface_member(m, &Exposure::Unknown)));
+        members.extend(
+          p.members
+            .iter()
+            .map(|m| to_resolved_iface_member(m, &Exposure::Unknown)),
+        );
       }
     }
     dedupe_resolved_interface_members(&mut members);
@@ -524,7 +547,10 @@ fn resolve_dictionaries(
   out
 }
 
-fn to_resolved_iface_member(m: &ParsedMember, parent_exposure: &Exposure) -> ResolvedInterfaceMember {
+fn to_resolved_iface_member(
+  m: &ParsedMember,
+  parent_exposure: &Exposure,
+) -> ResolvedInterfaceMember {
   ResolvedInterfaceMember {
     name: m.name.clone(),
     ext_attrs: m.ext_attrs.clone(),

@@ -46,7 +46,11 @@ fn fragment_navigation_scrolls_viewport_to_target() {
     .send(support::viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .expect("Navigate");
 
   // `spawn_ui_worker` emits ScrollStateUpdated after FrameReady; ensure we do not consume the only

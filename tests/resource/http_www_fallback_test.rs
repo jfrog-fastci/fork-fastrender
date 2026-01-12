@@ -1,6 +1,6 @@
+use crate::test_support;
 use fastrender::resource::{FetchContextKind, HttpFetcher, HttpRetryPolicy};
 use fastrender::ResourceFetcher;
-use crate::test_support;
 use std::io;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -91,12 +91,18 @@ fn try_bind_localhost(context: &str) -> Option<(Vec<TcpListener>, u16)> {
     }
   }
 
-  let have_v4 = listeners
-    .iter()
-    .any(|listener| listener.local_addr().map(|addr| addr.ip().is_ipv4()).unwrap_or(false));
-  let have_v6 = listeners
-    .iter()
-    .any(|listener| listener.local_addr().map(|addr| addr.ip().is_ipv6()).unwrap_or(false));
+  let have_v4 = listeners.iter().any(|listener| {
+    listener
+      .local_addr()
+      .map(|addr| addr.ip().is_ipv4())
+      .unwrap_or(false)
+  });
+  let have_v6 = listeners.iter().any(|listener| {
+    listener
+      .local_addr()
+      .map(|addr| addr.ip().is_ipv6())
+      .unwrap_or(false)
+  });
 
   if !((localhost_v4 && have_v4) || (localhost_v6 && have_v6)) {
     return None;
@@ -188,7 +194,8 @@ fn spawn_server(listeners: Vec<TcpListener>, port: u16) -> thread::JoinHandle<()
                 return;
               }
 
-              if host.eq_ignore_ascii_case(&expected_local) || host.eq_ignore_ascii_case("localhost")
+              if host.eq_ignore_ascii_case(&expected_local)
+                || host.eq_ignore_ascii_case("localhost")
               {
                 // Deliberately do not respond; hold the connection open long enough for the client
                 // to hit its timeout so the fetcher is forced to retry with the `www.` hostname.
@@ -202,9 +209,7 @@ fn spawn_server(listeners: Vec<TcpListener>, port: u16) -> thread::JoinHandle<()
             }));
           }
           Err(ref e)
-            if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted =>
-          {
-          }
+            if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted => {}
           Err(_) => return,
         }
       }

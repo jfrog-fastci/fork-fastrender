@@ -1,4 +1,6 @@
-use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD};
+use base64::engine::general_purpose::{
+  STANDARD as BASE64_STANDARD, STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD,
+};
 use base64::Engine;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
@@ -96,13 +98,17 @@ pub(crate) fn verify_integrity(bytes: &[u8], integrity: &str) -> std::result::Re
     return Err("SRI integrity check failed (sha256 mismatch)".to_string());
   }
 
-  Err("SRI integrity metadata did not contain any supported sha256/sha384/sha512 digests".to_string())
+  Err(
+    "SRI integrity metadata did not contain any supported sha256/sha384/sha512 digests".to_string(),
+  )
 }
 
 #[cfg(test)]
 mod tests {
   use super::verify_integrity;
-  use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD};
+  use base64::engine::general_purpose::{
+    STANDARD as BASE64_STANDARD, STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD,
+  };
   use base64::Engine;
   use sha2::{Digest, Sha256, Sha384, Sha512};
 

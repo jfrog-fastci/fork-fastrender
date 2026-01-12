@@ -51,4 +51,3 @@ pub fn alloc_constructor_function(
 ) -> Result<GcObject, VmError> {
   alloc_native_function(vm, scope, realm, name, length, call, Some(construct))
 }
-

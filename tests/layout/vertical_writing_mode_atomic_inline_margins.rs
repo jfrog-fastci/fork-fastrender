@@ -60,4 +60,3 @@ fn vertical_writing_mode_inline_block_margin_affects_inline_advance() {
     second.bounds
   );
 }
-

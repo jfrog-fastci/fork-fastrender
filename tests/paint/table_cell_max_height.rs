@@ -34,16 +34,25 @@ fn table_cell_max_height_does_not_collapse_row_height() {
   // y=20 is already inside the second (even) row.
   let row1_mid = pixmap.pixel(150, 20).expect("row 1 pixel");
   assert_eq!(
-    (row1_mid.red(), row1_mid.green(), row1_mid.blue(), row1_mid.alpha()),
+    (
+      row1_mid.red(),
+      row1_mid.green(),
+      row1_mid.blue(),
+      row1_mid.alpha()
+    ),
     (241, 241, 241, 255),
     "expected pixel to still be inside the first (odd) table row"
   );
 
   let row2_mid = pixmap.pixel(150, 40).expect("row 2 pixel");
   assert_eq!(
-    (row2_mid.red(), row2_mid.green(), row2_mid.blue(), row2_mid.alpha()),
+    (
+      row2_mid.red(),
+      row2_mid.green(),
+      row2_mid.blue(),
+      row2_mid.alpha()
+    ),
     (255, 255, 255, 255),
     "expected pixel to be inside the second (even) table row"
   );
 }
-

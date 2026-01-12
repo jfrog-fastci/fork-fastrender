@@ -1,11 +1,11 @@
+use crate::r#ref::image_compare::compare_pngs;
+use crate::r#ref::CompareConfig;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::media::MediaType;
 use fastrender::{
   snapshot_pipeline, FastRender, FontConfig, PipelineSnapshot, Pixmap, RenderArtifactRequest,
   RenderDiagnostics, RenderOptions, ResourcePolicy,
 };
-use crate::r#ref::image_compare::compare_pngs;
-use crate::r#ref::CompareConfig;
 use rayon::ThreadPoolBuilder;
 use std::collections::{BTreeSet, HashMap};
 use std::env;

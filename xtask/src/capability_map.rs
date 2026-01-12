@@ -398,21 +398,66 @@ fn algorithm_items() -> Vec<CapabilityItem> {
       "specs/csswg-drafts/css-writing-modes-3/",
     ],
     &[
-      ("whitespace-collapsing", "Whitespace collapsing + segment boundaries (white-space)"),
-      ("line-break-opportunities", "Line breaking opportunities and rules (wrapping)"),
-      ("line-box-construction", "Line box construction (inline formatting, line boxes)"),
-      ("inline-fragmentation", "Inline fragmentation across lines/columns/pages"),
-      ("bidi-ordering", "Bidi reordering integration with line layout (UAX#9 integration)"),
-      ("baseline-alignment", "Baseline alignment and dominant baselines in lines"),
-      ("vertical-align", "vertical-align used values and alignment in line boxes"),
-      ("text-indent", "text-indent interaction with first line and inline content"),
-      ("text-align", "text-align / text-align-last / justification hooks"),
-      ("word-letter-spacing", "word-spacing / letter-spacing application in shaping + layout"),
-      ("inline-replaced", "Inline replaced elements sizing + alignment inside lines"),
-      ("first-letter-first-line", "::first-letter / ::first-line layout interactions"),
-      ("ruby-inline", "Ruby layout interactions with inline formatting"),
-      ("list-marker-inline", "List marker inline alignment/placement with IFC"),
-      ("overflow-ellipsis", "text-overflow / ellipsis shaping/layout integration (when supported)"),
+      (
+        "whitespace-collapsing",
+        "Whitespace collapsing + segment boundaries (white-space)",
+      ),
+      (
+        "line-break-opportunities",
+        "Line breaking opportunities and rules (wrapping)",
+      ),
+      (
+        "line-box-construction",
+        "Line box construction (inline formatting, line boxes)",
+      ),
+      (
+        "inline-fragmentation",
+        "Inline fragmentation across lines/columns/pages",
+      ),
+      (
+        "bidi-ordering",
+        "Bidi reordering integration with line layout (UAX#9 integration)",
+      ),
+      (
+        "baseline-alignment",
+        "Baseline alignment and dominant baselines in lines",
+      ),
+      (
+        "vertical-align",
+        "vertical-align used values and alignment in line boxes",
+      ),
+      (
+        "text-indent",
+        "text-indent interaction with first line and inline content",
+      ),
+      (
+        "text-align",
+        "text-align / text-align-last / justification hooks",
+      ),
+      (
+        "word-letter-spacing",
+        "word-spacing / letter-spacing application in shaping + layout",
+      ),
+      (
+        "inline-replaced",
+        "Inline replaced elements sizing + alignment inside lines",
+      ),
+      (
+        "first-letter-first-line",
+        "::first-letter / ::first-line layout interactions",
+      ),
+      (
+        "ruby-inline",
+        "Ruby layout interactions with inline formatting",
+      ),
+      (
+        "list-marker-inline",
+        "List marker inline alignment/placement with IFC",
+      ),
+      (
+        "overflow-ellipsis",
+        "text-overflow / ellipsis shaping/layout integration (when supported)",
+      ),
     ],
   ));
 
@@ -420,14 +465,32 @@ fn algorithm_items() -> Vec<CapabilityItem> {
   out.extend(alg_group(
     "floats",
     PriorityTier::P0,
-    &["specs/csswg-drafts/css2/Overview.bs", "specs/csswg-drafts/css-shapes-1/"],
     &[
-      ("float-placement", "Float placement algorithm (left/right floats)"),
-      ("float-intrusion", "Float intrusion/avoidance into line boxes"),
+      "specs/csswg-drafts/css2/Overview.bs",
+      "specs/csswg-drafts/css-shapes-1/",
+    ],
+    &[
+      (
+        "float-placement",
+        "Float placement algorithm (left/right floats)",
+      ),
+      (
+        "float-intrusion",
+        "Float intrusion/avoidance into line boxes",
+      ),
       ("clearance", "clear property + clearance calculation"),
-      ("float-containing-blocks", "Containing block interactions for floats (percent bases)"),
-      ("float-fragmentation", "Float behavior across fragmentation (columns/pages)"),
-      ("shape-outside", "shape-outside interaction with line wrapping (if/when supported)"),
+      (
+        "float-containing-blocks",
+        "Containing block interactions for floats (percent bases)",
+      ),
+      (
+        "float-fragmentation",
+        "Float behavior across fragmentation (columns/pages)",
+      ),
+      (
+        "shape-outside",
+        "shape-outside interaction with line wrapping (if/when supported)",
+      ),
     ],
   ));
 
@@ -441,13 +504,28 @@ fn algorithm_items() -> Vec<CapabilityItem> {
       "specs/csswg-drafts/css-sizing-3/",
     ],
     &[
-      ("block-width", "Block width computation (auto margins, shrink-to-fit cases)"),
+      (
+        "block-width",
+        "Block width computation (auto margins, shrink-to-fit cases)",
+      ),
       ("min-max", "min/max width/height constraint application"),
-      ("percentage-resolution", "Percentage resolution rules and percentage bases"),
-      ("margin-collapsing", "Margin collapsing (block formatting model)"),
-      ("bfc-establishment", "BFC establishment conditions (overflow, floats, etc.)"),
+      (
+        "percentage-resolution",
+        "Percentage resolution rules and percentage bases",
+      ),
+      (
+        "margin-collapsing",
+        "Margin collapsing (block formatting model)",
+      ),
+      (
+        "bfc-establishment",
+        "BFC establishment conditions (overflow, floats, etc.)",
+      ),
       ("clearance-bfc", "Clearance and BFC interactions"),
-      ("overflow-clipping", "Overflow clipping vs layout size (scroll containers)"),
+      (
+        "overflow-clipping",
+        "Overflow clipping vs layout size (scroll containers)",
+      ),
     ],
   ));
 
@@ -455,14 +533,35 @@ fn algorithm_items() -> Vec<CapabilityItem> {
   out.extend(alg_group(
     "positioning",
     PriorityTier::P0,
-    &["specs/csswg-drafts/css-position-3/", "specs/csswg-drafts/css2/Overview.bs"],
     &[
-      ("containing-block", "Containing block determination rules (static/relative/abs/fixed)"),
-      ("static-position", "Static position calculation (abspos static pos)"),
-      ("abspos-sizing", "Absolute positioning sizing algorithm (used values)"),
-      ("abspos-position", "Absolute positioning offset resolution (top/right/bottom/left)"),
-      ("fixed-position", "Fixed positioning relative to viewport / pages"),
-      ("z-index-stacking", "z-index + positioned stacking context creation"),
+      "specs/csswg-drafts/css-position-3/",
+      "specs/csswg-drafts/css2/Overview.bs",
+    ],
+    &[
+      (
+        "containing-block",
+        "Containing block determination rules (static/relative/abs/fixed)",
+      ),
+      (
+        "static-position",
+        "Static position calculation (abspos static pos)",
+      ),
+      (
+        "abspos-sizing",
+        "Absolute positioning sizing algorithm (used values)",
+      ),
+      (
+        "abspos-position",
+        "Absolute positioning offset resolution (top/right/bottom/left)",
+      ),
+      (
+        "fixed-position",
+        "Fixed positioning relative to viewport / pages",
+      ),
+      (
+        "z-index-stacking",
+        "z-index + positioned stacking context creation",
+      ),
     ],
   ));
 
@@ -472,15 +571,39 @@ fn algorithm_items() -> Vec<CapabilityItem> {
     PriorityTier::P0,
     &["specs/csswg-drafts/css-flexbox-1/Overview.bs"],
     &[
-      ("available-space", "Determine available main/cross space and definite sizes"),
-      ("flex-base-size", "Flex base size + hypothetical main size computation"),
+      (
+        "available-space",
+        "Determine available main/cross space and definite sizes",
+      ),
+      (
+        "flex-base-size",
+        "Flex base size + hypothetical main size computation",
+      ),
       ("line-collection", "Collect items into flex lines"),
-      ("resolve-flexible-lengths", "Resolve flexible lengths algorithm"),
-      ("cross-size", "Determine cross sizes (hypothetical, stretched, final)"),
-      ("alignment", "justify-content / align-items / align-content resolution"),
-      ("min-size-auto", "auto min-size behavior and intrinsic constraints"),
-      ("baseline-alignment", "Baseline alignment in flex containers"),
-      ("abspos-in-flex", "Abspos items in flex containers (static position)"),
+      (
+        "resolve-flexible-lengths",
+        "Resolve flexible lengths algorithm",
+      ),
+      (
+        "cross-size",
+        "Determine cross sizes (hypothetical, stretched, final)",
+      ),
+      (
+        "alignment",
+        "justify-content / align-items / align-content resolution",
+      ),
+      (
+        "min-size-auto",
+        "auto min-size behavior and intrinsic constraints",
+      ),
+      (
+        "baseline-alignment",
+        "Baseline alignment in flex containers",
+      ),
+      (
+        "abspos-in-flex",
+        "Abspos items in flex containers (static position)",
+      ),
     ],
   ));
 
@@ -488,11 +611,17 @@ fn algorithm_items() -> Vec<CapabilityItem> {
   out.extend(alg_group(
     "grid",
     PriorityTier::P1,
-    &["specs/csswg-drafts/css-grid-1/Overview.bs", "specs/csswg-drafts/css-grid-2/"],
+    &[
+      "specs/csswg-drafts/css-grid-1/Overview.bs",
+      "specs/csswg-drafts/css-grid-2/",
+    ],
     &[
       ("track-sizing", "Grid track sizing algorithm"),
       ("auto-placement", "Grid auto-placement algorithm"),
-      ("intrinsic-contributions", "Intrinsic size contributions in grid"),
+      (
+        "intrinsic-contributions",
+        "Intrinsic size contributions in grid",
+      ),
       ("alignment", "Grid alignment and gutters (gap)"),
       ("abspos-in-grid", "Abspos items in grid containers"),
       ("subgrid", "Subgrid behavior (when supported)"),
@@ -503,14 +632,29 @@ fn algorithm_items() -> Vec<CapabilityItem> {
   out.extend(alg_group(
     "tables",
     PriorityTier::P0,
-    &["specs/csswg-drafts/css2/Overview.bs", "specs/csswg-drafts/css-tables-3/"],
     &[
-      ("anonymous-table-objects", "Anonymous table object generation rules"),
+      "specs/csswg-drafts/css2/Overview.bs",
+      "specs/csswg-drafts/css-tables-3/",
+    ],
+    &[
+      (
+        "anonymous-table-objects",
+        "Anonymous table object generation rules",
+      ),
       ("fixed-layout", "Fixed table layout algorithm"),
       ("auto-layout", "Auto table layout algorithm"),
-      ("col-width-distribution", "Column width distribution (spans, percentages, min/max)"),
-      ("row-height-distribution", "Row height distribution (rowspans, baselines)"),
-      ("border-collapse", "Border-collapsing conflict resolution and geometry"),
+      (
+        "col-width-distribution",
+        "Column width distribution (spans, percentages, min/max)",
+      ),
+      (
+        "row-height-distribution",
+        "Row height distribution (rowspans, baselines)",
+      ),
+      (
+        "border-collapse",
+        "Border-collapsing conflict resolution and geometry",
+      ),
       ("caption-placement", "Caption placement and sizing"),
     ],
   ));
@@ -526,14 +670,35 @@ fn algorithm_items() -> Vec<CapabilityItem> {
       "specs/csswg-drafts/css-transforms-1/",
     ],
     &[
-      ("stacking-contexts", "Stacking context creation + painting order"),
-      ("background-paint", "Background painting (color/images positioning/tiling)"),
-      ("border-paint", "Border painting (styles, radius, border-image)"),
+      (
+        "stacking-contexts",
+        "Stacking context creation + painting order",
+      ),
+      (
+        "background-paint",
+        "Background painting (color/images positioning/tiling)",
+      ),
+      (
+        "border-paint",
+        "Border painting (styles, radius, border-image)",
+      ),
       ("outline-paint", "Outline painting (ordering vs borders)"),
-      ("box-shadow", "Box-shadow painting order and blur/spread geometry"),
-      ("overflow-clip", "Overflow clipping and border-radius clip interactions"),
-      ("opacity-compositing", "Opacity compositing and stacking interactions"),
-      ("transforms", "Transform application order and containing block effects"),
+      (
+        "box-shadow",
+        "Box-shadow painting order and blur/spread geometry",
+      ),
+      (
+        "overflow-clip",
+        "Overflow clipping and border-radius clip interactions",
+      ),
+      (
+        "opacity-compositing",
+        "Opacity compositing and stacking interactions",
+      ),
+      (
+        "transforms",
+        "Transform application order and containing block effects",
+      ),
     ],
   ));
 
@@ -541,12 +706,24 @@ fn algorithm_items() -> Vec<CapabilityItem> {
   out.extend(alg_group(
     "replaced",
     PriorityTier::P0,
-    &["specs/csswg-drafts/css2/Overview.bs", "specs/csswg-drafts/css-images-4/"],
     &[
-      ("intrinsic-size", "Intrinsic size determination (images/SVG)"),
-      ("replaced-min-max", "Replaced min/max constraints with intrinsic sizes"),
+      "specs/csswg-drafts/css2/Overview.bs",
+      "specs/csswg-drafts/css-images-4/",
+    ],
+    &[
+      (
+        "intrinsic-size",
+        "Intrinsic size determination (images/SVG)",
+      ),
+      (
+        "replaced-min-max",
+        "Replaced min/max constraints with intrinsic sizes",
+      ),
       ("object-fit", "object-fit sizing algorithm"),
-      ("object-position", "object-position alignment inside replaced content box"),
+      (
+        "object-position",
+        "object-position alignment inside replaced content box",
+      ),
       ("aspect-ratio", "Aspect-ratio interaction with auto sizes"),
     ],
   ));
@@ -557,11 +734,23 @@ fn algorithm_items() -> Vec<CapabilityItem> {
     PriorityTier::P0,
     &["specs/whatwg-html/source", "specs/csswg-drafts/css-ui-4/"],
     &[
-      ("ua-default-styles", "UA default style rules for controls (baseline web expectations)"),
-      ("control-intrinsic-size", "Intrinsic sizes for controls and replaced-box mapping"),
+      (
+        "ua-default-styles",
+        "UA default style rules for controls (baseline web expectations)",
+      ),
+      (
+        "control-intrinsic-size",
+        "Intrinsic sizes for controls and replaced-box mapping",
+      ),
       ("control-baselines", "Baselines for inline form controls"),
-      ("appearance-none", "appearance:none and fallback rendering model"),
-      ("select-option-rendering", "<select>/<option> rendering model subset (static)"),
+      (
+        "appearance-none",
+        "appearance:none and fallback rendering model",
+      ),
+      (
+        "select-option-rendering",
+        "<select>/<option> rendering model subset (static)",
+      ),
     ],
   ));
 
@@ -592,21 +781,44 @@ fn alg_group(
 fn html_items() -> Vec<CapabilityItem> {
   // Intentionally coarse: the goal is breadth reminders. Algorithms live in `docs/conformance.md`.
   let p0 = [
-    "html", "head", "body", "base", "meta", "link", "style", "title",
-    "div", "span", "p", "a", "img", "picture", "source",
-    "ul", "ol", "li", "dl", "dt", "dd",
-    "h1", "h2", "h3", "h4", "h5", "h6",
-    "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col",
-    "form", "label", "input", "button", "select", "option", "optgroup", "textarea", "fieldset", "legend",
+    "html", "head", "body", "base", "meta", "link", "style", "title", "div", "span", "p", "a",
+    "img", "picture", "source", "ul", "ol", "li", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "h5",
+    "h6", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col",
+    "form", "label", "input", "button", "select", "option", "optgroup", "textarea", "fieldset",
+    "legend",
   ];
   let p1 = [
-    "main", "header", "footer", "nav", "section", "article", "aside",
-    "strong", "em", "small", "br", "hr", "pre", "code",
-    "blockquote", "q", "cite", "abbr", "time",
-    "svg", "math",
-    "iframe", "object", "embed",
-    "video", "audio", "track", "canvas",
-    "details", "summary", "dialog",
+    "main",
+    "header",
+    "footer",
+    "nav",
+    "section",
+    "article",
+    "aside",
+    "strong",
+    "em",
+    "small",
+    "br",
+    "hr",
+    "pre",
+    "code",
+    "blockquote",
+    "q",
+    "cite",
+    "abbr",
+    "time",
+    "svg",
+    "math",
+    "iframe",
+    "object",
+    "embed",
+    "video",
+    "audio",
+    "track",
+    "canvas",
+    "details",
+    "summary",
+    "dialog",
     "template",
   ];
 
@@ -651,14 +863,14 @@ fn csswg_mined_algorithm_items(repo_root: &Path) -> Result<Vec<CapabilityItem>> 
 
   // Note: Rust's regex crate does not support backreferences, so we match any closing `</hN>`.
   // The capture is still useful for `level` and the match is non-greedy.
-  let heading_re = Regex::new(
-    r#"(?s)<h([1-6])[^>]*\bid=['"]([^'"]+)['"][^>]*>(.*?)</h[1-6]>"#,
-  )
-  .context("compile heading regex")?;
+  let heading_re = Regex::new(r#"(?s)<h([1-6])[^>]*\bid=['"]([^'"]+)['"][^>]*>(.*?)</h[1-6]>"#)
+    .context("compile heading regex")?;
   let strip_tags_re = Regex::new(r#"(?s)<[^>]+>"#).context("compile strip-tags regex")?;
 
   let mut out = Vec::new();
-  for entry in fs::read_dir(&csswg_root).with_context(|| format!("read {}", csswg_root.display()))? {
+  for entry in
+    fs::read_dir(&csswg_root).with_context(|| format!("read {}", csswg_root.display()))?
+  {
     let entry = match entry {
       Ok(e) => e,
       Err(_) => continue,
@@ -683,20 +895,24 @@ fn csswg_mined_algorithm_items(repo_root: &Path) -> Result<Vec<CapabilityItem>> 
     let (spec_path, contents) = if overview_bs.is_file() {
       let contents = fs::read_to_string(&overview_bs)
         .with_context(|| format!("read {}", overview_bs.display()))?;
-      (format!("specs/csswg-drafts/{}/Overview.bs", module), contents)
+      (
+        format!("specs/csswg-drafts/{}/Overview.bs", module),
+        contents,
+      )
     } else if overview_html.is_file() {
       let contents = fs::read_to_string(&overview_html)
         .with_context(|| format!("read {}", overview_html.display()))?;
-      (format!("specs/csswg-drafts/{}/Overview.html", module), contents)
+      (
+        format!("specs/csswg-drafts/{}/Overview.html", module),
+        contents,
+      )
     } else {
       continue;
     };
 
     let headings = extract_headings(&contents, &heading_re, &strip_tags_re);
     out.extend(mined_algorithm_items_for_headings(
-      &module,
-      &spec_path,
-      &headings,
+      &module, &spec_path, &headings,
     ));
   }
 
@@ -711,10 +927,8 @@ fn html_mined_algorithm_items(repo_root: &Path) -> Result<Vec<CapabilityItem>> {
 
   // WHATWG HTML `source` is large; keep mining cheap by only extracting headings and selecting
   // those that look algorithmic.
-  let heading_re = Regex::new(
-    r#"(?s)<h([1-6])[^>]*\bid=['"]([^'"]+)['"][^>]*>(.*?)</h[1-6]>"#,
-  )
-  .context("compile heading regex")?;
+  let heading_re = Regex::new(r#"(?s)<h([1-6])[^>]*\bid=['"]([^'"]+)['"][^>]*>(.*?)</h[1-6]>"#)
+    .context("compile heading regex")?;
   let strip_tags_re = Regex::new(r#"(?s)<[^>]+>"#).context("compile strip-tags regex")?;
   let contents =
     fs::read_to_string(&html_source).with_context(|| format!("read {}", html_source.display()))?;
@@ -734,7 +948,12 @@ fn extract_headings(contents: &str, heading_re: &Regex, strip_tags_re: &Regex) -
       Some(v) => v,
       None => continue,
     };
-    let id = caps.get(2).map(|m| m.as_str()).unwrap_or("").trim().to_string();
+    let id = caps
+      .get(2)
+      .map(|m| m.as_str())
+      .unwrap_or("")
+      .trim()
+      .to_string();
     if id.is_empty() {
       continue;
     }

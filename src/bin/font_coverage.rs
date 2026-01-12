@@ -203,11 +203,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let html = String::from_utf8_lossy(&data);
     collect_codepoints_from_html(&html)?
   } else {
-    return Err(std::io::Error::new(
-      std::io::ErrorKind::InvalidInput,
-      "expected either --text or --html-file",
-    )
-    .into());
+    return Err(
+      std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "expected either --text or --html-file",
+      )
+      .into(),
+    );
   };
 
   let missing = find_missing_codepoints(&db, &codepoints);

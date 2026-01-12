@@ -41,13 +41,12 @@ pub fn build_type_context(world: &ResolvedWebIdlWorld) -> Result<TypeContext> {
   for dict in world.dictionaries.values() {
     let mut members = Vec::<DictionaryMemberSchema>::with_capacity(dict.members.len());
     for member in &dict.members {
-      let schema =
-        parse_dictionary_member_schema(world, &ctx, member).with_context(|| {
-          format!(
-            "parse dictionary member in `{}`: `{}`",
-            dict.name, member.raw
-          )
-        })?;
+      let schema = parse_dictionary_member_schema(world, &ctx, member).with_context(|| {
+        format!(
+          "parse dictionary member in `{}`: `{}`",
+          dict.name, member.raw
+        )
+      })?;
       members.push(schema);
     }
 
@@ -71,10 +70,9 @@ pub fn parse_type_with_world(
   input: &str,
   extra_annotations: &[ExtendedAttribute],
 ) -> Result<IdlType> {
-  let mut ty =
-    parse_idl_type_complete(input).map_err(|e| anyhow::anyhow!("{e}")).with_context(|| {
-      format!("parse WebIDL type `{}`", input.trim())
-    })?;
+  let mut ty = parse_idl_type_complete(input)
+    .map_err(|e| anyhow::anyhow!("{e}"))
+    .with_context(|| format!("parse WebIDL type `{}`", input.trim()))?;
 
   if !extra_annotations.is_empty() {
     ty = merge_extra_annotations(ty, extra_annotations);
@@ -131,7 +129,10 @@ pub fn parse_dictionary_member_schema(
     rest = &rest[1..];
     rest = super::strip_leading_ws_and_comments(rest).trim_start();
     if rest.is_empty() {
-      bail!("dictionary member has `=` but no default value: `{}`", member.raw);
+      bail!(
+        "dictionary member has `=` but no default value: `{}`",
+        member.raw
+      );
     }
     let dv = parse_default_value(rest)
       .map_err(|e| anyhow::anyhow!("{e}"))
@@ -211,7 +212,10 @@ pub(crate) fn merge_extra_annotations(ty: IdlType, extra: &[ExtendedAttribute]) 
   if extra.is_empty() {
     return ty;
   }
-  let mut annotations = extra.iter().map(ext_attr_to_type_annotation).collect::<Vec<_>>();
+  let mut annotations = extra
+    .iter()
+    .map(ext_attr_to_type_annotation)
+    .collect::<Vec<_>>();
 
   match ty {
     IdlType::Annotated {
@@ -262,11 +266,7 @@ pub fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlTyp
       .with_context(|| format!("unknown typedef `{name}`"))?;
 
     if !state.in_progress.insert(name.to_string()) {
-      let start = state
-        .stack
-        .iter()
-        .position(|n| n == name)
-        .unwrap_or(0);
+      let start = state.stack.iter().position(|n| n == name).unwrap_or(0);
       let mut cycle: Vec<String> = state.stack[start..].to_vec();
       cycle.push(name.to_string());
       bail!("typedef cycle detected: {}", cycle.join(" -> "));
@@ -322,8 +322,8 @@ pub fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlTyp
 #[cfg(test)]
 mod tests {
   use super::*;
-  use webidl_ir::DefaultValue;
   use crate::webidl::overload_ir;
+  use webidl_ir::DefaultValue;
 
   fn test_world() -> ResolvedWebIdlWorld {
     let idl = r#"

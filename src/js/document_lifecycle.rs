@@ -59,7 +59,9 @@ pub trait DocumentLifecycleHost {
 
     // Queue DOMContentLoaded/load tasks (or mark parsing as complete so they can be queued once any
     // pending deferred scripts have executed).
-    self.document_lifecycle_mut().parsing_completed(event_loop)?;
+    self
+      .document_lifecycle_mut()
+      .parsing_completed(event_loop)?;
 
     // If parsing completion is signalled from outside an event-loop task turn, perform a microtask
     // checkpoint immediately. This matches the HTML expectation that microtasks queued during the
@@ -256,7 +258,9 @@ impl DocumentLifecycle {
       // Dispatch DOMContentLoaded within the event loop runtime context, then decide whether `load`
       // can be queued (after listeners have had a chance to register load blockers).
       fire_dom_content_loaded(host, event_loop)?;
-      host.document_lifecycle_mut().maybe_queue_load_task(event_loop)?;
+      host
+        .document_lifecycle_mut()
+        .maybe_queue_load_task(event_loop)?;
       Ok(())
     })?;
 
@@ -396,9 +400,11 @@ fn fire_ready_state_change<Host: DocumentLifecycleHost + 'static>(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::RunLimits;
   use crate::js::DomJsRealm;
-  use crate::web::events::{dispatch_event, AddEventListenerOptions, DomError, EventListenerInvoker, ListenerId};
+  use crate::js::RunLimits;
+  use crate::web::events::{
+    dispatch_event, AddEventListenerOptions, DomError, EventListenerInvoker, ListenerId,
+  };
   use selectors::context::QuirksMode;
   use std::cell::RefCell;
   use std::collections::HashMap;
@@ -427,7 +433,11 @@ mod tests {
   }
 
   impl EventListenerInvoker for TestInvoker {
-    fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> std::result::Result<(), DomError> {
+    fn invoke(
+      &mut self,
+      listener_id: ListenerId,
+      event: &mut Event,
+    ) -> std::result::Result<(), DomError> {
       let cb = self
         .callbacks
         .get_mut(&listener_id)
@@ -1026,10 +1036,7 @@ mod tests {
       let onload_key = pk(rt, "onload");
       assert_eq!(rt.get(window, onload_key).unwrap(), Value::Null);
       let onrs_key = pk(rt, "onreadystatechange");
-      assert_eq!(
-        rt.get(document, onrs_key).unwrap(),
-        Value::Null
-      );
+      assert_eq!(rt.get(document, onrs_key).unwrap(), Value::Null);
     }
 
     // document.addEventListener("readystatechange", ...)
@@ -1165,14 +1172,20 @@ mod tests {
 
     assert_eq!(
       &*log.borrow(),
-      &vec!["rs:interactive".to_string(), "rsprop:interactive".to_string()]
+      &vec![
+        "rs:interactive".to_string(),
+        "rsprop:interactive".to_string()
+      ]
     );
 
     // Barrier task.
     assert!(event_loop.run_next_task(&mut host)?);
     assert_eq!(
       &*log.borrow(),
-      &vec!["rs:interactive".to_string(), "rsprop:interactive".to_string()]
+      &vec![
+        "rs:interactive".to_string(),
+        "rsprop:interactive".to_string()
+      ]
     );
 
     // DOMContentLoaded task.

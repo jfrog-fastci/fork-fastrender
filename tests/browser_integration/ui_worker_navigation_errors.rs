@@ -70,7 +70,10 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
     };
 
     match msg {
-      WorkerToUi::NavigationStarted { tab_id: msg_tab, url } if msg_tab == tab_id => {
+      WorkerToUi::NavigationStarted {
+        tab_id: msg_tab,
+        url,
+      } if msg_tab == tab_id => {
         assert_eq!(url, missing_url);
         saw_started = true;
       }
@@ -90,25 +93,37 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
         error,
         ..
       } if msg_tab == tab_id => {
-        assert!(saw_started, "expected NavigationStarted before NavigationFailed");
-        assert!(saw_loading_true, "expected LoadingState(true) before NavigationFailed");
+        assert!(
+          saw_started,
+          "expected NavigationStarted before NavigationFailed"
+        );
+        assert!(
+          saw_loading_true,
+          "expected LoadingState(true) before NavigationFailed"
+        );
         assert_eq!(url, missing_url);
         assert!(!error.is_empty(), "expected non-empty error string");
         saw_failed = true;
       }
-      WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+      WorkerToUi::FrameReady {
+        tab_id: msg_tab, ..
+      } if msg_tab == tab_id => {
         // The worker should render an `about:error` fallback for missing files.
         assert!(saw_failed, "expected NavigationFailed before FrameReady");
         saw_error_frame = true;
       }
-      WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+      WorkerToUi::ScrollStateUpdated {
+        tab_id: msg_tab, ..
+      } if msg_tab == tab_id => {
         assert!(
           saw_failed,
           "expected NavigationFailed before ScrollStateUpdated for about:error fallback"
         );
         saw_scroll_update = true;
       }
-      WorkerToUi::NavigationCommitted { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+      WorkerToUi::NavigationCommitted {
+        tab_id: msg_tab, ..
+      } if msg_tab == tab_id => {
         panic!("missing-file navigation should not commit");
       }
       _ => {}
@@ -136,7 +151,11 @@ fn unknown_about_page_still_commits_and_renders_error_page() {
 
   let url = "about:does-not-exist".to_string();
   ui_tx
-    .send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send navigate");
 
   let deadline = Instant::now() + DEFAULT_TIMEOUT;
@@ -159,7 +178,9 @@ fn unknown_about_page_still_commits_and_renders_error_page() {
         assert_eq!(committed, url);
         saw_commit = true;
       }
-      WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+      WorkerToUi::FrameReady {
+        tab_id: msg_tab, ..
+      } if msg_tab == tab_id => {
         saw_frame = true;
       }
       _ => {}
@@ -179,8 +200,8 @@ fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
     .expect("file URL")
     .to_string();
 
-  let worker = spawn_ui_worker("fastr-ui-worker-missing-file-history-test")
-    .expect("spawn ui worker");
+  let worker =
+    spawn_ui_worker("fastr-ui-worker-missing-file-history-test").expect("spawn ui worker");
 
   let tab_id = TabId::new();
   worker
@@ -255,7 +276,9 @@ fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
         );
         saw_frame = true;
       }
-      WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+      WorkerToUi::ScrollStateUpdated {
+        tab_id: msg_tab, ..
+      } if msg_tab == tab_id => {
         if saw_failed {
           saw_scroll = true;
         }
@@ -278,7 +301,10 @@ fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
   }
 
   assert!(saw_failed, "expected NavigationFailed for missing file");
-  assert!(saw_frame, "expected about:error fallback FrameReady after failure");
+  assert!(
+    saw_frame,
+    "expected about:error fallback FrameReady after failure"
+  );
   assert!(
     saw_scroll,
     "expected ScrollStateUpdated for the about:error fallback frame"
@@ -323,12 +349,18 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
     };
 
     match msg {
-      WorkerToUi::NavigationStarted { tab_id: msg_tab, url } if msg_tab == tab_id => {
+      WorkerToUi::NavigationStarted {
+        tab_id: msg_tab,
+        url,
+      } if msg_tab == tab_id => {
         if url == missing_url {
           saw_started = true;
         }
       }
-      WorkerToUi::LoadingState { tab_id: msg_tab, loading } if msg_tab == tab_id => {
+      WorkerToUi::LoadingState {
+        tab_id: msg_tab,
+        loading,
+      } if msg_tab == tab_id => {
         if loading {
           saw_loading_true = true;
         } else {
@@ -341,13 +373,22 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
         error,
         ..
       } if msg_tab == tab_id => {
-        assert!(saw_started, "expected NavigationStarted before NavigationFailed");
-        assert!(saw_loading_true, "expected LoadingState(true) before NavigationFailed");
+        assert!(
+          saw_started,
+          "expected NavigationStarted before NavigationFailed"
+        );
+        assert!(
+          saw_loading_true,
+          "expected LoadingState(true) before NavigationFailed"
+        );
         assert_eq!(url, missing_url);
         assert!(!error.is_empty(), "expected non-empty error string");
         saw_failed = true;
       }
-      WorkerToUi::FrameReady { tab_id: msg_tab, frame } if msg_tab == tab_id => {
+      WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame,
+      } if msg_tab == tab_id => {
         assert!(saw_failed, "expected NavigationFailed before FrameReady");
         assert!(
           frame.pixmap.width() > 0 && frame.pixmap.height() > 0,
@@ -355,12 +396,16 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
         );
         saw_frame = true;
       }
-      WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+      WorkerToUi::ScrollStateUpdated {
+        tab_id: msg_tab, ..
+      } if msg_tab == tab_id => {
         if saw_failed {
           saw_scroll_update = true;
         }
       }
-      WorkerToUi::NavigationCommitted { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+      WorkerToUi::NavigationCommitted {
+        tab_id: msg_tab, ..
+      } if msg_tab == tab_id => {
         panic!("missing-file navigation should not commit");
       }
       _ => {}
@@ -407,10 +452,15 @@ fn model_worker_unknown_about_page_still_commits_and_renders_error_page() {
         assert_eq!(committed, url);
         saw_commit = true;
       }
-      WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+      WorkerToUi::FrameReady {
+        tab_id: msg_tab, ..
+      } if msg_tab == tab_id => {
         saw_frame = true;
       }
-      WorkerToUi::LoadingState { tab_id: msg_tab, loading } if msg_tab == tab_id && !loading => {
+      WorkerToUi::LoadingState {
+        tab_id: msg_tab,
+        loading,
+      } if msg_tab == tab_id && !loading => {
         saw_loading_false = true;
       }
       WorkerToUi::NavigationFailed {

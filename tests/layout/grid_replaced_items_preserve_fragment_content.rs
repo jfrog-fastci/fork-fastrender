@@ -58,9 +58,11 @@ fn grid_keeps_replaced_fragment_content_for_leaf_items() {
   assert!(
     matches!(
       fragment.children[0].content,
-      FragmentContent::Replaced { box_id: Some(10), .. }
+      FragmentContent::Replaced {
+        box_id: Some(10),
+        ..
+      }
     ),
     "expected grid leaf replaced element to preserve FragmentContent::Replaced"
   );
 }
-

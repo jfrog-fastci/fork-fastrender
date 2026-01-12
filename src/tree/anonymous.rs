@@ -42,8 +42,8 @@
 
 use crate::error::{RenderStage, Result};
 use crate::render_control::active_deadline;
-use crate::style::display::FormattingContextType;
 use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
 use crate::style::float::{Clear, Float};
 use crate::style::position::Position;
 use crate::style::types::WhiteSpace;
@@ -80,7 +80,12 @@ enum InlineSplitOutcome {
 
 impl AnonymousBoxCreator {
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+    value.trim_matches(|c: char| {
+      matches!(
+        c,
+        '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+      )
+    })
   }
 
   /// Fixes up a box tree by inserting anonymous boxes
@@ -488,7 +493,10 @@ impl AnonymousBoxCreator {
 
     loop {
       let Some(top) = stack.last_mut() else {
-        debug_assert!(false, "split stack should always return from within the loop");
+        debug_assert!(
+          false,
+          "split stack should always return from within the loop"
+        );
         return InlineSplitOutcome::Split(Vec::new());
       };
 
@@ -814,7 +822,10 @@ impl AnonymousBoxCreator {
           {
             inline_run.pop();
           }
-          if matches!(inline_run.last().map(|n| &n.box_type), Some(BoxType::LineBreak(_))) {
+          if matches!(
+            inline_run.last().map(|n| &n.box_type),
+            Some(BoxType::LineBreak(_))
+          ) {
             let has_non_break_content = inline_run.iter().any(|node| {
               !matches!(node.box_type, BoxType::LineBreak(_))
                 && !Self::is_collapsible_whitespace_text_node(node)
@@ -1236,7 +1247,11 @@ mod tests {
     let style = default_style();
     let text = BoxNode::new_text(style.clone(), "Footnote".to_string());
     let block = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
-    let body = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![text, block]);
+    let body = BoxNode::new_block(
+      style.clone(),
+      FormattingContextType::Block,
+      vec![text, block],
+    );
 
     let mut call = BoxNode::new_inline(style.clone(), vec![]);
     call.footnote_body = Some(Box::new(body));
@@ -1332,7 +1347,8 @@ mod tests {
     let parent_style = Arc::new(parent_style);
 
     let text = BoxNode::new_text(default_style(), "Platform".to_string());
-    let inline_flex = BoxNode::new_inline_block(parent_style, FormattingContextType::Flex, vec![text]);
+    let inline_flex =
+      BoxNode::new_inline_block(parent_style, FormattingContextType::Flex, vec![text]);
     let fixed = AnonymousBoxCreator::fixup_tree(inline_flex).expect("anonymous fixup");
 
     let wrapper = fixed.children.first().expect("wrapped text");
@@ -1521,8 +1537,11 @@ mod tests {
     let block = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
     let inline2 = BoxNode::new_inline(default_style(), vec![]);
 
-    let container =
-      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![inline1, block, inline2]);
+    let container = BoxNode::new_block(
+      grid_style,
+      FormattingContextType::Grid,
+      vec![inline1, block, inline2],
+    );
 
     let fixed = fixup_tree(container);
     assert_eq!(fixed.children.len(), 3);
@@ -1596,27 +1615,45 @@ mod tests {
     let mut float_style_1 = ComputedStyle::default();
     float_style_1.display = Display::Block;
     float_style_1.float = Float::Left;
-    let float1 = BoxNode::new_block(Arc::new(float_style_1), FormattingContextType::Block, vec![]);
+    let float1 = BoxNode::new_block(
+      Arc::new(float_style_1),
+      FormattingContextType::Block,
+      vec![],
+    );
 
     let whitespace2 = BoxNode::new_text(default_style(), "\n  ".to_string());
 
     let mut float_style_2 = ComputedStyle::default();
     float_style_2.display = Display::Block;
     float_style_2.float = Float::Right;
-    let float2 = BoxNode::new_block(Arc::new(float_style_2), FormattingContextType::Block, vec![]);
+    let float2 = BoxNode::new_block(
+      Arc::new(float_style_2),
+      FormattingContextType::Block,
+      vec![],
+    );
 
     let whitespace3 = BoxNode::new_text(default_style(), " ".to_string());
 
     let mut clearer_style = ComputedStyle::default();
     clearer_style.display = Display::Block;
     clearer_style.clear = Clear::Both;
-    let clearer =
-      BoxNode::new_block(Arc::new(clearer_style), FormattingContextType::Block, vec![]);
+    let clearer = BoxNode::new_block(
+      Arc::new(clearer_style),
+      FormattingContextType::Block,
+      vec![],
+    );
 
     let container = BoxNode::new_block(
       default_style(),
       FormattingContextType::Block,
-      vec![whitespace1, float1, whitespace2, float2, whitespace3, clearer],
+      vec![
+        whitespace1,
+        float1,
+        whitespace2,
+        float2,
+        whitespace3,
+        clearer,
+      ],
     );
 
     let fixed = fixup_tree(container);
@@ -1926,7 +1963,10 @@ mod tests {
     assert!(wrapper.is_anonymous());
     assert_eq!(wrapper.style.display, Display::Inline);
     // Anonymous inline wrappers must not inherit non-inherited properties from the parent inline.
-    assert_eq!(wrapper.style.padding_top, crate::style::values::Length::px(0.0));
+    assert_eq!(
+      wrapper.style.padding_top,
+      crate::style::values::Length::px(0.0)
+    );
     assert_eq!(
       wrapper.style.border_bottom_width,
       crate::style::values::Length::px(0.0)
@@ -1945,11 +1985,8 @@ mod tests {
     let inline_block_style = Arc::new(inline_block_style);
 
     let text = BoxNode::new_text(default_style(), "Hello".to_string());
-    let inline_block = BoxNode::new_inline_block(
-      inline_block_style,
-      FormattingContextType::Block,
-      vec![text],
-    );
+    let inline_block =
+      BoxNode::new_inline_block(inline_block_style, FormattingContextType::Block, vec![text]);
     let root = BoxNode::new_block(
       default_style(),
       FormattingContextType::Block,

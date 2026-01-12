@@ -9,8 +9,8 @@ mod operator_dict;
 use crate::dom::{DomNode, DomNodeType, MATHML_NAMESPACE};
 use crate::geometry::{Point, Rect, Size};
 use crate::style::color::{Color, Rgba};
-use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::FontFeatureSetting;
+use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::FontWeight as CssFontWeight;
 use crate::style::ComputedStyle;
 use crate::text::font_db::{FontStretch, FontStyle, LoadedFont, ScaledMetrics};
@@ -762,8 +762,7 @@ impl MathStyle {
           break;
         }
         let prev_level = out.script_level.saturating_sub(1);
-        let scale_down =
-          Self::script_scale_down(constants, prev_level, out.script_size_multiplier);
+        let scale_down = Self::script_scale_down(constants, prev_level, out.script_size_multiplier);
         if scale_down > 0.0 {
           out.font_size = (out.font_size / scale_down).max(1.0);
         }
@@ -1029,13 +1028,18 @@ fn parse_math_space(raw: Option<&str>) -> Option<MathLengthOrKeyword> {
   }
 }
 
-const DEFAULT_TABLE_COLUMN_SPACING: MathLengthOrKeyword = MathLengthOrKeyword::Length(MathLength::Em(0.8));
-const DEFAULT_TABLE_ROW_SPACING: MathLengthOrKeyword = MathLengthOrKeyword::Length(MathLength::Em(0.2));
+const DEFAULT_TABLE_COLUMN_SPACING: MathLengthOrKeyword =
+  MathLengthOrKeyword::Length(MathLength::Em(0.8));
+const DEFAULT_TABLE_ROW_SPACING: MathLengthOrKeyword =
+  MathLengthOrKeyword::Length(MathLength::Em(0.2));
 
 const DEFAULT_TABLE_FRAME_SPACING_X: MathLength = MathLength::Em(0.4);
 const DEFAULT_TABLE_FRAME_SPACING_Y: MathLength = MathLength::Ex(0.5);
 
-fn parse_math_space_list(value: Option<&str>, default: MathLengthOrKeyword) -> Option<Vec<MathLengthOrKeyword>> {
+fn parse_math_space_list(
+  value: Option<&str>,
+  default: MathLengthOrKeyword,
+) -> Option<Vec<MathLengthOrKeyword>> {
   let raw = value?;
   let parsed: Vec<MathLengthOrKeyword> = raw
     .split(|c| c == ' ' || c == ',')
@@ -1077,9 +1081,14 @@ fn parse_table_line_list(value: Option<&str>) -> Option<Vec<TableLineStyle>> {
 
 fn parse_frame_spacing(value: Option<&str>) -> Option<(MathLength, MathLength)> {
   let raw = value?;
-  let mut parts = raw.split(|c| c == ' ' || c == ',').filter(|s| !s.is_empty());
+  let mut parts = raw
+    .split(|c| c == ' ' || c == ',')
+    .filter(|s| !s.is_empty());
   let first = parse_math_length(parts.next())?;
-  let second = parts.next().and_then(|v| parse_math_length(Some(v))).unwrap_or(first);
+  let second = parts
+    .next()
+    .and_then(|v| parse_math_length(Some(v)))
+    .unwrap_or(first);
   Some((first, second))
 }
 
@@ -1360,8 +1369,9 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
         }
         "none" => None,
         "mrow" => Some(MathNode::Row(parse_children(node))),
-        "mphantom" => wrap_row_or_single(parse_children(node))
-          .map(|child| MathNode::Phantom(Box::new(child))),
+        "mphantom" => {
+          wrap_row_or_single(parse_children(node)).map(|child| MathNode::Phantom(Box::new(child)))
+        }
         "mpadded" => wrap_row_or_single(parse_children(node)).map(|child| MathNode::Padded {
           child: Box::new(child),
           width: parse_mpadded_length(node.get_attribute_ref("width")),
@@ -1688,10 +1698,14 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
         "mtable" => {
           let table_row_aligns = parse_row_align_list(node.get_attribute_ref("rowalign"));
           let table_col_aligns = parse_column_align_list(node.get_attribute_ref("columnalign"));
-          let column_spacings =
-            parse_math_space_list(node.get_attribute_ref("columnspacing"), DEFAULT_TABLE_COLUMN_SPACING);
-          let row_spacings =
-            parse_math_space_list(node.get_attribute_ref("rowspacing"), DEFAULT_TABLE_ROW_SPACING);
+          let column_spacings = parse_math_space_list(
+            node.get_attribute_ref("columnspacing"),
+            DEFAULT_TABLE_COLUMN_SPACING,
+          );
+          let row_spacings = parse_math_space_list(
+            node.get_attribute_ref("rowspacing"),
+            DEFAULT_TABLE_ROW_SPACING,
+          );
           let column_lines = parse_table_line_list(node.get_attribute_ref("columnlines"));
           let row_lines = parse_table_line_list(node.get_attribute_ref("rowlines"));
           let frame = parse_table_line_style(node.get_attribute_ref("frame"));
@@ -3561,8 +3575,16 @@ impl MathLayoutContext {
       }
     };
 
-    let under_layout =
-      under.map(|n| layout_script(n, if under_is_accent { style } else { &script_style }));
+    let under_layout = under.map(|n| {
+      layout_script(
+        n,
+        if under_is_accent {
+          style
+        } else {
+          &script_style
+        },
+      )
+    });
     let over_layout =
       over.map(|n| layout_script(n, if over_is_accent { style } else { &script_style }));
     let over_gap = constants
@@ -3909,12 +3931,10 @@ impl MathLayoutContext {
             color: style.color,
           });
         }
-        MencloseNotation::Top => {
-          fragments.push(MathFragment::Rule {
-            rect: Rect::from_xywh(0.0, 0.0, width, stroke),
-            color: style.color,
-          })
-        }
+        MencloseNotation::Top => fragments.push(MathFragment::Rule {
+          rect: Rect::from_xywh(0.0, 0.0, width, stroke),
+          color: style.color,
+        }),
         MencloseNotation::Bottom => fragments.push(MathFragment::Rule {
           rect: Rect::from_xywh(0.0, height - stroke, width, stroke),
           color: style.color,
@@ -4625,20 +4645,24 @@ impl MathLayoutContext {
         style,
         base_style,
       ),
-      MathNode::Over {
+      MathNode::Over { base, over, accent } => self.layout_under_over(
         base,
-        over,
-        accent,
-      } => {
-        self.layout_under_over(base, None, Some((over.as_ref(), *accent)), style, base_style)
-      }
+        None,
+        Some((over.as_ref(), *accent)),
+        style,
+        base_style,
+      ),
       MathNode::Under {
         base,
         under,
         accentunder,
-      } => {
-        self.layout_under_over(base, Some((under.as_ref(), *accentunder)), None, style, base_style)
-      }
+      } => self.layout_under_over(
+        base,
+        Some((under.as_ref(), *accentunder)),
+        None,
+        style,
+        base_style,
+      ),
       MathNode::UnderOver {
         base,
         under,
@@ -4673,7 +4697,11 @@ impl MathLayoutContext {
           .annotations
           .trailing_glyph
           .as_ref()
-          .and_then(|glyph| self.font_ctx.get_scaled_metrics(&glyph.font, style.font_size))
+          .and_then(|glyph| {
+            self
+              .font_ctx
+              .get_scaled_metrics(&glyph.font, style.font_size)
+          })
           .unwrap_or_else(|| self.base_font_metrics(base_style, style.font_size));
 
         let resolve = |value: MathPaddedLength, base: f32| -> f32 {
@@ -4693,8 +4721,12 @@ impl MathLayoutContext {
         let voffset_px = voffset.map(|v| resolve(v, 0.0)).unwrap_or(0.0);
 
         let mut padded_width = width.map(|v| resolve(v, base_width)).unwrap_or(base_width);
-        let mut ascent = height.map(|v| resolve(v, base_ascent)).unwrap_or(base_ascent);
-        let mut descent = depth.map(|v| resolve(v, base_descent)).unwrap_or(base_descent);
+        let mut ascent = height
+          .map(|v| resolve(v, base_ascent))
+          .unwrap_or(base_ascent);
+        let mut descent = depth
+          .map(|v| resolve(v, base_descent))
+          .unwrap_or(base_descent);
 
         // `lspace` shifts the rendered content horizontally; when width is not explicitly set,
         // treat it as adding extra space on the left (matching common MathML usage where mpadded
@@ -4906,7 +4938,8 @@ mod tests {
     style.font_family = vec!["STIX Two Math".to_string()].into();
 
     let baseline = parse_math_from_html("<math><mi>a</mi></math>");
-    let with_lspace = parse_math_from_html("<math><mpadded lspace=\"1em\"><mi>a</mi></mpadded></math>");
+    let with_lspace =
+      parse_math_from_html("<math><mpadded lspace=\"1em\"><mi>a</mi></mpadded></math>");
 
     let baseline_layout = layout_mathml(&baseline, &style, &ctx);
     let lspace_layout = layout_mathml(&with_lspace, &style, &ctx);
@@ -4947,7 +4980,9 @@ mod tests {
   fn mpadded_relative_width_adds_to_base_width() {
     let style = ComputedStyle::default();
     let base = parse_math_from_html("<math><mspace width=\"1em\"/></math>");
-    let padded = parse_math_from_html("<math><mpadded width=\"+1em\"><mspace width=\"1em\"/></mpadded></math>");
+    let padded = parse_math_from_html(
+      "<math><mpadded width=\"+1em\"><mspace width=\"1em\"/></mpadded></math>",
+    );
 
     let base_layout = layout_mathml(&base, &style, &FontContext::empty());
     let padded_layout = layout_mathml(&padded, &style, &FontContext::empty());
@@ -4968,7 +5003,8 @@ mod tests {
     style.font_family = vec!["STIX Two Math".to_string()].into();
 
     let baseline = parse_math_from_html("<math><mi>a</mi></math>");
-    let with_voffset = parse_math_from_html("<math><mpadded voffset=\"1em\"><mi>a</mi></mpadded></math>");
+    let with_voffset =
+      parse_math_from_html("<math><mpadded voffset=\"1em\"><mi>a</mi></mpadded></math>");
 
     let baseline_layout = layout_mathml(&baseline, &style, &ctx);
     let voffset_layout = layout_mathml(&with_voffset, &style, &ctx);
@@ -5043,9 +5079,9 @@ mod tests {
 
   fn math_font_context() -> FontContext {
     let mut cfg = FontConfig::bundled_only();
-    cfg.font_dirs.push(
-      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts"),
-    );
+    cfg
+      .font_dirs
+      .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts"));
     FontContext::with_config(cfg)
   }
 
@@ -5096,7 +5132,10 @@ mod tests {
     );
 
     assert!(
-      base_run.features.iter().all(|f| f.tag.to_bytes() != *b"ssty"),
+      base_run
+        .features
+        .iter()
+        .all(|f| f.tag.to_bytes() != *b"ssty"),
       "base run should not set ssty"
     );
   }
@@ -5152,9 +5191,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.font_size = 24.0;
     style.font_family = vec!["STIX Two Math".to_string()].into();
-    let node = parse_math_from_html(
-      "<math><mi mathvariant=\"sans-serif-bold\">&#x391;&#x3B2;</mi></math>",
-    );
+    let node =
+      parse_math_from_html("<math><mi mathvariant=\"sans-serif-bold\">&#x391;&#x3B2;</mi></math>");
     let layout = layout_mathml(&node, &style, &ctx);
     let shaped_text = concat_glyph_text(&layout);
     assert!(
@@ -5242,7 +5280,8 @@ mod tests {
 
   #[test]
   fn merror_parses_as_boxed_enclose_and_emits_stroke_rect() {
-    let parsed = parse_math_from_html("<math><merror><mi>x</mi><mo>+</mo><mi>y</mi></merror></math>");
+    let parsed =
+      parse_math_from_html("<math><merror><mi>x</mi><mo>+</mo><mi>y</mi></merror></math>");
     let MathNode::Math { children, .. } = &parsed else {
       panic!("expected math root");
     };
@@ -5388,7 +5427,10 @@ mod tests {
     let mut sizes = std::collections::HashMap::<String, Vec<f32>>::new();
     for fragment in &layout.fragments {
       if let MathFragment::Glyph { run, .. } = fragment {
-        sizes.entry(run.text.clone()).or_default().push(run.font_size);
+        sizes
+          .entry(run.text.clone())
+          .or_default()
+          .push(run.font_size);
       }
     }
 
@@ -5575,9 +5617,16 @@ mod tests {
       })
     };
 
-    let solid_layout = layout_mathml(&make_table(TableLineStyle::Solid), &style, &FontContext::empty());
-    let dashed_layout =
-      layout_mathml(&make_table(TableLineStyle::Dashed), &style, &FontContext::empty());
+    let solid_layout = layout_mathml(
+      &make_table(TableLineStyle::Solid),
+      &style,
+      &FontContext::empty(),
+    );
+    let dashed_layout = layout_mathml(
+      &make_table(TableLineStyle::Dashed),
+      &style,
+      &FontContext::empty(),
+    );
 
     let solid_rules = solid_layout
       .fragments
@@ -5590,7 +5639,10 @@ mod tests {
       .filter(|f| matches!(f, MathFragment::Rule { .. }))
       .count();
 
-    assert_eq!(solid_rules, 1, "solid table columnlines should emit one rule");
+    assert_eq!(
+      solid_rules, 1,
+      "solid table columnlines should emit one rule"
+    );
     assert!(
       dashed_rules > 1,
       "dashed table columnlines should emit multiple rule segments, got {}",
@@ -5770,14 +5822,18 @@ mod tests {
   fn mathbackground_emits_colored_rule_fragment() {
     let style = ComputedStyle::default();
     let ctx = FontContext::with_config(FontConfig::bundled_only());
-    let node = parse_math_from_html("<math><mrow mathbackground=\"yellow\"><mi>a</mi></mrow></math>");
+    let node =
+      parse_math_from_html("<math><mrow mathbackground=\"yellow\"><mi>a</mi></mrow></math>");
     let layout = layout_mathml(&node, &style, &ctx);
 
     let has_background = layout.fragments.iter().any(|frag| match frag {
       MathFragment::Rule { color: Some(c), .. } => *c == Rgba::rgb(255, 255, 0),
       _ => false,
     });
-    assert!(has_background, "expected mathbackground to emit a colored Rule fragment");
+    assert!(
+      has_background,
+      "expected mathbackground to emit a colored Rule fragment"
+    );
 
     let a_color = layout
       .fragments
@@ -6112,7 +6168,8 @@ mod tests {
 
   #[test]
   fn mfenced_empty_open_close_without_children_parses_as_empty_row() {
-    let fenced = parse_math_from_html("<math><mfenced open=\"\" close=\"\" separators=\"\"></mfenced></math>");
+    let fenced =
+      parse_math_from_html("<math><mfenced open=\"\" close=\"\" separators=\"\"></mfenced></math>");
     let row = parse_math_from_html("<math><mrow></mrow></math>");
 
     let MathNode::Math {
@@ -6210,7 +6267,11 @@ mod tests {
     let MathNode::Row(row) = &children[0] else {
       panic!("expected mfenced to parse to a row");
     };
-    assert_eq!(row.len(), 4, "expected no separator operators to be inserted");
+    assert_eq!(
+      row.len(),
+      4,
+      "expected no separator operators to be inserted"
+    );
     assert!(matches!(&row[0], MathNode::Operator { text, .. } if text == "("));
     assert!(matches!(&row[1], MathNode::Identifier { text, .. } if text == "a"));
     assert!(matches!(&row[2], MathNode::Identifier { text, .. } if text == "b"));
@@ -6266,7 +6327,10 @@ mod tests {
     let props = MathLayoutContext::operator_default_properties("∫", OperatorForm::Prefix);
     assert!(props.large_op, "integral should default to largeop");
     assert!(props.stretchy, "integral should default to stretchy");
-    assert!(props.movable_limits, "integral should default to movablelimits");
+    assert!(
+      props.movable_limits,
+      "integral should default to movablelimits"
+    );
   }
 
   #[test]

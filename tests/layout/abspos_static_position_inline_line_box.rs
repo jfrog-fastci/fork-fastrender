@@ -25,9 +25,15 @@ fn find_fragment_by_box_id_abs<'a>(
   let abs_bounds = Rect::new(abs_origin, fragment.bounds.size);
   let matches_id = match &fragment.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_id {
@@ -140,4 +146,3 @@ fn abspos_static_position_in_inline_context_anchors_to_line_box_top() {
     real_bounds.origin.y
   );
 }
-

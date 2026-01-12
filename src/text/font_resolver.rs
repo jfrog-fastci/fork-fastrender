@@ -335,12 +335,9 @@ pub(crate) fn resolve_font_for_char<C: FontResolverContext>(
           for weight_choice in &weight_preferences {
             for slope in slope_preferences {
               for stretch_choice in &stretch_preferences {
-                if let Some(id) = db.query_named_family_with_aliases(
-                  name,
-                  *weight_choice,
-                  *slope,
-                  *stretch_choice,
-                ) {
+                if let Some(id) =
+                  db.query_named_family_with_aliases(name, *weight_choice, *slope, *stretch_choice)
+                {
                   if let Some(font) = db.load_font(id) {
                     let resolved = ResolvedFont { font, id: Some(id) };
                     let is_emoji_font = font_is_emoji_font(db, resolved.id, &resolved.font);
@@ -363,7 +360,10 @@ pub(crate) fn resolve_font_for_char<C: FontResolverContext>(
     let prefer_named_fallbacks_for_generic = match entry {
       FamilyEntry::Generic(generic) => {
         generic.prefers_named_fallbacks_first()
-          && !matches!(generic, GenericFamily::Serif | GenericFamily::SansSerif | GenericFamily::Monospace)
+          && !matches!(
+            generic,
+            GenericFamily::Serif | GenericFamily::SansSerif | GenericFamily::Monospace
+          )
       }
       _ => false,
     };
@@ -380,12 +380,9 @@ pub(crate) fn resolve_font_for_char<C: FontResolverContext>(
       for slope in slope_preferences {
         for weight_choice in &weight_preferences {
           let id = match entry {
-            FamilyEntry::Named(name) => db.query_named_family_with_aliases(
-              name,
-              *weight_choice,
-              *slope,
-              *stretch_choice,
-            ),
+            FamilyEntry::Named(name) => {
+              db.query_named_family_with_aliases(name, *weight_choice, *slope, *stretch_choice)
+            }
             FamilyEntry::Generic(generic) => {
               let query = fontdb::Query {
                 families: &[generic.to_fontdb()],
@@ -565,12 +562,9 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
           for weight_choice in &weight_preferences {
             for slope in slope_preferences {
               for stretch_choice in &stretch_preferences {
-                if let Some(id) = db.query_named_family_with_aliases(
-                  name,
-                  *weight_choice,
-                  *slope,
-                  *stretch_choice,
-                ) {
+                if let Some(id) =
+                  db.query_named_family_with_aliases(name, *weight_choice, *slope, *stretch_choice)
+                {
                   if let Some(font) = db.load_font(id) {
                     if !base_supported(id) {
                       continue;
@@ -596,7 +590,10 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
     let prefer_named_fallbacks_for_generic = match entry {
       FamilyEntry::Generic(generic) => {
         generic.prefers_named_fallbacks_first()
-          && !matches!(generic, GenericFamily::Serif | GenericFamily::SansSerif | GenericFamily::Monospace)
+          && !matches!(
+            generic,
+            GenericFamily::Serif | GenericFamily::SansSerif | GenericFamily::Monospace
+          )
       }
       _ => false,
     };
@@ -613,12 +610,9 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
       for slope in slope_preferences {
         for weight_choice in &weight_preferences {
           let id = match entry {
-            FamilyEntry::Named(name) => db.query_named_family_with_aliases(
-              name,
-              *weight_choice,
-              *slope,
-              *stretch_choice,
-            ),
+            FamilyEntry::Named(name) => {
+              db.query_named_family_with_aliases(name, *weight_choice, *slope, *stretch_choice)
+            }
             FamilyEntry::Generic(generic) => {
               let query = fontdb::Query {
                 families: &[generic.to_fontdb()],

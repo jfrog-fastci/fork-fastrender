@@ -389,31 +389,28 @@ pub fn read_cached_document(path: &Path) -> Result<CachedDocument> {
     .map(parse_cached_html_meta)
     .unwrap_or_default();
 
-  let base_hint = parsed_meta
-    .url
-    .clone()
-    .unwrap_or_else(|| {
-      let abs = path.canonicalize().unwrap_or_else(|_| {
-        if path.is_absolute() {
-          PathBuf::from(path)
-        } else {
-          std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-        }
-      });
-      url::Url::from_file_path(&abs)
-        .map(|u| u.to_string())
-        .unwrap_or_else(|()| {
-          let mut url = url::Url::parse("file:///").expect("file base url");
-          let mut path_str = abs.to_string_lossy().replace('\\', "/");
-          if !path_str.starts_with('/') {
-            path_str.insert(0, '/');
-          }
-          url.set_path(&path_str);
-          url.to_string()
-        })
+  let base_hint = parsed_meta.url.clone().unwrap_or_else(|| {
+    let abs = path.canonicalize().unwrap_or_else(|_| {
+      if path.is_absolute() {
+        PathBuf::from(path)
+      } else {
+        std::env::current_dir()
+          .unwrap_or_else(|_| PathBuf::from("."))
+          .join(path)
+      }
     });
+    url::Url::from_file_path(&abs)
+      .map(|u| u.to_string())
+      .unwrap_or_else(|()| {
+        let mut url = url::Url::parse("file:///").expect("file base url");
+        let mut path_str = abs.to_string_lossy().replace('\\', "/");
+        if !path_str.starts_with('/') {
+          path_str.insert(0, '/');
+        }
+        url.set_path(&path_str);
+        url.to_string()
+      })
+  });
   let mut resource = FetchedResource::with_final_url(
     bytes,
     parsed_meta.content_type.clone(),

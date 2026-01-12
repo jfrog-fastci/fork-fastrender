@@ -59,8 +59,14 @@ html, body { margin: 0; width: 100%; height: 100%; background: rgb(255, 0, 0); }
   let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
   let js_pixel = render_pixel(&url, &js_png, /* js */ true);
 
-  assert_red(no_js_pixel, "no-JS run should render the HTML fixture successfully");
-  assert_red(js_pixel, "JS run should render the HTML fixture successfully");
+  assert_red(
+    no_js_pixel,
+    "no-JS run should render the HTML fixture successfully",
+  );
+  assert_red(
+    js_pixel,
+    "JS run should render the HTML fixture successfully",
+  );
 }
 
 #[test]
@@ -288,8 +294,11 @@ fn js_flag_honors_cached_html_meta_base_hint_for_relative_script_fetches() {
   // Only create the script in the "origin" dir. The cached HTML lives elsewhere, but the `.meta`
   // base hint should cause relative URLs (script.js) to resolve against `origin_dir`.
   let origin_script = origin_dir.join("script.js");
-  fs::write(&origin_script, "document.documentElement.className = 'js-enabled';")
-    .expect("write origin script");
+  fs::write(
+    &origin_script,
+    "document.documentElement.className = 'js-enabled';",
+  )
+  .expect("write origin script");
 
   let cached_html_path = cache_dir.join("page.html");
   fs::write(
@@ -311,7 +320,9 @@ html.js-enabled body { background: rgb(0, 255, 0); }
     .to_string();
   fs::write(&meta_path, format!("url: {base_hint_url}\n")).expect("write meta sidecar");
 
-  let cache_url = url::Url::from_file_path(&cached_html_path).unwrap().to_string();
+  let cache_url = url::Url::from_file_path(&cached_html_path)
+    .unwrap()
+    .to_string();
   let no_js_png = tmp.path().join("no_js.png");
   let js_png = tmp.path().join("js.png");
 
@@ -584,7 +595,10 @@ body { background: rgb(255, 0, 0); }
   let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
   let js_pixel = render_pixel(&url, &js_png, /* js */ true);
 
-  assert_red(no_js_pixel, "baseline run should not execute document.write");
+  assert_red(
+    no_js_pixel,
+    "baseline run should not execute document.write",
+  );
   assert_green(
     js_pixel,
     "JS run should allow document.write() to inject markup into the streaming parser",
@@ -620,7 +634,10 @@ body { background: rgb(255, 0, 0); }
   let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
   let js_pixel = render_pixel(&url, &js_png, /* js */ true);
 
-  assert_red(no_js_pixel, "baseline run should not execute async document.write()");
+  assert_red(
+    no_js_pixel,
+    "baseline run should not execute async document.write()",
+  );
   assert_green(
     js_pixel,
     "JS run should allow document.write() from an async script during streaming parsing",

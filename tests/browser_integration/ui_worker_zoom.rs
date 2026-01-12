@@ -68,11 +68,8 @@ fn zoom_mapping_scales_css_viewport_without_changing_drawn_size() {
   ui_tx.send(support::create_tab_msg(tab_id, None)).unwrap();
 
   // Zoom=1: normal mapping (viewport_css == available_points, dpr == ppp).
-  let (viewport_1, dpr_1) = fastrender::ui::viewport_css_and_dpr_for_zoom(
-    available_points,
-    pixels_per_point,
-    1.0,
-  );
+  let (viewport_1, dpr_1) =
+    fastrender::ui::viewport_css_and_dpr_for_zoom(available_points, pixels_per_point, 1.0);
   ui_tx
     .send(support::viewport_changed_msg(tab_id, viewport_1, dpr_1))
     .unwrap();
@@ -88,12 +85,12 @@ fn zoom_mapping_scales_css_viewport_without_changing_drawn_size() {
   let pixmap_1 = (frame_1.pixmap.width(), frame_1.pixmap.height());
 
   // Zoom=2: fewer CSS pixels in the viewport + higher DPR.
-  let (viewport_2, dpr_2) = fastrender::ui::viewport_css_and_dpr_for_zoom(
-    available_points,
-    pixels_per_point,
-    2.0,
+  let (viewport_2, dpr_2) =
+    fastrender::ui::viewport_css_and_dpr_for_zoom(available_points, pixels_per_point, 2.0);
+  assert_ne!(
+    viewport_1, viewport_2,
+    "viewport_css should change with zoom"
   );
-  assert_ne!(viewport_1, viewport_2, "viewport_css should change with zoom");
   assert!(dpr_2 > dpr_1, "dpr should increase with zoom");
 
   ui_tx
@@ -113,10 +110,26 @@ fn zoom_mapping_scales_css_viewport_without_changing_drawn_size() {
   );
 
   // The UI draws the pixmap at `pixmap_px / pixels_per_point` points; ensure that's constant too.
-  let drawn_points_1 = (pixmap_1.0 as f32 / pixels_per_point, pixmap_1.1 as f32 / pixels_per_point);
-  let drawn_points_2 = (pixmap_2.0 as f32 / pixels_per_point, pixmap_2.1 as f32 / pixels_per_point);
-  assert_close(drawn_points_1.0, drawn_points_2.0, 0.75, "drawn width points");
-  assert_close(drawn_points_1.1, drawn_points_2.1, 0.75, "drawn height points");
+  let drawn_points_1 = (
+    pixmap_1.0 as f32 / pixels_per_point,
+    pixmap_1.1 as f32 / pixels_per_point,
+  );
+  let drawn_points_2 = (
+    pixmap_2.0 as f32 / pixels_per_point,
+    pixmap_2.1 as f32 / pixels_per_point,
+  );
+  assert_close(
+    drawn_points_1.0,
+    drawn_points_2.0,
+    0.75,
+    "drawn width points",
+  );
+  assert_close(
+    drawn_points_1.1,
+    drawn_points_2.1,
+    0.75,
+    "drawn height points",
+  );
 
   // Sanity: the viewport↔DPR pairs should be consistent with the constant device pixel size.
   assert_close(
@@ -135,4 +148,3 @@ fn zoom_mapping_scales_css_viewport_without_changing_drawn_size() {
   drop(ui_tx);
   join.join().unwrap();
 }
-

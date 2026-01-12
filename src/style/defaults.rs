@@ -143,7 +143,10 @@ pub fn parse_dimension_attribute(dim_str: &str) -> Option<Length> {
   // Handle percentage like "85%"
   if dim_str.ends_with('%') {
     let raw = trim_ascii_whitespace_html(&dim_str[..dim_str.len() - 1]);
-    let value = raw.parse::<f32>().ok().or_else(|| parse_number_prefix(raw))?;
+    let value = raw
+      .parse::<f32>()
+      .ok()
+      .or_else(|| parse_number_prefix(raw))?;
     if value.is_finite() && value >= 0.0 {
       return Some(Length::percent(value));
     }
@@ -292,7 +295,11 @@ mod tests {
   use std::collections::HashMap;
   use std::sync::Arc;
 
-  fn collect_embed_object_widths(node: &FragmentNode, embeds: &mut Vec<f32>, objects: &mut Vec<f32>) {
+  fn collect_embed_object_widths(
+    node: &FragmentNode,
+    embeds: &mut Vec<f32>,
+    objects: &mut Vec<f32>,
+  ) {
     if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
       match replaced_type {
         ReplacedType::Embed { .. } => embeds.push(node.bounds.width()),
@@ -344,8 +351,14 @@ mod tests {
   fn parse_dimension_attribute_accepts_px_suffix() {
     assert_eq!(parse_dimension_attribute("90px"), Some(Length::px(90.0)));
     assert_eq!(parse_dimension_attribute("  50px "), Some(Length::px(50.0)));
-    assert_eq!(parse_dimension_attribute("  50PX  "), Some(Length::px(50.0)));
-    assert_eq!(parse_dimension_attribute("85%"), Some(Length::percent(85.0)));
+    assert_eq!(
+      parse_dimension_attribute("  50PX  "),
+      Some(Length::px(50.0))
+    );
+    assert_eq!(
+      parse_dimension_attribute("85%"),
+      Some(Length::percent(85.0))
+    );
   }
 
   #[test]
@@ -365,7 +378,10 @@ mod tests {
 
   #[test]
   fn parse_color_attribute_parses_hashless_hex() {
-    assert_eq!(parse_color_attribute("ff6600"), Some(Rgba::rgb(255, 102, 0)));
+    assert_eq!(
+      parse_color_attribute("ff6600"),
+      Some(Rgba::rgb(255, 102, 0))
+    );
     assert_eq!(
       parse_color_attribute("  ff6600  "),
       Some(Rgba::rgb(255, 102, 0))
@@ -382,7 +398,10 @@ mod tests {
   fn parse_color_attribute_does_not_recognize_system_colors() {
     // HTML legacy color parsing only recognizes named colors, not CSS system color keywords like
     // "Canvas". Treat it as a "hashless hex" legacy color value instead.
-    assert_eq!(parse_color_attribute("Canvas"), Some(Rgba::rgb(202, 0, 160)));
+    assert_eq!(
+      parse_color_attribute("Canvas"),
+      Some(Rgba::rgb(202, 0, 160))
+    );
   }
 
   fn layout_widths(toggle: &str) -> (Vec<f32>, Vec<f32>) {
@@ -401,15 +420,13 @@ mod tests {
       </html>
     "#;
     let dom = crate::dom::parse_html(html).expect("parse");
-    let styled =
-      crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = crate::tree::box_generation::generate_box_tree_with_anonymous_fixup(&styled)
       .expect("box tree");
 
-    let engine =
-      crate::layout::engine::LayoutEngine::new(crate::layout::engine::LayoutConfig::for_viewport(
-        crate::geometry::Size::new(100.0, 100.0),
-      ));
+    let engine = crate::layout::engine::LayoutEngine::new(
+      crate::layout::engine::LayoutConfig::for_viewport(crate::geometry::Size::new(100.0, 100.0)),
+    );
     let fragment_tree = engine.layout_tree(&box_tree).expect("layout");
 
     let mut embeds = Vec::new();
@@ -432,15 +449,13 @@ mod tests {
       </html>
     "#;
     let dom = crate::dom::parse_html(html).expect("parse");
-    let styled =
-      crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = crate::tree::box_generation::generate_box_tree_with_anonymous_fixup(&styled)
       .expect("box tree");
 
-    let engine =
-      crate::layout::engine::LayoutEngine::new(crate::layout::engine::LayoutConfig::for_viewport(
-        crate::geometry::Size::new(100.0, 100.0),
-      ));
+    let engine = crate::layout::engine::LayoutEngine::new(
+      crate::layout::engine::LayoutConfig::for_viewport(crate::geometry::Size::new(100.0, 100.0)),
+    );
     let fragment_tree = engine.layout_tree(&box_tree).expect("layout");
 
     let mut svgs = Vec::new();
@@ -473,10 +488,9 @@ mod tests {
     let box_tree = crate::tree::box_generation::generate_box_tree_with_anonymous_fixup(&styled)
       .expect("box tree");
 
-    let engine =
-      crate::layout::engine::LayoutEngine::new(crate::layout::engine::LayoutConfig::for_viewport(
-        crate::geometry::Size::new(400.0, 400.0),
-      ));
+    let engine = crate::layout::engine::LayoutEngine::new(
+      crate::layout::engine::LayoutConfig::for_viewport(crate::geometry::Size::new(400.0, 400.0)),
+    );
     let fragment_tree = engine.layout_tree(&box_tree).expect("layout");
 
     let mut images = Vec::new();

@@ -43,7 +43,11 @@ fn grid_item_relative_positioning_offsets_border_box() {
   item_style.bottom = InsetValue::Length(Length::px(10.0));
 
   let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
-  let grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc
@@ -57,4 +61,3 @@ fn grid_item_relative_positioning_offsets_border_box() {
   assert_approx(child.bounds.x(), 50.0, "relative right offset shifts x");
   assert_approx(child.bounds.y(), -10.0, "relative bottom offset shifts y");
 }
-

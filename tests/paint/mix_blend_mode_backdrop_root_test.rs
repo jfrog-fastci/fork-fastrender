@@ -1,11 +1,11 @@
 use fastrender::paint::display_list::{
   BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, OpacityItem, StackingContextItem,
 };
+use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::style::color::Rgba;
 use fastrender::style::types::{BackfaceVisibility, TransformStyle};
 use fastrender::text::font_loader::FontContext;
 use fastrender::Rect;
-use fastrender::paint::display_list_renderer::DisplayListRenderer;
 
 fn stacking_context(bounds: Rect) -> StackingContextItem {
   StackingContextItem {
@@ -65,7 +65,12 @@ fn mix_blend_mode_samples_composited_backdrop_through_intermediate_layers() {
   let pixmap = render(&list);
   let outside = pixmap.pixel(9, 9).expect("pixel in-bounds");
   assert_eq!(
-    (outside.red(), outside.green(), outside.blue(), outside.alpha()),
+    (
+      outside.red(),
+      outside.green(),
+      outside.blue(),
+      outside.alpha()
+    ),
     (0, 255, 0, 255),
     "expected background pixel to remain green"
   );
@@ -113,7 +118,12 @@ fn mix_blend_mode_is_scoped_by_backdrop_root_boundary() {
   let pixmap = render(&list);
   let outside = pixmap.pixel(9, 9).expect("pixel in-bounds");
   assert_eq!(
-    (outside.red(), outside.green(), outside.blue(), outside.alpha()),
+    (
+      outside.red(),
+      outside.green(),
+      outside.blue(),
+      outside.alpha()
+    ),
     (0, 255, 0, 255),
     "expected background pixel to remain green"
   );

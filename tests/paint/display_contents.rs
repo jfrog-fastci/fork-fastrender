@@ -97,4 +97,3 @@ fn display_contents_background_border_not_painted() {
     "display:contents element border must not paint (saw blue stroke/border)"
   );
 }
-

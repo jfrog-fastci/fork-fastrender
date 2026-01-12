@@ -7,7 +7,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-const LEGACY_QUICKJS_CRATES: [&str; 2] = ["crates/js-dom-bindings", "crates/js-dom-bindings-quickjs"];
+const LEGACY_QUICKJS_CRATES: [&str; 2] =
+  ["crates/js-dom-bindings", "crates/js-dom-bindings-quickjs"];
 
 fn parse_root_manifest() -> toml::Value {
   let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -38,10 +39,7 @@ fn legacy_quickjs_crates_are_excluded_from_default_workspace_builds() {
     .iter()
     .any(|legacy| toml_array_contains_str(members, legacy));
 
-  match workspace
-    .get("default-members")
-    .and_then(|v| v.as_array())
-  {
+  match workspace.get("default-members").and_then(|v| v.as_array()) {
     Some(default_members) => {
       for legacy in LEGACY_QUICKJS_CRATES {
         assert!(
@@ -103,4 +101,3 @@ fn rquickjs_dependency_is_optional_when_present() {
     "dependencies.rquickjs must remain optional so default builds do not pull in QuickJS"
   );
 }
-

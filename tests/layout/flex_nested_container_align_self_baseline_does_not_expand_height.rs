@@ -1,7 +1,10 @@
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{FastRender, FontConfig, Rgba};
 
-fn find_fragment_by_background<'a>(node: &'a FragmentNode, color: Rgba) -> Option<&'a FragmentNode> {
+fn find_fragment_by_background<'a>(
+  node: &'a FragmentNode,
+  color: Rgba,
+) -> Option<&'a FragmentNode> {
   if node
     .style
     .as_ref()
@@ -10,7 +13,10 @@ fn find_fragment_by_background<'a>(node: &'a FragmentNode, color: Rgba) -> Optio
     return Some(node);
   }
 
-  node.children.iter().find_map(|child| find_fragment_by_background(child, color))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_fragment_by_background(child, color))
 }
 
 #[test]

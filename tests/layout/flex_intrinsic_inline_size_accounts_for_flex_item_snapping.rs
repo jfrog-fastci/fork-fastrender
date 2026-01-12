@@ -6,8 +6,8 @@ use fastrender::layout::formatting_context::IntrinsicSizingMode;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::types::{FlexDirection, FlexWrap};
 use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{ComputedStyle, FormattingContext};
 
 fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {
@@ -118,8 +118,8 @@ fn flex_intrinsic_inline_size_accounts_for_flex_item_snapping() {
     .layout(&outer, &LayoutConstraints::definite(200.0, 50.0))
     .expect("layout succeeds");
 
-  let nav_fragment =
-    find_fragment_by_box_id(&fragment, 1).unwrap_or_else(|| panic!("missing nav fragment: {fragment:#?}"));
+  let nav_fragment = find_fragment_by_box_id(&fragment, 1)
+    .unwrap_or_else(|| panic!("missing nav fragment: {fragment:#?}"));
   let item2_fragment = find_fragment_by_box_id(&fragment, 4)
     .unwrap_or_else(|| panic!("missing second nav item fragment: {fragment:#?}"));
 

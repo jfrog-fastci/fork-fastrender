@@ -452,7 +452,10 @@ impl BrowserAppState {
         .clone()
         .or_else(|| closed.current_url.clone())
         .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string()),
-      title: closed.committed_title.clone().or_else(|| closed.title.clone()),
+      title: closed
+        .committed_title
+        .clone()
+        .or_else(|| closed.title.clone()),
     });
 
     let was_active = self.active_tab == Some(tab_id);

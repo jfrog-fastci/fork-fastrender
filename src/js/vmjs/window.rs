@@ -1,20 +1,20 @@
 use crate::dom2;
 use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
-use crate::js::import_maps::{ImportMapError, ImportMapState, ImportMapWarning, ModuleResolutionError};
-use crate::js::orchestrator::CurrentScriptHost;
-use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
-use crate::js::window_realm::{
-  WindowRealm, WindowRealmConfig, WindowRealmHost,
+use crate::js::import_maps::{
+  ImportMapError, ImportMapState, ImportMapWarning, ModuleResolutionError,
 };
+use crate::js::orchestrator::CurrentScriptHost;
+use crate::js::vm_error_format;
+use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
+use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmHost};
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
   install_window_timers_bindings, install_window_xhr_bindings_with_guard, DomHost, EventLoop,
-  JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, WindowFetchBindings, WindowFetchEnv,
-  WindowXhrBindings, WindowXhrEnv,
+  JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, WindowFetchBindings,
+  WindowFetchEnv, WindowXhrBindings, WindowXhrEnv,
 };
 use crate::js::{Clock, RealClock};
-use crate::js::vm_error_format;
 use crate::resource::{origin_from_url, HttpFetcher, ResourceFetcher};
 use std::sync::Arc;
 
@@ -121,7 +121,13 @@ impl WindowHost {
     options: JsExecutionOptions,
   ) -> Result<Self> {
     let event_loop = EventLoop::<WindowHostState>::new();
-    Self::new_with_fetcher_and_event_loop_and_options(dom, document_url, fetcher, event_loop, options)
+    Self::new_with_fetcher_and_event_loop_and_options(
+      dom,
+      document_url,
+      fetcher,
+      event_loop,
+      options,
+    )
   }
 
   pub fn new_with_event_loop_and_options(
@@ -158,7 +164,10 @@ impl WindowHost {
     Ok(Self { host, event_loop })
   }
 
-  pub fn from_renderer_dom(root: &crate::dom::DomNode, document_url: impl Into<String>) -> Result<Self> {
+  pub fn from_renderer_dom(
+    root: &crate::dom::DomNode,
+    document_url: impl Into<String>,
+  ) -> Result<Self> {
     Self::new(dom2::Document::from_renderer_dom(root), document_url)
   }
 
@@ -167,7 +176,11 @@ impl WindowHost {
     document_url: impl Into<String>,
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
-    Self::new_with_fetcher(dom2::Document::from_renderer_dom(root), document_url, fetcher)
+    Self::new_with_fetcher(
+      dom2::Document::from_renderer_dom(root),
+      document_url,
+      fetcher,
+    )
   }
 
   pub fn host(&self) -> &WindowHostState {
@@ -298,7 +311,13 @@ impl WindowHostState {
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self> {
     let clock: Arc<dyn Clock> = Arc::new(RealClock::default());
-    Self::new_with_fetcher_and_clock_and_options(dom, document_url, fetcher, clock, js_execution_options)
+    Self::new_with_fetcher_and_clock_and_options(
+      dom,
+      document_url,
+      fetcher,
+      clock,
+      js_execution_options,
+    )
   }
 
   pub fn new_with_fetcher_and_clock_and_options(
@@ -364,7 +383,8 @@ impl WindowHostState {
       (fetch_bindings, xhr_bindings)
     };
 
-    let webidl_bindings_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
+    let webidl_bindings_host =
+      VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
 
     Ok(Self {
       base_url: Some(document_url.clone()),
@@ -382,7 +402,10 @@ impl WindowHostState {
     })
   }
 
-  pub fn from_renderer_dom(root: &crate::dom::DomNode, document_url: impl Into<String>) -> Result<Self> {
+  pub fn from_renderer_dom(
+    root: &crate::dom::DomNode,
+    document_url: impl Into<String>,
+  ) -> Result<Self> {
     Self::new(dom2::Document::from_renderer_dom(root), document_url)
   }
 
@@ -391,7 +414,11 @@ impl WindowHostState {
     document_url: impl Into<String>,
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
-    Self::new_with_fetcher(dom2::Document::from_renderer_dom(root), document_url, fetcher)
+    Self::new_with_fetcher(
+      dom2::Document::from_renderer_dom(root),
+      document_url,
+      fetcher,
+    )
   }
 
   pub fn dom(&self) -> &dom2::Document {
@@ -498,19 +525,30 @@ impl WindowHostState {
     let mut parse_result =
       crate::js::import_maps::create_import_map_parse_result_with_limits(json, base_url, limits);
     let warnings = std::mem::take(&mut parse_result.warnings);
-    crate::js::import_maps::register_import_map_with_limits(self.import_map_state_mut(), parse_result, limits)?;
+    crate::js::import_maps::register_import_map_with_limits(
+      self.import_map_state_mut(),
+      parse_result,
+      limits,
+    )?;
     self.sync_import_map_state_to_module_loader();
     Ok(warnings)
   }
 
-  pub fn register_import_map_from_script_text(&mut self, input: &str, base_url: &::url::Url) -> Result<()> {
+  pub fn register_import_map_from_script_text(
+    &mut self,
+    input: &str,
+    base_url: &::url::Url,
+  ) -> Result<()> {
     let limits = self.js_execution_options.import_map_limits;
-    let mut result = crate::js::import_maps::create_import_map_parse_result_with_limits(input, base_url, &limits);
+    let mut result =
+      crate::js::import_maps::create_import_map_parse_result_with_limits(input, base_url, &limits);
     self.import_map_warnings.append(&mut result.warnings);
 
-    if let Err(err) =
-      crate::js::import_maps::register_import_map_with_limits(self.import_map_state_mut(), result, &limits)
-    {
+    if let Err(err) = crate::js::import_maps::register_import_map_with_limits(
+      self.import_map_state_mut(),
+      result,
+      &limits,
+    ) {
       // For now, keep the host API stable and let higher-level HTML plumbing decide how to surface
       // import map errors (console, `window.onerror`, etc.).
       self.import_map_errors.push(err);
@@ -548,7 +586,11 @@ impl WindowHostState {
     specifier: &str,
     referrer_base: &::url::Url,
   ) -> std::result::Result<::url::Url, ModuleResolutionError> {
-    crate::js::import_maps::resolve_module_specifier(self.import_map_state_mut(), specifier, referrer_base)
+    crate::js::import_maps::resolve_module_specifier(
+      self.import_map_state_mut(),
+      specifier,
+      referrer_base,
+    )
   }
 
   pub fn resolve_module_specifier_using_document_base(
@@ -661,9 +703,9 @@ impl WindowRealmHost for WindowHostState {
 mod tests {
   use super::*;
 
+  use crate::resource::FetchedResource;
   use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
   use base64::Engine as _;
-  use crate::resource::FetchedResource;
   use selectors::context::QuirksMode;
   use sha2::{Digest, Sha256};
   use std::collections::HashMap;
@@ -673,8 +715,8 @@ mod tests {
   use std::sync::Mutex;
   use std::time::{Duration, Instant};
   use vm_js::{
-    GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, TerminationReason, Value, Vm, VmError,
-    VmHost, VmHostHooks,
+    GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, TerminationReason, Value, Vm,
+    VmError, VmHost, VmHostHooks,
   };
 
   fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
@@ -886,7 +928,8 @@ mod tests {
   }
 
   #[test]
-  fn generated_vmjs_url_search_params_installer_is_idempotent_and_does_not_clobber_dom() -> Result<()> {
+  fn generated_vmjs_url_search_params_installer_is_idempotent_and_does_not_clobber_dom(
+  ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
 
@@ -943,7 +986,8 @@ mod tests {
   }
 
   #[test]
-  fn generated_vmjs_node_installer_can_patch_prototype_chain_after_event_target_install() -> Result<()> {
+  fn generated_vmjs_node_installer_can_patch_prototype_chain_after_event_target_install(
+  ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
     {
@@ -956,7 +1000,9 @@ mod tests {
         .push_root(Value::Object(global))
         .map_err(|err| Error::Other(err.to_string()))?;
       for name in ["EventTarget", "Node"] {
-        let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+        let key_s = scope
+          .alloc_string(name)
+          .map_err(|err| Error::Other(err.to_string()))?;
         scope
           .push_root(Value::String(key_s))
           .map_err(|err| Error::Other(err.to_string()))?;
@@ -980,7 +1026,8 @@ mod tests {
         .map_err(|err| Error::Other(err.to_string()))?;
     }
 
-    let out = host.exec_script("Object.getPrototypeOf(Node.prototype) === EventTarget.prototype")?;
+    let out =
+      host.exec_script("Object.getPrototypeOf(Node.prototype) === EventTarget.prototype")?;
     assert_eq!(out, Value::Bool(true));
 
     Ok(())
@@ -1004,7 +1051,9 @@ mod tests {
         .push_root(Value::Object(global))
         .map_err(|err| Error::Other(err.to_string()))?;
       for name in ["EventTarget", "URL", "URLSearchParams"] {
-        let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+        let key_s = scope
+          .alloc_string(name)
+          .map_err(|err| Error::Other(err.to_string()))?;
         scope
           .push_root(Value::String(key_s))
           .map_err(|err| Error::Other(err.to_string()))?;
@@ -1053,10 +1102,8 @@ mod tests {
 
     let got = {
       let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
-      host_state.exec_script_in_event_loop(
-        event_loop,
-        "new URLSearchParams('a=1').keys().next().value",
-      )?
+      host_state
+        .exec_script_in_event_loop(event_loop, "new URLSearchParams('a=1').keys().next().value")?
     };
     assert_eq!(value_to_string(&host, got), "a");
 
@@ -1143,7 +1190,9 @@ mod tests {
         .push_root(Value::Object(global))
         .map_err(|err| Error::Other(err.to_string()))?;
       for name in ["queueMicrotask", "setTimeout"] {
-        let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+        let key_s = scope
+          .alloc_string(name)
+          .map_err(|err| Error::Other(err.to_string()))?;
         scope
           .push_root(Value::String(key_s))
           .map_err(|err| Error::Other(err.to_string()))?;
@@ -1278,7 +1327,10 @@ mod tests {
       },
     )?;
 
-    assert_eq!(get_global_prop_utf8_host_state(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8_host_state(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert_eq!(
       get_global_prop_utf8_host_state(&mut host, "__text").as_deref(),
       Some("ok")
@@ -1323,7 +1375,10 @@ mod tests {
       max_wall_time: Some(Duration::from_secs(5)),
     })?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__x"),
       Value::Number(n) if n == 42.0
@@ -1375,7 +1430,10 @@ mod tests {
       max_wall_time: Some(Duration::from_secs(5)),
     })?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__x"),
       Value::Number(n) if n == 42.0
@@ -1394,9 +1452,7 @@ mod tests {
     fetcher.insert(
       "https://example.invalid/mod.js",
       FetchedResource::new(
-        "import './dep.js'; export default 42;"
-          .as_bytes()
-          .to_vec(),
+        "import './dep.js'; export default 42;".as_bytes().to_vec(),
         Some("application/javascript".to_string()),
       ),
     );
@@ -1456,9 +1512,9 @@ mod tests {
     let mut host =
       WindowHost::new_with_fetcher_and_options(dom, "https://example.invalid/", fetcher, options)?;
 
-    host
-      .host_mut()
-      .register_import_map_using_document_base(r#"{"imports":{"foo":"https://example.invalid/mod.js"}}"#)?;
+    host.host_mut().register_import_map_using_document_base(
+      r#"{"imports":{"foo":"https://example.invalid/mod.js"}}"#,
+    )?;
 
     host.exec_script(
       r#"
@@ -1476,7 +1532,10 @@ mod tests {
       max_wall_time: Some(Duration::from_secs(5)),
     })?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__x"),
       Value::Number(n) if n == 42.0
@@ -1521,10 +1580,9 @@ mod tests {
 
   #[test]
   fn window_host_exec_script_exposes_document_current_script_via_host_context() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html(
-      "<!doctype html><html><body><script id=\"s\"></script></body></html>",
-    )
-    .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><script id=\"s\"></script></body></html>")
+        .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
 
     let no_current = host.exec_script("document.currentScript === null")?;
@@ -1535,11 +1593,7 @@ mod tests {
       .dom()
       .get_element_by_id("s")
       .expect("expected #s script element");
-    let current_script_state = host
-      .host()
-      .document_host()
-      .current_script_handle()
-      .clone();
+    let current_script_state = host.host().document_host().current_script_handle().clone();
     let mut orchestrator = crate::js::ScriptOrchestrator::new();
     orchestrator.execute_with_current_script_state_resolved(
       &current_script_state,
@@ -1565,7 +1619,10 @@ mod tests {
 
   impl CookieRecordingFetcher {
     fn cookie_header(&self) -> Option<String> {
-      let lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let lock = self
+        .cookies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       if lock.is_empty() {
         return None;
       }
@@ -1604,7 +1661,10 @@ mod tests {
         return;
       }
 
-      let mut lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let mut lock = self
+        .cookies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       if let Some(existing) = lock.iter_mut().find(|(n, _)| n == name) {
         existing.1 = value.to_string();
       } else {
@@ -1613,7 +1673,10 @@ mod tests {
     }
   }
 
-  fn accept_with_deadline(listener: &TcpListener, deadline: Instant) -> std::io::Result<std::net::TcpStream> {
+  fn accept_with_deadline(
+    listener: &TcpListener,
+    deadline: Instant,
+  ) -> std::io::Result<std::net::TcpStream> {
     use std::io::ErrorKind;
 
     loop {
@@ -1658,9 +1721,7 @@ mod tests {
       // Some sandboxed CI environments may forbid binding sockets; skip in that case.
       return Ok(());
     };
-    listener
-      .set_nonblocking(true)
-      .expect("set_nonblocking");
+    listener.set_nonblocking(true).expect("set_nonblocking");
     let addr = listener.local_addr().expect("local_addr");
     let url = format!("http://{addr}/");
     let server = std::thread::spawn(move || {
@@ -1754,12 +1815,14 @@ mod tests {
 
     let dom = host.host().dom();
     assert_eq!(
-      dom.get_attribute(target, "data-foo-bar")
+      dom
+        .get_attribute(target, "data-foo-bar")
         .expect("get data-foo-bar"),
       Some("baz")
     );
     assert_eq!(
-      dom.get_attribute(target, "data-remove-me")
+      dom
+        .get_attribute(target, "data-remove-me")
         .expect("get data-remove-me"),
       None
     );
@@ -1775,9 +1838,7 @@ mod tests {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
 
-    host.exec_script(
-      "var g = this; g.__x = 0; g.queueMicrotask(function () { g.__x = 1; });",
-    )?;
+    host.exec_script("var g = this; g.__x = 0; g.queueMicrotask(function () { g.__x = 1; });")?;
 
     assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 0.0));
 
@@ -1813,7 +1874,11 @@ mod tests {
     _this: Value,
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    if host.as_any_mut().downcast_mut::<DocumentHostState>().is_some() {
+    if host
+      .as_any_mut()
+      .downcast_mut::<DocumentHostState>()
+      .is_some()
+    {
       Ok(Value::Bool(true))
     } else {
       Err(VmError::TypeError(
@@ -1831,12 +1896,16 @@ mod tests {
     let mut scope = heap.scope();
     let global = realm.global_object();
 
-    scope.push_root(Value::Object(global)).expect("push root global");
+    scope
+      .push_root(Value::Object(global))
+      .expect("push root global");
 
     let id = vm
       .register_native_call(record_host_native)
       .expect("register recordHost native");
-    let name_s = scope.alloc_string("recordHost").expect("alloc recordHost name");
+    let name_s = scope
+      .alloc_string("recordHost")
+      .expect("alloc recordHost name");
     scope
       .push_root(Value::String(name_s))
       .expect("push root recordHost name");
@@ -1890,7 +1959,9 @@ mod tests {
         .push_root(Value::Object(global))
         .expect("push root global");
 
-      let name_s = scope.alloc_string("__fr_is_document_host").expect("alloc name");
+      let name_s = scope
+        .alloc_string("__fr_is_document_host")
+        .expect("alloc name");
       scope
         .push_root(Value::String(name_s))
         .expect("push root name");
@@ -1915,7 +1986,7 @@ mod tests {
           },
         )
         .expect("define global native function");
-  }
+    }
 
     host.exec_script(
       r#"
@@ -1991,12 +2062,7 @@ mod tests {
         .push_root(Value::Object(ctor_obj))
         .expect("push root __ctor function");
       let create_result = crate::js::window_realm::test_only_create_error(
-        vm,
-        &mut scope,
-        vm_host,
-        &mut hooks,
-        ctor_obj,
-        "boom",
+        vm, &mut scope, vm_host, &mut hooks, ctor_obj, "boom",
       );
       drop(scope);
       let create_result = match create_result {
@@ -2010,7 +2076,10 @@ mod tests {
     };
     create_error_result?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
@@ -2043,7 +2112,10 @@ mod tests {
       "#,
     )?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
@@ -2076,7 +2148,10 @@ mod tests {
       "#,
     )?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
@@ -2118,7 +2193,10 @@ mod tests {
       "#,
     )?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok_type"),
       Value::Bool(true)
@@ -2190,7 +2268,10 @@ mod tests {
       "#,
     )?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      ""
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok_cb"),
       Value::Bool(true)
@@ -2311,8 +2392,9 @@ mod tests {
 
   #[test]
   fn mutation_observer_callback_runs_with_real_vm_host() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
-      .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
@@ -2327,12 +2409,18 @@ mod tests {
     )?;
 
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
-    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(false)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(false)
+    ));
 
     host.perform_microtask_checkpoint()?;
 
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
-    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(true)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
     Ok(())
   }
 
@@ -2349,11 +2437,17 @@ mod tests {
       "#,
     )?;
 
-    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(false)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(false)
+    ));
 
     host.perform_microtask_checkpoint()?;
 
-    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(true)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
     Ok(())
   }
 
@@ -2407,7 +2501,10 @@ mod tests {
     )?;
 
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
-    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(false)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(false)
+    ));
 
     let _ = host.run_until_idle(RunLimits {
       max_tasks: 10,
@@ -2416,7 +2513,10 @@ mod tests {
     })?;
 
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
-    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(true)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
     Ok(())
   }
 
@@ -2440,7 +2540,10 @@ mod tests {
 
     // `requestAnimationFrame` callbacks are queued separately from task/microtask queues.
     {
-      let WindowHost { host: host_state, event_loop } = &mut host;
+      let WindowHost {
+        host: host_state,
+        event_loop,
+      } = &mut host;
       let _ = event_loop.run_animation_frame(host_state)?;
     }
 
@@ -2483,10 +2586,7 @@ mod tests {
         )
         .map_err(|err| Error::Other(err.to_string()))?;
 
-        Ok(Self {
-          document,
-          window,
-        })
+        Ok(Self { document, window })
       }
 
       fn exec_script(&mut self, event_loop: &mut EventLoop<Self>, source: &str) -> Result<Value> {
@@ -2551,8 +2651,9 @@ mod tests {
       }
     }
 
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
-      .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .expect("parse_html");
     let dom = dom2::Document::from_renderer_dom(&renderer_dom);
     let mut host = NoTimersHostState::new(dom, "https://example.invalid/")?;
 
@@ -2578,7 +2679,10 @@ mod tests {
     )?;
 
     assert_eq!(host.get_global_prop_utf8("__err").unwrap_or_default(), "");
-    assert!(matches!(host.get_global_prop("__host_ok"), Value::Bool(true)));
+    assert!(matches!(
+      host.get_global_prop("__host_ok"),
+      Value::Bool(true)
+    ));
     Ok(())
   }
 
@@ -2623,10 +2727,11 @@ mod tests {
 
   #[test]
   fn mutation_observer_delivers_attribute_records_via_microtask_checkpoint() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
-      .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
- 
+
     host.exec_script(
       "var g = this;\n\
        g.__calls = 0;\n\
@@ -2654,10 +2759,10 @@ mod tests {
        target.setAttribute('DATA-X', 'a');\n\
        target.setAttribute('DATA-X', 'b');\n",
     )?;
- 
+
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
     host.perform_microtask_checkpoint()?;
- 
+
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
     assert!(matches!(get_global_prop(&mut host, "__len"), Value::Number(n) if n == 2.0));
     assert_eq!(
@@ -2668,22 +2773,29 @@ mod tests {
       get_global_prop_utf8(&mut host, "__attr0").as_deref(),
       Some("data-x")
     );
-    assert_eq!(get_global_prop(&mut host, "__old0_is_null"), Value::Bool(true));
+    assert_eq!(
+      get_global_prop(&mut host, "__old0_is_null"),
+      Value::Bool(true)
+    );
     assert_eq!(
       get_global_prop_utf8(&mut host, "__old1").as_deref(),
       Some("a")
     );
     assert_eq!(get_global_prop(&mut host, "__target_eq"), Value::Bool(true));
-    assert_eq!(get_global_prop(&mut host, "__observer_eq"), Value::Bool(true));
+    assert_eq!(
+      get_global_prop(&mut host, "__observer_eq"),
+      Value::Bool(true)
+    );
     assert_eq!(get_global_prop(&mut host, "__this_eq"), Value::Bool(true));
- 
+
     Ok(())
   }
 
   #[test]
   fn mutation_observer_attribute_old_value_implies_attributes_option() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
-      .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
 
     // Per the DOM Standard, specifying `attributeOldValue` without an explicit `attributes` member
@@ -2718,17 +2830,21 @@ mod tests {
       get_global_prop_utf8(&mut host, "__attr0").as_deref(),
       Some("data-q")
     );
-    assert_eq!(get_global_prop(&mut host, "__old0_is_null"), Value::Bool(true));
+    assert_eq!(
+      get_global_prop(&mut host, "__old0_is_null"),
+      Value::Bool(true)
+    );
 
     Ok(())
   }
 
   #[test]
   fn mutation_observer_delivers_child_list_records_via_microtask_checkpoint() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
-      .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
- 
+
     host.exec_script(
       "var g = this;\n\
        g.__calls = 0;\n\
@@ -2748,10 +2864,10 @@ mod tests {
        obs.observe(target, { childList: true });\n\
        target.appendChild(child);\n",
     )?;
- 
+
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
     host.perform_microtask_checkpoint()?;
- 
+
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
     assert_eq!(
       get_global_prop_utf8(&mut host, "__type0").as_deref(),
@@ -2760,14 +2876,15 @@ mod tests {
     assert!(matches!(get_global_prop(&mut host, "__added_len"), Value::Number(n) if n == 1.0));
     assert!(matches!(get_global_prop(&mut host, "__removed_len"), Value::Number(n) if n == 0.0));
     assert_eq!(get_global_prop(&mut host, "__target_eq"), Value::Bool(true));
- 
+
     Ok(())
   }
 
   #[test]
   fn mutation_observer_move_within_parent_queues_separate_remove_and_add_records() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
-      .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
 
     host.exec_script(
@@ -2806,7 +2923,7 @@ mod tests {
     assert!(matches!(get_global_prop(&mut host, "__removed1"), Value::Number(n) if n == 0.0));
     Ok(())
   }
-  
+
   #[test]
   fn mutation_observer_subtree_option_observes_descendant_attributes() -> Result<()> {
     let renderer_dom = crate::dom::parse_html(
@@ -2814,7 +2931,7 @@ mod tests {
     )
     .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
- 
+
     host.exec_script(
       "var g = this;\n\
        g.__calls = 0;\n\
@@ -2828,19 +2945,20 @@ mod tests {
        obs.observe(root, { attributes: true, subtree: true });\n\
        target.setAttribute('data-y', '1');\n",
     )?;
- 
+
     host.perform_microtask_checkpoint()?;
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
     assert_eq!(get_global_prop(&mut host, "__target_eq"), Value::Bool(true));
     Ok(())
   }
- 
+
   #[test]
   fn mutation_observer_take_records_drains_queue() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
-      .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
- 
+
     host.exec_script(
       "var g = this;\n\
        g.__calls = 0;\n\
@@ -2851,7 +2969,7 @@ mod tests {
        target.setAttribute('data-z', '1');\n\
        g.__taken_len = obs.takeRecords().length;\n",
     )?;
- 
+
     assert!(matches!(
       get_global_prop(&mut host, "__taken_len"),
       Value::Number(n) if n == 1.0
@@ -2863,13 +2981,14 @@ mod tests {
     ));
     Ok(())
   }
- 
+
   #[test]
   fn mutation_observer_disconnect_stops_future_records() -> Result<()> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
-      .expect("parse_html");
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .expect("parse_html");
     let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
- 
+
     host.exec_script(
       "var g = this;\n\
        g.__calls = 0;\n\
@@ -2879,7 +2998,7 @@ mod tests {
        obs.disconnect();\n\
        target.setAttribute('data-a', '1');\n",
     )?;
- 
+
     host.perform_microtask_checkpoint()?;
     assert!(matches!(
       get_global_prop(&mut host, "__calls"),
@@ -2887,7 +3006,7 @@ mod tests {
     ));
     Ok(())
   }
- 
+
   #[test]
   fn document_cookie_round_trip_is_deterministic() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
@@ -2949,9 +3068,7 @@ mod tests {
       // Some sandboxed CI environments may forbid binding sockets; skip in that case.
       return Ok(());
     };
-    listener
-      .set_nonblocking(true)
-      .expect("set_nonblocking");
+    listener.set_nonblocking(true).expect("set_nonblocking");
     let addr = listener.local_addr().expect("local_addr");
     let url = format!("http://{addr}/");
     let server = std::thread::spawn(move || {
@@ -3045,9 +3162,7 @@ mod tests {
       // Some sandboxed CI environments may forbid binding sockets; skip in that case.
       return Ok(());
     };
-    listener
-      .set_nonblocking(true)
-      .expect("set_nonblocking");
+    listener.set_nonblocking(true).expect("set_nonblocking");
     let addr = listener.local_addr().expect("local_addr");
     let url = format!("http://{addr}/");
     let server = std::thread::spawn(move || {
@@ -3284,7 +3399,10 @@ mod tests {
       host.run_until_idle(RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(get_global_prop_utf8(&mut host, "__unhandled").as_deref(), Some("x"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__unhandled").as_deref(),
+      Some("x")
+    );
     Ok(())
   }
 
@@ -3371,8 +3489,14 @@ mod tests {
       host.run_until_idle(RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
-    assert_eq!(get_global_prop_utf8(&mut host, "__reason").as_deref(), Some("x"));
+    assert!(matches!(
+      get_global_prop(&mut host, "__called"),
+      Value::Bool(true)
+    ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__reason").as_deref(),
+      Some("x")
+    );
     assert!(matches!(
       get_global_prop(&mut host, "__default_prevented"),
       Value::Bool(true)
@@ -3405,8 +3529,14 @@ mod tests {
       host.run_until_idle(RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
-    assert_eq!(get_global_prop_utf8(&mut host, "__reason").as_deref(), Some("x"));
+    assert!(matches!(
+      get_global_prop(&mut host, "__called"),
+      Value::Bool(true)
+    ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__reason").as_deref(),
+      Some("x")
+    );
     Ok(())
   }
 
@@ -3448,7 +3578,10 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
 
-    assert!(matches!(get_global_prop(&mut host, "__has_ctor"), Value::Bool(true)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__has_ctor"),
+      Value::Bool(true)
+    ));
     assert_eq!(
       get_global_prop_utf8(&mut host, "__ctor_name").as_deref(),
       Some("PromiseRejectionEvent")
@@ -3461,7 +3594,10 @@ mod tests {
       get_global_prop(&mut host, "__promise_then"),
       Value::Bool(true)
     ));
-    assert_eq!(get_global_prop_utf8(&mut host, "__reason").as_deref(), Some("x"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__reason").as_deref(),
+      Some("x")
+    );
     assert_eq!(
       get_global_prop_utf8(&mut host, "__reason_assign_err").as_deref(),
       Some("TypeError")
@@ -3511,9 +3647,18 @@ mod tests {
       host.run_until_idle(RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(get_global_prop_utf8(&mut host, "__order").as_deref(), Some("uh"));
-    assert_eq!(get_global_prop_utf8(&mut host, "__unhandled").as_deref(), Some("x"));
-    assert_eq!(get_global_prop_utf8(&mut host, "__handled").as_deref(), Some("x"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__order").as_deref(),
+      Some("uh")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__unhandled").as_deref(),
+      Some("x")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__handled").as_deref(),
+      Some("x")
+    );
     Ok(())
   }
 
@@ -3536,7 +3681,10 @@ mod tests {
       host.run_until_idle(RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert!(matches!(get_global_prop(&mut host, "__fired"), Value::Bool(false)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__fired"),
+      Value::Bool(false)
+    ));
     Ok(())
   }
 
@@ -3640,7 +3788,10 @@ mod tests {
       msg.contains("SRI blocked script"),
       "expected SRI error message, got {msg:?}"
     );
-    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(false)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__ran"),
+      Value::Bool(false)
+    ));
     Ok(())
   }
 
@@ -3685,7 +3836,10 @@ mod tests {
       msg.contains("integrity attribute exceeded max length"),
       "expected oversized integrity error message, got {msg:?}"
     );
-    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(false)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__ran"),
+      Value::Bool(false)
+    ));
     Ok(())
   }
 
@@ -3710,7 +3864,10 @@ mod tests {
       }})()"
     ))?;
 
-    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(false)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__ran"),
+      Value::Bool(false)
+    ));
     let script = host
       .host()
       .dom()
@@ -3767,7 +3924,10 @@ mod tests {
         "SRI blocked script {script_url}: cross-origin integrity requires a CORS-enabled fetch (missing crossorigin attribute)"
       )
     );
-    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(false)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__ran"),
+      Value::Bool(false)
+    ));
     Ok(())
   }
 
@@ -3807,7 +3967,10 @@ mod tests {
       host.run_until_idle(RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(true)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__ran"),
+      Value::Bool(true)
+    ));
     Ok(())
   }
 
@@ -3888,7 +4051,8 @@ mod tests {
     js_options.event_loop_run_limits.max_wall_time = None;
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+    let mut host =
+      WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
 
     let err = host
       .exec_script("while (true) {}")
@@ -3947,7 +4111,9 @@ mod tests {
   impl ResourceFetcher for CountingFetcher {
     fn fetch(&self, url: &str) -> Result<FetchedResource> {
       self.calls.fetch_add(1, Ordering::Relaxed);
-      Err(Error::Other(format!("CountingFetcher does not support fetch: {url}")))
+      Err(Error::Other(format!(
+        "CountingFetcher does not support fetch: {url}"
+      )))
     }
   }
 
@@ -3988,7 +4154,8 @@ mod tests {
     js_options.event_loop_run_limits.max_wall_time = None;
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+    let mut host =
+      WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
 
     let err = host
       .exec_script("function f() { return f(); }\nf();")
@@ -4038,7 +4205,8 @@ mod tests {
     js_options.event_loop_run_limits.max_wall_time = None;
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+    let mut host =
+      WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
 
     host.exec_script("Promise.resolve().then(function () { while (true) {} });")?;
     let err = host
@@ -4116,7 +4284,9 @@ mod tests {
     dom
       .set_attribute(container, "id", "c")
       .expect("set container id");
-    dom.append_child(dom.root(), container).expect("append container");
+    dom
+      .append_child(dom.root(), container)
+      .expect("append container");
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
 
     host.exec_script(
@@ -4130,7 +4300,10 @@ mod tests {
       "#,
     )?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("A"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("A")
+    );
 
     host.run_until_idle(RunLimits {
       max_tasks: 10,
@@ -4138,7 +4311,10 @@ mod tests {
       max_wall_time: Some(Duration::from_secs(1)),
     })?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("AS"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("AS")
+    );
     Ok(())
   }
 
@@ -4149,7 +4325,9 @@ mod tests {
     dom
       .set_attribute(container, "id", "c")
       .expect("set container id");
-    dom.append_child(dom.root(), container).expect("append container");
+    dom
+      .append_child(dom.root(), container)
+      .expect("append container");
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
 
     host.exec_script(
@@ -4165,7 +4343,10 @@ mod tests {
       "#,
     )?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("A"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("A")
+    );
 
     host.run_until_idle(RunLimits {
       max_tasks: 10,
@@ -4173,7 +4354,10 @@ mod tests {
       max_wall_time: Some(Duration::from_secs(1)),
     })?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("AS"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("AS")
+    );
 
     // Mutating the script again must not re-execute it.
     host.exec_script(
@@ -4189,7 +4373,10 @@ mod tests {
       max_wall_time: Some(Duration::from_secs(1)),
     })?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("ASB"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("ASB")
+    );
     Ok(())
   }
 
@@ -4244,7 +4431,9 @@ mod tests {
     dom
       .set_attribute(container, "id", "c")
       .expect("set container id");
-    dom.append_child(dom.root(), container).expect("append container");
+    dom
+      .append_child(dom.root(), container)
+      .expect("append container");
     let fetcher = Arc::new(ScriptMapFetcher::default());
     fetcher.insert(
       "https://example.invalid/a.js",
@@ -4268,7 +4457,10 @@ mod tests {
       "#,
     )?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("A"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("A")
+    );
 
     host.run_until_idle(RunLimits {
       max_tasks: 10,
@@ -4276,7 +4468,10 @@ mod tests {
       max_wall_time: Some(Duration::from_secs(1)),
     })?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("AS"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("AS")
+    );
 
     host.exec_script(
       r#"
@@ -4291,7 +4486,10 @@ mod tests {
       max_wall_time: Some(Duration::from_secs(1)),
     })?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("ASB"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("ASB")
+    );
     Ok(())
   }
 
@@ -4302,7 +4500,9 @@ mod tests {
     dom
       .set_attribute(container, "id", "c")
       .expect("set container id");
-    dom.append_child(dom.root(), container).expect("append container");
+    dom
+      .append_child(dom.root(), container)
+      .expect("append container");
 
     // Return SHIFT_JIS-encoded bytes to ensure the dynamic script loader honors the `<script charset>`
     // fallback encoding.
@@ -4327,7 +4527,10 @@ mod tests {
       "#,
     )?;
 
-    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("A"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("A")
+    );
 
     host.run_until_idle(RunLimits {
       max_tasks: 10,
@@ -4371,9 +4574,15 @@ mod import_map_tests {
     let base_url = Url::parse("https://example.com/index.html").expect("parse base URL");
 
     let warnings = host
-      .register_import_map_string(r#"{ "imports": { "react": "/vendor/react.js" } }"#, &base_url)
+      .register_import_map_string(
+        r#"{ "imports": { "react": "/vendor/react.js" } }"#,
+        &base_url,
+      )
       .expect("register import map should succeed");
-    assert!(warnings.is_empty(), "expected no warnings, got {warnings:?}");
+    assert!(
+      warnings.is_empty(),
+      "expected no warnings, got {warnings:?}"
+    );
     assert!(host.import_map_state().resolved_module_set().is_empty());
 
     let resolved = host
@@ -4404,6 +4613,9 @@ mod import_map_tests {
     let err = host
       .register_import_map_string("{", &base_url)
       .expect_err("expected invalid JSON to error");
-    assert!(matches!(err, ImportMapError::Json(_)), "unexpected error: {err:?}");
+    assert!(
+      matches!(err, ImportMapError::Json(_)),
+      "unexpected error: {err:?}"
+    );
   }
 }

@@ -20,7 +20,10 @@ fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
   // UI-side model state: tab A is active.
   let mut app_state = BrowserAppState::new();
   app_state.push_tab(BrowserTabState::new(tab_a, "about:blank".to_string()), true);
-  app_state.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+  app_state.push_tab(
+    BrowserTabState::new(tab_b, "about:newtab".to_string()),
+    false,
+  );
   assert_eq!(app_state.active_tab_id(), Some(tab_a));
 
   // Simulated UI-side texture registry: if an upload is scheduled for a tab, that tab's texture
@@ -29,7 +32,9 @@ fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
   let mut pending_uploads = FrameUploadCoalescer::new();
 
   // Worker setup: create both tabs and render them at a small viewport.
-  ui_tx.send(create_tab(tab_a, Some("about:blank"))).expect("create tab A");
+  ui_tx
+    .send(create_tab(tab_a, Some("about:blank")))
+    .expect("create tab A");
   ui_tx
     .send(create_tab(tab_b, Some("about:newtab")))
     .expect("create tab B");
@@ -76,8 +81,10 @@ fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
     }
   }
 
-  let frame_a = frame_a.unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab A; msgs={seen_msgs:?}"));
-  let frame_b = frame_b.unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab B; msgs={seen_msgs:?}"));
+  let frame_a = frame_a
+    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab A; msgs={seen_msgs:?}"));
+  let frame_b = frame_b
+    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab B; msgs={seen_msgs:?}"));
 
   // Feed both frames into the UI state model + upload planner, flushing after each to simulate the
   // browser UI's "coalesce then upload" behavior.
@@ -134,8 +141,8 @@ fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("worker disconnected"),
     }
   }
-  let activated_frame_b =
-    activated_frame_b.unwrap_or_else(|| panic!("timed out waiting for FrameReady for activated tab B"));
+  let activated_frame_b = activated_frame_b
+    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for activated tab B"));
 
   let update = app_state.apply_worker_msg(WorkerToUi::FrameReady {
     tab_id: tab_b,
@@ -157,4 +164,3 @@ fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

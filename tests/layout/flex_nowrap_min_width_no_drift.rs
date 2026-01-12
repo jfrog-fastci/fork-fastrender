@@ -13,9 +13,15 @@ fn find_child<'a>(fragment: &'a FragmentNode, box_id: usize) -> &'a FragmentNode
     .iter()
     .find(|child| match &child.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     })
     .unwrap_or_else(|| panic!("missing child fragment for box_id={box_id}"))
@@ -42,8 +48,7 @@ fn flex_nowrap_min_width_does_not_drift_children_when_width_auto() {
   );
   first.id = 1;
   let first_id = first.id;
-  let mut second =
-    BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  let mut second = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   second.id = 2;
   let second_id = second.id;
 

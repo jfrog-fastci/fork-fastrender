@@ -8,7 +8,8 @@ fn count_line_fragments(fragment: &FragmentNode) -> usize {
   let mut count = usize::from(matches!(fragment.content, FragmentContent::Line { .. }));
 
   match &fragment.content {
-    FragmentContent::RunningAnchor { snapshot, .. } | FragmentContent::FootnoteAnchor { snapshot } => {
+    FragmentContent::RunningAnchor { snapshot, .. }
+    | FragmentContent::FootnoteAnchor { snapshot } => {
       count += count_line_fragments(snapshot.as_ref());
     }
     _ => {}
@@ -79,4 +80,3 @@ fn thai_text_wraps_in_narrow_container_without_overflow_wrap_anywhere() {
     .join()
     .expect("join test thread");
 }
-

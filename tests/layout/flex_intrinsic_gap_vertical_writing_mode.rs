@@ -53,4 +53,3 @@ fn flex_intrinsic_gap_vertical_writing_mode_uses_column_gap() {
     "expected inline-size≈76, got {inline}"
   );
 }
-

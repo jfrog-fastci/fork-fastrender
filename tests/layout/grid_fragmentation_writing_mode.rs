@@ -67,12 +67,18 @@ fn grid_vertical_writing_mode_breaks_between_rows_not_inside_row() {
     AvailableSpace::Definite(60.0),
     AvailableSpace::Definite(80.0),
   );
-  let grid_fragment = grid_fc.layout(&container, &constraints).expect("layout succeeds");
+  let grid_fragment = grid_fc
+    .layout(&container, &constraints)
+    .expect("layout succeeds");
 
   let fragments = fragment_tree(&grid_fragment, &FragmentationOptions::new(50.0))
     .expect("fragmentation succeeds");
 
-  assert_eq!(fragments.len(), 2, "expected one fragment per grid row band");
+  assert_eq!(
+    fragments.len(),
+    2,
+    "expected one fragment per grid row band"
+  );
   assert!(
     !fragments_with_id(&fragments[0], 1).is_empty(),
     "first fragment should contain the first row item"

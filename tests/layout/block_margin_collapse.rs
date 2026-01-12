@@ -76,7 +76,8 @@ fn root_margins_do_not_collapse_with_children() {
     vec![child],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -136,10 +137,12 @@ fn flex_item_margins_do_not_collapse_with_children() {
   let tree = BoxTree::new(root);
   let flex_item = &tree.root.children[0];
 
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
-  let fragment = BlockFormattingContext::for_flex_item_with_factory(FormattingContextFactory::new())
-    .layout(flex_item, &constraints)
-    .expect("layout");
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment =
+    BlockFormattingContext::for_flex_item_with_factory(FormattingContextFactory::new())
+      .layout(flex_item, &constraints)
+      .expect("layout");
 
   let inner_fragment = &fragment.children[0];
   assert_approx(
@@ -174,7 +177,8 @@ fn parent_first_child_margin_collapses() {
     vec![prev, outer],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -232,7 +236,8 @@ fn parent_first_child_collapse_through_empty_block_does_not_offset_floats() {
     vec![prev, outer],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -276,7 +281,11 @@ fn clearance_prevents_parent_first_child_margin_collapse_past_floats() {
   let mut cleared_style = block_style_with_height(Some(0.0));
   cleared_style.margin_top = Some(Length::px(20.0));
   cleared_style.clear = Clear::Left;
-  let cleared = BoxNode::new_block(Arc::new(cleared_style), FormattingContextType::Block, vec![]);
+  let cleared = BoxNode::new_block(
+    Arc::new(cleared_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let outer = BoxNode::new_block(
     Arc::new(block_style_with_height(None)),
@@ -290,7 +299,8 @@ fn clearance_prevents_parent_first_child_margin_collapse_past_floats() {
     vec![prev, outer],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -316,7 +326,11 @@ fn border_prevents_parent_first_child_margin_collapse() {
   let mut outer_style = block_style_with_height(None);
   outer_style.border_top_style = BorderStyle::Solid;
   outer_style.border_top_width = Length::px(10.0);
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let root = BoxNode::new_block(
     Arc::new(block_style_with_height(None)),
@@ -356,7 +370,11 @@ fn padding_prevents_parent_first_child_margin_collapse() {
 
   let mut outer_style = block_style_with_height(None);
   outer_style.padding_top = Length::px(10.0);
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let root = BoxNode::new_block(
     Arc::new(block_style_with_height(None)),
@@ -396,7 +414,11 @@ fn overflow_creates_bfc_and_prevents_parent_child_margin_collapse() {
 
   let mut outer_style = block_style_with_height(None);
   outer_style.overflow_y = Overflow::Hidden;
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let root = BoxNode::new_block(
     Arc::new(block_style_with_height(None)),
@@ -436,7 +458,11 @@ fn overflow_clip_does_not_create_bfc_and_allows_parent_child_margin_collapse() {
 
   let mut outer_style = block_style_with_height(None);
   outer_style.overflow_y = Overflow::Clip;
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let root = BoxNode::new_block(
     Arc::new(block_style_with_height(None)),
@@ -444,7 +470,8 @@ fn overflow_clip_does_not_create_bfc_and_allows_parent_child_margin_collapse() {
     vec![prev, outer],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -475,7 +502,11 @@ fn flow_root_creates_bfc_and_prevents_parent_child_margin_collapse() {
 
   let mut outer_style = block_style_with_height(None);
   outer_style.display = Display::FlowRoot;
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let root = BoxNode::new_block(
     Arc::new(block_style_with_height(None)),
@@ -521,7 +552,11 @@ fn bfc_with_only_floats_is_not_treated_as_empty_for_margin_collapse() {
 
   let mut bfc_style = block_style_with_height(None);
   bfc_style.overflow_y = Overflow::Hidden;
-  let bfc = BoxNode::new_block(Arc::new(bfc_style), FormattingContextType::Block, vec![float_box]);
+  let bfc = BoxNode::new_block(
+    Arc::new(bfc_style),
+    FormattingContextType::Block,
+    vec![float_box],
+  );
 
   // Wrapper that would be considered collapsible-through if the BFC child were misclassified as
   // empty.
@@ -548,7 +583,8 @@ fn bfc_with_only_floats_is_not_treated_as_empty_for_margin_collapse() {
     vec![body],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -583,7 +619,8 @@ fn collapsed_through_blocks_position_border_edge_for_descendants() {
     vec![prev, float_container],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -680,7 +717,8 @@ fn parent_last_child_margin_collapses() {
     vec![outer, next],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -843,7 +881,11 @@ fn negative_trailing_margin_can_shrink_auto_height_when_not_collapsing_with_pare
   let mut outer_style = block_style_with_height(None);
   outer_style.overflow_x = Overflow::Hidden;
   outer_style.overflow_y = Overflow::Hidden;
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let after = block_with_height_and_margins(10.0, 0.0, 0.0);
 
@@ -892,7 +934,8 @@ fn collapse_through_empty_blocks() {
     vec![red, empty, blue],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -919,7 +962,8 @@ fn collapse_through_whitespace_only_blocks() {
     vec![red, empty, blue],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1053,7 +1097,8 @@ fn negative_margins_collapse_correctly() {
     vec![a, b],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1289,8 +1334,11 @@ fn overflow_bfc_with_floats_prevents_collapse_through() {
 
   let mut following_style = block_style_with_height(Some(10.0));
   following_style.margin_top = Some(Length::px(20.0));
-  let following =
-    BoxNode::new_block(Arc::new(following_style), FormattingContextType::Block, vec![]);
+  let following = BoxNode::new_block(
+    Arc::new(following_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let mut body_style = ComputedStyle::default();
   body_style.display = Display::Block;
@@ -1303,13 +1351,17 @@ fn overflow_bfc_with_floats_prevents_collapse_through() {
 
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;
-  let mut root =
-    BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![body]);
+  let mut root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![body],
+  );
   // Root element margins never collapse with children; mimic the real HTML root.
   root.id = 1;
 
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1336,7 +1388,11 @@ fn clearance_breaks_margin_collapse() {
   let mut cleared_style = block_style_with_height(Some(10.0));
   cleared_style.margin_top = Some(Length::px(10.0));
   cleared_style.clear = Clear::Left;
-  let cleared = BoxNode::new_block(Arc::new(cleared_style), FormattingContextType::Block, vec![]);
+  let cleared = BoxNode::new_block(
+    Arc::new(cleared_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let root = BoxNode::new_block(
     Arc::new(block_style_with_height(None)),
@@ -1344,7 +1400,8 @@ fn clearance_breaks_margin_collapse() {
     vec![float_box, prev, cleared],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1385,7 +1442,8 @@ fn clear_none_does_not_break_sibling_margin_collapse_in_nested_block() {
     vec![spacer, nested],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1446,7 +1504,8 @@ fn clear_with_descendant_float_prevents_collapse_through() {
     vec![prev, container],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1510,7 +1569,8 @@ fn float_does_not_break_sibling_margin_collapse() {
     vec![a, float_box, b],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1541,7 +1601,8 @@ fn trailing_margins_do_not_extend_past_floats() {
     vec![float_box, block],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1575,7 +1636,8 @@ fn float_establishes_bfc_for_margin_collapse() {
     vec![float_box],
   );
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -1611,7 +1673,11 @@ fn vertical_writing_mode_uses_block_start_end_edges_for_margin_collapse() {
   outer_style.width_keyword = None;
   outer_style.height_keyword = None;
   outer_style.padding_right = Length::px(10.0); // block-start padding in vertical-rl
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;
@@ -1620,7 +1686,11 @@ fn vertical_writing_mode_uses_block_start_end_edges_for_margin_collapse() {
   root_style.height = Some(Length::px(200.0));
   root_style.width_keyword = None;
   root_style.height_keyword = None;
-  let root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![outer]);
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![outer],
+  );
 
   let tree = BoxTree::new(root);
   let constraints = LayoutConstraints::new(

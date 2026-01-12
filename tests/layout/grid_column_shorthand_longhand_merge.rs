@@ -61,9 +61,12 @@ fn grid_column_shorthand_then_end_longhand_preserves_start_component() {
 
   let mut renderer = FastRender::new().expect("renderer");
   let pixmap = renderer.render_html(html, 200, 60).expect("rendered");
-  let bbox = find_colored_bbox(pixmap.data(), pixmap.width(), pixmap.height(), |r, g, b, a| {
-    a > 0 && r > 200 && g < 50 && b < 50
-  })
+  let bbox = find_colored_bbox(
+    pixmap.data(),
+    pixmap.width(),
+    pixmap.height(),
+    |r, g, b, a| a > 0 && r > 200 && g < 50 && b < 50,
+  )
   .expect("found red pixels");
 
   // The rectangle should start after the first 10px track and extend to the end of the 10px track
@@ -79,4 +82,3 @@ fn grid_column_shorthand_then_end_longhand_preserves_start_component() {
     bbox.2
   );
 }
-

@@ -34,10 +34,16 @@ fn flex_intrinsic_block_size_ignores_percentage_width_when_base_indefinite() {
   // intrinsic size probe. These must behave as `auto`, not collapse to 0px.
   text_block_style.width = Some(Length::percent(100.0));
 
-  let words = std::iter::repeat("word").take(30).collect::<Vec<_>>().join(" ");
+  let words = std::iter::repeat("word")
+    .take(30)
+    .collect::<Vec<_>>()
+    .join(" ");
   let text = BoxNode::new_text(Arc::new(ComputedStyle::default()), words);
-  let text_block =
-    BoxNode::new_block(Arc::new(text_block_style), FormattingContextType::Block, vec![text]);
+  let text_block = BoxNode::new_block(
+    Arc::new(text_block_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
 
   let flex = BoxNode::new_block(
     Arc::new(flex_style),
@@ -81,25 +87,46 @@ fn fixed_flex_container_with_auto_height_does_not_stretch_to_viewport() {
   let mut text_block_style = ComputedStyle::default();
   text_block_style.display = Display::Block;
 
-  let words = std::iter::repeat("word").take(30).collect::<Vec<_>>().join(" ");
+  let words = std::iter::repeat("word")
+    .take(30)
+    .collect::<Vec<_>>()
+    .join(" ");
   let text = BoxNode::new_text(Arc::new(ComputedStyle::default()), words);
-  let text_block =
-    BoxNode::new_block(Arc::new(text_block_style), FormattingContextType::Block, vec![text]);
+  let text_block = BoxNode::new_block(
+    Arc::new(text_block_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
 
-  let fixed_flex = BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Flex, vec![text_block]);
+  let fixed_flex = BoxNode::new_block(
+    Arc::new(fixed_style),
+    FormattingContextType::Flex,
+    vec![text_block],
+  );
 
-  let root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![fixed_flex]);
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![fixed_flex],
+  );
 
   let constraints = LayoutConstraints::new(
     AvailableSpace::Definite(viewport.width),
     AvailableSpace::Definite(viewport.height),
   );
-  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let fixed_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Fixed)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Fixed)
+      )
+    })
     .expect("fixed fragment present");
 
   let first_child = fixed_fragment.children.first().expect("flex child");

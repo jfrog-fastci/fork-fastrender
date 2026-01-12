@@ -101,9 +101,9 @@ use rustybuzz::Language as HbLanguage;
 use rustybuzz::UnicodeBuffer;
 use rustybuzz::Variation;
 use std::borrow::Cow;
-use std::cell::RefCell;
 #[cfg(any(test, debug_assertions))]
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
@@ -2759,7 +2759,11 @@ fn language_signature_for_script_fallback(language: &str) -> u64 {
     }),
   };
 
-  if use_traditional { 3 } else { 0 }
+  if use_traditional {
+    3
+  } else {
+    0
+  }
 }
 
 fn resolve_opentype_language(style: &ComputedStyle, font: &LoadedFont) -> Option<HbLanguage> {
@@ -3703,7 +3707,11 @@ fn assign_fonts_internal(
       let mut resolved: Option<Arc<LoadedFont>> = cached_cluster.clone().flatten();
       let mut skip_resolution = matches!(cached_cluster, Some(None));
 
-      if !skip_resolution && resolved.is_none() && !use_cluster_cache && coverage_chars_all.len() <= 1 {
+      if !skip_resolution
+        && resolved.is_none()
+        && !use_cluster_cache
+        && coverage_chars_all.len() <= 1
+      {
         let char_cache_key = descriptor.map(|descriptor| GlyphFallbackCacheKey {
           descriptor,
           ch: base_char,
@@ -4673,8 +4681,8 @@ fn emoji_preference_for_cluster(cluster_text: &str, variant: FontVariantEmoji) -
 }
 
 fn build_family_entries(style: &ComputedStyle) -> Vec<crate::text::font_fallback::FamilyEntry> {
-  use crate::text::font_fallback::FamilyEntry;
   use crate::text::font_fallback::family_name_signature;
+  use crate::text::font_fallback::FamilyEntry;
   use rustc_hash::FxHashSet;
   let mut entries = Vec::new();
   let mut seen_named: FxHashSet<u64> = FxHashSet::default();
@@ -4876,14 +4884,9 @@ fn resolve_font_for_char_with_preferences(
     if let FamilyEntry::Generic(generic) = entry {
       if generic.prefers_named_fallbacks_first() {
         for name in generic.fallback_families() {
-          if let Some(font) = font_context.match_web_font_for_char(
-            name,
-            weight,
-            style,
-            stretch,
-            oblique_angle,
-            ch,
-          ) {
+          if let Some(font) =
+            font_context.match_web_font_for_char(name, weight, style, stretch, oblique_angle, ch)
+          {
             let font = Arc::new(font);
             if picker.prefer_emoji || picker.avoid_emoji {
               let is_emoji_font = font_is_emoji_font(db, None, font.as_ref());
@@ -4914,11 +4917,10 @@ fn resolve_font_for_char_with_preferences(
       }
     }
 
-    let try_generic_named_fallbacks =
-      |generic: crate::text::font_db::GenericFamily,
-       seen_ids: &mut SeenFontIds,
-       picker: &mut FontPreferencePicker|
-       -> Option<Arc<LoadedFont>> {
+    let try_generic_named_fallbacks = |generic: crate::text::font_db::GenericFamily,
+                                       seen_ids: &mut SeenFontIds,
+                                       picker: &mut FontPreferencePicker|
+     -> Option<Arc<LoadedFont>> {
       for name in generic.fallback_families() {
         // Web fonts shadow local fonts for the same family name; if the family is declared, do not
         // fall back to local lookup (CSS Fonts 4 §5.2).
@@ -4929,12 +4931,9 @@ fn resolve_font_for_char_with_preferences(
         for weight_choice in weight_preferences {
           for slope in slope_preferences {
             for stretch_choice in stretch_preferences {
-              if let Some(id) = db.query_named_family_with_aliases(
-                name,
-                *weight_choice,
-                *slope,
-                *stretch_choice,
-              ) {
+              if let Some(id) =
+                db.query_named_family_with_aliases(name, *weight_choice, *slope, *stretch_choice)
+              {
                 if seen_ids.contains_or_insert(id) || seen_fallback_ids.contains_or_insert(id) {
                   continue;
                 }
@@ -4976,12 +4975,9 @@ fn resolve_font_for_char_with_preferences(
       for slope in slope_preferences {
         for weight_choice in weight_preferences {
           let id = match entry {
-            FamilyEntry::Named(name) => db.query_named_family_with_aliases(
-              name,
-              *weight_choice,
-              *slope,
-              *stretch_choice,
-            ),
+            FamilyEntry::Named(name) => {
+              db.query_named_family_with_aliases(name, *weight_choice, *slope, *stretch_choice)
+            }
             FamilyEntry::Generic(generic) => {
               let query = fontdb::Query {
                 families: &[generic.to_fontdb()],
@@ -5033,12 +5029,9 @@ fn resolve_font_for_char_with_preferences(
     for stretch_choice in stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in weight_preferences {
-          if let Some(id) = db.query_named_family_with_aliases(
-            family,
-            *weight_choice,
-            *slope,
-            *stretch_choice,
-          ) {
+          if let Some(id) =
+            db.query_named_family_with_aliases(family, *weight_choice, *slope, *stretch_choice)
+          {
             if seen_ids.contains_or_insert(id) {
               continue;
             }
@@ -5251,11 +5244,10 @@ fn resolve_font_for_cluster_with_preferences(
       }
     }
 
-    let try_generic_named_fallbacks =
-      |generic: crate::text::font_db::GenericFamily,
-       seen_ids: &mut SeenFontIds,
-       picker: &mut FontPreferencePicker|
-       -> Option<Arc<LoadedFont>> {
+    let try_generic_named_fallbacks = |generic: crate::text::font_db::GenericFamily,
+                                       seen_ids: &mut SeenFontIds,
+                                       picker: &mut FontPreferencePicker|
+     -> Option<Arc<LoadedFont>> {
       for name in generic.fallback_families() {
         if font_context.is_web_family_declared(name) {
           continue;
@@ -5264,23 +5256,16 @@ fn resolve_font_for_cluster_with_preferences(
         for weight_choice in weight_preferences {
           for slope in slope_preferences {
             for stretch_choice in stretch_preferences {
-              if let Some(id) = db.query_named_family_with_aliases(
-                name,
-                *weight_choice,
-                *slope,
-                *stretch_choice,
-              ) {
+              if let Some(id) =
+                db.query_named_family_with_aliases(name, *weight_choice, *slope, *stretch_choice)
+              {
                 if seen_ids.contains_or_insert(id) || seen_fallback_ids.contains_or_insert(id) {
                   continue;
                 }
                 let (cached_face, covers) = face_and_covers_needed(id);
-                if let Some(font) = consider_local_font_candidate(
-                  db,
-                  picker,
-                  id,
-                  cached_face.as_deref(),
-                  covers,
-                ) {
+                if let Some(font) =
+                  consider_local_font_candidate(db, picker, id, cached_face.as_deref(), covers)
+                {
                   return Some(font);
                 }
               }
@@ -5315,12 +5300,9 @@ fn resolve_font_for_cluster_with_preferences(
       for slope in slope_preferences {
         for weight_choice in weight_preferences {
           let id = match entry {
-            FamilyEntry::Named(name) => db.query_named_family_with_aliases(
-              name,
-              *weight_choice,
-              *slope,
-              *stretch_choice,
-            ),
+            FamilyEntry::Named(name) => {
+              db.query_named_family_with_aliases(name, *weight_choice, *slope, *stretch_choice)
+            }
             FamilyEntry::Generic(generic) => {
               let query = fontdb::Query {
                 families: &[generic.to_fontdb()],
@@ -5372,12 +5354,9 @@ fn resolve_font_for_cluster_with_preferences(
     for stretch_choice in stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in weight_preferences {
-          if let Some(id) = db.query_named_family_with_aliases(
-            family,
-            *weight_choice,
-            *slope,
-            *stretch_choice,
-          ) {
+          if let Some(id) =
+            db.query_named_family_with_aliases(family, *weight_choice, *slope, *stretch_choice)
+          {
             if seen_ids.contains_or_insert(id) {
               continue;
             }
@@ -7120,6 +7099,7 @@ mod tests {
   use crate::css::types::{
     FontFaceRule, FontFaceSource, FontFeatureValueType, FontFeatureValuesRule,
   };
+  use crate::style::font_feature_values::FontFeatureValuesRegistry;
   use crate::style::types::EastAsianVariant;
   use crate::style::types::EastAsianWidth;
   use crate::style::types::FontFeatureSetting;
@@ -7134,7 +7114,6 @@ mod tests {
   use crate::style::types::NumericSpacing;
   use crate::style::types::TextOrientation;
   use crate::style::types::WritingMode;
-  use crate::style::font_feature_values::FontFeatureValuesRegistry;
   use crate::text::font_db::FontConfig;
   use crate::text::font_db::FontDatabase;
   use crate::text::font_db::FontStretch as DbFontStretch;
@@ -9138,7 +9117,11 @@ mod tests {
 
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let font_path = manifest_dir.join("tests/fixtures/fonts/STIXTwoMath-Regular.otf");
-    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    assert!(
+      font_path.is_file(),
+      "missing test font at {}",
+      font_path.display()
+    );
     let font_url = Url::from_file_path(font_path)
       .expect("font path is absolute")
       .to_string();
@@ -9427,7 +9410,11 @@ mod tests {
     // for web font resolution too.
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let font_path = manifest_dir.join("tests/fixtures/fonts/STIXTwoMath-Regular.otf");
-    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    assert!(
+      font_path.is_file(),
+      "missing test font at {}",
+      font_path.display()
+    );
     let font_url = Url::from_file_path(&font_path)
       .expect("font path is absolute")
       .to_string();
@@ -9439,7 +9426,8 @@ mod tests {
       weight: (100, 1000),
       ..Default::default()
     };
-    ctx.load_web_fonts(&[face], None, None)
+    ctx
+      .load_web_fonts(&[face], None, None)
       .expect("load web font alias");
     assert!(
       ctx.wait_for_pending_web_fonts(Duration::from_secs(1)),
@@ -10607,7 +10595,10 @@ mod tests {
   }
 
   fn tag_value(features: &[Feature], tag: &[u8; 4]) -> Option<u32> {
-    features.iter().find(|f| f.tag.to_bytes() == *tag).map(|f| f.value)
+    features
+      .iter()
+      .find(|f| f.tag.to_bytes() == *tag)
+      .map(|f| f.value)
   }
 
   #[test]
@@ -10625,7 +10616,9 @@ mod tests {
     style
       .font_variant_alternates
       .stylesets
-      .push(FontVariantAlternateValue::Name("disambiguation".to_string()));
+      .push(FontVariantAlternateValue::Name(
+        "disambiguation".to_string(),
+      ));
 
     let features = collect_opentype_features(&style, "Inter");
     assert_eq!(tag_value(&features, b"ss02"), Some(1));
@@ -10670,7 +10663,9 @@ mod tests {
     style
       .font_variant_alternates
       .stylesets
-      .push(FontVariantAlternateValue::Name("disambiguation".to_string()));
+      .push(FontVariantAlternateValue::Name(
+        "disambiguation".to_string(),
+      ));
     style.font_feature_settings = Arc::from([FontFeatureSetting {
       tag: *b"ss02",
       value: 0,
@@ -10712,7 +10707,8 @@ mod tests {
 
     let mut style = ComputedStyle::default();
     style.font_feature_values = Arc::new(registry);
-    style.font_variant_alternates.annotation = Some(FontVariantAlternateValue::Name("note".to_string()));
+    style.font_variant_alternates.annotation =
+      Some(FontVariantAlternateValue::Name("note".to_string()));
 
     let features = collect_opentype_features(&style, "Inter");
     assert_eq!(tag_value(&features, b"nalt"), Some(4));
@@ -10733,13 +10729,10 @@ mod tests {
 
     let mut style = ComputedStyle::default();
     style.font_feature_values = Arc::new(registry);
-    style
-      .font_variant_alternates
-      .character_variants
-      .extend([
-        FontVariantAlternateValue::Name("one".to_string()),
-        FontVariantAlternateValue::Name("two".to_string()),
-      ]);
+    style.font_variant_alternates.character_variants.extend([
+      FontVariantAlternateValue::Name("one".to_string()),
+      FontVariantAlternateValue::Name("two".to_string()),
+    ]);
 
     let features = collect_opentype_features(&style, "Inter");
     assert_eq!(tag_value(&features, b"cv02"), Some(7));

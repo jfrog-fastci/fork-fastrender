@@ -43,4 +43,3 @@ fn font_smoothing_property_sets_text_item_allow_subpixel_aa_flag() {
 
   assert!(saw_text, "expected at least one non-empty text item");
 }
-

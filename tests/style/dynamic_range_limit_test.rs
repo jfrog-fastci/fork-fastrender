@@ -53,8 +53,14 @@ fn dynamic_range_limit_is_inherited() {
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
   let parent = find_by_id(&styled, "p").expect("parent");
   let child = find_by_id(&styled, "c").expect("child");
-  assert_eq!(parent.styles.dynamic_range_limit, DynamicRangeLimit::Constrained);
-  assert_eq!(child.styles.dynamic_range_limit, DynamicRangeLimit::Constrained);
+  assert_eq!(
+    parent.styles.dynamic_range_limit,
+    DynamicRangeLimit::Constrained
+  );
+  assert_eq!(
+    child.styles.dynamic_range_limit,
+    DynamicRangeLimit::Constrained
+  );
 }
 
 #[test]
@@ -66,7 +72,10 @@ fn dynamic_range_limit_parses_mix_function() {
     panic!("expected mix, got {value:?}");
   };
   assert_eq!(components.len(), 2);
-  assert!(matches!(components[0].value.as_ref(), DynamicRangeLimit::Standard));
+  assert!(matches!(
+    components[0].value.as_ref(),
+    DynamicRangeLimit::Standard
+  ));
   assert!((components[0].percentage - 25.0).abs() < 1e-6);
   assert!(matches!(
     components[1].value.as_ref(),
@@ -84,4 +93,3 @@ fn supports_dynamic_range_limit_declaration() {
   ));
   assert!(!supports_declaration("dynamic-range-limit", "bogus"));
 }
-

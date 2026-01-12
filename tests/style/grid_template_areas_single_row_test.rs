@@ -40,4 +40,3 @@ fn grid_template_areas_single_row_preserves_quotes_for_downstream_parsing() {
   assert_eq!(styles.grid_template_areas[0][0].as_deref(), Some("a"));
   assert_eq!(styles.grid_template_areas[0][1].as_deref(), Some("b"));
 }
-

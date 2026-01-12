@@ -45,7 +45,10 @@ fn assigns_named_type_kinds_for_dom_eventtarget_and_add_event_listener_options()
   let loaded = load_combined_webidl(repo_root, &sources).unwrap();
   if !loaded.missing_sources.is_empty() {
     for (label, path) in &loaded.missing_sources {
-      eprintln!("skipping semantic WebIDL test: missing {label} source at {}", path.display());
+      eprintln!(
+        "skipping semantic WebIDL test: missing {label} source at {}",
+        path.display()
+      );
     }
     return;
   }
@@ -83,11 +86,11 @@ fn assigns_named_type_kinds_for_dom_eventtarget_and_add_event_listener_options()
     .members
     .iter()
     .find_map(|m| match m.parsed.as_ref()? {
-      xtask::webidl::semantic::SemanticInterfaceMemberKind::Operation { name: Some(name), arguments, .. }
-        if name == "addEventListener" =>
-      {
-        Some(arguments)
-      }
+      xtask::webidl::semantic::SemanticInterfaceMemberKind::Operation {
+        name: Some(name),
+        arguments,
+        ..
+      } if name == "addEventListener" => Some(arguments),
       _ => None,
     })
     .expect("EventTarget.addEventListener parsed");
@@ -95,7 +98,11 @@ fn assigns_named_type_kinds_for_dom_eventtarget_and_add_event_listener_options()
   assert!(
     add_event_listener
       .iter()
-      .any(|arg| type_contains_named_kind(&arg.ty, "AddEventListenerOptions", NamedTypeKind::Dictionary)),
+      .any(|arg| type_contains_named_kind(
+        &arg.ty,
+        "AddEventListenerOptions",
+        NamedTypeKind::Dictionary
+      )),
     "expected an AddEventListenerOptions dictionary argument on EventTarget.addEventListener"
   );
 }
@@ -120,7 +127,10 @@ fn smoke_build_semantic_world_dom_and_html() {
   let loaded = load_combined_webidl(repo_root, &sources).unwrap();
   if !loaded.missing_sources.is_empty() {
     for (label, path) in &loaded.missing_sources {
-      eprintln!("skipping semantic WebIDL smoke test: missing {label} source at {}", path.display());
+      eprintln!(
+        "skipping semantic WebIDL smoke test: missing {label} source at {}",
+        path.display()
+      );
     }
     return;
   }

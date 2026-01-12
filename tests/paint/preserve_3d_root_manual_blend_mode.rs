@@ -80,4 +80,3 @@ fn preserve_3d_root_manual_mix_blend_mode_is_applied_when_compositing_scene() {
     pixel.alpha()
   );
 }
-

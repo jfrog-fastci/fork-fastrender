@@ -116,4 +116,3 @@ fn preserve_3d_inherited_clip_path_respects_fill_rule() {
   // remain background-colored.
   assert_eq!(pixel(&pixmap, 60, 50), (255, 255, 255, 255));
 }
-

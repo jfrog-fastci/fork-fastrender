@@ -55,4 +55,3 @@ fn supports_query_accepts_relative_rgb() {
   "#;
   assert_eq!(render_color(css), Rgba::rgb(1, 2, 3));
 }
-

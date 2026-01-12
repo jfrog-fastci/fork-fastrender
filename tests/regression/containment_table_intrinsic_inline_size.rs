@@ -16,7 +16,8 @@ fn golden_dir() -> PathBuf {
 }
 
 fn diff_dir() -> PathBuf {
-  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/containment_table_intrinsic_inline_size_diffs")
+  PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("target/containment_table_intrinsic_inline_size_diffs")
 }
 
 fn golden_path(name: &str) -> PathBuf {
@@ -84,4 +85,3 @@ fn containment_table_intrinsic_inline_size_regression() {
   )
   .unwrap_or_else(|e| panic!("Comparison failed: {e}"));
 }
-

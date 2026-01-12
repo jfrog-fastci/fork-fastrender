@@ -25,27 +25,41 @@ fn grid_item_percent_height_does_not_resolve_against_auto_track() {
   fixed_child_style.display = Display::Block;
   fixed_child_style.height = Some(Length::px(10.0));
   fixed_child_style.height_keyword = None;
-  let fixed_child =
-    BoxNode::new_block(Arc::new(fixed_child_style), FormattingContextType::Block, vec![]);
+  let fixed_child = BoxNode::new_block(
+    Arc::new(fixed_child_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let mut flex_style = ComputedStyle::default();
   flex_style.display = Display::Flex;
   flex_style.flex_direction = FlexDirection::Column;
   flex_style.height = Some(Length::percent(100.0));
   flex_style.height_keyword = None;
-  let flex_box = BoxNode::new_block(Arc::new(flex_style), FormattingContextType::Flex, vec![fixed_child]);
+  let flex_box = BoxNode::new_block(
+    Arc::new(flex_style),
+    FormattingContextType::Flex,
+    vec![fixed_child],
+  );
 
   let mut item_style = ComputedStyle::default();
   item_style.display = Display::Block;
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![flex_box]);
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![flex_box],
+  );
 
   let mut grid_style = ComputedStyle::default();
   grid_style.display = Display::Grid;
   grid_style.grid_auto_flow = GridAutoFlow::Column;
   grid_style.grid_auto_columns = vec![GridTrack::Length(Length::px(100.0))].into();
   // Leave rows as the default implicit `auto` track.
-  let grid =
-    BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc
@@ -54,7 +68,10 @@ fn grid_item_percent_height_does_not_resolve_against_auto_track() {
       // The grid container is in normal flow (`height:auto`). Even if the outer layout provides a
       // definite viewport block size, CSS block formatting context does not constrain the grid's
       // used height. Ensure we don't treat that definite available height as a sizing constraint.
-      &LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Definite(500.0)),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(100.0),
+        AvailableSpace::Definite(500.0),
+      ),
     )
     .expect("layout should succeed");
 

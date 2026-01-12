@@ -149,16 +149,20 @@ fn near_fit_text_does_not_wrap_due_to_subpixel_rounding() {
 "#
   );
   let wide_dom = renderer.parse_html(&wide_html).expect("parse html");
-  let wide_fragment = renderer.layout_document(&wide_dom, 1000, 200).expect("layout");
+  let wide_fragment = renderer
+    .layout_document(&wide_dom, 1000, 200)
+    .expect("layout");
   let (measured_width, text_frag_count) = wide_fragment
     .iter_fragments()
     .filter_map(|frag| match &frag.content {
-      FragmentContent::Text { text: frag_text, .. } if frag_text.as_ref() == text => {
-        Some((frag.bounds.size.width, 1usize))
-      }
+      FragmentContent::Text {
+        text: frag_text, ..
+      } if frag_text.as_ref() == text => Some((frag.bounds.size.width, 1usize)),
       _ => None,
     })
-    .fold((0.0f32, 0usize), |(w, c), (frag_w, frag_c)| (w.max(frag_w), c + frag_c));
+    .fold((0.0f32, 0usize), |(w, c), (frag_w, frag_c)| {
+      (w.max(frag_w), c + frag_c)
+    });
   assert_eq!(
     text_frag_count, 1,
     "expected single text fragment in wide layout; got {text_frag_count}"

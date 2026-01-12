@@ -93,7 +93,9 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
   }
 
   assert!(
-    items.iter().any(|item| matches!(item, DisplayItem::Text(_))),
+    items
+      .iter()
+      .any(|item| matches!(item, DisplayItem::Text(_))),
     "select control should emit text items for its label/arrow"
   );
 }

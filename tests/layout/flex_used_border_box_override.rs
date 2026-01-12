@@ -41,9 +41,16 @@ fn flex_item_used_border_box_width_override_applies_when_width_is_percentage() {
   inner_style.height_keyword = None;
 
   let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![inner]);
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![item]);
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![item],
+  );
 
   let fragment = FlexFormattingContext::new()
     .layout(
@@ -66,4 +73,3 @@ fn flex_item_used_border_box_width_override_applies_when_width_is_percentage() {
     "expected block children to reflow within the flex-resolved border-box width",
   );
 }
-

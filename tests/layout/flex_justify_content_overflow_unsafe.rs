@@ -7,7 +7,10 @@ use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
 use std::sync::Arc;
 
-fn find_child_by_id<'a>(fragment: &'a fastrender::tree::fragment_tree::FragmentNode, id: usize) -> &'a fastrender::tree::fragment_tree::FragmentNode {
+fn find_child_by_id<'a>(
+  fragment: &'a fastrender::tree::fragment_tree::FragmentNode,
+  id: usize,
+) -> &'a fastrender::tree::fragment_tree::FragmentNode {
   fragment
     .children
     .iter()

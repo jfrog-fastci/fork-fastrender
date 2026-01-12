@@ -38,4 +38,3 @@ fn abspos_inset_zero_inside_padded_container_does_not_bleed_into_previous_siblin
     (255, 0, 0, 255)
   );
 }
-

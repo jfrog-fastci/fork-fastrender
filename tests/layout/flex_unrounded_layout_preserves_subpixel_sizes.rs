@@ -46,4 +46,3 @@ fn flex_unrounded_layout_preserves_subpixel_sizes() {
     child_fragment.bounds.height()
   );
 }
-

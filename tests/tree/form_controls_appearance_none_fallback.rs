@@ -4,7 +4,10 @@ use fastrender::style::cascade::apply_styles;
 use fastrender::tree::box_generation::generate_box_tree;
 use fastrender::tree::box_tree::{BoxNode, BoxType, GeneratedPseudoElement, ReplacedType};
 
-fn find_styled_node_id_by_element_id(styled: &fastrender::style::cascade::StyledNode, id: &str) -> Option<usize> {
+fn find_styled_node_id_by_element_id(
+  styled: &fastrender::style::cascade::StyledNode,
+  id: &str,
+) -> Option<usize> {
   if styled.node.get_attribute_ref("id") == Some(id) {
     return Some(styled.node_id);
   }
@@ -18,7 +21,10 @@ fn find_box_by_styled_id<'a>(node: &'a BoxNode, styled_id: usize) -> Option<&'a 
   if node.styled_node_id == Some(styled_id) {
     return Some(node);
   }
-  node.children.iter().find_map(|child| find_box_by_styled_id(child, styled_id))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_box_by_styled_id(child, styled_id))
 }
 
 fn has_descendant_with_styled_id(node: &BoxNode, styled_id: usize) -> bool {
@@ -48,7 +54,10 @@ fn has_generated_pseudo(node: &BoxNode, pseudo: GeneratedPseudoElement) -> bool 
   if node.generated_pseudo == Some(pseudo) {
     return true;
   }
-  node.children.iter().any(|child| has_generated_pseudo(child, pseudo))
+  node
+    .children
+    .iter()
+    .any(|child| has_generated_pseudo(child, pseudo))
 }
 
 #[test]
@@ -80,11 +89,13 @@ fn button_appearance_none_preserves_dom_children() {
 
 #[test]
 fn range_appearance_none_generates_slider_track_and_thumb_boxes() {
-  let html = "<html><body><input id=\"slider\" type=\"range\" style=\"appearance:none\" /></body></html>";
+  let html =
+    "<html><body><input id=\"slider\" type=\"range\" style=\"appearance:none\" /></body></html>";
   let dom = dom::parse_html(html).expect("parse html");
   let styled = apply_styles(&dom, &StyleSheet::new());
 
-  let slider_id = find_styled_node_id_by_element_id(&styled, "slider").expect("slider styled node id");
+  let slider_id =
+    find_styled_node_id_by_element_id(&styled, "slider").expect("slider styled node id");
   let tree = generate_box_tree(&styled).expect("box tree");
 
   assert_eq!(
@@ -106,7 +117,8 @@ fn range_appearance_none_generates_slider_track_and_thumb_boxes() {
 
 #[test]
 fn file_input_appearance_none_generates_file_selector_button_box() {
-  let html = "<html><body><input id=\"file\" type=\"file\" style=\"appearance:none\" /></body></html>";
+  let html =
+    "<html><body><input id=\"file\" type=\"file\" style=\"appearance:none\" /></body></html>";
   let dom = dom::parse_html(html).expect("parse html");
   let styled = apply_styles(&dom, &StyleSheet::new());
 
@@ -125,4 +137,3 @@ fn file_input_appearance_none_generates_file_selector_button_box() {
     "expected file-selector-button pseudo-element box to be generated"
   );
 }
-

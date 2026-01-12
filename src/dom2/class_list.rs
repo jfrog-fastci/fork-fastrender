@@ -6,7 +6,10 @@ use super::{Document, DomError, NodeId, NodeKind};
 // whitespace).
 #[inline]
 fn is_dom_ascii_whitespace(c: char) -> bool {
-  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+  matches!(
+    c,
+    '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+  )
 }
 
 #[inline]

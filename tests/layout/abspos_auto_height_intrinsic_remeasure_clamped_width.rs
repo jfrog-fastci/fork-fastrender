@@ -18,14 +18,23 @@ use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::Size;
 use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let mut stack = vec![fragment];
   while let Some(node) = stack.pop() {
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -106,7 +115,8 @@ fn abspos_auto_height_remeasures_intrinsic_height_at_clamped_width() {
   let fc = BlockFormattingContext::new();
   let fragment = fc.layout(&root, &constraints).expect("layout");
 
-  let abs_fragment = find_fragment_by_box_id(&fragment, 2).expect("abspos flex fragment should exist");
+  let abs_fragment =
+    find_fragment_by_box_id(&fragment, 2).expect("abspos flex fragment should exist");
   let img_fragment = find_fragment_by_box_id(&fragment, 3).expect("image fragment should exist");
 
   let expected_height = 40.0 * (156.0 / 139.0);

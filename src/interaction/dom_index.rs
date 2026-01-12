@@ -47,19 +47,13 @@ impl DomIndex {
       if !in_template_contents {
         if let Some(element_id) = node.get_attribute_ref("id") {
           // Keep the first occurrence to match typical getElementById behavior.
-          id_by_element_id
-            .entry(element_id.to_string())
-            .or_insert(id);
+          id_by_element_id.entry(element_id.to_string()).or_insert(id);
         }
       }
 
       let child_in_template_contents = in_template_contents || node.is_template_element();
       for child in node.children.iter_mut().rev() {
-        stack.push((
-          child as *mut DomNode,
-          id,
-          child_in_template_contents,
-        ));
+        stack.push((child as *mut DomNode, id, child_in_template_contents));
       }
     }
 

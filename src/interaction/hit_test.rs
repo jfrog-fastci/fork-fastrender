@@ -10,7 +10,12 @@ use std::ptr;
 use super::image_maps;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+  value.trim_matches(|c: char| {
+    matches!(
+      c,
+      '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+    )
+  })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,18 +403,19 @@ pub fn hit_test_dom(
     // MVP: styled node ids are the cascade DOM pre-order ids.
     let dom_node_id = styled_node_id;
 
-    let (semantic_dom_node_id, mut kind, mut href) = match resolve_semantic_target(&dom_index, dom_node_id) {
-      SemanticResolveResult::Hit {
-        node_id,
-        kind,
-        href,
-      } => (node_id, kind, href),
-      SemanticResolveResult::InertSubtree => {
-        // Stop and return None if the target falls within an inert subtree.
-        return None;
-      }
-      SemanticResolveResult::Invalid => continue,
-    };
+    let (semantic_dom_node_id, mut kind, mut href) =
+      match resolve_semantic_target(&dom_index, dom_node_id) {
+        SemanticResolveResult::Hit {
+          node_id,
+          kind,
+          href,
+        } => (node_id, kind, href),
+        SemanticResolveResult::InertSubtree => {
+          // Stop and return None if the target falls within an inert subtree.
+          return None;
+        }
+        SemanticResolveResult::Invalid => continue,
+      };
 
     let mut resolved_dom_node_id = semantic_dom_node_id;
 
@@ -423,7 +429,9 @@ pub fn hit_test_dom(
         .node(dom_node_id)
         .and_then(|node| node.get_attribute_ref("usemap"))
       {
-        if let Some(image_point) = image_maps::local_point_in_fragment(fragment_tree, fragment, point) {
+        if let Some(image_point) =
+          image_maps::local_point_in_fragment(fragment_tree, fragment, point)
+        {
           if let Some(area) = image_maps::hit_test_image_map(dom, usemap, image_point) {
             if let Some(area_id) = dom_index.id_for_ptr(area as *const DomNode) {
               resolved_dom_node_id = area_id;
@@ -526,7 +534,8 @@ mod tests {
   #[test]
   fn non_ascii_whitespace_label_for_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
-    let html = format!("<html><body><label for=\"{nbsp}x\">Label</label><input id=\"x\"></body></html>");
+    let html =
+      format!("<html><body><label for=\"{nbsp}x\">Label</label><input id=\"x\"></body></html>");
     let dom = crate::dom::parse_html(&html).expect("parse");
     let label_id = find_element_node_id(&dom, "label");
 
@@ -545,7 +554,8 @@ mod tests {
 
   #[test]
   fn cursor_kind_for_hover_link_is_pointer() {
-    let dom = crate::dom::parse_html("<html><body><a href=\"x\">Link</a></body></html>").expect("parse");
+    let dom =
+      crate::dom::parse_html("<html><body><a href=\"x\">Link</a></body></html>").expect("parse");
     let a_id = find_element_node_id(&dom, "a");
     let hit = HitTestResult {
       box_id: 1,
@@ -573,7 +583,8 @@ mod tests {
 
   #[test]
   fn cursor_kind_for_hover_checkbox_input_is_default() {
-    let dom = crate::dom::parse_html("<html><body><input type=\"checkbox\"></body></html>").expect("parse");
+    let dom =
+      crate::dom::parse_html("<html><body><input type=\"checkbox\"></body></html>").expect("parse");
     let input_id = find_element_node_id(&dom, "input");
     let hit = HitTestResult {
       box_id: 1,
@@ -587,7 +598,8 @@ mod tests {
 
   #[test]
   fn cursor_kind_for_hover_textarea_is_text() {
-    let dom = crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
+    let dom =
+      crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
     let textarea_id = find_element_node_id(&dom, "textarea");
     let hit = HitTestResult {
       box_id: 1,

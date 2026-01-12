@@ -54,4 +54,3 @@ fn blurred_box_shadow_uses_css_blur_radius_semantics() {
     "expected shadow to get lighter with distance, near={near:?} far={far:?}"
   );
 }
-

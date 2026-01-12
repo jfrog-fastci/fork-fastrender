@@ -6,11 +6,14 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use super::support::{
-  create_tab_msg_with_cancel, format_messages, key_action, navigate_msg, scroll_msg, viewport_changed_msg,
-  DEFAULT_TIMEOUT,
+  create_tab_msg_with_cancel, format_messages, key_action, navigate_msg, scroll_msg,
+  viewport_changed_msg, DEFAULT_TIMEOUT,
 };
 
-fn wait_for_initial_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::RenderedFrame {
+fn wait_for_initial_frame(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> fastrender::ui::RenderedFrame {
   super::support::recv_for_tab(rx, tab_id, DEFAULT_TIMEOUT * 2, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
@@ -37,7 +40,10 @@ fn wait_for_scroll_response(
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+          WorkerToUi::ScrollStateUpdated {
+            tab_id: got,
+            scroll,
+          } if *got == tab_id => {
             if pred(scroll.viewport.y) {
               scroll_y = Some(scroll.viewport.y);
             }
@@ -115,7 +121,8 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
 
   // PageDown / Space.
   tx.send(scroll_msg(tab_id, (0.0, step_y), None)).unwrap();
-  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 1.0);
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 1.0);
   assert!(
     (frame_y - step_y).abs() < 1.0,
     "expected PageDown to scroll by ~{step_y} (0.9*viewport height), got {frame_y}"
@@ -124,7 +131,9 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
 
   // PageUp / Shift+Space.
   tx.send(scroll_msg(tab_id, (0.0, -step_y), None)).unwrap();
-  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next < y - 1.0 || next <= 1.0);
+  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
+    next < y - 1.0 || next <= 1.0
+  });
   assert!(
     frame_y <= 1.0,
     "expected PageUp to scroll back toward the top, got {frame_y}"
@@ -134,9 +143,13 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
   // End.
   tx.send(scroll_msg(tab_id, (0.0, 1_000_000_000.0), None))
     .unwrap();
-  let (_scroll_y, frame_y) =
-    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 10.0 && next > 3_000.0);
-  assert!(frame_y > 3_000.0, "expected End to scroll near bottom, got {frame_y}");
+  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
+    next > y + 10.0 && next > 3_000.0
+  });
+  assert!(
+    frame_y > 3_000.0,
+    "expected End to scroll near bottom, got {frame_y}"
+  );
   y = frame_y;
 
   // Home.
@@ -190,9 +203,13 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
   // `End` should scroll near the bottom when nothing is focused.
   tx.send(key_action(tab_id, fastrender::interaction::KeyAction::End))
     .unwrap();
-  let (_scroll_y, frame_y) =
-    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 10.0 && next > 3_000.0);
-  assert!(frame_y > 3_000.0, "expected End to scroll near bottom, got {frame_y}");
+  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
+    next > y + 10.0 && next > 3_000.0
+  });
+  assert!(
+    frame_y > 3_000.0,
+    "expected End to scroll near bottom, got {frame_y}"
+  );
 
   // `Home` should scroll back to the top.
   tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Home))
@@ -212,8 +229,9 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
     fastrender::interaction::KeyAction::ShiftEnd,
   ))
   .unwrap();
-  let (_scroll_y, frame_y) =
-    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 10.0 && next > 3_000.0);
+  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
+    next > y + 10.0 && next > 3_000.0
+  });
   assert!(
     frame_y > 3_000.0,
     "expected Shift+End to scroll near bottom, got {frame_y}"
@@ -235,8 +253,11 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
 
   // `Space` should scroll down by ~0.9 * viewport height.
   let step_y = (viewport_css.1 as f32) * 0.9;
-  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Space))
-    .unwrap();
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::Space,
+  ))
+  .unwrap();
   let (_scroll_y, frame_y) =
     wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 1.0);
   assert!(
@@ -247,8 +268,11 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
 
   // ArrowDown / ArrowUp should scroll by a small fixed step when nothing is focused.
   let arrow_step = 40.0;
-  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::ArrowDown))
-    .unwrap();
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ArrowDown,
+  ))
+  .unwrap();
   let (_scroll_y, frame_y) =
     wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 1.0);
   assert!(
@@ -257,8 +281,11 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
   );
   y = frame_y;
 
-  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::ArrowUp))
-    .unwrap();
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ArrowUp,
+  ))
+  .unwrap();
   let (_scroll_y, frame_y) =
     wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next < y - 1.0);
   assert!(

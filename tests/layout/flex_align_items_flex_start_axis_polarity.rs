@@ -27,7 +27,10 @@ fn find_fragment_with_id<'a>(
   fragment: &'a fastrender::FragmentNode,
   id: usize,
 ) -> Option<&'a fastrender::FragmentNode> {
-  if fragment.box_id().is_some_and(|fragment_id| fragment_id == id) {
+  if fragment
+    .box_id()
+    .is_some_and(|fragment_id| fragment_id == id)
+  {
     return Some(fragment);
   }
   for child in fragment.children.iter() {
@@ -81,7 +84,13 @@ fn flex_align_items_flex_start_vertical_rl_respects_axis_polarity() {
   let child_id = 10_001;
   let child = sized_child(child_id, 10.0, 10.0);
 
-  let fragment = layout_flex(container_id, container_style.clone(), vec![child], 100.0, 40.0);
+  let fragment = layout_flex(
+    container_id,
+    container_style.clone(),
+    vec![child],
+    100.0,
+    40.0,
+  );
   let child_fragment = find_fragment_with_id(&fragment, child_id).expect("child fragment");
   assert_approx(
     child_fragment.bounds.x(),

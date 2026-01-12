@@ -77,7 +77,9 @@ mod tests {
       .map(|arg| arg.to_string_lossy().into_owned())
       .collect();
     assert!(
-      args.iter().any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
+      args
+        .iter()
+        .any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
       "expected command args to include scripts/cargo_agent.sh; got {args:?}"
     );
   }
@@ -91,7 +93,9 @@ mod tests {
       .map(|arg| arg.to_string_lossy().into_owned())
       .collect();
     assert!(
-      args.iter().any(|arg| arg.ends_with("scripts/run_limited.sh")),
+      args
+        .iter()
+        .any(|arg| arg.ends_with("scripts/run_limited.sh")),
       "expected command args to include scripts/run_limited.sh; got {args:?}"
     );
     assert!(

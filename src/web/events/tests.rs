@@ -358,16 +358,14 @@ fn capture_and_bubble_ordering_across_tree() {
       ..Default::default()
     },
   );
-  assert!(
-    dispatch_event(
-      EventTargetId::Node(c),
-      &mut event,
-      &doc,
-      &registry,
-      &mut invoker
-    )
-    .unwrap()
-  );
+  assert!(dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker
+  )
+  .unwrap());
 
   assert_eq!(
     invoker.calls.as_slice(),
@@ -1158,8 +1156,8 @@ fn detached_node_event_path_does_not_include_document_or_window() {
 
 #[test]
 fn template_contents_event_path_does_not_include_template_document_or_window() {
-  let root = parse_html("<!doctype html><template><div id=in></div></template><div id=out></div>")
-    .unwrap();
+  let root =
+    parse_html("<!doctype html><template><div id=in></div></template><div id=out></div>").unwrap();
   let doc = Document::from_renderer_dom(&root);
 
   let mut template_id: Option<NodeId> = None;
@@ -1168,7 +1166,9 @@ fn template_contents_event_path_does_not_include_template_document_or_window() {
 
   for id in doc.subtree_preorder(doc.root()) {
     let NodeKind::Element {
-      tag_name, attributes, ..
+      tag_name,
+      attributes,
+      ..
     } = &doc.node(id).kind
     else {
       continue;

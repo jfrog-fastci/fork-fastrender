@@ -21,16 +21,19 @@ use std::sync::Arc;
 
 use rquickjs::class::{Trace, Tracer};
 use rquickjs::function::{Opt, This};
-use rquickjs::{Class, Ctx, FromJs, Function, IntoJs, JsLifetime, Object, Result as JsResult, Value};
+use rquickjs::{
+  Class, Ctx, FromJs, Function, IntoJs, JsLifetime, Object, Result as JsResult, Value,
+};
 
 use fastrender::js::resolve_url;
 
-use fastrender::resource::{
-  DocumentOrigin, FetchDestination, PolicyError, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
-};
 use fastrender::resource::web_fetch::{
   execute_web_fetch, Body, Headers, HeadersGuard, RequestCredentials, RequestMode, RequestRedirect,
   Response as CoreResponse, ResponseType, WebFetchError, WebFetchExecutionContext,
+};
+use fastrender::resource::{
+  DocumentOrigin, FetchDestination, PolicyError, ReferrerPolicy, ResourceAccessPolicy,
+  ResourceFetcher,
 };
 
 #[derive(Clone)]
@@ -95,7 +98,11 @@ fn object_entries<'js>(ctx: &Ctx<'js>, obj: Object<'js>) -> JsResult<Vec<Vec<Str
 }
 
 /// Parse a `HeadersInit` value and append its entries into `headers`.
-fn fill_headers_from_init<'js>(ctx: Ctx<'js>, headers: &mut Headers, init: Value<'js>) -> JsResult<()> {
+fn fill_headers_from_init<'js>(
+  ctx: Ctx<'js>,
+  headers: &mut Headers,
+  init: Value<'js>,
+) -> JsResult<()> {
   if init.is_undefined() {
     return Ok(());
   }
@@ -103,7 +110,10 @@ fn fill_headers_from_init<'js>(ctx: Ctx<'js>, headers: &mut Headers, init: Value
   // `HeadersInit` includes `Headers`, sequence-of-pairs, and record.
   if let Ok(existing) = Class::<JsHeaders>::from_value(&init) {
     let existing = existing.borrow();
-    map_web_fetch_result(ctx.clone(), headers.fill_from_pairs(existing.inner.raw_pairs()))?;
+    map_web_fetch_result(
+      ctx.clone(),
+      headers.fill_from_pairs(existing.inner.raw_pairs()),
+    )?;
     return Ok(());
   }
 
@@ -238,7 +248,10 @@ impl<'js> JsRequest<'js> {
   fn new_empty(ctx: Ctx<'js>, url: String) -> JsResult<Self> {
     let mode = RequestMode::Cors;
     let guard = headers_guard_for_mode(mode);
-    let headers = Class::instance(ctx.clone(), JsHeaders::from_core(Headers::new_with_guard(guard)))?;
+    let headers = Class::instance(
+      ctx.clone(),
+      JsHeaders::from_core(Headers::new_with_guard(guard)),
+    )?;
     Ok(Self {
       method: "GET".to_string(),
       url,
@@ -275,7 +288,8 @@ impl<'js> JsRequest<'js> {
   }
 
   fn to_core_request(&self, ctx: Ctx<'js>) -> JsResult<fastrender::resource::web_fetch::Request> {
-    let mut req = fastrender::resource::web_fetch::Request::new(self.method.clone(), self.url.clone());
+    let mut req =
+      fastrender::resource::web_fetch::Request::new(self.method.clone(), self.url.clone());
     req.credentials = self.credentials;
     req.redirect = self.redirect;
     req.referrer = self.referrer.clone();
@@ -503,7 +517,10 @@ impl<'js> JsResponse<'js> {
 
     let headers = Class::instance(ctx.clone(), JsHeaders::from_core(headers))?;
     let body = match body.0 {
-      Some(body) => Some(map_web_fetch_result(ctx.clone(), Body::new(body.into_bytes()))?),
+      Some(body) => Some(map_web_fetch_result(
+        ctx.clone(),
+        Body::new(body.into_bytes()),
+      )?),
       None => None,
     };
     Ok(Self {

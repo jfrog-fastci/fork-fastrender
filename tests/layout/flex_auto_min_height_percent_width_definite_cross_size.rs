@@ -71,7 +71,11 @@ fn flex_auto_min_height_percent_width_uses_container_cross_size() {
   let mut details_style = ComputedStyle::default();
   details_style.display = Display::Block;
   details_style.height = Some(Length::px(10.0));
-  let mut details = BoxNode::new_block(Arc::new(details_style), FormattingContextType::Block, Vec::new());
+  let mut details = BoxNode::new_block(
+    Arc::new(details_style),
+    FormattingContextType::Block,
+    Vec::new(),
+  );
   details.id = 14;
 
   let mut flex_style = ComputedStyle::default();

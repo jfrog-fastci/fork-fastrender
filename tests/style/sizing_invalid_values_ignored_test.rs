@@ -51,4 +51,3 @@ fn width_none_keyword_is_invalid_but_max_width_none_is_valid() {
   assert_eq!(styles.max_width, None);
   assert_eq!(styles.max_width_keyword, None);
 }
-

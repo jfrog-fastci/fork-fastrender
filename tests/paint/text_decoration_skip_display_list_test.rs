@@ -71,7 +71,10 @@ fn find_background_rect_bounds(list: &DisplayList, color: Rgba) -> Rect {
   }
 
   assert!(found, "expected background rect not found for {color:?}");
-  Rect::from_points(fastrender::geometry::Point::new(min_x, min_y), fastrender::geometry::Point::new(max_x, max_y))
+  Rect::from_points(
+    fastrender::geometry::Point::new(min_x, min_y),
+    fastrender::geometry::Point::new(max_x, max_y),
+  )
 }
 
 fn underline_covers_inline_pos(item: &TextDecorationItem, inline_pos: f32) -> bool {
@@ -166,7 +169,12 @@ fn text_items_preserve_variable_font_wght_variations() {
     runs.len(),
   );
 
-  runs.sort_by(|a, b| a.origin.y.partial_cmp(&b.origin.y).unwrap_or(std::cmp::Ordering::Equal));
+  runs.sort_by(|a, b| {
+    a.origin
+      .y
+      .partial_cmp(&b.origin.y)
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
   let first = runs[0];
   let second = runs[1];
 
@@ -320,19 +328,20 @@ fn text_decoration_skip_spaces_clips_leading_and_trailing_spacers() {
 
   let list = render_display_list(html, 240, 80);
   let underline = list.items().iter().find_map(|item| match item {
-    DisplayItem::TextDecoration(decoration) => decoration
-      .decorations
-      .iter()
-      .find_map(|deco| deco.underline.as_ref().map(|stroke| (decoration.line_width, stroke))),
+    DisplayItem::TextDecoration(decoration) => decoration.decorations.iter().find_map(|deco| {
+      deco
+        .underline
+        .as_ref()
+        .map(|stroke| (decoration.line_width, stroke))
+    }),
     _ => None,
   });
   let (line_width, stroke) = underline.expect("expected underline");
   let (min_start, max_end) = match stroke.segments.as_ref() {
-    Some(segments) if !segments.is_empty() => segments
-      .iter()
-      .fold((f32::INFINITY, f32::NEG_INFINITY), |(min_start, max_end), (start, end)| {
-        (min_start.min(*start), max_end.max(*end))
-      }),
+    Some(segments) if !segments.is_empty() => segments.iter().fold(
+      (f32::INFINITY, f32::NEG_INFINITY),
+      |(min_start, max_end), (start, end)| (min_start.min(*start), max_end.max(*end)),
+    ),
     _ => (0.0, line_width),
   };
   assert!(

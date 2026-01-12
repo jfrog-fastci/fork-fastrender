@@ -2,7 +2,9 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::paint::display_list::ResolvedFilter;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::paint::svg_filter::{ColorInterpolationFilters, FilterInput, FilterPrimitive, TransferFn};
+use fastrender::paint::svg_filter::{
+  ColorInterpolationFilters, FilterInput, FilterPrimitive, TransferFn,
+};
 use fastrender::FastRender;
 
 #[test]
@@ -122,10 +124,16 @@ fn filter_url_data_component_transfer_invert_srgb_resolves_to_svg_filter() {
     .expect("expected SvgFilter to be present in stacking context filters");
 
   assert_eq!(svg_filter.steps.len(), 1);
-  assert_eq!(svg_filter.color_interpolation_filters, ColorInterpolationFilters::LinearRGB);
+  assert_eq!(
+    svg_filter.color_interpolation_filters,
+    ColorInterpolationFilters::LinearRGB
+  );
 
   let step = &svg_filter.steps[0];
-  assert_eq!(step.color_interpolation_filters, Some(ColorInterpolationFilters::SRGB));
+  assert_eq!(
+    step.color_interpolation_filters,
+    Some(ColorInterpolationFilters::SRGB)
+  );
 
   match &step.primitive {
     FilterPrimitive::ComponentTransfer { input, r, g, b, a } => {
@@ -137,7 +145,10 @@ fn filter_url_data_component_transfer_invert_srgb_resolves_to_svg_filter() {
       for tf in [r, g, b] {
         match tf {
           TransferFn::Table { values } => assert_eq!(values.as_slice(), &[1.0, 0.0]),
-          other => panic!("expected TransferFn::Table for invert transfer, got {:?}", other),
+          other => panic!(
+            "expected TransferFn::Table for invert transfer, got {:?}",
+            other
+          ),
         }
       }
       assert!(

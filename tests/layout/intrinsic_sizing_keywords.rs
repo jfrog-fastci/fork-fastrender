@@ -163,7 +163,10 @@ fn height_fit_content_keyword_uses_max_content_when_min_content_exceeds_max_cont
 
   let root = block_container(vec![child]);
   let fragment = ctx
-    .layout(&root, &LayoutConstraints::definite_width(max_inline + 200.0))
+    .layout(
+      &root,
+      &LayoutConstraints::definite_width(max_inline + 200.0),
+    )
     .expect("layout");
   let child_fragment = &fragment.children[0];
   assert_approx(

@@ -83,7 +83,10 @@ fn browser_tab_exceptions_do_not_abort_subsequent_scripts() -> fastrender::Resul
     .diagnostics_snapshot()
     .expect("expected diagnostics to be enabled");
   assert!(
-    diagnostics.js_exceptions.iter().any(|e| e.message.contains("boom")),
+    diagnostics
+      .js_exceptions
+      .iter()
+      .any(|e| e.message.contains("boom")),
     "expected thrown exception to be recorded; got {:?}",
     diagnostics.js_exceptions
   );
@@ -189,7 +192,8 @@ fn browser_tab_js_exception_stack_includes_external_script_url() -> fastrender::
 }
 
 #[test]
-fn browser_tab_module_script_exception_stack_includes_inline_module_url() -> fastrender::Result<()> {
+fn browser_tab_module_script_exception_stack_includes_inline_module_url() -> fastrender::Result<()>
+{
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -238,7 +242,8 @@ fn browser_tab_module_script_exception_stack_includes_inline_module_url() -> fas
 }
 
 #[test]
-fn browser_tab_module_script_exception_stack_includes_external_module_url() -> fastrender::Result<()> {
+fn browser_tab_module_script_exception_stack_includes_external_module_url() -> fastrender::Result<()>
+{
   let url = "https://example.com/a.js";
 
   let options = RenderOptions::new()
@@ -246,7 +251,8 @@ fn browser_tab_module_script_exception_stack_includes_external_module_url() -> f
     .with_diagnostics_level(DiagnosticsLevel::Basic);
   let mut js_options = fastrender::js::JsExecutionOptions::default();
   js_options.supports_module_scripts = true;
-  let mut tab = BrowserTab::from_html_with_vmjs_and_js_execution_options("", options.clone(), js_options)?;
+  let mut tab =
+    BrowserTab::from_html_with_vmjs_and_js_execution_options("", options.clone(), js_options)?;
   tab.register_script_source(url, r#"throw new Error("boom");"#);
 
   let html = format!(

@@ -89,11 +89,7 @@ fn harness_microtasks_run_after_each_timer_task() -> Result<()> {
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(
     h.take_log(),
-    vec![
-      "t1".to_string(),
-      "m1".to_string(),
-      "t2".to_string(),
-    ]
+    vec!["t1".to_string(), "m1".to_string(), "t2".to_string(),]
   );
   Ok(())
 }

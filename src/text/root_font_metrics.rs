@@ -26,4 +26,3 @@ pub struct RootFontMetrics {
   /// Root element used line height in CSS px.
   pub root_used_line_height_px: f32,
 }
-

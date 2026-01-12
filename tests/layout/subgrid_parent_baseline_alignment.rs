@@ -8,9 +8,9 @@ use fastrender::style::types::LineHeight;
 use fastrender::style::values::Length;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
+use fastrender::FormattingContextType;
 use fastrender::FragmentContent;
 use fastrender::FragmentNode;
-use fastrender::FormattingContextType;
 use std::sync::Arc;
 
 fn find_first_baseline_offset(fragment: &FragmentNode) -> Option<f32> {
@@ -112,7 +112,11 @@ fn subgrid_virtual_items_do_not_disable_parent_baseline_alignment() {
   assert_eq!(fragment.children.len(), 2, "grid should have two items");
   let a = &fragment.children[0];
   let b = &fragment.children[1];
-  assert_eq!(b.children.len(), 2, "subgrid should have two item fragments");
+  assert_eq!(
+    b.children.len(),
+    2,
+    "subgrid should have two item fragments"
+  );
 
   let baseline_offset_a = baseline_offset_with_fallback(a);
   let baseline_offset_b = baseline_offset_with_fallback(b);

@@ -26,4 +26,3 @@ fn bundled_system_ui_prefers_roboto_flex_over_dejavu_sans() {
     "expected bundled system-ui to resolve to Roboto Flex"
   );
 }
-

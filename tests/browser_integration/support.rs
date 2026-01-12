@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use fastrender::dom2::NodeId;
 use fastrender::js::{
-  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, ScriptElementSpec, WindowRealm, WindowRealmConfig,
-  WindowRealmHost,
+  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, ScriptElementSpec, WindowRealm,
+  WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::{BrowserDocumentDom2, BrowserTabHost, BrowserTabJsExecutor, Result};
 
@@ -36,8 +36,8 @@ pub(crate) struct ExecutorWithWindow<E> {
 
 impl<E> ExecutorWithWindow<E> {
   pub(crate) fn new(inner: E) -> Self {
-    let window =
-      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create WindowRealm");
     Self {
       inner,
       host_ctx: (),
@@ -112,7 +112,9 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
 impl<E> WindowRealmHost for ExecutorWithWindow<E> {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    let ExecutorWithWindow {
+      host_ctx, window, ..
+    } = self;
     (host_ctx, window)
   }
 }
@@ -353,7 +355,8 @@ pub fn rgba_at(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
 
 #[cfg(feature = "browser_ui")]
 use fastrender::ui::messages::{
-  KeyAction, NavigationReason, PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker, WorkerToUi,
+  KeyAction, NavigationReason, PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker,
+  WorkerToUi,
 };
 
 #[cfg(feature = "browser_ui")]
@@ -591,7 +594,11 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       continue;
     }
     if let WorkerToUi::SetClipboardText { tab_id, text } = msg {
-      let _ = writeln!(&mut out, "SetClipboardText(tab={}, text={text:?})", tab_id.0);
+      let _ = writeln!(
+        &mut out,
+        "SetClipboardText(tab={}, text={text:?})",
+        tab_id.0
+      );
       continue;
     }
 

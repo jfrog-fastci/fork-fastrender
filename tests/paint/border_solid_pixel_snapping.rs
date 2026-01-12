@@ -30,7 +30,12 @@ fn solid_border_does_not_bleed_into_adjacent_pixels() {
 
   let outside = pixmap.pixel(2, 2).expect("outside pixel");
   assert_eq!(
-    (outside.red(), outside.green(), outside.blue(), outside.alpha()),
+    (
+      outside.red(),
+      outside.green(),
+      outside.blue(),
+      outside.alpha()
+    ),
     (255, 102, 0, 255),
     "expected pixel outside border to remain the background color"
   );
@@ -42,4 +47,3 @@ fn solid_border_does_not_bleed_into_adjacent_pixels() {
     "expected border pixel to be solid white"
   );
 }
-

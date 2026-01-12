@@ -2,13 +2,15 @@ use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::{EventLoop, RunLimits, RunUntilIdleOutcome};
 use fastrender::resource::{
-  origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher,
+  origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
+  ResourceFetcher,
 };
 use fastrender::web::events::{
   AddEventListenerOptions, DomError, Event, EventListenerInvoker, EventTargetId, ListenerId,
 };
 use fastrender::{
-  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, RenderOptions, Result,
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, RenderOptions,
+  Result,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -89,7 +91,11 @@ struct RecordingInvoker {
 }
 
 impl EventListenerInvoker for RecordingInvoker {
-  fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> std::result::Result<(), DomError> {
+  fn invoke(
+    &mut self,
+    listener_id: ListenerId,
+    event: &mut Event,
+  ) -> std::result::Result<(), DomError> {
     self
       .invocations
       .lock()
@@ -143,7 +149,12 @@ fn run_script_case(
   crossorigin_attr: Option<&str>,
   response_allow_origin: Option<&str>,
   response_allow_credentials: bool,
-) -> Result<(NodeId, RecordedRequest, Vec<String>, Vec<RecordedInvocation>)> {
+) -> Result<(
+  NodeId,
+  RecordedRequest,
+  Vec<String>,
+  Vec<RecordedInvocation>,
+)> {
   let document_url = "https://example.com/index.html";
   let script_url = "https://cross.example/script.js";
   let crossorigin_snippet = crossorigin_attr
@@ -220,7 +231,10 @@ fn run_script_case(
   );
   let request = requests[0].clone();
   assert_eq!(request.referrer_url.as_deref(), Some(document_url));
-  assert_eq!(request.client_origin.as_deref(), Some(expected_origin.as_str()));
+  assert_eq!(
+    request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 
   let executed = executed.lock().expect("executed lock").clone();
   let invocations = invocations.lock().expect("invocations lock").clone();
@@ -312,25 +326,31 @@ fn script_crossorigin_use_credentials_requires_acac_and_rejects_wildcard() -> Re
     assert_eq!(request.destination, FetchDestination::ScriptCors);
     assert_eq!(request.credentials_mode, FetchCredentialsMode::Include);
     assert!(executed.is_empty(), "expected wildcard ACAO to be rejected");
-    assert_eq!(invocations.len(), 1, "expected an error event for wildcard ACAO");
+    assert_eq!(
+      invocations.len(),
+      1,
+      "expected an error event for wildcard ACAO"
+    );
 
     // Matching origin requires Access-Control-Allow-Credentials: true.
-    let (_script_node, request, executed, invocations) = run_script_case(
-      Some("use-credentials"),
-      Some("https://example.com"),
-      false,
-    )?;
+    let (_script_node, request, executed, invocations) =
+      run_script_case(Some("use-credentials"), Some("https://example.com"), false)?;
     assert_eq!(request.credentials_mode, FetchCredentialsMode::Include);
     assert!(executed.is_empty(), "expected missing ACAC to fail");
-    assert_eq!(invocations.len(), 1, "expected an error event for missing ACAC");
+    assert_eq!(
+      invocations.len(),
+      1,
+      "expected an error event for missing ACAC"
+    );
 
-    let (_script_node, request, executed, invocations) = run_script_case(
-      Some("use-credentials"),
-      Some("https://example.com"),
-      true,
-    )?;
+    let (_script_node, request, executed, invocations) =
+      run_script_case(Some("use-credentials"), Some("https://example.com"), true)?;
     assert_eq!(request.credentials_mode, FetchCredentialsMode::Include);
-    assert_eq!(executed.len(), 1, "expected script to execute with ACAC=true");
+    assert_eq!(
+      executed.len(),
+      1,
+      "expected script to execute with ACAC=true"
+    );
     assert!(
       invocations.is_empty(),
       "expected no error event; got {invocations:?}"

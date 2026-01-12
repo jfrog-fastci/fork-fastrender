@@ -1,7 +1,9 @@
-use webidl_ir::{IdlType, NamedType, NamedTypeKind};
-use webidl_js_runtime::conversions::{convert_to_interface, convert_to_interface_opaque, to_interface_opaque};
-use webidl_js_runtime::{VmJsRuntime, WebIdlJsRuntime};
 use vm_js::Value;
+use webidl_ir::{IdlType, NamedType, NamedTypeKind};
+use webidl_js_runtime::conversions::{
+  convert_to_interface, convert_to_interface_opaque, to_interface_opaque,
+};
+use webidl_js_runtime::{VmJsRuntime, WebIdlJsRuntime};
 
 fn interface_type(name: &str) -> IdlType {
   IdlType::Named(NamedType {

@@ -1,8 +1,8 @@
 use fastrender::api::VmJsBrowserTabExecutor;
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::{
-  Clock, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, VirtualClock, WindowRealm,
-  WindowRealmConfig, WindowRealmHost,
+  Clock, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, VirtualClock,
+  WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::{
   BrowserTab, BrowserTabHost, BrowserTabJsExecutor, DiagnosticsLevel, Error, RenderOptions, Result,
@@ -35,8 +35,8 @@ struct ExecutorWithWindow<E> {
 
 impl<E> ExecutorWithWindow<E> {
   fn new(inner: E) -> Self {
-    let window =
-      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create WindowRealm");
     Self {
       inner,
       host_ctx: (),
@@ -111,7 +111,9 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
 impl<E> WindowRealmHost for ExecutorWithWindow<E> {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    let ExecutorWithWindow {
+      host_ctx, window, ..
+    } = self;
     (host_ctx, window)
   }
 }
@@ -281,7 +283,11 @@ fn browser_tab_parses_with_scripting_enabled_semantics() -> Result<()> {
      </html>"#;
 
   let options = RenderOptions::new().with_viewport(64, 64);
-  let mut tab = BrowserTab::from_html(html, options, ExecutorWithWindow::new(NoopExecutor::default()))?;
+  let mut tab = BrowserTab::from_html(
+    html,
+    options,
+    ExecutorWithWindow::new(NoopExecutor::default()),
+  )?;
   let pixmap = tab.render_frame()?;
 
   assert_eq!(
@@ -315,8 +321,11 @@ fn browser_tab_runs_queued_tasks_and_microtasks_and_rerenders() -> Result<()> {
     .with_viewport(64, 64)
     .with_timeout(Some(Duration::from_secs(1)));
 
-  let mut tab =
-    BrowserTab::from_html(html, options, ExecutorWithWindow::new(QueuedMutationExecutor::default()))?;
+  let mut tab = BrowserTab::from_html(
+    html,
+    options,
+    ExecutorWithWindow::new(QueuedMutationExecutor::default()),
+  )?;
   let frame_a = tab.render_frame()?;
   assert!(tab.render_if_needed()?.is_none());
 
@@ -340,8 +349,7 @@ fn browser_tab_runs_queued_tasks_and_microtasks_and_rerenders() -> Result<()> {
     Some("1")
   );
 
-  let frame_b = tab
-    .render_frame()?;
+  let frame_b = tab.render_frame()?;
   assert_ne!(frame_b.data(), frame_a.data(), "expected pixels to change");
   assert!(tab.render_if_needed()?.is_none());
   Ok(())
@@ -651,30 +659,42 @@ fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<
 }
 
 #[test]
-fn browser_tab_with_event_loop_executes_parser_inserted_scripts_against_partial_dom() -> Result<()> {
+fn browser_tab_with_event_loop_executes_parser_inserted_scripts_against_partial_dom() -> Result<()>
+{
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
-  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let executor = ParseTimeDomAssertionExecutor {
+    log: Arc::clone(&log),
+  };
   let options = RenderOptions::new().with_viewport(1, 1);
 
   let html = "<!doctype html><script>assert-partial-dom</script><div id=after></div>";
   let event_loop = EventLoop::<BrowserTabHost>::new();
-  let tab = BrowserTab::from_html_with_event_loop(html, options, ExecutorWithWindow::new(executor), event_loop)?;
+  let tab = BrowserTab::from_html_with_event_loop(
+    html,
+    options,
+    ExecutorWithWindow::new(executor),
+    event_loop,
+  )?;
 
   assert!(
     find_element_by_id(tab.dom(), "after").is_some(),
     "expected parsing to resume after executing the script"
   );
   assert_eq!(
-    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .as_slice(),
     &["assert-partial-dom".to_string()]
   );
   Ok(())
 }
 
 #[test]
-fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_dom() -> Result<()> {
+fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_dom() -> Result<()>
+{
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let site = TempSite::new();
@@ -685,7 +705,9 @@ fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_
   );
 
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
-  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let executor = ParseTimeDomAssertionExecutor {
+    log: Arc::clone(&log),
+  };
   let options = RenderOptions::new().with_viewport(1, 1);
 
   let mut tab = BrowserTab::from_html("", options.clone(), ExecutorWithWindow::new(executor))?;
@@ -697,7 +719,10 @@ fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_
     "expected parsing to resume after executing the script"
   );
   assert_eq!(
-    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .as_slice(),
     &["assert-partial-dom".to_string()]
   );
   Ok(())
@@ -726,7 +751,9 @@ fn browser_tab_navigate_to_url_resolves_script_src_against_parse_time_base_url()
   );
 
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
-  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let executor = ParseTimeDomAssertionExecutor {
+    log: Arc::clone(&log),
+  };
   let options = RenderOptions::new().with_viewport(1, 1);
 
   let mut tab = BrowserTab::from_html("", options.clone(), ExecutorWithWindow::new(executor))?;
@@ -734,7 +761,10 @@ fn browser_tab_navigate_to_url_resolves_script_src_against_parse_time_base_url()
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
   assert_eq!(
-    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .as_slice(),
     &["A_ROOT".to_string(), "B_SUB".to_string()]
   );
   Ok(())
@@ -756,14 +786,19 @@ fn browser_tab_navigate_to_url_honors_async_and_defer_scheduling() -> Result<()>
   );
 
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
-  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let executor = ParseTimeDomAssertionExecutor {
+    log: Arc::clone(&log),
+  };
   let options = RenderOptions::new().with_viewport(1, 1);
 
   let mut tab = BrowserTab::from_html("", options.clone(), ExecutorWithWindow::new(executor))?;
   tab.navigate_to_url(&index_url, options)?;
 
   assert_eq!(
-    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .as_slice(),
     &["ASYNC".to_string()],
     "expected async script to execute during parsing for fast sources, while defer remains pending"
   );
@@ -773,7 +808,10 @@ fn browser_tab_navigate_to_url_honors_async_and_defer_scheduling() -> Result<()>
     RunUntilIdleOutcome::Idle
   );
   assert_eq!(
-    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .as_slice(),
     &["ASYNC".to_string(), "DEFER".to_string()]
   );
   Ok(())
@@ -917,7 +955,10 @@ fn browser_tab_navigate_to_url_executes_inline_and_external_scripts_at_parse_tim
   );
 
   assert_eq!(
-    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .as_slice(),
     &["inline-check".to_string(), "external-check".to_string()]
   );
   Ok(())
@@ -1046,7 +1087,9 @@ fn browser_tab_executes_vm_js_scripts_that_mutate_dom_and_pixels() -> Result<()>
   let dom = tab.dom();
   let html_id = dom.document_element().expect("documentElement");
   assert_eq!(
-    dom.class_name(html_id).map_err(|e| Error::Other(e.to_string()))?,
+    dom
+      .class_name(html_id)
+      .map_err(|e| Error::Other(e.to_string()))?,
     Some("x")
   );
 
@@ -1120,8 +1163,7 @@ fn browser_tab_vm_js_promise_jobs_run_in_microtask_checkpoint() -> Result<()> {
         </script>
       </body>
     </html>"#;
-  let options = RenderOptions::new()
-    .with_viewport(1, 1);
+  let options = RenderOptions::new().with_viewport(1, 1);
   let tab = BrowserTab::from_html(html, options, VmJsBrowserTabExecutor::default())?;
 
   // Parser-inserted scripts run at parse time; by the time the constructor returns the microtask
@@ -1131,7 +1173,8 @@ fn browser_tab_vm_js_promise_jobs_run_in_microtask_checkpoint() -> Result<()> {
     .document_element()
     .ok_or_else(|| Error::Other("expected documentElement".to_string()))?;
   assert_eq!(
-    tab.dom()
+    tab
+      .dom()
       .get_attribute(html_id, "data-x")
       .map_err(|e| Error::Other(e.to_string()))?,
     Some("1")
@@ -1172,7 +1215,8 @@ fn browser_tab_vm_js_set_timeout_fires_after_virtual_clock_advance() -> Result<(
   );
   let box_id = find_element_by_id(tab.dom(), "box").expect("#box id");
   assert_eq!(
-    tab.dom()
+    tab
+      .dom()
       .get_attribute(box_id, "data-phase")
       .map_err(|e| Error::Other(e.to_string()))?,
     Some("start"),
@@ -1185,7 +1229,8 @@ fn browser_tab_vm_js_set_timeout_fires_after_virtual_clock_advance() -> Result<(
     RunUntilIdleOutcome::Idle
   );
   assert_eq!(
-    tab.dom()
+    tab
+      .dom()
       .get_attribute(box_id, "data-phase")
       .map_err(|e| Error::Other(e.to_string()))?,
     Some("timer")

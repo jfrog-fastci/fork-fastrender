@@ -109,7 +109,12 @@ fn wait_for_frame_with_meta(
       assert_eq!(got, tab_id);
       frame
     }
-    WorkerToUi::NavigationFailed { tab_id: got, url, error, .. } => {
+    WorkerToUi::NavigationFailed {
+      tab_id: got,
+      url,
+      error,
+      ..
+    } => {
       assert_eq!(got, tab_id);
       panic!("navigation failed for {url}: {error}");
     }
@@ -205,9 +210,7 @@ fn viewport_changed_after_navigation_emits_new_frame_with_updated_dimensions() {
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
-  ui_tx
-    .send(support::create_tab_msg(tab_id, None))
-    .unwrap();
+  ui_tx.send(support::create_tab_msg(tab_id, None)).unwrap();
   // Keep the initial navigation small so the test is fast.
   ui_tx
     .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
@@ -256,9 +259,7 @@ fn viewport_changed_updates_dpr_and_pixmap_scale() {
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
-  ui_tx
-    .send(support::create_tab_msg(tab_id, None))
-    .unwrap();
+  ui_tx.send(support::create_tab_msg(tab_id, None)).unwrap();
   ui_tx
     .send(support::viewport_changed_msg(tab_id, (90, 60), 1.0))
     .unwrap();

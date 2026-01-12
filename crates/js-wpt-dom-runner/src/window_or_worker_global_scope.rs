@@ -100,7 +100,9 @@ pub(crate) fn forgiving_base64_decode(input: &str) -> Result<Vec<u8>, ()> {
   }
 
   // 6. Decode.
-  let decoded = general_purpose::STANDARD.decode(stripped.as_bytes()).map_err(|_| ())?;
+  let decoded = general_purpose::STANDARD
+    .decode(stripped.as_bytes())
+    .map_err(|_| ())?;
   if decoded.len() > MAX_OUTPUT_LEN {
     return Err(());
   }
@@ -128,4 +130,3 @@ pub(crate) fn latin1_encode(input: &str) -> Result<Vec<u8>, ()> {
 fn is_base64_alphabet_byte(b: u8) -> bool {
   matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/')
 }
-

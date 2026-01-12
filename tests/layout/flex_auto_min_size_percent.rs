@@ -9,8 +9,8 @@ use fastrender::style::types::FlexDirection;
 use fastrender::style::types::Overflow;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::box_tree::ReplacedType;
 use fastrender::Size;
 use std::sync::Arc;
 
@@ -27,7 +27,11 @@ fn flex_auto_min_size_percent_width_clamps_to_preferred_size() {
   child_style.overflow_y = Overflow::Visible;
 
   let text = BoxNode::new_text(Arc::new(ComputedStyle::default()), "X".repeat(200));
-  let child_box = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![text]);
+  let child_box = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -74,8 +78,11 @@ fn flex_auto_min_size_percent_width_clamps_even_when_container_width_auto() {
   child_style.overflow_y = Overflow::Visible;
 
   let text = BoxNode::new_text(Arc::new(ComputedStyle::default()), "X".repeat(200));
-  let child_box =
-    BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![text]);
+  let child_box = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),

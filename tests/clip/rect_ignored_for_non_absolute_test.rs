@@ -56,4 +56,3 @@ fn clip_rect_is_ignored_unless_absolutely_positioned() {
   // This pixel would be clipped if `clip` incorrectly applied to relative positioning.
   assert_eq!(pixel(&pixmap, 5, 3), (255, 0, 0, 255));
 }
-

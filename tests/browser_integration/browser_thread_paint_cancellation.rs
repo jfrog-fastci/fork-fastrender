@@ -1,8 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::cancel::CancelGens;
 use fastrender::render_control::StageHeartbeat;
+use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{TabId, WorkerToUi};
 use std::time::{Duration, Instant};
 
@@ -66,7 +66,9 @@ fn paint_cancellation_during_navigation_does_not_surface_error_page() {
             // Keep debug logs (they are useful when investigating flakes) but ignore them for
             // assertions.
           }
-          WorkerToUi::NavigationCommitted { tab_id: got, url, .. } if *got == tab_id => {
+          WorkerToUi::NavigationCommitted {
+            tab_id: got, url, ..
+          } if *got == tab_id => {
             assert_eq!(url, "about:test-heavy");
             saw_nav_committed = true;
           }

@@ -33,12 +33,12 @@
 use crate::layout::utils::content_size_from_box_sizing;
 use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
-use crate::style::RootFontMetrics;
-use crate::style::types::Overflow;
 use crate::style::types::BoxSizing;
+use crate::style::types::Overflow;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::style::PhysicalSide;
+use crate::style::RootFontMetrics;
 use crate::text::font_loader::FontContext;
 
 /// Result of width computation
@@ -232,7 +232,16 @@ pub fn compute_block_width(
   };
   let width_value = inline_size_value
     .as_ref()
-    .map(|len| resolve_length(*len, containing_width, style, viewport, root_font_metrics, font_context))
+    .map(|len| {
+      resolve_length(
+        *len,
+        containing_width,
+        style,
+        viewport,
+        root_font_metrics,
+        font_context,
+      )
+    })
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
   // Scrollbars are rendered inside the scrollport, consuming space without affecting the border box
   // size. We model this by treating reserved scrollbar gutters like extra padding while also
@@ -240,7 +249,8 @@ pub fn compute_block_width(
   //
   // For `box-sizing: border-box`, `content_size_from_box_sizing` already accounts for padding (and
   // thus scrollbar gutters) so no adjustment is necessary.
-  let width_value = if reserved_scrollbar_gutter > 0.0 && style.box_sizing == BoxSizing::ContentBox {
+  let width_value = if reserved_scrollbar_gutter > 0.0 && style.box_sizing == BoxSizing::ContentBox
+  {
     width_value.map(|w| (w - reserved_scrollbar_gutter).max(0.0))
   } else {
     width_value
@@ -335,7 +345,7 @@ pub fn compute_block_width_with_auto_margins(
         root_font_metrics,
         font_context,
       )
-        .unwrap_or(0.0),
+      .unwrap_or(0.0),
     )
   };
 
@@ -351,7 +361,7 @@ pub fn compute_block_width_with_auto_margins(
         root_font_metrics,
         font_context,
       )
-        .unwrap_or(0.0),
+      .unwrap_or(0.0),
     )
   };
 
@@ -364,7 +374,16 @@ pub fn compute_block_width_with_auto_margins(
   };
   let width_value = inline_size_value
     .as_ref()
-    .map(|len| resolve_length(*len, containing_width, style, viewport, root_font_metrics, font_context))
+    .map(|len| {
+      resolve_length(
+        *len,
+        containing_width,
+        style,
+        viewport,
+        root_font_metrics,
+        font_context,
+      )
+    })
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
 
   // Compute the resolved values
@@ -431,8 +450,8 @@ fn margin_value_for_side(
     root_font_metrics,
     font_context,
   )
-    .map(MarginValue::Length)
-    .unwrap_or(MarginValue::Auto)
+  .map(MarginValue::Length)
+  .unwrap_or(MarginValue::Auto)
 }
 
 fn resolve_padding_for_side(
@@ -449,7 +468,14 @@ fn resolve_padding_for_side(
     PhysicalSide::Bottom => style.padding_bottom,
     PhysicalSide::Left => style.padding_left,
   };
-  let resolved = resolve_length(length, containing_width, style, viewport, root_font_metrics, font_context);
+  let resolved = resolve_length(
+    length,
+    containing_width,
+    style,
+    viewport,
+    root_font_metrics,
+    font_context,
+  );
   if resolved.is_finite() {
     resolved.max(0.0)
   } else {
@@ -471,7 +497,14 @@ fn resolve_border_for_side(
     PhysicalSide::Bottom => style.used_border_bottom_width(),
     PhysicalSide::Left => style.used_border_left_width(),
   };
-  let resolved = resolve_length(length, containing_width, style, viewport, root_font_metrics, font_context);
+  let resolved = resolve_length(
+    length,
+    containing_width,
+    style,
+    viewport,
+    root_font_metrics,
+    font_context,
+  );
   if resolved.is_finite() {
     resolved.max(0.0)
   } else {

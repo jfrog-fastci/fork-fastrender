@@ -210,8 +210,12 @@ fn collapsed_column_removal_adjusts_colspans_and_offsets() {
     "collapsed column cell should not be laid out"
   );
 
-  let a = cells.get(&'A').expect("cell in first visible column present");
-  let c = cells.get(&'C').expect("cell in last visible column present");
+  let a = cells
+    .get(&'A')
+    .expect("cell in first visible column present");
+  let c = cells
+    .get(&'C')
+    .expect("cell in last visible column present");
   let s = cells.get(&'S').expect("spanning cell present");
 
   let expected_c_x = a.rect.x() + a.rect.width();
@@ -278,8 +282,12 @@ fn collapsed_column_removal_adjusts_colspans_and_offsets_rtl() {
     "collapsed column cell should not be laid out"
   );
 
-  let a = cells.get(&'A').expect("cell in first visible column present");
-  let c = cells.get(&'C').expect("cell in last visible column present");
+  let a = cells
+    .get(&'A')
+    .expect("cell in first visible column present");
+  let c = cells
+    .get(&'C')
+    .expect("cell in last visible column present");
   let s = cells.get(&'S').expect("spanning cell present");
 
   assert!(
@@ -355,8 +363,12 @@ fn collapsed_column_removal_adjusts_colspans_and_offsets_collapsed_border_model(
     "collapsed column cell should not be laid out"
   );
 
-  let a = cells.get(&'A').expect("cell in first visible column present");
-  let c = cells.get(&'C').expect("cell in last visible column present");
+  let a = cells
+    .get(&'A')
+    .expect("cell in first visible column present");
+  let c = cells
+    .get(&'C')
+    .expect("cell in last visible column present");
   let s = cells.get(&'S').expect("spanning cell present");
 
   let expected_c_x = a.rect.x() + a.rect.width();
@@ -423,8 +435,12 @@ fn collapsed_column_removal_adjusts_colspans_and_offsets_collapsed_border_model_
     "collapsed column cell should not be laid out"
   );
 
-  let a = cells.get(&'A').expect("cell in first visible column present");
-  let c = cells.get(&'C').expect("cell in last visible column present");
+  let a = cells
+    .get(&'A')
+    .expect("cell in first visible column present");
+  let c = cells
+    .get(&'C')
+    .expect("cell in last visible column present");
   let s = cells.get(&'S').expect("spanning cell present");
 
   assert!(
@@ -489,7 +505,10 @@ fn column_visibility_collapse_removes_column_from_layout() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed column cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column cell should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
   let c = cells.get(&'C').expect("cell C present");
@@ -547,7 +566,10 @@ fn column_visibility_collapse_removes_column_from_layout_rtl() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed column cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column cell should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
   let c = cells.get(&'C').expect("cell C present");
@@ -605,7 +627,10 @@ fn row_visibility_collapse_removes_row_from_layout() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed row cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed row cell should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
   let c = cells.get(&'C').expect("cell C present");
@@ -1408,8 +1433,14 @@ fn column_group_span_visibility_collapse_removes_columns_from_layout() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed column-group cell should not be laid out");
-  assert!(!cells.contains_key(&'C'), "collapsed column-group cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column-group cell should not be laid out"
+  );
+  assert!(
+    !cells.contains_key(&'C'),
+    "collapsed column-group cell should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
   let d = cells.get(&'D').expect("cell D present");
@@ -1543,8 +1574,14 @@ fn column_group_span_visibility_collapse_removes_columns_from_layout_rtl() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed column-group cell should not be laid out");
-  assert!(!cells.contains_key(&'C'), "collapsed column-group cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column-group cell should not be laid out"
+  );
+  assert!(
+    !cells.contains_key(&'C'),
+    "collapsed column-group cell should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
   let d = cells.get(&'D').expect("cell D present");
@@ -1684,7 +1721,10 @@ fn column_visibility_collapse_removes_extra_border_spacing_gap() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed column cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column cell should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
   let c = cells.get(&'C').expect("cell C present");
@@ -1737,7 +1777,10 @@ fn column_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed column cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column cell should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
   let c = cells.get(&'C').expect("cell C present");
@@ -1785,7 +1828,10 @@ fn row_visibility_collapse_removes_extra_border_spacing_gap() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed row cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed row cell should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
   let c = cells.get(&'C').expect("cell C present");

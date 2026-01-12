@@ -117,4 +117,3 @@ fn overflow_clip_margin_preserves_rounded_corners_legacy() {
   let mut renderer = create_stacking_context_bounds_renderer_legacy();
   overflow_clip_margin_preserves_rounded_corners(&mut renderer);
 }
-

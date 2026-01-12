@@ -30,8 +30,8 @@ fn quickjs_url_and_urlsearchparams_bindings() {
             }
           })()
         "#,
-      )
-      .unwrap();
+        )
+        .unwrap();
       assert_eq!(ctor_invalid_name, "TypeError");
 
       let setter_invalid_name: String = ctx
@@ -114,7 +114,9 @@ fn quickjs_url_and_urlsearchparams_bindings() {
         .unwrap();
       assert_eq!(ctor_record, "a=b&c=d");
 
-      let get_null: bool = ctx.eval("new URLSearchParams('').get('missing') === null").unwrap();
+      let get_null: bool = ctx
+        .eval("new URLSearchParams('').get('missing') === null")
+        .unwrap();
       assert!(get_null);
 
       let delete_value: String = ctx

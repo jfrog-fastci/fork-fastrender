@@ -57,7 +57,10 @@ impl ResourceFetcher for MapFetcher {
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
     // Ensure tests fail loudly if the request is not for an image.
     assert!(
-      matches!(req.destination, FetchDestination::Image | FetchDestination::ImageCors),
+      matches!(
+        req.destination,
+        FetchDestination::Image | FetchDestination::ImageCors
+      ),
       "unexpected fetch destination {:?} for {}",
       req.destination,
       req.url
@@ -97,10 +100,20 @@ fn display_list_img_empty_bytes_renders_ua_placeholder() {
   // Chrome paints a thin border around broken images.
   let border_px = pixmap.pixel(0, 0).expect("border pixel in bounds");
   assert_eq!(
-    (border_px.red(), border_px.green(), border_px.blue(), border_px.alpha()),
+    (
+      border_px.red(),
+      border_px.green(),
+      border_px.blue(),
+      border_px.alpha()
+    ),
     (192, 192, 192, 255),
     "expected broken-image border to be light gray, got {:?}",
-    (border_px.red(), border_px.green(), border_px.blue(), border_px.alpha())
+    (
+      border_px.red(),
+      border_px.green(),
+      border_px.blue(),
+      border_px.alpha()
+    )
   );
 
   // Chrome's broken-image placeholder keeps the image box transparent (so author-provided
@@ -109,12 +122,22 @@ fn display_list_img_empty_bytes_renders_ua_placeholder() {
   assert!(
     icon_px.red() > 100 && icon_px.green() > 100 && icon_px.blue() > 100 && icon_px.alpha() == 255,
     "expected broken-image icon to paint a light pixel, got {:?}",
-    (icon_px.red(), icon_px.green(), icon_px.blue(), icon_px.alpha())
+    (
+      icon_px.red(),
+      icon_px.green(),
+      icon_px.blue(),
+      icon_px.alpha()
+    )
   );
 
   let interior_px = pixmap.pixel(15, 15).expect("interior pixel in bounds");
   assert_eq!(
-    (interior_px.red(), interior_px.green(), interior_px.blue(), interior_px.alpha()),
+    (
+      interior_px.red(),
+      interior_px.green(),
+      interior_px.blue(),
+      interior_px.alpha()
+    ),
     (0, 0, 0, 255),
     "expected placeholder interior to remain transparent over black background",
   );
@@ -149,14 +172,22 @@ fn display_list_img_alt_text_wraps_within_replaced_box() {
   // top of the replaced box and further down.
   let border_px = pixmap.pixel(0, 0).expect("border pixel in bounds");
   assert_eq!(
-    (border_px.red(), border_px.green(), border_px.blue(), border_px.alpha()),
+    (
+      border_px.red(),
+      border_px.green(),
+      border_px.blue(),
+      border_px.alpha()
+    ),
     (192, 192, 192, 255),
     "expected broken-image border to be light gray"
   );
 
   let top_red = count_red(&pixmap, 0, 0, 60, 20);
   let bottom_red = count_red(&pixmap, 0, 30, 60, 60);
-  assert!(top_red > 0, "expected red alt text pixels near top (got {top_red})");
+  assert!(
+    top_red > 0,
+    "expected red alt text pixels near top (got {top_red})"
+  );
   assert!(
     bottom_red > 0,
     "expected wrapped alt text to reach bottom half (got {bottom_red})"
@@ -181,10 +212,7 @@ fn display_list_img_marked_placeholder_png_renders_ua_broken_image_icon() {
 
   let mut res = FetchedResource::new(
     bytes,
-    Some(
-      fastrender::resource::offline_placeholder_png_content_type()
-        .to_string(),
-    ),
+    Some(fastrender::resource::offline_placeholder_png_content_type().to_string()),
   );
   res.status = Some(200);
   res.final_url = Some(url.to_string());
@@ -252,5 +280,8 @@ fn display_list_img_unmarked_transparent_png_does_not_render_ua_broken_image_ico
   // With a successfully decoded (but fully transparent) image, the black page background should
   // remain visible.
   let px = pixmap.pixel(4, 4).expect("pixel in bounds");
-  assert_eq!((px.red(), px.green(), px.blue(), px.alpha()), (0, 0, 0, 255));
+  assert_eq!(
+    (px.red(), px.green(), px.blue(), px.alpha()),
+    (0, 0, 0, 255)
+  );
 }

@@ -12,8 +12,8 @@ use super::CachingFetcherConfig;
 use super::FetchContextKind;
 use super::FetchRequest;
 use super::FetchedResource;
-use super::HttpRequest;
 use super::HttpCachePolicy;
+use super::HttpRequest;
 use super::ReferrerPolicy;
 use super::ResourceFetcher;
 use super::ResourcePolicy;
@@ -191,25 +191,27 @@ fn read_all_with_deadline<R: Read>(
     .unwrap_or(max_chunk_size)
     .clamp(DISK_READ_MIN_CHUNK_SIZE, max_chunk_size);
 
-  DISK_READ_SCRATCH.with(|scratch| -> std::result::Result<(), ReadAllWithDeadlineError> {
-    let mut buf = scratch.borrow_mut();
-    if buf.len() < desired_chunk_size {
-      buf.resize(desired_chunk_size, 0);
-    }
-    let mut deadline_counter = 0usize;
-    loop {
-      if let Err(err) = render_control::check_active_periodic(&mut deadline_counter, 1, stage) {
-        return Err(ReadAllWithDeadlineError::Timeout(err));
+  DISK_READ_SCRATCH.with(
+    |scratch| -> std::result::Result<(), ReadAllWithDeadlineError> {
+      let mut buf = scratch.borrow_mut();
+      if buf.len() < desired_chunk_size {
+        buf.resize(desired_chunk_size, 0);
       }
-      match reader.read(&mut buf[..desired_chunk_size]) {
-        Ok(0) => break,
-        Ok(n) => bytes.write_all(&buf[..n])?,
-        Err(err) if err.kind() == ErrorKind::Interrupted => continue,
-        Err(_err) => return Err(ReadAllWithDeadlineError::Io),
+      let mut deadline_counter = 0usize;
+      loop {
+        if let Err(err) = render_control::check_active_periodic(&mut deadline_counter, 1, stage) {
+          return Err(ReadAllWithDeadlineError::Timeout(err));
+        }
+        match reader.read(&mut buf[..desired_chunk_size]) {
+          Ok(0) => break,
+          Ok(n) => bytes.write_all(&buf[..n])?,
+          Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+          Err(_err) => return Err(ReadAllWithDeadlineError::Io),
+        }
       }
-    }
-    Ok(())
-  })?;
+      Ok(())
+    },
+  )?;
   Ok(bytes.into_inner())
 }
 
@@ -227,33 +229,35 @@ fn read_prefix_with_deadline<R: Read>(
   let desired_chunk_size = max_bytes.clamp(DISK_READ_MIN_CHUNK_SIZE, max_chunk_size);
   let mut written = 0usize;
 
-  DISK_READ_SCRATCH.with(|scratch| -> std::result::Result<(), ReadAllWithDeadlineError> {
-    let mut buf = scratch.borrow_mut();
-    if buf.len() < desired_chunk_size {
-      buf.resize(desired_chunk_size, 0);
-    }
-    let mut deadline_counter = 0usize;
-    loop {
-      if written >= max_bytes {
-        break;
+  DISK_READ_SCRATCH.with(
+    |scratch| -> std::result::Result<(), ReadAllWithDeadlineError> {
+      let mut buf = scratch.borrow_mut();
+      if buf.len() < desired_chunk_size {
+        buf.resize(desired_chunk_size, 0);
       }
-      if let Err(err) = render_control::check_active_periodic(&mut deadline_counter, 1, stage) {
-        return Err(ReadAllWithDeadlineError::Timeout(err));
-      }
-      let remaining = max_bytes - written;
-      let to_read = remaining.min(desired_chunk_size);
-      match reader.read(&mut buf[..to_read]) {
-        Ok(0) => break,
-        Ok(n) => {
-          bytes.write_all(&buf[..n])?;
-          written = written.saturating_add(n);
+      let mut deadline_counter = 0usize;
+      loop {
+        if written >= max_bytes {
+          break;
         }
-        Err(err) if err.kind() == ErrorKind::Interrupted => continue,
-        Err(_err) => return Err(ReadAllWithDeadlineError::Io),
+        if let Err(err) = render_control::check_active_periodic(&mut deadline_counter, 1, stage) {
+          return Err(ReadAllWithDeadlineError::Timeout(err));
+        }
+        let remaining = max_bytes - written;
+        let to_read = remaining.min(desired_chunk_size);
+        match reader.read(&mut buf[..to_read]) {
+          Ok(0) => break,
+          Ok(n) => {
+            bytes.write_all(&buf[..n])?;
+            written = written.saturating_add(n);
+          }
+          Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+          Err(_err) => return Err(ReadAllWithDeadlineError::Io),
+        }
       }
-    }
-    Ok(())
-  })?;
+      Ok(())
+    },
+  )?;
   Ok(bytes.into_inner())
 }
 
@@ -725,7 +729,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     .and_then(|bytes| serde_json::from_slice::<StoredMetadata>(&bytes).ok())
     .map(|meta| (meta.stored_at, meta.len as u64))
     .unwrap_or_else(|| {
-      let len = fs::metadata(&legacy_data_path).map(|m| m.len()).unwrap_or(0);
+      let len = fs::metadata(&legacy_data_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
       (now_seconds(), len)
     });
 
@@ -924,7 +930,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       referrer_policy: request.referrer_policy,
       credentials_mode: request.credentials_mode,
     };
-    let vary_key = super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())?;
+    let vary_key =
+      super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())?;
 
     let stored_at_for_key = |key: &str| -> Option<u64> {
       let data_path = self.data_path_for_key(key);
@@ -1293,15 +1300,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       else {
         // If we can't compute the vary key (e.g. unknown header values or Vary:*), treat as a miss
         // rather than risking a poisoned reuse.
-        let Some(next) =
-          self.read_alias_target(
-            kind,
-            &current,
-            origin_key_for_current,
-            credentials_partition_for_current,
-            &request_sig,
-          )
-        else {
+        let Some(next) = self.read_alias_target(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+          &request_sig,
+        ) else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Ok(None);
@@ -1435,15 +1440,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         }
       }
 
-      let Some(next) =
-        self.read_alias_target(
-          kind,
-          &current,
-          origin_key_for_current,
-          credentials_partition_for_current,
-          &request_sig,
-        )
-      else {
+      let Some(next) = self.read_alias_target(
+        kind,
+        &current,
+        origin_key_for_current,
+        credentials_partition_for_current,
+        &request_sig,
+      ) else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -1517,15 +1520,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       let Some(vary_key) =
         super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
       else {
-        let Some(next) =
-          self.read_alias_target(
-            kind,
-            &current,
-            origin_key_for_current,
-            credentials_partition_for_current,
-            &request_sig,
-          )
-        else {
+        let Some(next) = self.read_alias_target(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+          &request_sig,
+        ) else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Ok(None);
@@ -1554,38 +1555,36 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         Miss,
       }
 
-      let read_prefix_candidate = |key: &str,
-                                   data_path: &PathBuf,
-                                   meta_path: &PathBuf|
-       -> Result<PrefixCandidate> {
-        let attempt = |key: &str| {
-          self.try_read_resource_prefix(key, &current, data_path, meta_path, max_bytes)
-        };
+      let read_prefix_candidate =
+        |key: &str, data_path: &PathBuf, meta_path: &PathBuf| -> Result<PrefixCandidate> {
+          let attempt = |key: &str| {
+            self.try_read_resource_prefix(key, &current, data_path, meta_path, max_bytes)
+          };
 
-        match attempt(key) {
-          SnapshotPrefixRead::Hit(resource) => Ok(PrefixCandidate::Hit(resource)),
-          SnapshotPrefixRead::Error(err) => Ok(PrefixCandidate::Error(err)),
-          SnapshotPrefixRead::Timeout(err) => Err(Error::Render(err)),
-          SnapshotPrefixRead::Miss => Ok(PrefixCandidate::Miss),
-          SnapshotPrefixRead::Locked => {
-            let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
-            if !max_wait.is_zero() {
-              let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
-              let unlocked = self.wait_for_unlock(data_path, max_wait);
-              super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
-              if unlocked {
-                match attempt(key) {
-                  SnapshotPrefixRead::Hit(resource) => return Ok(PrefixCandidate::Hit(resource)),
-                  SnapshotPrefixRead::Error(err) => return Ok(PrefixCandidate::Error(err)),
-                  SnapshotPrefixRead::Timeout(err) => return Err(Error::Render(err)),
-                  _ => {}
+          match attempt(key) {
+            SnapshotPrefixRead::Hit(resource) => Ok(PrefixCandidate::Hit(resource)),
+            SnapshotPrefixRead::Error(err) => Ok(PrefixCandidate::Error(err)),
+            SnapshotPrefixRead::Timeout(err) => Err(Error::Render(err)),
+            SnapshotPrefixRead::Miss => Ok(PrefixCandidate::Miss),
+            SnapshotPrefixRead::Locked => {
+              let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
+              if !max_wait.is_zero() {
+                let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
+                let unlocked = self.wait_for_unlock(data_path, max_wait);
+                super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
+                if unlocked {
+                  match attempt(key) {
+                    SnapshotPrefixRead::Hit(resource) => return Ok(PrefixCandidate::Hit(resource)),
+                    SnapshotPrefixRead::Error(err) => return Ok(PrefixCandidate::Error(err)),
+                    SnapshotPrefixRead::Timeout(err) => return Err(Error::Render(err)),
+                    _ => {}
+                  }
                 }
               }
+              Ok(PrefixCandidate::Miss)
             }
-            Ok(PrefixCandidate::Miss)
           }
-        }
-      };
+        };
 
       let validate_resource = |key: &str,
                                data_path: &PathBuf,
@@ -1677,15 +1676,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         }
       }
 
-      let Some(next) =
-        self.read_alias_target(
-          kind,
-          &current,
-          origin_key_for_current,
-          credentials_partition_for_current,
-          &request_sig,
-        )
-      else {
+      let Some(next) = self.read_alias_target(
+        kind,
+        &current,
+        origin_key_for_current,
+        credentials_partition_for_current,
+        &request_sig,
+      ) else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -1995,9 +1992,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       DISK_META_READ_CHUNK_SIZE,
       DISK_ALIAS_MAX_BYTES,
     )
-      .ok()
-      .and_then(|bytes| serde_json::from_slice::<StoredAlias>(&bytes).ok())
-      .and_then(|alias| alias.target_for_sig(request_sig).map(|s| s.to_string()))
+    .ok()
+    .and_then(|bytes| serde_json::from_slice::<StoredAlias>(&bytes).ok())
+    .and_then(|alias| alias.target_for_sig(request_sig).map(|s| s.to_string()))
   }
 
   fn remove_alias_for(
@@ -2058,7 +2055,11 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     if stored.targets.values().any(|value| value != canonical) {
       stored.varies_by_sig = true;
     }
-    if stored.target.as_deref().is_some_and(|value| value != canonical) {
+    if stored
+      .target
+      .as_deref()
+      .is_some_and(|value| value != canonical)
+    {
       stored.varies_by_sig = true;
     }
 
@@ -2688,15 +2689,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       let Some(vary_key) =
         super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
       else {
-        let Some(next) =
-          self.read_alias_target(
-            kind,
-            &current,
-            origin_key_for_current,
-            credentials_partition_for_current,
-            &request_sig,
-          )
-        else {
+        let Some(next) = self.read_alias_target(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+          &request_sig,
+        ) else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Ok(None);
@@ -2818,15 +2817,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         }
       }
 
-      let Some(next) =
-        self.read_alias_target(
-          kind,
-          &current,
-          origin_key_for_current,
-          credentials_partition_for_current,
-          &request_sig,
-        )
-      else {
+      let Some(next) = self.read_alias_target(
+        kind,
+        &current,
+        origin_key_for_current,
+        credentials_partition_for_current,
+        &request_sig,
+      ) else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -2898,7 +2895,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       referrer_policy: request.referrer_policy,
       credentials_mode: request.credentials_mode,
     };
-    let canonical_credentials_partition = super::CacheCredentialsPartition::for_request(&canonical_request);
+    let canonical_credentials_partition =
+      super::CacheCredentialsPartition::for_request(&canonical_request);
     let mut canonical_origin_key_owned = None::<String>;
     let canonical_origin_key = if origin_key.is_some() {
       canonical_origin_key_owned = super::cors_cache_partition_key(&canonical_request);
@@ -3179,8 +3177,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           }
         }
         if canonical != url {
-          let request_sig =
-            super::inflight_signature_for_request(&self.memory.inner, request);
+          let request_sig = super::inflight_signature_for_request(&self.memory.inner, request);
           self.persist_alias(
             kind,
             url,
@@ -3194,7 +3191,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
 
     let cached = cached.or_else(|| disk_snapshot.map(|(_, snapshot)| snapshot));
-    let plan = self.memory.plan_cache_use(url, cached.clone(), self.disk_config.max_age);
+    let plan = self
+      .memory
+      .plan_cache_use(url, cached.clone(), self.disk_config.max_age);
 
     if let CacheAction::UseCached = plan.action {
       if let Some(snapshot) = plan.cached.as_ref() {
@@ -3227,8 +3226,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       return result;
     }
 
-    let mut inflight_guard =
-      super::InFlightOwnerGuard::new(&self.memory, inflight_key, flight);
+    let mut inflight_guard = super::InFlightOwnerGuard::new(&self.memory, inflight_key, flight);
 
     let validators = match &plan.action {
       CacheAction::Validate {
@@ -3345,43 +3343,43 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
                   if disk_cacheable {
                     if let Some(snapshot) = self.memory.cached_entry(&canonical, Some(request)) {
-                        self.persist_snapshot(
-                          kind,
-                          &canonical.url,
-                          request,
-                          &snapshot,
-                          canonical.origin_key.as_deref(),
-                          canonical.credentials_partition,
-                        );
-                        if canonical.url != url {
-                          let request_sig =
-                            super::inflight_signature_for_request(&self.memory.inner, request);
-                          self.persist_alias(
-                            kind,
-                            url,
-                            &canonical.url,
-                            key.origin_key.as_deref(),
-                            key.credentials_partition,
-                            &request_sig,
-                          );
-                        }
-                      }
-                    } else {
-                      self.remove_entry_for_url(
+                      self.persist_snapshot(
                         kind,
                         &canonical.url,
+                        request,
+                        &snapshot,
                         canonical.origin_key.as_deref(),
                         canonical.credentials_partition,
                       );
                       if canonical.url != url {
-                        self.remove_alias_for(
+                        let request_sig =
+                          super::inflight_signature_for_request(&self.memory.inner, request);
+                        self.persist_alias(
                           kind,
                           url,
+                          &canonical.url,
                           key.origin_key.as_deref(),
                           key.credentials_partition,
+                          &request_sig,
                         );
                       }
                     }
+                  } else {
+                    self.remove_entry_for_url(
+                      kind,
+                      &canonical.url,
+                      canonical.origin_key.as_deref(),
+                      canonical.credentials_partition,
+                    );
+                    if canonical.url != url {
+                      self.remove_alias_for(
+                        kind,
+                        url,
+                        key.origin_key.as_deref(),
+                        key.credentials_partition,
+                      );
+                    }
+                  }
                 } else {
                   // If we can't compute the vary key (unknown request header values), treat as
                   // uncacheable to avoid poisoned reuse.
@@ -3403,7 +3401,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                     canonical_credentials_partition,
                   );
                   if canonical_url != url {
-                    self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
+                    self.remove_alias_for(
+                      kind,
+                      url,
+                      key.origin_key.as_deref(),
+                      key.credentials_partition,
+                    );
                   }
                 }
               } else {
@@ -3421,8 +3424,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                   super::CacheCredentialsPartition::for_request(&canonical_request);
                 let mut canonical_origin_key_owned = None::<String>;
                 let canonical_origin_key = if key.origin_key.is_some() {
-                  canonical_origin_key_owned =
-                    super::cors_cache_partition_key(&canonical_request);
+                  canonical_origin_key_owned = super::cors_cache_partition_key(&canonical_request);
                   canonical_origin_key_owned.as_deref()
                 } else {
                   None
@@ -3434,7 +3436,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                   canonical_credentials_partition,
                 );
                 if canonical != url {
-                  self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
+                  self.remove_alias_for(
+                    kind,
+                    url,
+                    key.origin_key.as_deref(),
+                    key.credentials_partition,
+                  );
                 }
               }
             }
@@ -3611,7 +3618,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                     canonical_credentials_partition,
                   );
                   if canonical_url != url {
-                    self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
+                    self.remove_alias_for(
+                      kind,
+                      url,
+                      key.origin_key.as_deref(),
+                      key.credentials_partition,
+                    );
                   }
                 }
               }
@@ -3624,7 +3636,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             FetchContextKind::Stylesheet | FetchContextKind::StylesheetCors => {
               ensure_http_success(&res, url).and_then(|_| ensure_stylesheet_mime_sane(&res, url))
             }
-            FetchContextKind::Script | FetchContextKind::ScriptCors => ensure_http_success(&res, url),
+            FetchContextKind::Script | FetchContextKind::ScriptCors => {
+              ensure_http_success(&res, url)
+            }
             FetchContextKind::Font => {
               ensure_http_success(&res, url).and_then(|_| ensure_font_mime_sane(&res, url))
             }
@@ -3754,8 +3768,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                   super::CacheCredentialsPartition::for_request(&canonical_request);
                 let mut canonical_origin_key_owned = None::<String>;
                 let canonical_origin_key = if key.origin_key.is_some() {
-                  canonical_origin_key_owned =
-                    super::cors_cache_partition_key(&canonical_request);
+                  canonical_origin_key_owned = super::cors_cache_partition_key(&canonical_request);
                   canonical_origin_key_owned.as_deref()
                 } else {
                   None
@@ -3767,7 +3780,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                   canonical_credentials_partition,
                 );
                 if canonical_url != url {
-                  self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
+                  self.remove_alias_for(
+                    kind,
+                    url,
+                    key.origin_key.as_deref(),
+                    key.credentials_partition,
+                  );
                 }
               }
             } else if res
@@ -3791,8 +3809,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 super::CacheCredentialsPartition::for_request(&canonical_request);
               let mut canonical_origin_key_owned = None::<String>;
               let canonical_origin_key = if key.origin_key.is_some() {
-                canonical_origin_key_owned =
-                  super::cors_cache_partition_key(&canonical_request);
+                canonical_origin_key_owned = super::cors_cache_partition_key(&canonical_request);
                 canonical_origin_key_owned.as_deref()
               } else {
                 None
@@ -3804,7 +3821,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 canonical_credentials_partition,
               );
               if canonical != url {
-                self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
+                self.remove_alias_for(
+                  kind,
+                  url,
+                  key.origin_key.as_deref(),
+                  key.credentials_partition,
+                );
               }
             }
             super::record_cache_miss();
@@ -3954,7 +3976,10 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
   }
 
   fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
-    self.memory.inner.store_cookie_from_document(url, cookie_string)
+    self
+      .memory
+      .inner
+      .store_cookie_from_document(url, cookie_string)
   }
 
   fn fetch_partial(&self, url: &str, max_bytes: usize) -> Result<FetchedResource> {
@@ -4119,8 +4144,13 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       || artifact_stored_at.is_none()
       || resource_stored_at != artifact_stored_at
     {
-      let base_key =
-        self.artifact_key_with_partition(kind, &canonical, artifact, None, canonical_credentials_partition);
+      let base_key = self.artifact_key_with_partition(
+        kind,
+        &canonical,
+        artifact,
+        None,
+        canonical_credentials_partition,
+      );
       self.remove_entry_family_files_best_effort(&base_key);
       return None;
     }
@@ -4258,13 +4288,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
   fn remove_cache_artifact(&self, kind: FetchContextKind, url: &str, artifact: CacheArtifactKind) {
     let default_credentials_partition =
       super::CacheCredentialsPartition::for_request(&FetchRequest::new(url, kind.into()));
-    self.remove_artifact_for_url(
-      kind,
-      url,
-      artifact,
-      None,
-      default_credentials_partition,
-    );
+    self.remove_artifact_for_url(kind, url, artifact, None, default_credentials_partition);
   }
 
   fn remove_cache_artifact_with_request(&self, req: FetchRequest<'_>, artifact: CacheArtifactKind) {
@@ -4518,7 +4542,8 @@ fn secs_to_system_time(secs: u64) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
   use super::super::{
-    CacheStalePolicy, FetchCredentialsMode, FetchDestination, FetchRequest, HttpFetcher, ResourcePolicy,
+    CacheStalePolicy, FetchCredentialsMode, FetchDestination, FetchRequest, HttpFetcher,
+    ResourcePolicy,
   };
   use super::*;
   use crate::debug::runtime;
@@ -4585,12 +4610,9 @@ mod tests {
     .expect("write legacy vary");
 
     let request = FetchRequest::new(url, TEST_KIND.into());
-    let legacy_vary_key = super::super::compute_vary_key_for_request_legacy(
-      &PanicFetcher,
-      request,
-      Some(legacy_vary),
-    )
-    .expect("legacy vary key");
+    let legacy_vary_key =
+      super::super::compute_vary_key_for_request_legacy(&PanicFetcher, request, Some(legacy_vary))
+        .expect("legacy vary key");
 
     let key = disk.variant_key_for_base_key(&base_key, &legacy_vary_key);
     let data_path = disk.data_path_for_key(&key);
@@ -4619,8 +4641,11 @@ mod tests {
       cache: None,
       error: None,
     };
-    fs::write(&meta_path, serde_json::to_vec(&meta).expect("serialize meta"))
-      .expect("write meta");
+    fs::write(
+      &meta_path,
+      serde_json::to_vec(&meta).expect("serialize meta"),
+    )
+    .expect("write meta");
 
     // Ensure the stored-at lookup can find legacy variant filenames as well (used for aligning
     // cached artifacts against their backing resources).
@@ -4645,19 +4670,18 @@ mod tests {
     let canonical_vary = fs::read_to_string(&canonical_vary_path).expect("read canonical vary");
     assert_eq!(canonical_vary, "accept-language, origin");
 
-    let canonical_vary_key = super::super::compute_vary_key_for_request(
-      &PanicFetcher,
-      request,
-      Some(legacy_vary),
-    )
-    .expect("canonical vary key");
+    let canonical_vary_key =
+      super::super::compute_vary_key_for_request(&PanicFetcher, request, Some(legacy_vary))
+        .expect("canonical vary key");
     let canonical_key = disk.variant_key_for_base_key(&base_key, &canonical_vary_key);
     assert!(
       disk.data_path_for_key(&canonical_key).exists(),
       "expected canonical variant data to exist"
     );
     assert!(
-      disk.meta_path_for_data(&disk.data_path_for_key(&canonical_key)).exists(),
+      disk
+        .meta_path_for_data(&disk.data_path_for_key(&canonical_key))
+        .exists(),
       "expected canonical variant meta to exist"
     );
   }
@@ -4669,7 +4693,8 @@ mod tests {
 
     impl ResourceFetcher for HeaderFetcher {
       fn fetch(&self, url: &str) -> Result<FetchedResource> {
-        let mut res = FetchedResource::new(b"<html></html>".to_vec(), Some("text/html".to_string()));
+        let mut res =
+          FetchedResource::new(b"<html></html>".to_vec(), Some("text/html".to_string()));
         res.status = Some(200);
         res.final_url = Some(url.to_string());
         res.response_headers = Some(vec![
@@ -4702,7 +4727,10 @@ mod tests {
 
     let csp = crate::html::content_security_policy::CspPolicy::from_response_headers(&res)
       .expect("CSP should be extracted from cached response headers");
-    assert!(!csp.is_empty(), "expected parsed CSP policy to be non-empty");
+    assert!(
+      !csp.is_empty(),
+      "expected parsed CSP policy to be non-empty"
+    );
   }
 
   #[derive(Clone)]
@@ -5285,7 +5313,10 @@ mod tests {
       let data_path = disk.data_path(TEST_KIND, url);
       let meta_path = disk.meta_path_for_data(&data_path);
       disk.fetch(url).expect("first fetch");
-      assert!(!data_path.exists(), "expected Vary:* entry to not be persisted");
+      assert!(
+        !data_path.exists(),
+        "expected Vary:* entry to not be persisted"
+      );
       assert!(
         !meta_path.exists(),
         "expected Vary:* metadata to not be persisted"
@@ -5513,7 +5544,10 @@ mod tests {
 
     let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
     let second = disk_again.fetch(url).expect("disk hit");
-    assert_eq!(second.response_referrer_policy, Some(ReferrerPolicy::Origin));
+    assert_eq!(
+      second.response_referrer_policy,
+      Some(ReferrerPolicy::Origin)
+    );
   }
 
   fn spawn_cors_origin_echo_server(
@@ -5830,7 +5864,9 @@ mod tests {
       drop(disk);
 
       let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
-      let second_include = disk_again.fetch_with_request(req_include).expect("disk include");
+      let second_include = disk_again
+        .fetch_with_request(req_include)
+        .expect("disk include");
       assert_eq!(second_include.bytes, b"include");
       let second_omit = disk_again.fetch_with_request(req_omit).expect("disk omit");
       assert_eq!(second_omit.bytes, b"omit");
@@ -5883,7 +5919,9 @@ mod tests {
         },
         tmp.path(),
       );
-      let first = disk.fetch_with_request(req_same_origin).expect("seed fetch");
+      let first = disk
+        .fetch_with_request(req_same_origin)
+        .expect("seed fetch");
       assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -5949,7 +5987,9 @@ mod tests {
         },
         tmp.path(),
       );
-      let first = disk.fetch_with_request(req_same_origin).expect("seed fetch");
+      let first = disk
+        .fetch_with_request(req_same_origin)
+        .expect("seed fetch");
       assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -5959,7 +5999,9 @@ mod tests {
       drop(disk);
 
       let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
-      let second = disk_again.fetch_with_request(req_omit).expect("disk cache hit");
+      let second = disk_again
+        .fetch_with_request(req_omit)
+        .expect("disk cache hit");
       assert_eq!(
         second.bytes, first.bytes,
         "expected omit request to reuse same disk cache entry as cross-origin same-origin credentials"
@@ -5988,7 +6030,11 @@ mod tests {
           panic!("expected DiskCachingFetcher to use fetch_with_context/fetch_with_request()");
         }
 
-        fn fetch_with_context(&self, _kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+        fn fetch_with_context(
+          &self,
+          _kind: FetchContextKind,
+          url: &str,
+        ) -> Result<FetchedResource> {
           self.calls.fetch_add(1, Ordering::SeqCst);
           let mut res = FetchedResource::with_final_url(
             b"context".to_vec(),
@@ -6035,9 +6081,7 @@ mod tests {
         .expect("context fetch");
       assert_eq!(context.bytes, b"context");
 
-      let include = disk
-        .fetch_with_request(req_include)
-        .expect("include fetch");
+      let include = disk.fetch_with_request(req_include).expect("include fetch");
       assert_eq!(include.bytes, b"request-include");
 
       assert_eq!(
@@ -6107,10 +6151,10 @@ mod tests {
     )])));
     runtime::with_thread_runtime_toggles(toggles, || {
       let tmp = tempfile::tempdir().unwrap();
-      let req_a =
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url("http://a.test/page");
-      let req_b =
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url("http://b.test/page");
+      let req_a = FetchRequest::new(&url, FetchDestination::ImageCors)
+        .with_referrer_url("http://a.test/page");
+      let req_b = FetchRequest::new(&url, FetchDestination::ImageCors)
+        .with_referrer_url("http://b.test/page");
 
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
@@ -6243,10 +6287,10 @@ mod tests {
     )])));
     runtime::with_thread_runtime_toggles(toggles, || {
       let tmp = tempfile::tempdir().unwrap();
-      let req_a =
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url("http://a.test/page");
-      let req_b =
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url("http://b.test/page");
+      let req_a = FetchRequest::new(&url, FetchDestination::ImageCors)
+        .with_referrer_url("http://a.test/page");
+      let req_b = FetchRequest::new(&url, FetchDestination::ImageCors)
+        .with_referrer_url("http://b.test/page");
 
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
@@ -6739,7 +6783,10 @@ mod tests {
     let key = disk.artifact_key(TEST_KIND, url, CacheArtifactKind::ImageProbeMetadata);
     let artifact_data_path = disk.data_path_for_key(&key);
     let artifact_meta_path = disk.meta_path_for_data(&artifact_data_path);
-    assert!(artifact_data_path.exists(), "expected artifact data to exist");
+    assert!(
+      artifact_data_path.exists(),
+      "expected artifact data to exist"
+    );
     assert!(
       artifact_meta_path.exists(),
       "expected artifact metadata to exist"
@@ -6758,8 +6805,11 @@ mod tests {
     let mut meta: StoredMetadata =
       serde_json::from_slice(&meta_bytes).expect("parse resource meta");
     meta.stored_at = meta.stored_at.saturating_add(1);
-    fs::write(&resource_meta_path, serde_json::to_vec(&meta).expect("serialize resource meta"))
-      .expect("write resource meta");
+    fs::write(
+      &resource_meta_path,
+      serde_json::to_vec(&meta).expect("serialize resource meta"),
+    )
+    .expect("write resource meta");
 
     assert!(
       disk
@@ -7220,7 +7270,9 @@ mod tests {
         ..DiskCacheConfig::default()
       },
     );
-    let err = seed.fetch_with_request(req_a).expect_err("expected seed fetch to fail");
+    let err = seed
+      .fetch_with_request(req_a)
+      .expect_err("expected seed fetch to fail");
     match err {
       Error::Resource(err) => assert_eq!(err.message, "blocked"),
       other => panic!("expected resource error, got {other:?}"),
@@ -7256,10 +7308,8 @@ mod tests {
       "expected referrer A load to avoid hitting the inner fetcher"
     );
 
-    let ok =
-      render_control::with_deadline(Some(&deadline), || disk.fetch_with_request(req_b)).expect(
-        "expected referrer B load to bypass persisted error and attempt a fresh fetch",
-      );
+    let ok = render_control::with_deadline(Some(&deadline), || disk.fetch_with_request(req_b))
+      .expect("expected referrer B load to bypass persisted error and attempt a fresh fetch");
     assert_eq!(ok.bytes, b"ok".to_vec());
     assert_eq!(
       calls.load(Ordering::SeqCst),
@@ -7403,13 +7453,13 @@ mod tests {
         ..DiskCacheConfig::default()
       },
     );
- 
+
     let url = "https://example.com/stale-if-error-disk";
     let cached_bytes = b"cached".to_vec();
     let data_path = disk.data_path(TEST_KIND, url);
     let meta_path = disk.meta_path_for_data(&data_path);
     fs::write(&data_path, &cached_bytes).unwrap();
- 
+
     let stored_at = now_seconds();
     let stored_time = UNIX_EPOCH
       .checked_add(Duration::from_secs(stored_at))
@@ -7428,7 +7478,7 @@ mod tests {
       no_store: false,
       must_revalidate: true,
     };
- 
+
     let meta = StoredMetadata {
       url: url.to_string(),
       status: None,
@@ -7450,8 +7500,10 @@ mod tests {
       error: None,
     };
     fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
- 
-    let res = disk.fetch(url).expect("should fall back within stale-if-error window");
+
+    let res = disk
+      .fetch(url)
+      .expect("should fall back within stale-if-error window");
     assert_eq!(
       calls.load(Ordering::SeqCst),
       1,
@@ -8352,15 +8404,9 @@ mod tests {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let referer = req.referrer_url.unwrap_or("");
         let (final_url, body) = if referer.contains("a.example") {
-          (
-            "https://example.com/canonical-a",
-            b"canonical-a".to_vec(),
-          )
+          ("https://example.com/canonical-a", b"canonical-a".to_vec())
         } else {
-          (
-            "https://example.com/canonical-b",
-            b"canonical-b".to_vec(),
-          )
+          ("https://example.com/canonical-b", b"canonical-b".to_vec())
         };
         Ok(FetchedResource::with_final_url(
           body,
@@ -8373,7 +8419,12 @@ mod tests {
         match header_name {
           "accept-encoding" => Some("gzip".to_string()),
           "accept-language" => Some("en".to_string()),
-          "origin" => Some(req.client_origin.map(ToString::to_string).unwrap_or_default()),
+          "origin" => Some(
+            req
+              .client_origin
+              .map(ToString::to_string)
+              .unwrap_or_default(),
+          ),
           "referer" => Some(req.referrer_url.unwrap_or("").to_string()),
           "user-agent" => Some("fastrender-test".to_string()),
           _ => None,
@@ -8456,14 +8507,15 @@ mod tests {
       let request_sig = format!("{i:064x}");
       let canonical = format!("https://example.com/canonical/{i}");
       assert_eq!(
-        disk.read_alias_target(
-          TEST_KIND,
-          alias_url,
-          None,
-          super::super::CacheCredentialsPartition::Include,
-          &request_sig,
-        )
-        .as_deref(),
+        disk
+          .read_alias_target(
+            TEST_KIND,
+            alias_url,
+            None,
+            super::super::CacheCredentialsPartition::Include,
+            &request_sig,
+          )
+          .as_deref(),
         Some(canonical.as_str()),
         "expected alias to retain recently written targets",
       );
@@ -8515,14 +8567,15 @@ mod tests {
     assert!(stored.targets.is_empty());
 
     assert_eq!(
-      disk.read_alias_target(
-        TEST_KIND,
-        alias_url,
-        None,
-        super::super::CacheCredentialsPartition::Include,
-        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-      )
-      .as_deref(),
+      disk
+        .read_alias_target(
+          TEST_KIND,
+          alias_url,
+          None,
+          super::super::CacheCredentialsPartition::Include,
+          "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        )
+        .as_deref(),
       Some(canonical),
       "collapsed alias should behave like a legacy signature-invariant alias",
     );
@@ -8556,14 +8609,15 @@ mod tests {
     let alias_bytes = fs::read(&alias_path).expect("read rewritten alias");
     serde_json::from_slice::<serde_json::Value>(&alias_bytes).expect("rewritten alias json");
     assert_eq!(
-      disk.read_alias_target(
-        TEST_KIND,
-        alias_url,
-        None,
-        super::super::CacheCredentialsPartition::Include,
-        request_sig,
-      )
-      .as_deref(),
+      disk
+        .read_alias_target(
+          TEST_KIND,
+          alias_url,
+          None,
+          super::super::CacheCredentialsPartition::Include,
+          request_sig,
+        )
+        .as_deref(),
       Some(canonical),
     );
   }

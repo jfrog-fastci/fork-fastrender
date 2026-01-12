@@ -6922,9 +6922,7 @@ mod tests {
     let err = parse_stylesheet(css).unwrap_err();
     match err {
       Error::Render(RenderError::StageAllocationBudgetExceeded {
-        stage,
-        heartbeat,
-        ..
+        stage, heartbeat, ..
       }) => {
         assert_eq!(stage, RenderStage::Css);
         assert_eq!(heartbeat, StageHeartbeat::CssParse);

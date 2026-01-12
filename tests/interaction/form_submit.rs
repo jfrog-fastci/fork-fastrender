@@ -70,8 +70,13 @@ fn checkbox_and_radio_inclusion_rules() {
   .unwrap();
   let submitter_id = node_id(&dom, "submit");
 
-  let submission =
-    form_submission(&dom, submitter_id, "https://example.com/doc", "https://example.com/").unwrap();
+  let submission = form_submission(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/",
+  )
+  .unwrap();
   assert_eq!(submission.method, FormSubmissionMethod::Get);
   assert_eq!(submission.url, "https://example.com/submit?a=on&c=yes&r=1");
 }
@@ -95,8 +100,13 @@ fn select_multiple_serializes_multiple_pairs() {
   .unwrap();
   let submitter_id = node_id(&dom, "submit");
 
-  let submission =
-    form_submission(&dom, submitter_id, "https://example.com/doc", "https://example.com/").unwrap();
+  let submission = form_submission(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/",
+  )
+  .unwrap();
   assert_eq!(submission.method, FormSubmissionMethod::Get);
   assert_eq!(submission.url, "https://example.com/s?s=a&s=C&go=1");
 }
@@ -116,8 +126,13 @@ fn action_query_is_replaced() {
   .unwrap();
   let submitter_id = node_id(&dom, "submit");
 
-  let submission =
-    form_submission(&dom, submitter_id, "https://example.com/doc", "https://example.com/").unwrap();
+  let submission = form_submission(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/",
+  )
+  .unwrap();
   assert_eq!(submission.method, FormSubmissionMethod::Get);
   assert_eq!(submission.url, "https://example.com/search?q=hi");
 }
@@ -137,11 +152,15 @@ fn action_fragment_is_stripped() {
   .unwrap();
   let submitter_id = node_id(&dom, "submit");
 
-  let submission =
-    form_submission(&dom, submitter_id, "https://example.com/doc", "https://example.com/").unwrap();
+  let submission = form_submission(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/",
+  )
+  .unwrap();
   assert_eq!(
-    submission.url,
-    "https://example.com/search?q=hi",
+    submission.url, "https://example.com/search?q=hi",
     "form submission should discard fragments from the action URL"
   );
 }
@@ -221,13 +240,21 @@ fn post_method_builds_urlencoded_body() {
   .unwrap();
   let submitter_id = node_id(&dom, "submit");
 
-  let submission =
-    form_submission(&dom, submitter_id, "https://example.com/doc", "https://example.com/").unwrap();
+  let submission = form_submission(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/",
+  )
+  .unwrap();
   assert_eq!(submission.method, FormSubmissionMethod::Post);
   assert_eq!(submission.url, "https://example.com/search");
   assert_eq!(
     submission.headers,
-    vec![("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string())]
+    vec![(
+      "Content-Type".to_string(),
+      "application/x-www-form-urlencoded".to_string()
+    )]
   );
   assert_eq!(submission.body, Some(b"q=hi".to_vec()));
 }
@@ -250,11 +277,15 @@ fn get_submission_sanitizes_input_values() {
   .unwrap();
   let submitter_id = node_id(&dom, "submit");
 
-  let submission =
-    form_submission(&dom, submitter_id, "https://example.com/doc", "https://example.com/").unwrap();
+  let submission = form_submission(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/",
+  )
+  .unwrap();
   assert_eq!(
-    submission.url,
-    "https://example.com/submit?n=&d=&c=%23000000&t=ab",
+    submission.url, "https://example.com/submit?n=&d=&c=%23000000&t=ab",
     "HTML form submission uses each control's sanitized value"
   );
 }
@@ -280,8 +311,13 @@ fn submitter_overrides_action_method_and_enctype() {
   .unwrap();
   let submitter_id = node_id(&dom, "submit");
 
-  let submission =
-    form_submission(&dom, submitter_id, "https://example.com/doc", "https://example.com/").unwrap();
+  let submission = form_submission(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/",
+  )
+  .unwrap();
   assert_eq!(submission.method, FormSubmissionMethod::Post);
   assert_eq!(submission.url, "https://example.com/override");
   assert_eq!(
@@ -306,7 +342,12 @@ fn disabled_controls_are_excluded() {
   )
   .unwrap();
   let submitter_id = node_id(&dom, "submit");
-  let submission =
-    form_submission(&dom, submitter_id, "https://example.com/doc", "https://example.com/").unwrap();
+  let submission = form_submission(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/",
+  )
+  .unwrap();
   assert_eq!(submission.url, "https://example.com/submit?a=1");
 }

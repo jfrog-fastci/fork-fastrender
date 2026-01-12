@@ -43,4 +43,3 @@ fn css_content_url_replaces_img_source() {
     "expected `content: url(...)` to paint the image for <img>"
   );
 }
-

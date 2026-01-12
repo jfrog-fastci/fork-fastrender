@@ -1,4 +1,4 @@
-use crate::dom2::{DomError, Document, NodeId};
+use crate::dom2::{Document, DomError, NodeId};
 use vm_js::VmHost;
 
 /// Abstraction over a live `dom2::Document` that allows DOM mutation while keeping renderer cache
@@ -50,14 +50,24 @@ pub trait DomHostVmJs {
     token: &str,
     force: Option<bool>,
   ) -> Result<bool, DomError>;
-  fn class_list_replace(&mut self, element: NodeId, token: &str, new_token: &str) -> Result<bool, DomError>;
+  fn class_list_replace(
+    &mut self,
+    element: NodeId,
+    token: &str,
+    new_token: &str,
+  ) -> Result<bool, DomError>;
 
   fn dataset_get(&self, element: NodeId, prop: &str) -> Option<String>;
   fn dataset_set(&mut self, element: NodeId, prop: &str, value: &str) -> Result<bool, DomError>;
   fn dataset_delete(&mut self, element: NodeId, prop: &str) -> Result<bool, DomError>;
 
   fn style_get_property_value(&self, element: NodeId, name: &str) -> String;
-  fn style_set_property(&mut self, element: NodeId, name: &str, value: &str) -> Result<bool, DomError>;
+  fn style_set_property(
+    &mut self,
+    element: NodeId,
+    name: &str,
+    value: &str,
+  ) -> Result<bool, DomError>;
 }
 
 /// Downcast a `vm-js` [`VmHost`] into a dyn-compatible [`DomHostVmJs`] implementation.
@@ -134,7 +144,12 @@ where
     })
   }
 
-  fn class_list_replace(&mut self, element: NodeId, token: &str, new_token: &str) -> Result<bool, DomError> {
+  fn class_list_replace(
+    &mut self,
+    element: NodeId,
+    token: &str,
+    new_token: &str,
+  ) -> Result<bool, DomError> {
     self.mutate_dom(|dom| {
       let before = match dom.get_attribute(element, "class") {
         Ok(v) => v.map(str::to_string),
@@ -176,7 +191,12 @@ where
     self.with_dom(|dom| dom.style_get_property_value(element, name))
   }
 
-  fn style_set_property(&mut self, element: NodeId, name: &str, value: &str) -> Result<bool, DomError> {
+  fn style_set_property(
+    &mut self,
+    element: NodeId,
+    name: &str,
+    value: &str,
+  ) -> Result<bool, DomError> {
     self.mutate_dom(|dom| match dom.style_set_property(element, name, value) {
       Ok(changed) => (Ok(changed), changed),
       Err(err) => (Err(err), false),

@@ -809,15 +809,14 @@ impl GridItem {
       .minimum_contribution_cache
       .get(axis)
       .unwrap_or_else(|| {
-        let size =
-          self.minimum_contribution(
-            tree,
-            axis,
-            axis_tracks,
-            other_axis_tracks,
-            known_dimensions,
-            inner_node_size,
-          );
+        let size = self.minimum_contribution(
+          tree,
+          axis,
+          axis_tracks,
+          other_axis_tracks,
+          known_dimensions,
+          inner_node_size,
+        );
         self.minimum_contribution_cache.set(axis, Some(size));
         size
       })

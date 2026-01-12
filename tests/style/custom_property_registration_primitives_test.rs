@@ -56,7 +56,11 @@ fn custom_property_registration_rejects_invalid_integer_initial_value() {
   let styled = apply_styles(&dom, &sheet);
 
   assert!(
-    styled.styles.custom_property_registry.get("--bad").is_none(),
+    styled
+      .styles
+      .custom_property_registry
+      .get("--bad")
+      .is_none(),
     "invalid <integer> initial-value should cause @property registration to be ignored"
   );
 }
@@ -121,4 +125,3 @@ fn custom_property_registration_parses_resolution_initial_value_to_dppx() {
   );
   assert_eq!(value.value.trim(), "2dppx");
 }
-

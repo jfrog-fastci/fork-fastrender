@@ -67,8 +67,14 @@ fn box_shadow_blur_only_produces_soft_edge() {
   // Pixel just outside the left edge should be darkened, but not fully black.
   let (r, g, b, a) = rgba_at(&pixmap, 19, 30);
   assert_eq!(a, 255);
-  assert!(r < 255 && g < 255 && b < 255, "expected shadow to darken pixel");
-  assert!(r > 0 && g > 0 && b > 0, "expected blur to avoid a hard edge");
+  assert!(
+    r < 255 && g < 255 && b < 255,
+    "expected shadow to darken pixel"
+  );
+  assert!(
+    r > 0 && g > 0 && b > 0,
+    "expected blur to avoid a hard edge"
+  );
   assert_eq!((r, g, b), (r, r, r), "expected neutral shadow tint");
 }
 
@@ -97,9 +103,15 @@ fn box_shadow_blur_and_spread_respect_fractional_values() {
   // A pixel whose center lies exactly on the outer edge (spread=12.5 => left edge at 7.5).
   // This should be partially covered due to AA and fractional geometry.
   let (r, g, b, a) = rgba_at(&pixmap, 7, 30);
-  assert_eq!(b, 255, "expected blue channel to remain saturated over white");
+  assert_eq!(
+    b, 255,
+    "expected blue channel to remain saturated over white"
+  );
   assert_eq!(r, g, "expected neutral falloff for red/green channels");
-  assert!(r > 0 && r < 255, "expected a partially-covered outer edge pixel");
+  assert!(
+    r > 0 && r < 255,
+    "expected a partially-covered outer edge pixel"
+  );
   assert_eq!(a, 255);
 }
 
@@ -163,12 +175,18 @@ fn box_shadow_inset_blur_only_produces_inner_shadow() {
   // Inner shadow should darken pixels along the padding edge.
   let (er, eg, eb, ea) = rgba_at(&pixmap, 20, 40);
   assert_eq!(ea, 255);
-  assert!(er < 255 && eg < 255 && eb < 255, "expected edge pixel to be darkened");
+  assert!(
+    er < 255 && eg < 255 && eb < 255,
+    "expected edge pixel to be darkened"
+  );
 
   // Center should be less affected than the edge.
   let (cr, cg, cb, ca) = rgba_at(&pixmap, 40, 40);
   assert_eq!(ca, 255);
-  assert!(cr > er && cg > eg && cb > eb, "expected shadow to fade toward center");
+  assert!(
+    cr > er && cg > eg && cb > eb,
+    "expected shadow to fade toward center"
+  );
 }
 
 #[test]
@@ -296,7 +314,10 @@ fn box_shadow_figma_modal_smoke() {
   // Just outside the modal's left edge (modal is centered at x=325..715) should be darkened.
   let (nr, ng, nb, na) = rgba_at(&pixmap, 324, 620);
   assert_eq!(na, 255);
-  assert!(nr < 178 && ng < 178 && nb < 178, "expected shadow to darken pixel");
+  assert!(
+    nr < 178 && ng < 178 && nb < 178,
+    "expected shadow to darken pixel"
+  );
 
   // Further away from the box, the shadow should decay back toward the overlay background.
   let (fr, fg, fb, fa) = rgba_at(&pixmap, 290, 620);

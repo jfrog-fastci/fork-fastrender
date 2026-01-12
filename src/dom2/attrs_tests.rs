@@ -98,7 +98,10 @@ fn set_bool_attribute_matches_existing_interaction_helpers() {
   assert!(doc.has_attribute(el, "disabled").unwrap());
 
   assert_eq!(doc.set_bool_attribute(el, "disabled", false).unwrap(), true);
-  assert_eq!(doc.set_bool_attribute(el, "disabled", false).unwrap(), false);
+  assert_eq!(
+    doc.set_bool_attribute(el, "disabled", false).unwrap(),
+    false
+  );
   assert!(!doc.has_attribute(el, "disabled").unwrap());
 }
 
@@ -156,10 +159,7 @@ fn invalid_nodeid_attribute_and_text_apis_are_deterministic() {
     Err(DomError::NotFoundError)
   );
   assert_eq!(doc.text_data(bogus), Err(DomError::NotFoundError));
-  assert_eq!(
-    doc.set_text_data(bogus, "y"),
-    Err(DomError::NotFoundError)
-  );
+  assert_eq!(doc.set_text_data(bogus, "y"), Err(DomError::NotFoundError));
 
   // Ensure valid nodes still work after bogus calls (no partial mutation).
   assert_eq!(doc.set_attribute(el, "id", "a").unwrap(), true);

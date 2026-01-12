@@ -7,7 +7,8 @@ use fastrender::api::{
 use fastrender::dom2::{NodeId, NodeKind};
 use fastrender::error::Result;
 use fastrender::js::{
-  EventLoop, RunLimits, ScriptElementSpec, TaskSource, WindowRealm, WindowRealmConfig, WindowRealmHost,
+  EventLoop, RunLimits, ScriptElementSpec, TaskSource, WindowRealm, WindowRealmConfig,
+  WindowRealmHost,
 };
 
 struct ExecutorWithWindow<E> {
@@ -18,8 +19,8 @@ struct ExecutorWithWindow<E> {
 
 impl<E> ExecutorWithWindow<E> {
   fn new(inner: E) -> Self {
-    let window =
-      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create WindowRealm");
     Self {
       inner,
       host_ctx: (),
@@ -45,7 +46,9 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
 impl<E> WindowRealmHost for ExecutorWithWindow<E> {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    let ExecutorWithWindow {
+      host_ctx, window, ..
+    } = self;
     (host_ctx, window)
   }
 }

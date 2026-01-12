@@ -7,8 +7,8 @@ use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::GridTrack;
 use fastrender::style::values::Length;
-use fastrender::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::ComputedStyle;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -36,7 +36,11 @@ fn grid_percent_height_computes_to_auto_when_containing_block_height_is_indefini
   child_style.height = Some(Length::px(80.0));
   let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
 
-  let mut grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![child]);
+  let mut grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
   grid.id = 1;
 
   let fc = GridFormattingContext::new();
@@ -49,7 +53,11 @@ fn grid_percent_height_computes_to_auto_when_containing_block_height_is_indefini
 
   assert_eq!(fragment.children.len(), 1);
   assert_approx(fragment.bounds.height(), 80.0, "grid height");
-  assert_approx(fragment.children[0].bounds.height(), 80.0, "grid item height");
+  assert_approx(
+    fragment.children[0].bounds.height(),
+    80.0,
+    "grid item height",
+  );
 
   // This same scenario occurs during flex/grid intrinsic sizing probes: the max-content intrinsic
   // block size must not collapse to 0 when the only authored height is a percentage.

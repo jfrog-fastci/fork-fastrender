@@ -40,8 +40,14 @@ fn leading_whitespace_after_outside_list_marker_is_ignored() {
 
   let mut lines = Vec::new();
   collect_line_texts(&fragments.root, &mut lines);
-  let item_lines: Vec<String> = lines.into_iter().filter(|line| line.contains("Item")).collect();
-  assert_eq!(item_lines.len(), 1, "expected one line containing the list item text");
+  let item_lines: Vec<String> = lines
+    .into_iter()
+    .filter(|line| line.contains("Item"))
+    .collect();
+  assert_eq!(
+    item_lines.len(),
+    1,
+    "expected one line containing the list item text"
+  );
   assert_eq!(item_lines[0].trim_end(), "• Item");
 }
-

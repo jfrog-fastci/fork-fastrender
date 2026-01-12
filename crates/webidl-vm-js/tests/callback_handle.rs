@@ -1,8 +1,8 @@
 use std::any::Any;
 
 use vm_js::{
-  GcObject, HeapLimits, Job, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks, VmOptions,
+  GcObject, HeapLimits, Job, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, Scope, Value,
+  Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 use webidl_vm_js::CallbackHandle;
 
@@ -126,7 +126,8 @@ fn register_callback_interface_with_accessor(
   let getter_id = vm.register_native_call(handle_event_getter)?;
   let getter_name = scope.alloc_string("handleEvent getter")?;
   scope.push_root(Value::String(getter_name))?;
-  let getter = scope.alloc_native_function_with_slots(getter_id, None, getter_name, 0, &[method])?;
+  let getter =
+    scope.alloc_native_function_with_slots(getter_id, None, getter_name, 0, &[method])?;
   scope.push_root(Value::Object(getter))?;
   scope.define_property(
     obj,
@@ -194,7 +195,10 @@ fn callback_function_handle_roots_and_invokes_later() -> Result<(), VmError> {
   rt.register_global_native_function("registerCallback", register_callback_function, 1)?;
 
   let mut host = StoredHandle::default();
-  rt.exec_script_with_host(&mut host, "registerCallback(function () { globalThis.called = 1; });")?;
+  rt.exec_script_with_host(
+    &mut host,
+    "registerCallback(function () { globalThis.called = 1; });",
+  )?;
 
   let handle = host.handle.take().expect("expected callback handle");
   let mut hooks = CapturingHooks::default();
@@ -247,11 +251,16 @@ fn callback_interface_handle_calls_handle_event_with_object_this() -> Result<(),
 }
 
 #[test]
-fn callback_interface_handle_invocation_calls_handle_event_getter_with_hooks() -> Result<(), VmError> {
+fn callback_interface_handle_invocation_calls_handle_event_getter_with_hooks() -> Result<(), VmError>
+{
   let vm = Vm::new(VmOptions::default());
   let heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut rt = vm_js::JsRuntime::new(vm, heap)?;
-  rt.register_global_native_function("registerListenerAccessor", register_callback_interface_with_accessor, 1)?;
+  rt.register_global_native_function(
+    "registerListenerAccessor",
+    register_callback_interface_with_accessor,
+    1,
+  )?;
 
   let mut host = StoredHandle::default();
   rt.exec_script_with_host(

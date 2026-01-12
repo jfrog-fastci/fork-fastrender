@@ -2,8 +2,8 @@ use super::event_loop::{EventLoop, TaskSource};
 use super::promise::JsPromise;
 use crate::error::{Error, Result};
 use crate::resource::web_fetch::{
-  execute_web_fetch, Headers as WebHeaders, Request as WebRequest, Response as WebResponse, WebFetchError,
-  WebFetchExecutionContext,
+  execute_web_fetch, Headers as WebHeaders, Request as WebRequest, Response as WebResponse,
+  WebFetchError, WebFetchExecutionContext,
 };
 use crate::resource::ResourceFetcher;
 use std::cell::RefCell;
@@ -68,7 +68,10 @@ impl JsHeaders {
     Ok(JsHeaders::Owned(Rc::new(RefCell::new(headers))))
   }
 
-  fn with_headers<R>(&self, f: impl FnOnce(&WebHeaders) -> std::result::Result<R, WebFetchError>) -> Result<R> {
+  fn with_headers<R>(
+    &self,
+    f: impl FnOnce(&WebHeaders) -> std::result::Result<R, WebFetchError>,
+  ) -> Result<R> {
     match self {
       JsHeaders::Owned(h) => map_web_fetch_result(f(&h.borrow())),
       JsHeaders::Request(r) => map_web_fetch_result(f(&r.borrow().headers)),

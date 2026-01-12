@@ -247,8 +247,8 @@ fn run_perf_smoke(
   for fixture in &mut perf_smoke_manifest.fixtures {
     fixture.budget_ms = Some(perf_smoke_budget_ms);
   }
-  let perf_smoke_manifest_json = serde_json::to_string_pretty(&perf_smoke_manifest)
-    .context("serialize perf_smoke manifest")?;
+  let perf_smoke_manifest_json =
+    serde_json::to_string_pretty(&perf_smoke_manifest).context("serialize perf_smoke manifest")?;
   fs::write(
     &perf_smoke_manifest_path,
     format!("{perf_smoke_manifest_json}\n"),
@@ -619,7 +619,9 @@ mod tests {
       "expected perf_smoke command to pass --fail-on-fetch-errors; got {argv:?}"
     );
     assert!(
-      argv.windows(2).any(|w| w == ["--suite", "pageset-guardrails"]),
+      argv
+        .windows(2)
+        .any(|w| w == ["--suite", "pageset-guardrails"]),
       "expected perf_smoke command to select the pageset-guardrails suite; got {argv:?}"
     );
     assert!(

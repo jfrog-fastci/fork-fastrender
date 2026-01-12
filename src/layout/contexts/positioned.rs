@@ -181,7 +181,11 @@ impl ContainingBlock {
 
   /// Returns a copy of this containing block with the supplied writing mode and direction.
   #[inline]
-  pub fn with_writing_mode_and_direction(self, writing_mode: WritingMode, direction: Direction) -> Self {
+  pub fn with_writing_mode_and_direction(
+    self,
+    writing_mode: WritingMode,
+    direction: Direction,
+  ) -> Self {
     Self {
       writing_mode,
       direction,
@@ -253,20 +257,8 @@ impl StickyConstraints {
     let y_base = block_base;
     Self {
       top: resolve_offset_for_positioned(&style.top, y_base, viewport, style, font_context),
-      right: resolve_offset_for_positioned(
-        &style.right,
-        x_base,
-        viewport,
-        style,
-        font_context,
-      ),
-      bottom: resolve_offset_for_positioned(
-        &style.bottom,
-        y_base,
-        viewport,
-        style,
-        font_context,
-      ),
+      right: resolve_offset_for_positioned(&style.right, x_base, viewport, style, font_context),
+      bottom: resolve_offset_for_positioned(&style.bottom, y_base, viewport, style, font_context),
       left: resolve_offset_for_positioned(&style.left, x_base, viewport, style, font_context),
     }
   }
@@ -372,7 +364,9 @@ impl PositionedLayout {
     // fragmentation/pagination decisions may use logical geometry.
     let mut adjusted = fragment.clone();
     adjusted.bounds = adjusted.bounds.translate(offset);
-    adjusted.logical_override = adjusted.logical_override.map(|logical| logical.translate(offset));
+    adjusted.logical_override = adjusted
+      .logical_override
+      .map(|logical| logical.translate(offset));
     Ok(adjusted)
   }
 
@@ -578,8 +572,7 @@ pub(crate) fn compute_relative_offset(
   };
 
   let left = resolve_offset_for_positioned(&style.left, x_base, viewport, style, font_context);
-  let right =
-    resolve_offset_for_positioned(&style.right, x_base, viewport, style, font_context);
+  let right = resolve_offset_for_positioned(&style.right, x_base, viewport, style, font_context);
 
   // Horizontal offset: when both `left` and `right` are specified, the used value
   // depends on `direction` (CSS 2.1 §9.3.2).

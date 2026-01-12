@@ -221,7 +221,10 @@ impl MeasureOutput {
 
   /// Construct a `MeasureOutput` from a measured size and baselines.
   pub fn from_size_and_baselines(size: Size<f32>, first_baselines: Point<Option<f32>>) -> Self {
-    Self { size, first_baselines }
+    Self {
+      size,
+      first_baselines,
+    }
   }
 }
 

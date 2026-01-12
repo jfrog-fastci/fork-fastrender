@@ -71,10 +71,7 @@ fn select_listbox_emits_rows_and_selection_highlight() {
       _ => None,
     })
     .collect();
-  let min_x = text_xs
-    .iter()
-    .copied()
-    .fold(f32::INFINITY, |a, b| a.min(b));
+  let min_x = text_xs.iter().copied().fold(f32::INFINITY, |a, b| a.min(b));
   let max_x = text_xs
     .iter()
     .copied()

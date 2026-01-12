@@ -18,7 +18,10 @@
   any(target_os = "linux", target_os = "android", target_os = "freebsd"),
   link_section = ".init_array"
 )]
-#[cfg_attr(any(target_os = "macos", target_os = "ios"), link_section = "__DATA,__mod_init_func")]
+#[cfg_attr(
+  any(target_os = "macos", target_os = "ios"),
+  link_section = "__DATA,__mod_init_func"
+)]
 #[cfg_attr(target_os = "windows", link_section = ".CRT$XCU")]
 static INIT_BROWSER_INTEGRATION_ENV: extern "C" fn() = {
   extern "C" fn init() {
@@ -43,105 +46,105 @@ static INIT_BROWSER_INTEGRATION_ENV: extern "C" fn() = {
   init
 };
 
-mod browser_headless_smoke_test;
-mod browser_cli_help;
-mod browser_cli_gpu_flags;
-mod browser_cli_start_url_scheme;
-mod browser_session_restore;
-mod browser_mem_limit_env;
 mod author_css_cannot_observe_data_fastr_hover;
+mod browser_cli_gpu_flags;
+mod browser_cli_help;
+mod browser_cli_start_url_scheme;
+mod browser_headless_smoke_test;
+mod browser_mem_limit_env;
+mod browser_session_restore;
+mod browser_tab_vmjs_smoke;
 mod browser_thread_base_url_across_navigations;
+mod browser_thread_cancellation;
+mod browser_thread_history_scroll_restore;
+mod browser_thread_paint_cancellation;
+mod browser_thread_select_dropdown;
+mod browser_thread_select_dropdown_choose;
+mod browser_thread_worker;
 mod browser_worker_cancel_gens;
 mod browser_worker_cancellation;
 mod browser_worker_fragment_navigation;
 mod browser_worker_percent_encoded_fragment;
 mod browser_worker_target_pseudoclass;
 mod browser_worker_thread;
-mod browser_thread_cancellation;
-mod browser_thread_history_scroll_restore;
-mod browser_thread_select_dropdown;
-mod browser_thread_select_dropdown_choose;
-mod browser_thread_paint_cancellation;
+mod click_events;
 mod document;
 mod document2;
 mod dynamic_script_insertion;
 mod history_navigation;
-mod select_dropdown;
-mod select_dropdown_hidden_option_arrow_key;
-mod select_listbox_hidden_option_click;
-mod select_dropdown_pick;
-mod select_listbox_click_scrolled;
-mod select_listbox_wheel_scroll;
-mod click_events;
+mod js_diagnostics;
 #[cfg(feature = "quickjs")]
 mod js_rendering;
-mod navigation_streaming;
-mod location_navigation;
 mod js_time;
-mod tab_vm_js_time;
-mod js_diagnostics;
+mod location_navigation;
+mod navigation_streaming;
+mod select_dropdown;
+mod select_dropdown_hidden_option_arrow_key;
+mod select_dropdown_pick;
+mod select_listbox_click_scrolled;
+mod select_listbox_hidden_option_click;
+mod select_listbox_wheel_scroll;
 mod support;
 mod tab;
-mod browser_tab_vmjs_smoke;
-mod ui_clipboard;
 mod tab_js_realm_navigation_reset;
+mod tab_vm_js_time;
 mod tab_vmjs;
-mod ui_input_routing;
-mod ui_navigation_messages;
-mod ui_render_thread;
 mod ui_browser_worker_live_tab;
 mod ui_browser_worker_thread_naming;
-mod ui_fragment_navigation;
 mod ui_cancellation;
+mod ui_clipboard;
 mod ui_context_menu;
-mod ui_select_listbox_click_after_wheel_scroll;
+mod ui_fragment_navigation;
+mod ui_frame_upload_coalescing;
+mod ui_input_routing;
+mod ui_keyboard_scrolling;
+mod ui_navigation_messages;
+mod ui_render_thread;
 mod ui_render_worker_thread_builder_test;
+mod ui_scroll_metrics;
+mod ui_scrolling;
 mod ui_select_dropdown_choose;
 mod ui_select_listbox_click;
+mod ui_select_listbox_click_after_wheel_scroll;
 mod ui_stage_heartbeat_forwarding;
+mod ui_text_editing;
+mod ui_worker_about_pages;
+mod ui_worker_anchor_scroll;
+mod ui_worker_anchor_scroll_percent_encoded;
+mod ui_worker_anchor_scroll_percent_escaped_percent;
 mod ui_worker_base_url_isolation;
 mod ui_worker_cancellation;
+mod ui_worker_click_prevent_default;
 mod ui_worker_dpr;
-mod ui_worker_zoom;
+mod ui_worker_favicon;
+mod ui_worker_focus_scroll;
+mod ui_worker_form_submit;
 mod ui_worker_fragment_navigation;
 mod ui_worker_history;
 mod ui_worker_hover_active;
 mod ui_worker_hover_cursor;
 mod ui_worker_interaction;
-mod ui_worker_form_submit;
-mod ui_worker_focus_scroll;
 mod ui_worker_keyboard;
-mod ui_keyboard_scrolling;
-mod ui_worker_text_editing;
-mod ui_worker_open_in_new_tab;
-mod ui_worker_click_prevent_default;
 mod ui_worker_navigation_errors;
 mod ui_worker_navigation_messages;
+mod ui_worker_open_in_new_tab;
+mod ui_worker_prioritization_preemption;
+mod ui_worker_protocol_smoke;
+mod ui_worker_renderer_reuse;
 mod ui_worker_robustness;
 mod ui_worker_scroll;
 mod ui_worker_scroll_hit_test;
-mod ui_worker_anchor_scroll;
-mod ui_text_editing;
-mod ui_scrolling;
-mod ui_scroll_metrics;
-mod ui_worker_stage_listener_scoping;
-mod ui_worker_anchor_scroll_percent_encoded;
-mod ui_worker_anchor_scroll_percent_escaped_percent;
 mod ui_worker_shutdown;
+mod ui_worker_stage_listener_scoping;
 mod ui_worker_tab_resource_isolation;
-mod ui_worker_renderer_reuse;
 mod ui_worker_tabs;
+mod ui_worker_text_editing;
 mod ui_worker_title;
-mod ui_worker_about_pages;
-mod ui_worker_favicon;
+mod ui_worker_unsupported_scheme;
 mod ui_worker_viewport_changed;
 mod ui_worker_viewport_limits;
-mod ui_worker_prioritization_preemption;
-mod ui_frame_upload_coalescing;
+mod ui_worker_zoom;
 mod worker_harness;
-mod browser_thread_worker;
-mod ui_worker_protocol_smoke;
-mod ui_worker_unsupported_scheme;
 
 // -----------------------------------------------------------------------------
 // Global integration test environment

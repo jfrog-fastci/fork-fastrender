@@ -52,4 +52,3 @@ fn text_wrap_pretty_does_not_rebalance() {
     .join()
     .unwrap();
 }
-

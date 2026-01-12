@@ -7,8 +7,8 @@ use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::GridTrack;
 use fastrender::style::types::Overflow;
 use fastrender::style::values::Length;
-use fastrender::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::ComputedStyle;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -47,7 +47,11 @@ fn grid_nested_grid_container_has_nonzero_intrinsic_block_size() {
 
     let mut flex_style = ComputedStyle::default();
     flex_style.display = Display::Flex;
-    BoxNode::new_block(Arc::new(flex_style), FormattingContextType::Flex, vec![child])
+    BoxNode::new_block(
+      Arc::new(flex_style),
+      FormattingContextType::Flex,
+      vec![child],
+    )
   };
 
   let mut inner_style = ComputedStyle::default();
@@ -62,8 +66,11 @@ fn grid_nested_grid_container_has_nonzero_intrinsic_block_size() {
     vec![make_flex_item(80.0), make_flex_item(66.0)],
   );
 
-  let grid =
-    BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Grid, vec![inner_grid]);
+  let grid = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Grid,
+    vec![inner_grid],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc

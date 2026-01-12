@@ -10,7 +10,9 @@ fn fragment_has_display(fragment: &FragmentNode, display: Display) -> bool {
 }
 
 fn find_table_wrapper<'a>(fragment: &'a FragmentNode) -> Option<&'a FragmentNode> {
-  if fragment_has_display(fragment, Display::Table) || fragment_has_display(fragment, Display::InlineTable) {
+  if fragment_has_display(fragment, Display::Table)
+    || fragment_has_display(fragment, Display::InlineTable)
+  {
     if fragment
       .children
       .iter()
@@ -71,7 +73,10 @@ fn caption_does_not_widen_table_to_max_content() {
   let table_grid = wrapper
     .children
     .iter()
-    .find(|child| fragment_has_display(child, Display::Table) || fragment_has_display(child, Display::InlineTable))
+    .find(|child| {
+      fragment_has_display(child, Display::Table)
+        || fragment_has_display(child, Display::InlineTable)
+    })
     .expect("table grid fragment");
 
   assert!(
@@ -153,7 +158,10 @@ fn caption_vertical_margins_affect_table_stacking() {
   let table_grid = wrapper
     .children
     .iter()
-    .find(|child| fragment_has_display(child, Display::Table) || fragment_has_display(child, Display::InlineTable))
+    .find(|child| {
+      fragment_has_display(child, Display::Table)
+        || fragment_has_display(child, Display::InlineTable)
+    })
     .expect("table grid fragment");
 
   let expected_table_y = caption.bounds.y() + caption.bounds.height() + 10.0;
@@ -165,4 +173,3 @@ fn caption_vertical_margins_affect_table_stacking() {
     caption.bounds.height()
   );
 }
-

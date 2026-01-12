@@ -4,6 +4,7 @@ pub mod asset_discovery;
 pub mod base_url_tracker;
 pub mod color_scheme;
 pub mod content_security_policy;
+pub(crate) mod document_write;
 pub mod dom2_tree_sink;
 pub mod encoding;
 pub mod favicon;
@@ -14,13 +15,12 @@ pub mod meta_refresh;
 pub mod pausable_html5ever;
 pub mod referrer_policy;
 pub mod streaming_parser;
-pub(crate) mod document_write;
 pub mod title;
 pub mod viewport;
 
+pub use crate::css::loader::infer_base_url;
 pub use favicon::find_document_favicon_url;
 pub use title::find_document_title;
-pub use crate::css::loader::infer_base_url;
 
 use crate::css::loader::resolve_href;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
@@ -259,9 +259,8 @@ pub fn find_base_href(dom: &DomNode) -> Option<String> {
   // Avoid `str::trim()` here because it removes non-ASCII whitespace like NBSP (U+00A0), which
   // should be preserved and percent-encoded by URL parsing.
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| {
-      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
-    })
+    value
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
   fn find_head(root: &DomNode) -> Option<&DomNode> {
@@ -613,9 +612,8 @@ mod tests {
   #[test]
   fn document_base_url_does_not_trim_non_ascii_whitespace() {
     let nbsp = "\u{00A0}";
-    let html = format!(
-      "<html><head><base href=\"https://cdn.example.com/static/{nbsp}\"></head></html>"
-    );
+    let html =
+      format!("<html><head><base href=\"https://cdn.example.com/static/{nbsp}\"></head></html>");
     let dom = parse_html(&html).unwrap();
     assert_eq!(
       document_base_url(&dom, None),
@@ -664,6 +662,9 @@ mod tests {
       children: vec![node],
     };
 
-    assert_eq!(find_base_href(&dom), Some("https://example.com/".to_string()));
+    assert_eq!(
+      find_base_href(&dom),
+      Some("https://example.com/".to_string())
+    );
   }
 }

@@ -94,8 +94,7 @@ fn flex_measured_fragment_reuse_respects_updated_positioned_containing_block() {
   "#;
 
   let tree = layout_html(&mut renderer, html, 200, 200);
-  let overlay_bounds =
-    find_block_bounds_for_text(&tree.root, "OVERLAY").expect("find overlay");
+  let overlay_bounds = find_block_bounds_for_text(&tree.root, "OVERLAY").expect("find overlay");
 
   assert!(
     (overlay_bounds.x() - 0.0).abs() <= EPS,

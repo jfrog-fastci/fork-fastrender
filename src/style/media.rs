@@ -1334,22 +1334,25 @@ impl MediaFeature {
     let ratio = match value.parse::<f32>() {
       Ok(ratio) => ratio,
       Err(_) => {
-        let (num, denom) = value.split_once('/').ok_or_else(|| MediaParseError::InvalidValue {
-          feature: name.to_string(),
-          value: value.to_string(),
+        let (num, denom) = value
+          .split_once('/')
+          .ok_or_else(|| MediaParseError::InvalidValue {
+            feature: name.to_string(),
+            value: value.to_string(),
+          })?;
+        let num =
+          trim_ascii_whitespace(num)
+            .parse::<f32>()
+            .map_err(|_| MediaParseError::InvalidValue {
+              feature: name.to_string(),
+              value: value.to_string(),
+            })?;
+        let denom = trim_ascii_whitespace(denom).parse::<f32>().map_err(|_| {
+          MediaParseError::InvalidValue {
+            feature: name.to_string(),
+            value: value.to_string(),
+          }
         })?;
-        let num = trim_ascii_whitespace(num)
-          .parse::<f32>()
-          .map_err(|_| MediaParseError::InvalidValue {
-            feature: name.to_string(),
-            value: value.to_string(),
-          })?;
-        let denom = trim_ascii_whitespace(denom)
-          .parse::<f32>()
-          .map_err(|_| MediaParseError::InvalidValue {
-            feature: name.to_string(),
-            value: value.to_string(),
-          })?;
         if !denom.is_finite() || denom == 0.0 {
           return Err(MediaParseError::InvalidValue {
             feature: name.to_string(),
@@ -3531,31 +3534,31 @@ impl<'a> MediaQueryParser<'a> {
         '<' | '>' | '=' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
           parts.push(trim_ascii_whitespace(&input[last..idx]));
           let mut end = idx + ch.len_utf8();
-            let op = match ch {
-              '<' => {
-                if let Some((eq_idx, '=')) = chars.peek().copied() {
-                  let _ = chars.next();
-                  end = eq_idx + 1;
-                  ComparisonOp::LessThanEqual
-                } else {
-                  ComparisonOp::LessThan
-                }
+          let op = match ch {
+            '<' => {
+              if let Some((eq_idx, '=')) = chars.peek().copied() {
+                let _ = chars.next();
+                end = eq_idx + 1;
+                ComparisonOp::LessThanEqual
+              } else {
+                ComparisonOp::LessThan
               }
-              '>' => {
-                if let Some((eq_idx, '=')) = chars.peek().copied() {
-                  let _ = chars.next();
-                  end = eq_idx + 1;
-                  ComparisonOp::GreaterThanEqual
-                } else {
-                  ComparisonOp::GreaterThan
-                }
+            }
+            '>' => {
+              if let Some((eq_idx, '=')) = chars.peek().copied() {
+                let _ = chars.next();
+                end = eq_idx + 1;
+                ComparisonOp::GreaterThanEqual
+              } else {
+                ComparisonOp::GreaterThan
               }
-              '=' => ComparisonOp::Equal,
-              _ => {
-                debug_assert!(false, "range operator should be one of '<', '>', '='");
-                ComparisonOp::Equal
-              }
-            };
+            }
+            '=' => ComparisonOp::Equal,
+            _ => {
+              debug_assert!(false, "range operator should be one of '<', '>', '='");
+              ComparisonOp::Equal
+            }
+          };
           ops.push(op);
           last = end;
         }

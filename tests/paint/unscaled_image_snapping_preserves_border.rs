@@ -52,4 +52,3 @@ fn unscaled_image_snapping_does_not_overpaint_border() {
     "expected the image content to render on the correct pixel grid"
   );
 }
-

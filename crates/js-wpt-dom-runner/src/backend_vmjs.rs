@@ -4,13 +4,14 @@ use crate::wpt_report::{WptReport, WptSubtest};
 use crate::wpt_resource_fetcher::WptResourceFetcher;
 use crate::RunError;
 use fastrender::js::{
-  EventLoop, JsExecutionOptions, MicrotaskCheckpointLimitedOutcome, RunLimits, RunNextTaskLimitedOutcome,
-  RunState, VirtualClock, WindowHostState,
+  EventLoop, JsExecutionOptions, MicrotaskCheckpointLimitedOutcome, RunLimits,
+  RunNextTaskLimitedOutcome, RunState, VirtualClock, WindowHostState,
 };
 use std::sync::Arc;
 use std::time::Duration;
 use vm_js::{
-  GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks,
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 
@@ -50,7 +51,14 @@ impl VmJsBackend {
 
   fn state_mut(
     &mut self,
-  ) -> Result<(&mut WindowHostState, &mut EventLoop<WindowHostState>, &mut RunState), RunError> {
+  ) -> Result<
+    (
+      &mut WindowHostState,
+      &mut EventLoop<WindowHostState>,
+      &mut RunState,
+    ),
+    RunError,
+  > {
     let host = self
       .host
       .as_mut()
@@ -77,7 +85,10 @@ impl VmJsBackend {
     self.virtual_clock.as_ref().map(|c| c.now())
   }
 
-  fn handle_fastrender_error_as_timeout_or_js(&mut self, err: fastrender::error::Error) -> Result<(), RunError> {
+  fn handle_fastrender_error_as_timeout_or_js(
+    &mut self,
+    err: fastrender::error::Error,
+  ) -> Result<(), RunError> {
     let msg = err.to_string();
     if is_vm_interrupt_message(&msg) {
       self.timed_out = true;
@@ -124,8 +135,9 @@ impl Backend for VmJsBackend {
 
     // Create an HTML-ish DOM with <html><head> and <body> so curated tests can assert:
     // `document.head.tagName === "HEAD"` etc.
-    let dom = fastrender::dom2::parse_html("<!doctype html><html><head></head><body></body></html>")
-      .map_err(|e| RunError::Js(e.to_string()))?;
+    let dom =
+      fastrender::dom2::parse_html("<!doctype html><html><head></head><body></body></html>")
+        .map_err(|e| RunError::Js(e.to_string()))?;
 
     // Offline-only fetcher mapped to the local curated WPT corpus.
     let fetcher = Arc::new(WptResourceFetcher::from_wpt_fs(&self.fs));
@@ -213,7 +225,11 @@ impl Backend for VmJsBackend {
     "#;
 
     host
-      .exec_script_with_name_in_event_loop(&mut event_loop, "fastrender_wpt_bootstrap.js", BOOTSTRAP)
+      .exec_script_with_name_in_event_loop(
+        &mut event_loop,
+        "fastrender_wpt_bootstrap.js",
+        BOOTSTRAP,
+      )
       .map_err(|e| RunError::Js(e.to_string()))?;
 
     let run_state = event_loop.new_run_state(RunLimits {
@@ -317,7 +333,13 @@ impl Backend for VmJsBackend {
     let report = report_from_js_value(vm, &mut scope, payload);
 
     // Clear the stored payload so subsequent `take_report` calls return `None`.
-    let _ = scope.ordinary_set(vm, global, payload_key, Value::Undefined, Value::Object(global));
+    let _ = scope.ordinary_set(
+      vm,
+      global,
+      payload_key,
+      Value::Undefined,
+      Value::Object(global),
+    );
 
     Ok(Some(report))
   }
@@ -340,7 +362,8 @@ impl Backend for VmJsBackend {
       return true;
     };
     let limits = run_state.limits();
-    run_state.tasks_executed() >= limits.max_tasks || run_state.microtasks_executed() >= limits.max_microtasks
+    run_state.tasks_executed() >= limits.max_tasks
+      || run_state.microtasks_executed() >= limits.max_microtasks
   }
 
   fn idle_wait(&mut self) {
@@ -505,7 +528,11 @@ fn harness_error_report(message: impl Into<String>) -> WptReport {
   }
 }
 
-fn report_from_js_value(vm: &mut vm_js::Vm, scope: &mut vm_js::Scope<'_>, payload: Value) -> WptReport {
+fn report_from_js_value(
+  vm: &mut vm_js::Vm,
+  scope: &mut vm_js::Scope<'_>,
+  payload: Value,
+) -> WptReport {
   let heap = scope.heap();
 
   match payload {
@@ -526,7 +553,11 @@ fn report_from_js_value(vm: &mut vm_js::Vm, scope: &mut vm_js::Scope<'_>, payloa
   }
 }
 
-fn report_from_js_object(vm: &mut vm_js::Vm, scope: &mut vm_js::Scope<'_>, obj: vm_js::GcObject) -> WptReport {
+fn report_from_js_object(
+  vm: &mut vm_js::Vm,
+  scope: &mut vm_js::Scope<'_>,
+  obj: vm_js::GcObject,
+) -> WptReport {
   // Root the payload object while allocating property keys and reading properties.
   if let Err(err) = scope.push_root(Value::Object(obj)) {
     return harness_error_report(format!("failed to root report payload object: {err}"));
@@ -538,7 +569,9 @@ fn report_from_js_object(vm: &mut vm_js::Vm, scope: &mut vm_js::Scope<'_>, obj: 
   };
   let harness_status_key = match alloc_key(scope, "harness_status") {
     Ok(key) => key,
-    Err(err) => return harness_error_report(format!("failed to allocate harness_status key: {err}")),
+    Err(err) => {
+      return harness_error_report(format!("failed to allocate harness_status key: {err}"))
+    }
   };
   let message_key = match alloc_key(scope, "message") {
     Ok(key) => key,
@@ -596,7 +629,16 @@ fn report_from_js_object(vm: &mut vm_js::Vm, scope: &mut vm_js::Scope<'_>, obj: 
   };
 
   let subtests = match vm.get(scope, obj, subtests_key) {
-    Ok(Value::Object(arr)) => parse_subtests_array(vm, scope, arr, length_key, name_key, status_key, message_key, stack_key),
+    Ok(Value::Object(arr)) => parse_subtests_array(
+      vm,
+      scope,
+      arr,
+      length_key,
+      name_key,
+      status_key,
+      message_key,
+      stack_key,
+    ),
     _ => Vec::new(),
   };
 

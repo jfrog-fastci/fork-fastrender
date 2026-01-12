@@ -44,9 +44,17 @@ fn grid_item_min_height_min_content_does_not_blow_up_from_min_content_inline_wra
     FormattingContextType::Block,
     vec![BoxNode::new_text(Arc::new(ComputedStyle::default()), text)],
   );
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Flex, vec![child]);
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
-  let grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
   let fc = GridFormattingContext::new();
   let fragment = fc
     .layout(&grid, &LayoutConstraints::definite(200.0, 400.0))

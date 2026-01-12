@@ -11,10 +11,10 @@
 use clap::{ArgAction, Parser};
 use fastrender::dom::{self, DomNode, DomNodeType};
 use fastrender::html::encoding::decode_html_bytes;
-use fastrender::resource::parse_cached_html_meta;
 use fastrender::pageset::{
   pageset_entries_with_collisions, pageset_stem, PagesetEntry, PagesetFilter, CACHE_HTML_DIR,
 };
+use fastrender::resource::parse_cached_html_meta;
 use fastrender::{FontDatabase, Script};
 use regex::Regex;
 use serde::Serialize;
@@ -336,18 +336,16 @@ fn collect_css_content_strings(
   static CONTENT_RE: std::sync::OnceLock<Result<Regex, regex::Error>> = std::sync::OnceLock::new();
   static STRING_RE: std::sync::OnceLock<Result<Regex, regex::Error>> = std::sync::OnceLock::new();
 
-  let content_re = match CONTENT_RE
-    .get_or_init(|| Regex::new(r"(?is)(?:^|[;{\s])content\s*:\s*([^;}]*)"))
-  {
-    Ok(re) => re,
-    Err(_) => return,
-  };
-  let string_re = match STRING_RE
-    .get_or_init(|| Regex::new(r#"(?s)"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'"#))
-  {
-    Ok(re) => re,
-    Err(_) => return,
-  };
+  let content_re =
+    match CONTENT_RE.get_or_init(|| Regex::new(r"(?is)(?:^|[;{\s])content\s*:\s*([^;}]*)")) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
+  let string_re =
+    match STRING_RE.get_or_init(|| Regex::new(r#"(?s)"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'"#)) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
 
   // Guard against pathological inline styles (e.g., embedded data URIs).
   let css = if css.len() > 256 * 1024 {

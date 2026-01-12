@@ -474,30 +474,42 @@ pub fn compute_line_height_with_metrics_viewport(
       }
       LengthUnit::Ch => len.value * font_size * 0.5,
       LengthUnit::Cap => {
-        let cap_height = metrics.and_then(|m| m.cap_height).unwrap_or(font_size * 0.7);
+        let cap_height = metrics
+          .and_then(|m| m.cap_height)
+          .unwrap_or(font_size * 0.7);
         len.value * cap_height
       }
       LengthUnit::Ic => len.value * font_size,
-      LengthUnit::Rex => len.value
-        * root_metrics
-          .map(|m| m.root_x_height_px)
-          .unwrap_or(style.root_font_size * 0.5),
-      LengthUnit::Rch => len.value
-        * root_metrics
-          .map(|m| m.root_ch_advance_px)
-          .unwrap_or(style.root_font_size * 0.5),
-      LengthUnit::Rcap => len.value
-        * root_metrics
-          .map(|m| m.root_cap_height_px)
-          .unwrap_or(style.root_font_size * 0.7),
-      LengthUnit::Ric => len.value
-        * root_metrics
-          .map(|m| m.root_ic_advance_px)
-          .unwrap_or(style.root_font_size),
-      LengthUnit::Rlh => len.value
-        * root_metrics
-          .map(|m| m.root_used_line_height_px)
-          .unwrap_or(style.root_font_size * 1.2),
+      LengthUnit::Rex => {
+        len.value
+          * root_metrics
+            .map(|m| m.root_x_height_px)
+            .unwrap_or(style.root_font_size * 0.5)
+      }
+      LengthUnit::Rch => {
+        len.value
+          * root_metrics
+            .map(|m| m.root_ch_advance_px)
+            .unwrap_or(style.root_font_size * 0.5)
+      }
+      LengthUnit::Rcap => {
+        len.value
+          * root_metrics
+            .map(|m| m.root_cap_height_px)
+            .unwrap_or(style.root_font_size * 0.7)
+      }
+      LengthUnit::Ric => {
+        len.value
+          * root_metrics
+            .map(|m| m.root_ic_advance_px)
+            .unwrap_or(style.root_font_size)
+      }
+      LengthUnit::Rlh => {
+        len.value
+          * root_metrics
+            .map(|m| m.root_used_line_height_px)
+            .unwrap_or(style.root_font_size * 1.2)
+      }
       // `lh` inside the `line-height` property is cyclic; approximate it using the UA's
       // `normal` line height.
       LengthUnit::Lh => len.value * normal_line_height,
@@ -517,7 +529,9 @@ pub fn compute_line_height_with_metrics_viewport(
               for term in linear.terms() {
                 resolved += match term.unit {
                   LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
-                  u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
+                  u if u.is_absolute() => {
+                    Some(crate::style::values::Length::new(term.value, u).to_px())
+                  }
                   LengthUnit::Em => Some(term.value * font_px),
                   LengthUnit::Rem => Some(term.value * root_px),
                   LengthUnit::Ex => {
@@ -525,45 +539,45 @@ pub fn compute_line_height_with_metrics_viewport(
                     Some(term.value * x_height)
                   }
                   LengthUnit::Ch => Some(term.value * font_px * 0.5),
-                   LengthUnit::Cap => {
-                     let cap_height = metrics.and_then(|m| m.cap_height).unwrap_or(font_px * 0.7);
-                     Some(term.value * cap_height)
-                   }
-                   LengthUnit::Ic => Some(term.value * font_px),
-                   LengthUnit::Rex => Some(
-                     term.value
-                       * root_metrics
-                         .map(|m| m.root_x_height_px)
-                         .unwrap_or(root_px * 0.5),
-                   ),
-                   LengthUnit::Rch => Some(
-                     term.value
-                       * root_metrics
-                         .map(|m| m.root_ch_advance_px)
-                         .unwrap_or(root_px * 0.5),
-                   ),
-                   LengthUnit::Rcap => Some(
-                     term.value
-                       * root_metrics
-                         .map(|m| m.root_cap_height_px)
-                         .unwrap_or(root_px * 0.7),
-                   ),
-                   LengthUnit::Ric => Some(
-                     term.value
-                       * root_metrics
-                         .map(|m| m.root_ic_advance_px)
-                         .unwrap_or(root_px),
-                   ),
-                   LengthUnit::Rlh => Some(
-                     term.value
-                       * root_metrics
-                         .map(|m| m.root_used_line_height_px)
-                         .unwrap_or(root_px * 1.2),
-                   ),
-                   // `lh` inside `line-height` is cyclic; approximate it using the UA `normal` line height.
-                   LengthUnit::Lh => Some(term.value * normal_line_height),
-                   u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
-                     .resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode),
+                  LengthUnit::Cap => {
+                    let cap_height = metrics.and_then(|m| m.cap_height).unwrap_or(font_px * 0.7);
+                    Some(term.value * cap_height)
+                  }
+                  LengthUnit::Ic => Some(term.value * font_px),
+                  LengthUnit::Rex => Some(
+                    term.value
+                      * root_metrics
+                        .map(|m| m.root_x_height_px)
+                        .unwrap_or(root_px * 0.5),
+                  ),
+                  LengthUnit::Rch => Some(
+                    term.value
+                      * root_metrics
+                        .map(|m| m.root_ch_advance_px)
+                        .unwrap_or(root_px * 0.5),
+                  ),
+                  LengthUnit::Rcap => Some(
+                    term.value
+                      * root_metrics
+                        .map(|m| m.root_cap_height_px)
+                        .unwrap_or(root_px * 0.7),
+                  ),
+                  LengthUnit::Ric => Some(
+                    term.value
+                      * root_metrics
+                        .map(|m| m.root_ic_advance_px)
+                        .unwrap_or(root_px),
+                  ),
+                  LengthUnit::Rlh => Some(
+                    term.value
+                      * root_metrics
+                        .map(|m| m.root_used_line_height_px)
+                        .unwrap_or(root_px * 1.2),
+                  ),
+                  // `lh` inside `line-height` is cyclic; approximate it using the UA `normal` line height.
+                  LengthUnit::Lh => Some(term.value * normal_line_height),
+                  u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
+                    .resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode),
                   _ => Some(term.value),
                 }?;
               }
@@ -1018,8 +1032,7 @@ mod tests {
     style.font_size = 20.0;
     style.root_font_size = 10.0;
 
-    style.line_height =
-      crate::style::types::LineHeight::Length(Length::new(1.0, LengthUnit::Rch));
+    style.line_height = crate::style::types::LineHeight::Length(Length::new(1.0, LengthUnit::Rch));
     let rch = compute_line_height_with_metrics_viewport(&style, None, None, None);
     assert!((rch - 5.0).abs() < 0.001);
 

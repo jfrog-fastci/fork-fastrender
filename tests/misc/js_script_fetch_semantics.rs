@@ -1,6 +1,8 @@
 use crate::test_support::net::{net_test_lock, try_bind_localhost};
 
-use fastrender::api::{BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions};
+use fastrender::api::{
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions,
+};
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
@@ -70,8 +72,8 @@ struct ExecutorWithWindow<E> {
 
 impl<E> ExecutorWithWindow<E> {
   fn new(inner: E) -> Self {
-    let window =
-      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create WindowRealm");
     Self {
       inner,
       host_ctx: (),
@@ -97,7 +99,9 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
 impl<E> WindowRealmHost for ExecutorWithWindow<E> {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    let ExecutorWithWindow {
+      host_ctx, window, ..
+    } = self;
     (host_ctx, window)
   }
 }
@@ -141,10 +145,7 @@ fn read_http_request(stream: &mut TcpStream) -> (String, HashMap<String, String>
     let Some((name, value)) = line.split_once(':') else {
       continue;
     };
-    headers.insert(
-      name.trim().to_ascii_lowercase(),
-      value.trim().to_string(),
-    );
+    headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
   }
 
   (path, headers)
@@ -189,8 +190,11 @@ fn sri_sha256_allows_matching_digest() -> Result<()> {
   );
 
   let executor = LogExecutor::default();
-  let mut tab =
-    BrowserTab::from_html(&html, RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
+  let mut tab = BrowserTab::from_html(
+    &html,
+    RenderOptions::default(),
+    ExecutorWithWindow::new(executor.clone()),
+  )?;
   tab.register_script_source(script_url, script_body);
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
@@ -246,9 +250,8 @@ fn sri_strongest_algorithm_preferred_over_weaker_matches() -> Result<()> {
   let sha256_ok = BASE64_STANDARD.encode(Sha256::digest(script_body.as_bytes()));
   let integrity = format!("sha512-{sha512_wrong} sha256-{sha256_ok}");
 
-  let html = format!(
-    r#"<!doctype html><script async src="{script_url}" integrity="{integrity}"></script>"#
-  );
+  let html =
+    format!(r#"<!doctype html><script async src="{script_url}" integrity="{integrity}"></script>"#);
 
   let executor = LogExecutor::default();
   let mut tab = BrowserTab::from_html(&html, RenderOptions::default(), executor.clone())?;
@@ -275,8 +278,11 @@ fn sri_sha256_mismatch_blocks_script_execution_without_aborting() -> Result<()> 
   );
 
   let executor = LogExecutor::default();
-  let mut tab =
-    BrowserTab::from_html(&html, RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
+  let mut tab = BrowserTab::from_html(
+    &html,
+    RenderOptions::default(),
+    ExecutorWithWindow::new(executor.clone()),
+  )?;
   tab.register_script_source(script_url, script_body);
 
   // SRI mismatches should behave like script load failures: no execution, but the run completes.
@@ -305,7 +311,8 @@ fn sri_cross_origin_without_crossorigin_blocks_script_execution() -> Result<()> 
   let digest = Sha256::digest(script_body.as_bytes());
   let b64 = BASE64_STANDARD.encode(digest);
 
-  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::new(Mutex::new(None));
+  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> =
+    Arc::new(Mutex::new(None));
   let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
   let (script_done_tx, script_done_rx) = std::sync::mpsc::channel::<()>();
 
@@ -344,9 +351,14 @@ fn sri_cross_origin_without_crossorigin_blocks_script_execution() -> Result<()> 
     // the `integrity` attribute is present. Our implementation rejects scripts that are cross-origin
     // + integrity + missing `crossorigin` **before fetching**, so we should not see any request to
     // the script server.
-    script_listener.set_nonblocking(true).expect("script nonblocking");
+    script_listener
+      .set_nonblocking(true)
+      .expect("script nonblocking");
     loop {
-      if matches!(script_done_rx.try_recv(), Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected)) {
+      if matches!(
+        script_done_rx.try_recv(),
+        Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected)
+      ) {
         return;
       }
       match script_listener.accept() {
@@ -475,7 +487,8 @@ fn crossorigin_anonymous_enforces_cors_and_blocks_on_missing_acao() -> Result<()
   let doc_url = format!("http://{}/page.html", doc_addr);
   let script_url = format!("http://{}/script.js", script_addr);
 
-  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::new(Mutex::new(None));
+  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> =
+    Arc::new(Mutex::new(None));
   let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
 
   let doc_thread = std::thread::spawn(move || {
@@ -506,8 +519,11 @@ fn crossorigin_anonymous_enforces_cors_and_blocks_on_missing_acao() -> Result<()
     "1".to_string(),
   )])));
   with_thread_runtime_toggles(toggles, || -> Result<()> {
-    let mut tab =
-      BrowserTab::from_html("", RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
+    let mut tab = BrowserTab::from_html(
+      "",
+      RenderOptions::default(),
+      ExecutorWithWindow::new(executor.clone()),
+    )?;
     tab.navigate_to_url(&doc_url, RenderOptions::default())?;
     // No async/defer scripts; everything should have been handled during navigation.
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
@@ -555,7 +571,8 @@ fn referrerpolicy_no_referrer_suppresses_referer_header_for_scripts() -> Result<
   let addr = listener.local_addr().expect("server addr");
   let doc_url = format!("http://{}/page.html", addr);
 
-  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::new(Mutex::new(None));
+  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> =
+    Arc::new(Mutex::new(None));
   let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
 
   let server_thread = std::thread::spawn(move || {
@@ -580,8 +597,11 @@ fn referrerpolicy_no_referrer_suppresses_referer_header_for_scripts() -> Result<
   });
 
   let executor = LogExecutor::default();
-  let mut tab =
-    BrowserTab::from_html("", RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
+  let mut tab = BrowserTab::from_html(
+    "",
+    RenderOptions::default(),
+    ExecutorWithWindow::new(executor.clone()),
+  )?;
   tab.navigate_to_url(&doc_url, RenderOptions::default())?;
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
@@ -612,7 +632,8 @@ fn document_referrer_policy_header_applies_to_script_requests() -> Result<()> {
   let addr = listener.local_addr().expect("server addr");
   let doc_url = format!("http://{}/page.html", addr);
 
-  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::new(Mutex::new(None));
+  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> =
+    Arc::new(Mutex::new(None));
   let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
 
   let server_thread = std::thread::spawn(move || {
@@ -643,8 +664,11 @@ fn document_referrer_policy_header_applies_to_script_requests() -> Result<()> {
   });
 
   let executor = LogExecutor::default();
-  let mut tab =
-    BrowserTab::from_html("", RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
+  let mut tab = BrowserTab::from_html(
+    "",
+    RenderOptions::default(),
+    ExecutorWithWindow::new(executor.clone()),
+  )?;
   tab.navigate_to_url(&doc_url, RenderOptions::default())?;
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
@@ -773,14 +797,8 @@ fn crossorigin_use_credentials_includes_cookies_on_cross_origin_script_requests(
     .unwrap_or_else(|poisoned| poisoned.into_inner())
     .clone();
 
-  let anon_headers = headers_by_path
-    .get("/anon.js")
-    .cloned()
-    .unwrap_or_default();
-  let cred_headers = headers_by_path
-    .get("/cred.js")
-    .cloned()
-    .unwrap_or_default();
+  let anon_headers = headers_by_path.get("/anon.js").cloned().unwrap_or_default();
+  let cred_headers = headers_by_path.get("/cred.js").cloned().unwrap_or_default();
 
   assert!(
     !anon_headers.contains_key("cookie"),
@@ -795,12 +813,15 @@ fn crossorigin_use_credentials_includes_cookies_on_cross_origin_script_requests(
 }
 
 #[test]
-fn crossorigin_use_credentials_blocks_without_allow_credentials_or_with_wildcard_acao() -> Result<()> {
+fn crossorigin_use_credentials_blocks_without_allow_credentials_or_with_wildcard_acao() -> Result<()>
+{
   let _net_lock = net_test_lock();
-  let Some(doc_listener) = try_bind_localhost("cors credentials failures script document server") else {
+  let Some(doc_listener) = try_bind_localhost("cors credentials failures script document server")
+  else {
     return Ok(());
   };
-  let Some(script_listener) = try_bind_localhost("cors credentials failures script asset server") else {
+  let Some(script_listener) = try_bind_localhost("cors credentials failures script asset server")
+  else {
     return Ok(());
   };
 

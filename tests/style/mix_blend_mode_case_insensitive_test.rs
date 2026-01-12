@@ -29,4 +29,3 @@ fn mix_blend_mode_keyword_is_ascii_case_insensitive() {
   let target = find_by_id(&styled, "target").expect("target element");
   assert_eq!(target.styles.mix_blend_mode, MixBlendMode::Difference);
 }
-

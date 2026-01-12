@@ -49,4 +49,3 @@ fn container_query_can_match_query_container_in_shadow_tree_for_part_elements() 
   let part = find_by_id(&styled, "parted").expect("part element");
   assert_eq!(part.styles.color, Rgba::rgb(255, 0, 0));
 }
-

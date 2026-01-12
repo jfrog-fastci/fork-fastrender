@@ -1,6 +1,6 @@
 use fastrender::dom2;
-use fastrender::js::JsDomEvents;
 use fastrender::js::webidl::legacy::VmJsRuntime;
+use fastrender::js::JsDomEvents;
 use fastrender::web::events::{AddEventListenerOptions, Event, EventInit, EventTargetId};
 use fastrender::Result;
 use std::cell::RefCell;
@@ -864,7 +864,10 @@ fn js_callback_interface_listener_object_invokes_handle_event() -> Result<()> {
 
   // Listener object implements the EventListener callback interface by exposing a callable
   // `handleEvent` method.
-  let listener_obj = js.runtime_mut().alloc_object_value().expect("alloc listener object");
+  let listener_obj = js
+    .runtime_mut()
+    .alloc_object_value()
+    .expect("alloc listener object");
   let listener_obj_for_assert = listener_obj;
   let log_for_cb = log.clone();
 
@@ -936,7 +939,13 @@ fn js_callback_interface_listener_object_invokes_handle_event() -> Result<()> {
     AddEventListenerOptions::default(),
   )?;
 
-  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  let mut event = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
 
   assert_eq!(*log.borrow(), vec!["handleEvent"]);
@@ -994,7 +1003,13 @@ fn js_cancel_bubble_setter_stops_propagation() -> Result<()> {
     AddEventListenerOptions::default(),
   )?;
 
-  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  let mut event = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
 
   assert_eq!(*log.borrow(), vec!["target"]);
@@ -1129,7 +1144,13 @@ fn js_composed_path_and_src_element_reflect_dispatch_path() -> Result<()> {
     AddEventListenerOptions::default(),
   )?;
 
-  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  let mut event = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
   Ok(())
 }
@@ -1162,7 +1183,13 @@ fn js_time_stamp_is_number() -> Result<()> {
     AddEventListenerOptions::default(),
   )?;
 
-  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  let mut event = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
   Ok(())
 }

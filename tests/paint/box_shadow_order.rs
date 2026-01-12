@@ -50,4 +50,3 @@ fn box_shadow_paints_first_shadow_on_top() {
     "expected second box-shadow (blue) to be visible outside the overlap region"
   );
 }
-

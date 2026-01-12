@@ -38,13 +38,11 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
   let fastrender::ui::BrowserWorkerHandle { tx, rx, join } = worker;
 
   let tab_id = TabId::new();
-  tx
-    .send(support::create_tab_msg(tab_id, Some(url)))
+  tx.send(support::create_tab_msg(tab_id, Some(url)))
     .expect("CreateTab");
   tx.send(UiToWorker::SetActiveTab { tab_id })
     .expect("SetActiveTab");
-  tx
-    .send(support::viewport_changed_msg(tab_id, (200, 80), 1.0))
+  tx.send(support::viewport_changed_msg(tab_id, (200, 80), 1.0))
     .expect("ViewportChanged");
 
   let _frame = match support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
@@ -87,7 +85,10 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
   };
   assert_eq!(msg_tab, tab_id);
   assert!(select_node_id > 0, "expected non-zero select_node_id");
-  assert!(!control.multiple, "expected dropdown select to be single-select");
+  assert!(
+    !control.multiple,
+    "expected dropdown select to be single-select"
+  );
   assert_eq!(control.size, 1);
   assert_eq!(control.items.len(), 3);
   assert_eq!(control.selected, vec![1]);
@@ -98,8 +99,8 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
     .filter_map(|item| match item {
       SelectItem::Option { label, .. } => Some(label.clone()),
       _ => None,
-  })
-  .collect();
+    })
+    .collect();
   assert_eq!(labels, vec!["One", "Two", "Three"]);
 
   let anchored = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {

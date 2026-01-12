@@ -1,6 +1,6 @@
 use crate::test_support;
-use fastrender::resource::{FetchDestination, FetchRequest, HttpFetcher, HttpRequest};
 use fastrender::resource::web_fetch::RequestRedirect;
+use fastrender::resource::{FetchDestination, FetchRequest, HttpFetcher, HttpRequest};
 use fastrender::ResourceFetcher;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -47,7 +47,12 @@ fn read_http_request_with_body(stream: &mut std::net::TcpStream) -> Vec<u8> {
     match stream.read(&mut tmp) {
       Ok(0) => break,
       Ok(n) => buf.extend_from_slice(&tmp[..n]),
-      Err(ref e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+      Err(ref e)
+        if matches!(
+          e.kind(),
+          io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ) =>
+      {
         thread::sleep(Duration::from_millis(5));
       }
       Err(_) => break,
@@ -103,7 +108,9 @@ fn http_request_post_sends_method_headers_and_body() {
   let (tx, rx) = mpsc::channel::<CapturedRequest>();
   let handle = thread::spawn(move || {
     let (mut stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    stream
+      .set_read_timeout(Some(Duration::from_millis(500)))
+      .unwrap();
     let raw = read_http_request_with_body(&mut stream);
     tx.send(parse_request(raw)).unwrap();
     let body = b"ok";
@@ -134,10 +141,15 @@ fn http_request_post_sends_method_headers_and_body() {
   let res = fetcher.fetch_http_request(req).expect("fetch_http_request");
   assert_eq!(res.bytes, b"ok");
 
-  let captured = rx.recv_timeout(Duration::from_secs(1)).expect("captured request");
+  let captured = rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("captured request");
   assert_eq!(captured.method, "POST");
   assert_eq!(captured.path, "/submit");
-  assert_eq!(captured.headers.get("x-test").map(String::as_str), Some("hello"));
+  assert_eq!(
+    captured.headers.get("x-test").map(String::as_str),
+    Some("hello")
+  );
   assert_eq!(
     captured.headers.get("accept").map(String::as_str),
     Some("text/plain")
@@ -158,7 +170,9 @@ fn http_request_head_returns_empty_body() {
   let (tx, rx) = mpsc::channel::<CapturedRequest>();
   let handle = thread::spawn(move || {
     let (mut stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    stream
+      .set_read_timeout(Some(Duration::from_millis(500)))
+      .unwrap();
     let raw = read_http_request_with_body(&mut stream);
     tx.send(parse_request(raw)).unwrap();
     // Intentionally send a body even though HEAD responses should not include one; the fetcher must
@@ -180,7 +194,9 @@ fn http_request_head_returns_empty_body() {
   assert_eq!(res.status, Some(200));
   assert!(res.bytes.is_empty(), "expected empty body for HEAD");
 
-  let captured = rx.recv_timeout(Duration::from_secs(1)).expect("captured request");
+  let captured = rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("captured request");
   assert_eq!(captured.method, "HEAD");
   assert_eq!(captured.path, "/head");
 
@@ -190,7 +206,9 @@ fn http_request_head_returns_empty_body() {
 #[test]
 fn http_request_redirect_updates_final_url_and_downgrades_post_to_get() {
   let _net_guard = net_test_lock();
-  let Some(listener) = try_bind_localhost("http_request_redirect_updates_final_url_and_downgrades_post_to_get") else {
+  let Some(listener) =
+    try_bind_localhost("http_request_redirect_updates_final_url_and_downgrades_post_to_get")
+  else {
     return;
   };
   let addr = listener.local_addr().unwrap();
@@ -199,15 +217,20 @@ fn http_request_redirect_updates_final_url_and_downgrades_post_to_get() {
   let handle = thread::spawn(move || {
     // Redirect response.
     let (mut stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    stream
+      .set_read_timeout(Some(Duration::from_millis(500)))
+      .unwrap();
     let raw = read_http_request_with_body(&mut stream);
     tx.send(parse_request(raw)).unwrap();
-    let response = "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let response =
+      "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     stream.write_all(response.as_bytes()).unwrap();
 
     // Final response.
     let (mut stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    stream
+      .set_read_timeout(Some(Duration::from_millis(500)))
+      .unwrap();
     let raw = read_http_request_with_body(&mut stream);
     tx.send(parse_request(raw)).unwrap();
     let body = b"ok";
@@ -234,15 +257,22 @@ fn http_request_redirect_updates_final_url_and_downgrades_post_to_get() {
   let expected_final = format!("http://{addr}/final");
   assert_eq!(res.final_url.as_deref(), Some(expected_final.as_str()));
 
-  let first = rx.recv_timeout(Duration::from_secs(1)).expect("first request");
+  let first = rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("first request");
   assert_eq!(first.method, "POST");
   assert_eq!(first.path, "/redirect");
   assert_eq!(first.body, b"hello");
 
-  let second = rx.recv_timeout(Duration::from_secs(1)).expect("second request");
+  let second = rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("second request");
   assert_eq!(second.method, "GET");
   assert_eq!(second.path, "/final");
-  assert!(second.body.is_empty(), "redirected request should drop body");
+  assert!(
+    second.body.is_empty(),
+    "redirected request should drop body"
+  );
 
   handle.join().unwrap();
 }

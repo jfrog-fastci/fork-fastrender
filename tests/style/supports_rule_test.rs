@@ -157,8 +157,7 @@ fn supports_system_color_keywords_match() {
 
 #[test]
 fn supports_dynamic_range_limit_mix_in_color_positions() {
-  let css =
-    r"@supports (color: dynamic-range-limit-mix(in srgb-linear, red, blue)) { div { display: inline; } }";
+  let css = r"@supports (color: dynamic-range-limit-mix(in srgb-linear, red, blue)) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "inline");
 }
 

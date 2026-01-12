@@ -1,7 +1,9 @@
 use fastrender::dom::DomNodeType;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaType;
-use fastrender::{BoxNode, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Rect};
+use fastrender::{
+  BoxNode, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Rect,
+};
 
 fn find_styled_node_id_for_dom_id(node: &StyledNode, id_value: &str) -> Option<usize> {
   if let DomNodeType::Element { attributes, .. } = &node.node.node_type {
@@ -42,9 +44,15 @@ fn find_box_id_for_styled_node_id(node: &BoxNode, styled_node_id: usize) -> Opti
 fn find_fragment_bounds_for_box_id(node: &FragmentNode, box_id: usize) -> Option<Rect> {
   let matches_box = match &node.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_box {

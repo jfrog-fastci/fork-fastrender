@@ -25,9 +25,15 @@ fn find_fragment_by_box_id_abs<'a>(
   let abs_bounds = Rect::new(abs_origin, fragment.bounds.size);
   let matches_id = match &fragment.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_id {
@@ -105,7 +111,11 @@ fn abspos_percent_top_in_auto_height_positioned_block_does_not_create_empty_line
   let mut abs = BoxNode::new_inline(Arc::new(abs_style), vec![]);
   abs.id = 3;
 
-  let mut cb = BoxNode::new_block(cb_style, FormattingContextType::Block, vec![img, whitespace, abs]);
+  let mut cb = BoxNode::new_block(
+    cb_style,
+    FormattingContextType::Block,
+    vec![img, whitespace, abs],
+  );
   cb.id = 1;
 
   let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![cb]);
@@ -132,4 +142,3 @@ fn abspos_percent_top_in_auto_height_positioned_block_does_not_create_empty_line
     expected_y
   );
 }
-

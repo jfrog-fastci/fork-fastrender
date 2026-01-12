@@ -42,7 +42,9 @@ fn find_deepest_block_fragment_abs_by_text(fragment: &FragmentNode, needle: &str
     (contains, best)
   }
 
-  rec(fragment, needle, Point::ZERO, 0).1.map(|(_, rect)| rect)
+  rec(fragment, needle, Point::ZERO, 0)
+    .1
+    .map(|(_, rect)| rect)
 }
 
 #[test]
@@ -135,8 +137,8 @@ fn root_relative_font_units_use_root_font_metrics_and_used_line_height() {
 
   let rlh_container_rect = find_deepest_block_fragment_abs_by_text(&tree.root, "RLH_CONTAINER")
     .expect("rlh container block fragment");
-  let rlh_rect =
-    find_deepest_block_fragment_abs_by_text(&tree.root, "RLH_MARK").expect("rlh element block fragment");
+  let rlh_rect = find_deepest_block_fragment_abs_by_text(&tree.root, "RLH_MARK")
+    .expect("rlh element block fragment");
   let actual_top = rlh_rect.y() - rlh_container_rect.y();
   let expected_margin_top = root_font_size_px * 2.0;
 

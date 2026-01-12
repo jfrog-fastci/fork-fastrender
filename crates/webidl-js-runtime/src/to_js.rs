@@ -71,7 +71,9 @@ fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
   typedef_stack: &mut Vec<String>,
 ) -> Result<R::JsValue, R::Error> {
   match ty {
-    IdlType::Annotated { inner, .. } => to_js_with_limits_inner(rt, ctx, inner, value, limits, typedef_stack),
+    IdlType::Annotated { inner, .. } => {
+      to_js_with_limits_inner(rt, ctx, inner, value, limits, typedef_stack)
+    }
     IdlType::Nullable(inner) => match value {
       WebIdlValue::Null => Ok(rt.js_null()),
       _ => to_js_with_limits_inner(rt, ctx, inner, value, limits, typedef_stack),
@@ -167,9 +169,9 @@ fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
         }
         Ok(v)
       }
-      _ => Err(rt.throw_type_error(
-        "async sequence return values require a platform object handle",
-      )),
+      _ => {
+        Err(rt.throw_type_error("async sequence return values require a platform object handle"))
+      }
     },
     IdlType::Record(key_ty, value_ty) => {
       let WebIdlValue::Record { entries, .. } = value else {
@@ -187,9 +189,7 @@ fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
         }
         Ok(v)
       }
-      _ => Err(rt.throw_type_error(
-        "promise return values require a platform object handle",
-      )),
+      _ => Err(rt.throw_type_error("promise return values require a platform object handle")),
     },
   }
 }
@@ -387,7 +387,9 @@ fn to_js_named<R: WebIdlJsRuntime>(
 ) -> Result<R::JsValue, R::Error> {
   let kind = match &named.kind {
     NamedTypeKind::Unresolved => resolve_named_kind(ctx, &named.name).ok_or_else(|| {
-      rt.throw_type_error("named type could not be resolved (missing enum/dictionary/typedef schema)")
+      rt.throw_type_error(
+        "named type could not be resolved (missing enum/dictionary/typedef schema)",
+      )
     })?,
     other => other.clone(),
   };
@@ -458,9 +460,9 @@ fn to_js_named<R: WebIdlJsRuntime>(
         }
         Ok(js_value)
       }
-      _ => Err(rt.throw_type_error(
-        "callback function return values require a platform object handle",
-      )),
+      _ => {
+        Err(rt.throw_type_error("callback function return values require a platform object handle"))
+      }
     },
     NamedTypeKind::CallbackInterface => match value {
       WebIdlValue::PlatformObject(obj) => {
@@ -472,13 +474,13 @@ fn to_js_named<R: WebIdlJsRuntime>(
         }
         Ok(js_value)
       }
-      _ => Err(rt.throw_type_error(
-        "callback interface return values require a platform object handle",
-      )),
+      _ => Err(
+        rt.throw_type_error("callback interface return values require a platform object handle"),
+      ),
     },
-    NamedTypeKind::Unresolved => Err(rt.throw_type_error(
-      "named type kind is unresolved (missing enum/dictionary/typedef schema)",
-    )),
+    NamedTypeKind::Unresolved => Err(
+      rt.throw_type_error("named type kind is unresolved (missing enum/dictionary/typedef schema)"),
+    ),
   }
 }
 
@@ -523,7 +525,10 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
     }
     schema_names.insert(member.name.as_str());
     if member.required && !members.contains_key(&member.name) {
-      let message = format!("dictionary `{name}` missing required member `{}`", member.name);
+      let message = format!(
+        "dictionary `{name}` missing required member `{}`",
+        member.name
+      );
       return Err(rt.throw_type_error(&message));
     }
   }
@@ -659,8 +664,8 @@ mod tests {
   use std::collections::BTreeMap;
   use vm_js::{HeapLimits, Value};
   use webidl_ir::{
-    parse_default_value, parse_idl_type_complete, DictionaryMemberSchema, DictionarySchema, NamedType,
-    NamedTypeKind, PlatformObject,
+    parse_default_value, parse_idl_type_complete, DictionaryMemberSchema, DictionarySchema,
+    NamedType, NamedTypeKind, PlatformObject,
   };
 
   #[test]
@@ -694,7 +699,8 @@ mod tests {
   }
 
   #[test]
-  fn sequence_to_array_defines_indexed_enumerable_properties() -> Result<(), Box<dyn std::error::Error>> {
+  fn sequence_to_array_defines_indexed_enumerable_properties(
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rt = VmJsRuntime::new();
     let ctx = TypeContext::default();
     let ty = parse_idl_type_complete("sequence<long>")?;
@@ -730,7 +736,8 @@ mod tests {
   }
 
   #[test]
-  fn sequence_to_array_is_gc_safe_under_extreme_gc_pressure() -> Result<(), Box<dyn std::error::Error>> {
+  fn sequence_to_array_is_gc_safe_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
     // Force a GC before every allocation to stress rooting in `to_js_sequence`.
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
     let ctx = TypeContext::default();
@@ -760,7 +767,8 @@ mod tests {
   }
 
   #[test]
-  fn dictionary_to_object_defines_enumerable_own_properties() -> Result<(), Box<dyn std::error::Error>> {
+  fn dictionary_to_object_defines_enumerable_own_properties(
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = TypeContext::default();
     ctx.add_dictionary(DictionarySchema {
       name: "Options".to_string(),
@@ -819,7 +827,8 @@ mod tests {
   }
 
   #[test]
-  fn dictionary_to_object_is_gc_safe_under_extreme_gc_pressure() -> Result<(), Box<dyn std::error::Error>> {
+  fn dictionary_to_object_is_gc_safe_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = TypeContext::default();
     ctx.add_dictionary(DictionarySchema {
       name: "Options".to_string(),
@@ -996,7 +1005,8 @@ mod tests {
   }
 
   #[test]
-  fn dictionary_missing_required_member_throws_type_error() -> Result<(), Box<dyn std::error::Error>> {
+  fn dictionary_missing_required_member_throws_type_error() -> Result<(), Box<dyn std::error::Error>>
+  {
     let mut ctx = TypeContext::default();
     ctx.add_dictionary(DictionarySchema {
       name: "RequiredDict".to_string(),
@@ -1037,7 +1047,8 @@ mod tests {
   }
 
   #[test]
-  fn record_to_object_defines_enumerable_own_properties() -> Result<(), Box<dyn std::error::Error>> {
+  fn record_to_object_defines_enumerable_own_properties() -> Result<(), Box<dyn std::error::Error>>
+  {
     let mut rt = VmJsRuntime::new();
     let ctx = TypeContext::default();
 
@@ -1072,7 +1083,8 @@ mod tests {
   }
 
   #[test]
-  fn record_to_object_is_gc_safe_under_extreme_gc_pressure() -> Result<(), Box<dyn std::error::Error>> {
+  fn record_to_object_is_gc_safe_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
     let ctx = TypeContext::default();
 
@@ -1144,7 +1156,8 @@ mod tests {
   }
 
   #[test]
-  fn callback_function_return_allows_callable_platform_object() -> Result<(), Box<dyn std::error::Error>> {
+  fn callback_function_return_allows_callable_platform_object(
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rt = VmJsRuntime::new();
     let ctx = TypeContext::default();
 
@@ -1183,7 +1196,10 @@ mod tests {
       return Err("expected thrown error to stringify to a JS string".into());
     };
     let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
-    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
     assert!(
       msg.contains("not callable"),
       "expected not-callable message, got {msg:?}"
@@ -1192,7 +1208,8 @@ mod tests {
   }
 
   #[test]
-  fn callback_interface_return_allows_object_platform_object() -> Result<(), Box<dyn std::error::Error>> {
+  fn callback_interface_return_allows_object_platform_object(
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rt = VmJsRuntime::new();
     let ctx = TypeContext::default();
 
@@ -1230,7 +1247,10 @@ mod tests {
       return Err("expected thrown error to stringify to a JS string".into());
     };
     let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
-    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
     assert!(
       msg.contains("not an object"),
       "expected not-an-object message, got {msg:?}"
@@ -1272,7 +1292,10 @@ mod tests {
       return Err("expected thrown error to stringify to a JS string".into());
     };
     let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
-    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
     assert!(
       msg.contains("member type is not part of the union"),
       "expected union member error message, got {msg:?}"
@@ -1324,7 +1347,10 @@ mod tests {
       return Err("expected thrown error to stringify to a JS string".into());
     };
     let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
-    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
     assert!(
       msg.contains("typedef cycle detected"),
       "expected typedef cycle message, got {msg:?}"
@@ -1349,7 +1375,10 @@ mod tests {
       return Err("expected thrown error to stringify to a JS string".into());
     };
     let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
-    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
     assert!(
       msg.contains("platform object is not an object"),
       "expected objectness error message, got {msg:?}"
@@ -1402,7 +1431,10 @@ mod tests {
       return Err("expected thrown error to stringify to a JS string".into());
     };
     let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
-    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
     assert!(
       msg.contains("expected an object"),
       "expected objectness error message, got {msg:?}"

@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use fastrender::error::Result;
 use fastrender::resource::web_fetch::RequestRedirect;
-use fastrender::resource::{origin_from_url, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher};
+use fastrender::resource::{
+  origin_from_url, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
+};
 use rquickjs::{Context, Runtime};
 
 #[derive(Debug, Clone)]
@@ -76,7 +78,10 @@ fn drain_microtasks(rt: &Runtime) {
 #[test]
 fn quickjs_fetch_resolves_and_json_parses() {
   let mut resource = FetchedResource::new(br#"{"hello":"world"}"#.to_vec(), None);
-  resource.response_headers = Some(vec![("content-type".to_string(), "application/json".to_string())]);
+  resource.response_headers = Some(vec![(
+    "content-type".to_string(),
+    "application/json".to_string(),
+  )]);
   let fetcher = Arc::new(RecordingFetcher::new(resource));
 
   let rt = Runtime::new().unwrap();
@@ -120,7 +125,10 @@ fn quickjs_fetch_resolves_and_json_parses() {
 
 #[test]
 fn quickjs_fetch_drops_forbidden_request_headers() {
-  let fetcher = Arc::new(RecordingFetcher::new(FetchedResource::new(b"ok".to_vec(), None)));
+  let fetcher = Arc::new(RecordingFetcher::new(FetchedResource::new(
+    b"ok".to_vec(),
+    None,
+  )));
 
   let rt = Runtime::new().unwrap();
   let ctx = Context::full(&rt).unwrap();
@@ -164,7 +172,10 @@ fn quickjs_fetch_drops_forbidden_request_headers() {
 
 #[test]
 fn quickjs_fetch_rejects_on_cors_failure() {
-  let fetcher = Arc::new(RecordingFetcher::new(FetchedResource::new(b"ok".to_vec(), None)));
+  let fetcher = Arc::new(RecordingFetcher::new(FetchedResource::new(
+    b"ok".to_vec(),
+    None,
+  )));
   let origin = origin_from_url("https://client.example/").expect("origin");
 
   let rt = Runtime::new().unwrap();

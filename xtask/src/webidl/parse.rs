@@ -25,12 +25,7 @@ fn is_delim_byte(b: u8) -> bool {
   b.is_ascii_whitespace()
     || matches!(
       b,
-      b'(' | b')'
-        | b'{' | b'}'
-        | b'[' | b']'
-        | b'<' | b'>'
-        | b',' | b';'
-        | b'?' | b'='
+      b'(' | b')' | b'{' | b'}' | b'[' | b']' | b'<' | b'>' | b',' | b';' | b'?' | b'='
     )
 }
 
@@ -80,12 +75,7 @@ fn lex(input: &str) -> Result<Vec<Token>> {
     // Punctuation.
     if matches!(
       b,
-      b'(' | b')'
-        | b'{' | b'}'
-        | b'[' | b']'
-        | b'<' | b'>'
-        | b',' | b';'
-        | b'?' | b'='
+      b'(' | b')' | b'{' | b'}' | b'[' | b']' | b'<' | b'>' | b',' | b';' | b'?' | b'='
     ) {
       out.push(Token {
         kind: TokenKind::Punct(b as char),
@@ -220,7 +210,9 @@ impl<'a> Parser<'a> {
   }
 
   fn eat_punct(&mut self, ch: char) -> bool {
-    matches!(&self.peek().kind, TokenKind::Punct(c) if *c == ch).then(|| self.next()).is_some()
+    matches!(&self.peek().kind, TokenKind::Punct(c) if *c == ch)
+      .then(|| self.next())
+      .is_some()
   }
 
   fn expect_punct(&mut self, ch: char) -> Result<()> {
@@ -248,7 +240,9 @@ impl<'a> Parser<'a> {
   }
 
   fn eat_ellipsis(&mut self) -> bool {
-    matches!(&self.peek().kind, TokenKind::Ellipsis).then(|| self.next()).is_some()
+    matches!(&self.peek().kind, TokenKind::Ellipsis)
+      .then(|| self.next())
+      .is_some()
   }
 
   fn error_here(&self, msg: &str) -> anyhow::Error {
@@ -507,16 +501,17 @@ pub fn parse_interface_member(input: &str) -> Result<InterfaceMember> {
   // If we consumed attribute-only modifiers but did not see `attribute`, this is likely something
   // else (`readonly maplike<...>`). Don't misparse it as an operation.
   if (readonly || inherit) && special.is_none() {
-    return Ok(InterfaceMember::Unparsed {
-      raw: s.to_string(),
-    });
+    return Ok(InterfaceMember::Unparsed { raw: s.to_string() });
   }
 
   // Operation signature.
   let return_type = parse_type(&mut p)?;
   let name = match p.peek().kind.clone() {
     TokenKind::Ident(n) => {
-      if !matches!(p.tokens.get(p.idx + 1).map(|t| &t.kind), Some(TokenKind::Punct('('))) {
+      if !matches!(
+        p.tokens.get(p.idx + 1).map(|t| &t.kind),
+        Some(TokenKind::Punct('('))
+      ) {
         bail!(p.error_here("expected `(` after operation name"));
       }
       p.next();
@@ -649,10 +644,6 @@ fn parse_literal(p: &mut Parser<'_>) -> Result<IdlLiteral> {
       }
       Ok(IdlLiteral::EmptyArray)
     }
-    _ => bail!(format_error(
-      p.input,
-      tok.span.start,
-      "expected literal"
-    )),
+    _ => bail!(format_error(p.input, tok.span.start, "expected literal")),
   }
 }

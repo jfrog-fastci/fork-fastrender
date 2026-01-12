@@ -52,8 +52,10 @@ fn overflow_hidden_wrapper_does_not_isolate_stacking_contexts() {
     sibling_a_style,
   );
 
-  let root =
-    FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 30.0, 30.0), vec![sibling_a, sibling_b]);
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 30.0, 30.0),
+    vec![sibling_a, sibling_b],
+  );
 
   let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
   let pixmap = DisplayListRenderer::new(30, 30, Rgba::WHITE, FontContext::new())
@@ -68,4 +70,3 @@ fn overflow_hidden_wrapper_does_not_isolate_stacking_contexts() {
   assert_eq!(pixel(&pixmap, 25, 25), (0, 0, 255, 255));
   assert_eq!(pixel(&pixmap, 29, 0), (255, 255, 255, 255));
 }
-

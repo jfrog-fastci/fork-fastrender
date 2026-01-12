@@ -115,4 +115,3 @@ fn legacy_input_buttons_honor_text_align() {
     "expected text-align to affect horizontal label placement in legacy backend (left_rel={left_rel:.2}, right_rel={right_rel:.2})"
   );
 }
-

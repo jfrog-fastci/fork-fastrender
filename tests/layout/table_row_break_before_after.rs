@@ -192,4 +192,3 @@ fn table_row_break_after_forces_page_break_after_each_row() {
     "expected 'After' content to appear only on the page after the last row"
   );
 }
-

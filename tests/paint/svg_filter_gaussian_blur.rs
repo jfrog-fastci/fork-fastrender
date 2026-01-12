@@ -167,9 +167,7 @@ fn gaussian_blur_parses_case_insensitive_attributes_and_edge_mode() {
     parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("parse filter");
   match &filter.steps[0].primitive {
     FilterPrimitive::GaussianBlur {
-      std_dev,
-      edge_mode,
-      ..
+      std_dev, edge_mode, ..
     } => {
       assert_eq!(*std_dev, (4.0, 4.0));
       assert!(matches!(edge_mode, EdgeMode::Wrap));
@@ -215,7 +213,11 @@ fn gaussian_blur_edge_mode_none_fades_edges() {
   apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
 
   let corner = pixmap.pixel(0, 0).unwrap();
-  assert!(corner.alpha() < 255, "expected corner alpha to fade, got {}", corner.alpha());
+  assert!(
+    corner.alpha() < 255,
+    "expected corner alpha to fade, got {}",
+    corner.alpha()
+  );
 }
 
 #[test]

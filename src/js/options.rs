@@ -192,9 +192,9 @@ impl JsExecutionOptions {
     module_bytes: usize,
     specifier: &str,
   ) -> Result<usize> {
-    let next_total = current_total.checked_add(module_bytes).ok_or_else(|| {
-      Error::Other("Module graph total bytes overflowed usize".to_string())
-    })?;
+    let next_total = current_total
+      .checked_add(module_bytes)
+      .ok_or_else(|| Error::Other("Module graph total bytes overflowed usize".to_string()))?;
     if next_total > self.max_module_graph_total_bytes {
       return Err(Error::Other(format!(
         "Module graph exceeded max_module_graph_total_bytes (next={next_total}, limit={}, specifier={specifier}, module_bytes={module_bytes})",

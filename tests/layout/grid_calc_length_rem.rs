@@ -44,8 +44,7 @@ fn grid_item_height_calc_rem_sizes_track() {
   first_style.display = Display::Block;
   first_style.width = Some(Length::px(100.0));
   first_style.height = Some(calc_height);
-  let first_child =
-    BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let first_child = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
 
   let mut second_style = ComputedStyle::default();
   second_style.display = Display::Block;
@@ -67,11 +66,21 @@ fn grid_item_height_calc_rem_sizes_track() {
 
   let first_fragment = fragment
     .iter_fragments()
-    .find(|node| node.style.as_ref().is_some_and(|style| style.height == Some(calc_height)))
+    .find(|node| {
+      node
+        .style
+        .as_ref()
+        .is_some_and(|style| style.height == Some(calc_height))
+    })
     .expect("first grid item fragment");
   let second_fragment = fragment
     .iter_fragments()
-    .find(|node| node.style.as_ref().is_some_and(|style| style.height == Some(Length::px(10.0))))
+    .find(|node| {
+      node
+        .style
+        .as_ref()
+        .is_some_and(|style| style.height == Some(Length::px(10.0)))
+    })
     .expect("second grid item fragment");
 
   assert_approx(
@@ -85,4 +94,3 @@ fn grid_item_height_calc_rem_sizes_track() {
     "second row should start after first row's resolved height",
   );
 }
-

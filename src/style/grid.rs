@@ -517,9 +517,7 @@ pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> 
         Some(line_names) => (None, None, true, Some(line_names)),
         None => {
           let ParsedTracks {
-            tracks,
-            line_names,
-            ..
+            tracks, line_names, ..
           } = parse_track_list(main);
           if tracks.is_empty() {
             return None;
@@ -533,9 +531,7 @@ pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> 
         Some(line_names) => (None, None, true, Some(line_names)),
         None => {
           let ParsedTracks {
-            tracks,
-            line_names,
-            ..
+            tracks, line_names, ..
           } = parse_track_list(cols_raw);
           if tracks.is_empty() {
             return None;
@@ -683,7 +679,9 @@ pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
   let right = right_opt.map(trim_ascii_whitespace);
 
   let left_has_flow = contains_grid_auto_flow_keyword(left);
-  let right_has_flow = right.as_ref().is_some_and(|r| contains_grid_auto_flow_keyword(r));
+  let right_has_flow = right
+    .as_ref()
+    .is_some_and(|r| contains_grid_auto_flow_keyword(r));
 
   if !left_has_flow && !right_has_flow {
     return parse_grid_template_shorthand(value).map(|template| ParsedGridShorthand {
@@ -1671,10 +1669,8 @@ mod tests {
 
   #[test]
   fn grid_template_shorthand_areas_single_quotes() {
-    let parsed = parse_grid_template_shorthand(
-      "'header' 'scroller' 'footer'/minmax(0, 1fr)",
-    )
-    .expect("should parse");
+    let parsed = parse_grid_template_shorthand("'header' 'scroller' 'footer'/minmax(0, 1fr)")
+      .expect("should parse");
     let areas = parsed.areas.expect("areas");
     assert_eq!(areas.len(), 3);
     assert_eq!(areas[0].len(), 1);

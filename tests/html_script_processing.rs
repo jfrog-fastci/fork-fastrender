@@ -105,7 +105,8 @@ where
       ScriptType::Classic,
       "parse_and_run_classic_scripts should execute only classic scripts in v1"
     );
-    self.events
+    self
+      .events
       .borrow_mut()
       .push(format!("script:{source_text}"));
     self
@@ -264,7 +265,9 @@ fn microtask_checkpoint_runs_after_every_script_and_clears_current_script() -> R
   let ev = events.borrow();
   assert_eq!(ev.len(), 6, "expected 3 scripts + 3 microtask checkpoints");
   for pair in ev.chunks(2) {
-    let [script, micro] = pair else { unreachable!() };
+    let [script, micro] = pair else {
+      unreachable!()
+    };
     assert!(
       script.starts_with("script:"),
       "expected script entry, got {script:?}"

@@ -1430,15 +1430,12 @@ fn parse_property_value_in_context_internal(
 
   // CSS property names are ASCII case-insensitive. Normalize to lowercase so caller-facing helpers
   // like `parse_property_value("-WeBkIt-TrAnSfOrM", ...)` behave the same as stylesheet parsing.
-  let property_lower: std::borrow::Cow<'_, str> = if property
-    .as_bytes()
-    .iter()
-    .any(|b| b.is_ascii_uppercase())
-  {
-    std::borrow::Cow::Owned(property.to_ascii_lowercase())
-  } else {
-    std::borrow::Cow::Borrowed(property)
-  };
+  let property_lower: std::borrow::Cow<'_, str> =
+    if property.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+      std::borrow::Cow::Owned(property.to_ascii_lowercase())
+    } else {
+      std::borrow::Cow::Borrowed(property)
+    };
   let mut property = property_lower.as_ref();
 
   // Unknown properties are ignored per the CSS error-handling rules.
@@ -2809,10 +2806,9 @@ fn supports_intrinsic_size_keyword(raw_value: &str) -> bool {
     "max-content" | "-webkit-max-content" | "-moz-max-content" => return true,
     "fit-content" | "-webkit-fit-content" | "-moz-fit-content" => return true,
     "stretch" => return true,
-    "fill-available"
-    | "-webkit-fill-available"
-    | "-moz-available"
-    | "-moz-fill-available" => return true,
+    "fill-available" | "-webkit-fill-available" | "-moz-available" | "-moz-fill-available" => {
+      return true
+    }
     _ => {}
   }
 
@@ -2899,9 +2895,9 @@ fn supports_intrinsic_size_keyword(raw_value: &str) -> bool {
         true
       } else {
         // Prevent infinite recursion: `<basis>` does not include `calc-size()`.
-        let is_calc_size = basis
-          .find('(')
-          .is_some_and(|open| trim_css_whitespace(basis.get(..open).unwrap_or("")).eq_ignore_ascii_case("calc-size"));
+        let is_calc_size = basis.find('(').is_some_and(|open| {
+          trim_css_whitespace(basis.get(..open).unwrap_or("")).eq_ignore_ascii_case("calc-size")
+        });
         if !is_calc_size && supports_intrinsic_size_keyword(basis) {
           true
         } else {
@@ -3132,11 +3128,17 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "float" => return keyword_parse(parsed, |kw| Float::parse(kw).ok()),
     "clear" => return keyword_parse(parsed, |kw| Clear::parse(kw).ok()),
     "overflow-x" | "overflow-y" => {
-      return keyword_in_list(parsed, &["visible", "hidden", "scroll", "auto", "overlay", "clip"])
+      return keyword_in_list(
+        parsed,
+        &["visible", "hidden", "scroll", "auto", "overlay", "clip"],
+      )
     }
     "overflow" => {
       fn is_overflow_keyword(value: &PropertyValue) -> bool {
-        keyword_in_list(value, &["visible", "hidden", "scroll", "auto", "overlay", "clip"])
+        keyword_in_list(
+          value,
+          &["visible", "hidden", "scroll", "auto", "overlay", "clip"],
+        )
       }
 
       return match parsed {
@@ -3169,7 +3171,10 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         ],
       );
     }
-    "page-break-before" | "page-break-after" | "-webkit-page-break-before" | "-webkit-page-break-after" => {
+    "page-break-before"
+    | "page-break-after"
+    | "-webkit-page-break-before"
+    | "-webkit-page-break-after" => {
       // Legacy `page-break-*` only accepts the historical keyword set (CSS Fragmentation aliasing).
       return keyword_in_list(parsed, &["auto", "avoid", "always", "left", "right"]);
     }
@@ -3213,7 +3218,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       };
 
       return match parsed {
-        PropertyValue::Keyword(kw) => is_box(kw) || parse_length(kw).is_some_and(|len| is_margin_len(&len)),
+        PropertyValue::Keyword(kw) => {
+          is_box(kw) || parse_length(kw).is_some_and(|len| is_margin_len(&len))
+        }
         PropertyValue::Number(n) => *n == 0.0,
         PropertyValue::Length(len) => is_margin_len(len),
         PropertyValue::Multiple(values) => {
@@ -3364,11 +3371,21 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "transition-behavior" => return supports_transition_behavior_value(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),
-    "-webkit-font-smoothing" => return keyword_parse(parsed, |kw| crate::style::types::FontSmoothing::parse_webkit(kw)),
-    "-moz-osx-font-smoothing" => {
-      return keyword_parse(parsed, |kw| crate::style::types::FontSmoothing::parse_moz_osx(kw));
+    "-webkit-font-smoothing" => {
+      return keyword_parse(parsed, |kw| {
+        crate::style::types::FontSmoothing::parse_webkit(kw)
+      })
     }
-    "font-smooth" => return keyword_parse(parsed, |kw| crate::style::types::FontSmoothing::parse_font_smooth(kw)),
+    "-moz-osx-font-smoothing" => {
+      return keyword_parse(parsed, |kw| {
+        crate::style::types::FontSmoothing::parse_moz_osx(kw)
+      });
+    }
+    "font-smooth" => {
+      return keyword_parse(parsed, |kw| {
+        crate::style::types::FontSmoothing::parse_font_smooth(kw)
+      })
+    }
     "container-type" => {
       return supports_container_type_value(raw_value);
     }
@@ -3377,7 +3394,10 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     }
     "flex-wrap" => return keyword_in_list(parsed, &["nowrap", "wrap", "wrap-reverse"]),
     "-ms-flex-wrap" => {
-      return keyword_in_list(parsed, &["none", "nowrap", "no-wrap", "wrap", "wrap-reverse"])
+      return keyword_in_list(
+        parsed,
+        &["none", "nowrap", "no-wrap", "wrap", "wrap-reverse"],
+      )
     }
     // CSS Box Alignment keywords.
     //
@@ -3490,7 +3510,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "space-around",
           "space-evenly",
         ],
-      )
+      );
     }
     "-ms-flex-line-pack" => {
       return keyword_in_list(
@@ -3507,7 +3527,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "left",
           "right",
         ],
-      )
+      );
     }
     "-ms-flex-align" => {
       return keyword_in_list(
@@ -3527,7 +3547,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "right",
           "normal",
         ],
-      )
+      );
     }
     "-ms-flex-item-align" => {
       return keyword_in_list(
@@ -3552,7 +3572,10 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       if keyword_in_list(parsed, &["auto", "content"]) {
         return true;
       }
-      return matches!(parsed, PropertyValue::Length(_) | PropertyValue::Number(0.0));
+      return matches!(
+        parsed,
+        PropertyValue::Length(_) | PropertyValue::Number(0.0)
+      );
     }
     "-ms-grid-row" | "-ms-grid-column" => {
       // Legacy IE/MS Grid placement properties. FastRender supports these as aliases for modern
@@ -3589,11 +3612,13 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     // Our property-value parser currently represents raw `50%` tokens as `Length { unit: Percent }`,
     // so accept that shape as well.
     "opacity" => {
-      return matches!(parsed, PropertyValue::Number(_) | PropertyValue::Percentage(_))
-        || matches!(
-          parsed,
-          PropertyValue::Length(len) if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent)
-        );
+      return matches!(
+        parsed,
+        PropertyValue::Number(_) | PropertyValue::Percentage(_)
+      ) || matches!(
+        parsed,
+        PropertyValue::Length(len) if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent)
+      );
     }
     "z-index" => {
       return matches!(parsed, PropertyValue::Number(_)) || keyword_in_list(parsed, &["auto"])
@@ -3700,8 +3725,7 @@ fn parse_simple_value(value_str: &str) -> Option<PropertyValue> {
   // identifier. This lets downstream keyword matching stay ASCII-case-insensitive without needing
   // to re-implement comment/escape handling in every property parser.
   let bytes = trimmed.as_bytes();
-  if bytes.contains(&b'\\')
-    || (bytes.contains(&b'/') && bytes.windows(2).any(|pair| pair == b"/*"))
+  if bytes.contains(&b'\\') || (bytes.contains(&b'/') && bytes.windows(2).any(|pair| pair == b"/*"))
   {
     let mut input = ParserInput::new(trimmed);
     let mut parser = Parser::new(&mut input);
@@ -3752,7 +3776,9 @@ fn trim_css_whitespace_end(value: &str) -> &str {
 }
 
 fn split_css_whitespace<'a>(value: &'a str) -> impl Iterator<Item = &'a str> {
-  value.split(is_css_whitespace).filter(|part| !part.is_empty())
+  value
+    .split(is_css_whitespace)
+    .filter(|part| !part.is_empty())
 }
 
 fn is_single_function_call(trimmed: &str, name: &str) -> bool {
@@ -5472,8 +5498,14 @@ mod tests {
     assert!((angle - 180.0).abs() < 0.01);
     assert_eq!(stops.len(), 3);
     assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
-    assert_eq!(stops[1].position, Some(ColorStopPosition::Length(Length::rem(3.2))));
-    assert_eq!(stops[2].position, Some(ColorStopPosition::Length(Length::rem(3.2))));
+    assert_eq!(
+      stops[1].position,
+      Some(ColorStopPosition::Length(Length::rem(3.2)))
+    );
+    assert_eq!(
+      stops[2].position,
+      Some(ColorStopPosition::Length(Length::rem(3.2)))
+    );
   }
 
   #[test]
@@ -5962,10 +5994,9 @@ mod tests {
 
   #[test]
   fn parses_transition_behavior_and_timeline_scope_declarations() {
-    let sheet = parse_stylesheet(
-      ".a{transition-behavior: allow-discrete; timeline-scope: --scroller;}",
-    )
-    .expect("stylesheet");
+    let sheet =
+      parse_stylesheet(".a{transition-behavior: allow-discrete; timeline-scope: --scroller;}")
+        .expect("stylesheet");
     let CssRule::Style(rule) = sheet.rules.first().expect("style rule") else {
       panic!("expected style rule");
     };
@@ -5992,7 +6023,10 @@ mod tests {
       }
     }
 
-    assert!(saw_transition_behavior, "transition-behavior declaration dropped");
+    assert!(
+      saw_transition_behavior,
+      "transition-behavior declaration dropped"
+    );
     assert!(saw_timeline_scope, "timeline-scope declaration dropped");
   }
 
@@ -6472,9 +6506,7 @@ mod tests {
   fn parses_transform_translate_percentages() {
     let transforms = parse_transform_list("translateX(-100%) translateY(50%)").expect("parsed");
     assert_eq!(transforms.len(), 2);
-    assert!(
-      matches!(&transforms[0], Transform::TranslateX(x) if *x == Length::percent(-100.0))
-    );
+    assert!(matches!(&transforms[0], Transform::TranslateX(x) if *x == Length::percent(-100.0)));
     assert!(matches!(&transforms[1], Transform::TranslateY(y) if *y == Length::percent(50.0)));
   }
 
@@ -7222,20 +7254,18 @@ fn calc_component_to_length_with_numbers(
         None
       }
     }
-    CalcComponent::Length(calc) => {
-      match calc {
-        LengthCalc::Linear(calc) => {
-          if calc.is_zero() {
-            Some(Length::px(0.0))
-          } else if let Some(term) = calc.single_term() {
-            Some(Length::new(term.value, term.unit))
-          } else {
-            Some(Length::calc(calc))
-          }
+    CalcComponent::Length(calc) => match calc {
+      LengthCalc::Linear(calc) => {
+        if calc.is_zero() {
+          Some(Length::px(0.0))
+        } else if let Some(term) = calc.single_term() {
+          Some(Length::new(term.value, term.unit))
+        } else {
+          Some(Length::calc(calc))
         }
-        LengthCalc::Expr(id) => Some(Length::calc_expr(id)),
       }
-    }
+      LengthCalc::Expr(id) => Some(Length::calc_expr(id)),
+    },
     _ => None,
   }
 }
@@ -7440,9 +7470,9 @@ fn parse_calc_factor<'i, 't>(
         "lvmax" => LengthUnit::Vmax,
         _ => return Err(location.new_custom_error(())),
       };
-      Ok(CalcComponent::Length(LengthCalc::Linear(CalcLength::single(
-        unit, *value,
-      ))))
+      Ok(CalcComponent::Length(LengthCalc::Linear(
+        CalcLength::single(unit, *value),
+      )))
     }
     Token::Percentage { unit_value, .. } => Ok(CalcComponent::Length(LengthCalc::Linear(
       CalcLength::single(LengthUnit::Percent, *unit_value * 100.0),
@@ -7586,9 +7616,9 @@ fn parse_clamp<'i, 't>(
             max_value
           };
           let clamped = pref_value.max(min_value).min(upper);
-          return Ok(CalcComponent::Length(LengthCalc::Linear(CalcLength::single(
-            unit, clamped,
-          ))));
+          return Ok(CalcComponent::Length(LengthCalc::Linear(
+            CalcLength::single(unit, clamped),
+          )));
         }
       }
 
@@ -7727,9 +7757,9 @@ fn reduce_components<'i>(
         }
 
         if all_simple {
-          return Ok(CalcComponent::Length(LengthCalc::Linear(CalcLength::single(
-            unit, extremum,
-          ))));
+          return Ok(CalcComponent::Length(LengthCalc::Linear(
+            CalcLength::single(unit, extremum),
+          )));
         }
       }
 
@@ -7737,7 +7767,10 @@ fn reduce_components<'i>(
         MathFn::Min => MinMaxOp::Min,
         MathFn::Max => MinMaxOp::Max,
       };
-      Ok(CalcComponent::Length(length_calc_min_max(op, length_values)))
+      Ok(CalcComponent::Length(length_calc_min_max(
+        op,
+        length_values,
+      )))
     }
   }
 }
@@ -7755,11 +7788,9 @@ fn combine_sum<'i>(
       .map(CalcComponent::Length)
       .ok_or_else(|| location.new_custom_error(())),
     (CalcComponent::Length(l), CalcComponent::Number(0.0)) => Ok(CalcComponent::Length(l)),
-    (CalcComponent::Number(0.0), CalcComponent::Length(l)) => {
-      Ok(CalcComponent::Length(
-        length_calc_scale(l, sign).ok_or_else(|| location.new_custom_error(()))?,
-      ))
-    }
+    (CalcComponent::Number(0.0), CalcComponent::Length(l)) => Ok(CalcComponent::Length(
+      length_calc_scale(l, sign).ok_or_else(|| location.new_custom_error(()))?,
+    )),
     (CalcComponent::Angle(a), CalcComponent::Number(0.0)) => Ok(CalcComponent::Angle(a)),
     (CalcComponent::Number(0.0), CalcComponent::Angle(a)) => Ok(CalcComponent::Angle(a * sign)),
     _ => Err(location.new_custom_error(())),
@@ -7776,11 +7807,9 @@ fn combine_product<'i>(
     '*' => match (left, right) {
       (CalcComponent::Number(a), CalcComponent::Number(b)) => Ok(CalcComponent::Number(a * b)),
       (CalcComponent::Length(l), CalcComponent::Number(n))
-      | (CalcComponent::Number(n), CalcComponent::Length(l)) => {
-        Ok(CalcComponent::Length(
-          length_calc_scale(l, n).ok_or_else(|| location.new_custom_error(()))?,
-        ))
-      }
+      | (CalcComponent::Number(n), CalcComponent::Length(l)) => Ok(CalcComponent::Length(
+        length_calc_scale(l, n).ok_or_else(|| location.new_custom_error(()))?,
+      )),
       (CalcComponent::Angle(a), CalcComponent::Number(n))
       | (CalcComponent::Number(n), CalcComponent::Angle(a)) => Ok(CalcComponent::Angle(a * n)),
       _ => Err(location.new_custom_error(())),
@@ -7788,11 +7817,9 @@ fn combine_product<'i>(
     '/' => match (left, right) {
       (_, CalcComponent::Number(0.0)) => Err(location.new_custom_error(())),
       (CalcComponent::Number(a), CalcComponent::Number(b)) => Ok(CalcComponent::Number(a / b)),
-      (CalcComponent::Length(l), CalcComponent::Number(n)) => {
-        Ok(CalcComponent::Length(
-          length_calc_scale(l, 1.0 / n).ok_or_else(|| location.new_custom_error(()))?,
-        ))
-      }
+      (CalcComponent::Length(l), CalcComponent::Number(n)) => Ok(CalcComponent::Length(
+        length_calc_scale(l, 1.0 / n).ok_or_else(|| location.new_custom_error(()))?,
+      )),
       (CalcComponent::Angle(a), CalcComponent::Number(n)) => Ok(CalcComponent::Angle(a / n)),
       _ => Err(location.new_custom_error(())),
     },
@@ -7960,9 +7987,8 @@ fn apply_mod_rem<'i>(
         return Err(location.new_custom_error(()));
       }
       let result = if euclidean { a.rem_euclid(b) } else { a % b };
-      ensure_finite(result, location).map(|v| {
-        CalcComponent::Length(LengthCalc::Linear(CalcLength::single(unit, v)))
-      })
+      ensure_finite(result, location)
+        .map(|v| CalcComponent::Length(LengthCalc::Linear(CalcLength::single(unit, v))))
     }
     _ => Err(location.new_custom_error(())),
   }
@@ -8018,9 +8044,8 @@ fn parse_hypot_function<'i, 't>(
         acc_value = acc_value.hypot(val);
       }
       let unit = acc_unit.ok_or_else(|| location.new_custom_error(()))?;
-      ensure_finite(acc_value, location).map(|v| {
-        CalcComponent::Length(LengthCalc::Linear(CalcLength::single(unit, v)))
-      })
+      ensure_finite(acc_value, location)
+        .map(|v| CalcComponent::Length(LengthCalc::Linear(CalcLength::single(unit, v))))
     }
   }
 }
@@ -8177,10 +8202,9 @@ fn parse_math_function<'i, 't>(
         CalcComponent::Length(len) => {
           let (v, unit) =
             extract_simple_length(&len).ok_or_else(|| location.new_custom_error(()))?;
-          Ok(CalcComponent::Length(LengthCalc::Linear(CalcLength::single(
-            unit,
-            v.abs(),
-          ))))
+          Ok(CalcComponent::Length(LengthCalc::Linear(
+            CalcLength::single(unit, v.abs()),
+          )))
         }
       }
     }),

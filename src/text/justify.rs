@@ -474,7 +474,8 @@ pub fn justify_line_with_text(
       let word_boundaries: usize = glyphs.iter().filter(|g| g.is_word_boundary).count();
       let gaps = collect_inter_character_gaps(glyphs, text_chars_ref);
       if word_boundaries > 0 || !gaps.is_empty() {
-        result = distribute_space_distribute_mode(glyphs, extra_space, axis, word_boundaries, &gaps);
+        result =
+          distribute_space_distribute_mode(glyphs, extra_space, axis, word_boundaries, &gaps);
       }
     }
     _ => {

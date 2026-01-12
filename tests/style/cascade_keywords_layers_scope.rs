@@ -57,7 +57,8 @@ fn important_revert_layer_ignores_normal_declarations_in_the_same_layer() {
 
 #[test]
 fn unset_on_inherited_and_non_inherited_properties() {
-  let dom = dom::parse_html(r#"<div id="parent"><div id="child"></div></div>"#).expect("parse html");
+  let dom =
+    dom::parse_html(r#"<div id="parent"><div id="child"></div></div>"#).expect("parse html");
   let css = r#"
     #parent { color: rgb(10, 20, 30); }
     #child { color: rgb(1, 2, 3); display: inline-block; }

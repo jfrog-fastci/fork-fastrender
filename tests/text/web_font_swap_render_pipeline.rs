@@ -33,8 +33,9 @@ fn swap_web_fonts_are_used_by_render_pipeline() {
 
   fs::write(dir.path().join("swap.ttf"), bytes).expect("write font");
 
-  let base_url =
-    Url::from_file_path(dir.path().join("index.html")).expect("file url").to_string();
+  let base_url = Url::from_file_path(dir.path().join("index.html"))
+    .expect("file url")
+    .to_string();
 
   let html = r#"
 <!doctype html>
@@ -105,8 +106,9 @@ fn local_swap_web_fonts_load_without_wait_toggle() {
 
   fs::write(dir.path().join("swap.ttf"), bytes).expect("write font");
 
-  let base_url =
-    Url::from_file_path(dir.path().join("index.html")).expect("file url").to_string();
+  let base_url = Url::from_file_path(dir.path().join("index.html"))
+    .expect("file url")
+    .to_string();
 
   let html = r#"
 <!doctype html>

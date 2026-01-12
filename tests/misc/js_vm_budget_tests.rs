@@ -1,8 +1,8 @@
 use fastrender::api::{BrowserTab, RenderOptions, VmJsBrowserTabExecutor};
 use fastrender::dom2;
-use fastrender::js::{JsExecutionOptions, WindowHost};
 use fastrender::js::window_realm::{WindowRealm, WindowRealmConfig};
 use fastrender::js::RunLimits;
+use fastrender::js::{JsExecutionOptions, WindowHost};
 use selectors::context::QuirksMode;
 use std::time::Duration;
 use vm_js::{Job, RealmId, VmError, VmHostHooks};
@@ -14,7 +14,10 @@ impl VmHostHooks for NoopHostHooks {
   fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
 }
 
-fn exec_script(realm: &mut WindowRealm, source: &str) -> std::result::Result<vm_js::Value, VmError> {
+fn exec_script(
+  realm: &mut WindowRealm,
+  source: &str,
+) -> std::result::Result<vm_js::Value, VmError> {
   let mut host_ctx = ();
   let mut hooks = NoopHostHooks::default();
   realm.exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, source)
@@ -29,7 +32,9 @@ fn exec_script_infinite_loop_is_terminated_by_instruction_budget() -> fastrender
   opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
 
   let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
-  let err = host.exec_script("for(;;){}").expect_err("expected script to terminate");
+  let err = host
+    .exec_script("for(;;){}")
+    .expect_err("expected script to terminate");
   let msg = err.to_string().to_ascii_lowercase();
   assert!(
     msg.contains("out of fuel"),
@@ -46,7 +51,9 @@ fn exec_script_deadline_budget_can_terminate_immediately() -> fastrender::Result
   opts.event_loop_run_limits.max_wall_time = Some(Duration::from_millis(0));
 
   let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
-  let err = host.exec_script("for(;;){}").expect_err("expected deadline termination");
+  let err = host
+    .exec_script("for(;;){}")
+    .expect_err("expected deadline termination");
   let msg = err.to_string().to_ascii_lowercase();
   assert!(
     msg.contains("deadline exceeded"),
@@ -95,7 +102,8 @@ fn window_realm_exec_script_deadline_budget_can_terminate_immediately() {
 }
 
 #[test]
-fn module_script_budget_deadline_is_refreshed_relative_to_execution_time() -> fastrender::Result<()> {
+fn module_script_budget_deadline_is_refreshed_relative_to_execution_time() -> fastrender::Result<()>
+{
   let mut opts = JsExecutionOptions::default();
   opts.supports_module_scripts = true;
   // Ensure this test remains stable even if defaults change.
@@ -124,7 +132,8 @@ fn module_script_budget_deadline_is_refreshed_relative_to_execution_time() -> fa
   let dom = tab.dom();
   let body = dom.body().expect("body should exist");
   assert_eq!(
-    dom.get_attribute(body, "data-module-ran")
+    dom
+      .get_attribute(body, "data-module-ran")
       .expect("get_attribute should succeed"),
     None
   );
@@ -138,7 +147,8 @@ fn module_script_budget_deadline_is_refreshed_relative_to_execution_time() -> fa
   let dom = tab.dom();
   let body = dom.body().expect("body should exist");
   assert_eq!(
-    dom.get_attribute(body, "data-module-ran")
+    dom
+      .get_attribute(body, "data-module-ran")
       .expect("get_attribute should succeed"),
     Some("1")
   );

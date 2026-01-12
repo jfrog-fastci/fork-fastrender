@@ -1,4 +1,6 @@
-use super::util::{create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy};
+use super::util::{
+  create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
+};
 
 fn assert_gap(pixmap: &tiny_skia::Pixmap) {
   // With a 4px solid border, the border stroke is centered at y=2.

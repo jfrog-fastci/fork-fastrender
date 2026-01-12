@@ -1,6 +1,6 @@
+use crate::test_support;
 use fastrender::resource::{HttpFetcher, HttpRetryPolicy};
 use fastrender::ResourceFetcher;
-use crate::test_support;
 use std::io;
 use std::io::{Read, Write};
 use std::net::TcpListener;

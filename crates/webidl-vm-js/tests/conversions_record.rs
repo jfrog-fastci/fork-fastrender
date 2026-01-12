@@ -1,6 +1,8 @@
 use std::any::Any;
 
-use vm_js::{Heap, HeapLimits, Job, PropertyKey, Realm, RealmId, Value, Vm, VmError, VmHostHooks, VmOptions};
+use vm_js::{
+  Heap, HeapLimits, Job, PropertyKey, Realm, RealmId, Value, Vm, VmError, VmHostHooks, VmOptions,
+};
 
 use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
 use webidl_vm_js::conversions;
@@ -75,9 +77,15 @@ fn record_conversion_uses_to_object_and_ignores_symbol_keys() -> Result<(), VmEr
   rt.scope.push_root(Value::Object(out_obj))?;
 
   let keys = rt.scope.ordinary_own_property_keys(out_obj)?;
-  assert_eq!(keys.len(), 1, "record conversion should only include string keys");
+  assert_eq!(
+    keys.len(),
+    1,
+    "record conversion should only include string keys"
+  );
   let PropertyKey::String(key_s) = keys[0] else {
-    return Err(VmError::TypeError("expected string key in record conversion output"));
+    return Err(VmError::TypeError(
+      "expected string key in record conversion output",
+    ));
   };
   assert_eq!(rt.scope.heap().get_string(key_s)?.to_utf8_lossy(), "a");
 
@@ -102,11 +110,13 @@ fn record_conversion_uses_to_object_and_ignores_symbol_keys() -> Result<(), VmEr
   };
   rt.scope.push_root(Value::Object(out2_obj))?;
   let keys = rt.scope.ordinary_own_property_keys(out2_obj)?;
-  assert!(keys.is_empty(), "boxed primitive should convert to an empty record");
+  assert!(
+    keys.is_empty(),
+    "boxed primitive should convert to an empty record"
+  );
 
   drop(rt);
   drop(scope);
   realm.teardown(&mut heap);
   Ok(())
 }
-

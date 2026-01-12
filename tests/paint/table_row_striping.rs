@@ -40,4 +40,3 @@ fn table_row_striping_applies_via_tbody_and_nth_of_type() {
     "expected second (even) row background color"
   );
 }
-

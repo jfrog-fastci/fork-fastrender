@@ -5,11 +5,8 @@ use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::BackgroundRepeatKeyword;
 use fastrender::{
-  css::parser::parse_declarations,
-  style::properties::apply_declaration,
-  style::properties::DEFAULT_VIEWPORT,
-  style::values::CustomPropertyValue,
-  style::ComputedStyle,
+  css::parser::parse_declarations, style::properties::apply_declaration,
+  style::properties::DEFAULT_VIEWPORT, style::values::CustomPropertyValue, style::ComputedStyle,
 };
 
 fn find_first_div<'a>(node: &'a StyledNode) -> Option<&'a StyledNode> {
@@ -68,8 +65,7 @@ fn background_shorthand_resets_background_repeat_when_applied_after_longhand() {
 fn recompute_var_dependent_background_does_not_clobber_background_repeat_longhand() {
   let mut style = ComputedStyle::default();
   let parent = ComputedStyle::default();
-  let decls =
-    parse_declarations("--bg: red; background: var(--bg); background-repeat: repeat-y;");
+  let decls = parse_declarations("--bg: red; background: var(--bg); background-repeat: repeat-y;");
   for decl in decls.iter() {
     apply_declaration(&mut style, decl, &parent, 16.0, 16.0);
   }

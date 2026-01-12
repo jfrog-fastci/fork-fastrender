@@ -12,11 +12,11 @@ use fastrender::style::display::Display;
 use fastrender::style::types::BackfaceVisibility;
 use fastrender::style::types::TransformStyle;
 use fastrender::style::values::Length;
+use fastrender::text::font_loader::FontContext;
+use fastrender::tree::fragment_tree::FragmentTree;
 use fastrender::ComputedStyle;
 use fastrender::FragmentNode;
 use fastrender::Rgba;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::fragment_tree::FragmentTree;
 
 #[test]
 fn backface_hidden_fragments_are_not_painted() {

@@ -57,7 +57,10 @@ fn in_range_and_out_of_range_match_number_min_max() {
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
   assert_eq!(
-    find_by_id(&styled, "oor").expect("out of range").styles.color,
+    find_by_id(&styled, "oor")
+      .expect("out of range")
+      .styles
+      .color,
     Rgba::rgb(255, 0, 0)
   );
   assert_eq!(
@@ -81,12 +84,17 @@ fn placeholder_shown_matches_empty_placeholder_controls() {
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
   assert_eq!(
-    find_by_id(&styled, "empty").expect("empty placeholder").styles.color,
+    find_by_id(&styled, "empty")
+      .expect("empty placeholder")
+      .styles
+      .color,
     Rgba::rgb(255, 0, 0)
   );
   assert_eq!(
-    find_by_id(&styled, "filled").expect("filled placeholder").styles.color,
+    find_by_id(&styled, "filled")
+      .expect("filled placeholder")
+      .styles
+      .color,
     Rgba::rgb(0, 0, 255)
   );
 }
-

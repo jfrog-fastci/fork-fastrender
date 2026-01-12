@@ -35,7 +35,8 @@ fn content_visibility_auto_does_not_skip_unknown_block_size() {
   let auto_box = block_with_style(auto_style, vec![tall_child]);
 
   let root = block_with_style(ComputedStyle::default(), vec![spacer, auto_box]);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
   let fragment = fc.layout(&root, &constraints).expect("layout");
 
   let auto_fragment = fragment
@@ -80,7 +81,8 @@ fn content_visibility_auto_skips_with_explicit_intrinsic_fallback() {
   let auto_box = block_with_style(auto_style, vec![tall_child]);
 
   let root = block_with_style(ComputedStyle::default(), vec![spacer, auto_box]);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
   let fragment = fc.layout(&root, &constraints).expect("layout");
 
   let auto_fragment = fragment
@@ -100,4 +102,3 @@ fn content_visibility_auto_skips_with_explicit_intrinsic_fallback() {
     "auto subtree descendants should be skipped when an explicit intrinsic fallback exists"
   );
 }
-

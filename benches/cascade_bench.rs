@@ -470,8 +470,7 @@ fn cascade_deep_dom_benchmark(c: &mut Criterion) {
   // a large attribute payload. A balanced tree keeps recursion depth bounded while still producing
   // thousands of nodes.
   let params = deep_dom_bench_params();
-  let (dom, node_count) =
-    generate_balanced_dom(params.depth, params.fan_out, params.payload_bytes);
+  let (dom, node_count) = generate_balanced_dom(params.depth, params.fan_out, params.payload_bytes);
   let stylesheet = parse_stylesheet("div { color: #222; }").expect("parse stylesheet");
   let media = MediaContext::screen(1280.0, 720.0);
   static PRINTED: AtomicBool = AtomicBool::new(false);

@@ -83,9 +83,7 @@ fn layer6_merges_positioned_auto_and_zero_contexts_in_tree_order() {
 
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
-  let fragment_tree = renderer
-    .layout_document(&dom, 120, 40)
-    .expect("laid out");
+  let fragment_tree = renderer.layout_document(&dom, 120, 40).expect("laid out");
 
   let display = render_with_backend(
     &fragment_tree,

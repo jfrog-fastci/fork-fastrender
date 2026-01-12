@@ -1,7 +1,7 @@
+use fastrender::geometry::Size;
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::grid::GridFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::geometry::Size;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::AspectRatio;
@@ -12,10 +12,10 @@ use fastrender::style::types::JustifyContent;
 use fastrender::style::types::WordBreak;
 use fastrender::style::values::CalcLength;
 use fastrender::style::values::Length;
-use fastrender::LengthUnit;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::ReplacedType;
+use fastrender::LengthUnit;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -33,8 +33,10 @@ fn grid_fit_content_track_clamps_to_argument() {
   container_style.display = Display::Grid;
   container_style.width = Some(Length::px(200.0));
   container_style.height = Some(Length::px(40.0));
-  container_style.grid_template_columns =
-    vec![GridTrack::FitContent(Length::calc(CalcLength::single(LengthUnit::Px, 100.0))), GridTrack::Fr(1.0)];
+  container_style.grid_template_columns = vec![
+    GridTrack::FitContent(Length::calc(CalcLength::single(LengthUnit::Px, 100.0))),
+    GridTrack::Fr(1.0),
+  ];
   container_style.grid_template_rows = vec![GridTrack::Auto];
   let container_style = Arc::new(container_style);
 
@@ -92,8 +94,10 @@ fn grid_fit_content_percentage_track_clamps_to_resolved_limit() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Grid;
   container_style.height = Some(Length::px(40.0));
-  container_style.grid_template_columns =
-    vec![GridTrack::FitContent(Length::percent(25.0)), GridTrack::Auto];
+  container_style.grid_template_columns = vec![
+    GridTrack::FitContent(Length::percent(25.0)),
+    GridTrack::Auto,
+  ];
   container_style.grid_template_rows = vec![GridTrack::Auto];
   let container_style = Arc::new(container_style);
 
@@ -143,8 +147,10 @@ fn nested_grid_fit_content_percentage_track_does_not_reuse_indefinite_measuremen
   // Inner grid matches the apnews pattern: `grid-template-columns: fit-content(25%) auto`.
   let mut inner_style = ComputedStyle::default();
   inner_style.display = Display::Grid;
-  inner_style.grid_template_columns =
-    vec![GridTrack::FitContent(Length::percent(25.0)), GridTrack::Auto];
+  inner_style.grid_template_columns = vec![
+    GridTrack::FitContent(Length::percent(25.0)),
+    GridTrack::Auto,
+  ];
   inner_style.grid_template_rows = vec![GridTrack::Auto];
   let inner_style = Arc::new(inner_style);
 
@@ -210,8 +216,10 @@ fn grid_fit_content_percentage_track_clamps_with_auto_placement() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Grid;
   container_style.height = Some(Length::px(40.0));
-  container_style.grid_template_columns =
-    vec![GridTrack::FitContent(Length::percent(25.0)), GridTrack::Auto];
+  container_style.grid_template_columns = vec![
+    GridTrack::FitContent(Length::percent(25.0)),
+    GridTrack::Auto,
+  ];
   container_style.grid_template_rows = vec![GridTrack::Auto];
   let container_style = Arc::new(container_style);
 
@@ -240,7 +248,11 @@ fn grid_fit_content_percentage_track_clamps_with_auto_placement() {
   second_style.height = Some(Length::px(10.0));
   let second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
 
-  let grid = BoxNode::new_block(container_style, FormattingContextType::Grid, vec![first, second]);
+  let grid = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Grid,
+    vec![first, second],
+  );
 
   let fragment = fc
     .layout(&grid, &LayoutConstraints::definite(200.0, 40.0))

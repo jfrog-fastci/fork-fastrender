@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RepaintReason, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -125,7 +125,11 @@ fn pointer_move_sets_hover_and_repaints() {
     .unwrap();
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
@@ -173,7 +177,11 @@ fn pointer_down_sets_active_until_pointer_up() {
     .unwrap();
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
@@ -233,7 +241,11 @@ fn scroll_with_pointer_updates_hover_target() {
     .unwrap();
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
@@ -292,14 +304,22 @@ fn activating_tab_clears_hover_state() {
 
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_a, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_a,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
   let frame = next_frame_ready(&worker.ui_rx, tab_a);
   expect_rgb_at_css(&frame, 10, 10, (255, 0, 0));
 
   worker
     .ui_tx
-    .send(support::pointer_move(tab_a, (10.0, 10.0), PointerButton::None))
+    .send(support::pointer_move(
+      tab_a,
+      (10.0, 10.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let frame = next_frame_ready(&worker.ui_rx, tab_a);
   expect_rgb_at_css(&frame, 10, 10, (0, 255, 0));

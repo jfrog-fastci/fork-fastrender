@@ -1,7 +1,9 @@
 use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::interaction::{hit_test_dom_viewport_point, HitTestKind};
 use fastrender::scroll::ScrollState;
-use fastrender::{BoxNode, BoxTree, FastRender, FragmentNode, FragmentTree, Point, Rect, RenderOptions};
+use fastrender::{
+  BoxNode, BoxTree, FastRender, FragmentNode, FragmentTree, Point, Rect, RenderOptions,
+};
 use std::collections::HashMap;
 
 fn find_dom_ptr_by_id(root: &DomNode, id: &str) -> Option<*const DomNode> {
@@ -97,8 +99,8 @@ fn hit_test_dom_accounts_for_viewport_and_element_scroll() {
   let target_box_id =
     find_box_id_for_styled_node(prepared.box_tree(), target_dom_id).expect("target box id");
 
-  let scroller_rect =
-    find_fragment_rect_for_box_id(prepared.fragment_tree(), scroller_box_id).expect("scroller rect");
+  let scroller_rect = find_fragment_rect_for_box_id(prepared.fragment_tree(), scroller_box_id)
+    .expect("scroller rect");
   let target_rect =
     find_fragment_rect_for_box_id(prepared.fragment_tree(), target_box_id).expect("target rect");
 
@@ -127,9 +129,8 @@ fn hit_test_dom_accounts_for_viewport_and_element_scroll() {
     rendered_target_rect.y() + 1.0 - viewport_scroll_y,
   );
 
-  let result = hit_test_dom_viewport_point(&prepared, &scroll, viewport_point)
-    .expect("expected a hit result");
+  let result =
+    hit_test_dom_viewport_point(&prepared, &scroll, viewport_point).expect("expected a hit result");
   assert_eq!(result.kind, HitTestKind::Link);
   assert_eq!(result.href.as_deref(), Some("/ok"));
 }
-

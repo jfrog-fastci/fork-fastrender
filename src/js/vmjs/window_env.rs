@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use vm_js::{
-  GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost,
-  VmHostHooks,
+  GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
+  VmHost, VmHostHooks,
 };
 use webidl_js_runtime::JsRuntime as _;
 
@@ -107,7 +107,9 @@ impl Drop for MatchMediaEnvGuard {
 
 fn prop_key(rt: &mut VmJsRuntime, name: &str) -> Result<PropertyKey, VmError> {
   let Value::String(handle) = rt.alloc_string_value(name)? else {
-    return Err(VmError::Unimplemented("alloc_string_value returned non-string"));
+    return Err(VmError::Unimplemented(
+      "alloc_string_value returned non-string",
+    ));
   };
   Ok(PropertyKey::String(handle))
 }
@@ -207,9 +209,15 @@ fn noop_listener_native(
 
 fn env_id_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<u64, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  match slots.get(MATCH_MEDIA_SLOT_ENV_ID).copied().unwrap_or(Value::Undefined) {
+  match slots
+    .get(MATCH_MEDIA_SLOT_ENV_ID)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
     Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => Ok(n as u64),
-    _ => Err(VmError::InvariantViolation("matchMedia missing env id native slot")),
+    _ => Err(VmError::InvariantViolation(
+      "matchMedia missing env id native slot",
+    )),
   }
 }
 
@@ -262,7 +270,9 @@ fn match_media_native(
   } else {
     let matches = MediaQuery::parse_list(&query_text)
       .ok()
-      .is_some_and(|queries| with_match_media_env(env_id, |ctx| ctx.evaluate_list(&queries)).unwrap_or(false));
+      .is_some_and(|queries| {
+        with_match_media_env(env_id, |ctx| ctx.evaluate_list(&queries)).unwrap_or(false)
+      });
     (matches, Value::String(s))
   };
 
@@ -366,20 +376,36 @@ pub(crate) fn install_window_shims_vm_js(
     let idx_key = alloc_key_vm_js(scope, &idx.to_string())?;
     let lang_s = scope.alloc_string(lang)?;
     scope.push_root(Value::String(lang_s))?;
-    scope.define_property(languages, idx_key, read_only_data_desc(Value::String(lang_s)))?;
+    scope.define_property(
+      languages,
+      idx_key,
+      read_only_data_desc(Value::String(lang_s)),
+    )?;
   }
-  define_read_only_vm_js(scope, languages, "length", Value::Number(env.languages.len() as f64))?;
+  define_read_only_vm_js(
+    scope,
+    languages,
+    "length",
+    Value::Number(env.languages.len() as f64),
+  )?;
   define_read_only_vm_js(scope, navigator, "languages", Value::Object(languages))?;
 
   let send_beacon_call_id = vm.register_native_call(navigator_send_beacon_native)?;
   let send_beacon_name = scope.alloc_string("sendBeacon")?;
   scope.push_root(Value::String(send_beacon_name))?;
-  let send_beacon_func = scope.alloc_native_function(send_beacon_call_id, None, send_beacon_name, 2)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(send_beacon_func, Some(realm.intrinsics().function_prototype()))?;
+  let send_beacon_func =
+    scope.alloc_native_function(send_beacon_call_id, None, send_beacon_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    send_beacon_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(send_beacon_func))?;
-  define_read_only_vm_js(scope, navigator, "sendBeacon", Value::Object(send_beacon_func))?;
+  define_read_only_vm_js(
+    scope,
+    navigator,
+    "sendBeacon",
+    Value::Object(send_beacon_func),
+  )?;
 
   define_read_only_vm_js(scope, window, "navigator", Value::Object(navigator))?;
 
@@ -405,9 +431,10 @@ pub(crate) fn install_window_shims_vm_js(
       Value::Object(noop_func),
     ],
   )?;
-  scope
-    .heap_mut()
-    .object_set_prototype(match_media_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    match_media_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(match_media_func))?;
 
   define_read_only_vm_js(scope, window, "matchMedia", Value::Object(match_media_func))?;
@@ -488,12 +515,7 @@ pub fn install_window_shims(
   for (idx, lang) in env.languages.iter().enumerate() {
     let idx_key = prop_key(rt, &idx.to_string())?;
     let lang_value = rt.alloc_string_value(lang)?;
-    rt.define_data_property(
-      languages,
-      idx_key,
-      lang_value,
-      true,
-    )?;
+    rt.define_data_property(languages, idx_key, lang_value, true)?;
   }
   define_read_only_number(rt, languages, "length", env.languages.len() as f64)?;
   let languages_key = prop_key(rt, "languages")?;
@@ -573,11 +595,7 @@ mod tests {
     let Value::String(s) = value else {
       panic!("expected string value");
     };
-    rt
-      .heap()
-      .get_string(s)
-      .unwrap()
-      .to_utf8_lossy()
+    rt.heap().get_string(s).unwrap().to_utf8_lossy()
   }
 
   #[test]
@@ -616,23 +634,17 @@ mod tests {
     let match_media_fn = get_prop(&mut rt, window, "matchMedia");
 
     let query = rt.alloc_string_value("(min-width: 700px)").unwrap();
-    let mql = rt
-      .call_function(match_media_fn, window, &[query])
-      .unwrap();
+    let mql = rt.call_function(match_media_fn, window, &[query]).unwrap();
     let matches = get_prop(&mut rt, mql, "matches");
     assert!(matches == Value::Bool(true));
 
     let query = rt.alloc_string_value("(min-resolution: 2dppx)").unwrap();
-    let mql = rt
-      .call_function(match_media_fn, window, &[query])
-      .unwrap();
+    let mql = rt.call_function(match_media_fn, window, &[query]).unwrap();
     let matches = get_prop(&mut rt, mql, "matches");
     assert!(matches == Value::Bool(true));
 
     let query = rt.alloc_string_value("(max-resolution: 1.5dppx)").unwrap();
-    let mql = rt
-      .call_function(match_media_fn, window, &[query])
-      .unwrap();
+    let mql = rt.call_function(match_media_fn, window, &[query]).unwrap();
     let matches = get_prop(&mut rt, mql, "matches");
     assert!(matches == Value::Bool(false));
   }

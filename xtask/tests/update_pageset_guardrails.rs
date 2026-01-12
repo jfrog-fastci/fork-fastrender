@@ -15,7 +15,10 @@ enum ProgressStatus {
 
 impl ProgressStatus {
   fn is_failure(self) -> bool {
-    matches!(self, ProgressStatus::Timeout | ProgressStatus::Panic | ProgressStatus::Error)
+    matches!(
+      self,
+      ProgressStatus::Timeout | ProgressStatus::Panic | ProgressStatus::Error
+    )
   }
 }
 
@@ -108,10 +111,8 @@ fn guardrails_manifest_excludes_sync_placeholders_but_keeps_real_failures() {
     "expected progress/pages to contain at least {required_ok_pages} ok page(s), got {ok_count}"
   );
 
-  let placeholders_in_manifest: Vec<String> = placeholders
-    .intersection(&fixture_names)
-    .cloned()
-    .collect();
+  let placeholders_in_manifest: Vec<String> =
+    placeholders.intersection(&fixture_names).cloned().collect();
   assert!(
     placeholders_in_manifest.is_empty(),
     "{} should not include pageset_progress sync placeholders: {}",
@@ -119,10 +120,7 @@ fn guardrails_manifest_excludes_sync_placeholders_but_keeps_real_failures() {
     placeholders_in_manifest.join(", ")
   );
 
-  let missing_failures: Vec<String> = real_failures
-    .difference(&fixture_names)
-    .cloned()
-    .collect();
+  let missing_failures: Vec<String> = real_failures.difference(&fixture_names).cloned().collect();
   assert!(
     missing_failures.is_empty(),
     "{} is missing real failing pages from progress/pages: {}",

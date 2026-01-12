@@ -28,10 +28,10 @@ fn styled_div(html: &str) -> StyledNode {
 
 #[test]
 fn invalid_second_token_does_not_override_text_overflow() {
-  let node = styled_div(
-    r#"<div style="text-overflow: clip; text-overflow: ellipsis foo;"></div>"#,
+  let node = styled_div(r#"<div style="text-overflow: clip; text-overflow: ellipsis foo;"></div>"#);
+  assert_eq!(
+    node.styles.text_overflow.inline_start,
+    TextOverflowSide::Clip
   );
-  assert_eq!(node.styles.text_overflow.inline_start, TextOverflowSide::Clip);
   assert_eq!(node.styles.text_overflow.inline_end, TextOverflowSide::Clip);
 }
-

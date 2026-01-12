@@ -1256,7 +1256,9 @@ enum NodeKind {
     tag_name: String,
     attributes: Vec<(String, String)>,
   },
-  Text { content: String },
+  Text {
+    content: String,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1327,10 +1329,7 @@ impl Dom {
   }
 
   fn node_checked_mut(&mut self, id: NodeId) -> Result<&mut Node, DomShimError> {
-    self
-      .nodes
-      .get_mut(id.0)
-      .ok_or(DomShimError::NotFoundError)
+    self.nodes.get_mut(id.0).ok_or(DomShimError::NotFoundError)
   }
 
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>) -> NodeId {
@@ -1565,7 +1564,10 @@ impl Dom {
     }
 
     self.node_checked_mut(child)?.parent = Some(parent);
-    self.node_checked_mut(parent)?.children.insert(insert_idx, child);
+    self
+      .node_checked_mut(parent)?
+      .children
+      .insert(insert_idx, child);
     Ok(())
   }
 
@@ -1598,7 +1600,10 @@ impl Dom {
       .position(|&id| id == old_child)
       .ok_or(DomShimError::NotFoundError)?;
 
-    if matches!(self.node_checked(new_child)?.kind, NodeKind::DocumentFragment) {
+    if matches!(
+      self.node_checked(new_child)?.kind,
+      NodeKind::DocumentFragment
+    ) {
       let fragment_children = self.node_checked(new_child)?.children.clone();
       for &moved in &fragment_children {
         if matches!(self.node_checked(moved)?.kind, NodeKind::Document) {
@@ -1734,7 +1739,10 @@ impl Dom {
 
     // Insert new nodes, then remove the old one.
     let parent_children = &mut self.node_checked_mut(parent)?.children;
-    parent_children.splice(replacement_idx..replacement_idx + 1, new_nodes.iter().copied());
+    parent_children.splice(
+      replacement_idx..replacement_idx + 1,
+      new_nodes.iter().copied(),
+    );
     for node_id in new_nodes {
       self.node_checked_mut(node_id)?.parent = Some(parent);
     }
@@ -1756,14 +1764,22 @@ impl Dom {
     )
   }
 
-  fn set_attribute(&mut self, element: NodeId, name: &str, value: &str) -> Result<(), DomShimError> {
+  fn set_attribute(
+    &mut self,
+    element: NodeId,
+    name: &str,
+    value: &str,
+  ) -> Result<(), DomShimError> {
     let name = Self::normalize_attr_name(name);
     let node = self.node_checked_mut(element)?;
     let NodeKind::Element { attributes, .. } = &mut node.kind else {
       return Err(DomShimError::InvalidNodeType);
     };
 
-    if let Some((_n, v)) = attributes.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+    if let Some((_n, v)) = attributes
+      .iter_mut()
+      .find(|(n, _)| n.eq_ignore_ascii_case(&name))
+    {
       v.clear();
       v.push_str(value);
     } else {
@@ -1778,7 +1794,10 @@ impl Dom {
     let NodeKind::Element { attributes, .. } = &mut node.kind else {
       return Err(DomShimError::InvalidNodeType);
     };
-    if let Some(idx) = attributes.iter().position(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+    if let Some(idx) = attributes
+      .iter()
+      .position(|(n, _)| n.eq_ignore_ascii_case(&name))
+    {
       attributes.remove(idx);
     }
     Ok(())
@@ -1801,7 +1820,6 @@ impl Dom {
     content.push_str(data);
     Ok(())
   }
-
 
   fn clear_children(&mut self, parent: NodeId) -> Result<(), DomShimError> {
     self.node_checked(parent)?;
@@ -1839,11 +1857,7 @@ impl Dom {
     Ok(Some(out))
   }
 
-  fn set_text_content(
-    &mut self,
-    node: NodeId,
-    data: &str,
-  ) -> Result<Option<NodeId>, DomShimError> {
+  fn set_text_content(&mut self, node: NodeId, data: &str) -> Result<Option<NodeId>, DomShimError> {
     self.node_checked(node)?;
     match &self.nodes[node.0].kind {
       NodeKind::Document => return Ok(None),
@@ -2097,7 +2111,10 @@ impl Dom {
     let mut stack: Vec<WorkItem> = fragment_children_from_rcdom(&rcdom)
       .into_iter()
       .rev()
-      .map(|handle| WorkItem { parent: None, handle })
+      .map(|handle| WorkItem {
+        parent: None,
+        handle,
+      })
       .collect();
 
     while let Some(item) = stack.pop() {
@@ -2243,7 +2260,12 @@ fn fragment_children_from_rcdom(rcdom: &RcDom) -> Vec<Handle> {
   let children = handle_children(&rcdom.document);
   let significant: Vec<Handle> = children
     .iter()
-    .filter(|handle| !matches!(handle.data, NodeData::Doctype { .. } | NodeData::Comment { .. }))
+    .filter(|handle| {
+      !matches!(
+        handle.data,
+        NodeData::Doctype { .. } | NodeData::Comment { .. }
+      )
+    })
     .cloned()
     .collect();
 
@@ -2475,7 +2497,11 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
       };
       dom
         .borrow_mut()
-        .insert_before(NodeId(parent_id as usize), NodeId(child_id as usize), reference)
+        .insert_before(
+          NodeId(parent_id as usize),
+          NodeId(child_id as usize),
+          reference,
+        )
         .map_err(dom_error_to_js_error)?;
       Ok(())
     }
@@ -2512,7 +2538,6 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
       Ok(())
     }
   })?;
-
 
   let has_child_nodes = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
@@ -2603,11 +2628,7 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
       }
       let ids = dom
         .borrow()
-        .get_elements_by_tag_name_ns(
-          NodeId(root_id as usize),
-          namespace.as_deref(),
-          &local_name,
-        )
+        .get_elements_by_tag_name_ns(NodeId(root_id as usize), namespace.as_deref(), &local_name)
         .map_err(dom_error_to_js_error)?;
       Ok(ids.into_iter().map(|id| id.0 as i32).collect())
     }
@@ -2664,7 +2685,10 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
   globals.set("__fastrender_dom_get_parent_node", get_parent_node)?;
   globals.set("__fastrender_dom_get_child_nodes", get_child_nodes)?;
   globals.set("__fastrender_dom_get_tag_name", get_tag_name)?;
-  globals.set("__fastrender_dom_get_elements_by_tag_name", get_elements_by_tag_name)?;
+  globals.set(
+    "__fastrender_dom_get_elements_by_tag_name",
+    get_elements_by_tag_name,
+  )?;
   globals.set(
     "__fastrender_dom_get_elements_by_tag_name_ns",
     get_elements_by_tag_name_ns,
@@ -2673,7 +2697,10 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     "__fastrender_dom_get_elements_by_class_name",
     get_elements_by_class_name,
   )?;
-  globals.set("__fastrender_dom_get_elements_by_name", get_elements_by_name)?;
+  globals.set(
+    "__fastrender_dom_get_elements_by_name",
+    get_elements_by_name,
+  )?;
   ctx.eval::<(), _>(DOM_SHIM)?;
   Ok(())
 }

@@ -1304,9 +1304,7 @@ impl Painter {
         }
       }
       ReplacedType::Video {
-        src: _src,
-        poster,
-        ..
+        src: _src, poster, ..
       } => {
         let needs_intrinsic = replaced_box.intrinsic_size.is_none();
         let needs_ratio = replaced_box.aspect_ratio.is_none();
@@ -2345,9 +2343,7 @@ impl Painter {
         layer6.push((*order, 1, *idx));
       }
       layer6.sort_by(|(o1, k1, i1), (o2, k2, i2)| {
-        o1.cmp(o2)
-          .then_with(|| k1.cmp(k2))
-          .then_with(|| i1.cmp(i2))
+        o1.cmp(o2).then_with(|| k1.cmp(k2)).then_with(|| i1.cmp(i2))
       });
       for (_, _, idx) in layer6 {
         self.collect_stacking_context(
@@ -2545,9 +2541,7 @@ impl Painter {
       layer6.push((*order, 1, *idx));
     }
     layer6.sort_by(|(o1, k1, i1), (o2, k2, i2)| {
-      o1.cmp(o2)
-        .then_with(|| k1.cmp(k2))
-        .then_with(|| i1.cmp(i2))
+      o1.cmp(o2).then_with(|| k1.cmp(k2)).then_with(|| i1.cmp(i2))
     });
     for (_, _, idx) in layer6 {
       self.collect_stacking_context(
@@ -2790,14 +2784,17 @@ impl Painter {
         .background_layers
         .iter()
         .any(|layer| layer.clip == crate::style::types::BackgroundBox::Text);
-       let text_clip = if wants_text_clip {
-         let mut clip_commands = Vec::new();
-         let offset = Point::new(abs_bounds.x() - fragment.bounds.x(), abs_bounds.y() - fragment.bounds.y());
-         self.collect_text_commands_for_clip(fragment, offset, &mut clip_commands);
+      let text_clip = if wants_text_clip {
+        let mut clip_commands = Vec::new();
+        let offset = Point::new(
+          abs_bounds.x() - fragment.bounds.x(),
+          abs_bounds.y() - fragment.bounds.y(),
+        );
+        self.collect_text_commands_for_clip(fragment, offset, &mut clip_commands);
         Some(Arc::from(clip_commands.into_boxed_slice()))
-       } else {
-         None
-       };
+      } else {
+        None
+      };
       items.push(DisplayCommand::Background {
         rect: background_rect,
         style: style.clone(),
@@ -3012,7 +3009,12 @@ impl Painter {
     }
   }
 
-  fn collect_text_commands_for_clip(&self, fragment: &FragmentNode, offset: Point, out: &mut Vec<DisplayCommand>) {
+  fn collect_text_commands_for_clip(
+    &self,
+    fragment: &FragmentNode,
+    offset: Point,
+    out: &mut Vec<DisplayCommand>,
+  ) {
     let style_opt = fragment.style.as_deref();
     if style_opt.is_some_and(|style| {
       !matches!(
@@ -3063,7 +3065,10 @@ impl Painter {
     }
 
     let element_scroll = self.element_scroll_offset(fragment);
-    let child_offset = Point::new(abs_bounds.x() - element_scroll.x, abs_bounds.y() - element_scroll.y);
+    let child_offset = Point::new(
+      abs_bounds.x() - element_scroll.x,
+      abs_bounds.y() - element_scroll.y,
+    );
     for child in fragment.children.iter() {
       self.collect_text_commands_for_clip(child, child_offset, out);
     }
@@ -3506,8 +3511,9 @@ impl Painter {
         };
         let has_clip = clip.is_some();
         let clip_root = clip.map(|clip| clip.clip_root).unwrap_or(false);
-        let root_style_ptr =
-          root_style.as_ref().map(|style| Arc::as_ptr(style) as *const () as usize);
+        let root_style_ptr = root_style
+          .as_ref()
+          .map(|style| Arc::as_ptr(style) as *const () as usize);
         let mut outline_commands = Vec::new();
         let mut unclipped = Vec::new();
         let mut clipped = Vec::new();
@@ -5650,7 +5656,13 @@ impl Painter {
     Ok(())
   }
 
-  fn composite_pixmap_with_blend_mode(&mut self, x0: i32, y0: i32, pixmap: &Pixmap, mode: MixBlendMode) {
+  fn composite_pixmap_with_blend_mode(
+    &mut self,
+    x0: i32,
+    y0: i32,
+    pixmap: &Pixmap,
+    mode: MixBlendMode,
+  ) {
     if is_hsl_blend(mode) {
       composite_hsl_layer_offset(&mut self.pixmap, pixmap, 1.0, mode, x0, y0);
       return;
@@ -5671,14 +5683,9 @@ impl Painter {
         None,
       );
     } else {
-      self.pixmap.draw_pixmap(
-        x0,
-        y0,
-        pixmap.as_ref(),
-        &paint,
-        Transform::identity(),
-        None,
-      );
+      self
+        .pixmap
+        .draw_pixmap(x0, y0, pixmap.as_ref(), &paint, Transform::identity(), None);
     }
   }
 
@@ -10080,20 +10087,26 @@ impl Painter {
       TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
       runs.iter().map(|run| run.advance).sum()
     };
-    let shape_text_runs = |painter: &mut Self, text: &str, style: &ComputedStyle| -> Vec<ShapedRun> {
-      if text.is_empty() {
-        return Vec::new();
-      }
-      painter
-        .shaper
-        .shape(text, style, &painter.font_ctx)
-        .ok()
-        .map(|mut runs| {
-          TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
-          runs
-        })
-        .unwrap_or_default()
-    };
+    let shape_text_runs =
+      |painter: &mut Self, text: &str, style: &ComputedStyle| -> Vec<ShapedRun> {
+        if text.is_empty() {
+          return Vec::new();
+        }
+        painter
+          .shaper
+          .shape(text, style, &painter.font_ctx)
+          .ok()
+          .map(|mut runs| {
+            TextItem::apply_spacing_to_runs(
+              &mut runs,
+              text,
+              style.letter_spacing,
+              style.word_spacing,
+            );
+            runs
+          })
+          .unwrap_or_default()
+      };
 
     match &control.control {
       FormControlKind::Text {
@@ -10286,14 +10299,11 @@ impl Painter {
               for (seg_start, seg_end) in segments {
                 let left = start_x + seg_start;
                 let right = start_x + seg_end;
-                let sel_rect = Rect::from_xywh(
-                  left,
-                  top,
-                  (right - left).max(0.0),
-                  (bottom - top).max(0.0),
-                );
-                if let Some(clipped) =
-                  sel_rect.intersection(rect).filter(|r| r.width() > 0.0 && r.height() > 0.0)
+                let sel_rect =
+                  Rect::from_xywh(left, top, (right - left).max(0.0), (bottom - top).max(0.0));
+                if let Some(clipped) = sel_rect
+                  .intersection(rect)
+                  .filter(|r| r.width() > 0.0 && r.height() > 0.0)
                 {
                   selection_rects.push(clipped);
                 }
@@ -10536,21 +10546,14 @@ impl Painter {
                   vec![(x1.min(x2), x1.max(x2))]
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
-                    line,
-                    &line_runs,
-                    start_col,
-                    end_col,
+                    line, &line_runs, start_col, end_col,
                   )
                 };
                 for (seg_start, seg_end) in segments {
                   let left = start_x + seg_start;
                   let right = start_x + seg_end;
-                  let sel_rect = Rect::from_xywh(
-                    left,
-                    top,
-                    (right - left).max(0.0),
-                    (bottom - top).max(0.0),
-                  );
+                  let sel_rect =
+                    Rect::from_xywh(left, top, (right - left).max(0.0), (bottom - top).max(0.0));
                   if let Some(clipped) = sel_rect.intersection(rect) {
                     if clipped.width() > 0.0 && clipped.height() > 0.0 {
                       let device_rect = self.device_rect(clipped);

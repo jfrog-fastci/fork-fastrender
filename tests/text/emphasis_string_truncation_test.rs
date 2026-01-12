@@ -72,4 +72,3 @@ fn text_emphasis_string_truncates_to_first_grapheme_cluster() {
     "expected emphasis string glyph clusters {clusters:?} to be within the first grapheme cluster (byte len {first_cluster_len})"
   );
 }
-

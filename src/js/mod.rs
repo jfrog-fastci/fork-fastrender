@@ -32,90 +32,88 @@
 //! For spec-correct execution plumbing, construct [`ScriptElementSpec`] at parse time (see
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
-pub mod dom_scripts;
-pub mod dom_host;
 pub mod cookie_jar;
 pub mod dom2_bindings;
+pub mod dom_host;
+pub mod dom_scripts;
 // Dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
 //
 // This is not part of the canonical `vm-js` WindowRealm pipeline, but remains useful while bindings
 // and streaming execution are still being integrated.
-pub mod dom_integration;
+pub mod browser_tab;
 pub mod clock;
 pub mod document_lifecycle;
+pub mod document_write;
+pub mod dom_integration;
 pub mod event_loop;
+pub mod fetch;
 pub mod host_document;
 pub mod html_classic_scripts;
-pub mod html_scripting;
-pub mod html_script_processing;
 pub mod html_script_pipeline;
+pub mod html_script_processing;
 pub mod html_script_scheduler;
+pub mod html_scripting;
 pub mod import_maps;
 pub mod module_graph_loader;
-pub mod realm_module_loader;
-pub mod script_encoding;
 pub mod options;
-pub mod document_write;
 pub mod orchestrator;
-pub mod browser_tab;
 pub mod page_load;
-pub mod script_blocking_stylesheets;
-pub mod script_scheduler;
 pub mod promise;
+pub mod realm_module_loader;
+pub mod script_blocking_stylesheets;
+pub mod script_encoding;
 pub mod script_loader_resource;
+pub mod script_scheduler;
 pub(crate) mod sri;
-pub mod time;
-pub mod url;
-pub mod url_resolve;
 pub mod streaming;
 pub mod streaming_dom2;
 pub mod streaming_pipeline;
-pub mod fetch;
+pub mod time;
+pub mod url;
+pub mod url_resolve;
 pub mod webidl;
 
 // --- vm-js embedding (`src/js/vmjs/*`) ---
 
 #[path = "vmjs/dom_platform.rs"]
 pub mod dom_platform;
-#[path = "vmjs/runtime.rs"]
-pub mod runtime;
-#[path = "vmjs/vm_limits.rs"]
-pub mod vm_limits;
-#[path = "vmjs/vm_error_format.rs"]
-pub(crate) mod vm_error_format;
 #[path = "vmjs/module_loader.rs"]
 pub mod module_loader;
+#[path = "vmjs/runtime.rs"]
+pub mod runtime;
+#[path = "vmjs/vm_error_format.rs"]
+pub(crate) mod vm_error_format;
+#[path = "vmjs/vm_limits.rs"]
+pub mod vm_limits;
 #[path = "vmjs/window.rs"]
 pub mod window;
 #[path = "vmjs/window_abort.rs"]
 pub mod window_abort;
 #[path = "vmjs/window_animation_frame.rs"]
 pub mod window_animation_frame;
-#[path = "vmjs/window_crypto.rs"]
-pub mod window_crypto;
 #[path = "vmjs/window_blob.rs"]
 pub mod window_blob;
-#[path = "vmjs/window_text_encoding.rs"]
-pub mod window_text_encoding;
+#[path = "vmjs/window_crypto.rs"]
+pub mod window_crypto;
 #[path = "vmjs/window_env.rs"]
 pub mod window_env;
 #[path = "vmjs/window_fetch.rs"]
 pub mod window_fetch;
-#[path = "vmjs/window_xhr.rs"]
-pub mod window_xhr;
+#[path = "vmjs/window_form_data.rs"]
+pub mod window_form_data;
 #[path = "vmjs/window_realm.rs"]
 pub mod window_realm;
+#[path = "vmjs/window_text_encoding.rs"]
+pub mod window_text_encoding;
 #[path = "vmjs/window_timers.rs"]
 pub mod window_timers;
 #[path = "vmjs/window_url.rs"]
 pub mod window_url;
-#[path = "vmjs/window_form_data.rs"]
-pub mod window_form_data;
+#[path = "vmjs/window_xhr.rs"]
+pub mod window_xhr;
 
 // --- WebIDL runtime + bindings integration (`src/js/webidl/*`) ---
 
-#[path = "webidl/runtime_vmjs.rs"]
-pub mod webidl_runtime_vmjs;
 #[path = "webidl/bindings/mod.rs"]
 pub mod bindings;
 #[path = "webidl/dom_bindings/mod.rs"]
@@ -126,6 +124,8 @@ pub mod events;
 pub mod events_bindings;
 #[path = "webidl/url_bindings.rs"]
 pub mod url_bindings;
+#[path = "webidl/runtime_vmjs.rs"]
+pub mod webidl_runtime_vmjs;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
 //
@@ -134,94 +134,99 @@ pub mod url_bindings;
 // elements. It is still referenced by integration tests and DOM-mutation plumbing. Do not
 // re-declare it here.
 #[cfg(feature = "quickjs")]
-#[path = "legacy/vm_host.rs"]
-pub mod vm_host;
-#[cfg(feature = "quickjs")]
 #[path = "legacy/quickjs_dom.rs"]
 pub mod quickjs_dom;
+#[cfg(feature = "quickjs")]
+#[path = "legacy/vm_host.rs"]
+pub mod vm_host;
 
 // Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
-#[path = "legacy/vm_dom.rs"]
-pub mod vm_dom;
 #[path = "legacy/dom_bindings_context.rs"]
 pub mod dom_bindings_context;
+#[path = "legacy/vm_dom.rs"]
+pub mod vm_dom;
 
 // Legacy `vm-js` embeddings kept for tests and experimental script execution paths.
 #[path = "legacy/ecma_embed.rs"]
 pub mod ecma_embed;
 #[path = "legacy/ecma_vm_runtime.rs"]
 pub mod ecma_vm_runtime;
+pub use crate::web::dom::DocumentReadyState;
+pub use browser_tab::{BrowserTab, BrowserTabHost};
+pub use clock::{Clock, RealClock, VirtualClock};
+pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost, LoadBlockerKind};
+pub use document_write::{with_document_write_state, DocumentWriteLimitError, DocumentWriteState};
+pub use dom_bindings::DomJsRealm;
+pub use dom_host::{DomHost, DomHostVmJs};
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
-pub use dom_host::{DomHost, DomHostVmJs};
-pub use clock::{Clock, RealClock, VirtualClock};
-pub use events::{JsDomEvents, JsFunctionHandle};
-pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost, LoadBlockerKind};
-pub use crate::web::dom::DocumentReadyState;
 pub use event_loop::{
-  AnimationFrameId, EventLoop, MicrotaskCheckpointLimitedOutcome, QueueLimits, RunAnimationFrameOutcome,
-  RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome,
-  Task, TaskSource, TimerId,
+  AnimationFrameId, EventLoop, MicrotaskCheckpointLimitedOutcome, QueueLimits,
+  RunAnimationFrameOutcome, RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome,
+  RunUntilIdleStopReason, SpinOutcome, Task, TaskSource, TimerId,
 };
-pub use options::{JsExecutionOptions, ParseBudget};
-pub use document_write::{DocumentWriteLimitError, DocumentWriteState, with_document_write_state};
+pub use events::{JsDomEvents, JsFunctionHandle};
+pub use fetch::{
+  fetch, FetchInit, HeadersInit, JsHeaders, JsRequest, JsResponse, RequestInit, WebFetchHost,
+};
 pub use host_document::{DocumentHostState, HostDocumentState};
-pub use orchestrator::{
-  CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
-  ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
-};
-pub use import_maps::{
-  ImportMap, ImportMapError, ImportMapLimits, ImportMapParseResult, ImportMapState, ImportMapWarning,
-  ImportMapWarningKind, ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet,
-  ResolvedModuleSetIndex, ScopeMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
-};
-pub use browser_tab::{BrowserTab, BrowserTabHost};
-pub use dom_bindings::DomJsRealm;
 pub use html_classic_scripts::{
   parse_and_run_classic_scripts, ClassicScriptExecutor, ClassicScriptFetcher,
   ResourceFetcherClassicScriptFetcher,
 };
+pub use html_script_scheduler::{
+  HtmlDiscoveredScript, HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction,
+  HtmlScriptWork,
+};
+pub use import_maps::{
+  ImportMap, ImportMapError, ImportMapLimits, ImportMapParseResult, ImportMapState,
+  ImportMapWarning, ImportMapWarningKind, ModuleIntegrityMap, ModuleResolutionError,
+  ModuleSpecifierMap, ResolvedModuleSet, ResolvedModuleSetIndex, ScopeMap, ScopesMap,
+  SpecifierAsUrlKind, SpecifierResolutionRecord,
+};
 pub use module_loader::VmJsModuleLoader;
+pub use options::{JsExecutionOptions, ParseBudget};
+pub use orchestrator::{
+  CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
+  ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
+};
+pub use page_load::{
+  HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor,
+  ScriptFetcher as PageLoadScriptFetcher,
+};
+pub use promise::{JsPromise, JsPromiseResolver, JsPromiseValue};
 pub use realm_module_loader::{ModuleKey, ModuleLoader, ModuleLoaderHandle};
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
+pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
+pub use script_loader_resource::ResourceScriptLoader;
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptElementEvent, ScriptEventDispatcher,
   ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler, ScriptSchedulerAction,
 };
-pub use html_script_scheduler::{
-  HtmlDiscoveredScript, HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork,
-};
-pub use script_loader_resource::ResourceScriptLoader;
-pub use page_load::{
-  HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
-};
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
-pub use url_resolve::{resolve_url, UrlResolveError};
 pub use url_bindings::{install_url_bindings, install_url_bindings_with_limits};
+pub use url_resolve::{resolve_url, UrlResolveError};
+pub use vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
+#[cfg(feature = "quickjs")]
+pub use vm_host::JsVmHost;
+pub use window::{WindowHost, WindowHostState};
 pub use window_animation_frame::install_window_animation_frame_bindings;
 pub use window_blob::install_window_blob_bindings;
 pub use window_fetch::{
-  install_window_fetch_bindings, install_window_fetch_bindings_with_guard, unregister_window_fetch_env,
-  WindowFetchBindings, WindowFetchEnv,
+  install_window_fetch_bindings, install_window_fetch_bindings_with_guard,
+  unregister_window_fetch_env, WindowFetchBindings, WindowFetchEnv,
 };
 pub use window_form_data::install_window_form_data_bindings;
+pub use window_realm::{
+  ConsoleSink, LocationNavigationRequest, WindowRealm, WindowRealmConfig, WindowRealmHost,
+};
+pub use window_timers::install_window_timers_bindings;
+pub use window_url::install_window_url_bindings;
 pub use window_xhr::{
   install_window_xhr_bindings, install_window_xhr_bindings_with_guard, unregister_window_xhr_env,
   WindowXhrBindings, WindowXhrEnv,
 };
-pub use window_timers::install_window_timers_bindings;
-pub use window_url::install_window_url_bindings;
-pub use window_realm::{
-  ConsoleSink, LocationNavigationRequest, WindowRealm, WindowRealmConfig, WindowRealmHost,
-};
-pub use window::{WindowHost, WindowHostState};
-#[cfg(feature = "quickjs")]
-pub use vm_host::JsVmHost;
-pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
-pub use promise::{JsPromise, JsPromiseResolver, JsPromiseValue};
-pub use fetch::{fetch, FetchInit, HeadersInit, JsHeaders, JsRequest, JsResponse, RequestInit, WebFetchHost};
-pub use vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,9 +262,7 @@ pub(crate) fn parse_crossorigin_attr(value: Option<&str>) -> Option<crate::resou
   value.and_then(parse_cors_settings_attribute)
 }
 
-pub(crate) fn parse_cors_settings_attribute(
-  value: &str,
-) -> Option<crate::resource::CorsMode> {
+pub(crate) fn parse_cors_settings_attribute(value: &str) -> Option<crate::resource::CorsMode> {
   let value = trim_ascii_whitespace(value);
   if value.is_empty() || value.eq_ignore_ascii_case("anonymous") {
     return Some(crate::resource::CorsMode::Anonymous);

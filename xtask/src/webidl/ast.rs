@@ -3,9 +3,9 @@
 //! The top-level Bikeshed WebIDL extractor/parser in [`super`] intentionally stays forgiving and
 //! stores interface members as raw strings. This AST is a *second* typed layer used by codegen.
 
+use super::ExtendedAttribute;
 use anyhow::Result;
 use std::fmt;
-use super::ExtendedAttribute;
 
 /// A WebIDL type expression.
 ///
@@ -46,7 +46,9 @@ impl IdlType {
     Ok(match self {
       IdlType::Builtin(b) => IdlType::Builtin(*b),
       IdlType::Named(name) => resolve_named(name)?.unwrap_or_else(|| IdlType::Named(name.clone())),
-      IdlType::Nullable(inner) => IdlType::Nullable(Box::new(inner.canonicalize_with(resolve_named)?)),
+      IdlType::Nullable(inner) => {
+        IdlType::Nullable(Box::new(inner.canonicalize_with(resolve_named)?))
+      }
       IdlType::Union(members) => {
         let mut out = Vec::with_capacity(members.len());
         for m in members {
@@ -60,7 +62,9 @@ impl IdlType {
       IdlType::FrozenArray(inner) => {
         IdlType::FrozenArray(Box::new(inner.canonicalize_with(resolve_named)?))
       }
-      IdlType::Promise(inner) => IdlType::Promise(Box::new(inner.canonicalize_with(resolve_named)?)),
+      IdlType::Promise(inner) => {
+        IdlType::Promise(Box::new(inner.canonicalize_with(resolve_named)?))
+      }
       IdlType::Record { key, value } => IdlType::Record {
         key: Box::new(key.canonicalize_with(resolve_named)?),
         value: Box::new(value.canonicalize_with(resolve_named)?),
@@ -154,7 +158,9 @@ pub enum SpecialOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterfaceMember {
-  Constructor { arguments: Vec<Argument> },
+  Constructor {
+    arguments: Vec<Argument>,
+  },
   Attribute {
     name: String,
     type_: IdlType,
@@ -181,5 +187,7 @@ pub enum InterfaceMember {
     key_type: Option<IdlType>,
     value_type: IdlType,
   },
-  Unparsed { raw: String },
+  Unparsed {
+    raw: String,
+  },
 }

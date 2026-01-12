@@ -198,4 +198,3 @@ fn display_list_vertical_skip_ink_wavy_preserves_wave_phase_across_segments() {
     "expected left side to be unpainted at y={sample_y} when wave phase is preserved"
   );
 }
-

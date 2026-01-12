@@ -164,11 +164,19 @@ fn tbody_break_inside_avoid_moves_group_to_next_column() {
     .filter(|t| t.text.contains("Before"))
     .map(|t| t.x)
     .fold(f32::INFINITY, f32::min);
-  assert!(before_x.is_finite(), "expected to find 'Before' text fragment");
+  assert!(
+    before_x.is_finite(),
+    "expected to find 'Before' text fragment"
+  );
 
-  let row_fragments: Vec<TextFragment> =
-    texts.into_iter().filter(|t| t.text.contains("Row")).collect();
-  assert!(!row_fragments.is_empty(), "expected to find row text fragments");
+  let row_fragments: Vec<TextFragment> = texts
+    .into_iter()
+    .filter(|t| t.text.contains("Row"))
+    .collect();
+  assert!(
+    !row_fragments.is_empty(),
+    "expected to find row text fragments"
+  );
 
   let row_positions: Vec<(String, f32, f32)> = row_fragments
     .iter()

@@ -40,7 +40,9 @@ fn style_set_property_and_get_property_value_roundtrip() {
   assert_eq!(doc.style_get_property_value(el, "cursor"), "pointer");
 
   // Property name normalization: camelCase is accepted.
-  doc.style_set_property(el, "backgroundColor", "red").unwrap();
+  doc
+    .style_set_property(el, "backgroundColor", "red")
+    .unwrap();
   assert_eq!(doc.style_get_property_value(el, "background-color"), "red");
 
   // Live reflection: overriding `style` attribute updates the accessor results.
@@ -68,7 +70,9 @@ fn reflected_idl_attributes_map_to_dom2_attributes() {
   assert_eq!(doc.element_class_name(script), "a b");
   assert_eq!(doc.get_attribute(script, "class").unwrap(), Some("a b"));
 
-  doc.set_element_src(script, "https://example.com/app.js").unwrap();
+  doc
+    .set_element_src(script, "https://example.com/app.js")
+    .unwrap();
   assert_eq!(doc.element_src(script), "https://example.com/app.js");
   assert_eq!(
     doc.get_attribute(script, "src").unwrap(),

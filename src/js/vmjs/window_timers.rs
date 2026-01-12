@@ -12,7 +12,8 @@ use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
 use crate::js::realm_module_loader::ModuleLoadOutcome;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
-  dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealmHost, WindowRealmUserData,
+  dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealmHost,
+  WindowRealmUserData,
 };
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,8 +25,8 @@ use vm_js::{
   PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, Value, Vm,
   VmError, VmHost, VmHostHooks, VmJobContext,
 };
-use webidl_vm_js::WebIdlBindingsHost;
 use webidl_vm_js::VmJsHostHooksPayload;
+use webidl_vm_js::WebIdlBindingsHost;
 pub(crate) const SET_TIMEOUT_STRING_HANDLER_ERROR: &str =
   "setTimeout does not currently support string handlers";
 pub(crate) const SET_TIMEOUT_NOT_CALLABLE_ERROR: &str = "setTimeout callback is not callable";
@@ -112,7 +113,11 @@ fn make_type_error_value(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Resul
   vm_js::new_type_error_object(scope, &intr, message)
 }
 
-fn make_syntax_error_value(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<Value, VmError> {
+fn make_syntax_error_value(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  message: &str,
+) -> Result<Value, VmError> {
   let intr = vm
     .intrinsics()
     .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
@@ -296,7 +301,12 @@ impl<'a> WindowRealmJobContext<'a> {
     host: &'a mut dyn VmHost,
     realm: Option<RealmId>,
   ) -> Self {
-    Self { vm, heap, host, realm }
+    Self {
+      vm,
+      heap,
+      host,
+      realm,
+    }
   }
 }
 
@@ -339,14 +349,9 @@ impl VmJobContext for WindowRealmJobContext<'_> {
       });
       vm.construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
     } else {
-      self.vm.construct_with_host_and_hooks(
-        host,
-        &mut scope,
-        host_hooks,
-        callee,
-        args,
-        new_target,
-      )
+      self
+        .vm
+        .construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
     }
   }
 
@@ -576,7 +581,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
     let (module_loader, module_loading_enabled) = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::InvariantViolation("window realm missing user data"));
+        return Err(VmError::InvariantViolation(
+          "window realm missing user data",
+        ));
       };
       (data.module_loader.clone(), data.module_graph.is_some())
     };
@@ -600,10 +607,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       return Ok(());
     }
 
-    let outcome =
-      module_loader
-        .borrow_mut()
-        .request_module(referrer, &module_request, &payload);
+    let outcome = module_loader
+      .borrow_mut()
+      .request_module(referrer, &module_request, &payload);
 
     match outcome {
       ModuleLoadOutcome::FinishNow(result) => {
@@ -634,10 +640,10 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       ModuleLoadOutcome::InFlight => {}
       ModuleLoadOutcome::StartFetch(key) => {
         let mut complete_fetch_synchronously = |hooks: &mut VmJsEventLoopHooks<Host>,
-                                               vm: &mut Vm,
-                                               scope: &mut Scope<'_>,
-                                               modules: &mut ModuleGraph,
-                                               key: crate::js::realm_module_loader::ModuleKey|
+                                                vm: &mut Vm,
+                                                scope: &mut Scope<'_>,
+                                                modules: &mut ModuleGraph,
+                                                key: crate::js::realm_module_loader::ModuleKey|
          -> Result<(), VmError> {
           let (waiters, result) = module_loader
             .borrow_mut()
@@ -707,79 +713,83 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
         let module_loader_for_task = module_loader.clone();
         let key_for_task = key.clone();
-        let enqueue_result = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-          hooks.set_event_loop(event_loop);
-          let (vm_host, window_realm) = host.vm_host_and_window_realm();
-          window_realm.reset_interrupt();
+        let enqueue_result =
+          event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+            let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+            hooks.set_event_loop(event_loop);
+            let (vm_host, window_realm) = host.vm_host_and_window_realm();
+            window_realm.reset_interrupt();
 
-          let budget = window_realm.vm_budget_now();
-          let (vm, heap) = window_realm.vm_and_heap_mut();
+            let budget = window_realm.vm_budget_now();
+            let (vm, heap) = window_realm.vm_and_heap_mut();
 
-          let mut vm = vm.push_budget(budget);
-          let tick_result = vm.tick();
+            let mut vm = vm.push_budget(budget);
+            let tick_result = vm.tick();
 
-          let result: Result<(), VmError> = tick_result.and_then(|_| {
-            let Some(modules_ptr) = vm.module_graph_ptr() else {
-              return Err(VmError::InvariantViolation(
-                "module loader requires an active module graph",
-              ));
-            };
-            // SAFETY: `WindowRealm::enable_module_loader` installs a stable pointer to a
-            // realm-owned boxed `ModuleGraph`, cleared during teardown.
-            let modules = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+            let result: Result<(), VmError> = tick_result.and_then(|_| {
+              let Some(modules_ptr) = vm.module_graph_ptr() else {
+                return Err(VmError::InvariantViolation(
+                  "module loader requires an active module graph",
+                ));
+              };
+              // SAFETY: `WindowRealm::enable_module_loader` installs a stable pointer to a
+              // realm-owned boxed `ModuleGraph`, cleared during teardown.
+              let modules = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
 
-            let (waiters, result) = module_loader_for_task
-              .borrow_mut()
-              .fetch_and_register(modules, key_for_task)
-              .ok_or(VmError::InvariantViolation(
-                "module loader missing inflight continuation",
-              ))?;
+              let (waiters, result) = module_loader_for_task
+                .borrow_mut()
+                .fetch_and_register(modules, key_for_task)
+                .ok_or(VmError::InvariantViolation(
+                  "module loader missing inflight continuation",
+                ))?;
 
-            let mut scope = heap.scope();
+              let mut scope = heap.scope();
 
-            let completion = match result {
-              Ok(id) => Ok(id),
-              Err(VmError::Syntax(diags)) => {
-                let message =
-                  vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
-                let value = make_syntax_error_value(&vm, &mut scope, &message)?;
-                Err(VmError::Throw(value))
+              let completion = match result {
+                Ok(id) => Ok(id),
+                Err(VmError::Syntax(diags)) => {
+                  let message =
+                    vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
+                  let value = make_syntax_error_value(&vm, &mut scope, &message)?;
+                  Err(VmError::Throw(value))
+                }
+                Err(VmError::TypeError(message)) => {
+                  let value = make_type_error_value(&vm, &mut scope, message)?;
+                  Err(VmError::Throw(value))
+                }
+                Err(other) => Err(other),
+              };
+
+              for waiter in waiters {
+                vm.finish_loading_imported_module_with_host_and_hooks(
+                  vm_host,
+                  &mut scope,
+                  modules,
+                  &mut hooks,
+                  waiter.referrer,
+                  waiter.request,
+                  waiter.payload,
+                  completion.clone(),
+                )?;
               }
-              Err(VmError::TypeError(message)) => {
-                let value = make_type_error_value(&vm, &mut scope, message)?;
-                Err(VmError::Throw(value))
-              }
-              Err(other) => Err(other),
-            };
+              Ok(())
+            });
 
-            for waiter in waiters {
-              vm.finish_loading_imported_module_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                modules,
-                &mut hooks,
-                waiter.referrer,
-                waiter.request,
-                waiter.payload,
-                completion.clone(),
-              )?;
+            if let Some(err) = hooks.finish(heap) {
+              return Err(err);
             }
-            Ok(())
+
+            result
+              .map_err(|err| vm_error_to_event_loop_error(heap, err))
+              .map(|_| ())
           });
-
-          if let Some(err) = hooks.finish(heap) {
-            return Err(err);
-          }
-
-          result
-            .map_err(|err| vm_error_to_event_loop_error(heap, err))
-            .map(|_| ())
-        });
 
         if let Err(_err) = enqueue_result {
           // Failed to enqueue the networking task; reject all waiters immediately.
-          let waiters = module_loader.borrow_mut().take_inflight(&key).unwrap_or_default();
+          let waiters = module_loader
+            .borrow_mut()
+            .take_inflight(&key)
+            .unwrap_or_default();
           let value = make_type_error_value(vm, scope, "failed to enqueue module fetch task")?;
           let completion = Err(VmError::Throw(value));
           for waiter in waiters {
@@ -808,7 +818,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
   ) -> Result<Vec<ImportMetaProperty>, VmError> {
     let module_loader = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::InvariantViolation("window realm missing user data"));
+        return Err(VmError::InvariantViolation(
+          "window realm missing user data",
+        ));
       };
       data.module_loader.clone()
     };
@@ -893,7 +905,8 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
     // Ensure we have a microtask checkpoint hook installed so we can dispatch events after the
     // microtask queue is drained (HTML "notify about rejected promises").
-    event_loop.set_microtask_checkpoint_hook(Some(promise_rejection_microtask_checkpoint_hook::<Host>));
+    event_loop
+      .set_microtask_checkpoint_hook(Some(promise_rejection_microtask_checkpoint_hook::<Host>));
 
     let cap = event_loop.queue_limits().max_pending_tasks;
     let tracker = &mut event_loop.promise_rejection_tracker;
@@ -998,11 +1011,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
           scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
         }
         let promise_key = alloc_key(&mut scope, "promise")?;
-        scope.define_property(
-          init_obj,
-          promise_key,
-          data_desc(Value::Object(promise_obj)),
-        )?;
+        scope.define_property(init_obj, promise_key, data_desc(Value::Object(promise_obj)))?;
         let reason_key = alloc_key(&mut scope, "reason")?;
         scope.define_property(init_obj, reason_key, data_desc(reason))?;
 
@@ -1016,36 +1025,44 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         )?;
         scope.push_root(promise_rejection_ctor)?;
 
-        let (event_value, needs_payload_define) =
-          if scope.heap().is_callable(promise_rejection_ctor).unwrap_or(false) {
-            (
-              vm.call_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                &mut hooks,
-                promise_rejection_ctor,
-                Value::Undefined,
-                &[Value::String(type_s), Value::Object(init_obj)],
-              )?,
-              false,
-            )
-          } else {
-            let event_ctor_key = alloc_key(&mut scope, "Event")?;
-            let event_ctor =
-              vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, event_ctor_key)?;
-            scope.push_root(event_ctor)?;
-            (
-              vm.call_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                &mut hooks,
-                event_ctor,
-                Value::Undefined,
-                &[Value::String(type_s), Value::Object(init_obj)],
-              )?,
-              true,
-            )
-          };
+        let (event_value, needs_payload_define) = if scope
+          .heap()
+          .is_callable(promise_rejection_ctor)
+          .unwrap_or(false)
+        {
+          (
+            vm.call_with_host_and_hooks(
+              vm_host,
+              &mut scope,
+              &mut hooks,
+              promise_rejection_ctor,
+              Value::Undefined,
+              &[Value::String(type_s), Value::Object(init_obj)],
+            )?,
+            false,
+          )
+        } else {
+          let event_ctor_key = alloc_key(&mut scope, "Event")?;
+          let event_ctor = vm.get_with_host_and_hooks(
+            vm_host,
+            &mut scope,
+            &mut hooks,
+            global_obj,
+            event_ctor_key,
+          )?;
+          scope.push_root(event_ctor)?;
+          (
+            vm.call_with_host_and_hooks(
+              vm_host,
+              &mut scope,
+              &mut hooks,
+              event_ctor,
+              Value::Undefined,
+              &[Value::String(type_s), Value::Object(init_obj)],
+            )?,
+            true,
+          )
+        };
 
         let Value::Object(event_obj) = event_value else {
           return Err(VmError::Unimplemented(
@@ -1055,11 +1072,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         scope.push_root(Value::Object(event_obj))?;
 
         if needs_payload_define {
-          scope.define_property(
-            event_obj,
-            reason_key,
-            read_only_data_desc(reason),
-          )?;
+          scope.define_property(event_obj, reason_key, read_only_data_desc(reason))?;
           scope.define_property(
             event_obj,
             promise_key,
@@ -1068,7 +1081,8 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         }
 
         let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
-        let dispatch = vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, dispatch_key)?;
+        let dispatch =
+          vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, dispatch_key)?;
         let _ = vm.call_with_host_and_hooks(
           vm_host,
           &mut scope,
@@ -1081,8 +1095,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         Ok(scope.heap().promise_is_handled(promise_obj)?)
       })();
 
-      handled_after_dispatch
-        .map_err(|err| vm_error_to_event_loop_error(heap, err))
+      handled_after_dispatch.map_err(|err| vm_error_to_event_loop_error(heap, err))
     })();
 
     let finish_err = hooks.finish(heap);
@@ -1168,7 +1181,7 @@ fn promise_rejection_microtask_checkpoint_hook<Host: WindowRealmHost + 'static>(
 // this API, we want compilation to fail immediately instead of silently reintroducing stale-handle
 // bugs.
 #[allow(dead_code)]
- mod vm_js_gc_safety_guard {
+mod vm_js_gc_safety_guard {
   // Keep this guard signature-based so it fails at compile time if the `vm-js` job API regresses.
   #[allow(clippy::type_complexity)]
   const _: () = {
@@ -1185,10 +1198,10 @@ fn promise_rejection_microtask_checkpoint_hook<Host: WindowRealmHost + 'static>(
       &mut dyn vm_js::VmJobContext,
       &mut dyn vm_js::VmHostHooks,
     ) -> vm_js::JobResult = vm_js::Job::run;
-     let _discard: fn(vm_js::Job, &mut dyn vm_js::VmJobContext) = vm_js::Job::discard;
-   };
- }
- 
+    let _discard: fn(vm_js::Job, &mut dyn vm_js::VmJobContext) = vm_js::Job::discard;
+  };
+}
+
 fn set_timeout_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1517,16 +1530,15 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
         let call_result: Result<(), VmError> = (|| {
           let mut scope = heap.scope();
           // HTML `queueMicrotask` invokes callbacks with an `undefined` callback-this value.
-          vm
-            .call_with_host_and_hooks(
-              vm_host,
-              &mut scope,
-              &mut hooks,
-              callback,
-              Value::Undefined,
-              &[],
-            )
-            .map(|_| ())
+          vm.call_with_host_and_hooks(
+            vm_host,
+            &mut scope,
+            &mut hooks,
+            callback,
+            Value::Undefined,
+            &[],
+          )
+          .map(|_| ())
         })();
         call_result
       });
@@ -1709,8 +1721,8 @@ mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
   use crate::js::event_loop::{EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, TaskSource};
-  use crate::js::JsExecutionOptions;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use crate::js::JsExecutionOptions;
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex, OnceLock};
@@ -1881,7 +1893,9 @@ mod tests {
 
   impl WindowRealmHost for Host {
     fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
-      let Host { host_ctx, window, .. } = self;
+      let Host {
+        host_ctx, window, ..
+      } = self;
       (host_ctx, window)
     }
 
@@ -2318,7 +2332,8 @@ mod tests {
         _ => Value::Number(0.0),
       };
       let clear_interval = get_prop(scope, global, "clearInterval");
-      let _ = vm.call_with_host_and_hooks(host, scope, hooks, clear_interval, Value::Undefined, &[id])?;
+      let _ =
+        vm.call_with_host_and_hooks(host, scope, hooks, clear_interval, Value::Undefined, &[id])?;
     }
 
     Ok(Value::Undefined)
@@ -2508,11 +2523,26 @@ mod tests {
       install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
       let mut scope = heap.scope();
       let global = realm.global_object();
-      set_prop(&mut scope, global, "__budget_fuel_is_some", Value::Bool(false));
-      set_prop(&mut scope, global, "__budget_deadline_is_some", Value::Bool(false));
-      set_prop(&mut scope, global, "__budget_fuel_value", Value::Number(-1.0));
+      set_prop(
+        &mut scope,
+        global,
+        "__budget_fuel_is_some",
+        Value::Bool(false),
+      );
+      set_prop(
+        &mut scope,
+        global,
+        "__budget_deadline_is_some",
+        Value::Bool(false),
+      );
+      set_prop(
+        &mut scope,
+        global,
+        "__budget_fuel_value",
+        Value::Number(-1.0),
+      );
     }
- 
+
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
       let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
       hooks.set_event_loop(event_loop);
@@ -2910,7 +2940,12 @@ mod tests {
       scope
         .push_root(Value::Object(check))
         .expect("push root __check_host_hooks");
-      set_prop(&mut scope, global, "__check_host_hooks", Value::Object(check));
+      set_prop(
+        &mut scope,
+        global,
+        "__check_host_hooks",
+        Value::Object(check),
+      );
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
@@ -2942,7 +2977,8 @@ mod tests {
   }
 
   #[test]
-  fn webidl_bindings_host_is_available_via_explicit_slot_for_hooks_new() -> crate::error::Result<()> {
+  fn webidl_bindings_host_is_available_via_explicit_slot_for_hooks_new() -> crate::error::Result<()>
+  {
     // This mirrors `BrowserTabJsExecutor` entrypoints which only have access to a `&mut dyn VmHost`
     // (the document) and therefore construct hooks via `VmJsEventLoopHooks::new(host_ctx)`.
     //
@@ -2970,7 +3006,12 @@ mod tests {
       scope
         .push_root(Value::Object(check))
         .expect("push root __check_host_hooks");
-      set_prop(&mut scope, global, "__check_host_hooks", Value::Object(check));
+      set_prop(
+        &mut scope,
+        global,
+        "__check_host_hooks",
+        Value::Object(check),
+      );
     }
 
     // Call the callback directly so we don't need an EventLoop turn; this is enough to validate
@@ -2991,8 +3032,15 @@ mod tests {
         let binding = get_prop(&mut scope, global, "__check_host_hooks");
         scope.push_root(binding).expect("push root binding");
 
-        vm.call_with_host_and_hooks(host_ctx, &mut scope, &mut hooks, binding, Value::Undefined, &[])
-          .map_err(|err| crate::error::Error::Other(err.to_string()))?;
+        vm.call_with_host_and_hooks(
+          host_ctx,
+          &mut scope,
+          &mut hooks,
+          binding,
+          Value::Undefined,
+          &[],
+        )
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
       }
       if let Some(err) = hooks.finish(heap) {
         return Err(err);
@@ -3004,7 +3052,8 @@ mod tests {
   }
 
   #[test]
-  fn webidl_bindings_host_is_available_via_hooks_slot_for_script_and_tasks() -> crate::error::Result<()> {
+  fn webidl_bindings_host_is_available_via_hooks_slot_for_script_and_tasks(
+  ) -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
     let mut host = Host::new();
@@ -3029,7 +3078,12 @@ mod tests {
       scope
         .push_root(Value::Object(check))
         .expect("push root __check_host_hooks");
-      set_prop(&mut scope, global, "__check_host_hooks", Value::Object(check));
+      set_prop(
+        &mut scope,
+        global,
+        "__check_host_hooks",
+        Value::Object(check),
+      );
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
@@ -3106,8 +3160,7 @@ mod tests {
   }
 
   #[test]
-  fn timer_and_promise_jobs_invoke_callbacks_with_embedder_vm_host(
-  ) -> crate::error::Result<()> {
+  fn timer_and_promise_jobs_invoke_callbacks_with_embedder_vm_host() -> crate::error::Result<()> {
     #[derive(Default)]
     struct CounterVmHost {
       count: usize,
@@ -3192,7 +3245,13 @@ mod tests {
       scope
         .push_root(Value::Object(global))
         .expect("push root global");
-      let cb = make_callback(vm, &mut scope, global, "__bump_counter", bump_counter_native);
+      let cb = make_callback(
+        vm,
+        &mut scope,
+        global,
+        "__bump_counter",
+        bump_counter_native,
+      );
       set_prop(&mut scope, global, "__bump_counter", Value::Object(cb));
     }
 
@@ -3332,7 +3391,8 @@ mod tests {
         let mut scope = heap.scope();
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
 
-        let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
+        let timeout_cb =
+          make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
         let next_cb = make_callback(vm, &mut scope, global, "next_cb", cb_record_next);
 
         vm.call_with_host_and_hooks(
@@ -3397,8 +3457,13 @@ mod tests {
         let mut scope = heap.scope();
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
 
-        let webidl_dispatch =
-          make_callback(vm, &mut scope, global, "__webidl_dispatch", cb_webidl_dispatch);
+        let webidl_dispatch = make_callback(
+          vm,
+          &mut scope,
+          global,
+          "__webidl_dispatch",
+          cb_webidl_dispatch,
+        );
         scope
           .push_root(Value::Object(webidl_dispatch))
           .expect("push root __webidl_dispatch");
@@ -3447,7 +3512,8 @@ mod tests {
   }
 
   #[test]
-  fn webidl_host_slot_available_in_script_promise_microtask_and_timeout() -> crate::error::Result<()> {
+  fn webidl_host_slot_available_in_script_promise_microtask_and_timeout() -> crate::error::Result<()>
+  {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
     let mut host = Host::new();
@@ -3458,7 +3524,13 @@ mod tests {
 
       let mut scope = heap.scope();
       let global = realm.global_object();
-      let webidl_dispatch = make_callback(vm, &mut scope, global, "__webidl_dispatch", cb_webidl_dispatch);
+      let webidl_dispatch = make_callback(
+        vm,
+        &mut scope,
+        global,
+        "__webidl_dispatch",
+        cb_webidl_dispatch,
+      );
       scope
         .push_root(Value::Object(webidl_dispatch))
         .expect("push root __webidl_dispatch");
@@ -3790,8 +3862,7 @@ mod tests {
     let rendered = vm_error_format::vm_error_to_string(host.window.heap_mut(), err);
     let first_line = rendered.lines().next().unwrap_or("");
     assert_eq!(
-      first_line,
-      "TypeError: setTimeout called without an active EventLoop",
+      first_line, "TypeError: setTimeout called without an active EventLoop",
       "unexpected error: {rendered:?}"
     );
     Ok(())
@@ -3882,7 +3953,13 @@ mod tests {
       {
         let mut scope = heap.scope();
         let queue_microtask = get_prop(&mut scope, global, "queueMicrotask");
-        let cb = make_callback(vm, &mut scope, global, "micro_cb", cb_record_this_is_undefined);
+        let cb = make_callback(
+          vm,
+          &mut scope,
+          global,
+          "micro_cb",
+          cb_record_this_is_undefined,
+        );
         vm.call_with_host_and_hooks(
           &mut host.host_ctx,
           &mut scope,
@@ -4032,7 +4109,8 @@ mod tests {
         let mut scope = heap.scope();
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
 
-        let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
+        let timeout_cb =
+          make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
 
         vm.call_with_host_and_hooks(
           &mut host.host_ctx,
@@ -4197,7 +4275,9 @@ mod tests {
     hooks.host_enqueue_promise_job(job1, None);
     hooks.host_enqueue_promise_job(job2, None);
 
-    let err = hooks.finish(host.window.heap_mut()).expect("expected enqueue error");
+    let err = hooks
+      .finish(host.window.heap_mut())
+      .expect("expected enqueue error");
     assert!(
       err.to_string().contains("max pending microtasks"),
       "unexpected error: {err}"
@@ -4229,7 +4309,9 @@ mod tests {
     let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(&mut host);
     hooks.set_event_loop(&mut event_loop);
     hooks.host_enqueue_promise_job(
-      vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Err(vm_js::VmError::TypeError("boom"))),
+      vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
+        Err(vm_js::VmError::TypeError("boom"))
+      }),
       None,
     );
     assert!(hooks.finish(host.window.heap_mut()).is_none());
@@ -4269,12 +4351,7 @@ mod tests {
     let previous_realm = host.window.vm().current_realm();
 
     let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
-      ctx.call(
-        hooks,
-        Value::Object(callback_func),
-        Value::Undefined,
-        &[],
-      )?;
+      ctx.call(hooks, Value::Object(callback_func), Value::Undefined, &[])?;
       Ok(())
     });
     {
@@ -4316,7 +4393,7 @@ mod tests {
         (host_ctx, window)
       }
     }
- 
+
     impl WebIdlBindingsHost for GcHost {
       fn call_operation(
         &mut self,
@@ -4330,7 +4407,7 @@ mod tests {
       ) -> Result<Value, VmError> {
         Ok(Value::Undefined)
       }
- 
+
       fn call_constructor(
         &mut self,
         _vm: &mut Vm,
@@ -4372,9 +4449,7 @@ mod tests {
 
       let callback = {
         let name = scope.alloc_string("onFulfilled").unwrap();
-        scope
-          .alloc_native_function(call_id, None, name, 1)
-          .unwrap()
+        scope.alloc_native_function(call_id, None, name, 1).unwrap()
       };
       scope.push_root(Value::Object(callback)).unwrap();
       callback_obj = Some(callback);

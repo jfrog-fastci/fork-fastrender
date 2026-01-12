@@ -57,4 +57,3 @@ fn image_percent_height_with_missing_resource_uses_alt_intrinsic_size() {
     .join()
     .expect("join");
 }
-

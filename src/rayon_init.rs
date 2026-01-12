@@ -38,4 +38,3 @@ pub(crate) fn ensure_global_rayon_pool() {
       .build_global();
   });
 }
-

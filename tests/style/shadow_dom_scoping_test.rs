@@ -151,11 +151,7 @@ fn property_registrations_are_tree_scoped() {
 
   let outside = find_styled_by_id(&styled, "outside").expect("outside");
   assert!(
-    outside
-      .styles
-      .custom_property_registry
-      .get("--x")
-      .is_none(),
+    outside.styles.custom_property_registry.get("--x").is_none(),
     "shadow-root registrations must not leak into the document scope"
   );
   let outside_value = outside
@@ -219,7 +215,11 @@ fn position_try_rules_are_tree_scoped() {
 
   let outside = find_styled_by_id(&styled, "outside").expect("outside");
   assert!(
-    outside.styles.position_try_registry.get("--shadow").is_none(),
+    outside
+      .styles
+      .position_try_registry
+      .get("--shadow")
+      .is_none(),
     "shadow-root @position-try rules must not leak into the document scope"
   );
   let doc = outside

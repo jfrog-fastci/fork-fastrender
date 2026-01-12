@@ -92,10 +92,7 @@ fn for_each_attribute<'a>(
     }
 
     let name_start = i;
-    while i < bytes.len()
-      && !bytes[i].is_ascii_whitespace()
-      && bytes[i] != b'='
-      && bytes[i] != b'>'
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>'
     {
       i += 1;
     }
@@ -117,9 +114,7 @@ fn for_each_attribute<'a>(
         i += 1;
       }
 
-      if i + 1 < bytes.len()
-        && bytes[i] == b'\\'
-        && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
+      if i + 1 < bytes.len() && bytes[i] == b'\\' && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
       {
         let quote = bytes[i + 1];
         i += 2;
@@ -253,21 +248,22 @@ pub fn discover_html_asset_urls_with_srcset_limit(
   };
   let mut push_document =
     |out: &mut HtmlAssetUrls, seen_documents: &mut HashSet<String>, raw: &str| {
-    if out.documents.len() >= MAX_DISCOVERED_DOCUMENTS {
-      return;
-    }
-    if let Some(resolved) = resolve_href(base_url, raw) {
-      if seen_documents.insert(resolved.clone()) {
-        out.documents.push(resolved);
+      if out.documents.len() >= MAX_DISCOVERED_DOCUMENTS {
+        return;
       }
-    }
-  };
+      if let Some(resolved) = resolve_href(base_url, raw) {
+        if seen_documents.insert(resolved.clone()) {
+          out.documents.push(resolved);
+        }
+      }
+    };
 
   let mut template_depth: usize = 0;
   let mut i: usize = 0;
 
   while let Some(rel) = memchr(b'<', &bytes[i..]) {
-    if out.images.len() >= MAX_DISCOVERED_IMAGES && out.documents.len() >= MAX_DISCOVERED_DOCUMENTS {
+    if out.images.len() >= MAX_DISCOVERED_IMAGES && out.documents.len() >= MAX_DISCOVERED_DOCUMENTS
+    {
       break;
     }
 
@@ -310,7 +306,8 @@ pub fn discover_html_asset_urls_with_srcset_limit(
       break;
     };
 
-    let Some((is_end, name_start, name_end)) = super::parse_tag_name_range(bytes, tag_start, tag_end)
+    let Some((is_end, name_start, name_end)) =
+      super::parse_tag_name_range(bytes, tag_start, tag_end)
     else {
       i = tag_start + 1;
       continue;
@@ -431,8 +428,10 @@ pub fn discover_html_asset_urls_with_srcset_limit(
               push_image(&mut out, &mut seen_images, raw);
             }
             Some(mime)
-              if matches!(mime, "text/html" | "application/xhtml+xml" | "application/html")
-                || mime.contains("+html") =>
+              if matches!(
+                mime,
+                "text/html" | "application/xhtml+xml" | "application/html"
+              ) || mime.contains("+html") =>
             {
               push_document(&mut out, &mut seen_documents, raw);
             }
@@ -657,7 +656,10 @@ mod tests {
 
     let html = r#"<link rel="preload" as=" image " href="good.png">"#;
     let out = discover_html_asset_urls(html, "https://example.com/base/");
-    assert_eq!(out.images, vec!["https://example.com/base/good.png".to_string()]);
+    assert_eq!(
+      out.images,
+      vec!["https://example.com/base/good.png".to_string()]
+    );
 
     let html = format!(r#"<link rel="shortcut{nbsp}icon" href="bad.ico">"#);
     let out = discover_html_asset_urls(&html, "https://example.com/base/");

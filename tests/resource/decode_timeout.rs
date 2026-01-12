@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::test_support;
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::error::{Error, RenderError};
 use fastrender::render_control::{with_deadline, RenderDeadline};
 use fastrender::resource::HttpFetcher;
 use fastrender::ResourceFetcher;
-use crate::test_support;
 use test_support::net::{net_test_lock, try_bind_localhost};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);

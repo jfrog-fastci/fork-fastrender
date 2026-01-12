@@ -1,8 +1,8 @@
 use fastrender::api::{FastRender, FastRenderConfig};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::RenderOptions;
-use tiny_skia::Pixmap;
 use std::collections::HashMap;
+use tiny_skia::Pixmap;
 
 fn bounding_box_for_color<F>(pixmap: &Pixmap, predicate: F) -> Option<(u32, u32, u32, u32)>
 where
@@ -190,9 +190,8 @@ fn meta_viewport_width_or_height_derived_zoom_preserves_output_dimensions() {
   ];
 
   for (label, meta) in cases {
-    let html = format!(
-      r#"<html><head><meta name="viewport" content="{meta}"></head><body></body></html>"#
-    );
+    let html =
+      format!(r#"<html><head><meta name="viewport" content="{meta}"></head><body></body></html>"#);
     let options = RenderOptions::new()
       .with_viewport(900, 600)
       .with_runtime_toggles(runtime_toggles.clone());

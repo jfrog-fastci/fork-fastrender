@@ -2181,7 +2181,11 @@ media = "print"
     assert_eq!(entries[0].media_type, MediaType::Print);
 
     // `.ini` sidecars override the manifest.
-    std::fs::write(temp.path().join("test.html.ini"), "[test.html]\nmedia: screen\n").unwrap();
+    std::fs::write(
+      temp.path().join("test.html.ini"),
+      "[test.html]\nmedia: screen\n",
+    )
+    .unwrap();
 
     let entries = runner
       .load_manifest(&manifest_path, temp.path())

@@ -1,5 +1,5 @@
-use crate::error::{Error, RenderStage, Result};
 use crate::debug::trace::TraceHandle;
+use crate::error::{Error, RenderStage, Result};
 use crate::render_control::{self, record_stage, StageGuard, StageHeartbeat};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
@@ -199,8 +199,7 @@ pub(crate) struct PromiseRejectionTrackerState {
   pub(crate) outstanding_rejected: HashSet<PromiseHandle>,
 }
 
-type TimerCallback<Host> =
-  Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
+type TimerCallback<Host> = Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
 
 type AnimationFrameCallback<Host> =
   Box<dyn FnMut(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static>;
@@ -483,7 +482,9 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static,
   {
-    if self.animation_frame_callbacks.len() >= self.queue_limits.max_pending_animation_frame_callbacks {
+    if self.animation_frame_callbacks.len()
+      >= self.queue_limits.max_pending_animation_frame_callbacks
+    {
       return Err(Error::Other(format!(
         "EventLoop exceeded max pending requestAnimationFrame callbacks (limit={})",
         self.queue_limits.max_pending_animation_frame_callbacks
@@ -504,15 +505,15 @@ impl<Host: 'static> EventLoop<Host> {
       }
     };
 
-    let mut maybe = Some(
-      Box::new(callback) as Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()>>,
-    );
+    let mut maybe =
+      Some(Box::new(callback)
+        as Box<
+          dyn FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()>,
+        >);
     let callback: AnimationFrameCallback<Host> = Box::new(move |host, event_loop, timestamp| {
-      let runnable = maybe
-        .take()
-        .ok_or_else(|| {
-          Error::Other("requestAnimationFrame callback invoked more than once".to_string())
-        })?;
+      let runnable = maybe.take().ok_or_else(|| {
+        Error::Other("requestAnimationFrame callback invoked more than once".to_string())
+      })?;
       runnable(host, event_loop, timestamp)
     });
 
@@ -950,7 +951,8 @@ impl<Host: 'static> EventLoop<Host> {
       }
 
       if !self.microtask_queue.is_empty() {
-        self.perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error)?;
+        self
+          .perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error)?;
         continue;
       }
 
@@ -982,7 +984,8 @@ impl<Host: 'static> EventLoop<Host> {
       }
 
       if !self.microtask_queue.is_empty() {
-        self.perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error)?;
+        self
+          .perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error)?;
         hook(host, self).map_err(RunStepError::Error)?;
         continue;
       }
@@ -1325,7 +1328,9 @@ impl<Host: 'static> EventLoop<Host> {
     if executed == 0 {
       Ok(RunAnimationFrameOutcome::Idle)
     } else {
-      Ok(RunAnimationFrameOutcome::Ran { callbacks: executed })
+      Ok(RunAnimationFrameOutcome::Ran {
+        callbacks: executed,
+      })
     }
   }
 
@@ -1342,8 +1347,8 @@ impl<Host: 'static> EventLoop<Host> {
     // Compact opportunistically when the heap grows noticeably larger than the set of live timers.
     let live = self.timers.len();
     let heap_len = self.timer_queue.len();
-    let should_compact = heap_len > self.queue_limits.max_pending_timers
-      || heap_len > live.saturating_mul(2).max(64);
+    let should_compact =
+      heap_len > self.queue_limits.max_pending_timers || heap_len > live.saturating_mul(2).max(64);
     if !should_compact {
       return;
     }
@@ -1623,7 +1628,11 @@ pub struct RunState {
 }
 
 impl RunState {
-  pub fn new(limits: RunLimits, clock: Arc<dyn Clock>, default_deadline_stage: RenderStage) -> Self {
+  pub fn new(
+    limits: RunLimits,
+    clock: Arc<dyn Clock>,
+    default_deadline_stage: RenderStage,
+  ) -> Self {
     Self {
       limits,
       started_at: clock.now(),
@@ -1773,7 +1782,10 @@ mod tests {
     }
 
     assert_eq!(
-      stages.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+      stages
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_slice(),
       &[StageHeartbeat::Script]
     );
     Ok(())
@@ -1800,7 +1812,10 @@ mod tests {
     }
 
     assert_eq!(
-      stages.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+      stages
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_slice(),
       &[StageHeartbeat::Script]
     );
     Ok(())
@@ -1856,11 +1871,15 @@ mod tests {
 
     let mut hooks = 0usize;
     assert_eq!(
-      event_loop.run_until_idle_with_hook(&mut host, RunLimits::unbounded(), |host, _event_loop| {
-        hooks += 1;
-        host.log.push("hook");
-        Ok(())
-      })?,
+      event_loop.run_until_idle_with_hook(
+        &mut host,
+        RunLimits::unbounded(),
+        |host, _event_loop| {
+          hooks += 1;
+          host.log.push("hook");
+          Ok(())
+        }
+      )?,
       RunUntilIdleOutcome::Idle
     );
     assert_eq!(hooks, 2);
@@ -2838,17 +2857,25 @@ mod tests {
       }
 
       fn set(&self, now: Duration) {
-        *self.now.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = now;
+        *self
+          .now
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner()) = now;
       }
     }
 
     impl Clock for MutableClock {
       fn now(&self) -> Duration {
-        *self.now.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        *self
+          .now
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
       }
     }
 
-    let clock = Arc::new(MutableClock::new(Duration::MAX.saturating_sub(Duration::from_secs(1))));
+    let clock = Arc::new(MutableClock::new(
+      Duration::MAX.saturating_sub(Duration::from_secs(1)),
+    ));
     let clock_for_loop: Arc<dyn Clock> = clock.clone();
     let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
     let mut host = TestHost::default();

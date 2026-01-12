@@ -390,7 +390,11 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
     // are finite; propagating non-finite values quickly turns subsequent computations into NaN/∞.
     let basis = if basis.is_finite() { basis } else { 0.0 };
     let resolved = self.resolve_calc_value(val, basis);
-    if resolved.is_finite() { resolved } else { 0.0 }
+    if resolved.is_finite() {
+      resolved
+    } else {
+      0.0
+    }
   }
 
   /// Alias to `resolve_calc_value` with a shorter function name

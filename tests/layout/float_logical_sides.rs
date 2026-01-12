@@ -32,7 +32,11 @@ fn float_block(float: Float) -> BoxNode {
   BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
 }
 
-fn float_block_with_writing_mode(float: Float, writing_mode: WritingMode, direction: Direction) -> BoxNode {
+fn float_block_with_writing_mode(
+  float: Float,
+  writing_mode: WritingMode,
+  direction: Direction,
+) -> BoxNode {
   let mut style = block_style();
   style.float = float;
   style.clear = Clear::Both;
@@ -50,13 +54,19 @@ fn float_block_with_writing_mode(float: Float, writing_mode: WritingMode, direct
   BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
 }
 
-fn find_by_style<'a>(node: &'a FragmentNode, predicate: &impl Fn(&ComputedStyle) -> bool) -> Option<&'a FragmentNode> {
+fn find_by_style<'a>(
+  node: &'a FragmentNode,
+  predicate: &impl Fn(&ComputedStyle) -> bool,
+) -> Option<&'a FragmentNode> {
   if let Some(style) = node.style.as_ref() {
     if predicate(style) {
       return Some(node);
     }
   }
-  node.children.iter().find_map(|child| find_by_style(child, predicate))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_by_style(child, predicate))
 }
 
 #[test]
@@ -140,7 +150,11 @@ fn rtl_clear_inline_start_clears_inline_start_floats() {
   block_style.height_keyword = None;
   let clear_box = BoxNode::new_block(Arc::new(block_style), FormattingContextType::Block, vec![]);
 
-  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![float_box, clear_box],
+  );
   let tree = BoxTree::new(root);
 
   let constraints =
@@ -179,7 +193,11 @@ fn rtl_clear_left_does_not_clear_inline_start_floats() {
   block_style.height_keyword = None;
   let clear_box = BoxNode::new_block(Arc::new(block_style), FormattingContextType::Block, vec![]);
 
-  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![float_box, clear_box],
+  );
   let tree = BoxTree::new(root);
 
   let constraints =
@@ -535,7 +553,11 @@ fn vertical_writing_mode_clear_left_clears_left_floats_in_rtl() {
   clear_style.height_keyword = None;
   let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
 
-  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![float_box, clear_box],
+  );
   let tree = BoxTree::new(root);
   let constraints = LayoutConstraints::definite(200.0, 200.0);
 
@@ -599,7 +621,11 @@ fn vertical_writing_mode_clear_left_does_not_clear_right_floats_in_rtl() {
   clear_style.height_keyword = None;
   let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
 
-  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![float_box, clear_box],
+  );
   let tree = BoxTree::new(root);
   let constraints = LayoutConstraints::definite(200.0, 200.0);
 
@@ -658,7 +684,11 @@ fn vertical_writing_mode_clear_right_clears_right_floats_in_rtl() {
   clear_style.height_keyword = None;
   let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
 
-  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![float_box, clear_box],
+  );
   let tree = BoxTree::new(root);
   let constraints = LayoutConstraints::definite(200.0, 200.0);
 
@@ -722,7 +752,11 @@ fn vertical_writing_mode_clear_right_does_not_clear_left_floats_in_rtl() {
   clear_style.height_keyword = None;
   let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
 
-  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![float_box, clear_box],
+  );
   let tree = BoxTree::new(root);
   let constraints = LayoutConstraints::definite(200.0, 200.0);
 
@@ -795,7 +829,8 @@ fn vertical_writing_mode_clear_inline_end_clears_inline_end_floats() {
 
   let float_inline_end =
     find_by_style(&fragment, &|s| s.float == Float::InlineEnd).expect("float:inline-end");
-  let cleared = find_by_style(&fragment, &|s| s.clear == Clear::InlineEnd).expect("clear:inline-end");
+  let cleared =
+    find_by_style(&fragment, &|s| s.clear == Clear::InlineEnd).expect("clear:inline-end");
 
   // In vertical-rl, the block axis is horizontal and progresses right-to-left. Clearance therefore
   // shifts the cleared block leftward by the float's block-size (represented as the float's
@@ -865,7 +900,8 @@ fn vertical_writing_mode_clear_inline_end_does_not_clear_inline_start_floats() {
     .layout(&tree.root, &constraints)
     .expect("layout");
 
-  let cleared = find_by_style(&fragment, &|s| s.clear == Clear::InlineEnd).expect("clear:inline-end");
+  let cleared =
+    find_by_style(&fragment, &|s| s.clear == Clear::InlineEnd).expect("clear:inline-end");
 
   let container_width = fragment.bounds.width();
   let cleared_block_size = cleared.bounds.width();

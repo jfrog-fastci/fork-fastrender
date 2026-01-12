@@ -12,7 +12,11 @@ pub(crate) fn apply_alignment_fallback(
   mut is_safe: bool,
   start_end_axis_positive: bool,
 ) -> AlignContent {
-  let free_space = if free_space.is_finite() { free_space } else { 0.0 };
+  let free_space = if free_space.is_finite() {
+    free_space
+  } else {
+    0.0
+  };
 
   // Fallback occurs in two cases:
 
@@ -119,7 +123,11 @@ pub(crate) fn compute_alignment_offset(
       }
   };
 
-  if offset.is_finite() { offset } else { 0.0 }
+  if offset.is_finite() {
+    offset
+  } else {
+    0.0
+  }
 }
 
 #[cfg(test)]
@@ -182,14 +190,7 @@ mod tests {
 
   #[test]
   fn compute_alignment_offset_nan_free_space_is_finite() {
-    let offset = compute_alignment_offset(
-      f32::NAN,
-      3,
-      5.0,
-      AlignContent::Center,
-      false,
-      true,
-    );
+    let offset = compute_alignment_offset(f32::NAN, 3, 5.0, AlignContent::Center, false, true);
     assert!(offset.is_finite());
   }
 
@@ -267,12 +268,10 @@ mod tests {
     let is_safe = false;
     let mode = AlignContent::SpaceBetween;
 
-    let fallback_start_min =
-      apply_alignment_fallback(free_space, num_items, mode, is_safe, true);
+    let fallback_start_min = apply_alignment_fallback(free_space, num_items, mode, is_safe, true);
     assert_eq!(fallback_start_min, AlignContent::Start);
 
-    let fallback_start_max =
-      apply_alignment_fallback(free_space, num_items, mode, is_safe, false);
+    let fallback_start_max = apply_alignment_fallback(free_space, num_items, mode, is_safe, false);
     assert_eq!(fallback_start_max, AlignContent::End);
   }
 }

@@ -76,7 +76,9 @@ fn placeholder_style_from_form_control_kind_is_used() {
     "expected form control placeholder to emit at least one text item"
   );
   assert!(
-    text_items.iter().any(|text| text.color.r > 200 && text.color.g < 50),
+    text_items
+      .iter()
+      .any(|text| text.color.r > 200 && text.color.g < 50),
     "expected placeholder to use ::placeholder color from FormControlKind (got colors: {:?})",
     text_items.iter().map(|text| text.color).collect::<Vec<_>>()
   );

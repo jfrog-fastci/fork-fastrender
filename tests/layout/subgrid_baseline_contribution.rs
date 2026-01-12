@@ -8,9 +8,9 @@ use fastrender::style::types::LineHeight;
 use fastrender::style::values::Length;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
+use fastrender::FormattingContextType;
 use fastrender::FragmentContent;
 use fastrender::FragmentNode;
-use fastrender::FormattingContextType;
 use std::sync::Arc;
 
 fn assert_approx(actual: f32, expected: f32, label: &str) {
@@ -115,14 +115,17 @@ fn baseline_aligned_subgrid_items_contribute_to_parent_row_sizing() {
     vec![inner_large, inner_small],
   );
 
-  let grid =
-    BoxNode::new_block(parent_style, FormattingContextType::Grid, vec![subgrid]);
+  let grid = BoxNode::new_block(parent_style, FormattingContextType::Grid, vec![subgrid]);
 
   let fragment = fc
     .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
     .expect("layout succeeds");
 
-  assert_eq!(fragment.children.len(), 1, "grid should have one child (the subgrid)");
+  assert_eq!(
+    fragment.children.len(),
+    1,
+    "grid should have one child (the subgrid)"
+  );
   let subgrid_fragment = &fragment.children[0];
   assert_eq!(
     subgrid_fragment.children.len(),
@@ -133,8 +136,16 @@ fn baseline_aligned_subgrid_items_contribute_to_parent_row_sizing() {
   let b = &subgrid_fragment.children[1];
 
   let expected_height = expected_baseline_track_size([a, b]);
-  assert_approx(fragment.bounds.height(), expected_height, "parent row height");
-  assert_approx(subgrid_fragment.bounds.height(), expected_height, "subgrid height");
+  assert_approx(
+    fragment.bounds.height(),
+    expected_height,
+    "parent row height",
+  );
+  assert_approx(
+    subgrid_fragment.bounds.height(),
+    expected_height,
+    "subgrid height",
+  );
 
   let max_item_height = a.bounds.height().max(b.bounds.height());
   assert!(

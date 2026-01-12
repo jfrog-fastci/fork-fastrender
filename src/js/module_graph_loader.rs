@@ -171,9 +171,11 @@ mod tests {
 
   impl ModuleFetcher for MapFetcher {
     fn fetch(&mut self, specifier: &str) -> Result<FetchedModule> {
-      self.modules.get(specifier).cloned().ok_or_else(|| {
-        Error::Other(format!("no module registered for specifier={specifier}"))
-      })
+      self
+        .modules
+        .get(specifier)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("no module registered for specifier={specifier}")))
     }
   }
 
@@ -236,4 +238,3 @@ mod tests {
     assert!(msg.contains("max_module_graph_depth"), "msg={msg}");
   }
 }
-

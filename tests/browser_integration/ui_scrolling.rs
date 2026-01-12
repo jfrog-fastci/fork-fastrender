@@ -19,7 +19,10 @@ where
     let remaining = timeout
       .checked_sub(start.elapsed())
       .unwrap_or(Duration::from_secs(0));
-    assert!(remaining > Duration::ZERO, "timed out waiting for worker message");
+    assert!(
+      remaining > Duration::ZERO,
+      "timed out waiting for worker message"
+    );
     let msg = rx
       .recv_timeout(remaining)
       .unwrap_or_else(|_| panic!("timed out waiting for worker message"));
@@ -33,7 +36,11 @@ fn drain_worker(rx: &Receiver<WorkerToUi>) {
   while rx.try_recv().is_ok() {}
 }
 
-fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
+fn spawn_worker() -> (
+  Sender<UiToWorker>,
+  Receiver<WorkerToUi>,
+  std::thread::JoinHandle<()>,
+) {
   let handle = fastrender::ui::spawn_browser_worker_with_factory(support::deterministic_factory())
     .expect("spawn browser worker");
   (handle.tx, handle.rx, handle.join)
@@ -65,22 +72,20 @@ fn scroll_snap_updates_viewport_scroll_state() {
 
   let (ui_tx, worker_rx, handle) = spawn_worker();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, Some(url)))
-    .unwrap();
+  ui_tx.send(create_tab_msg(tab_id, Some(url))).unwrap();
   ui_tx.send(UiToWorker::SetActiveTab { tab_id }).unwrap();
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 100), 1.0))
     .unwrap();
 
-  let _ = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { tab_id: t, .. } if *t == tab_id)
-  });
+  let _ = wait_for_message(
+    &worker_rx,
+    DEFAULT_TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::FrameReady { tab_id: t, .. } if *t == tab_id),
+  );
   drain_worker(&worker_rx);
 
-  ui_tx
-    .send(scroll_msg(tab_id, (0.0, 60.0), None))
-    .unwrap();
+  ui_tx.send(scroll_msg(tab_id, (0.0, 60.0), None)).unwrap();
 
   let msg = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::ScrollStateUpdated { tab_id: t, scroll } if *t == tab_id => scroll.viewport.y > 0.0,
@@ -158,17 +163,17 @@ fn element_scroll_at_pointer_updates_element_scroll_state() {
 
   let (ui_tx, worker_rx, handle) = spawn_worker();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, Some(url)))
-    .unwrap();
+  ui_tx.send(create_tab_msg(tab_id, Some(url))).unwrap();
   ui_tx.send(UiToWorker::SetActiveTab { tab_id }).unwrap();
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 200), 1.0))
     .unwrap();
 
-  let _ = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { tab_id: t, .. } if *t == tab_id)
-  });
+  let _ = wait_for_message(
+    &worker_rx,
+    DEFAULT_TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::FrameReady { tab_id: t, .. } if *t == tab_id),
+  );
   drain_worker(&worker_rx);
 
   ui_tx

@@ -39,18 +39,17 @@ fn collect_content_item(
 ) {
   match item {
     ContentItem::String(s) => insert_text_codepoints(seen, s),
-    ContentItem::Attr {
-      name,
-      fallback,
-      ..
-    } => {
+    ContentItem::Attr { name, fallback, .. } => {
       if let Some(value) = node.get_attribute_ref(name) {
         insert_text_codepoints(seen, value);
       } else if let Some(fallback) = fallback {
         insert_text_codepoints(seen, fallback);
       }
     }
-    ContentItem::OpenQuote | ContentItem::CloseQuote | ContentItem::NoOpenQuote | ContentItem::NoCloseQuote => {
+    ContentItem::OpenQuote
+    | ContentItem::CloseQuote
+    | ContentItem::NoOpenQuote
+    | ContentItem::NoCloseQuote => {
       // Quote characters can be injected without appearing in the DOM text.
       for (open, close) in quotes {
         insert_text_codepoints(seen, open);
@@ -65,7 +64,11 @@ fn collect_content_item(
   }
 }
 
-fn collect_content_value(seen: &mut FxHashSet<u32>, node: &DomNode, styles: &crate::style::ComputedStyle) {
+fn collect_content_value(
+  seen: &mut FxHashSet<u32>,
+  node: &DomNode,
+  styles: &crate::style::ComputedStyle,
+) {
   let ContentValue::Items(items) = &styles.content_value else {
     return;
   };
@@ -151,10 +154,9 @@ mod tests {
   #[test]
   fn includes_generated_content_from_custom_property_var() {
     let dom = crate::dom::parse_html("<html><body><i class=\"fa\"></i></body></html>").unwrap();
-    let sheet = crate::css::parser::parse_stylesheet(
-      r#".fa{--fa:"\f04c";}.fa::before{content:var(--fa);}"#,
-    )
-    .unwrap();
+    let sheet =
+      crate::css::parser::parse_stylesheet(r#".fa{--fa:"\f04c";}.fa::before{content:var(--fa);}"#)
+        .unwrap();
     let styled = crate::style::cascade::apply_styles(&dom, &sheet);
 
     let codepoints = collect_used_codepoints(&styled).unwrap();

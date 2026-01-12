@@ -72,7 +72,11 @@ fn font_relative_units_in_font_size_and_line_height_resolve() {
   let expected_line_height = expected_font_size * 0.7;
   match &child.styles.line_height {
     LineHeight::Length(len) => {
-      assert_eq!(len.unit, LengthUnit::Px, "expected line-height to resolve to px");
+      assert_eq!(
+        len.unit,
+        LengthUnit::Px,
+        "expected line-height to resolve to px"
+      );
       assert!(
         (len.value - expected_line_height).abs() < 1e-3,
         "expected line-height ~{expected_line_height}px, got {}",
@@ -82,4 +86,3 @@ fn font_relative_units_in_font_size_and_line_height_resolve() {
     other => panic!("expected line-height length, got {other:?}"),
   }
 }
-

@@ -1,9 +1,13 @@
 use fastrender::dom2::NodeId;
 use fastrender::js::{Clock, EventLoop, RunLimits, RunUntilIdleOutcome, VirtualClock};
 use fastrender::resource::{
-  origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher,
+  origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
+  ResourceFetcher,
 };
-use fastrender::{BrowserTab, BrowserTabHost, Error, RenderOptions, Result, RunUntilStableOutcome, VmJsBrowserTabExecutor};
+use fastrender::{
+  BrowserTab, BrowserTabHost, Error, RenderOptions, Result, RunUntilStableOutcome,
+  VmJsBrowserTabExecutor,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -36,7 +40,11 @@ struct StubFetcher {
 
 impl StubFetcher {
   fn with_response(mut self, url: &str, resource: FetchedResource) -> Self {
-    self.responses.get_mut().unwrap().insert(url.to_string(), resource);
+    self
+      .responses
+      .get_mut()
+      .unwrap()
+      .insert(url.to_string(), resource);
     self
   }
 
@@ -119,8 +127,12 @@ fn browser_tab_vmjs_executes_scripts_microtasks_timers_and_rerenders() -> Result
   let clock_for_loop: Arc<dyn Clock> = clock.clone();
   let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock_for_loop);
 
-  let mut tab =
-    BrowserTab::from_html_with_event_loop(html, options, VmJsBrowserTabExecutor::default(), event_loop)?;
+  let mut tab = BrowserTab::from_html_with_event_loop(
+    html,
+    options,
+    VmJsBrowserTabExecutor::default(),
+    event_loop,
+  )?;
 
   let frame_a = tab.render_frame()?;
   assert_eq!(rgba_at(&frame_a, 32, 32), [255, 0, 0, 255]);
@@ -135,13 +147,19 @@ fn browser_tab_vmjs_executes_scripts_microtasks_timers_and_rerenders() -> Result
 
   // The parser-inserted script should have run a microtask checkpoint after executing, so the
   // `queueMicrotask` callback must run before any timer tasks.
-  assert_eq!(get_attr(tab.dom(), box_id, "data-order")?.as_deref(), Some("script,microtask"));
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-order")?.as_deref(),
+    Some("script,microtask")
+  );
 
   assert_eq!(
     tab.run_event_loop_until_idle(RunLimits::unbounded())?,
     RunUntilIdleOutcome::Idle
   );
-  assert_eq!(get_attr(tab.dom(), box_id, "data-order")?.as_deref(), Some("script,microtask"));
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-order")?.as_deref(),
+    Some("script,microtask")
+  );
   assert_eq!(get_attr(tab.dom(), box_id, "class")?.as_deref(), Some("a"));
   // Parsing completion queues DOMContentLoaded/load lifecycle tasks. They can change
   // `document.readyState`, which FastRender currently treats as a full DOM invalidation. Drain any
@@ -264,8 +282,12 @@ fn browser_tab_vmjs_request_animation_frame_runs_and_triggers_rerender() -> Resu
   let clock_for_loop: Arc<dyn Clock> = clock.clone();
   let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock_for_loop);
 
-  let mut tab =
-    BrowserTab::from_html_with_event_loop(html, options, VmJsBrowserTabExecutor::default(), event_loop)?;
+  let mut tab = BrowserTab::from_html_with_event_loop(
+    html,
+    options,
+    VmJsBrowserTabExecutor::default(),
+    event_loop,
+  )?;
 
   let frame_a = tab.render_frame()?;
   assert_eq!(rgba_at(&frame_a, 32, 32), [255, 0, 0, 255]);
@@ -300,7 +322,10 @@ fn browser_tab_vmjs_request_animation_frame_runs_and_triggers_rerender() -> Resu
     get_attr(tab.dom(), box_id, "data-order")?.as_deref(),
     Some("script,raf,microtask")
   );
-  assert_eq!(get_attr(tab.dom(), box_id, "data-ts")?.as_deref(), Some("123"));
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-ts")?.as_deref(),
+    Some("123")
+  );
 
   let frame_b = tab
     .render_if_needed()?
@@ -320,12 +345,10 @@ fn browser_tab_vmjs_fetch_resolves_and_triggers_rerender() -> Result<()> {
   let document_url = "https://client.example/page.html";
   let resource_url = "https://client.example/hello.txt";
 
-  let fetcher = Arc::new(
-    StubFetcher::default().with_response(
-      resource_url,
-      FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string())),
-    ),
-  );
+  let fetcher = Arc::new(StubFetcher::default().with_response(
+    resource_url,
+    FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string())),
+  ));
 
   let html = r#"<!doctype html>
     <html>
@@ -383,7 +406,10 @@ fn browser_tab_vmjs_fetch_resolves_and_triggers_rerender() -> Result<()> {
     RunUntilStableOutcome::Stable { .. }
   ));
 
-  assert_eq!(get_attr(tab.dom(), box_id, "data-fetch")?.as_deref(), Some("hello"));
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-fetch")?.as_deref(),
+    Some("hello")
+  );
   assert_eq!(get_attr(tab.dom(), box_id, "class")?.as_deref(), Some("b"));
 
   let recorded = fetcher.take_recorded();
@@ -394,8 +420,14 @@ fn browser_tab_vmjs_fetch_resolves_and_triggers_rerender() -> Result<()> {
   assert_eq!(recorded[0].url, resource_url);
   assert_eq!(recorded[0].destination, FetchDestination::Fetch);
   assert_eq!(recorded[0].referrer_url.as_deref(), Some(document_url));
-  assert_eq!(recorded[0].client_origin.as_deref(), Some(expected_origin.as_str()));
-  assert_eq!(recorded[0].credentials_mode, FetchCredentialsMode::SameOrigin);
+  assert_eq!(
+    recorded[0].client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
+  assert_eq!(
+    recorded[0].credentials_mode,
+    FetchCredentialsMode::SameOrigin
+  );
 
   let frame_b = tab
     .render_if_needed()?
@@ -455,7 +487,10 @@ fn browser_tab_vmjs_fetch_rejects_when_signal_is_pre_aborted() -> Result<()> {
 
   // The promise rejection happens synchronously, and Promise reactions should be run via the
   // microtask checkpoint performed after the parser-inserted script executes.
-  assert_eq!(get_attr(tab.dom(), box_id, "data-fetch")?.as_deref(), Some("AbortError"));
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-fetch")?.as_deref(),
+    Some("AbortError")
+  );
   assert!(
     fetcher.take_recorded().is_empty(),
     "expected aborted fetch to never call ResourceFetcher"
@@ -529,7 +564,10 @@ fn browser_tab_vmjs_fetch_can_be_aborted_after_scheduling_before_execution() -> 
     RunUntilStableOutcome::Stable { .. }
   ));
 
-  assert_eq!(get_attr(tab.dom(), box_id, "data-fetch")?.as_deref(), Some("AbortError"));
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-fetch")?.as_deref(),
+    Some("AbortError")
+  );
   assert_eq!(get_attr(tab.dom(), box_id, "class")?.as_deref(), Some("b"));
   assert!(
     fetcher.take_recorded().is_empty(),

@@ -45,11 +45,17 @@ fn background_repeat_x_and_y_longhands_set_single_axis() {
 
   assert_eq!(
     repeat_xy(divs[0]),
-    (BackgroundRepeatKeyword::NoRepeat, BackgroundRepeatKeyword::Repeat)
+    (
+      BackgroundRepeatKeyword::NoRepeat,
+      BackgroundRepeatKeyword::Repeat
+    )
   );
   assert_eq!(
     repeat_xy(divs[1]),
-    (BackgroundRepeatKeyword::Repeat, BackgroundRepeatKeyword::NoRepeat)
+    (
+      BackgroundRepeatKeyword::Repeat,
+      BackgroundRepeatKeyword::NoRepeat
+    )
   );
 }
 
@@ -69,7 +75,10 @@ fn background_repeat_inline_respects_final_writing_mode_regardless_of_declaratio
   for div in divs {
     assert_eq!(
       repeat_xy(div),
-      (BackgroundRepeatKeyword::Repeat, BackgroundRepeatKeyword::NoRepeat)
+      (
+        BackgroundRepeatKeyword::Repeat,
+        BackgroundRepeatKeyword::NoRepeat
+      )
     );
   }
 }
@@ -90,21 +99,32 @@ fn background_repeat_repeat_inline_and_block_keywords_map_logical_axes() {
   // Default writing mode is horizontal-tb, so repeat-inline == repeat-x and repeat-block == repeat-y.
   assert_eq!(
     repeat_xy(divs[0]),
-    (BackgroundRepeatKeyword::Repeat, BackgroundRepeatKeyword::NoRepeat)
+    (
+      BackgroundRepeatKeyword::Repeat,
+      BackgroundRepeatKeyword::NoRepeat
+    )
   );
   assert_eq!(
     repeat_xy(divs[1]),
-    (BackgroundRepeatKeyword::NoRepeat, BackgroundRepeatKeyword::Repeat)
+    (
+      BackgroundRepeatKeyword::NoRepeat,
+      BackgroundRepeatKeyword::Repeat
+    )
   );
 
   // In vertical-rl, inline maps to the physical y-axis, so repeat-inline == repeat-y.
   assert_eq!(
     repeat_xy(divs[2]),
-    (BackgroundRepeatKeyword::NoRepeat, BackgroundRepeatKeyword::Repeat)
+    (
+      BackgroundRepeatKeyword::NoRepeat,
+      BackgroundRepeatKeyword::Repeat
+    )
   );
   assert_eq!(
     repeat_xy(divs[3]),
-    (BackgroundRepeatKeyword::NoRepeat, BackgroundRepeatKeyword::Repeat)
+    (
+      BackgroundRepeatKeyword::NoRepeat,
+      BackgroundRepeatKeyword::Repeat
+    )
   );
 }
-

@@ -264,7 +264,9 @@ impl IdlType {
       IdlType::String(_) => Some(DistinguishabilityCategory::String),
       IdlType::Object => Some(DistinguishabilityCategory::Object),
       IdlType::Symbol => Some(DistinguishabilityCategory::Symbol),
-      IdlType::Sequence(_) | IdlType::FrozenArray(_) => Some(DistinguishabilityCategory::SequenceLike),
+      IdlType::Sequence(_) | IdlType::FrozenArray(_) => {
+        Some(DistinguishabilityCategory::SequenceLike)
+      }
       IdlType::AsyncSequence(_) => Some(DistinguishabilityCategory::AsyncSequence),
       IdlType::Record(_, _) => Some(DistinguishabilityCategory::DictionaryLike),
       IdlType::Named(NamedType { kind, .. }) => match kind {

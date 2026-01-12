@@ -20,7 +20,12 @@ fn layout_intermediates(
 ) -> LayoutIntermediates {
   let dom = renderer.parse_html(html).expect("parse");
   renderer
-    .layout_document_for_media_intermediates(&dom, viewport_width, viewport_height, MediaType::Screen)
+    .layout_document_for_media_intermediates(
+      &dom,
+      viewport_width,
+      viewport_height,
+      MediaType::Screen,
+    )
     .expect("layout intermediates")
 }
 

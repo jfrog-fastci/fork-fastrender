@@ -206,7 +206,11 @@ impl Document {
   // --- Common reflected attributes ------------------------------------------
 
   fn reflected_string(&self, element: NodeId, attr: &str) -> &str {
-    self.get_attribute(element, attr).ok().flatten().unwrap_or("")
+    self
+      .get_attribute(element, attr)
+      .ok()
+      .flatten()
+      .unwrap_or("")
   }
 
   fn set_reflected_string(

@@ -1,5 +1,5 @@
-use fastrender::css::properties::parse_property_value;
 use fastrender::css::parser::parse_stylesheet;
+use fastrender::css::properties::parse_property_value;
 use fastrender::css::types::PropertyValue;
 use fastrender::css::types::Transform;
 use fastrender::dom;

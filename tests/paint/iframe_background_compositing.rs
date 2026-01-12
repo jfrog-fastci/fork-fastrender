@@ -70,4 +70,3 @@ fn iframe_opaque_background_painted_by_parent_for_transparent_srcdoc() {
   // background painted by the parent document.
   assert_rgba_near(pixel_rgba(&pixmap, 10, 10), (255, 0, 0, 255), 2);
 }
-

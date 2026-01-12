@@ -1900,7 +1900,10 @@ fn preserve_3d_flattened_by_overflow_hidden_scroll_auto() {
   let mut auto_style = ComputedStyle::default();
   auto_style.overflow_x = Overflow::Auto;
   auto_style.overflow_y = Overflow::Auto;
-  assert_eq!(stacking_context_transform_style(auto_style), TransformStyle::Flat);
+  assert_eq!(
+    stacking_context_transform_style(auto_style),
+    TransformStyle::Flat
+  );
 }
 
 #[test]
@@ -1936,8 +1939,8 @@ fn preserve_3d_flattens_with_grouping_effects() {
   );
 
   let mut mask_border_style = ComputedStyle::default();
-  mask_border_style.mask_border.source = BorderImageSource::Image(Box::new(
-    BackgroundImage::LinearGradient {
+  mask_border_style.mask_border.source =
+    BorderImageSource::Image(Box::new(BackgroundImage::LinearGradient {
       angle: 90.0,
       stops: vec![
         ColorStop {
@@ -1949,8 +1952,7 @@ fn preserve_3d_flattens_with_grouping_effects() {
           position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
-    },
-  ));
+    }));
   assert_eq!(
     stacking_context_transform_style(mask_border_style),
     TransformStyle::Flat

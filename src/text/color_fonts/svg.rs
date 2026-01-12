@@ -2,7 +2,9 @@ use super::limits::{log_glyph_limit, round_dimension, GlyphRasterLimits};
 use super::{ColorFontCaches, ColorGlyphRaster, FontKey, SvgCacheKey};
 use crate::paint::pixmap::new_pixmap;
 use crate::style::color::Rgba;
-use crate::svg::{svg_markup_for_roxmltree, svg_root_view_box, svg_view_box_root_transform, SvgViewBox};
+use crate::svg::{
+  svg_markup_for_roxmltree, svg_root_view_box, svg_view_box_root_transform, SvgViewBox,
+};
 use regex::Regex;
 use roxmltree::Document;
 use std::ops::Range;

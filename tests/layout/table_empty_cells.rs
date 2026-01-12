@@ -81,7 +81,9 @@ fn collect_table_cell_fragments<'a>(node: &'a FragmentNode, out: &mut Vec<&'a Fr
   }
 }
 
-fn cell_fragments<'a>(tree: &'a fastrender::tree::fragment_tree::FragmentTree) -> Vec<&'a FragmentNode> {
+fn cell_fragments<'a>(
+  tree: &'a fastrender::tree::fragment_tree::FragmentTree,
+) -> Vec<&'a FragmentNode> {
   let mut cells = Vec::new();
   collect_table_cell_fragments(&tree.root, &mut cells);
   for fragment in &tree.additional_fragments {
@@ -265,7 +267,10 @@ fn empty_element_counts_as_cell_content_for_empty_cells() {
         .unwrap_or(false)
     })
     .count();
-  assert_eq!(suppressed, 1, "expected only the truly empty cell to be suppressed");
+  assert_eq!(
+    suppressed, 1,
+    "expected only the truly empty cell to be suppressed"
+  );
 
   let preserved = cells
     .iter()
@@ -277,7 +282,10 @@ fn empty_element_counts_as_cell_content_for_empty_cells() {
         .unwrap_or(false)
     })
     .count();
-  assert_eq!(preserved, 1, "expected the empty element cell to keep its background");
+  assert_eq!(
+    preserved, 1,
+    "expected the empty element cell to keep its background"
+  );
 }
 
 #[test]
@@ -316,7 +324,10 @@ fn white_space_pre_makes_whitespace_only_cells_non_empty_for_empty_cells() {
         .unwrap_or(false)
     })
     .count();
-  assert_eq!(suppressed, 1, "expected only the collapsed-whitespace cell to be suppressed");
+  assert_eq!(
+    suppressed, 1,
+    "expected only the collapsed-whitespace cell to be suppressed"
+  );
 }
 
 #[test]

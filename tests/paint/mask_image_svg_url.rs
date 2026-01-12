@@ -88,4 +88,3 @@ fn mask_image_url_fragments_apply_at_high_device_pixel_ratio() {
     );
   }
 }
-

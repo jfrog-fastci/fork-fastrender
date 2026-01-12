@@ -61,4 +61,3 @@ fn negative_block_size_does_not_override_height() {
   let node = styled_div(r#"<div style="height:10px; block-size:-1px"></div>"#);
   assert_eq!(node.styles.height, Some(Length::px(10.0)));
 }
-

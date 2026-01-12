@@ -63,7 +63,10 @@ fn preserve_3d_projected_clip_masks_allow_reentrant_rendering() {
   }));
 
   // Flattened plane which itself contains another preserve-3d context that also has a clip.
-  list.push(DisplayItem::PushStackingContext(ctx(root_bounds, TransformStyle::Flat)));
+  list.push(DisplayItem::PushStackingContext(ctx(
+    root_bounds,
+    TransformStyle::Flat,
+  )));
   list.push(DisplayItem::PushStackingContext(ctx(
     root_bounds,
     TransformStyle::Preserve3d,
@@ -74,7 +77,10 @@ fn preserve_3d_projected_clip_masks_allow_reentrant_rendering() {
       radii: None,
     },
   }));
-  list.push(DisplayItem::PushStackingContext(ctx(root_bounds, TransformStyle::Flat)));
+  list.push(DisplayItem::PushStackingContext(ctx(
+    root_bounds,
+    TransformStyle::Flat,
+  )));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: root_bounds,
     color: Rgba::RED,
@@ -96,4 +102,3 @@ fn preserve_3d_projected_clip_masks_allow_reentrant_rendering() {
   assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 60, 10), (255, 255, 255, 255));
 }
-

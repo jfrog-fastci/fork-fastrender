@@ -3,8 +3,8 @@ use fastrender::layout::contexts::grid::GridFormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::types::{GridAutoFlow, GridTrack};
 use fastrender::style::values::Length;
-use fastrender::{BoxNode, ComputedStyle, FormattingContextType};
 use fastrender::FormattingContext;
+use fastrender::{BoxNode, ComputedStyle, FormattingContextType};
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -32,40 +32,27 @@ fn column_subgrid_auto_span_is_derived_from_line_names() {
     GridTrack::Length(Length::px(70.0)),
     GridTrack::Length(Length::px(90.0)),
   ];
-  parent_style.grid_template_rows =
-    vec![GridTrack::Length(Length::px(20.0)), GridTrack::Length(Length::px(20.0))];
+  parent_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(20.0)),
+  ];
   parent_style.grid_column_gap = Length::px(10.0);
   parent_style.width = Some(Length::px(230.0));
 
   let mut first_style = ComputedStyle::default();
   first_style.display = Display::Block;
-  let first = BoxNode::new_block(
-    Arc::new(first_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
   subgrid_style.grid_column_subgrid = true;
-  subgrid_style.subgrid_column_line_names = vec![
-    vec!["a".into()],
-    vec!["b".into()],
-    vec!["c".into()],
-  ];
-  let subgrid = BoxNode::new_block(
-    Arc::new(subgrid_style),
-    FormattingContextType::Grid,
-    vec![],
-  );
+  subgrid_style.subgrid_column_line_names =
+    vec![vec!["a".into()], vec!["b".into()], vec!["c".into()]];
+  let subgrid = BoxNode::new_block(Arc::new(subgrid_style), FormattingContextType::Grid, vec![]);
 
   let mut third_style = ComputedStyle::default();
   third_style.display = Display::Block;
-  let third = BoxNode::new_block(
-    Arc::new(third_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let third = BoxNode::new_block(Arc::new(third_style), FormattingContextType::Block, vec![]);
 
   let grid = BoxNode::new_block(
     Arc::new(parent_style),
@@ -105,38 +92,27 @@ fn row_subgrid_auto_span_is_derived_from_line_names() {
     GridTrack::Length(Length::px(40.0)),
     GridTrack::Length(Length::px(50.0)),
   ];
-  parent_style.grid_template_columns =
-    vec![GridTrack::Length(Length::px(80.0)), GridTrack::Length(Length::px(80.0))];
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(80.0)),
+    GridTrack::Length(Length::px(80.0)),
+  ];
   parent_style.grid_row_gap = Length::px(7.0);
   parent_style.grid_column_gap = Length::px(5.0);
   parent_style.width = Some(Length::px(165.0));
 
   let mut first_style = ComputedStyle::default();
   first_style.display = Display::Block;
-  let first = BoxNode::new_block(
-    Arc::new(first_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
   subgrid_style.grid_row_subgrid = true;
-  subgrid_style.subgrid_row_line_names =
-    vec![vec!["a".into()], vec!["b".into()], vec!["c".into()]];
-  let subgrid = BoxNode::new_block(
-    Arc::new(subgrid_style),
-    FormattingContextType::Grid,
-    vec![],
-  );
+  subgrid_style.subgrid_row_line_names = vec![vec!["a".into()], vec!["b".into()], vec!["c".into()]];
+  let subgrid = BoxNode::new_block(Arc::new(subgrid_style), FormattingContextType::Grid, vec![]);
 
   let mut third_style = ComputedStyle::default();
   third_style.display = Display::Block;
-  let third = BoxNode::new_block(
-    Arc::new(third_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let third = BoxNode::new_block(Arc::new(third_style), FormattingContextType::Block, vec![]);
 
   let grid = BoxNode::new_block(
     Arc::new(parent_style),

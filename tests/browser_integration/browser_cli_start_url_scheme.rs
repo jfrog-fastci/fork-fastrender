@@ -3,8 +3,7 @@
 use std::process::Command;
 
 fn run_browser_with_url(url: &str) -> (std::process::ExitStatus, String, String) {
-  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("scripts/run_limited.sh");
+  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
   let output = Command::new("bash")
     .arg(run_limited)
     .args(["--as", "64G", "--"])

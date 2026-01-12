@@ -1,6 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{create_tab_msg, recv_for_tab, viewport_changed_msg, TempSite, DEFAULT_TIMEOUT};
+use super::support::{
+  create_tab_msg, recv_for_tab, viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
+};
 use fastrender::ui::messages::{RepaintReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 
@@ -78,4 +80,3 @@ fn ui_worker_emits_favicon_for_link_rel_icon() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

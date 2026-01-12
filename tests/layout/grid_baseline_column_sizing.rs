@@ -10,9 +10,9 @@ use fastrender::style::values::Length;
 use fastrender::AvailableSpace;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
+use fastrender::FormattingContextType;
 use fastrender::FragmentContent;
 use fastrender::FragmentNode;
-use fastrender::FormattingContextType;
 use std::sync::Arc;
 
 fn assert_approx(actual: f32, expected: f32, label: &str) {
@@ -157,7 +157,11 @@ fn grid_baseline_aligned_items_increase_auto_column_size() {
     )
     .expect("layout succeeds");
 
-  assert_eq!(fragment.children.len(), 2, "grid should have two item fragments");
+  assert_eq!(
+    fragment.children.len(),
+    2,
+    "grid should have two item fragments"
+  );
   let a = &fragment.children[0];
   let b = &fragment.children[1];
 
@@ -221,7 +225,11 @@ fn grid_baseline_aligned_items_increase_auto_column_size_vertical_rl() {
     )
     .expect("layout succeeds");
 
-  assert_eq!(fragment.children.len(), 2, "grid should have two item fragments");
+  assert_eq!(
+    fragment.children.len(),
+    2,
+    "grid should have two item fragments"
+  );
   let a = &fragment.children[0];
   let b = &fragment.children[1];
 
@@ -284,8 +292,11 @@ fn baseline_aligned_items_in_subgrid_increase_parent_auto_column_size() {
   let item_large = make_text_item(41, 20.0, line_height, writing_mode, width, 1);
   let item_small = make_text_item(42, 5.0, line_height, writing_mode, width, 2);
 
-  let mut subgrid =
-    BoxNode::new_block(subgrid_style, FormattingContextType::Grid, vec![item_large, item_small]);
+  let mut subgrid = BoxNode::new_block(
+    subgrid_style,
+    FormattingContextType::Grid,
+    vec![item_large, item_small],
+  );
   subgrid.id = 40;
 
   let grid = BoxNode::new_block(parent_style, FormattingContextType::Grid, vec![subgrid]);
@@ -297,7 +308,11 @@ fn baseline_aligned_items_in_subgrid_increase_parent_auto_column_size() {
     )
     .expect("layout succeeds");
 
-  assert_eq!(fragment.children.len(), 1, "parent grid should have one child (subgrid)");
+  assert_eq!(
+    fragment.children.len(),
+    1,
+    "parent grid should have one child (subgrid)"
+  );
   let subgrid_fragment = &fragment.children[0];
   assert_eq!(
     subgrid_fragment.children.len(),
@@ -308,8 +323,16 @@ fn baseline_aligned_items_in_subgrid_increase_parent_auto_column_size() {
   let b = &subgrid_fragment.children[1];
 
   let expected_width = expected_baseline_track_size_x([a, b], writing_mode);
-  assert_approx(fragment.bounds.width(), expected_width, "parent column width");
-  assert_approx(subgrid_fragment.bounds.width(), expected_width, "subgrid width");
+  assert_approx(
+    fragment.bounds.width(),
+    expected_width,
+    "parent column width",
+  );
+  assert_approx(
+    subgrid_fragment.bounds.width(),
+    expected_width,
+    "subgrid width",
+  );
 
   let max_item_width = a.bounds.width().max(b.bounds.width());
   assert!(

@@ -67,4 +67,3 @@ fn missing_image_placeholder_does_not_scale_to_width_via_1x1_ratio() {
     .join()
     .expect("join");
 }
-

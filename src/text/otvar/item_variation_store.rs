@@ -327,9 +327,12 @@ pub fn parse_delta_set_index_map(data: &[u8]) -> Result<DeltaSetIndexMapParsed, 
   let map_count_usize = usize::try_from(map_count)
     .map_err(|_| ParseError::InvalidValue("map count does not fit in usize"))?;
   let entry_size_usize = entry_size as usize;
-  let required_bytes = map_count_usize
-    .checked_mul(entry_size_usize)
-    .ok_or(ParseError::InvalidValue("map count overflows entry byte length"))?;
+  let required_bytes =
+    map_count_usize
+      .checked_mul(entry_size_usize)
+      .ok_or(ParseError::InvalidValue(
+        "map count overflows entry byte length",
+      ))?;
   if offset > data.len() || data.len() - offset < required_bytes {
     return Err(ParseError::UnexpectedEof);
   }
@@ -400,12 +403,17 @@ fn parse_variation_region_list(
 
   let region_count = region_count_u16 as usize;
   let axis_count_usize = axis_count as usize;
-  let axis_bytes_per_region = axis_count_usize.checked_mul(6).ok_or(ParseError::InvalidValue(
-    "variation region list axis count overflows record byte length",
-  ))?;
-  let axis_bytes = region_count.checked_mul(axis_bytes_per_region).ok_or(ParseError::InvalidValue(
-    "variation region list region count overflows record byte length",
-  ))?;
+  let axis_bytes_per_region = axis_count_usize
+    .checked_mul(6)
+    .ok_or(ParseError::InvalidValue(
+      "variation region list axis count overflows record byte length",
+    ))?;
+  let axis_bytes =
+    region_count
+      .checked_mul(axis_bytes_per_region)
+      .ok_or(ParseError::InvalidValue(
+        "variation region list region count overflows record byte length",
+      ))?;
   let required_bytes = 4usize
     .checked_add(axis_bytes)
     .ok_or(ParseError::InvalidValue(
@@ -461,21 +469,28 @@ fn parse_item_variation_data(data: &[u8]) -> Result<ItemVariationData, ParseErro
   let item_count_usize = item_count as usize;
   let short_delta_count_usize = short_delta_count as usize;
   let region_index_count_usize = region_index_count as usize;
-  let indices_bytes = region_index_count_usize.checked_mul(2).ok_or(ParseError::InvalidValue(
-    "region index count overflows region index byte length",
-  ))?;
-  let short_bytes = short_delta_count_usize.checked_mul(2).ok_or(ParseError::InvalidValue(
-    "short delta count overflows delta byte length",
-  ))?;
+  let indices_bytes = region_index_count_usize
+    .checked_mul(2)
+    .ok_or(ParseError::InvalidValue(
+      "region index count overflows region index byte length",
+    ))?;
+  let short_bytes = short_delta_count_usize
+    .checked_mul(2)
+    .ok_or(ParseError::InvalidValue(
+      "short delta count overflows delta byte length",
+    ))?;
   let long_count = region_index_count_usize.saturating_sub(short_delta_count_usize);
   let per_item_bytes = short_bytes
     .checked_add(long_count)
     .ok_or(ParseError::InvalidValue(
       "delta byte length overflows addressable range",
     ))?;
-  let delta_bytes = item_count_usize.checked_mul(per_item_bytes).ok_or(ParseError::InvalidValue(
-    "item count overflows delta byte length",
-  ))?;
+  let delta_bytes =
+    item_count_usize
+      .checked_mul(per_item_bytes)
+      .ok_or(ParseError::InvalidValue(
+        "item count overflows delta byte length",
+      ))?;
   let required_bytes = 6usize
     .checked_add(indices_bytes)
     .and_then(|v| v.checked_add(delta_bytes))

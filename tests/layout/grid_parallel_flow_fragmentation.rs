@@ -61,7 +61,10 @@ fn forced_break_inside_grid_item_does_not_force_siblings() {
     .unwrap();
   let page_roots = pages(&tree);
 
-  assert!(page_roots.len() >= 2, "forced break should create multiple pages");
+  assert!(
+    page_roots.len() >= 2,
+    "forced break should create multiple pages"
+  );
 
   let page1 = page_roots[0].children.first().expect("page 1 content");
   let page2 = page_roots[1].children.first().expect("page 2 content");

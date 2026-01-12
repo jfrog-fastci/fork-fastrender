@@ -7,7 +7,8 @@ use fastrender::layout::fragmentation::{
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
 use fastrender::style::types::{
-  BreakBetween, BreakInside, FlexDirection, GridTrack, InsetValue, IntrinsicSizeKeyword, WritingMode,
+  BreakBetween, BreakInside, FlexDirection, GridTrack, InsetValue, IntrinsicSizeKeyword,
+  WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
@@ -142,16 +143,8 @@ fn break_opportunity_just_after_fragmentainer_limit_does_not_slice_previous_box(
   // (within floating point epsilon), fragmentation should not select a boundary *before* the
   // opportunity. Otherwise the preceding box gets sliced, producing a near-zero continuation
   // fragment on the next page/column.
-  let first = FragmentNode::new_block_with_id(
-    Rect::from_xywh(0.0, 0.0, 40.0, 100.005),
-    1,
-    vec![],
-  );
-  let second = FragmentNode::new_block_with_id(
-    Rect::from_xywh(0.0, 150.0, 40.0, 10.0),
-    2,
-    vec![],
-  );
+  let first = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 100.005), 1, vec![]);
+  let second = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 150.0, 40.0, 10.0), 2, vec![]);
   let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 160.0), vec![first, second]);
 
   let fragments = fragment_tree(&root, &FragmentationOptions::new(100.0)).unwrap();
@@ -169,7 +162,8 @@ fn forced_break_before_first_child_does_not_create_leading_empty_fragment() {
   let child_style = Arc::new(child_style);
 
   // Simulate a first child that starts after a padding-like offset.
-  let mut child = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 10.0), 1, vec![]);
+  let mut child =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 10.0), 1, vec![]);
   child.style = Some(child_style);
   let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), vec![child]);
 
@@ -193,11 +187,8 @@ fn forced_break_after_last_child_propagates_to_parent_end() {
   let mut breaker =
     FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 10.0), 1, vec![]);
   breaker.style = Some(breaker_style);
-  let parent = FragmentNode::new_block_with_id(
-    Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
-    10,
-    vec![breaker],
-  );
+  let parent =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), 10, vec![breaker]);
 
   let follower =
     FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 40.0, 40.0, 10.0), 20, vec![]);
@@ -206,8 +197,13 @@ fn forced_break_after_last_child_propagates_to_parent_end() {
     vec![parent, follower],
   );
 
-  let fragments = fragment_tree(&root, &FragmentationOptions::new(50.0).with_columns(2, 0.0)).unwrap();
-  assert_eq!(fragments.len(), 2, "expected content to fragment after the forced break");
+  let fragments =
+    fragment_tree(&root, &FragmentationOptions::new(50.0).with_columns(2, 0.0)).unwrap();
+  assert_eq!(
+    fragments.len(),
+    2,
+    "expected content to fragment after the forced break"
+  );
 
   assert_eq!(fragments_with_id(&fragments[0], 10).len(), 1);
   assert_eq!(
@@ -231,7 +227,8 @@ fn flex_item_forced_break_does_not_force_sibling_breaks() {
   breaker_style.break_after = BreakBetween::Page;
   let breaker_style = Arc::new(breaker_style);
 
-  let mut breaker = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 1, vec![]);
+  let mut breaker =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 1, vec![]);
   breaker.style = Some(breaker_style);
   let follower = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 2, vec![]);
 
@@ -240,8 +237,7 @@ fn flex_item_forced_break_does_not_force_sibling_breaks() {
     10,
     vec![breaker, follower],
   );
-  let item_b =
-    FragmentNode::new_block_with_id(Rect::from_xywh(50.0, 0.0, 40.0, 40.0), 20, vec![]);
+  let item_b = FragmentNode::new_block_with_id(Rect::from_xywh(50.0, 0.0, 40.0, 40.0), 20, vec![]);
 
   let mut flex_style = ComputedStyle::default();
   flex_style.display = Display::Flex;
@@ -254,7 +250,11 @@ fn flex_item_forced_break_does_not_force_sibling_breaks() {
   let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), vec![flex]);
 
   let fragments = fragment_tree(&root, &FragmentationOptions::new(50.0)).unwrap();
-  assert_eq!(fragments.len(), 2, "expected content to fragment after blank insertion");
+  assert_eq!(
+    fragments.len(),
+    2,
+    "expected content to fragment after blank insertion"
+  );
 
   assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
   assert_eq!(
@@ -289,8 +289,7 @@ fn flex_item_forced_column_break_does_not_force_sibling_breaks() {
   let mut breaker =
     FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 1, vec![]);
   breaker.style = Some(breaker_style);
-  let follower =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 2, vec![]);
+  let follower = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 2, vec![]);
 
   let item_a = FragmentNode::new_block_with_id(
     Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
@@ -309,8 +308,13 @@ fn flex_item_forced_column_break_does_not_force_sibling_breaks() {
   );
   let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), vec![flex]);
 
-  let fragments = fragment_tree(&root, &FragmentationOptions::new(50.0).with_columns(2, 0.0)).unwrap();
-  assert_eq!(fragments.len(), 2, "expected content to fragment after blank insertion");
+  let fragments =
+    fragment_tree(&root, &FragmentationOptions::new(50.0).with_columns(2, 0.0)).unwrap();
+  assert_eq!(
+    fragments.len(),
+    2,
+    "expected content to fragment after blank insertion"
+  );
 
   assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
   assert_eq!(
@@ -345,8 +349,7 @@ fn grid_item_forced_column_break_does_not_force_sibling_breaks() {
   let mut breaker =
     FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 1, vec![]);
   breaker.style = Some(breaker_style);
-  let follower =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 2, vec![]);
+  let follower = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 2, vec![]);
 
   let item_a = FragmentNode::new_block_with_id(
     Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
@@ -717,14 +720,9 @@ fn forced_break_inside_avoid_still_splits_pages() {
   breaker_style.break_after = BreakBetween::Always;
   let breaker_style = Arc::new(breaker_style);
 
-  let mut first =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 50.0, 30.0), 1, vec![]);
+  let mut first = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 50.0, 30.0), 1, vec![]);
   first.style = Some(breaker_style);
-  let second = FragmentNode::new_block_with_id(
-    Rect::from_xywh(0.0, 30.0, 50.0, 60.0),
-    2,
-    vec![],
-  );
+  let second = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 30.0, 50.0, 60.0), 2, vec![]);
 
   let mut outer = FragmentNode::new_block_with_id(
     Rect::from_xywh(0.0, 0.0, 50.0, 90.0),
@@ -1055,11 +1053,7 @@ fn vertical_writing_mode_grid_continuation_reduces_available_block_size_in_physi
     style.writing_mode = WritingMode::VerticalLr;
     style
   });
-  let item1 = BoxNode::new_block(
-    item1_style,
-    FormattingContextType::Block,
-    vec![],
-  );
+  let item1 = BoxNode::new_block(item1_style, FormattingContextType::Block, vec![]);
 
   let item2_style = Arc::new({
     let mut style = ComputedStyle::default();
@@ -1075,11 +1069,7 @@ fn vertical_writing_mode_grid_continuation_reduces_available_block_size_in_physi
   item3_style.writing_mode = WritingMode::VerticalLr;
   item3_style.width_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
   item3_style.height_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
-  let item3 = BoxNode::new_block(
-    Arc::new(item3_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let item3 = BoxNode::new_block(Arc::new(item3_style), FormattingContextType::Block, vec![]);
 
   let root_box = BoxNode::new_block(
     Arc::new(grid_style),
@@ -1636,7 +1626,11 @@ fn table_headers_repeat_across_columns_without_overflow() {
   let header_cell = make(
     Display::TableCell,
     Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
-    vec![FragmentNode::new_text(Rect::from_xywh(0.0, 0.0, 50.0, 20.0), "Header", 16.0)],
+    vec![FragmentNode::new_text(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      "Header",
+      16.0,
+    )],
   );
   let header_row = make(
     Display::TableRow,
@@ -1845,7 +1839,10 @@ fn table_footers_repeat_across_columns_without_overflow() {
       })
       .count();
 
-    assert!(row_group_count >= 1, "fragment {idx} should contain table rows");
+    assert!(
+      row_group_count >= 1,
+      "fragment {idx} should contain table rows"
+    );
     assert!(
       header_count >= 1,
       "fragment {idx} should include a repeated table header"
@@ -1856,10 +1853,12 @@ fn table_footers_repeat_across_columns_without_overflow() {
     );
 
     for node in fragment.iter_fragments().filter(|node| {
-      node
-        .style
-        .as_ref()
-        .is_some_and(|style| matches!(style.display, Display::TableRowGroup | Display::TableFooterGroup))
+      node.style.as_ref().is_some_and(|style| {
+        matches!(
+          style.display,
+          Display::TableRowGroup | Display::TableFooterGroup
+        )
+      })
     }) {
       assert!(
         node.bounds.max_y() <= fragmentainer_size + 0.5,

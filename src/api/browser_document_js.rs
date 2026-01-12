@@ -1,10 +1,10 @@
 use crate::error::{Error, Result};
-use crate::js::{
-  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunAnimationFrameOutcome, RunLimits,
-  RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptExecutionLog, ScriptOrchestrator,
-  JsExecutionOptions, RealClock,
-};
 use crate::js::webidl::legacy::VmJsRuntime;
+use crate::js::{
+  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, JsExecutionOptions, RealClock,
+  RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason,
+  ScriptExecutionLog, ScriptOrchestrator,
+};
 use std::sync::Arc;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions};
@@ -58,7 +58,10 @@ impl BrowserDocumentJs {
     Self::with_js_execution_options(document, JsExecutionOptions::default())
   }
 
-  pub fn with_js_execution_options(document: BrowserDocumentDom2, js_execution_options: JsExecutionOptions) -> Self {
+  pub fn with_js_execution_options(
+    document: BrowserDocumentDom2,
+    js_execution_options: JsExecutionOptions,
+  ) -> Self {
     let event_loop = EventLoop::with_clock_and_queue_limits(
       Arc::new(RealClock::default()),
       js_execution_options.event_loop_queue_limits,
@@ -67,7 +70,11 @@ impl BrowserDocumentJs {
   }
 
   pub fn with_event_loop(document: BrowserDocumentDom2, event_loop: EventLoop<Self>) -> Self {
-    Self::with_event_loop_and_js_execution_options(document, event_loop, JsExecutionOptions::default())
+    Self::with_event_loop_and_js_execution_options(
+      document,
+      event_loop,
+      JsExecutionOptions::default(),
+    )
   }
 
   pub fn with_event_loop_and_js_execution_options(
@@ -216,7 +223,8 @@ impl BrowserDocumentJs {
   ///   [`EventLoop::run_until_idle`] (repeatedly).
   /// - Animation frame turns (`requestAnimationFrame`) and rendering are bounded by `max_frames`.
   pub fn run_until_stable(&mut self, max_frames: usize) -> Result<RunUntilStableOutcome> {
-    self.run_until_stable_with_run_limits(self.js_execution_options.event_loop_run_limits, max_frames)
+    self
+      .run_until_stable_with_run_limits(self.js_execution_options.event_loop_run_limits, max_frames)
   }
 
   pub fn run_until_stable_with_run_limits(
@@ -226,10 +234,9 @@ impl BrowserDocumentJs {
   ) -> Result<RunUntilStableOutcome> {
     let mut frames_rendered = 0usize;
     if !self.document.is_dirty()
-      && self
-        .event_loop
-        .as_ref()
-        .is_some_and(|event_loop| event_loop.is_idle() && !event_loop.has_pending_animation_frame_callbacks())
+      && self.event_loop.as_ref().is_some_and(|event_loop| {
+        event_loop.is_idle() && !event_loop.has_pending_animation_frame_callbacks()
+      })
     {
       return Ok(RunUntilStableOutcome::Stable { frames_rendered });
     }
@@ -459,7 +466,10 @@ mod tests {
       })?;
 
     let outcome = runtime.run_until_stable(10)?;
-    assert_eq!(outcome, RunUntilStableOutcome::Stable { frames_rendered: 1 });
+    assert_eq!(
+      outcome,
+      RunUntilStableOutcome::Stable { frames_rendered: 1 }
+    );
     assert_eq!(&*log.borrow(), &["task", "microtask"]);
     assert!(!runtime.document().is_dirty());
     Ok(())
@@ -494,14 +504,20 @@ mod tests {
         Ok(())
       })?;
 
-    assert!(runtime.tick_frame()?.is_some(), "expected render after task 1");
+    assert!(
+      runtime.tick_frame()?.is_some(),
+      "expected render after task 1"
+    );
     let id = first_text_node_id(runtime.document().dom()).expect("text node");
     let NodeKind::Text { content } = &runtime.document().dom().node(id).kind else {
       panic!("expected text node");
     };
     assert_eq!(content, "a");
 
-    assert!(runtime.tick_frame()?.is_some(), "expected render after task 2");
+    assert!(
+      runtime.tick_frame()?.is_some(),
+      "expected render after task 2"
+    );
     let id = first_text_node_id(runtime.document().dom()).expect("text node");
     let NodeKind::Text { content } = &runtime.document().dom().node(id).kind else {
       panic!("expected text node");
@@ -559,14 +575,19 @@ mod tests {
       js_options,
     );
 
-    runtime.event_loop_mut()?.queue_task(TaskSource::Script, |_host, _event_loop| {
-      Err(Error::Other("boom".to_string()))
-    })?;
+    runtime
+      .event_loop_mut()?
+      .queue_task(TaskSource::Script, |_host, _event_loop| {
+        Err(Error::Other("boom".to_string()))
+      })?;
 
     let err = runtime
       .tick_frame()
       .expect_err("expected tick_frame to surface the task error");
-    assert!(matches!(err, Error::Other(ref msg) if msg == "boom"), "{err:?}");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg == "boom"),
+      "{err:?}"
+    );
 
     // The event loop should still be available after the error.
     runtime
@@ -589,14 +610,19 @@ mod tests {
       js_options,
     );
 
-    runtime.event_loop_mut()?.queue_task(TaskSource::Script, |_host, _event_loop| {
-      Err(Error::Other("boom".to_string()))
-    })?;
+    runtime
+      .event_loop_mut()?
+      .queue_task(TaskSource::Script, |_host, _event_loop| {
+        Err(Error::Other("boom".to_string()))
+      })?;
 
     let err = runtime
       .run_until_stable(10)
       .expect_err("expected run_until_stable to surface the task error");
-    assert!(matches!(err, Error::Other(ref msg) if msg == "boom"), "{err:?}");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg == "boom"),
+      "{err:?}"
+    );
 
     runtime
       .event_loop_mut()?
@@ -689,16 +715,8 @@ mod tests {
     assert_eq!(scripts.len(), 2);
 
     let mut executor = LoggingExecutor::default();
-    runtime.execute_script_element(
-      scripts[0],
-      ScriptType::Classic,
-      &mut executor,
-    )?;
-    runtime.execute_script_element(
-      scripts[1],
-      ScriptType::Classic,
-      &mut executor,
-    )?;
+    runtime.execute_script_element(scripts[0], ScriptType::Classic, &mut executor)?;
+    runtime.execute_script_element(scripts[1], ScriptType::Classic, &mut executor)?;
 
     let log = runtime
       .script_execution_log()

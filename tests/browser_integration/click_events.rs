@@ -1,5 +1,5 @@
-use fastrender::{BrowserTab, RenderOptions, Result, VmJsBrowserTabExecutor};
 use fastrender::js::RunLimits;
+use fastrender::{BrowserTab, RenderOptions, Result, VmJsBrowserTabExecutor};
 
 #[test]
 fn click_prevent_default_blocks_link_navigation() -> Result<()> {

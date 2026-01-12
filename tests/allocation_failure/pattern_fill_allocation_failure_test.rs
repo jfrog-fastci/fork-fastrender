@@ -2,18 +2,18 @@ use fastrender::geometry::{Point, Rect, Size};
 use fastrender::paint::display_list::{
   BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, GradientSpread, GradientStop,
   ImageData, ImageFilterQuality, ImagePatternItem, ImagePatternRepeat, LinearGradientPatternItem,
-  MaskReferenceRects, ResolvedMask, ResolvedMaskImage, ResolvedMaskLayer, StackingContextItem,
-  RadialGradientPatternItem,
+  MaskReferenceRects, RadialGradientPatternItem, ResolvedMask, ResolvedMaskImage,
+  ResolvedMaskLayer, StackingContextItem,
 };
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
-use fastrender::text::font_loader::FontContext;
-use fastrender::Rgba;
 use fastrender::style::types::{
   BackfaceVisibility, BackgroundPosition, BackgroundPositionComponent, BackgroundRepeat,
   BackgroundSize, BackgroundSizeComponent, MaskClip, MaskComposite, MaskMode, MaskOrigin,
   TransformStyle,
 };
 use fastrender::style::values::Length;
+use fastrender::text::font_loader::FontContext;
+use fastrender::Rgba;
 use std::mem;
 use std::sync::Arc;
 
@@ -29,7 +29,11 @@ struct AxisSampleLayout {
 
 fn assert_not_white(pixmap: &tiny_skia::Pixmap) {
   let px = &pixmap.data()[..4];
-  assert_ne!(px, &[255, 255, 255, 255], "expected non-white pixel, got {px:?}");
+  assert_ne!(
+    px,
+    &[255, 255, 255, 255],
+    "expected non-white pixel, got {px:?}"
+  );
 }
 
 fn simple_mask(image: ResolvedMaskImage, mode: MaskMode, bounds: Rect) -> ResolvedMask {
@@ -77,29 +81,36 @@ fn pattern_fills_survive_allocation_failures_in_sampling_tables() {
   const HEIGHT: u32 = 2;
 
   let mut list = DisplayList::new();
-  list.push(DisplayItem::LinearGradientPattern(LinearGradientPatternItem {
-    dest_rect: Rect::from_xywh(0.0, 0.0, WIDTH as f32, HEIGHT as f32),
-    tile_size: Size::new(1.0, 1.0),
-    origin: Point::new(0.0, 0.0),
-    start: Point::new(0.0, 0.0),
-    end: Point::new(1.0, 0.0),
-    stops: vec![
-      GradientStop {
-        position: 0.0,
-        color: Rgba::BLACK,
-      },
-      GradientStop {
-        position: 1.0,
-        color: Rgba::BLACK,
-      },
-    ],
-    spread: GradientSpread::Pad,
-  }));
+  list.push(DisplayItem::LinearGradientPattern(
+    LinearGradientPatternItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, WIDTH as f32, HEIGHT as f32),
+      tile_size: Size::new(1.0, 1.0),
+      origin: Point::new(0.0, 0.0),
+      start: Point::new(0.0, 0.0),
+      end: Point::new(1.0, 0.0),
+      stops: vec![
+        GradientStop {
+          position: 0.0,
+          color: Rgba::BLACK,
+        },
+        GradientStop {
+          position: 1.0,
+          color: Rgba::BLACK,
+        },
+      ],
+      spread: GradientSpread::Pad,
+    },
+  ));
 
   let renderer = DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, FontContext::new()).unwrap();
   let start_failures = failed_allocs();
-  fail_next_allocation(WIDTH as usize * mem::size_of::<u32>(), mem::align_of::<u32>());
-  let pixmap = renderer.render(&list).expect("render linear gradient pattern");
+  fail_next_allocation(
+    WIDTH as usize * mem::size_of::<u32>(),
+    mem::align_of::<u32>(),
+  );
+  let pixmap = renderer
+    .render(&list)
+    .expect("render linear gradient pattern");
   assert_eq!(
     failed_allocs(),
     start_failures + 1,
@@ -108,29 +119,36 @@ fn pattern_fills_survive_allocation_failures_in_sampling_tables() {
   assert_not_white(&pixmap);
 
   let mut list = DisplayList::new();
-  list.push(DisplayItem::RadialGradientPattern(RadialGradientPatternItem {
-    dest_rect: Rect::from_xywh(0.0, 0.0, WIDTH as f32, HEIGHT as f32),
-    tile_size: Size::new(1.0, 1.0),
-    origin: Point::new(0.0, 0.0),
-    center: Point::new(0.5, 0.5),
-    radii: Point::new(0.5, 0.5),
-    stops: vec![
-      GradientStop {
-        position: 0.0,
-        color: Rgba::BLACK,
-      },
-      GradientStop {
-        position: 1.0,
-        color: Rgba::BLACK,
-      },
-    ],
-    spread: GradientSpread::Pad,
-  }));
+  list.push(DisplayItem::RadialGradientPattern(
+    RadialGradientPatternItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, WIDTH as f32, HEIGHT as f32),
+      tile_size: Size::new(1.0, 1.0),
+      origin: Point::new(0.0, 0.0),
+      center: Point::new(0.5, 0.5),
+      radii: Point::new(0.5, 0.5),
+      stops: vec![
+        GradientStop {
+          position: 0.0,
+          color: Rgba::BLACK,
+        },
+        GradientStop {
+          position: 1.0,
+          color: Rgba::BLACK,
+        },
+      ],
+      spread: GradientSpread::Pad,
+    },
+  ));
 
   let renderer = DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, FontContext::new()).unwrap();
   let start_failures = failed_allocs();
-  fail_next_allocation(WIDTH as usize * mem::size_of::<u32>(), mem::align_of::<u32>());
-  let pixmap = renderer.render(&list).expect("render radial gradient pattern");
+  fail_next_allocation(
+    WIDTH as usize * mem::size_of::<u32>(),
+    mem::align_of::<u32>(),
+  );
+  let pixmap = renderer
+    .render(&list)
+    .expect("render radial gradient pattern");
   assert_eq!(
     failed_allocs(),
     start_failures + 1,
@@ -171,7 +189,11 @@ fn pattern_fills_survive_allocation_failures_in_sampling_tables() {
     px[3] = 255;
   }
   let mask_image = ImageData::new(mask_w, mask_h, 1.0, 1.0, mask_pixels);
-  let mask = simple_mask(ResolvedMaskImage::Raster(mask_image), MaskMode::Luminance, mask_bounds);
+  let mask = simple_mask(
+    ResolvedMaskImage::Raster(mask_image),
+    MaskMode::Luminance,
+    mask_bounds,
+  );
 
   let mut list = DisplayList::new();
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
@@ -206,7 +228,9 @@ fn pattern_fills_survive_allocation_failures_in_sampling_tables() {
   let start_failures = failed_allocs();
   let mask_bytes = (mask_w as usize) * (mask_h as usize) * 4;
   fail_nth_allocation(mask_bytes, mem::align_of::<u8>(), 1);
-  let pixmap = renderer.render(&list).expect("render luminance mask with failed alloc");
+  let pixmap = renderer
+    .render(&list)
+    .expect("render luminance mask with failed alloc");
   assert_eq!(
     failed_allocs(),
     start_failures + 1,

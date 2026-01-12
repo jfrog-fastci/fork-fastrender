@@ -41,7 +41,9 @@ pub fn parse_meta_color_scheme_content(content: &str) -> Option<ColorSchemePrefe
     return None;
   }
 
-  let tokens: Vec<String> = split_ascii_whitespace(trimmed).map(|t| t.to_string()).collect();
+  let tokens: Vec<String> = split_ascii_whitespace(trimmed)
+    .map(|t| t.to_string())
+    .collect();
   crate::style::properties::parse_color_scheme_tokens(&tokens)
 }
 
@@ -52,7 +54,9 @@ pub fn extract_color_scheme(dom: &DomNode) -> Option<ColorSchemePreference> {
   extract_color_scheme_impl(dom, None).ok().flatten()
 }
 
-pub(crate) fn extract_color_scheme_with_deadline(dom: &DomNode) -> Result<Option<ColorSchemePreference>> {
+pub(crate) fn extract_color_scheme_with_deadline(
+  dom: &DomNode,
+) -> Result<Option<ColorSchemePreference>> {
   let mut deadline_counter = 0usize;
   extract_color_scheme_impl(dom, Some(&mut deadline_counter))
 }
@@ -192,9 +196,9 @@ mod tests {
 
   #[test]
   fn ignores_body_meta_color_scheme() {
-    let html = "<html><head></head><body><meta name=color-scheme content='light dark'></body></html>";
+    let html =
+      "<html><head></head><body><meta name=color-scheme content='light dark'></body></html>";
     let dom = crate::dom::parse_html(html).unwrap();
     assert!(extract_color_scheme(&dom).is_none());
   }
 }
-

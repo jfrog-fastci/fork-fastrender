@@ -34,7 +34,8 @@ fn generated_bindings_snapshots_contain_known_members() {
     "expected window bindings to install URL constructor"
   );
   assert!(
-    window_bindings_no_whitespace.contains("rt.define_data_property_str(global,\"URLSearchParams\","),
+    window_bindings_no_whitespace
+      .contains("rt.define_data_property_str(global,\"URLSearchParams\","),
     "expected window bindings to install URLSearchParams constructor"
   );
   assert!(

@@ -492,11 +492,8 @@ impl Bundle {
     if key == self.manifest.original_url || key == doc_final_url {
       let (doc_meta, bytes) = self.document();
       let bytes = clone_bytes_fallible(&bytes, "bundle document bytes")?;
-      let mut res = FetchedResource::with_final_url(
-        bytes,
-        doc_meta.content_type.clone(),
-        Some(doc_final_url),
-      );
+      let mut res =
+        FetchedResource::with_final_url(bytes, doc_meta.content_type.clone(), Some(doc_final_url));
       res.nosniff = doc_meta.nosniff;
       res.status = doc_meta.status;
       res.etag = doc_meta.etag.clone();
@@ -539,7 +536,10 @@ impl Bundle {
       return super::data_url::decode_data_url(key);
     }
 
-    Err(Error::Other(format!("Resource not found in bundle: {}", key)))
+    Err(Error::Other(format!(
+      "Resource not found in bundle: {}",
+      key
+    )))
   }
 
   fn load_directory(dir: &Path) -> Result<Self> {
@@ -1525,7 +1525,9 @@ mod tests {
 
     let req = FetchRequest::new("https://example.com/", FetchDestination::DocumentNoUser);
     assert_eq!(
-      fetcher.request_header_value(req, "sec-fetch-user").as_deref(),
+      fetcher
+        .request_header_value(req, "sec-fetch-user")
+        .as_deref(),
       Some("")
     );
 
@@ -2265,7 +2267,10 @@ mod tests {
     let fetcher = BundledFetcher::new(bundle);
 
     let res = fetcher.fetch(original_url.as_str()).expect("fetch doc");
-    assert_eq!(res.header_values("Content-Security-Policy"), vec![csp_value]);
+    assert_eq!(
+      res.header_values("Content-Security-Policy"),
+      vec![csp_value]
+    );
     assert!(CspPolicy::from_response_headers(&res).is_some());
   }
 
@@ -3666,10 +3671,10 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
-        fetch_profile: BundleFetchProfile {
-          user_agent: "Foo/1.0".to_string(),
-          accept_language: super::super::DEFAULT_ACCEPT_LANGUAGE.to_string(),
-        },
+      fetch_profile: BundleFetchProfile {
+        user_agent: "Foo/1.0".to_string(),
+        accept_language: super::super::DEFAULT_ACCEPT_LANGUAGE.to_string(),
+      },
       resources: BTreeMap::from([
         (
           key_foo,

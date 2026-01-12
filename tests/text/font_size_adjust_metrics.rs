@@ -115,7 +115,9 @@ fn font_size_adjust_ic_metrics_use_ideograph_advances() {
   let units_per_em = face.units_per_em() as f32;
   assert!(units_per_em > 0.0);
 
-  let glyph_id = face.glyph_index(IDEOGRAPH).expect("fixture includes ideograph");
+  let glyph_id = face
+    .glyph_index(IDEOGRAPH)
+    .expect("fixture includes ideograph");
   assert!(glyph_id.0 != 0);
   let hor = face
     .glyph_hor_advance(glyph_id)

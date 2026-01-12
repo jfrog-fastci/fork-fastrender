@@ -69,4 +69,3 @@ fn grid_container_padding_left_calc_percentage_resolves_against_containing_block
   let child = fragment.children.first().expect("child fragment");
   assert_approx(child.bounds.x(), 25.0, "grid item x offset");
 }
-

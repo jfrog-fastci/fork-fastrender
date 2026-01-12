@@ -350,7 +350,11 @@ fn compute_preliminary(
       .unwrap_or(0.0);
     constants.gap.set_main(
       constants.dir,
-      if new_gap.is_finite() && new_gap >= 0.0 { new_gap } else { 0.0 },
+      if new_gap.is_finite() && new_gap >= 0.0 {
+        new_gap
+      } else {
+        0.0
+      },
     );
   }
 
@@ -476,7 +480,11 @@ fn compute_preliminary(
           child.offset_main
         };
         let baseline = offset_vertical + child.baseline;
-        if baseline.is_finite() { Some(baseline) } else { None }
+        if baseline.is_finite() {
+          Some(baseline)
+        } else {
+          None
+        }
       })
   };
 
@@ -546,7 +554,13 @@ fn compute_constants(
     .resolve_or_zero(node_inner_size.or(Size::zero()), |val, basis| {
       tree.calc(val, basis)
     })
-    .map(|gap| if gap.is_finite() && gap >= 0.0 { gap } else { 0.0 });
+    .map(|gap| {
+      if gap.is_finite() && gap >= 0.0 {
+        gap
+      } else {
+        0.0
+      }
+    });
 
   let container_size = Size::zero();
   let inner_container_size = Size::zero();
@@ -1054,30 +1068,30 @@ fn collect_flex_lines<'a>(
           // Find index of the first item in the next line
           // (or the last item if all remaining items are in the current line)
           let mut line_length = 0.0;
-            let index = flex_items
-              .iter()
-              .enumerate()
-              .find(|&(idx, child)| {
-                // Gaps only occur between items (not before the first one or after the last one)
-                // So first item in the line does not contribute a gap to the line length
-                let gap_contribution = if idx == 0 { 0.0 } else { main_axis_gap };
-                line_length += child.hypothetical_outer_size.main(constants.dir) + gap_contribution;
-                // Taffy rounds final layouts to integer pixels by default (`TaffyConfig::use_rounding`).
-                // Flex line-breaking, however, happens on the unrounded sizes. This can cause a line to
-                // wrap even though the post-rounding layout would fit without overflow (e.g. text
-                // widths with small subpixel advances).
-                //
-                // Compare the rounded cumulative line length against the rounded available space so
-                // line-breaking decisions remain consistent with the final pixel-snapped layout.
-                let exceeds = if line_length.is_finite() && main_axis_available_space.is_finite() {
-                  round(line_length) > round(main_axis_available_space)
-                } else {
-                  line_length > main_axis_available_space
-                };
-                exceeds && idx != 0
-              })
-              .map(|(idx, _)| idx)
-              .unwrap_or(flex_items.len());
+          let index = flex_items
+            .iter()
+            .enumerate()
+            .find(|&(idx, child)| {
+              // Gaps only occur between items (not before the first one or after the last one)
+              // So first item in the line does not contribute a gap to the line length
+              let gap_contribution = if idx == 0 { 0.0 } else { main_axis_gap };
+              line_length += child.hypothetical_outer_size.main(constants.dir) + gap_contribution;
+              // Taffy rounds final layouts to integer pixels by default (`TaffyConfig::use_rounding`).
+              // Flex line-breaking, however, happens on the unrounded sizes. This can cause a line to
+              // wrap even though the post-rounding layout would fit without overflow (e.g. text
+              // widths with small subpixel advances).
+              //
+              // Compare the rounded cumulative line length against the rounded available space so
+              // line-breaking decisions remain consistent with the final pixel-snapped layout.
+              let exceeds = if line_length.is_finite() && main_axis_available_space.is_finite() {
+                round(line_length) > round(main_axis_available_space)
+              } else {
+                line_length > main_axis_available_space
+              };
+              exceeds && idx != 0
+            })
+            .map(|(idx, _)| idx)
+            .unwrap_or(flex_items.len());
 
           let (items, rest) = flex_items.split_at_mut(index);
           lines.push(FlexLine {
@@ -1767,7 +1781,11 @@ fn calculate_children_base_lines(
       } else {
         0.0
       };
-      let margin_start = if margin_start.is_finite() { margin_start } else { 0.0 };
+      let margin_start = if margin_start.is_finite() {
+        margin_start
+      } else {
+        0.0
+      };
 
       let baseline_value = baseline.unwrap_or(fallback_extent) + margin_start;
       child.baseline = if baseline_value.is_finite() {
@@ -2033,7 +2051,12 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
         child.offset_main = if i == 0 { 0.0 } else { gap };
       };
       if constants.dir.is_reverse() {
-        line.items.iter_mut().rev().enumerate().for_each(set_gap_offset);
+        line
+          .items
+          .iter_mut()
+          .rev()
+          .enumerate()
+          .for_each(set_gap_offset);
       } else {
         line.items.iter_mut().enumerate().for_each(set_gap_offset);
       }
@@ -2045,14 +2068,13 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
       let raw_justify_content_mode = constants
         .justify_content
         .unwrap_or(JustifyContent::FlexStart);
-      let justify_content_mode =
-        apply_alignment_fallback(
-          free_space,
-          num_items,
-          raw_justify_content_mode,
-          is_safe,
-          constants.start_end_axis_positive.main(constants.dir),
-        );
+      let justify_content_mode = apply_alignment_fallback(
+        free_space,
+        num_items,
+        raw_justify_content_mode,
+        is_safe,
+        constants.start_end_axis_positive.main(constants.dir),
+      );
 
       let justify_item = |(i, child): (usize, &mut FlexItem)| {
         child.offset_main = compute_alignment_offset(
@@ -2193,7 +2215,11 @@ fn align_flex_items_along_cross_axis(
     }
   };
 
-  if offset.is_finite() { offset } else { 0.0 }
+  if offset.is_finite() {
+    offset
+  } else {
+    0.0
+  }
 }
 
 /// Determine the flex container’s used cross size.
@@ -2257,14 +2283,13 @@ fn align_flex_lines_per_align_content(
   }
   let is_safe = false; // TODO: Implement safe alignment
 
-  let align_content_mode =
-    apply_alignment_fallback(
-      free_space,
-      num_lines,
-      constants.align_content,
-      is_safe,
-      constants.start_end_axis_positive.cross(constants.dir),
-    );
+  let align_content_mode = apply_alignment_fallback(
+    free_space,
+    num_lines,
+    constants.align_content,
+    is_safe,
+    constants.start_end_axis_positive.cross(constants.dir),
+  );
 
   let align_line = |(i, line): (usize, &mut FlexLine)| {
     line.offset_cross = compute_alignment_offset(
@@ -2334,8 +2359,11 @@ fn calculate_flex_item(
   if direction.is_row() {
     let baseline_offset_cross =
       total_offset_cross + line_offset_cross + item.margin.cross_start(direction);
-    let mut inner_baseline =
-      layout_output.first_baselines.y.filter(|b| b.is_finite()).unwrap_or(size.height);
+    let mut inner_baseline = layout_output
+      .first_baselines
+      .y
+      .filter(|b| b.is_finite())
+      .unwrap_or(size.height);
     if !inner_baseline.is_finite() {
       inner_baseline = 0.0;
     }
@@ -2344,8 +2372,11 @@ fn calculate_flex_item(
     item.baseline = if baseline.is_finite() { baseline } else { 0.0 };
   } else {
     let baseline_offset_main = *total_offset_main + item.margin.main_start(direction);
-    let mut inner_baseline =
-      layout_output.first_baselines.y.filter(|b| b.is_finite()).unwrap_or(size.height);
+    let mut inner_baseline = layout_output
+      .first_baselines
+      .y
+      .filter(|b| b.is_finite())
+      .unwrap_or(size.height);
     if !inner_baseline.is_finite() {
       inner_baseline = 0.0;
     }
@@ -2725,18 +2756,18 @@ fn perform_absolute_layout_on_absolute_children(
     } else {
       // Stretch is an invalid value for justify_content in the flexbox algorithm, so we
       // treat it as if it wasn't set (and thus we default to FlexStart behaviour)
-       // `wrap-reverse` only flips the *cross axis*. For absolutely positioned items, the
-       // main-axis alignment behaviour of `justify-content: flex-start/flex-end` must only be
-       // flipped when the main axis is reversed via `flex-direction: *-reverse`.
-       let main_axis_reversed = constants.dir.is_reverse();
-       match (
-         constants.justify_content.unwrap_or(JustifyContent::Start),
-         main_axis_reversed,
-       ) {
-         (JustifyContent::SpaceBetween, _)
-         | (JustifyContent::Start, _)
-         | (JustifyContent::Stretch, false)
-         | (JustifyContent::FlexStart, false)
+      // `wrap-reverse` only flips the *cross axis*. For absolutely positioned items, the
+      // main-axis alignment behaviour of `justify-content: flex-start/flex-end` must only be
+      // flipped when the main axis is reversed via `flex-direction: *-reverse`.
+      let main_axis_reversed = constants.dir.is_reverse();
+      match (
+        constants.justify_content.unwrap_or(JustifyContent::Start),
+        main_axis_reversed,
+      ) {
+        (JustifyContent::SpaceBetween, _)
+        | (JustifyContent::Start, _)
+        | (JustifyContent::Stretch, false)
+        | (JustifyContent::FlexStart, false)
         | (JustifyContent::FlexEnd, true) => {
           constants.content_box_inset.main_start(constants.dir)
             + resolved_margin.main_start(constants.dir)
@@ -2973,8 +3004,7 @@ mod tests {
 
   #[test]
   fn flex_wrap_wrap_reverse_row_align_content_flex_end_packs_toward_physical_cross_start() {
-    let (taffy, [child1, child2, child3]) =
-      build_row_wrap_reverse_tree(AlignContent::FlexEnd, 0.0);
+    let (taffy, [child1, child2, child3]) = build_row_wrap_reverse_tree(AlignContent::FlexEnd, 0.0);
 
     // Packed toward physical cross-start (top) with line order reversed.
     assert_eq!(taffy.layout(child3).unwrap().location.y, 0.0);
@@ -3185,10 +3215,8 @@ mod tests {
     let (mut taffy_expected, root_expected, [child1_expected, child2_expected]) =
       build_row_baseline_tree();
     taffy_expected
-      .compute_layout_with_measure(
-        root_expected,
-        Size::MAX_CONTENT,
-        |_, _, node_id, _, _| MeasureOutput {
+      .compute_layout_with_measure(root_expected, Size::MAX_CONTENT, |_, _, node_id, _, _| {
+        MeasureOutput {
           size: Size {
             width: 10.0,
             height: 10.0,
@@ -3201,8 +3229,8 @@ mod tests {
               Some(0.0)
             },
           },
-        },
-      )
+        }
+      })
       .unwrap();
 
     let expected_child1_y = taffy_expected.layout(child1_expected).unwrap().location.y;
@@ -3211,20 +3239,22 @@ mod tests {
     for baseline in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
       let (mut taffy, root, [child1, child2]) = build_row_baseline_tree();
       taffy
-        .compute_layout_with_measure(
-          root,
-          Size::MAX_CONTENT,
-          |_, _, node_id, _, _| MeasureOutput {
+        .compute_layout_with_measure(root, Size::MAX_CONTENT, |_, _, node_id, _, _| {
+          MeasureOutput {
             size: Size {
               width: 10.0,
               height: 10.0,
             },
             first_baselines: Point {
               x: None,
-              y: if node_id == child1 { Some(baseline) } else { Some(0.0) },
+              y: if node_id == child1 {
+                Some(baseline)
+              } else {
+                Some(0.0)
+              },
             },
-          },
-        )
+          }
+        })
         .unwrap();
 
       let child1_y = taffy.layout(child1).unwrap().location.y;

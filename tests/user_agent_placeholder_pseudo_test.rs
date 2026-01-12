@@ -63,4 +63,3 @@ fn author_placeholder_color_is_not_dimmed_by_user_agent_opacity() {
   assert_eq!(placeholder.color, Rgba::rgb(11, 22, 33));
   assert_eq!(placeholder.opacity, 1.0);
 }
-

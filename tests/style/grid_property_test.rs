@@ -272,7 +272,10 @@ fn grid_template_shorthand_supports_subgrid_columns_only() {
 
   apply_declaration(
     &mut style,
-    &decl("grid-template", PropertyValue::Keyword("auto / subgrid".into())),
+    &decl(
+      "grid-template",
+      PropertyValue::Keyword("auto / subgrid".into()),
+    ),
     &ComputedStyle::default(),
     16.0,
     16.0,
@@ -289,7 +292,10 @@ fn grid_template_shorthand_supports_subgrid_rows_only() {
 
   apply_declaration(
     &mut style,
-    &decl("grid-template", PropertyValue::Keyword("subgrid / auto".into())),
+    &decl(
+      "grid-template",
+      PropertyValue::Keyword("subgrid / auto".into()),
+    ),
     &ComputedStyle::default(),
     16.0,
     16.0,

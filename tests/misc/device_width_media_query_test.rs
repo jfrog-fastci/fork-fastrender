@@ -28,4 +28,3 @@ fn device_width_media_queries_use_headless_chrome_screen_size_by_default() {
     "expected max-device-width media query to apply (green background)"
   );
 }
-

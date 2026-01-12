@@ -2,19 +2,23 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use webidl_ir::{
-  parse_default_value, parse_idl_type_complete, DefaultValue, IdlType, NamedType, NamedTypeKind, NumericType,
-  StringType,
+  parse_default_value, parse_idl_type_complete, DefaultValue, IdlType, NamedType, NamedTypeKind,
+  NumericType, StringType,
 };
 
 use xtask::webidl::overload_ir::{
-  are_distinguishable, compute_dispatch_plan, compute_effective_overload_set, distinguishing_argument_index,
-  validate_overload_set, Optionality, Overload, OverloadArgument, Origin, WorldContext,
-  EffectiveOverloadEntry, EffectiveOverloadSet,
+  are_distinguishable, compute_dispatch_plan, compute_effective_overload_set,
+  distinguishing_argument_index, validate_overload_set, EffectiveOverloadEntry,
+  EffectiveOverloadSet, Optionality, Origin, Overload, OverloadArgument, WorldContext,
 };
 use xtask::webidl::resolve::{resolve_webidl_world, ExposureTarget};
 use xtask::webidl::semantic::SemanticInterfaceMemberKind;
 use xtask::webidl::type_resolution::expand_typedefs_in_type;
-use xtask::webidl::{ast::IdlLiteral, load::{load_combined_webidl, WebIdlSource}, parse_webidl, SemanticWorld};
+use xtask::webidl::{
+  ast::IdlLiteral,
+  load::{load_combined_webidl, WebIdlSource},
+  parse_webidl, SemanticWorld,
+};
 
 #[derive(Default)]
 struct TestWorld {
@@ -46,7 +50,9 @@ fn compute_effective_overload_set_spec_example_a_f() {
   let overloads = vec![
     Overload {
       name: "f".into(),
-      arguments: vec![OverloadArgument::required(IdlType::String(StringType::DomString))],
+      arguments: vec![OverloadArgument::required(IdlType::String(
+        StringType::DomString,
+      ))],
       origin: None,
     },
     Overload {
@@ -95,7 +101,11 @@ fn compute_effective_overload_set_spec_example_a_f() {
           IdlType::String(StringType::DomString),
           IdlType::Numeric(NumericType::Double),
         ],
-        optionality_list: vec![Optionality::Required, Optionality::Required, Optionality::Variadic],
+        optionality_list: vec![
+          Optionality::Required,
+          Optionality::Required,
+          Optionality::Variadic,
+        ],
       },
       EffectiveOverloadEntry {
         callable_id: 1,
@@ -129,7 +139,11 @@ fn compute_effective_overload_set_spec_example_a_f() {
           IdlType::String(StringType::DomString),
           IdlType::String(StringType::DomString),
         ],
-        optionality_list: vec![Optionality::Required, Optionality::Required, Optionality::Optional],
+        optionality_list: vec![
+          Optionality::Required,
+          Optionality::Required,
+          Optionality::Optional,
+        ],
       },
       EffectiveOverloadEntry {
         callable_id: 3,
@@ -186,12 +200,16 @@ fn validate_overload_set_rejects_domstring_vs_usvstring() {
   let overloads = vec![
     Overload {
       name: "f".into(),
-      arguments: vec![OverloadArgument::required(IdlType::String(StringType::DomString))],
+      arguments: vec![OverloadArgument::required(IdlType::String(
+        StringType::DomString,
+      ))],
       origin: None,
     },
     Overload {
       name: "f".into(),
-      arguments: vec![OverloadArgument::required(IdlType::String(StringType::UsvString))],
+      arguments: vec![OverloadArgument::required(IdlType::String(
+        StringType::UsvString,
+      ))],
       origin: None,
     },
   ];
@@ -208,7 +226,9 @@ fn validate_overload_set_rejects_mismatch_before_distinguishing_index() {
   let overloads = vec![
     Overload {
       name: "f".into(),
-      arguments: vec![OverloadArgument::required(IdlType::String(StringType::DomString))],
+      arguments: vec![OverloadArgument::required(IdlType::String(
+        StringType::DomString,
+      ))],
       origin: None,
     },
     Overload {
@@ -252,7 +272,9 @@ fn validate_overload_set_rejects_bigint_vs_numeric_at_distinguishing_index() {
     },
     Overload {
       name: "f".into(),
-      arguments: vec![OverloadArgument::required(IdlType::Numeric(NumericType::Double))],
+      arguments: vec![OverloadArgument::required(IdlType::Numeric(
+        NumericType::Double,
+      ))],
       origin: None,
     },
   ];
@@ -328,7 +350,11 @@ fn event_target_add_event_listener_effective_overload_set() {
   }];
 
   let plan = compute_dispatch_plan(&overloads, &world).expect("dispatch plan should be computable");
-  let group_counts = plan.groups.iter().map(|g| g.argument_count).collect::<Vec<_>>();
+  let group_counts = plan
+    .groups
+    .iter()
+    .map(|g| g.argument_count)
+    .collect::<Vec<_>>();
   assert_eq!(group_counts, vec![2, 3]);
   for g in &plan.groups {
     assert_eq!(g.entries.len(), 1);
@@ -365,7 +391,10 @@ fn overload_dispatch_plans_can_be_computed_for_window_exposed_dom_operations_in_
   let loaded = load_combined_webidl(repo_root, &sources).unwrap();
   if !loaded.missing_sources.is_empty() {
     for (label, path) in &loaded.missing_sources {
-      eprintln!("skipping semantic overload test: missing {label} source at {}", path.display());
+      eprintln!(
+        "skipping semantic overload test: missing {label} source at {}",
+        path.display()
+      );
     }
     return;
   }
@@ -384,8 +413,10 @@ fn overload_dispatch_plans_can_be_computed_for_window_exposed_dom_operations_in_
   for (iface_name, iface) in &semantic.interfaces {
     // Group operation overloads by (operation name, static flag). This is the minimal key for
     // WebIDL overload sets for named operations.
-    let mut ops: BTreeMap<(String, bool), Vec<(String, Vec<xtask::webidl::semantic::SemanticArgument>)>> =
-      BTreeMap::new();
+    let mut ops: BTreeMap<
+      (String, bool),
+      Vec<(String, Vec<xtask::webidl::semantic::SemanticArgument>)>,
+    > = BTreeMap::new();
     let mut ctors: Vec<(String, Vec<xtask::webidl::semantic::SemanticArgument>)> = Vec::new();
 
     for member in &iface.members {
@@ -421,8 +452,12 @@ fn overload_dispatch_plans_can_be_computed_for_window_exposed_dom_operations_in_
           arguments: args
             .iter()
             .map(|arg| {
-              let ty = expand_typedefs_in_type(&type_ctx, &arg.ty)
-                .unwrap_or_else(|e| panic!("expand typedefs in {iface_name} constructor arg {}: {e}", arg.name));
+              let ty = expand_typedefs_in_type(&type_ctx, &arg.ty).unwrap_or_else(|e| {
+                panic!(
+                  "expand typedefs in {iface_name} constructor arg {}: {e}",
+                  arg.name
+                )
+              });
               OverloadArgument {
                 name: Some(arg.name.clone()),
                 ty,
@@ -433,7 +468,10 @@ fn overload_dispatch_plans_can_be_computed_for_window_exposed_dom_operations_in_
                 } else {
                   Optionality::Required
                 },
-                default: arg.default.as_ref().and_then(default_value_from_idl_literal),
+                default: arg
+                  .default
+                  .as_ref()
+                  .and_then(default_value_from_idl_literal),
               }
             })
             .collect(),
@@ -465,8 +503,12 @@ fn overload_dispatch_plans_can_be_computed_for_window_exposed_dom_operations_in_
           arguments: args
             .iter()
             .map(|arg| {
-              let ty = expand_typedefs_in_type(&type_ctx, &arg.ty)
-                .unwrap_or_else(|e| panic!("expand typedefs in {iface_name}.{op_name} arg {}: {e}", arg.name));
+              let ty = expand_typedefs_in_type(&type_ctx, &arg.ty).unwrap_or_else(|e| {
+                panic!(
+                  "expand typedefs in {iface_name}.{op_name} arg {}: {e}",
+                  arg.name
+                )
+              });
               OverloadArgument {
                 name: Some(arg.name.clone()),
                 ty,
@@ -477,7 +519,10 @@ fn overload_dispatch_plans_can_be_computed_for_window_exposed_dom_operations_in_
                 } else {
                   Optionality::Required
                 },
-                default: arg.default.as_ref().and_then(default_value_from_idl_literal),
+                default: arg
+                  .default
+                  .as_ref()
+                  .and_then(default_value_from_idl_literal),
               }
             })
             .collect(),
@@ -501,7 +546,10 @@ fn overload_dispatch_plans_can_be_computed_for_window_exposed_dom_operations_in_
     }
   }
 
-  assert!(checked_sets > 0, "expected at least one overload set to be checked");
+  assert!(
+    checked_sets > 0,
+    "expected at least one overload set to be checked"
+  );
   assert!(
     failures.is_empty(),
     "semantic-world overload planning failed:\n\n{}",

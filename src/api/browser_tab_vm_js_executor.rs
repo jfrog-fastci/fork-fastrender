@@ -4,14 +4,14 @@ use crate::js::vm_error_format;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{
-  install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
-  install_window_timers_bindings, install_window_xhr_bindings_with_guard,
   import_maps::{
     create_import_map_parse_result_with_limits, register_import_map_with_limits, ImportMapError,
     ImportMapWarningKind,
   },
-  CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ModuleKey, ScriptElementSpec,
-  WindowFetchBindings, WindowFetchEnv, WindowXhrBindings, WindowXhrEnv,
+  install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
+  install_window_timers_bindings, install_window_xhr_bindings_with_guard, CurrentScriptStateHandle,
+  JsExecutionOptions, LocationNavigationRequest, ModuleKey, ScriptElementSpec, WindowFetchBindings,
+  WindowFetchEnv, WindowXhrBindings, WindowXhrEnv,
 };
 use crate::resource::{origin_from_url, CorsMode, ResourceFetcher};
 use crate::style::media::{MediaContext, MediaType};
@@ -73,7 +73,11 @@ impl VmJsBrowserTabExecutor {
     }
   }
 
-  fn record_js_exception(diag: &SharedRenderDiagnostics, realm: &mut WindowRealm, err: vm_js::VmError) {
+  fn record_js_exception(
+    diag: &SharedRenderDiagnostics,
+    realm: &mut WindowRealm,
+    err: vm_js::VmError,
+  ) {
     let (message, stack) = vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
     diag.record_js_exception(message, stack);
   }
@@ -107,9 +111,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.webidl_bindings_host = Some(NonNull::from(host));
   }
 
-  fn event_listener_invoker(
-    &self,
-  ) -> Option<Box<dyn crate::web::events::EventListenerInvoker>> {
+  fn event_listener_invoker(&self) -> Option<Box<dyn crate::web::events::EventListenerInvoker>> {
     // SAFETY: The returned invoker is stored alongside this executor in `BrowserTabHost`, so the
     // pointer remains valid for the lifetime of the host. All access occurs on the host thread.
     let realm_ptr = (&self.realm as *const Option<WindowRealm>) as *mut Option<WindowRealm>;
@@ -118,7 +120,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       (&self.webidl_bindings_host as *const Option<NonNull<dyn WebIdlBindingsHost>>) as *mut _;
     Some(Box::new(
       crate::js::window_realm::WindowRealmDomEventListenerInvoker::<BrowserTabHost>::new(
-        realm_ptr, vm_host_ptr, webidl_bindings_host_ptr,
+        realm_ptr,
+        vm_host_ptr,
+        webidl_bindings_host_ptr,
       ),
     ))
   }
@@ -233,7 +237,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
   ) -> Result<()> {
     let Some(realm) = self.realm.as_mut() else {
       return Err(Error::Other(
-        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
+        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?"
+          .to_string(),
       ));
     };
     let diagnostics = self.diagnostics.clone();
@@ -329,7 +334,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let Some(realm) = self.realm.as_mut() else {
       return Err(Error::Other(
-        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
+        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?"
+          .to_string(),
       ));
     };
 
@@ -347,12 +353,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
     let module_loader = realm.module_loader_handle();
 
-    update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
+    update_time_bindings_clock(realm.heap(), clock.clone())
+      .map_err(|err| Error::Other(err.to_string()))?;
     realm.set_base_url(spec.base_url.clone());
     realm.reset_interrupt();
 
     let exec_result: Result<()> = (|| {
-
       {
         let mut loader = module_loader.borrow_mut();
         loader.set_fetcher(Arc::clone(&fetcher));
@@ -411,7 +417,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         if spec.src_attr_present {
           loader.get_or_fetch_module(module_graph, entry_key.clone())
         } else {
-          loader.get_or_parse_inline_module(module_graph, entry_key.clone(), spec.inline_text.as_str())
+          loader.get_or_parse_inline_module(
+            module_graph,
+            entry_key.clone(),
+            spec.inline_text.as_str(),
+          )
         }
       };
 
@@ -489,12 +499,14 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let Some(realm) = self.realm.as_mut() else {
       return Err(Error::Other(
-        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
+        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?"
+          .to_string(),
       ));
     };
     let module_loader = realm.module_loader_handle();
 
-    update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
+    update_time_bindings_clock(realm.heap(), clock.clone())
+      .map_err(|err| Error::Other(err.to_string()))?;
     realm.set_base_url(spec.base_url.clone());
     {
       let mut loader = module_loader.borrow_mut();
@@ -779,9 +791,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       "composed": event.composed,
     })
     .to_string();
-    let source = format!(
-      "(function(){{const e=new Event({type_lit},{init_lit});{dispatch_expr}}})();",
-    );
+    let source =
+      format!("(function(){{const e=new Event({type_lit},{init_lit});{dispatch_expr}}})();",);
 
     let clock = event_loop.clock();
 
@@ -848,10 +859,16 @@ fn format_import_map_warning(kind: &ImportMapWarningKind) -> String {
     ImportMapWarningKind::AddressNotString { specifier_key } => {
       format!("address for specifier key {specifier_key:?} was not a string")
     }
-    ImportMapWarningKind::AddressInvalid { specifier_key, address } => {
+    ImportMapWarningKind::AddressInvalid {
+      specifier_key,
+      address,
+    } => {
       format!("invalid address {address:?} for specifier key {specifier_key:?}")
     }
-    ImportMapWarningKind::TrailingSlashMismatch { specifier_key, address } => {
+    ImportMapWarningKind::TrailingSlashMismatch {
+      specifier_key,
+      address,
+    } => {
       format!("trailing-slash mismatch for {specifier_key:?} -> {address:?}")
     }
     ImportMapWarningKind::ScopePrefixNotParseable { prefix } => {
@@ -872,11 +889,16 @@ fn format_import_map_error(err: &ImportMapError) -> String {
   match err {
     ImportMapError::Json(err) => format!("SyntaxError: {err}"),
     ImportMapError::TypeError(message) => format!("TypeError: {message}"),
-    ImportMapError::LimitExceeded(message) => format!("TypeError: import map limit exceeded: {message}"),
+    ImportMapError::LimitExceeded(message) => {
+      format!("TypeError: import map limit exceeded: {message}")
+    }
   }
 }
 
-fn ensure_promise_fulfilled(heap: &vm_js::Heap, promise: Value) -> std::result::Result<(), VmError> {
+fn ensure_promise_fulfilled(
+  heap: &vm_js::Heap,
+  promise: Value,
+) -> std::result::Result<(), VmError> {
   let Value::Object(promise_obj) = promise else {
     return Err(VmError::InvariantViolation("expected a Promise object"));
   };
@@ -886,7 +908,9 @@ fn ensure_promise_fulfilled(heap: &vm_js::Heap, promise: Value) -> std::result::
     )),
     PromiseState::Fulfilled => Ok(()),
     PromiseState::Rejected => {
-      let reason = heap.promise_result(promise_obj)?.unwrap_or(Value::Undefined);
+      let reason = heap
+        .promise_result(promise_obj)?
+        .unwrap_or(Value::Undefined);
       Err(VmError::Throw(reason))
     }
   }
@@ -928,7 +952,10 @@ mod tests {
 
   impl ResourceFetcher for MapFetcher {
     fn fetch(&self, url: &str) -> Result<FetchedResource> {
-      self.fetch_with_request(FetchRequest::new(url, crate::resource::FetchDestination::Other))
+      self.fetch_with_request(FetchRequest::new(
+        url,
+        crate::resource::FetchDestination::Other,
+      ))
     }
 
     fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
@@ -1060,8 +1087,11 @@ mod tests {
       .font_sources(FontConfig::bundled_only())
       .fetcher(fetcher)
       .build()?;
-    let mut document =
-      BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", RenderOptions::default())?;
+    let mut document = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html></html>",
+      RenderOptions::default(),
+    )?;
 
     let current_script = CurrentScriptStateHandle::default();
     let mut executor = VmJsBrowserTabExecutor::new();
@@ -1136,7 +1166,8 @@ mod tests {
   }
 
   #[test]
-  fn vm_js_browser_tab_executor_fetch_module_graph_counts_entry_module_bytes_for_total_budget() -> Result<()> {
+  fn vm_js_browser_tab_executor_fetch_module_graph_counts_entry_module_bytes_for_total_budget(
+  ) -> Result<()> {
     let entry_source = "import './dep.js';";
     let dep_source = "export const value = 1;";
     let dep_url = "https://example.com/dep.js";
@@ -1164,8 +1195,11 @@ mod tests {
       .font_sources(FontConfig::bundled_only())
       .fetcher(fetcher_trait.clone())
       .build()?;
-    let mut document =
-      BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", RenderOptions::default())?;
+    let mut document = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html></html>",
+      RenderOptions::default(),
+    )?;
 
     let current_script = CurrentScriptStateHandle::default();
     let mut executor = VmJsBrowserTabExecutor::new();
@@ -1224,8 +1258,11 @@ mod tests {
       .font_sources(FontConfig::bundled_only())
       .fetcher(fetcher)
       .build()?;
-    let mut document =
-      BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", RenderOptions::default())?;
+    let mut document = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html></html>",
+      RenderOptions::default(),
+    )?;
 
     let current_script = CurrentScriptStateHandle::default();
     let mut executor = VmJsBrowserTabExecutor::new();
@@ -1350,7 +1387,8 @@ mod tests {
   }
 
   #[test]
-  fn importmap_registration_respects_max_total_entries_limit_from_js_execution_options() -> Result<()> {
+  fn importmap_registration_respects_max_total_entries_limit_from_js_execution_options(
+  ) -> Result<()> {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     options.import_map_limits = ImportMapLimits {
@@ -1415,7 +1453,11 @@ mod tests {
       Promise.resolve().then(function () { document.documentElement.className = 'x'; });\
       </script></head><body></body></html>";
 
-    let tab = BrowserTab::from_html(html, RenderOptions::default(), VmJsBrowserTabExecutor::new())?;
+    let tab = BrowserTab::from_html(
+      html,
+      RenderOptions::default(),
+      VmJsBrowserTabExecutor::new(),
+    )?;
 
     let dom = tab.dom();
     let document_element = dom.document_element().expect("document element");

@@ -112,7 +112,13 @@ fn svg_serialization_overrides_gradient_transform_with_gradient_transform_attrib
   let doc = roxmltree::Document::parse(&svg).expect("parse serialized svg");
   let gradient = doc
     .descendants()
-    .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("linearGradient"))
+    .find(|node| {
+      node.is_element()
+        && node
+          .tag_name()
+          .name()
+          .eq_ignore_ascii_case("linearGradient")
+    })
     .expect("linearGradient element");
 
   assert_eq!(
@@ -146,7 +152,13 @@ fn svg_serialization_transform_none_removes_gradient_transform_attribute() {
   let doc = roxmltree::Document::parse(&svg).expect("parse serialized svg");
   let gradient = doc
     .descendants()
-    .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("linearGradient"))
+    .find(|node| {
+      node.is_element()
+        && node
+          .tag_name()
+          .name()
+          .eq_ignore_ascii_case("linearGradient")
+    })
     .expect("linearGradient element");
 
   assert!(
@@ -155,4 +167,3 @@ fn svg_serialization_transform_none_removes_gradient_transform_attribute() {
   );
   assert!(gradient.attribute("transform").is_none());
 }
-

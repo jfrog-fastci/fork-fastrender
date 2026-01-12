@@ -5,7 +5,9 @@ fn assert_type_error(rt: &mut VmJsRuntime, err: VmError) {
   let Some(thrown) = err.thrown_value() else {
     panic!("expected TypeError throw, got {err:?}");
   };
-  let s = rt.to_string(thrown).expect("error to_string should not throw");
+  let s = rt
+    .to_string(thrown)
+    .expect("error to_string should not throw");
   let Value::String(s) = s else {
     panic!("expected string");
   };

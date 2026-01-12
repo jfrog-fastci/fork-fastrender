@@ -76,4 +76,3 @@ fn abspos_grid_item_containing_block_uses_grid_area_for_percent_width() {
     "percentage widths should resolve against the grid area containing block",
   );
 }
-

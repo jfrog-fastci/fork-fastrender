@@ -27,11 +27,14 @@ fn unknown_container_queries_do_not_drop_nested_keyframes() {
     .expect("@container rule retained");
 
   assert_eq!(container_rule.conditions.len(), 1);
-  match container_rule.conditions.first().and_then(|condition| condition.query.as_ref()) {
-    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(ScrollStateFeature::Unknown {
-      name,
-      value,
-    }))) => {
+  match container_rule
+    .conditions
+    .first()
+    .and_then(|condition| condition.query.as_ref())
+  {
+    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(
+      ScrollStateFeature::Unknown { name, value },
+    ))) => {
       assert_eq!(name, "snapped");
       assert_eq!(value.as_deref(), Some("top"));
     }
@@ -61,10 +64,16 @@ fn stuck_scroll_state_query_parses() {
     .expect("@container rule retained");
 
   assert_eq!(container_rule.conditions.len(), 1);
-  match container_rule.conditions.first().and_then(|condition| condition.query.as_ref()) {
-    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(ScrollStateFeature::Stuck {
-      direction: Some(ScrollStateDirection::Top),
-    }))) => {}
+  match container_rule
+    .conditions
+    .first()
+    .and_then(|condition| condition.query.as_ref())
+  {
+    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(
+      ScrollStateFeature::Stuck {
+        direction: Some(ScrollStateDirection::Top),
+      },
+    ))) => {}
     other => panic!("expected stuck scroll-state() feature to parse, got {other:?}"),
   }
 }
@@ -88,10 +97,16 @@ fn snapped_scroll_state_query_parses() {
     .expect("@container rule retained");
 
   assert_eq!(container_rule.conditions.len(), 1);
-  match container_rule.conditions.first().and_then(|condition| condition.query.as_ref()) {
-    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(ScrollStateFeature::Snapped {
-      axis: Some(ScrollStateSnappedAxis::Both),
-    }))) => {}
+  match container_rule
+    .conditions
+    .first()
+    .and_then(|condition| condition.query.as_ref())
+  {
+    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(
+      ScrollStateFeature::Snapped {
+        axis: Some(ScrollStateSnappedAxis::Both),
+      },
+    ))) => {}
     other => panic!("expected snapped scroll-state() feature to parse, got {other:?}"),
   }
 }
@@ -115,10 +130,16 @@ fn scrolled_scroll_state_query_parses() {
     .expect("@container rule retained");
 
   assert_eq!(container_rule.conditions.len(), 1);
-  match container_rule.conditions.first().and_then(|condition| condition.query.as_ref()) {
-    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(ScrollStateFeature::Scrolled {
-      direction: Some(ScrollStateDirection::BlockStart),
-    }))) => {}
+  match container_rule
+    .conditions
+    .first()
+    .and_then(|condition| condition.query.as_ref())
+  {
+    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(
+      ScrollStateFeature::Scrolled {
+        direction: Some(ScrollStateDirection::BlockStart),
+      },
+    ))) => {}
     other => panic!("expected scrolled scroll-state() feature to parse, got {other:?}"),
   }
 }

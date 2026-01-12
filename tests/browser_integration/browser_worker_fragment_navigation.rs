@@ -53,12 +53,10 @@ fn next_frame_ready(
     }
 
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(msg) => {
-        match msg {
-          WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => return frame,
-          other => captured.push(other),
-        }
-      }
+      Ok(msg) => match msg {
+        WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => return frame,
+        other => captured.push(other),
+      },
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
         captured.extend(support::drain_for(rx, Duration::from_millis(200)));
@@ -309,7 +307,10 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
               committed_can_go_back = Some(*can_go_back);
             }
           }
-          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+          WorkerToUi::ScrollStateUpdated {
+            tab_id: got,
+            scroll,
+          } if *got == tab_id => {
             if committed_url.is_some() {
               scroll_y = Some(scroll.viewport.y);
             }
@@ -390,10 +391,15 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
       can_go_forward,
       ..
     } => (url, can_go_back, can_go_forward),
-    WorkerToUi::NavigationFailed { url, error, .. } => panic!("back navigation failed for {url}: {error}"),
+    WorkerToUi::NavigationFailed { url, error, .. } => {
+      panic!("back navigation failed for {url}: {error}")
+    }
     other => panic!("unexpected WorkerToUi message after back: {other:?}"),
   };
-  assert_eq!(back_url, url, "expected back navigation URL to match initial page");
+  assert_eq!(
+    back_url, url,
+    "expected back navigation URL to match initial page"
+  );
   assert!(
     !can_go_back && can_go_forward,
     "expected can_go_back=false and can_go_forward=true after back, got back={can_go_back} forward={can_go_forward}"
@@ -509,7 +515,10 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
               committed_can_go_back = Some(*can_go_back);
             }
           }
-          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+          WorkerToUi::ScrollStateUpdated {
+            tab_id: got,
+            scroll,
+          } if *got == tab_id => {
             if committed_url.is_some() {
               scroll_y = Some(scroll.viewport.y);
             }

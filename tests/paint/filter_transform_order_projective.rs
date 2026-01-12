@@ -1,8 +1,8 @@
 use super::util::bounding_box_for_color;
 use fastrender::geometry::{Point, Rect};
 use fastrender::paint::display_list::{
-  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter, StackingContextItem,
-  Transform3D,
+  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter,
+  StackingContextItem, Transform3D,
 };
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
 use fastrender::style::types::{BackfaceVisibility, TransformStyle};
@@ -73,7 +73,12 @@ fn filter_drop_shadow_rotates_with_affine_transform() {
   // Correct behavior: with a +90deg rotation, the +X shadow offset becomes +Y (down).
   let shadow_down = pixmap.pixel(25, 35).unwrap();
   assert_eq!(
-    (shadow_down.red(), shadow_down.green(), shadow_down.blue(), shadow_down.alpha()),
+    (
+      shadow_down.red(),
+      shadow_down.green(),
+      shadow_down.blue(),
+      shadow_down.alpha()
+    ),
     (0, 0, 0, 255),
     "expected drop-shadow offset to rotate with element (shadow should be below)"
   );
@@ -109,7 +114,9 @@ fn filter_drop_shadow_projective_transform_uses_local_offset() {
   // Full projective transform applied to the stacking context.
   let combined = perspective.multiply(&rotate);
 
-  let center_screen = combined.project_point_2d(cx, cy).expect("center should project");
+  let center_screen = combined
+    .project_point_2d(cx, cy)
+    .expect("center should project");
   let shadow_center_screen = combined
     .project_point_2d(cx + dx, cy)
     .expect("shadow center should project");
@@ -203,10 +210,9 @@ fn filter_drop_shadow_projective_transform_uses_local_offset() {
     "post-transform shadow pixel ({post_x},{post_y}) must be within the viewport"
   );
 
-  let content_bbox = bounding_box_for_color(&pixmap, |(r, g, b, a)| {
-    a > 0 && r > 0 && r >= g && r >= b
-  })
-  .expect("expected content to paint some pixels");
+  let content_bbox =
+    bounding_box_for_color(&pixmap, |(r, g, b, a)| a > 0 && r > 0 && r >= g && r >= b)
+      .expect("expected content to paint some pixels");
 
   let shadow_bbox = bounding_box_for_color(&pixmap, |(r, g, b, a)| {
     a > 0 && b > 50 && r < 40 && g < 40

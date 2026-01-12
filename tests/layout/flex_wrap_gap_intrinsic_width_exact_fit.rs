@@ -24,7 +24,10 @@ fn fixed_block(width: f32, height: f32) -> Arc<ComputedStyle> {
   Arc::new(style)
 }
 
-fn find_child<'a>(fragment: &'a fastrender::FragmentNode, box_id: usize) -> &'a fastrender::FragmentNode {
+fn find_child<'a>(
+  fragment: &'a fastrender::FragmentNode,
+  box_id: usize,
+) -> &'a fastrender::FragmentNode {
   fragment
     .children
     .iter()
@@ -57,15 +60,31 @@ fn flex_wrap_gap_exact_fit_does_not_wrap_when_container_is_intrinsically_sized()
   inner_style.grid_column_gap = Length::px(16.0);
   inner_style.grid_row_gap = Length::px(16.0);
 
-  let mut item_a = BoxNode::new_block(fixed_block(474.0, 56.0), FormattingContextType::Block, vec![]);
+  let mut item_a = BoxNode::new_block(
+    fixed_block(474.0, 56.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   item_a.id = 3;
-  let mut item_b = BoxNode::new_block(fixed_block(236.0, 56.0), FormattingContextType::Block, vec![]);
+  let mut item_b = BoxNode::new_block(
+    fixed_block(236.0, 56.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   item_b.id = 4;
 
-  let mut inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Flex, vec![item_a, item_b]);
+  let mut inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Flex,
+    vec![item_a, item_b],
+  );
   inner.id = 2;
 
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Flex, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Flex,
+    vec![inner],
+  );
 
   let fragment = fc
     .layout(&outer, &LayoutConstraints::definite_width(1000.0))
@@ -120,15 +139,31 @@ fn flex_wrap_gap_subpixel_fit_does_not_wrap_when_container_is_intrinsically_size
   inner_style.justify_content = JustifyContent::Center;
   inner_style.align_items = AlignItems::FlexEnd;
 
-  let mut item_a = BoxNode::new_block(fixed_block(308.6, 56.0), FormattingContextType::Block, vec![]);
+  let mut item_a = BoxNode::new_block(
+    fixed_block(308.6, 56.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   item_a.id = 3;
-  let mut item_b = BoxNode::new_block(fixed_block(308.6, 56.0), FormattingContextType::Block, vec![]);
+  let mut item_b = BoxNode::new_block(
+    fixed_block(308.6, 56.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   item_b.id = 4;
 
-  let mut inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Flex, vec![item_a, item_b]);
+  let mut inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Flex,
+    vec![item_a, item_b],
+  );
   inner.id = 2;
 
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Flex, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Flex,
+    vec![inner],
+  );
 
   let fragment = fc
     .layout(&outer, &LayoutConstraints::definite_width(1000.0))

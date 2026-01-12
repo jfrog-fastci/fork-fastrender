@@ -362,7 +362,7 @@ fn collapsed_table_borders_use_fragment_local_origin_with_repeated_thead_in_prin
     "expected at least one continuation page with a non-zero slice_offset"
   );
 }
- 
+
 #[test]
 fn collapsed_table_borders_use_fragment_local_origin_with_repeated_tfoot_in_print_pagination() {
   const EPSILON: f32 = 0.1;
@@ -399,7 +399,10 @@ fn collapsed_table_borders_use_fragment_local_origin_with_repeated_tfoot_in_prin
     .unwrap();
   let page_roots = pages(&tree);
 
-  assert!(page_roots.len() > 2, "table should span at least three pages");
+  assert!(
+    page_roots.len() > 2,
+    "table should span at least three pages"
+  );
 
   let mut saw_target_page = false;
   for (page_idx, page_root) in page_roots.iter().enumerate() {
@@ -600,7 +603,7 @@ fn collapsed_table_borders_align_with_repeated_footers_in_multicol() {
           rect.origin.x,
           rect.origin.y,
           node.slice_info.slice_offset,
-          node.slice_info.is_last
+          node.slice_info.is_last,
         )
       })
       .collect::<Vec<_>>()
@@ -814,7 +817,9 @@ fn collapsed_table_borders_keep_horizontal_edges_visible_with_repeated_headers()
     let table_indices: Vec<usize> = items
       .iter()
       .enumerate()
-      .filter_map(|(idx, item)| matches!(item, DisplayItem::TableCollapsedBorders(_)).then_some(idx))
+      .filter_map(|(idx, item)| {
+        matches!(item, DisplayItem::TableCollapsedBorders(_)).then_some(idx)
+      })
       .collect();
     assert_eq!(
       table_indices.len(),
@@ -904,7 +909,9 @@ fn collapsed_table_borders_keep_horizontal_edges_visible_with_repeated_footers()
     let table_indices: Vec<usize> = items
       .iter()
       .enumerate()
-      .filter_map(|(idx, item)| matches!(item, DisplayItem::TableCollapsedBorders(_)).then_some(idx))
+      .filter_map(|(idx, item)| {
+        matches!(item, DisplayItem::TableCollapsedBorders(_)).then_some(idx)
+      })
       .collect();
     assert_eq!(
       table_indices.len(),

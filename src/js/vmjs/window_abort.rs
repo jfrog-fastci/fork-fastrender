@@ -22,11 +22,11 @@
 //!
 //! These are plain objects (not `Error` instances); callers should key off `reason.name`.
 
-use vm_js::{
-  GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost,
-  VmHostHooks,
-};
 use vm_js::iterator;
+use vm_js::{
+  GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
+  VmHost, VmHostHooks,
+};
 
 const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_signal";
 const SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
@@ -97,7 +97,11 @@ fn require_object(this: Value, err: &'static str) -> Result<GcObject, VmError> {
   }
 }
 
-fn require_abort_signal(scope: &mut Scope<'_>, this: Value, err: &'static str) -> Result<GcObject, VmError> {
+fn require_abort_signal(
+  scope: &mut Scope<'_>,
+  this: Value,
+  err: &'static str,
+) -> Result<GcObject, VmError> {
   let obj = require_object(this, err)?;
   let brand = get_own_data_prop(scope, obj, SIGNAL_BRAND_KEY)?;
   if matches!(brand, Value::Bool(true)) {
@@ -141,7 +145,11 @@ fn create_dom_exception_like(
   let name_key = alloc_key(scope, "name")?;
   let message_key = alloc_key(scope, "message")?;
 
-  scope.define_property(obj, name_key, data_desc(Value::String(name_s), /* writable */ false))?;
+  scope.define_property(
+    obj,
+    name_key,
+    data_desc(Value::String(name_s), /* writable */ false),
+  )?;
   scope.define_property(
     obj,
     message_key,
@@ -166,7 +174,11 @@ fn create_abort_event(scope: &mut Scope<'_>) -> Result<Value, VmError> {
   let type_s = scope.alloc_string("abort")?;
   scope.push_root(Value::String(type_s))?;
   let type_key = alloc_key(scope, "type")?;
-  scope.define_property(event, type_key, data_desc(Value::String(type_s), /* writable */ false))?;
+  scope.define_property(
+    event,
+    type_key,
+    data_desc(Value::String(type_s), /* writable */ false),
+  )?;
   Ok(Value::Object(event))
 }
 
@@ -180,13 +192,24 @@ fn abort_signal(
   dispatch_event: bool,
 ) -> Result<(), VmError> {
   // `signal.aborted` must transition to true at most once.
-  let already_aborted = matches!(get_own_data_prop(scope, signal_obj, "aborted")?, Value::Bool(true));
+  let already_aborted = matches!(
+    get_own_data_prop(scope, signal_obj, "aborted")?,
+    Value::Bool(true)
+  );
   if already_aborted {
     return Ok(());
   }
 
-  set_own_data_prop(scope, signal_obj, "aborted", Value::Bool(true), /* writable */ false)?;
-  set_own_data_prop(scope, signal_obj, "reason", reason, /* writable */ false)?;
+  set_own_data_prop(
+    scope,
+    signal_obj,
+    "aborted",
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope, signal_obj, "reason", reason, /* writable */ false,
+  )?;
 
   // Dispatch the `abort` event and call `onabort`.
   if dispatch_event {
@@ -267,7 +290,9 @@ fn abort_controller_ctor_construct(
   let controller = scope.alloc_object()?;
   scope.push_root(Value::Object(controller))?;
   if let Some(proto) = proto {
-    scope.heap_mut().object_set_prototype(controller, Some(proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(controller, Some(proto))?;
   }
 
   // Create the associated signal.
@@ -282,11 +307,41 @@ fn abort_controller_ctor_construct(
 
   let signal = scope.alloc_object_with_prototype(Some(signal_proto))?;
   scope.push_root(Value::Object(signal))?;
-  set_own_data_prop(scope, signal, EVENT_TARGET_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
-  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
-  set_own_data_prop(scope, signal, "aborted", Value::Bool(false), /* writable */ false)?;
-  set_own_data_prop(scope, signal, "reason", Value::Undefined, /* writable */ false)?;
-  set_own_data_prop(scope, signal, "onabort", Value::Null, /* writable */ true)?;
+  set_own_data_prop(
+    scope,
+    signal,
+    EVENT_TARGET_BRAND_KEY,
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    SIGNAL_BRAND_KEY,
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "aborted",
+    Value::Bool(false),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "reason",
+    Value::Undefined,
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "onabort",
+    Value::Null,
+    /* writable */ true,
+  )?;
 
   // Public + internal links.
   set_own_data_prop(
@@ -319,7 +374,9 @@ fn abort_controller_abort_native(
   let controller = require_object(this, "AbortController.abort: illegal invocation")?;
   let signal_val = get_own_data_prop(scope, controller, CONTROLLER_SIGNAL_INTERNAL_KEY)?;
   let Value::Object(signal_obj) = signal_val else {
-    return Err(VmError::TypeError("AbortController.abort: illegal invocation"));
+    return Err(VmError::TypeError(
+      "AbortController.abort: illegal invocation",
+    ));
   };
 
   let reason_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -331,13 +388,7 @@ fn abort_controller_abort_native(
   scope.push_root(reason)?;
 
   abort_signal(
-    vm,
-    scope,
-    host,
-    host_hooks,
-    signal_obj,
-    reason,
-    /* dispatch_event */ true,
+    vm, scope, host, host_hooks, signal_obj, reason, /* dispatch_event */ true,
   )?;
   Ok(Value::Undefined)
 }
@@ -375,7 +426,11 @@ fn abort_signal_throw_if_aborted_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let signal_obj = require_abort_signal(scope, this, "AbortSignal.throwIfAborted: illegal invocation")?;
+  let signal_obj = require_abort_signal(
+    scope,
+    this,
+    "AbortSignal.throwIfAborted: illegal invocation",
+  )?;
   let aborted = get_own_data_prop(scope, signal_obj, "aborted")?;
   if matches!(aborted, Value::Bool(true)) {
     let reason = get_own_data_prop(scope, signal_obj, "reason")?;
@@ -390,7 +445,11 @@ const SLOT_GLOBAL: usize = 1;
 
 fn signal_proto_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  match slots.get(SLOT_SIGNAL_PROTO).copied().unwrap_or(Value::Undefined) {
+  match slots
+    .get(SLOT_SIGNAL_PROTO)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
     Value::Object(obj) => Ok(obj),
     _ => Err(VmError::InvariantViolation(
       "AbortSignal native missing signal prototype slot",
@@ -421,8 +480,20 @@ fn abort_signal_static_abort_native(
 
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
-  set_own_data_prop(scope, signal, EVENT_TARGET_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
-  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
+  set_own_data_prop(
+    scope,
+    signal,
+    EVENT_TARGET_BRAND_KEY,
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    SIGNAL_BRAND_KEY,
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
 
   let reason_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let reason = if matches!(reason_arg, Value::Undefined) {
@@ -432,9 +503,21 @@ fn abort_signal_static_abort_native(
   };
   scope.push_root(reason)?;
 
-  set_own_data_prop(scope, signal, "aborted", Value::Bool(true), /* writable */ false)?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "aborted",
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
   set_own_data_prop(scope, signal, "reason", reason, /* writable */ false)?;
-  set_own_data_prop(scope, signal, "onabort", Value::Null, /* writable */ true)?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "onabort",
+    Value::Null,
+    /* writable */ true,
+  )?;
 
   Ok(Value::Object(signal))
 }
@@ -464,11 +547,41 @@ fn abort_signal_static_timeout_native(
   // Create the signal and schedule a `setTimeout` to abort it.
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
-  set_own_data_prop(scope, signal, EVENT_TARGET_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
-  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
-  set_own_data_prop(scope, signal, "aborted", Value::Bool(false), /* writable */ false)?;
-  set_own_data_prop(scope, signal, "reason", Value::Undefined, /* writable */ false)?;
-  set_own_data_prop(scope, signal, "onabort", Value::Null, /* writable */ true)?;
+  set_own_data_prop(
+    scope,
+    signal,
+    EVENT_TARGET_BRAND_KEY,
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    SIGNAL_BRAND_KEY,
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "aborted",
+    Value::Bool(false),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "reason",
+    Value::Undefined,
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "onabort",
+    Value::Null,
+    /* writable */ true,
+  )?;
 
   let set_timeout = get_own_data_prop(scope, global, "setTimeout")?;
   if !scope.heap().is_callable(set_timeout).unwrap_or(false) {
@@ -490,7 +603,11 @@ fn abort_signal_static_timeout_native(
   )?;
   scope.heap_mut().object_set_prototype(
     callback,
-    Some(vm.intrinsics().ok_or(VmError::Unimplemented("missing intrinsics"))?.function_prototype()),
+    Some(
+      vm.intrinsics()
+        .ok_or(VmError::Unimplemented("missing intrinsics"))?
+        .function_prototype(),
+    ),
   )?;
   scope.push_root(Value::Object(callback))?;
 
@@ -527,13 +644,7 @@ fn abort_timeout_callback_native(
   let reason = create_timeout_reason(scope)?;
   scope.push_root(reason)?;
   abort_signal(
-    vm,
-    scope,
-    host_ctx,
-    host_hooks,
-    signal_obj,
-    reason,
-    /* dispatch_event */ true,
+    vm, scope, host_ctx, host_hooks, signal_obj, reason, /* dispatch_event */ true,
   )?;
   Ok(Value::Undefined)
 }
@@ -554,11 +665,41 @@ fn abort_signal_static_any_native(
 
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
-  set_own_data_prop(scope, signal, EVENT_TARGET_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
-  set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
-  set_own_data_prop(scope, signal, "aborted", Value::Bool(false), /* writable */ false)?;
-  set_own_data_prop(scope, signal, "reason", Value::Undefined, /* writable */ false)?;
-  set_own_data_prop(scope, signal, "onabort", Value::Null, /* writable */ true)?;
+  set_own_data_prop(
+    scope,
+    signal,
+    EVENT_TARGET_BRAND_KEY,
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    SIGNAL_BRAND_KEY,
+    Value::Bool(true),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "aborted",
+    Value::Bool(false),
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "reason",
+    Value::Undefined,
+    /* writable */ false,
+  )?;
+  set_own_data_prop(
+    scope,
+    signal,
+    "onabort",
+    Value::Null,
+    /* writable */ true,
+  )?;
 
   // Pre-allocate frequently accessed property keys so we do not repeatedly allocate strings while
   // consuming large iterables.
@@ -583,7 +724,8 @@ fn abort_signal_static_any_native(
       // exhaustion until we return to the interpreter.
       vm.tick()?;
 
-      let Some(item) = iterator::iterator_step_value(vm, host_ctx, host_hooks, scope, &mut record)? else {
+      let Some(item) = iterator::iterator_step_value(vm, host_ctx, host_hooks, scope, &mut record)?
+      else {
         break;
       };
       count += 1;
@@ -644,13 +786,7 @@ fn abort_signal_static_any_native(
     let _ = iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record);
     let reason = pre_aborted_reason.unwrap_or(Value::Undefined);
     abort_signal(
-      vm,
-      scope,
-      host_ctx,
-      host_hooks,
-      signal,
-      reason,
-      /* dispatch_event */ false,
+      vm, scope, host_ctx, host_hooks, signal, reason, /* dispatch_event */ false,
     )?;
     return Ok(Value::Object(signal));
   }
@@ -682,7 +818,13 @@ fn abort_signal_static_any_native(
     listener_scope.push_root(Value::Object(listener))?;
 
     let add_key = alloc_key(&mut listener_scope, "addEventListener")?;
-    let add = vm.get_with_host_and_hooks(host_ctx, &mut listener_scope, host_hooks, source_signal, add_key)?;
+    let add = vm.get_with_host_and_hooks(
+      host_ctx,
+      &mut listener_scope,
+      host_hooks,
+      source_signal,
+      add_key,
+    )?;
     if listener_scope.heap().is_callable(add).unwrap_or(false) {
       let type_s = listener_scope.alloc_string("abort")?;
       listener_scope.push_root(Value::String(type_s))?;
@@ -734,7 +876,11 @@ fn abort_any_listener_native(
 }
 
 /// Install `AbortController`/`AbortSignal` onto the global object of a `vm-js` Window realm.
-pub fn install_window_abort_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) -> Result<(), VmError> {
+pub fn install_window_abort_bindings(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut Heap,
+) -> Result<(), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
   scope.push_root(Value::Object(global))?;
@@ -749,7 +895,9 @@ pub fn install_window_abort_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap
         Value::Object(obj) => Some(obj),
         _ => None,
       })
-      .ok_or(VmError::Unimplemented("EventTarget is not installed on the global object"))?;
+      .ok_or(VmError::Unimplemented(
+        "EventTarget is not installed on the global object",
+      ))?;
 
     let proto_key = alloc_key(&mut scope, "prototype")?;
     scope
@@ -786,7 +934,8 @@ pub fn install_window_abort_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap
   )?;
 
   let abort_signal_ctor_call_id = vm.register_native_call(abort_signal_ctor_illegal)?;
-  let abort_signal_ctor_construct_id = vm.register_native_construct(abort_signal_ctor_construct_illegal)?;
+  let abort_signal_ctor_construct_id =
+    vm.register_native_construct(abort_signal_ctor_construct_illegal)?;
   let abort_signal_name = scope.alloc_string("AbortSignal")?;
   scope.push_root(Value::String(abort_signal_name))?;
   let abort_signal_ctor = scope.alloc_native_function(
@@ -882,20 +1031,27 @@ pub fn install_window_abort_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap
 
   // Expose on global.
   let abort_signal_key = alloc_key(&mut scope, "AbortSignal")?;
-  scope.define_property(global, abort_signal_key, data_desc(Value::Object(abort_signal_ctor), true))?;
+  scope.define_property(
+    global,
+    abort_signal_key,
+    data_desc(Value::Object(abort_signal_ctor), true),
+  )?;
 
   // --- AbortController (constructible) -------------------------------------------------------
   let abort_controller_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(abort_controller_proto))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(abort_controller_proto, Some(realm.intrinsics().object_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    abort_controller_proto,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
 
   let abort_id = vm.register_native_call(abort_controller_abort_native)?;
   let abort_name = scope.alloc_string("abort")?;
   scope.push_root(Value::String(abort_name))?;
   let abort_fn = scope.alloc_native_function(abort_id, None, abort_name, 0)?;
-  scope.heap_mut().object_set_prototype(abort_fn, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(abort_fn, Some(func_proto))?;
   set_own_data_prop(
     &mut scope,
     abort_controller_proto,
@@ -905,7 +1061,8 @@ pub fn install_window_abort_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap
   )?;
 
   let abort_controller_call_id = vm.register_native_call(abort_controller_ctor_call)?;
-  let abort_controller_construct_id = vm.register_native_construct(abort_controller_ctor_construct)?;
+  let abort_controller_construct_id =
+    vm.register_native_construct(abort_controller_ctor_construct)?;
   let abort_controller_name = scope.alloc_string("AbortController")?;
   scope.push_root(Value::String(abort_controller_name))?;
   let abort_controller_ctor = scope.alloc_native_function(

@@ -19,7 +19,11 @@ mod tests {
 "#;
 
   let violations = lint_source(Path::new("demo.rs"), src);
-  assert_eq!(violations.len(), 1, "unexpected violations: {violations:#?}");
+  assert_eq!(
+    violations.len(),
+    1,
+    "unexpected violations: {violations:#?}"
+  );
   assert_eq!(violations[0].kind, ViolationKind::Unwrap);
   assert_eq!(violations[0].line, 3);
 }
@@ -36,7 +40,11 @@ pub fn demo() {
 "#;
 
   let violations = lint_source(Path::new("demo.rs"), src);
-  assert_eq!(violations.len(), 4, "unexpected violations: {violations:#?}");
+  assert_eq!(
+    violations.len(),
+    4,
+    "unexpected violations: {violations:#?}"
+  );
   assert_eq!(violations[0].kind, ViolationKind::Assert);
   assert_eq!(violations[1].kind, ViolationKind::AssertEq);
   assert_eq!(violations[2].kind, ViolationKind::AssertNe);
@@ -53,7 +61,10 @@ pub fn demo() {
 "#;
 
   let violations = lint_source(Path::new("demo.rs"), src);
-  assert!(violations.is_empty(), "expected allow markers to suppress: {violations:#?}");
+  assert!(
+    violations.is_empty(),
+    "expected allow markers to suppress: {violations:#?}"
+  );
 }
 
 #[test]
@@ -69,5 +80,8 @@ pub fn demo() {
 "#;
 
   let violations = lint_source(Path::new("demo.rs"), src);
-  assert!(violations.is_empty(), "unexpected violations: {violations:#?}");
+  assert!(
+    violations.is_empty(),
+    "unexpected violations: {violations:#?}"
+  );
 }

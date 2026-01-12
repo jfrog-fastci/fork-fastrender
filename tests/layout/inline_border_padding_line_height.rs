@@ -14,11 +14,18 @@ fn fragment_contains_text(node: &FragmentNode, needle: &str) -> bool {
       return true;
     }
   }
-  node.children.iter().any(|child| fragment_contains_text(child, needle))
+  node
+    .children
+    .iter()
+    .any(|child| fragment_contains_text(child, needle))
 }
 
-fn find_first_inline_with_text<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
-  if matches!(node.content, FragmentContent::Inline { .. }) && fragment_contains_text(node, needle) {
+fn find_first_inline_with_text<'a>(
+  node: &'a FragmentNode,
+  needle: &str,
+) -> Option<&'a FragmentNode> {
+  if matches!(node.content, FragmentContent::Inline { .. }) && fragment_contains_text(node, needle)
+  {
     return Some(node);
   }
   node

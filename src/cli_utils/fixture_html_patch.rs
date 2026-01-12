@@ -270,7 +270,10 @@ fn unwrap_noscript_tags(data: &[u8]) -> Vec<u8> {
   let mut idx = 0usize;
 
   fn tag_boundary_ok(after: Option<&u8>) -> bool {
-    matches!(after, Some(b'>') | Some(b' ') | Some(b'\n') | Some(b'\r') | Some(b'\t') | Some(b'/'))
+    matches!(
+      after,
+      Some(b'>') | Some(b' ') | Some(b'\n') | Some(b'\r') | Some(b'\t') | Some(b'/')
+    )
   }
 
   while idx < data.len() {

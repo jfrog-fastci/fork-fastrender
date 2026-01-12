@@ -39,8 +39,7 @@ fn grid_item_percent_min_width_uses_grid_area() {
 
   let mut first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
   first.id = 2;
-  let mut second =
-    BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let mut second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
   second.id = 3;
 
   let mut grid = BoxNode::new_block(

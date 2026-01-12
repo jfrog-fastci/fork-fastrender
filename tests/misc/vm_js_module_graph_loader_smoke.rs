@@ -1,7 +1,7 @@
 use vm_js::{
-  load_requested_modules, HostDefined, Job, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
-  ModuleRequest, ModuleStatus, PromiseState, Realm, SourceTextModuleRecord, Value, Vm, VmError,
-  VmHostHooks, VmOptions,
+  load_requested_modules, HostDefined, Job, ModuleGraph, ModuleId, ModuleLoadPayload,
+  ModuleReferrer, ModuleRequest, ModuleStatus, PromiseState, Realm, SourceTextModuleRecord, Value,
+  Vm, VmError, VmHostHooks, VmOptions,
 };
 
 // Lightweight integration-smoke test for vm-js' module graph loader + `finish_loading_imported_module`
@@ -65,7 +65,15 @@ impl VmHostHooks for TestHost {
     // allowance for synchronous completion.
     let loaded = modules.add_module(SourceTextModuleRecord::default());
     self.last_loaded = Some(loaded);
-    vm.finish_loading_imported_module(scope, modules, self, referrer, module_request, payload, Ok(loaded))
+    vm.finish_loading_imported_module(
+      scope,
+      modules,
+      self,
+      referrer,
+      module_request,
+      payload,
+      Ok(loaded),
+    )
   }
 }
 
@@ -81,13 +89,22 @@ fn module_graph_loader_caches_loaded_modules_and_resolves_promise() -> Result<()
   referrer_record.requested_modules.push(request.clone());
   let referrer = modules.add_module(referrer_record);
 
-  let promise =
-    load_requested_modules(&mut rt.vm, &mut scope, &mut modules, &mut host, referrer, HostDefined::default())?;
+  let promise = load_requested_modules(
+    &mut rt.vm,
+    &mut scope,
+    &mut modules,
+    &mut host,
+    referrer,
+    HostDefined::default(),
+  )?;
   scope.push_root(promise)?;
   let Value::Object(promise) = promise else {
     panic!("expected module graph loader to return a Promise object");
   };
-  assert_eq!(scope.heap().promise_state(promise)?, PromiseState::Fulfilled);
+  assert_eq!(
+    scope.heap().promise_state(promise)?,
+    PromiseState::Fulfilled
+  );
 
   let loaded = host
     .last_loaded
@@ -101,7 +118,9 @@ fn module_graph_loader_caches_loaded_modules_and_resolves_promise() -> Result<()
   assert!(record.loaded_modules[0].request.spec_equal(&request));
   assert_eq!(record.loaded_modules[0].module, loaded);
 
-  let loaded_record = modules.get_module(loaded).expect("loaded module should exist");
+  let loaded_record = modules
+    .get_module(loaded)
+    .expect("loaded module should exist");
   assert_eq!(loaded_record.status, ModuleStatus::Unlinked);
 
   Ok(())
@@ -161,8 +180,14 @@ fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), 
 
   let mut host = PendingHost::default();
 
-  let promise =
-    load_requested_modules(&mut rt.vm, &mut scope, &mut modules, &mut host, referrer_module, HostDefined::default())?;
+  let promise = load_requested_modules(
+    &mut rt.vm,
+    &mut scope,
+    &mut modules,
+    &mut host,
+    referrer_module,
+    HostDefined::default(),
+  )?;
   scope.push_root(promise)?;
   let Value::Object(promise) = promise else {
     panic!("expected module graph loader to return a Promise object");

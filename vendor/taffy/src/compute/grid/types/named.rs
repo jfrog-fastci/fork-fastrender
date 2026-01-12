@@ -2,8 +2,8 @@
 
 use crate::{
   CheapCloneStr, GenericGridTemplateComponent, GenericRepetition as _, GridAreaAxis, GridAreaEnd,
-  GridContainerStyle, GridPlacement, GridTemplateArea, Line,
-  NonNamedGridPlacementWithNamedSpan, RepetitionCount,
+  GridContainerStyle, GridPlacement, GridTemplateArea, Line, NonNamedGridPlacementWithNamedSpan,
+  RepetitionCount,
 };
 use core::{
   borrow::Borrow,
@@ -90,12 +90,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     }
   }
 
-  fn lookup_named_lines(
-    &self,
-    name: &S,
-    axis: GridAreaAxis,
-    end: GridAreaEnd,
-  ) -> Option<&[u16]> {
+  fn lookup_named_lines(&self, name: &S, axis: GridAreaAxis, end: GridAreaEnd) -> Option<&[u16]> {
     let (line_lookup, _) = self.axis_line_maps(axis);
     if let Some(lines) = line_lookup.get(name.as_ref()) {
       return Some(lines.as_slice());
@@ -448,7 +443,9 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
 
       let remaining = idx - after_len as u16;
       let baseline = max(start_line, explicit_end_line);
-      return OriginZeroLine((baseline.0 as i32 + remaining as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+      return OriginZeroLine(
+        (baseline.0 as i32 + remaining as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+      );
     }
 
     let baseline = max(start_line, explicit_end_line);
@@ -487,7 +484,9 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
 
       let remaining = idx - before_len as u16;
       let baseline = min(end_line, OriginZeroLine(0));
-      return OriginZeroLine((baseline.0 as i32 - remaining as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+      return OriginZeroLine(
+        (baseline.0 as i32 - remaining as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+      );
     }
 
     let baseline = min(end_line, OriginZeroLine(0));

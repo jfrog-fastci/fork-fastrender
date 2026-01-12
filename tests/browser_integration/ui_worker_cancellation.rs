@@ -1,8 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{
-  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg,
-};
+use super::support::{create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg};
 use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::ui::cancel::CancelGens;
@@ -102,7 +100,10 @@ fn ui_worker_nav_generation_cancels_in_flight_navigation_and_drops_stale_frame()
   let frame = loop {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match ui_rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(WorkerToUi::FrameReady { tab_id: msg_tab, frame }) if msg_tab == tab_id => break frame,
+      Ok(WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame,
+      }) if msg_tab == tab_id => break frame,
       Ok(WorkerToUi::NavigationFailed { url, error, .. }) => {
         panic!("navigation failed for {url}: {error}");
       }
@@ -118,9 +119,11 @@ fn ui_worker_nav_generation_cancels_in_flight_navigation_and_drops_stale_frame()
   );
 
   // Ensure a stale FrameReady doesn't arrive after the latest navigation frame.
-  let extra_frame = recv_until(&ui_rx, Duration::from_secs(1), |msg| {
-    matches!(msg, WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id)
-  });
+  let extra_frame = recv_until(
+    &ui_rx,
+    Duration::from_secs(1),
+    |msg| matches!(msg, WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id),
+  );
   assert!(
     extra_frame
       .iter()
@@ -195,14 +198,22 @@ fn rapid_navigation_cancels_stale_navigation() {
   let tab_id = TabId(1);
 
   ui_tx
-    .send(create_tab_msg_with_cancel(tab_id, None, cancel_gens.clone()))
+    .send(create_tab_msg_with_cancel(
+      tab_id,
+      None,
+      cancel_gens.clone(),
+    ))
     .unwrap();
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
 
   ui_tx
-    .send(navigate_msg(tab_id, url_a.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      url_a.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let mut messages = recv_until(&ui_rx, MAX_WAIT, |msg| {
@@ -223,7 +234,11 @@ fn rapid_navigation_cancels_stale_navigation() {
 
   cancel_gens.bump_nav();
   ui_tx
-    .send(navigate_msg(tab_id, url_b.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      url_b.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let mut committed_b = false;
@@ -234,12 +249,16 @@ fn rapid_navigation_cancels_stale_navigation() {
     match ui_rx.recv_timeout(Duration::from_millis(50)) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::NavigationCommitted { tab_id: msg_tab, url, .. }
-            if *msg_tab == tab_id && url == &url_b =>
-          {
+          WorkerToUi::NavigationCommitted {
+            tab_id: msg_tab,
+            url,
+            ..
+          } if *msg_tab == tab_id && url == &url_b => {
             committed_b = true;
           }
-          WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id => {
+          WorkerToUi::FrameReady {
+            tab_id: msg_tab, ..
+          } if *msg_tab == tab_id => {
             saw_b_frame = true;
           }
           _ => {}
@@ -266,7 +285,9 @@ fn rapid_navigation_cancels_stale_navigation() {
           failed_a = true;
         }
       }
-      WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id => {
+      WorkerToUi::FrameReady {
+        tab_id: msg_tab, ..
+      } if *msg_tab == tab_id => {
         // Already tracked via the loop above.
       }
       _ => {}
@@ -335,24 +356,32 @@ fn rapid_scroll_cancels_stale_paint() {
   let tab_id = TabId(1);
 
   ui_tx
-    .send(create_tab_msg_with_cancel(tab_id, None, cancel_gens.clone()))
+    .send(create_tab_msg_with_cancel(
+      tab_id,
+      None,
+      cancel_gens.clone(),
+    ))
     .unwrap();
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
 
   ui_tx
-    .send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
-  let _initial = recv_until(&ui_rx, MAX_WAIT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }));
+  let _initial = recv_until(&ui_rx, MAX_WAIT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  });
 
   // Clear any remaining stage/navigation messages before we start the scroll assertions.
   for _ in ui_rx.try_iter() {}
 
-  ui_tx
-    .send(scroll_msg(tab_id, (0.0, 80.0), None))
-    .unwrap();
+  ui_tx.send(scroll_msg(tab_id, (0.0, 80.0), None)).unwrap();
 
   // Wait for the scroll repaint to enter the paint stages so we can cancel it mid-flight.
   let is_paint_stage = |msg: &WorkerToUi| {
@@ -373,9 +402,7 @@ fn rapid_scroll_cancels_stale_paint() {
   );
 
   cancel_gens.bump_paint();
-  ui_tx
-    .send(scroll_msg(tab_id, (0.0, 80.0), None))
-    .unwrap();
+  ui_tx.send(scroll_msg(tab_id, (0.0, 80.0), None)).unwrap();
 
   // `FrameReady` is emitted before `ScrollStateUpdated`. Some straggler scroll updates (e.g. from
   // the initial navigation) can arrive after we start this test, so wait specifically for the
@@ -388,14 +415,20 @@ fn rapid_scroll_cancels_stale_paint() {
   while start.elapsed() < MAX_WAIT && (frames.is_empty() || matching_scroll_update.is_none()) {
     match ui_rx.recv_timeout(Duration::from_millis(50)) {
       Ok(msg) => match msg {
-        WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, scroll } if msg_tab == tab_id => {
+        WorkerToUi::ScrollStateUpdated {
+          tab_id: msg_tab,
+          scroll,
+        } if msg_tab == tab_id => {
           if let Some(expected) = expected_scroll.as_ref() {
             if scroll.viewport == expected.viewport {
               matching_scroll_update = Some(scroll);
             }
           }
         }
-        WorkerToUi::FrameReady { tab_id: msg_tab, frame } if msg_tab == tab_id => {
+        WorkerToUi::FrameReady {
+          tab_id: msg_tab,
+          frame,
+        } if msg_tab == tab_id => {
           frames.push(frame.scroll_state.clone());
           if frames.len() == 1 {
             expected_scroll = Some(frame.scroll_state.clone());
@@ -433,7 +466,9 @@ fn rapid_scroll_cancels_stale_paint() {
     matches!(msg, WorkerToUi::FrameReady { .. })
   });
   assert!(
-    extra_frame.iter().all(|msg| !matches!(msg, WorkerToUi::FrameReady { .. })),
+    extra_frame
+      .iter()
+      .all(|msg| !matches!(msg, WorkerToUi::FrameReady { .. })),
     "unexpected additional FrameReady messages after latest scroll frame: {extra_frame:?}"
   );
 

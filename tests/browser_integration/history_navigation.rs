@@ -110,9 +110,8 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
         "<!doctype html><title>B</title><body>B</body>",
       ),
   );
-  let factory = FastRenderFactory::with_config(
-    FastRenderPoolConfig::default().with_fetcher(fetcher),
-  )?;
+  let factory =
+    FastRenderFactory::with_config(FastRenderPoolConfig::default().with_fetcher(fetcher))?;
   let worker = spawn_browser_worker_with_factory(factory)?;
   let (worker_tx, worker_rx, join) = (worker.tx, worker.rx, worker.join);
 
@@ -208,9 +207,8 @@ fn redirects_commit_final_url_into_history_entry() -> Result<()> {
         "<!doctype html><title>Final</title><body>final</body>",
       ),
   );
-  let factory = FastRenderFactory::with_config(
-    FastRenderPoolConfig::default().with_fetcher(fetcher),
-  )?;
+  let factory =
+    FastRenderFactory::with_config(FastRenderPoolConfig::default().with_fetcher(fetcher))?;
   let worker = spawn_browser_worker_with_factory(factory)?;
   let (worker_tx, worker_rx, join) = (worker.tx, worker.rx, worker.join);
 

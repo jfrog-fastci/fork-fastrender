@@ -105,7 +105,15 @@ impl SemanticWorld {
 
             let args = arguments
               .iter()
-              .map(|a| convert_argument(a, resolved, &mut unknown_named_types, &mut diagnostics, &cb.name))
+              .map(|a| {
+                convert_argument(
+                  a,
+                  resolved,
+                  &mut unknown_named_types,
+                  &mut diagnostics,
+                  &cb.name,
+                )
+              })
               .collect();
             Some(SemanticCallbackFunction {
               return_type,
@@ -359,7 +367,9 @@ pub struct SemanticInterfaceMember {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemanticInterfaceMemberKind {
-  Constructor { arguments: Vec<SemanticArgument> },
+  Constructor {
+    arguments: Vec<SemanticArgument>,
+  },
   Attribute {
     name: String,
     ty: IdlType,
@@ -376,7 +386,11 @@ pub enum SemanticInterfaceMemberKind {
     stringifier: bool,
     special: Option<SpecialOperation>,
   },
-  Constant { name: String, ty: IdlType, value: IdlLiteral },
+  Constant {
+    name: String,
+    ty: IdlType,
+    value: IdlLiteral,
+  },
   Iterable {
     async_: bool,
     key_type: Option<IdlType>,
@@ -447,12 +461,22 @@ fn convert_interface_member(
   interface_name: &str,
 ) -> Option<SemanticInterfaceMemberKind> {
   match ast {
-    AstInterfaceMember::Constructor { arguments } => Some(SemanticInterfaceMemberKind::Constructor {
-      arguments: arguments
-        .iter()
-        .map(|a| convert_argument(a, resolved, unknown_named_types, diagnostics, interface_name))
-        .collect(),
-    }),
+    AstInterfaceMember::Constructor { arguments } => {
+      Some(SemanticInterfaceMemberKind::Constructor {
+        arguments: arguments
+          .iter()
+          .map(|a| {
+            convert_argument(
+              a,
+              resolved,
+              unknown_named_types,
+              diagnostics,
+              interface_name,
+            )
+          })
+          .collect(),
+      })
+    }
     AstInterfaceMember::Attribute {
       name,
       type_,
@@ -502,7 +526,15 @@ fn convert_interface_member(
         return_type: ret,
         arguments: arguments
           .iter()
-          .map(|a| convert_argument(a, resolved, unknown_named_types, diagnostics, interface_name))
+          .map(|a| {
+            convert_argument(
+              a,
+              resolved,
+              unknown_named_types,
+              diagnostics,
+              interface_name,
+            )
+          })
           .collect(),
         static_: *static_,
         stringifier: *stringifier,
@@ -635,7 +667,13 @@ fn convert_type(
       context,
     ))),
     AstIdlType::Record { key, value } => IdlType::Record(
-      Box::new(convert_type(key, resolved, unknown_named_types, diagnostics, context)),
+      Box::new(convert_type(
+        key,
+        resolved,
+        unknown_named_types,
+        diagnostics,
+        context,
+      )),
       Box::new(convert_type(
         value,
         resolved,
@@ -661,7 +699,9 @@ fn convert_builtin_type(b: AstBuiltinType) -> IdlType {
     AstBuiltinType::LongLong => IdlType::Numeric(webidl_ir::NumericType::LongLong),
     AstBuiltinType::UnsignedLongLong => IdlType::Numeric(webidl_ir::NumericType::UnsignedLongLong),
     AstBuiltinType::Float => IdlType::Numeric(webidl_ir::NumericType::Float),
-    AstBuiltinType::UnrestrictedFloat => IdlType::Numeric(webidl_ir::NumericType::UnrestrictedFloat),
+    AstBuiltinType::UnrestrictedFloat => {
+      IdlType::Numeric(webidl_ir::NumericType::UnrestrictedFloat)
+    }
     AstBuiltinType::Double => IdlType::Numeric(webidl_ir::NumericType::Double),
     AstBuiltinType::UnrestrictedDouble => {
       IdlType::Numeric(webidl_ir::NumericType::UnrestrictedDouble)
@@ -707,7 +747,9 @@ fn resolve_named_types(
     | IdlType::Sequence(inner)
     | IdlType::FrozenArray(inner)
     | IdlType::AsyncSequence(inner)
-    | IdlType::Promise(inner) => resolve_named_types(inner, resolved, unknown_named_types, diagnostics, context),
+    | IdlType::Promise(inner) => {
+      resolve_named_types(inner, resolved, unknown_named_types, diagnostics, context)
+    }
     IdlType::Union(members) => {
       for m in members {
         resolve_named_types(m, resolved, unknown_named_types, diagnostics, context);

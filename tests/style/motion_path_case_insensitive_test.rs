@@ -60,4 +60,3 @@ fn motion_path_function_names_are_ascii_case_insensitive() {
     })
   );
 }
-

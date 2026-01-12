@@ -4,7 +4,10 @@ use fastrender::{FastRender, FontConfig};
 
 const EPS: f32 = 0.01;
 
-fn layout_html(renderer: &mut FastRender, html: &str) -> fastrender::tree::fragment_tree::FragmentTree {
+fn layout_html(
+  renderer: &mut FastRender,
+  html: &str,
+) -> fastrender::tree::fragment_tree::FragmentTree {
   let dom = renderer.parse_html(html).expect("parse HTML");
   renderer.layout_document(&dom, 400, 400).expect("layout")
 }

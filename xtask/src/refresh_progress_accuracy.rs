@@ -32,7 +32,12 @@ pub struct RefreshProgressAccuracyArgs {
   /// Only process listed fixture names (comma-separated stems).
   ///
   /// This forwards `--fixtures` to `xtask fixture-chrome-diff`.
-  #[arg(long, value_delimiter = ',', value_name = "STEM,...", conflicts_with = "from_progress")]
+  #[arg(
+    long,
+    value_delimiter = ',',
+    value_name = "STEM,...",
+    conflicts_with = "from_progress"
+  )]
   pub fixtures: Option<Vec<String>>,
 
   /// Select fixtures based on pageset progress files in this directory (typically `progress/pages`).
@@ -218,7 +223,10 @@ fn print_plan(
   println!("  print_top_worst: {}", args.print_top_worst);
   println!();
   println!("Steps:");
-  println!("  1) fixture-chrome-diff (writes {})", report_path.display());
+  println!(
+    "  1) fixture-chrome-diff (writes {})",
+    report_path.display()
+  );
   if let Ok(argv) = build_fixture_chrome_diff_argv(args) {
     // Print the exact `fixture-chrome-diff` invocation the wrapper will run (useful for debugging
     // sharding/selection).
@@ -235,7 +243,10 @@ fn print_plan(
     progress_dir.display()
   );
   if args.print_top_worst > 0 {
-    println!("  3) print top {} worst accuracy entries", args.print_top_worst);
+    println!(
+      "  3) print top {} worst accuracy entries",
+      args.print_top_worst
+    );
   }
 }
 
@@ -340,7 +351,10 @@ fn snapshot_progress_dir(progress_dir: &Path) -> Result<BTreeMap<String, String>
   Ok(snapshot)
 }
 
-fn count_snapshot_changes(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) -> usize {
+fn count_snapshot_changes(
+  before: &BTreeMap<String, String>,
+  after: &BTreeMap<String, String>,
+) -> usize {
   let mut updated = 0usize;
   for (k, v) in before {
     if after.get(k) != Some(v) {
@@ -393,12 +407,8 @@ fn parse_first_mismatch(value: &Value) -> Option<AccuracyFirstMismatch> {
   let y = obj.get("y")?.as_u64()?;
   let x = u32::try_from(x).ok()?;
   let y = u32::try_from(y).ok()?;
-  let baseline_rgba = obj
-    .get("baseline_rgba")
-    .and_then(parse_rgba_array);
-  let rendered_rgba = obj
-    .get("rendered_rgba")
-    .and_then(parse_rgba_array);
+  let baseline_rgba = obj.get("baseline_rgba").and_then(parse_rgba_array);
+  let rendered_rgba = obj.get("rendered_rgba").and_then(parse_rgba_array);
   Some(AccuracyFirstMismatch {
     x,
     y,

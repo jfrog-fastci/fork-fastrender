@@ -154,7 +154,11 @@ fn apply_headers_init<'js>(
   Err(Exception::throw_type(ctx, "Invalid fetch headers init"))
 }
 
-fn apply_body_init<'js>(ctx: &Ctx<'js>, request: &mut Request, init: Value<'js>) -> Result<(), Error> {
+fn apply_body_init<'js>(
+  ctx: &Ctx<'js>,
+  request: &mut Request,
+  init: Value<'js>,
+) -> Result<(), Error> {
   if init.is_null() || init.is_undefined() {
     return Ok(());
   }
@@ -199,8 +203,8 @@ pub fn install_fetch_bindings<'js>(
         let mut body_init: Option<Value<'js>> = None;
 
         if let Some(init) = init.0.filter(|v| !v.is_undefined() && !v.is_null()) {
-          let init_obj =
-            Object::from_value(init).map_err(|_| Exception::throw_type(&ctx, "Invalid fetch init"))?;
+          let init_obj = Object::from_value(init)
+            .map_err(|_| Exception::throw_type(&ctx, "Invalid fetch init"))?;
 
           if let Some(v) = init_obj.get::<_, Option<Value<'js>>>("method")? {
             if !v.is_undefined() && !v.is_null() {
@@ -249,9 +253,8 @@ pub fn install_fetch_bindings<'js>(
           ..WebFetchExecutionContext::default()
         };
 
-        let response = execute_web_fetch(fetcher.as_ref(), &request, exec_ctx).map_err(|err| {
-          Exception::throw_type(&ctx, &format!("Failed to fetch: {err}"))
-        })?;
+        let response = execute_web_fetch(fetcher.as_ref(), &request, exec_ctx)
+          .map_err(|err| Exception::throw_type(&ctx, &format!("Failed to fetch: {err}")))?;
 
         let inst = Class::instance(
           ctx.clone(),

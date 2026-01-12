@@ -23,4 +23,3 @@ fn font_size_zero_is_paint_noop() {
     "font-size 0 should not paint any pixels"
   );
 }
-

@@ -134,10 +134,14 @@ fn absolutely_positioned_inset_height_resolves_percent_height_children() {
         [255, 255, 255, 255],
         "pixel above abspos inset area should be white"
       );
-      let has_green = pixmap.data().chunks_exact(4).any(|px| {
-        is_green([px[0], px[1], px[2], px[3]])
-      });
-      assert!(has_green, "expected percent-height child to paint inside abspos inset area");
+      let has_green = pixmap
+        .data()
+        .chunks_exact(4)
+        .any(|px| is_green([px[0], px[1], px[2], px[3]]));
+      assert!(
+        has_green,
+        "expected percent-height child to paint inside abspos inset area"
+      );
     })
     .unwrap()
     .join()

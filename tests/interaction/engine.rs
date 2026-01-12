@@ -1,20 +1,19 @@
 use fastrender::dom::enumerate_dom_ids;
 use fastrender::dom::DomNode;
 use fastrender::dom::DomNodeType;
-use fastrender::dom::HTML_NAMESPACE;
 use fastrender::dom::ShadowRootMode;
+use fastrender::dom::HTML_NAMESPACE;
 use fastrender::geometry::Point;
 use fastrender::geometry::Rect;
 use fastrender::interaction::InteractionAction;
 use fastrender::interaction::InteractionEngine;
 use fastrender::interaction::KeyAction;
-use fastrender::Length;
 use fastrender::scroll::ScrollState;
 use fastrender::style::display::FormattingContextType;
-use fastrender::style::ComputedStyle;
 use fastrender::style::types::Appearance;
 use fastrender::style::types::LineHeight;
 use fastrender::style::types::PointerEvents;
+use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::BoxTree;
 use fastrender::tree::box_tree::FormControl;
@@ -26,6 +25,7 @@ use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::tree::fragment_tree::FragmentTree;
 use fastrender::ui::messages::PointerButton;
 use fastrender::ui::messages::PointerModifiers;
+use fastrender::Length;
 use selectors::context::QuirksMode;
 use std::sync::Arc;
 use url::Url;
@@ -141,7 +141,12 @@ fn radio_click_is_scoped_to_nearest_form() {
           vec![
             el(
               "input",
-              vec![("id", "a1"), ("type", "radio"), ("name", "g"), ("checked", "")],
+              vec![
+                ("id", "a1"),
+                ("type", "radio"),
+                ("name", "g"),
+                ("checked", ""),
+              ],
               vec![],
             ),
             el(
@@ -156,7 +161,12 @@ fn radio_click_is_scoped_to_nearest_form() {
           vec![],
           vec![el(
             "input",
-            vec![("id", "b1"), ("type", "radio"), ("name", "g"), ("checked", "")],
+            vec![
+              ("id", "b1"),
+              ("type", "radio"),
+              ("name", "g"),
+              ("checked", ""),
+            ],
             vec![],
           )],
         ),
@@ -294,11 +304,7 @@ fn hover_chain_applies_to_ancestors() {
   let state = engine.interaction_state();
   for id in ["inner", "outer", "body", "html"] {
     let node_id = node_id(&dom, id);
-    assert_eq!(
-      state.is_hovered(node_id),
-      true,
-      "{id} should be hovered"
-    );
+    assert_eq!(state.is_hovered(node_id), true, "{id} should be hovered");
     assert!(
       !has_attr(&dom, id, "data-fastr-hover"),
       "{id} must not have a data-fastr-hover attribute"
@@ -318,10 +324,7 @@ fn hover_chain_applies_to_ancestors() {
   let state = engine.interaction_state();
   for id in ["inner", "outer", "body", "html"] {
     let node_id = node_id(&dom, id);
-    assert!(
-      !state.is_hovered(node_id),
-      "{id} hover should be cleared"
-    );
+    assert!(!state.is_hovered(node_id), "{id} hover should be cleared");
     assert!(
       !has_attr(&dom, id, "data-fastr-hover"),
       "{id} must not have a data-fastr-hover attribute"
@@ -392,11 +395,7 @@ fn active_chain_sets_on_down_and_clears_on_up() {
   let state = engine.interaction_state();
   for id in ["inner", "outer", "body", "html"] {
     let node_id = node_id(&dom, id);
-    assert_eq!(
-      state.is_active(node_id),
-      true,
-      "{id} should be active"
-    );
+    assert_eq!(state.is_active(node_id), true, "{id} should be active");
     assert!(
       !has_attr(&dom, id, "data-fastr-active"),
       "{id} must not have a data-fastr-active attribute"
@@ -420,10 +419,7 @@ fn active_chain_sets_on_down_and_clears_on_up() {
   let state = engine.interaction_state();
   for id in ["inner", "outer", "body", "html"] {
     let node_id = node_id(&dom, id);
-    assert!(
-      !state.is_active(node_id),
-      "{id} active should be cleared"
-    );
+    assert!(!state.is_active(node_id), "{id} active should be cleared");
     assert!(
       !has_attr(&dom, id, "data-fastr-active"),
       "{id} must not have a data-fastr-active attribute"
@@ -526,11 +522,8 @@ fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
 
   let mut img_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
   img_box.styled_node_id = Some(img_dom_id);
-  let mut body_box = BoxNode::new_block(
-    default_style(),
-    FormattingContextType::Block,
-    vec![img_box],
-  );
+  let mut body_box =
+    BoxNode::new_block(default_style(), FormattingContextType::Block, vec![img_box]);
   body_box.styled_node_id = Some(body_dom_id);
   let box_tree = BoxTree::new(body_box);
 
@@ -595,11 +588,8 @@ fn anchor_activation_appends_ismap_coordinates() {
 
   let mut img_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
   img_box.styled_node_id = Some(img_dom_id);
-  let mut link_box = BoxNode::new_block(
-    default_style(),
-    FormattingContextType::Block,
-    vec![img_box],
-  );
+  let mut link_box =
+    BoxNode::new_block(default_style(), FormattingContextType::Block, vec![img_box]);
   link_box.styled_node_id = Some(link_dom_id);
   let box_tree = BoxTree::new(link_box);
 
@@ -652,7 +642,11 @@ fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
     vec![el(
       "body",
       vec![("id", "body")],
-      vec![el("a", vec![("id", "link"), ("href", " \u{00A0} ")], vec![])],
+      vec![el(
+        "a",
+        vec![("id", "link"), ("href", " \u{00A0} ")],
+        vec![],
+      )],
     )],
   )]);
 
@@ -1053,9 +1047,13 @@ fn space_key_toggles_focused_checkbox() {
     "https://x/",
     "https://x/",
   );
-  assert!(has_attr(&dom, "cb", "checked"), "click should check the box");
+  assert!(
+    has_attr(&dom, "cb", "checked"),
+    "click should check the box"
+  );
 
-  let (changed, action) = engine.key_activate(&mut dom, KeyAction::Space, "https://x/", "https://x/");
+  let (changed, action) =
+    engine.key_activate(&mut dom, KeyAction::Space, "https://x/", "https://x/");
   assert!(changed, "space should toggle the checkbox");
   assert_eq!(action, InteractionAction::None);
   assert!(
@@ -1081,10 +1079,19 @@ fn space_key_activates_focused_radio() {
         vec![
           el(
             "input",
-            vec![("id", "r1"), ("type", "radio"), ("name", "g"), ("checked", "")],
+            vec![
+              ("id", "r1"),
+              ("type", "radio"),
+              ("name", "g"),
+              ("checked", ""),
+            ],
             vec![],
           ),
-          el("input", vec![("id", "r2"), ("type", "radio"), ("name", "g")], vec![]),
+          el(
+            "input",
+            vec![("id", "r2"), ("type", "radio"), ("name", "g")],
+            vec![],
+          ),
         ],
       )],
     )],
@@ -1134,7 +1141,8 @@ fn space_key_activates_focused_radio() {
   fastrender::interaction::dom_mutation::remove_attr(r1, "checked");
   assert!(!has_attr(&dom, "r1", "checked"));
 
-  let (changed, action) = engine.key_activate(&mut dom, KeyAction::Space, "https://x/", "https://x/");
+  let (changed, action) =
+    engine.key_activate(&mut dom, KeyAction::Space, "https://x/", "https://x/");
   assert!(changed, "space should activate the radio");
   assert_eq!(action, InteractionAction::None);
   assert!(
@@ -2134,7 +2142,12 @@ fn submit_click_sanitizes_input_values() {
         vec![
           el(
             "input",
-            vec![("id", "n"), ("type", "number"), ("name", "n"), ("value", "abc")],
+            vec![
+              ("id", "n"),
+              ("type", "number"),
+              ("name", "n"),
+              ("value", "abc"),
+            ],
             vec![],
           ),
           el(
@@ -2149,10 +2162,19 @@ fn submit_click_sanitizes_input_values() {
           ),
           el(
             "input",
-            vec![("id", "c"), ("type", "color"), ("name", "c"), ("value", "not-a-color")],
+            vec![
+              ("id", "c"),
+              ("type", "color"),
+              ("name", "c"),
+              ("value", "not-a-color"),
+            ],
             vec![],
           ),
-          el("input", vec![("id", "t"), ("name", "t"), ("value", "a\nb")], vec![]),
+          el(
+            "input",
+            vec![("id", "t"), ("name", "t"), ("value", "a\nb")],
+            vec![],
+          ),
           el("input", vec![("id", "submit"), ("type", "submit")], vec![]),
         ],
       )],
@@ -2383,7 +2405,7 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
       ],
     )],
   )]);
- 
+
   let submit_dom_id = node_id(&dom, "submit");
   let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
   submit_box.styled_node_id = Some(submit_dom_id);
@@ -2392,7 +2414,7 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
     FormattingContextType::Block,
     vec![submit_box],
   ));
- 
+
   let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
   let fragment_tree = FragmentTree::new(FragmentNode::new_block(
     Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
@@ -2402,7 +2424,7 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
       vec![],
     )],
   ));
- 
+
   let mut engine = InteractionEngine::new();
   engine.pointer_down(
     &mut dom,
@@ -2411,7 +2433,7 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
- 
+
   let (_changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -2423,7 +2445,7 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
     "https://example.com/doc",
     "https://example.com/base/",
   );
- 
+
   // The only matching `id="f"` is inside an inert `<template>` subtree, so no form owner is found
   // and no navigation occurs.
   assert_eq!(
@@ -2481,7 +2503,7 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
       ],
     )],
   )]);
- 
+
   let submit_dom_id = node_id(&dom, "submit");
   let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
   submit_box.styled_node_id = Some(submit_dom_id);
@@ -2490,7 +2512,7 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
     FormattingContextType::Block,
     vec![submit_box],
   ));
- 
+
   let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
   let fragment_tree = FragmentTree::new(FragmentNode::new_block(
     Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
@@ -2500,7 +2522,7 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
       vec![],
     )],
   ));
- 
+
   let mut engine = InteractionEngine::new();
   engine.pointer_down(
     &mut dom,
@@ -2509,7 +2531,7 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
- 
+
   let (_changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -2521,7 +2543,7 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
     "https://example.com/doc",
     "https://example.com/base/",
   );
- 
+
   // `form="f"` should not cross the shadow root boundary, so the light DOM `<form id="f">` should
   // not be flagged as user-validity.
   assert_eq!(
@@ -2730,7 +2752,11 @@ fn submit_click_includes_form_associated_control_outside_form_in_query() {
         el(
           "form",
           vec![("id", "f"), ("action", "/search")],
-          vec![el("input", vec![("id", "submit"), ("type", "submit")], vec![])],
+          vec![el(
+            "input",
+            vec![("id", "submit"), ("type", "submit")],
+            vec![],
+          )],
         ),
         el(
           "input",
@@ -3110,11 +3136,7 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
   let fragment_tree = FragmentTree::new(FragmentNode::new_block(
     Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
     vec![
-      FragmentNode::new_block_with_id(
-        Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
-        link_box_id,
-        vec![],
-      ),
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 50.0, 50.0), link_box_id, vec![]),
       FragmentNode::new_block_with_id(
         Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
         overlay_box_id,
@@ -3222,7 +3244,13 @@ fn form_submit_get_builds_expected_url() {
 
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+  );
   let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -3255,10 +3283,19 @@ fn form_submit_get_skips_unchecked_checkbox() {
         "form",
         vec![("id", "f"), ("method", "get"), ("action", "/search")],
         vec![
-          el("input", vec![("id", "q"), ("name", "q"), ("value", "hi")], vec![]),
           el(
             "input",
-            vec![("id", "cb"), ("type", "checkbox"), ("name", "c"), ("value", "yes")],
+            vec![("id", "q"), ("name", "q"), ("value", "hi")],
+            vec![],
+          ),
+          el(
+            "input",
+            vec![
+              ("id", "cb"),
+              ("type", "checkbox"),
+              ("name", "c"),
+              ("value", "yes"),
+            ],
             vec![],
           ),
           el(
@@ -3297,7 +3334,13 @@ fn form_submit_get_skips_unchecked_checkbox() {
 
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+  );
   let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -3330,7 +3373,11 @@ fn form_submit_get_includes_checked_checkbox() {
         "form",
         vec![("id", "f"), ("method", "get"), ("action", "/search")],
         vec![
-          el("input", vec![("id", "q"), ("name", "q"), ("value", "hi")], vec![]),
+          el(
+            "input",
+            vec![("id", "q"), ("name", "q"), ("value", "hi")],
+            vec![],
+          ),
           el(
             "input",
             vec![
@@ -3378,7 +3425,13 @@ fn form_submit_get_includes_checked_checkbox() {
 
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+  );
   let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -3870,7 +3923,11 @@ fn tab_key_traverses_focusable_elements_in_dom_order_and_wraps() {
       vec![("id", "body")],
       vec![
         // Not focusable (disabled).
-        el("input", vec![("id", "disabled_first"), ("disabled", "")], vec![]),
+        el(
+          "input",
+          vec![("id", "disabled_first"), ("disabled", "")],
+          vec![],
+        ),
         // 1: <a href>
         el("a", vec![("id", "a1"), ("href", "/a1")], vec![]),
         // Not focusable (no href).
@@ -3888,7 +3945,11 @@ fn tab_key_traverses_focusable_elements_in_dom_order_and_wraps() {
           ],
         ),
         // Not focusable (disabled).
-        el("button", vec![("id", "b_disabled"), ("disabled", "")], vec![]),
+        el(
+          "button",
+          vec![("id", "b_disabled"), ("disabled", "")],
+          vec![],
+        ),
         // 3: <button>
         el("button", vec![("id", "b1")], vec![]),
         // Not focusable (data-fastr-inert subtree).
@@ -3988,7 +4049,11 @@ fn shift_tab_key_traverses_focusable_elements_in_reverse_dom_order_and_wraps() {
       vec![("id", "body")],
       vec![
         // Not focusable (disabled).
-        el("input", vec![("id", "disabled_first"), ("disabled", "")], vec![]),
+        el(
+          "input",
+          vec![("id", "disabled_first"), ("disabled", "")],
+          vec![],
+        ),
         // 1: <a href>
         el("a", vec![("id", "a1"), ("href", "/a1")], vec![]),
         // Not focusable (no href).
@@ -4006,7 +4071,11 @@ fn shift_tab_key_traverses_focusable_elements_in_reverse_dom_order_and_wraps() {
           ],
         ),
         // Not focusable (disabled).
-        el("button", vec![("id", "b_disabled"), ("disabled", "")], vec![]),
+        el(
+          "button",
+          vec![("id", "b_disabled"), ("disabled", "")],
+          vec![],
+        ),
         // 3: <button>
         el("button", vec![("id", "b1")], vec![]),
         // Not focusable (data-fastr-inert subtree).
@@ -4237,7 +4306,10 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     !has_attr(&dom, "o1", "selected"),
     "single-select listbox should clear previously selected option"
   );
-  assert!(has_attr(&dom, "o2", "selected"), "clicked row should be selected");
+  assert!(
+    has_attr(&dom, "o2", "selected"),
+    "clicked row should be selected"
+  );
   assert!(
     !has_attr(&dom, "s", "data-fastr-user-validity"),
     "renderer must not inject data-fastr-user-validity onto the DOM"
@@ -4397,7 +4469,10 @@ fn listbox_select_click_uses_painted_row_list_not_dom_options() {
     !has_attr(&dom, "o1", "selected"),
     "expected selection to move off the first visible option"
   );
-  assert!(has_attr(&dom, "o2", "selected"), "expected click to select o2");
+  assert!(
+    has_attr(&dom, "o2", "selected"),
+    "expected click to select o2"
+  );
   assert!(
     !has_attr(&dom, "o_hidden", "selected"),
     "hidden options must not consume painted rows"
@@ -4791,9 +4866,7 @@ fn select_keyboard_navigation_without_box_tree_changes_selection_and_skips_disab
 
 #[test]
 fn listbox_select_click_accounts_for_element_scroll_offset() {
-  let option_ids = [
-    "o0", "o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o9",
-  ];
+  let option_ids = ["o0", "o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o9"];
   let options = option_ids
     .iter()
     .map(|&id| el("option", vec![("id", id)], vec![]))
@@ -4976,8 +5049,12 @@ fn tab_cycles_focus_between_link_and_input_and_sets_focus_visible() {
 
   let mut engine = InteractionEngine::new();
 
-  let (changed, action) =
-    engine.key_activate(&mut dom, KeyAction::Tab, "https://x/", "https://example.com/base/");
+  let (changed, action) = engine.key_activate(
+    &mut dom,
+    KeyAction::Tab,
+    "https://x/",
+    "https://example.com/base/",
+  );
   assert!(changed, "Tab should focus the first focusable element");
   assert_eq!(
     action,
@@ -4992,8 +5069,12 @@ fn tab_cycles_focus_between_link_and_input_and_sets_focus_visible() {
   assert!(!has_attr(&dom, "txt", "data-fastr-focus"));
   assert!(!has_attr(&dom, "txt", "data-fastr-focus-visible"));
 
-  let (_, action) =
-    engine.key_activate(&mut dom, KeyAction::Tab, "https://x/", "https://example.com/base/");
+  let (_, action) = engine.key_activate(
+    &mut dom,
+    KeyAction::Tab,
+    "https://x/",
+    "https://example.com/base/",
+  );
   assert_eq!(
     action,
     InteractionAction::FocusChanged {
@@ -5008,8 +5089,12 @@ fn tab_cycles_focus_between_link_and_input_and_sets_focus_visible() {
   assert!(!has_attr(&dom, "txt", "data-fastr-focus-visible"));
 
   // Wrap at the end.
-  let (_, action) =
-    engine.key_activate(&mut dom, KeyAction::Tab, "https://x/", "https://example.com/base/");
+  let (_, action) = engine.key_activate(
+    &mut dom,
+    KeyAction::Tab,
+    "https://x/",
+    "https://example.com/base/",
+  );
   assert_eq!(
     action,
     InteractionAction::FocusChanged {
@@ -5213,7 +5298,13 @@ fn range_input_drag_updates_value_and_clamps_to_max() {
       vec![("id", "body")],
       vec![el(
         "input",
-        vec![("id", "r"), ("type", "range"), ("min", "0"), ("max", "10"), ("value", "0")],
+        vec![
+          ("id", "r"),
+          ("type", "range"),
+          ("min", "0"),
+          ("max", "10"),
+          ("value", "0"),
+        ],
         vec![],
       )],
     )],
@@ -5240,9 +5331,21 @@ fn range_input_drag_updates_value_and_clamps_to_max() {
 
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(0.0, 10.0),
+  );
 
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(25.0, 10.0));
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(25.0, 10.0),
+  );
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("3"));
   assert!(
     !has_attr(&dom, "r", "data-fastr-user-validity"),
@@ -5253,11 +5356,23 @@ fn range_input_drag_updates_value_and_clamps_to_max() {
     "changing a range value should mark user validity"
   );
 
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(75.0, 10.0));
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(75.0, 10.0),
+  );
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("8"));
 
   // Drag beyond the right edge: clamp at max.
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(150.0, 10.0));
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(150.0, 10.0),
+  );
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("10"));
 }
 
@@ -5307,7 +5422,13 @@ fn range_click_sets_min_max_and_snaps_to_step() {
   let scroll = ScrollState::default();
 
   // Left edge should set min.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(0.0, 10.0),
+  );
   engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -5322,7 +5443,13 @@ fn range_click_sets_min_max_and_snaps_to_step() {
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("0"));
 
   // Near 56% should snap to the nearest step.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(56.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(56.0, 10.0),
+  );
   engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -5337,7 +5464,13 @@ fn range_click_sets_min_max_and_snaps_to_step() {
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("60"));
 
   // Right edge should set max.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(100.0, 10.0),
+  );
   engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -5666,8 +5799,20 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
   let scroll = ScrollState::default();
 
   // Disabled range.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 10.0));
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(0.0, 10.0),
+  );
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(100.0, 10.0),
+  );
   engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -5685,13 +5830,27 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
     "renderer must not inject data-fastr-user-validity onto the DOM"
   );
   assert!(
-    !engine.interaction_state().has_user_validity(disabled_dom_id),
+    !engine
+      .interaction_state()
+      .has_user_validity(disabled_dom_id),
     "disabled range must not flip user validity"
   );
 
   // Readonly range.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 50.0));
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 50.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(0.0, 50.0),
+  );
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(100.0, 50.0),
+  );
   engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -5709,7 +5868,9 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
     "renderer must not inject data-fastr-user-validity onto the DOM"
   );
   assert!(
-    !engine.interaction_state().has_user_validity(readonly_dom_id),
+    !engine
+      .interaction_state()
+      .has_user_validity(readonly_dom_id),
     "readonly range must not flip user validity"
   );
 }
@@ -5724,7 +5885,13 @@ fn range_click_focuses_input() {
       vec![("id", "body")],
       vec![el(
         "input",
-        vec![("id", "r"), ("type", "range"), ("min", "0"), ("max", "100"), ("value", "10")],
+        vec![
+          ("id", "r"),
+          ("type", "range"),
+          ("min", "0"),
+          ("max", "100"),
+          ("value", "10"),
+        ],
         vec![],
       )],
     )],
@@ -5750,7 +5917,13 @@ fn range_click_focuses_input() {
 
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(10.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(10.0, 10.0),
+  );
   let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -5894,7 +6067,13 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
 
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+  );
   let (changed, _) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
@@ -5917,13 +6096,19 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
 
   // Tab sequence: first -> textarea -> link -> tabindex=0 div -> last button -> wrap to first.
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(engine.interaction_state().focused, Some(node_id(&dom, "ta")));
+  assert_eq!(
+    engine.interaction_state().focused,
+    Some(node_id(&dom, "ta"))
+  );
   assert!(engine.interaction_state().focus_visible);
   assert!(!has_attr(&dom, "ta", "data-fastr-focus"));
   assert!(!has_attr(&dom, "ta", "data-fastr-focus-visible"));
 
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(engine.interaction_state().focused, Some(node_id(&dom, "link")));
+  assert_eq!(
+    engine.interaction_state().focused,
+    Some(node_id(&dom, "link"))
+  );
   assert!(engine.interaction_state().focus_visible);
   assert!(!has_attr(&dom, "link", "data-fastr-focus"));
   assert!(!has_attr(&dom, "link", "data-fastr-focus-visible"));
@@ -5932,7 +6117,10 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
     engine.key_action(&mut dom, KeyAction::Tab),
     "should skip tabindex=-1, disabled and inert descendants"
   );
-  assert_eq!(engine.interaction_state().focused, Some(node_id(&dom, "tabbed")));
+  assert_eq!(
+    engine.interaction_state().focused,
+    Some(node_id(&dom, "tabbed"))
+  );
   assert!(engine.interaction_state().focus_visible);
   assert!(!has_attr(&dom, "tabbed", "data-fastr-focus"));
   assert!(!has_attr(&dom, "tabbed", "data-fastr-focus-visible"));
@@ -5941,7 +6129,10 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
   assert!(!has_attr(&dom, "inert-input", "data-fastr-focus"));
 
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(engine.interaction_state().focused, Some(node_id(&dom, "last")));
+  assert_eq!(
+    engine.interaction_state().focused,
+    Some(node_id(&dom, "last"))
+  );
   assert!(engine.interaction_state().focus_visible);
   assert!(!has_attr(&dom, "last", "data-fastr-focus"));
   assert!(!has_attr(&dom, "last", "data-fastr-focus-visible"));
@@ -6115,7 +6306,13 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
 
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+  );
   let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,

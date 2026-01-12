@@ -48,4 +48,3 @@ fn scroll_timeline_progress_respects_length_animation_range() {
   let progress = scroll_timeline_progress(&timeline, 250.0, 1000.0, 100.0, &range).unwrap();
   assert!((progress - 0.5).abs() < 1e-6, "progress={progress}");
 }
-

@@ -34,7 +34,10 @@ fn non_wpt_origin_is_rejected_offline() {
     .fetch("https://example.com/resources/testharness.js")
     .expect_err("non-WPT origin should error");
   let msg = err.to_string();
-  assert!(msg.contains("offline WPT fetcher blocked"), "unexpected error: {msg}");
+  assert!(
+    msg.contains("offline WPT fetcher blocked"),
+    "unexpected error: {msg}"
+  );
 }
 
 #[test]
@@ -61,7 +64,10 @@ fn path_traversal_is_rejected_even_when_target_missing() {
     .fetch("https://web-platform.test/resources/../secrets.txt")
     .expect_err("path traversal should error");
   let msg = err.to_string();
-  assert!(msg.contains("invalid WPT corpus path"), "unexpected error: {msg}");
+  assert!(
+    msg.contains("invalid WPT corpus path"),
+    "unexpected error: {msg}"
+  );
 }
 
 #[test]
@@ -72,4 +78,3 @@ fn http_scheme_is_accepted() {
     .expect("fetch resource over http");
   assert_eq!(res.status, Some(200));
 }
-

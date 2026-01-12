@@ -12,12 +12,12 @@ use crate::style::types::Overflow;
 use crate::style::types::ScrollbarWidth;
 use crate::style::types::TextOrientation;
 use crate::style::types::WritingMode;
+use crate::style::values::resolve_length_calc_with_resolver;
 use crate::style::values::CalcLength;
 use crate::style::values::Length;
 use crate::style::values::LengthCalc;
 use crate::style::values::LengthOrAuto;
 use crate::style::values::LengthUnit;
-use crate::style::values::resolve_length_calc_with_resolver;
 use crate::style::ComputedStyle;
 use crate::style::RootFontMetrics;
 use crate::text::font_db::compute_font_size_adjusted_size;
@@ -25,10 +25,10 @@ use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle as FontFaceStyle;
 use crate::text::font_db::ScaledMetrics;
 use crate::text::font_loader::FontContext;
-use rustybuzz::Variation;
-use ttf_parser::Tag;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::fragment_tree::{FragmentNode, ScrollbarReservation};
+use rustybuzz::Variation;
+use ttf_parser::Tag;
 
 /// Resolves a length using the provided percentage base, font size, and root font size.
 ///
@@ -109,7 +109,10 @@ pub fn resolve_length_with_percentage_metrics_and_root_font_metrics(
           resolve_calc_length_with_percentage_metrics(
             linear,
             base,
-            Size { width: vw, height: vh },
+            Size {
+              width: vw,
+              height: vh,
+            },
             font_px,
             root_px,
             style,
@@ -151,16 +154,33 @@ pub fn resolve_length_with_percentage_metrics_and_root_font_metrics(
     if !root_font_size.is_finite() {
       return None;
     }
-    let root_metrics = root_font_metrics.or_else(|| font_context.and_then(|ctx| ctx.root_font_metrics()));
+    let root_metrics =
+      root_font_metrics.or_else(|| font_context.and_then(|ctx| ctx.root_font_metrics()));
     let resolved = match length.unit {
-      LengthUnit::Rex => length.value * root_metrics.map(|m| m.root_x_height_px).unwrap_or(root_font_size * 0.5),
+      LengthUnit::Rex => {
+        length.value
+          * root_metrics
+            .map(|m| m.root_x_height_px)
+            .unwrap_or(root_font_size * 0.5)
+      }
       LengthUnit::Rch => {
-        length.value * root_metrics.map(|m| m.root_ch_advance_px).unwrap_or(root_font_size * 0.5)
+        length.value
+          * root_metrics
+            .map(|m| m.root_ch_advance_px)
+            .unwrap_or(root_font_size * 0.5)
       }
       LengthUnit::Rcap => {
-        length.value * root_metrics.map(|m| m.root_cap_height_px).unwrap_or(root_font_size * 0.7)
+        length.value
+          * root_metrics
+            .map(|m| m.root_cap_height_px)
+            .unwrap_or(root_font_size * 0.7)
       }
-      LengthUnit::Ric => length.value * root_metrics.map(|m| m.root_ic_advance_px).unwrap_or(root_font_size),
+      LengthUnit::Ric => {
+        length.value
+          * root_metrics
+            .map(|m| m.root_ic_advance_px)
+            .unwrap_or(root_font_size)
+      }
       LengthUnit::Rlh => {
         length.value
           * root_metrics
@@ -242,22 +262,23 @@ fn resolve_calc_length_with_percentage_metrics(
 
   let percentage_base = percentage_base.filter(|b| b.is_finite());
   let mut line_height_px: Option<f32> = None;
-  let root_metrics = root_font_metrics.or_else(|| font_context.and_then(|ctx| ctx.root_font_metrics()));
+  let root_metrics =
+    root_font_metrics.or_else(|| font_context.and_then(|ctx| ctx.root_font_metrics()));
 
   let mut resolve_term = |term: &crate::style::values::CalcTerm| -> Option<f32> {
     match term.unit {
       LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
       unit if unit.is_absolute() => Some(Length::new(term.value, unit).to_px()),
-      unit if unit.is_viewport_relative() => {
-        match style {
-          Some(style) => Length::new(term.value, unit).resolve_with_viewport_for_writing_mode(
-            viewport.width,
-            viewport.height,
-            style.writing_mode,
-          ),
-          None => Length::new(term.value, unit).resolve_with_viewport(viewport.width, viewport.height),
+      unit if unit.is_viewport_relative() => match style {
+        Some(style) => Length::new(term.value, unit).resolve_with_viewport_for_writing_mode(
+          viewport.width,
+          viewport.height,
+          style.writing_mode,
+        ),
+        None => {
+          Length::new(term.value, unit).resolve_with_viewport(viewport.width, viewport.height)
         }
-      }
+      },
       LengthUnit::Lh => {
         let lh = *line_height_px.get_or_insert_with(|| {
           resolve_line_height_px(viewport, font_size, root_font_size, style, font_context)
@@ -549,23 +570,43 @@ pub fn content_box_rect_for_style(
   viewport: Size,
   font_context: Option<&FontContext>,
 ) -> Rect {
-  let percentage_base = containing_width.is_finite().then_some(containing_width.max(0.0));
+  let percentage_base = containing_width
+    .is_finite()
+    .then_some(containing_width.max(0.0));
 
   // Resolve physical padding/border sides for the fragment coordinate system (inline = X,
   // block = Y). `scrollbar_reservation_for_style` is expressed in this same coordinate space.
   let (inline_start, inline_end) = if crate::style::inline_axis_is_horizontal(style.writing_mode) {
-    (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+    (
+      crate::style::PhysicalSide::Left,
+      crate::style::PhysicalSide::Right,
+    )
   } else {
-    (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+    (
+      crate::style::PhysicalSide::Top,
+      crate::style::PhysicalSide::Bottom,
+    )
   };
   let (block_start, block_end) = match (
     crate::style::block_axis_is_horizontal(style.writing_mode),
     crate::style::block_axis_positive(style.writing_mode),
   ) {
-    (true, true) => (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right),
-    (true, false) => (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left),
-    (false, true) => (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom),
-    (false, false) => (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top),
+    (true, true) => (
+      crate::style::PhysicalSide::Left,
+      crate::style::PhysicalSide::Right,
+    ),
+    (true, false) => (
+      crate::style::PhysicalSide::Right,
+      crate::style::PhysicalSide::Left,
+    ),
+    (false, true) => (
+      crate::style::PhysicalSide::Top,
+      crate::style::PhysicalSide::Bottom,
+    ),
+    (false, false) => (
+      crate::style::PhysicalSide::Bottom,
+      crate::style::PhysicalSide::Top,
+    ),
   };
   let border_for = |side: crate::style::PhysicalSide| match side {
     crate::style::PhysicalSide::Top => style.used_border_top_width(),
@@ -580,8 +621,13 @@ pub fn content_box_rect_for_style(
     crate::style::PhysicalSide::Left => style.padding_left,
   };
 
-  let border_inline_start =
-    resolve_length_for_scrollport(border_for(inline_start), None, style, viewport, font_context);
+  let border_inline_start = resolve_length_for_scrollport(
+    border_for(inline_start),
+    None,
+    style,
+    viewport,
+    font_context,
+  );
   let border_inline_end =
     resolve_length_for_scrollport(border_for(inline_end), None, style, viewport, font_context);
   let border_block_start =
@@ -589,14 +635,34 @@ pub fn content_box_rect_for_style(
   let border_block_end =
     resolve_length_for_scrollport(border_for(block_end), None, style, viewport, font_context);
 
-  let mut padding_inline_start =
-    resolve_length_for_scrollport(padding_for(inline_start), percentage_base, style, viewport, font_context);
-  let mut padding_inline_end =
-    resolve_length_for_scrollport(padding_for(inline_end), percentage_base, style, viewport, font_context);
-  let mut padding_block_start =
-    resolve_length_for_scrollport(padding_for(block_start), percentage_base, style, viewport, font_context);
-  let mut padding_block_end =
-    resolve_length_for_scrollport(padding_for(block_end), percentage_base, style, viewport, font_context);
+  let mut padding_inline_start = resolve_length_for_scrollport(
+    padding_for(inline_start),
+    percentage_base,
+    style,
+    viewport,
+    font_context,
+  );
+  let mut padding_inline_end = resolve_length_for_scrollport(
+    padding_for(inline_end),
+    percentage_base,
+    style,
+    viewport,
+    font_context,
+  );
+  let mut padding_block_start = resolve_length_for_scrollport(
+    padding_for(block_start),
+    percentage_base,
+    style,
+    viewport,
+    font_context,
+  );
+  let mut padding_block_end = resolve_length_for_scrollport(
+    padding_for(block_end),
+    percentage_base,
+    style,
+    viewport,
+    font_context,
+  );
 
   let reservation = scrollbar_reservation_for_style(style);
   padding_inline_start += reservation.left;
@@ -638,7 +704,13 @@ pub fn fragment_overflows_content_box(
   viewport: Size,
   font_context: Option<&FontContext>,
 ) -> (bool, bool) {
-  let content = content_box_rect_for_style(fragment.bounds, style, containing_width, viewport, font_context);
+  let content = content_box_rect_for_style(
+    fragment.bounds,
+    style,
+    containing_width,
+    viewport,
+    font_context,
+  );
   if content.width() <= 0.0 || content.height() <= 0.0 {
     return (false, false);
   }
@@ -765,7 +837,10 @@ pub(crate) fn resolve_length_for_positioned_style(
           resolve_calc_length_with_percentage_for_positioned(
             linear,
             base,
-            Size { width: vw, height: vh },
+            Size {
+              width: vw,
+              height: vh,
+            },
             style,
             font_context,
           )
@@ -778,12 +853,20 @@ pub(crate) fn resolve_length_for_positioned_style(
   } else if length.unit.is_absolute() {
     Some(length.to_px())
   } else if length.unit.is_viewport_relative() {
-    length.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
+    length.resolve_with_viewport_for_writing_mode(
+      viewport.width,
+      viewport.height,
+      style.writing_mode,
+    )
   } else if length.unit == LengthUnit::Lh {
     // PositionedStyle carries a simplified `line-height` value (already in px for <length>).
     Some(length.value * style.computed_line_height())
   } else if length.unit.is_font_relative() {
-    Some(resolve_font_relative_length_for_positioned(length, style, font_context))
+    Some(resolve_font_relative_length_for_positioned(
+      length,
+      style,
+      font_context,
+    ))
   } else {
     Some(length.value)
   }
@@ -811,13 +894,12 @@ fn resolve_calc_length_with_percentage_for_positioned(
     match term.unit {
       LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
       unit if unit.is_absolute() => Some(Length::new(term.value, unit).to_px()),
-      unit if unit.is_viewport_relative() => {
-        Length::new(term.value, unit).resolve_with_viewport_for_writing_mode(
+      unit if unit.is_viewport_relative() => Length::new(term.value, unit)
+        .resolve_with_viewport_for_writing_mode(
           viewport.width,
           viewport.height,
           style.writing_mode,
-        )
-      }
+        ),
       LengthUnit::Lh => {
         let lh = *line_height_px.get_or_insert_with(|| style.computed_line_height());
         Some(term.value * lh)
@@ -985,8 +1067,10 @@ fn compute_font_relative_metrics(
   // In vertical writing modes, the used metric depends on whether the relevant glyph is rendered
   // upright or sideways (CSS Values 4 "advance measure in inline axis").
   let digit_is_upright_in_vertical = matches!(text_orientation, TextOrientation::Upright);
-  let ideograph_is_upright_in_vertical =
-    matches!(text_orientation, TextOrientation::Mixed | TextOrientation::Upright);
+  let ideograph_is_upright_in_vertical = matches!(
+    text_orientation,
+    TextOrientation::Mixed | TextOrientation::Upright
+  );
 
   if let Some(font) = maybe_font {
     const IDEOGRAPH: char = '\u{6C34}'; // U+6C34 '水'
@@ -1029,13 +1113,16 @@ fn compute_font_relative_metrics(
 
     let authored_variations =
       style_for_variations.map(crate::text::variations::authored_variations_from_style);
-    let mut variations: Vec<Variation> = match (style_for_variations, authored_variations.as_deref()) {
-      (Some(style), Some(authored)) => crate::text::face_cache::with_face(&font, |face| {
-        crate::text::variations::collect_variations_for_face(face, style, &font, font_size, authored)
-      })
-      .unwrap_or_else(|| authored.to_vec()),
-      _ => Vec::new(),
-    };
+    let mut variations: Vec<Variation> =
+      match (style_for_variations, authored_variations.as_deref()) {
+        (Some(style), Some(authored)) => crate::text::face_cache::with_face(&font, |face| {
+          crate::text::variations::collect_variations_for_face(
+            face, style, &font, font_size, authored,
+          )
+        })
+        .unwrap_or_else(|| authored.to_vec()),
+        _ => Vec::new(),
+      };
 
     if let (Some(style), Some(authored)) = (style_for_variations, authored_variations.as_deref()) {
       let opsz_tag = Tag::from_bytes(b"opsz");
@@ -1064,7 +1151,10 @@ fn compute_font_relative_metrics(
 
     let x_height_ratio = metrics
       .as_ref()
-      .and_then(|m| m.x_height.and_then(|xh| ratio_from_units(m.units_per_em, xh)))
+      .and_then(|m| {
+        m.x_height
+          .and_then(|xh| ratio_from_units(m.units_per_em, xh))
+      })
       .unwrap_or(0.5);
     let x_height = x_height_ratio * used_size;
 
@@ -1324,15 +1414,36 @@ fn resolve_font_relative_length_with_params(
     LengthUnit::Cap => length.value * metrics.cap_height,
     LengthUnit::Ic => length.value * metrics.ic_advance,
     LengthUnit::Rem => length.value * root_font_size,
-    LengthUnit::Rex => length.value * root_metrics.map(|m| m.root_x_height_px).unwrap_or(root_font_size * 0.5),
-    LengthUnit::Rch => length.value * root_metrics.map(|m| m.root_ch_advance_px).unwrap_or(root_font_size * 0.5),
-    LengthUnit::Rcap => length.value * root_metrics.map(|m| m.root_cap_height_px).unwrap_or(root_font_size * 0.7),
-    LengthUnit::Ric => length.value * root_metrics.map(|m| m.root_ic_advance_px).unwrap_or(root_font_size),
-    LengthUnit::Rlh => length
-      .value
-      * root_metrics
-        .map(|m| m.root_used_line_height_px)
-        .unwrap_or(root_font_size * 1.2),
+    LengthUnit::Rex => {
+      length.value
+        * root_metrics
+          .map(|m| m.root_x_height_px)
+          .unwrap_or(root_font_size * 0.5)
+    }
+    LengthUnit::Rch => {
+      length.value
+        * root_metrics
+          .map(|m| m.root_ch_advance_px)
+          .unwrap_or(root_font_size * 0.5)
+    }
+    LengthUnit::Rcap => {
+      length.value
+        * root_metrics
+          .map(|m| m.root_cap_height_px)
+          .unwrap_or(root_font_size * 0.7)
+    }
+    LengthUnit::Ric => {
+      length.value
+        * root_metrics
+          .map(|m| m.root_ic_advance_px)
+          .unwrap_or(root_font_size)
+    }
+    LengthUnit::Rlh => {
+      length.value
+        * root_metrics
+          .map(|m| m.root_used_line_height_px)
+          .unwrap_or(root_font_size * 1.2)
+    }
     _ => length
       .resolve_with_font_size(font_size)
       .unwrap_or(length.value * font_size),
@@ -1518,7 +1629,9 @@ pub fn compute_replaced_size(
           CalcSizeBasis::Auto => intrinsic_keyword_w,
           CalcSizeBasis::MinContent | CalcSizeBasis::MaxContent => intrinsic_keyword_w,
           CalcSizeBasis::FillAvailable => width_base
-            .map(|base| content_size_from_box_sizing(base.max(0.0), horizontal_edges, style.box_sizing))
+            .map(|base| {
+              content_size_from_box_sizing(base.max(0.0), horizontal_edges, style.box_sizing)
+            })
             .or(intrinsic_keyword_w),
           CalcSizeBasis::FitContent { limit } => {
             let max_content = intrinsic_keyword_w?;
@@ -1532,7 +1645,8 @@ pub fn compute_replaced_size(
               }
               None => {
                 if let Some(base) = width_base {
-                  let available = content_size_from_box_sizing(base, horizontal_edges, style.box_sizing);
+                  let available =
+                    content_size_from_box_sizing(base, horizontal_edges, style.box_sizing);
                   Some(max_content.min(min_content.max(available)))
                 } else {
                   Some(max_content)
@@ -1540,8 +1654,10 @@ pub fn compute_replaced_size(
               }
             }
           }
-          CalcSizeBasis::Length(len) => resolve_replaced_length(&len, width_base, viewport, style, None)
-            .map(|v| content_size_from_box_sizing(v, horizontal_edges, style.box_sizing)),
+          CalcSizeBasis::Length(len) => {
+            resolve_replaced_length(&len, width_base, viewport, style, None)
+              .map(|v| content_size_from_box_sizing(v, horizontal_edges, style.box_sizing))
+          }
         }?;
         let basis_content = sanitize(basis_content);
         let basis_specified = match style.box_sizing {
@@ -1550,7 +1666,9 @@ pub fn compute_replaced_size(
         };
         crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
           .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-          .and_then(|expr_len| resolve_replaced_length(&expr_len, width_base, viewport, style, None))
+          .and_then(|expr_len| {
+            resolve_replaced_length(&expr_len, width_base, viewport, style, None)
+          })
           .map(|resolved_specified| {
             sanitize(content_size_from_box_sizing(
               resolved_specified,
@@ -1599,7 +1717,9 @@ pub fn compute_replaced_size(
           CalcSizeBasis::Auto => intrinsic_keyword_h,
           CalcSizeBasis::MinContent | CalcSizeBasis::MaxContent => intrinsic_keyword_h,
           CalcSizeBasis::FillAvailable => height_base
-            .map(|base| content_size_from_box_sizing(base.max(0.0), vertical_edges, style.box_sizing))
+            .map(|base| {
+              content_size_from_box_sizing(base.max(0.0), vertical_edges, style.box_sizing)
+            })
             .or(intrinsic_keyword_h),
           CalcSizeBasis::FitContent { limit } => {
             let max_content = intrinsic_keyword_h?;
@@ -1613,7 +1733,8 @@ pub fn compute_replaced_size(
               }
               None => {
                 if let Some(base) = height_base {
-                  let available = content_size_from_box_sizing(base, vertical_edges, style.box_sizing);
+                  let available =
+                    content_size_from_box_sizing(base, vertical_edges, style.box_sizing);
                   Some(max_content.min(min_content.max(available)))
                 } else {
                   Some(max_content)
@@ -1621,8 +1742,10 @@ pub fn compute_replaced_size(
               }
             }
           }
-          CalcSizeBasis::Length(len) => resolve_replaced_length(&len, height_base, viewport, style, None)
-            .map(|v| content_size_from_box_sizing(v, vertical_edges, style.box_sizing)),
+          CalcSizeBasis::Length(len) => {
+            resolve_replaced_length(&len, height_base, viewport, style, None)
+              .map(|v| content_size_from_box_sizing(v, vertical_edges, style.box_sizing))
+          }
         }?;
         let basis_content = sanitize(basis_content);
         let basis_specified = match style.box_sizing {
@@ -1631,7 +1754,9 @@ pub fn compute_replaced_size(
         };
         crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
           .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
-          .and_then(|expr_len| resolve_replaced_length(&expr_len, height_base, viewport, style, None))
+          .and_then(|expr_len| {
+            resolve_replaced_length(&expr_len, height_base, viewport, style, None)
+          })
           .map(|resolved_specified| {
             sanitize(content_size_from_box_sizing(
               resolved_specified,

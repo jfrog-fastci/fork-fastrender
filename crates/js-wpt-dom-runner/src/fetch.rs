@@ -14,7 +14,9 @@ fn resolve_url(input: &str, base_url: Option<&str>) -> Result<String, UrlResolve
   if base_url.is_none() {
     match Url::parse(input) {
       Ok(url) => return Ok(url.to_string()),
-      Err(url::ParseError::RelativeUrlWithoutBase) => return Err(UrlResolveError::RelativeUrlWithoutBase),
+      Err(url::ParseError::RelativeUrlWithoutBase) => {
+        return Err(UrlResolveError::RelativeUrlWithoutBase)
+      }
       Err(err) => return Err(UrlResolveError::Url(err)),
     }
   }
@@ -26,14 +28,16 @@ fn resolve_url(input: &str, base_url: Option<&str>) -> Result<String, UrlResolve
 
 pub fn install_fetch_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<()> {
   // Host hook used by the JS shims to perform WHATWG URL resolution using Rust's `url` crate.
-  let resolve_inner =
-    Function::new(ctx.clone(), |input: String, base: Option<String>| -> JsResult<String> {
+  let resolve_inner = Function::new(
+    ctx.clone(),
+    |input: String, base: Option<String>| -> JsResult<String> {
       resolve_url(&input, base.as_deref()).map_err(|err| {
         // The caller wraps this in a JS shim that rethrows `TypeError`. Here we surface a plain
         // `Error` so the message is preserved.
         rquickjs::Error::new_from_js_message("Error", "Error", err.to_string())
       })
-  })?;
+    },
+  )?;
 
   globals.set("__fastrender_resolve_url_inner", resolve_inner)?;
 

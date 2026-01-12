@@ -184,11 +184,7 @@ fn conformance_doc_links_to_real_code_and_tests() {
     regex::Regex::new(r"\[[^\]]*]\(([^)]+)\)").expect("regex for markdown links should compile");
   let mut linked: HashSet<String> = HashSet::new();
   for cap in link_re.captures_iter(&content) {
-    let raw_target = cap
-      .get(1)
-      .expect("link target capture")
-      .as_str()
-      .trim();
+    let raw_target = cap.get(1).expect("link target capture").as_str().trim();
 
     // Support the common Markdown forms:
     //   [text](path)
@@ -249,8 +245,6 @@ fn conformance_doc_links_to_real_code_and_tests() {
       .map(|(rel, abs)| format!("{rel} (resolved to {})", abs.display()))
       .collect::<Vec<_>>()
       .join("\n");
-    panic!(
-      "docs/conformance.md contains links to paths that do not exist:\n{formatted}"
-    );
+    panic!("docs/conformance.md contains links to paths that do not exist:\n{formatted}");
   }
 }

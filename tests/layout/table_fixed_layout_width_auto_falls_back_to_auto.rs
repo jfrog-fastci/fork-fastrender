@@ -182,7 +182,10 @@ fn inline_table_fixed_layout_width_auto_uses_auto_algorithm_rtl() {
     b.x()
   );
   let gap = a.x() - (b.x() + b.width());
-  assert!(gap.abs() < 0.1, "expected cells to be adjacent in RTL (gap={gap})");
+  assert!(
+    gap.abs() < 0.1,
+    "expected cells to be adjacent in RTL (gap={gap})"
+  );
 
   assert!(
     long_width > 200.0,
@@ -231,7 +234,10 @@ fn inline_table_fixed_layout_with_specified_width_stays_fixed_rtl() {
     b.x()
   );
   let gap = a.x() - (b.x() + b.width());
-  assert!(gap.abs() < 0.1, "expected cells to be adjacent in RTL (gap={gap})");
+  assert!(
+    gap.abs() < 0.1,
+    "expected cells to be adjacent in RTL (gap={gap})"
+  );
 
   assert!(
     (long_width - b_width).abs() < 1.0,

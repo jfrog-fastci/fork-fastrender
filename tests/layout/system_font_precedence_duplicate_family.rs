@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::{FastRender, FastRenderConfig, FontConfig};
 
-fn find_text_fragment<'a>(fragment: &'a fastrender::FragmentNode, needle: &str) -> Option<&'a fastrender::FragmentNode> {
+fn find_text_fragment<'a>(
+  fragment: &'a fastrender::FragmentNode,
+  needle: &str,
+) -> Option<&'a fastrender::FragmentNode> {
   let mut stack = vec![fragment];
   while let Some(node) = stack.pop() {
     if let FragmentContent::Text { text, .. } = &node.content {
@@ -64,7 +67,10 @@ fn named_family_prefers_non_bundled_duplicate_face() {
       .first()
       .expect("{label}: expected at least one shaped run");
 
-    assert_eq!(run.font.family, "Noto Sans", "{label}: wrong resolved family");
+    assert_eq!(
+      run.font.family, "Noto Sans",
+      "{label}: wrong resolved family"
+    );
     assert!(
       !run.font.face_metrics_overrides.has_metric_overrides(),
       "{label}: expected non-bundled face (no built-in metric overrides)"
@@ -106,7 +112,10 @@ fn generic_sans_serif_prefers_non_bundled_duplicate_face() {
       .first()
       .expect("{label}: expected at least one shaped run");
 
-    assert_eq!(run.font.family, "Noto Sans", "{label}: wrong resolved family");
+    assert_eq!(
+      run.font.family, "Noto Sans",
+      "{label}: wrong resolved family"
+    );
     assert!(
       !run.font.face_metrics_overrides.has_metric_overrides(),
       "{label}: expected non-bundled face (no built-in metric overrides)"

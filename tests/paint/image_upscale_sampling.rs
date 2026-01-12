@@ -1,5 +1,7 @@
 use fastrender::geometry::Rect;
-use fastrender::paint::display_list::{DisplayItem, DisplayList, ImageData, ImageFilterQuality, ImageItem};
+use fastrender::paint::display_list::{
+  DisplayItem, DisplayList, ImageData, ImageFilterQuality, ImageItem,
+};
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::style::color::Rgba;
 use fastrender::text::font_loader::FontContext;
@@ -93,7 +95,10 @@ fn image_linear_upscale_with_fractional_src_rect_preserves_subpixel_offset() {
     "expected cropped src_rect to exclude endpoints; got {values:?}"
   );
   for pair in values.windows(2) {
-    assert!(pair[0] <= pair[1], "expected monotonic gradient; got {values:?}");
+    assert!(
+      pair[0] <= pair[1],
+      "expected monotonic gradient; got {values:?}"
+    );
   }
   assert!(
     (values[4] as i32 - 127).abs() <= 4,

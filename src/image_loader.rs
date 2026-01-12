@@ -24,14 +24,14 @@ use crate::resource::{ensure_http_success, ensure_image_mime_sane, origin_from_u
 use crate::style::color::Rgba;
 use crate::style::types::ImageResolution;
 use crate::style::types::OrientationTransform;
-use crate::text::font_db::FontConfig;
-use crate::url_normalize::normalize_url_reference_for_resolution;
 use crate::svg::{
   map_svg_aspect_ratio, parse_svg_length_px, parse_svg_view_box,
   svg_intrinsic_dimensions_from_attributes, svg_markup_for_roxmltree, svg_view_box_root_transform,
   SvgPreserveAspectRatio, SvgViewBox,
 };
+use crate::text::font_db::FontConfig;
 use crate::tree::box_tree::CrossOriginAttribute;
+use crate::url_normalize::normalize_url_reference_for_resolution;
 #[cfg(feature = "avif")]
 use avif_decode::Decoder as AvifDecoder;
 #[cfg(feature = "avif")]
@@ -130,7 +130,11 @@ enum IccToneCurve {
 
 impl IccToneCurve {
   fn eval(&self, v: f64) -> f64 {
-    let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    let v = if v.is_finite() {
+      v.clamp(0.0, 1.0)
+    } else {
+      0.0
+    };
     match self {
       Self::Identity => v,
       Self::Gamma(gamma) if gamma.is_finite() && *gamma > 0.0 => v.powf(*gamma),
@@ -258,7 +262,11 @@ fn apply_icc_profile_to_srgb(rgba: &mut RgbaImage, icc_profile: &[u8]) -> bool {
   }
 
   fn clamp_and_quantize(v: f64) -> u8 {
-    let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    let v = if v.is_finite() {
+      v.clamp(0.0, 1.0)
+    } else {
+      0.0
+    };
     let v = (v * 255.0 + 0.5).floor();
     v.clamp(0.0, 255.0) as u8
   }
@@ -321,7 +329,10 @@ fn apply_icc_profile_to_srgb(rgba: &mut RgbaImage, icc_profile: &[u8]) -> bool {
       }
     }
 
-    Some(IccMatrixProfileToSrgb { matrix, u8_to_linear })
+    Some(IccMatrixProfileToSrgb {
+      matrix,
+      u8_to_linear,
+    })
   })() else {
     return false;
   };
@@ -331,9 +342,12 @@ fn apply_icc_profile_to_srgb(rgba: &mut RgbaImage, icc_profile: &[u8]) -> bool {
     let src_g = profile.u8_to_linear[1][px[1] as usize];
     let src_b = profile.u8_to_linear[2][px[2] as usize];
 
-    let lin_r = profile.matrix[0][0] * src_r + profile.matrix[0][1] * src_g + profile.matrix[0][2] * src_b;
-    let lin_g = profile.matrix[1][0] * src_r + profile.matrix[1][1] * src_g + profile.matrix[1][2] * src_b;
-    let lin_b = profile.matrix[2][0] * src_r + profile.matrix[2][1] * src_g + profile.matrix[2][2] * src_b;
+    let lin_r =
+      profile.matrix[0][0] * src_r + profile.matrix[0][1] * src_g + profile.matrix[0][2] * src_b;
+    let lin_g =
+      profile.matrix[1][0] * src_r + profile.matrix[1][1] * src_g + profile.matrix[1][2] * src_b;
+    let lin_b =
+      profile.matrix[2][0] * src_r + profile.matrix[2][1] * src_g + profile.matrix[2][2] * src_b;
 
     px[0] = clamp_and_quantize(srgb_encode(lin_r));
     px[1] = clamp_and_quantize(srgb_encode(lin_g));
@@ -394,8 +408,9 @@ fn usvg_options_for_url(url: &str) -> resvg::usvg::Options<'_> {
     if parsed.scheme() == "file" {
       if let Ok(path) = parsed.to_file_path() {
         if let Some(dir) = path.parent() {
-          options.resources_dir =
-            std::fs::canonicalize(dir).ok().or_else(|| Some(dir.to_path_buf()));
+          options.resources_dir = std::fs::canonicalize(dir)
+            .ok()
+            .or_else(|| Some(dir.to_path_buf()));
         }
       }
     }
@@ -410,7 +425,9 @@ fn fetch_credentials_mode_for_crossorigin(
   match crossorigin {
     CrossOriginAttribute::None => FetchCredentialsMode::Include,
     CrossOriginAttribute::Anonymous => crate::resource::CorsMode::Anonymous.credentials_mode(),
-    CrossOriginAttribute::UseCredentials => crate::resource::CorsMode::UseCredentials.credentials_mode(),
+    CrossOriginAttribute::UseCredentials => {
+      crate::resource::CorsMode::UseCredentials.credentials_mode()
+    }
   }
 }
 
@@ -1103,13 +1120,7 @@ fn icc_parse_trc_tag(tag: &[u8]) -> Option<IccTransferCurve> {
         params[i] = icc_s15fixed16_to_f32(read_be_i32(tag, 12 + i * 4)?);
       }
       let (g, a, b, c, d, e, f) = (
-        params[0],
-        params[1],
-        params[2],
-        params[3],
-        params[4],
-        params[5],
-        params[6],
+        params[0], params[1], params[2], params[3], params[4], params[5], params[6],
       );
       Some(IccTransferCurve::Parametric {
         kind,
@@ -1181,7 +1192,10 @@ fn icc_transform_to_srgb(profile: &[u8]) -> Option<IccToSrgbTransform> {
     [0.0557, -0.2040, 1.0570],
   ];
 
-  let m_profile_to_srgb = mat3_mul(m_xyz_d65_to_srgb, mat3_mul(m_d50_to_d65, m_profile_to_xyz_d50));
+  let m_profile_to_srgb = mat3_mul(
+    m_xyz_d65_to_srgb,
+    mat3_mul(m_d50_to_d65, m_profile_to_xyz_d50),
+  );
 
   let build_trc_lut = |curve: &IccTransferCurve| -> [f32; 256] {
     let mut lut = [0.0f32; 256];
@@ -1708,12 +1722,8 @@ fn inline_svg_use_references<'a>(
           let mut decompression_deadline_counter = 0usize;
           let mut ok = true;
           loop {
-            check_root_periodic(
-              &mut decompression_deadline_counter,
-              32,
-              RenderStage::Paint,
-            )
-            .map_err(Error::Render)?;
+            check_root_periodic(&mut decompression_deadline_counter, 32, RenderStage::Paint)
+              .map_err(Error::Render)?;
             let n = match decoder.read(&mut buf) {
               Ok(n) => n,
               Err(_) => {
@@ -1750,13 +1760,8 @@ fn inline_svg_use_references<'a>(
       // Inline any external raster images referenced by the sprite itself so that when we later
       // embed a single `<symbol>`/`<g>` fragment into the parent document, nested `<image>`
       // references continue to resolve relative to the sprite URL (not the parent document URL).
-      sprite_text = inline_svg_image_references(
-        &sprite_text,
-        &sprite_base_url,
-        fetcher,
-        ctx,
-      )?
-      .into_owned();
+      sprite_text =
+        inline_svg_image_references(&sprite_text, &sprite_base_url, fetcher, ctx)?.into_owned();
 
       let sprite_for_parse = svg_markup_for_roxmltree(&sprite_text);
       let sprite_doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2102,14 +2107,11 @@ fn inline_svg_image_references<'a>(
     Ok(Err(_)) | Err(_) => return Ok(Cow::Borrowed(svg_content)),
   };
 
-  let base_url = Url::parse(svg_url)
-    .ok()
-    .map(|_| svg_url)
-    .or_else(|| {
-      ctx
-        .and_then(|ctx| ctx.document_url.as_deref())
-        .filter(|doc_url| Url::parse(doc_url).is_ok())
-    });
+  let base_url = Url::parse(svg_url).ok().map(|_| svg_url).or_else(|| {
+    ctx
+      .and_then(|ctx| ctx.document_url.as_deref())
+      .filter(|doc_url| Url::parse(doc_url).is_ok())
+  });
 
   let mut deadline_counter = 0usize;
   let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
@@ -2630,7 +2632,12 @@ fn apply_svg_url_fragment<'a>(svg_content: &'a str, requested_url: &str) -> Cow<
       .attribute("viewBox")
       .map(trim_ascii_whitespace)
       .filter(|v| !v.is_empty())
-      .or_else(|| root.attribute("viewBox").map(trim_ascii_whitespace).filter(|v| !v.is_empty()));
+      .or_else(|| {
+        root
+          .attribute("viewBox")
+          .map(trim_ascii_whitespace)
+          .filter(|v| !v.is_empty())
+      });
     let preserve_aspect_ratio = symbol
       .attribute("preserveAspectRatio")
       .map(trim_ascii_whitespace)
@@ -2839,10 +2846,7 @@ fn svg_with_resolved_root_viewport_size<'a>(
     while i < bytes.len() && bytes[i].is_ascii_whitespace() {
       i += 1;
     }
-    while i < bytes.len()
-      && !bytes[i].is_ascii_whitespace()
-      && bytes[i] != b'>'
-      && bytes[i] != b'/'
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' && bytes[i] != b'/'
     {
       i += 1;
     }
@@ -2923,10 +2927,7 @@ fn svg_with_resolved_root_viewport_size<'a>(
       continue;
     }
 
-    while i < bytes.len()
-      && !bytes[i].is_ascii_whitespace()
-      && bytes[i] != b'>'
-      && bytes[i] != b'/'
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' && bytes[i] != b'/'
     {
       i += 1;
     }
@@ -4749,7 +4750,10 @@ impl ImageCache {
       Err(_) => return Ok(None),
     };
     render_control::reserve_allocation_with(bytes_u64, || {
-      format!("image raster pixmap {}x{} url={}", width, height, resolved_url)
+      format!(
+        "image raster pixmap {}x{} url={}",
+        width, height, resolved_url
+      )
     })
     .map_err(Error::Render)?;
 
@@ -4846,7 +4850,10 @@ impl ImageCache {
       Err(_) => return Ok(None),
     };
     render_control::reserve_allocation_with(bytes_u64, || {
-      format!("image raster pixmap {}x{} url={}", width, height, resolved_url)
+      format!(
+        "image raster pixmap {}x{} url={}",
+        width, height, resolved_url
+      )
     })
     .map_err(Error::Render)?;
 
@@ -5505,12 +5512,35 @@ impl ImageCache {
   fn estimate_raw_cache_entry_bytes(key: &str, resource: &FetchedResource) -> usize {
     let mut bytes = key.len().saturating_add(resource.bytes.len());
     bytes = bytes.saturating_add(resource.content_type.as_ref().map(|s| s.len()).unwrap_or(0));
-    bytes = bytes.saturating_add(resource.content_encoding.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes = bytes.saturating_add(
+      resource
+        .content_encoding
+        .as_ref()
+        .map(|s| s.len())
+        .unwrap_or(0),
+    );
     bytes = bytes.saturating_add(resource.etag.as_ref().map(|s| s.len()).unwrap_or(0));
-    bytes = bytes.saturating_add(resource.last_modified.as_ref().map(|s| s.len()).unwrap_or(0));
-    bytes =
-      bytes.saturating_add(resource.access_control_allow_origin.as_ref().map(|s| s.len()).unwrap_or(0));
-    bytes = bytes.saturating_add(resource.timing_allow_origin.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes = bytes.saturating_add(
+      resource
+        .last_modified
+        .as_ref()
+        .map(|s| s.len())
+        .unwrap_or(0),
+    );
+    bytes = bytes.saturating_add(
+      resource
+        .access_control_allow_origin
+        .as_ref()
+        .map(|s| s.len())
+        .unwrap_or(0),
+    );
+    bytes = bytes.saturating_add(
+      resource
+        .timing_allow_origin
+        .as_ref()
+        .map(|s| s.len())
+        .unwrap_or(0),
+    );
     bytes = bytes.saturating_add(resource.vary.as_ref().map(|s| s.len()).unwrap_or(0));
     bytes = bytes.saturating_add(resource.final_url.as_ref().map(|s| s.len()).unwrap_or(0));
     if let Some(headers) = resource.response_headers.as_ref() {
@@ -5612,14 +5642,12 @@ impl ImageCache {
       return Ok(());
     };
     let credentials_mode = fetch_credentials_mode_for_crossorigin(crossorigin);
-    if let Err(reason) =
-      crate::resource::validate_cors_allow_origin(
-        resource,
-        requested_url,
-        Some(document_origin),
-        credentials_mode,
-      )
-    {
+    if let Err(reason) = crate::resource::validate_cors_allow_origin(
+      resource,
+      requested_url,
+      Some(document_origin),
+      credentials_mode,
+    ) {
       return Err(Error::Image(ImageError::LoadFailed {
         url: requested_url.to_string(),
         reason,
@@ -6084,8 +6112,7 @@ impl ImageCache {
             && (tag_name.eq_ignore_ascii_case("image")
               || tag_name.eq_ignore_ascii_case("use")
               || tag_name.eq_ignore_ascii_case("feimage"));
-          let is_image_src =
-            local_name == "src" && tag_name.eq_ignore_ascii_case("image");
+          let is_image_src = local_name == "src" && tag_name.eq_ignore_ascii_case("image");
           if is_image_href || is_image_src {
             if svg_node_has_display_none(node) {
               continue;
@@ -6126,9 +6153,13 @@ impl ImageCache {
           for child in node.children() {
             if child.is_text() {
               if let Some(text) = child.text() {
-                scan_css_urls(text, true, &mut css_budget_remaining, svg_url, &mut |url, kind| {
-                  check_url(url, &base, kind)
-                })?;
+                scan_css_urls(
+                  text,
+                  true,
+                  &mut css_budget_remaining,
+                  svg_url,
+                  &mut |url, kind| check_url(url, &base, kind),
+                )?;
               }
             }
           }
@@ -6170,8 +6201,8 @@ impl ImageCache {
       .and_then(|ctx| ctx.policy.document_origin.as_ref())
       .or(origin_fallback.as_ref());
     let fetch_url_no_fragment = strip_url_fragment(resolved_url);
-    let mut request =
-      FetchRequest::new(fetch_url_no_fragment.as_ref(), destination).with_credentials_mode(credentials_mode);
+    let mut request = FetchRequest::new(fetch_url_no_fragment.as_ref(), destination)
+      .with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
     }
@@ -6248,21 +6279,21 @@ impl ImageCache {
       svg_content,
       svg_has_intrinsic_size,
     ) = match {
-        // Image decoding can be triggered deep inside nested deadline budgets (e.g. display-list
-        // builder time slices). Those scoped budgets are meant to bound renderer algorithm choice
-        // (e.g. fall back to legacy paint) but should not cause subresource decoding to be dropped
-        // when the overall render deadline still has time remaining.
-        let deadline = render_control::root_deadline();
-        render_control::with_deadline(deadline.as_ref(), || {
-          self.decode_resource(&resource, resolved_url)
-        })
-      } {
-        Ok(decoded) => decoded,
-        Err(err) => {
-          self.record_image_error(resolved_url, &err);
-          return Err(err);
-        }
-      };
+      // Image decoding can be triggered deep inside nested deadline budgets (e.g. display-list
+      // builder time slices). Those scoped budgets are meant to bound renderer algorithm choice
+      // (e.g. fall back to legacy paint) but should not cause subresource decoding to be dropped
+      // when the overall render deadline still has time remaining.
+      let deadline = render_control::root_deadline();
+      render_control::with_deadline(deadline.as_ref(), || {
+        self.decode_resource(&resource, resolved_url)
+      })
+    } {
+      Ok(decoded) => decoded,
+      Err(err) => {
+        self.record_image_error(resolved_url, &err);
+        return Err(err);
+      }
+    };
     if Self::should_map_decoded_image_to_placeholder(&resource, &img, has_alpha, is_vector) {
       return Ok(self.cache_placeholder_image(cache_key));
     }
@@ -6366,12 +6397,12 @@ impl ImageCache {
       svg_content,
       svg_has_intrinsic_size,
     ) = {
-        // See `fetch_and_decode` for why we temporarily switch to the root deadline for decoding.
-        let deadline = render_control::root_deadline();
-        render_control::with_deadline(deadline.as_ref(), || {
-          self.decode_resource(resource, resolved_url)
-        })
-      }?;
+      // See `fetch_and_decode` for why we temporarily switch to the root deadline for decoding.
+      let deadline = render_control::root_deadline();
+      render_control::with_deadline(deadline.as_ref(), || {
+        self.decode_resource(resource, resolved_url)
+      })
+    }?;
     if Self::should_map_decoded_image_to_placeholder(resource, &img, has_alpha, is_vector) {
       return Ok(self.cache_placeholder_image(cache_key));
     }
@@ -6449,8 +6480,8 @@ impl ImageCache {
       .and_then(|ctx| ctx.policy.document_origin.as_ref())
       .or(origin_fallback.as_ref());
     let fetch_url_no_fragment = strip_url_fragment(resolved_url);
-    let mut request =
-      FetchRequest::new(fetch_url_no_fragment.as_ref(), destination).with_credentials_mode(credentials_mode);
+    let mut request = FetchRequest::new(fetch_url_no_fragment.as_ref(), destination)
+      .with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
     }
@@ -6510,7 +6541,9 @@ impl ImageCache {
         return Err(err);
       }
       if resource.bytes.is_empty()
-        || crate::resource::content_type_is_offline_placeholder_png(resource.content_type.as_deref())
+        || crate::resource::content_type_is_offline_placeholder_png(
+          resource.content_type.as_deref(),
+        )
         || resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes()
       {
         // Preserve the raw probe response when it was small enough to fit in this probe prefix so
@@ -6543,20 +6576,20 @@ impl ImageCache {
 
       let fetch_ms = fetch_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
       let attempt_probe_start = profile_enabled.then(Instant::now);
-        match self.probe_resource(&resource, resolved_url) {
-          Ok(meta) => {
-            let probe_ms = attempt_probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
-            let meta = Arc::new(meta);
+      match self.probe_resource(&resource, resolved_url) {
+        Ok(meta) => {
+          let probe_ms = attempt_probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
+          let meta = Arc::new(meta);
 
-            if let Ok(mut cache) = self.meta_cache.lock() {
-              let key = cache_key.to_string();
-              let bytes = Self::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
-              cache.insert(key, Arc::clone(&meta), bytes);
-            }
-            if let Some(serialized) = encode_probe_metadata_for_disk(&meta) {
-              self.fetcher.write_cache_artifact_with_request(
-                request,
-                CacheArtifactKind::ImageProbeMetadata,
+          if let Ok(mut cache) = self.meta_cache.lock() {
+            let key = cache_key.to_string();
+            let bytes = Self::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
+            cache.insert(key, Arc::clone(&meta), bytes);
+          }
+          if let Some(serialized) = encode_probe_metadata_for_disk(&meta) {
+            self.fetcher.write_cache_artifact_with_request(
+              request,
+              CacheArtifactKind::ImageProbeMetadata,
               &serialized,
               Some(resource.as_ref()),
             );
@@ -6564,14 +6597,14 @@ impl ImageCache {
 
           // When the image is small enough to fit in the probe prefix, keep the bytes so a later
           // decode can reuse them without issuing another HTTP request.
-            if resource.bytes.len() < limit && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES
-            {
-              if let Ok(mut cache) = self.raw_cache.lock() {
-                let key = cache_key.to_string();
-                let bytes = Self::estimate_raw_cache_entry_bytes(&key, resource.as_ref());
-                cache.insert(key, Arc::clone(&resource), bytes);
-              }
+          if resource.bytes.len() < limit && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES
+          {
+            if let Ok(mut cache) = self.raw_cache.lock() {
+              let key = cache_key.to_string();
+              let bytes = Self::estimate_raw_cache_entry_bytes(&key, resource.as_ref());
+              cache.insert(key, Arc::clone(&resource), bytes);
             }
+          }
 
           if let (Some(threshold_ms), Some(total_start)) = (threshold_ms, total_start) {
             let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
@@ -7201,14 +7234,38 @@ impl ImageCache {
           let (orientation, resolution) = Self::exif_metadata(&decompressed);
           return self
             .decode_bitmap(&decompressed, content_type, url)
-            .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None, true));
+            .map(|(img, has_alpha)| {
+              (
+                img,
+                has_alpha,
+                orientation,
+                resolution,
+                false,
+                None,
+                false,
+                None,
+                true,
+              )
+            });
         }
 
         // Not valid UTF-8 after decompression; treat as a (possibly mislabelled) bitmap.
         let (orientation, resolution) = Self::exif_metadata(&decompressed);
         return self
           .decode_bitmap(&decompressed, content_type, url)
-          .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None, true));
+          .map(|(img, has_alpha)| {
+            (
+              img,
+              has_alpha,
+              orientation,
+              resolution,
+              false,
+              None,
+              false,
+              None,
+              true,
+            )
+          });
       }
     }
 
@@ -7216,7 +7273,19 @@ impl ImageCache {
     let (orientation, resolution) = Self::exif_metadata(bytes);
     self
       .decode_bitmap(bytes, content_type, url)
-      .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None, true))
+      .map(|(img, has_alpha)| {
+        (
+          img,
+          has_alpha,
+          orientation,
+          resolution,
+          false,
+          None,
+          false,
+          None,
+          true,
+        )
+      })
   }
 
   fn probe_resource(&self, resource: &FetchedResource, url: &str) -> Result<CachedImageMetadata> {
@@ -7668,7 +7737,12 @@ impl ImageCache {
     Some(false)
   }
 
-  fn decode_gif_at_time(&self, bytes: &[u8], url: &str, time_ms: f32) -> Result<(DynamicImage, bool)> {
+  fn decode_gif_at_time(
+    &self,
+    bytes: &[u8],
+    url: &str,
+    time_ms: f32,
+  ) -> Result<(DynamicImage, bool)> {
     #[derive(Debug, Default)]
     struct GifTiming {
       delays_cs: Vec<u16>,
@@ -7754,8 +7828,7 @@ impl ImageCache {
                     && size >= 3
                     && bytes.get(offset) == Some(&0x01)
                   {
-                    let loop_bytes: [u8; 2] =
-                      bytes.get(offset + 1..offset + 3)?.try_into().ok()?;
+                    let loop_bytes: [u8; 2] = bytes.get(offset + 1..offset + 3)?.try_into().ok()?;
                     out.loop_count = Some(u16::from_le_bytes(loop_bytes));
                   }
                   offset = payload_end;
@@ -7840,7 +7913,11 @@ impl ImageCache {
       .map(|delay_cs| u64::from((*delay_cs).max(1)) * 10)
       .collect();
     let total_ms: u64 = delays_ms.iter().sum();
-    let mut t_ms = if time_ms.is_finite() { time_ms.max(0.0) as f64 } else { 0.0 };
+    let mut t_ms = if time_ms.is_finite() {
+      time_ms.max(0.0) as f64
+    } else {
+      0.0
+    };
 
     let selected_frame = if delays_ms.len() == 1 || total_ms == 0 {
       0usize
@@ -7895,7 +7972,10 @@ impl ImageCache {
         return Ok(DynamicImage::ImageRgba8(frame.into_buffer()));
       }
       Err(image::ImageError::Decoding(
-        image::error::DecodingError::new(image::error::ImageFormatHint::Exact(ImageFormat::Gif), "GIF contained no frames"),
+        image::error::DecodingError::new(
+          image::error::ImageFormatHint::Exact(ImageFormat::Gif),
+          "GIF contained no frames",
+        ),
       ))
     };
 
@@ -8372,12 +8452,12 @@ impl ImageCache {
 
     self.enforce_decode_limits(width, height, url)?;
 
-    let stride_bytes = u64::from(width)
-      .checked_mul(4)
-      .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+    let stride_bytes = u64::from(width).checked_mul(4).ok_or_else(|| {
+      Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
         reason: format!("WebP row byte size overflow (width={width})"),
-      }))?;
+      })
+    })?;
     let stride = i32::try_from(stride_bytes).map_err(|_| {
       Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
@@ -8385,12 +8465,12 @@ impl ImageCache {
       })
     })?;
 
-    let buf_size_bytes = stride_bytes
-      .checked_mul(u64::from(height))
-      .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+    let buf_size_bytes = stride_bytes.checked_mul(u64::from(height)).ok_or_else(|| {
+      Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
         reason: format!("WebP decoded byte size overflow ({width}x{height})"),
-      }))?;
+      })
+    })?;
     let buf_len = usize::try_from(buf_size_bytes).map_err(|_| {
       Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
@@ -9360,8 +9440,8 @@ impl ImageCache {
     let svg_content = svg_fragment_applied.as_ref();
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
       svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
-    let svg_has_intrinsic_size = meta_width.filter(|w| *w > 0.0).is_some()
-      || meta_height.filter(|h| *h > 0.0).is_some();
+    let svg_has_intrinsic_size =
+      meta_width.filter(|w| *w > 0.0).is_some() || meta_height.filter(|h| *h > 0.0).is_some();
     let svg_for_parse = svg_markup_for_roxmltree(svg_content);
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       usvg::Tree::from_str(svg_for_parse.as_ref(), &options)
@@ -9551,9 +9631,15 @@ fn svg_find_root_start_tag(svg_content: &str) -> Option<&str> {
       _ => {}
     }
 
-    if bytes.get(i + 1).is_some_and(|b| b.to_ascii_lowercase() == b's')
-      && bytes.get(i + 2).is_some_and(|b| b.to_ascii_lowercase() == b'v')
-      && bytes.get(i + 3).is_some_and(|b| b.to_ascii_lowercase() == b'g')
+    if bytes
+      .get(i + 1)
+      .is_some_and(|b| b.to_ascii_lowercase() == b's')
+      && bytes
+        .get(i + 2)
+        .is_some_and(|b| b.to_ascii_lowercase() == b'v')
+      && bytes
+        .get(i + 3)
+        .is_some_and(|b| b.to_ascii_lowercase() == b'g')
     {
       // Ensure we're not matching `<svgFoo>`; require a boundary.
       let boundary = bytes.get(i + 4).copied().unwrap_or(b'>');
@@ -9658,7 +9744,8 @@ fn svg_extract_root_attr<'a>(start_tag: &'a str, target: &str) -> Option<&'a str
       }
       _ => {
         let start = i;
-        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'/') {
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'/')
+        {
           i += 1;
         }
         (start, i)
@@ -9809,11 +9896,13 @@ impl Clone for ImageCache {
 // ============================================================================
 
 #[cfg(test)]
-  mod tests {
+mod tests {
   use super::*;
   use crate::error::{Error, RenderError, RenderStage};
-  use crate::render_control::{record_stage, StageAllocationBudget, StageAllocationBudgetGuard, StageHeartbeat};
   use crate::render_control::RenderDeadline;
+  use crate::render_control::{
+    record_stage, StageAllocationBudget, StageAllocationBudgetGuard, StageHeartbeat,
+  };
   use crate::style::types::OrientationTransform;
   use base64::Engine;
   use image::codecs::gif::GifEncoder;
@@ -9945,9 +10034,8 @@ impl Clone for ImageCache {
   #[cfg(feature = "avif")]
   fn avif_fixture_asset_decodes() {
     let cache = ImageCache::new();
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-      "tests/pages/fixtures/gitlab.com/assets/22f6f99a9d5ab37d1feb616188f30106.avif",
-    );
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+      .join("tests/pages/fixtures/gitlab.com/assets/22f6f99a9d5ab37d1feb616188f30106.avif");
     let bytes = std::fs::read(&path).expect("read avif fixture");
     let (img, has_alpha) = cache
       .decode_bitmap(&bytes, Some("image/avif"), &path.to_string_lossy())
@@ -10073,9 +10161,7 @@ impl Clone for ImageCache {
       .unwrap_err();
     match err {
       Error::Render(RenderError::StageAllocationBudgetExceeded {
-        stage,
-        heartbeat,
-        ..
+        stage, heartbeat, ..
       }) => {
         assert_eq!(stage, RenderStage::Paint);
         assert_eq!(heartbeat, StageHeartbeat::PaintRasterize);
@@ -10089,7 +10175,9 @@ impl Clone for ImageCache {
     // Regression test for the ietf.org fixture: some PNGs embed an ICC profile (e.g. Display P3),
     // and Chrome converts them to sRGB when rendering. If we ignore the embedded profile, images
     // render with noticeably different colors.
-    let png = include_bytes!("../tests/pages/fixtures/ietf.org/assets/d569cb1453b4178adc5736e882edf968.png");
+    let png = include_bytes!(
+      "../tests/pages/fixtures/ietf.org/assets/d569cb1453b4178adc5736e882edf968.png"
+    );
     let cache = ImageCache::new();
     let (decoded, _) = cache
       .decode_with_format(png, ImageFormat::Png, "test://iccp.png")
@@ -10190,7 +10278,8 @@ impl Clone for ImageCache {
   }
 
   #[test]
-  fn image_cache_load_file_url_1x1_transparent_png_with_non_image_content_type_maps_to_placeholder() {
+  fn image_cache_load_file_url_1x1_transparent_png_with_non_image_content_type_maps_to_placeholder()
+  {
     // Older offline fixtures can contain 1×1 transparent PNG "placeholder pixel" files without the
     // explicit `fastrender-placeholder=1` content-type marker (because file:// loads infer their
     // MIME type from the path extension). Ensure we still map these to the shared placeholder image
@@ -10344,8 +10433,25 @@ impl Clone for ImageCache {
       }
 
       let extension = [
-        0x21, 0xFF, 0x0B, b'N', b'E', b'T', b'S', b'C', b'A', b'P', b'E', b'2', b'.', b'0', 0x03,
-        0x01, (loop_count & 0xFF) as u8, (loop_count >> 8) as u8, 0x00,
+        0x21,
+        0xFF,
+        0x0B,
+        b'N',
+        b'E',
+        b'T',
+        b'S',
+        b'C',
+        b'A',
+        b'P',
+        b'E',
+        b'2',
+        b'.',
+        b'0',
+        0x03,
+        0x01,
+        (loop_count & 0xFF) as u8,
+        (loop_count >> 8) as u8,
+        0x00,
       ];
       bytes.splice(offset..offset, extension);
     }
@@ -10376,15 +10482,11 @@ impl Clone for ImageCache {
     assert_eq!(img0.image.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
 
     cache.set_animation_time_ms(Some(150.0));
-    let img1 = cache
-      .load(&url)
-      .expect("gif frame at t=150 should decode");
+    let img1 = cache.load(&url).expect("gif frame at t=150 should decode");
     assert_eq!(img1.image.to_rgba8().get_pixel(0, 0).0, [0, 0, 255, 255]);
 
     cache.set_animation_time_ms(Some(250.0));
-    let img2 = cache
-      .load(&url)
-      .expect("gif frame at t=250 should decode");
+    let img2 = cache.load(&url).expect("gif frame at t=250 should decode");
     assert_eq!(img2.image.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
   }
 
@@ -10507,7 +10609,10 @@ impl Clone for ImageCache {
     match err {
       Error::Image(ImageError::LoadFailed { url, reason }) => {
         assert_eq!(url, "https://cross.test/a.png");
-        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "{reason}"
+        );
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
@@ -10523,7 +10628,10 @@ impl Clone for ImageCache {
     match err {
       Error::Image(ImageError::LoadFailed { url, reason }) => {
         assert_eq!(url, "https://cross.test/f.svg#f");
-        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "{reason}"
+        );
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
@@ -10539,7 +10647,10 @@ impl Clone for ImageCache {
     match err {
       Error::Image(ImageError::LoadFailed { url, reason }) => {
         assert_eq!(url, "https://cross.test/a.png");
-        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "{reason}"
+        );
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
@@ -10555,7 +10666,10 @@ impl Clone for ImageCache {
     match err {
       Error::Image(ImageError::LoadFailed { url, reason }) => {
         assert_eq!(url, "https://cross.test/a.png");
-        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "{reason}"
+        );
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
@@ -10586,7 +10700,10 @@ impl Clone for ImageCache {
     // Large non-CSS attribute values (e.g. huge path data) should not consume the embedded CSS scan
     // budget when they cannot contain `url(...)` references.
     let d = "M".repeat(600 * 1024);
-    assert!(d.len() > 512 * 1024, "expected test path data to exceed scan budget");
+    assert!(
+      d.len() > 512 * 1024,
+      "expected test path data to exceed scan budget"
+    );
     let svg = format!(
       r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><path d="{d}"/></svg>"#
     );
@@ -11779,7 +11896,10 @@ impl Clone for ImageCache {
       aspect_ratio_none: false,
     });
 
-    let mut guard = cache.meta_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = cache
+      .meta_cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.clear();
     for i in 0..16 {
       let key = format!("test://meta/{i}");
@@ -11813,7 +11933,10 @@ impl Clone for ImageCache {
       .with_max_raw_cached_bytes(180);
     let cache = ImageCache::with_fetcher_and_config(Arc::new(PanicFetcher), config);
 
-    let mut guard = cache.raw_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = cache
+      .raw_cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.clear();
 
     let mut last_key = String::new();
@@ -11988,7 +12111,10 @@ impl Clone for ImageCache {
     resource.status = Some(200);
     let resource = Arc::new(resource);
 
-    let mut guard = cache.raw_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = cache
+      .raw_cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.clear();
     let bytes = ImageCache::estimate_raw_cache_entry_bytes(&cache_key, resource.as_ref());
     guard.insert(cache_key, resource, bytes);
@@ -13103,7 +13229,10 @@ impl Clone for ImageCache {
       svg_has_intrinsic_size: true,
     };
 
-    assert_eq!(img.intrinsic_ratio(OrientationTransform::IDENTITY), Some(0.5));
+    assert_eq!(
+      img.intrinsic_ratio(OrientationTransform::IDENTITY),
+      Some(0.5)
+    );
     assert_eq!(
       img.intrinsic_ratio(OrientationTransform {
         quarter_turns: 1,
@@ -13311,7 +13440,8 @@ impl Clone for ImageCache {
   #[test]
   fn render_svg_to_image_viewbox_min_xy_translation_respected() {
     let cache = ImageCache::new();
-    let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='50 50 100 100'>\
+    let svg =
+      "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='50 50 100 100'>\
       <rect x='50' y='50' width='100' height='100' fill='red'/>\
     </svg>";
     let (image, _, _) = cache.render_svg_to_image(svg).expect("render svg");
@@ -13660,8 +13790,7 @@ impl Clone for ImageCache {
 
     let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
     let sprite_svgz = gzip_bytes(sprite_svg.as_bytes());
-    let main_svg =
-      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svgz#icon"/></svg>"#;
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svgz#icon"/></svg>"#;
 
     let mut main_res = FetchedResource::new(
       main_svg.as_bytes().to_vec(),
@@ -13695,29 +13824,29 @@ impl Clone for ImageCache {
   fn svg_external_image_href_renders() {
     let main_url = "https://example.test/main.svg";
     let img_url = "https://example.test/img.png";
- 
+
     let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="/img.png" width="1" height="1"/></svg>"#;
- 
+
     let mut main_res = FetchedResource::new(
       main_svg.as_bytes().to_vec(),
       Some("image/svg+xml".to_string()),
     );
     main_res.status = Some(200);
     main_res.final_url = Some(main_url.to_string());
- 
+
     let mut img_res = FetchedResource::new(
       encode_single_pixel_png([255, 0, 0, 255]),
       Some("image/png".to_string()),
     );
     img_res.status = Some(200);
     img_res.final_url = Some(img_url.to_string());
- 
+
     let fetcher = MapFetcher::with_entries([
       (main_url.to_string(), main_res),
       (img_url.to_string(), img_res),
     ]);
     let cache = ImageCache::with_fetcher(Arc::new(fetcher));
- 
+
     let image = cache.load(main_url).expect("load main svg");
     assert_eq!((image.width(), image.height()), (1, 1));
     let rgba = image.image.to_rgba8();
@@ -13980,30 +14109,30 @@ impl Clone for ImageCache {
     let doc_url = "https://example.test/";
     let main_url = "https://example.test/main.svg";
     let img_url = "https://cross.test/img.png";
- 
+
     let main_svg = format!(
       r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="{img_url}" width="1" height="1"/></svg>"#
     );
- 
+
     let mut main_res = FetchedResource::new(
       main_svg.as_bytes().to_vec(),
       Some("image/svg+xml".to_string()),
     );
     main_res.status = Some(200);
     main_res.final_url = Some(main_url.to_string());
- 
+
     let mut img_res = FetchedResource::new(
       encode_single_pixel_png([255, 0, 0, 255]),
       Some("image/png".to_string()),
     );
     img_res.status = Some(200);
     img_res.final_url = Some(img_url.to_string());
- 
+
     let fetcher = MapFetcher::with_entries([
       (main_url.to_string(), main_res),
       (img_url.to_string(), img_res),
     ]);
- 
+
     let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
     let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
     let mut ctx = ResourceContext::default();
@@ -14011,7 +14140,7 @@ impl Clone for ImageCache {
     ctx.policy.document_origin = Some(doc_origin);
     ctx.policy.same_origin_only = true;
     cache.set_resource_context(Some(ctx));
- 
+
     let load_err = match cache.load(main_url) {
       Ok(_) => panic!("cross-origin SVG image href should be blocked"),
       Err(err) => err,
@@ -14025,7 +14154,7 @@ impl Clone for ImageCache {
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
- 
+
     let probe_err = match cache.probe(main_url) {
       Ok(_) => panic!("cross-origin SVG image href should be blocked during probe"),
       Err(err) => err,
@@ -14039,7 +14168,7 @@ impl Clone for ImageCache {
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
- 
+
     assert!(
       fetcher.requests().iter().all(|(url, _, _)| url != img_url),
       "blocked image should not be fetched"
@@ -14073,7 +14202,9 @@ impl Clone for ImageCache {
     ctx.policy.same_origin_only = true;
     cache.set_resource_context(Some(ctx));
 
-    let image = cache.load(main_url).expect("SVG with <a href> should not be blocked");
+    let image = cache
+      .load(main_url)
+      .expect("SVG with <a href> should not be blocked");
     assert_eq!((image.width(), image.height()), (1, 1));
     let rgba = image.image.to_rgba8();
     assert_eq!(
@@ -14132,8 +14263,13 @@ impl Clone for ImageCache {
     }
 
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><use href="https://example.test/sprite.svg#icon"/></svg>"#;
-    let err = inline_svg_use_references(svg, "https://example.test/main.svg", &RenderErrorFetcher, None)
-      .expect_err("expected render error to propagate");
+    let err = inline_svg_use_references(
+      svg,
+      "https://example.test/main.svg",
+      &RenderErrorFetcher,
+      None,
+    )
+    .expect_err("expected render error to propagate");
     assert!(
       matches!(
         err,
@@ -14199,7 +14335,10 @@ impl Clone for ImageCache {
     }
 
     assert!(
-      fetcher.requests().iter().all(|(url, _, _)| url != sprite_url),
+      fetcher
+        .requests()
+        .iter()
+        .all(|(url, _, _)| url != sprite_url),
       "blocked sprite should not be fetched"
     );
   }
@@ -14401,8 +14540,10 @@ impl Clone for ImageCache {
 
     let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="/img.png" width="1" height="1"/></svg>"#;
 
-    let mut main_res =
-      FetchedResource::new(main_svg.as_bytes().to_vec(), Some("image/svg+xml".to_string()));
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
     main_res.status = Some(200);
     main_res.final_url = Some(main_url.to_string());
 
@@ -14559,9 +14700,13 @@ impl Clone for ImageCache {
     }
 
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.test/img.png" width="1" height="1"/></svg>"#;
-    let err =
-      inline_svg_image_references(svg, "https://example.test/main.svg", &RenderErrorFetcher, None)
-        .expect_err("expected render error to propagate");
+    let err = inline_svg_image_references(
+      svg,
+      "https://example.test/main.svg",
+      &RenderErrorFetcher,
+      None,
+    )
+    .expect_err("expected render error to propagate");
     assert!(
       matches!(
         err,
@@ -14711,11 +14856,11 @@ impl Clone for ImageCache {
         .unwrap()
         .as_nanos()
     ));
-  let dir = path.parent().unwrap().to_path_buf();
-  let image = RgbaImage::from_raw(1, 1, vec![255, 0, 0, 255]).expect("build 1x1");
-  image.save(&path).expect("encode png");
-  let base_url = Url::from_directory_path(&dir).unwrap().to_string();
-  cache.set_base_url(base_url);
+    let dir = path.parent().unwrap().to_path_buf();
+    let image = RgbaImage::from_raw(1, 1, vec![255, 0, 0, 255]).expect("build 1x1");
+    image.save(&path).expect("encode png");
+    let base_url = Url::from_directory_path(&dir).unwrap().to_string();
+    cache.set_base_url(base_url);
 
     let image = cache
       .load(path.file_name().unwrap().to_str().unwrap())
@@ -14813,12 +14958,12 @@ impl Clone for ImageCache {
         .unwrap()
         .as_nanos()
     ));
-  std::fs::create_dir_all(dir.join("assets")).expect("create temp dir");
-  let mut base_url = Url::from_directory_path(&dir).unwrap();
-  let trimmed = base_url.path().trim_end_matches('/').to_string();
-  base_url.set_path(&trimmed);
-  let base = base_url.to_string();
-  let cache = ImageCache::with_base_url(base);
+    std::fs::create_dir_all(dir.join("assets")).expect("create temp dir");
+    let mut base_url = Url::from_directory_path(&dir).unwrap();
+    let trimmed = base_url.path().trim_end_matches('/').to_string();
+    base_url.set_path(&trimmed);
+    let base = base_url.to_string();
+    let cache = ImageCache::with_base_url(base);
 
     let resolved = cache.resolve_url("assets/image.png");
     assert!(
@@ -15670,7 +15815,9 @@ impl Clone for ImageCache {
 
   #[test]
   fn icc_adobe_rgb_profile_converts_to_srgb_reference_values() {
-    let bytes = include_bytes!("../tests/pages/fixtures/arstechnica.com/assets/52a1160fbdf01f8511cf15e24a23ec7e.jpg");
+    let bytes = include_bytes!(
+      "../tests/pages/fixtures/arstechnica.com/assets/52a1160fbdf01f8511cf15e24a23ec7e.jpg"
+    );
     let icc = extract_jpeg_icc_profile(bytes).expect("extract icc profile");
     let transform = icc_transform_to_srgb(&icc).expect("build ICC transform");
 
@@ -15684,7 +15831,9 @@ impl Clone for ImageCache {
 
   #[test]
   fn image_cache_decodes_adobe_rgb_jpeg_with_color_management() {
-    let bytes = include_bytes!("../tests/pages/fixtures/arstechnica.com/assets/52a1160fbdf01f8511cf15e24a23ec7e.jpg");
+    let bytes = include_bytes!(
+      "../tests/pages/fixtures/arstechnica.com/assets/52a1160fbdf01f8511cf15e24a23ec7e.jpg"
+    );
     let icc = extract_jpeg_icc_profile(bytes).expect("extract icc profile");
     let transform = icc_transform_to_srgb(&icc).expect("build ICC transform");
 

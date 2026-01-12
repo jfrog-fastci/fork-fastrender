@@ -1,9 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
-};
+use fastrender::ui::messages::{NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -21,7 +19,12 @@ fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> Re
       "timed out waiting for FrameReady\n{}",
       support::format_messages(&seen)
     );
-    let msg = support::recv_for_tab(rx, tab_id, remaining.min(Duration::from_millis(200)), |_| true);
+    let msg = support::recv_for_tab(
+      rx,
+      tab_id,
+      remaining.min(Duration::from_millis(200)),
+      |_| true,
+    );
     let Some(msg) = msg else {
       continue;
     };
@@ -78,7 +81,11 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
     .expect("ViewportChanged");
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .expect("Navigate");
 
   let frame = recv_frame(&worker.ui_rx, tab_id, TIMEOUT);
@@ -96,11 +103,19 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
   let click_pos = (10.0_f32, 30.0_f32);
   worker
     .ui_tx
-    .send(support::pointer_down(tab_id, click_pos, PointerButton::Primary))
+    .send(support::pointer_down(
+      tab_id,
+      click_pos,
+      PointerButton::Primary,
+    ))
     .expect("PointerDown");
   worker
     .ui_tx
-    .send(support::pointer_up(tab_id, click_pos, PointerButton::Primary))
+    .send(support::pointer_up(
+      tab_id,
+      click_pos,
+      PointerButton::Primary,
+    ))
     .expect("PointerUp");
 
   let deadline = Instant::now() + TIMEOUT;

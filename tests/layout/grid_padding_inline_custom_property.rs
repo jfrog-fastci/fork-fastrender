@@ -36,9 +36,15 @@ fn find_fragment_bounds_by_box_id(
 
   let matches = match &fragment.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches {
@@ -127,9 +133,8 @@ fn grid_padding_inline_custom_property_resolves_against_viewport() {
     .expect("fragment tree artifact");
 
   let image_box_id = find_box_id_by_dom_id(&box_tree.root, "image").expect("logo image box");
-  let image_bounds =
-    find_fragment_bounds_by_box_id(&fragment_tree.root, Point::ZERO, image_box_id)
-      .expect("image fragment");
+  let image_bounds = find_fragment_bounds_by_box_id(&fragment_tree.root, Point::ZERO, image_box_id)
+    .expect("image fragment");
 
   // Expected x = 16px (layout-side-padding) - 6px (navigation__logo margin) + 8px (logo padding).
   assert!(
@@ -138,4 +143,3 @@ fn grid_padding_inline_custom_property_resolves_against_viewport() {
     image_bounds
   );
 }
-

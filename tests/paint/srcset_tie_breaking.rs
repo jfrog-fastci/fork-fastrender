@@ -68,4 +68,3 @@ fn picture_source_srcset_tie_prefers_first_candidate_when_all_below_target() {
     .expect("center pixel");
   assert_eq!((px.red(), px.green(), px.blue()), (255, 0, 0));
 }
-

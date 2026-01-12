@@ -146,8 +146,8 @@ use crate::style::types::ContentVisibility;
 use crate::style::types::ImageOrientation;
 use crate::style::types::ImageRendering;
 use crate::style::types::Isolation;
-use crate::style::types::MaskClip;
 use crate::style::types::MaskBorderMode;
+use crate::style::types::MaskClip;
 use crate::style::types::MaskMode;
 use crate::style::types::MixBlendMode;
 use crate::style::types::ObjectFit;
@@ -1408,7 +1408,8 @@ impl DisplayListBuilder {
     } else {
       parallel_min.saturating_mul(4)
     };
-    let (decoded_image_cache_entries, decoded_image_cache_bytes) = decoded_image_cache_limits_from_env();
+    let (decoded_image_cache_entries, decoded_image_cache_bytes) =
+      decoded_image_cache_limits_from_env();
     Self {
       list: DisplayList::new(),
       image_cache: Some(ImageCache::new()),
@@ -1455,7 +1456,8 @@ impl DisplayListBuilder {
     } else {
       parallel_min.saturating_mul(4)
     };
-    let (decoded_image_cache_entries, decoded_image_cache_bytes) = decoded_image_cache_limits_from_env();
+    let (decoded_image_cache_entries, decoded_image_cache_bytes) =
+      decoded_image_cache_limits_from_env();
     Self {
       list: DisplayList::new(),
       image_cache: Some(image_cache),
@@ -2458,7 +2460,9 @@ impl DisplayListBuilder {
 
         if let Some(overlays) = overlays.as_ref() {
           if let Some((rect, color)) = overlays.caret_rect {
-            self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
+            self
+              .list
+              .push(DisplayItem::FillRect(FillRectItem { rect, color }));
           }
         }
 
@@ -3018,10 +3022,12 @@ impl DisplayListBuilder {
     };
 
     let mut mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
-    if mask
-      .as_ref()
-      .is_some_and(|mask| mask.layers.iter().any(|layer| matches!(layer.clip, MaskClip::Text)))
-    {
+    if mask.as_ref().is_some_and(|mask| {
+      mask
+        .layers
+        .iter()
+        .any(|layer| matches!(layer.clip, MaskClip::Text))
+    }) {
       if let (Some(mask), Some(fragment)) = (mask.as_mut(), root_fragment) {
         mask.text_clip = self.build_text_clip_runs(fragment, root_fragment_offset, visibility);
       }
@@ -3627,7 +3633,9 @@ impl DisplayListBuilder {
       );
       if let Some(overlays) = appearance_none_overlays.as_ref() {
         if let Some((rect, color)) = overlays.caret_rect {
-          self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
+          self
+            .list
+            .push(DisplayItem::FillRect(FillRectItem { rect, color }));
         }
       }
       for item in context.layer6_iter() {
@@ -3752,7 +3760,8 @@ impl DisplayListBuilder {
         self.list.push(DisplayItem::PopClip);
       }
       if needs_layer_bounds {
-        self.expand_stacking_context_bounds_from_items(stacking_push_index, stacking_context_bounds);
+        self
+          .expand_stacking_context_bounds_from_items(stacking_push_index, stacking_context_bounds);
       }
       self.list.push(DisplayItem::PopStackingContext);
       if let Some(DisplayItem::PushStackingContext(item)) =
@@ -3827,7 +3836,9 @@ impl DisplayListBuilder {
     );
     if let Some(overlays) = appearance_none_overlays.as_ref() {
       if let Some((rect, color)) = overlays.caret_rect {
-        self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
+        self
+          .list
+          .push(DisplayItem::FillRect(FillRectItem { rect, color }));
       }
     }
     for item in context.layer6_iter() {
@@ -7071,15 +7082,14 @@ impl DisplayListBuilder {
                             .checked_mul(u64::from(render_h_unoriented))
                             .and_then(|px| px.checked_mul(4))
                           {
-                            if let Err(err) = crate::render_control::reserve_allocation_with(
-                              bytes,
-                              || {
+                            if let Err(err) =
+                              crate::render_control::reserve_allocation_with(bytes, || {
                                 format!(
                                   "image data pixel buffer {}x{} url={}",
                                   render_w_unoriented, render_h_unoriented, render_url
                                 )
-                              },
-                            ) {
+                              })
+                            {
                               self.error.get_or_insert(err);
                               return;
                             }
@@ -9088,27 +9098,35 @@ impl DisplayListBuilder {
           //
           // This is especially common for `repeat-x` underline textures where the image is taller
           // than the element's background painting area, meaning only the bottom slice is visible.
-          let clip_within_origin_tile = |clip_min: f32, clip_max: f32, origin: f32, tile: f32| -> bool {
-            if !clip_min.is_finite() || !clip_max.is_finite() || !origin.is_finite() || !tile.is_finite() {
-              return false;
-            }
-            if tile <= 0.0 {
-              return false;
-            }
-            if clip_max <= clip_min {
-              return false;
-            }
-            // Allow a small epsilon for float noise from layout/pixel snapping.
-            let eps = 1e-3;
-            clip_min + eps >= origin && clip_max <= origin + tile + eps
-          };
+          let clip_within_origin_tile =
+            |clip_min: f32, clip_max: f32, origin: f32, tile: f32| -> bool {
+              if !clip_min.is_finite()
+                || !clip_max.is_finite()
+                || !origin.is_finite()
+                || !tile.is_finite()
+              {
+                return false;
+              }
+              if tile <= 0.0 {
+                return false;
+              }
+              if clip_max <= clip_min {
+                return false;
+              }
+              // Allow a small epsilon for float noise from layout/pixel snapping.
+              let eps = 1e-3;
+              clip_min + eps >= origin && clip_max <= origin + tile + eps
+            };
 
-          let repeats_x =
-            matches!(layer.repeat.x, BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round);
-          let repeats_y =
-            matches!(layer.repeat.y, BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round);
-          let repeat_both_axes = repeats_x
-            && repeats_y
+          let repeats_x = matches!(
+            layer.repeat.x,
+            BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round
+          );
+          let repeats_y = matches!(
+            layer.repeat.y,
+            BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round
+          );
+          let repeat_both_axes = repeats_x && repeats_y
             || (repeats_x
               && layer.repeat.y == BackgroundRepeatKeyword::NoRepeat
               && clip_within_origin_tile(
@@ -11136,7 +11154,11 @@ impl DisplayListBuilder {
     let icon_size = (available_w.min(available_h) * 0.5)
       .floor()
       .clamp(0.0, max_icon_size);
-    if icon_size >= 8.0 { icon_size } else { 0.0 }
+    if icon_size >= 8.0 {
+      icon_size
+    } else {
+      0.0
+    }
   }
 
   fn emit_inside_border_rect(&mut self, rect: Rect, color: Rgba) {
@@ -11283,16 +11305,18 @@ impl DisplayListBuilder {
       rect: Rect::from_xywh(track_x, progress_y, track_w, progress_h),
       color: Rgba::WHITE.with_alpha(0.35),
     }));
-    self.list.push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-      rect: Rect::from_xywh(
-        track_x - knob_r,
-        progress_y + progress_h * 0.5 - knob_r,
-        knob_r * 2.0,
-        knob_r * 2.0,
-      ),
-      color: Rgba::WHITE.with_alpha(0.9),
-      radii: BorderRadii::uniform(knob_r),
-    }));
+    self
+      .list
+      .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+        rect: Rect::from_xywh(
+          track_x - knob_r,
+          progress_y + progress_h * 0.5 - knob_r,
+          knob_r * 2.0,
+          knob_r * 2.0,
+        ),
+        color: Rgba::WHITE.with_alpha(0.9),
+        radii: BorderRadii::uniform(knob_r),
+      }));
 
     // Play icon (triangle built from vertical strips so we don't need a path primitive).
     let play_rect = Rect::from_xywh(track_x, icon_y, icon_size, icon_size);
@@ -11382,12 +11406,7 @@ impl DisplayListBuilder {
     // For `<video controls>` without a poster/frame, browsers still paint a dark video surface and
     // chrome for the native controls. Emit a stable approximation rather than leaving the element
     // transparent.
-    if matches!(
-      replaced_type,
-      ReplacedType::Video {
-        controls: true, ..
-      }
-    ) {
+    if matches!(replaced_type, ReplacedType::Video { controls: true, .. }) {
       self.list.push(DisplayItem::FillRect(FillRectItem {
         rect: content_rect,
         color: Rgba::rgb(51, 51, 51),
@@ -11424,13 +11443,15 @@ impl DisplayListBuilder {
           position: 1.0,
           color: black(end_alpha),
         });
-        self.list.push(DisplayItem::LinearGradient(LinearGradientItem {
-          rect: content_rect,
-          start: Point::new(0.0, 0.0),
-          end: Point::new(0.0, content_rect.height()),
-          stops,
-          spread: GradientSpread::Pad,
-        }));
+        self
+          .list
+          .push(DisplayItem::LinearGradient(LinearGradientItem {
+            rect: content_rect,
+            start: Point::new(0.0, 0.0),
+            end: Point::new(0.0, content_rect.height()),
+            stops,
+            spread: GradientSpread::Pad,
+          }));
       }
 
       self.emit_video_controls_placeholder_ui(content_rect);
@@ -11778,8 +11799,9 @@ impl DisplayListBuilder {
                 (seg_end - seg_start).max(0.0),
                 (bottom - top).max(0.0),
               );
-              if let Some(clipped) =
-                rect.intersection(content_rect).filter(|r| r.width() > 0.0 && r.height() > 0.0)
+              if let Some(clipped) = rect
+                .intersection(content_rect)
+                .filter(|r| r.width() > 0.0 && r.height() > 0.0)
               {
                 overlays.selection_rects.push(clipped);
               }
@@ -11807,7 +11829,8 @@ impl DisplayListBuilder {
             *caret_affinity
           };
           let caret_x = start_x
-            + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint).unwrap_or(0.0);
+            + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint)
+              .unwrap_or(0.0);
           let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
           let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
           let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -11988,10 +12011,7 @@ impl DisplayListBuilder {
                 vec![(x1.min(x2), x1.max(x2))]
               } else {
                 crate::text::caret::selection_segments_for_char_range(
-                  line,
-                  &line_runs,
-                  start_col,
-                  end_col,
+                  line, &line_runs, start_col, end_col,
                 )
               };
               for (seg_start, seg_end) in segments {
@@ -12010,13 +12030,11 @@ impl DisplayListBuilder {
             }
           }
 
-          if caret_rect.is_none()
-            && caret_idx <= line_end
-            && !caret_color.is_transparent()
-          {
+          if caret_rect.is_none() && caret_idx <= line_end && !caret_color.is_transparent() {
             let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
             let caret_x = start_x
-              + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint).unwrap_or(0.0);
+              + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint)
+                .unwrap_or(0.0);
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -12147,12 +12165,9 @@ impl DisplayListBuilder {
         builder.font_ctx.root_font_metrics(),
       );
       let metrics = match &style.line_height {
-        crate::style::types::LineHeight::Normal => InlineTextItem::metrics_from_runs(
-          &builder.font_ctx,
-          &runs,
-          line_height,
-          style.font_size,
-        ),
+        crate::style::types::LineHeight::Normal => {
+          InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size)
+        }
         _ => InlineTextItem::metrics_from_first_available_font(
           metrics_scaled.as_ref(),
           line_height,
@@ -12499,8 +12514,9 @@ impl DisplayListBuilder {
                 (seg_end - seg_start).max(0.0),
                 1.0,
               );
-              if let Some(clipped) =
-                underline_rect.intersection(padding_rect).filter(|r| r.width() > 0.0 && r.height() > 0.0)
+              if let Some(clipped) = underline_rect
+                .intersection(padding_rect)
+                .filter(|r| r.width() > 0.0 && r.height() > 0.0)
               {
                 preedit_underline_rects.push(clipped);
               }
@@ -12530,8 +12546,9 @@ impl DisplayListBuilder {
                   (seg_end - seg_start).max(0.0),
                   (bottom - top).max(0.0),
                 );
-                if let Some(clipped) =
-                  rect.intersection(text_rect).filter(|r| r.width() > 0.0 && r.height() > 0.0)
+                if let Some(clipped) = rect
+                  .intersection(text_rect)
+                  .filter(|r| r.width() > 0.0 && r.height() > 0.0)
                 {
                   selection_rects.push(clipped);
                 }
@@ -12814,10 +12831,7 @@ impl DisplayListBuilder {
                   vec![(x1.min(x2), x1.max(x2))]
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
-                    line,
-                    &line_runs,
-                    start_col,
-                    end_col,
+                    line, &line_runs, start_col, end_col,
                   )
                 };
                 for (seg_start, seg_end) in segments {
@@ -12846,15 +12860,15 @@ impl DisplayListBuilder {
 
           if control.focused && !control.disabled {
             if let Some((pre_start, pre_end)) = preedit_range {
-                let seg_start = pre_start.max(line_start).min(line_end);
-                let seg_end = pre_end.max(line_start).min(line_end);
-                if seg_start < seg_end && text_style.color.a > f32::EPSILON {
-                  let start_col = seg_start - line_start;
-                  let end_col = seg_end - line_start;
-                  let underline_y = (bottom - 1.0).max(top);
-                  let fallback_char_advance = if line_len > 0 {
-                    (fallback_advance / line_len as f32).max(0.0)
-                  } else {
+              let seg_start = pre_start.max(line_start).min(line_end);
+              let seg_end = pre_end.max(line_start).min(line_end);
+              if seg_start < seg_end && text_style.color.a > f32::EPSILON {
+                let start_col = seg_start - line_start;
+                let end_col = seg_end - line_start;
+                let underline_y = (bottom - 1.0).max(top);
+                let fallback_char_advance = if line_len > 0 {
+                  (fallback_advance / line_len as f32).max(0.0)
+                } else {
                   0.0
                 };
                 let segments = if line_runs.is_empty() {
@@ -12863,10 +12877,7 @@ impl DisplayListBuilder {
                   vec![(x1.min(x2), x1.max(x2))]
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
-                    line,
-                    &line_runs,
-                    start_col,
-                    end_col,
+                    line, &line_runs, start_col, end_col,
                   )
                 };
                 for (seg_start, seg_end) in segments {
@@ -14036,7 +14047,10 @@ impl DisplayListBuilder {
           clone.text_align = crate::style::types::TextAlign::Start;
           clone
         });
-        let style_ref = override_style.as_ref().map(|s| s as &ComputedStyle).or(style);
+        let style_ref = override_style
+          .as_ref()
+          .map(|s| s as &ComputedStyle)
+          .or(style);
         self.emit_text_with_style(alt, style_ref, text_rect)
       } else {
         self.emit_text_with_style(alt, style, content_inner_rect)
@@ -15243,9 +15257,7 @@ mod tests {
     let err = builder.finish().unwrap_err();
     match err {
       Error::Render(RenderError::StageAllocationBudgetExceeded {
-        stage,
-        heartbeat,
-        ..
+        stage, heartbeat, ..
       }) => {
         assert_eq!(stage, RenderStage::Paint);
         assert_eq!(heartbeat, StageHeartbeat::PaintBuild);
@@ -15272,9 +15284,7 @@ mod tests {
     let err = builder.finish().unwrap_err();
     match err {
       Error::Render(RenderError::StageAllocationBudgetExceeded {
-        stage,
-        heartbeat,
-        ..
+        stage, heartbeat, ..
       }) => {
         assert_eq!(stage, RenderStage::Paint);
         assert_eq!(heartbeat, StageHeartbeat::PaintBuild);
@@ -18802,9 +18812,7 @@ mod tests {
     assert_eq!(img.image.height, 10);
     let pixels = img.image.pixels.as_ref();
     assert_eq!(pixels.len(), 10 * 10 * 4);
-    assert!(pixels
-      .chunks_exact(4)
-      .all(|px| px == [255, 0, 0, 255]));
+    assert!(pixels.chunks_exact(4).all(|px| px == [255, 0, 0, 255]));
   }
 
   #[test]
@@ -19829,9 +19837,10 @@ mod tests {
       .expect("Expected text item for alt fallback");
     assert!(text.advance_width > 0.0);
     assert!(
-      list.items().iter().any(|item| {
-        matches!(item, DisplayItem::FillRect(_))
-      }),
+      list
+        .items()
+        .iter()
+        .any(|item| { matches!(item, DisplayItem::FillRect(_)) }),
       "Expected placeholder items for missing image"
     );
     assert!(
@@ -20070,10 +20079,7 @@ mod tests {
       }),
       "expected broken-image icon border placeholder"
     );
-    assert!(
-      list.len() >= 8,
-      "expected broken-image icon items"
-    );
+    assert!(list.len() >= 8, "expected broken-image icon items");
     assert!(
       !list
         .items()
@@ -20116,7 +20122,10 @@ mod tests {
     let list = builder.build(&fragment);
 
     assert!(
-      list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(_))),
+      list
+        .items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::FillRect(_))),
       "expected video surface fill"
     );
     assert!(
@@ -20765,10 +20774,16 @@ mod tests {
       .iter()
       .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
       .count();
-    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
+    let images = list
+      .iter()
+      .filter(|item| matches!(item, DisplayItem::Image(_)))
+      .count();
 
     assert_eq!(patterns, 1, "expected a single pattern fill");
-    assert_eq!(images, 0, "expected pattern fast path to avoid per-tile images");
+    assert_eq!(
+      images, 0,
+      "expected pattern fast path to avoid per-tile images"
+    );
   }
 
   #[test]
@@ -20815,10 +20830,16 @@ mod tests {
       .iter()
       .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
       .count();
-    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
+    let images = list
+      .iter()
+      .filter(|item| matches!(item, DisplayItem::Image(_)))
+      .count();
 
     assert_eq!(patterns, 0, "expected per-tile path (no ImagePattern)");
-    assert!(images > 0, "expected background to be emitted as Image tile(s)");
+    assert!(
+      images > 0,
+      "expected background to be emitted as Image tile(s)"
+    );
   }
 
   #[test]
@@ -20855,9 +20876,15 @@ mod tests {
       .iter()
       .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
       .count();
-    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
+    let images = list
+      .iter()
+      .filter(|item| matches!(item, DisplayItem::Image(_)))
+      .count();
 
-    assert_eq!(patterns, 0, "expected no ImagePattern for a single visible tile");
+    assert_eq!(
+      patterns, 0,
+      "expected no ImagePattern for a single visible tile"
+    );
     assert_eq!(images, 1, "expected exactly one Image item");
   }
 

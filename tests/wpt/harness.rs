@@ -34,8 +34,8 @@
 //!                 └── margin-applies-to-002.png  # Expected image
 //! ```
 
-use image::RgbaImage;
 use fastrender::style::media::MediaType;
+use image::RgbaImage;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;

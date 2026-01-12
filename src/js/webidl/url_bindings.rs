@@ -1,11 +1,11 @@
+use crate::js::url::{Url, UrlError, UrlLimits, UrlSearchParams};
 use std::cell::RefCell;
 use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::rc::Rc;
-use crate::js::url::{Url, UrlError, UrlLimits, UrlSearchParams};
-use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use vm_js::{GcObject, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Value, VmError};
 use webidl_js_runtime::runtime::JsPropertyKind;
+use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 
 #[derive(Default)]
 struct UrlBindingState {
@@ -48,9 +48,7 @@ fn string_to_rust_string_limited(
   if code_units_len > max_bytes {
     return Err(type_error(
       rt,
-      &format!(
-        "{context} exceeded max bytes (len_code_units={code_units_len}, limit={max_bytes})"
-      ),
+      &format!("{context} exceeded max bytes (len_code_units={code_units_len}, limit={max_bytes})"),
     ));
   }
 
@@ -221,7 +219,11 @@ fn array_to_iterator(
   result
 }
 
-fn expect_object(rt: &mut webidl_js_runtime::VmJsRuntime, this: Value, class_name: &str) -> Result<GcObject, VmError> {
+fn expect_object(
+  rt: &mut webidl_js_runtime::VmJsRuntime,
+  this: Value,
+  class_name: &str,
+) -> Result<GcObject, VmError> {
   let Value::Object(obj) = this else {
     return Err(type_error(
       rt,
@@ -231,7 +233,10 @@ fn expect_object(rt: &mut webidl_js_runtime::VmJsRuntime, this: Value, class_nam
   Ok(obj)
 }
 
-fn array_like_length(rt: &mut webidl_js_runtime::VmJsRuntime, value: Value) -> Result<Option<u32>, VmError> {
+fn array_like_length(
+  rt: &mut webidl_js_runtime::VmJsRuntime,
+  value: Value,
+) -> Result<Option<u32>, VmError> {
   if !rt.is_object(value) {
     return Ok(None);
   }
@@ -278,9 +283,7 @@ fn init_url_instance(
           .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
           .url
           .clone();
-        let href = url
-          .href()
-          .map_err(|e| type_error(rt, &e.to_string()))?;
+        let href = url.href().map_err(|e| type_error(rt, &e.to_string()))?;
         rt.alloc_string_value(&href)
       }
     })?;
@@ -335,9 +338,7 @@ fn init_url_instance(
           .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
           .url
           .clone();
-        let protocol = url
-          .protocol()
-          .map_err(|e| type_error(rt, &e.to_string()))?;
+        let protocol = url.protocol().map_err(|e| type_error(rt, &e.to_string()))?;
         rt.alloc_string_value(&protocol)
       }
     })?;
@@ -373,9 +374,7 @@ fn init_url_instance(
           .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
           .url
           .clone();
-        let username = url
-          .username()
-          .map_err(|e| type_error(rt, &e.to_string()))?;
+        let username = url.username().map_err(|e| type_error(rt, &e.to_string()))?;
         rt.alloc_string_value(&username)
       }
     })?;
@@ -411,9 +410,7 @@ fn init_url_instance(
           .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
           .url
           .clone();
-        let password = url
-          .password()
-          .map_err(|e| type_error(rt, &e.to_string()))?;
+        let password = url.password().map_err(|e| type_error(rt, &e.to_string()))?;
         rt.alloc_string_value(&password)
       }
     })?;
@@ -485,9 +482,7 @@ fn init_url_instance(
           .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
           .url
           .clone();
-        let hostname = url
-          .hostname()
-          .map_err(|e| type_error(rt, &e.to_string()))?;
+        let hostname = url.hostname().map_err(|e| type_error(rt, &e.to_string()))?;
         rt.alloc_string_value(&hostname)
       }
     })?;
@@ -559,9 +554,7 @@ fn init_url_instance(
           .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
           .url
           .clone();
-        let pathname = url
-          .pathname()
-          .map_err(|e| type_error(rt, &e.to_string()))?;
+        let pathname = url.pathname().map_err(|e| type_error(rt, &e.to_string()))?;
         rt.alloc_string_value(&pathname)
       }
     })?;
@@ -883,7 +876,9 @@ fn init_urlsearchparams_instance(
           .get(&obj)
           .ok_or_else(|| type_error(rt, "URLSearchParams: illegal invocation"))?
           .clone();
-        let value = params.get(&name).map_err(|e| type_error(rt, &e.to_string()))?;
+        let value = params
+          .get(&name)
+          .map_err(|e| type_error(rt, &e.to_string()))?;
         match value {
           Some(v) => rt.alloc_string_value(&v),
           None => Ok(Value::Null),
@@ -1144,7 +1139,10 @@ fn init_urlsearchparams_instance(
         let obj = expect_object(rt, this, "URLSearchParams")?;
         let callback = args.get(0).copied().unwrap_or(Value::Undefined);
         if !rt.is_callable(callback) {
-          return Err(type_error(rt, "URLSearchParams.forEach callback is not a function"));
+          return Err(type_error(
+            rt,
+            "URLSearchParams.forEach callback is not a function",
+          ));
         }
         let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
 
@@ -1159,7 +1157,11 @@ fn init_urlsearchparams_instance(
         for (name, value) in pairs {
           let value_value = rt.alloc_string_value(&value)?;
           let name_value = rt.alloc_string_value(&name)?;
-          rt.call_function(callback, this_arg, &[value_value, name_value, Value::Object(obj)])?;
+          rt.call_function(
+            callback,
+            this_arg,
+            &[value_value, name_value, Value::Object(obj)],
+          )?;
         }
         Ok(Value::Undefined)
       }
@@ -1238,7 +1240,9 @@ pub fn install_url_bindings_with_limits(
             // special-case bases that are themselves URL wrappers.
             let maybe_base = { state.borrow().urls.get(&obj).map(|u| u.url.clone()) };
             if let Some(base_url) = maybe_base {
-              let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
+              let href = base_url
+                .href()
+                .map_err(|e| type_error(rt, &e.to_string()))?;
               Some(href)
             } else {
               Some(to_rust_string_limited(
@@ -1264,7 +1268,10 @@ pub fn install_url_bindings_with_limits(
           return Err(type_error(rt, "URL: expected object"));
         };
 
-        state.borrow_mut().urls.insert(obj_handle, UrlInstance { url });
+        state
+          .borrow_mut()
+          .urls
+          .insert(obj_handle, UrlInstance { url });
 
         init_url_instance(rt, state.clone(), obj)?;
         Ok(obj)
@@ -1288,7 +1295,9 @@ pub fn install_url_bindings_with_limits(
           Some(Value::Object(obj)) => {
             let maybe_base = { state.borrow().urls.get(&obj).map(|u| u.url.clone()) };
             if let Some(base_url) = maybe_base {
-              let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
+              let href = base_url
+                .href()
+                .map_err(|e| type_error(rt, &e.to_string()))?;
               Some(href)
             } else {
               Some(to_rust_string_limited(
@@ -1299,7 +1308,12 @@ pub fn install_url_bindings_with_limits(
               )?)
             }
           }
-          Some(v) => Some(to_rust_string_limited(rt, v, limits.max_input_bytes, "URL.parse base")?),
+          Some(v) => Some(to_rust_string_limited(
+            rt,
+            v,
+            limits.max_input_bytes,
+            "URL.parse base",
+          )?),
         };
 
         let url = match Url::parse_without_diagnostics(&input, base.as_deref(), &limits) {
@@ -1312,7 +1326,10 @@ pub fn install_url_bindings_with_limits(
           return Err(type_error(rt, "URL: expected object"));
         };
 
-        state.borrow_mut().urls.insert(obj_handle, UrlInstance { url });
+        state
+          .borrow_mut()
+          .urls
+          .insert(obj_handle, UrlInstance { url });
         init_url_instance(rt, state.clone(), obj)?;
         Ok(obj)
       }
@@ -1335,7 +1352,9 @@ pub fn install_url_bindings_with_limits(
           Some(Value::Object(obj)) => {
             let maybe_base = { state.borrow().urls.get(&obj).map(|u| u.url.clone()) };
             if let Some(base_url) = maybe_base {
-              let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
+              let href = base_url
+                .href()
+                .map_err(|e| type_error(rt, &e.to_string()))?;
               Some(href)
             } else {
               Some(to_rust_string_limited(
@@ -1354,7 +1373,11 @@ pub fn install_url_bindings_with_limits(
           )?),
         };
 
-        Ok(Value::Bool(Url::can_parse(&input, base.as_deref(), &limits)))
+        Ok(Value::Bool(Url::can_parse(
+          &input,
+          base.as_deref(),
+          &limits,
+        )))
       }
     })?;
     roots.push(rt.heap_mut().add_root(url_can_parse)?);
@@ -1394,13 +1417,19 @@ pub fn install_url_bindings_with_limits(
                   let pair_root = rt.heap_mut().add_root(pair)?;
                   let step = (|| -> Result<(), VmError> {
                     let Value::Object(pair_obj) = pair else {
-                      return Err(type_error(rt, "URLSearchParams init: expected a [name, value] pair"));
+                      return Err(type_error(
+                        rt,
+                        "URLSearchParams init: expected a [name, value] pair",
+                      ));
                     };
 
                     let length_key = rt.property_key_from_str("length")?;
                     let len = rt.get(Value::Object(pair_obj), length_key)?;
                     if len != Value::Number(2.0) {
-                      return Err(type_error(rt, "URLSearchParams init: expected a [name, value] pair"));
+                      return Err(type_error(
+                        rt,
+                        "URLSearchParams init: expected a [name, value] pair",
+                      ));
                     }
 
                     let name_value = {
@@ -1448,13 +1477,19 @@ pub fn install_url_bindings_with_limits(
                   rt.get(v, key)?
                 };
                 let Value::Object(pair_obj) = pair else {
-                  return Err(type_error(rt, "URLSearchParams init: expected a [name, value] pair"));
+                  return Err(type_error(
+                    rt,
+                    "URLSearchParams init: expected a [name, value] pair",
+                  ));
                 };
 
                 let length_key = rt.property_key_from_str("length")?;
                 let len = rt.get(Value::Object(pair_obj), length_key)?;
                 if len != Value::Number(2.0) {
-                  return Err(type_error(rt, "URLSearchParams init: expected a [name, value] pair"));
+                  return Err(type_error(
+                    rt,
+                    "URLSearchParams init: expected a [name, value] pair",
+                  ));
                 }
 
                 let name_value = {

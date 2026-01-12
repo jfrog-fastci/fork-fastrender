@@ -1,5 +1,6 @@
 use fastrender::paint::display_list::{
-  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter, StackingContextItem,
+  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter,
+  StackingContextItem,
 };
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
 use fastrender::style::types::{BackfaceVisibility, TransformStyle};

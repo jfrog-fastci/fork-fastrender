@@ -119,9 +119,7 @@ fn collected_text_compacted(node: &FragmentNode) -> String {
 fn collected_page_content_texts_compacted(page_roots: &[&FragmentNode]) -> Vec<String> {
   page_roots
     .iter()
-    .map(|page| {
-      collected_text_compacted(page_content(page))
-    })
+    .map(|page| collected_text_compacted(page_content(page)))
     .collect()
 }
 
@@ -158,9 +156,7 @@ fn collect_words_in_content(node: &FragmentNode) -> Vec<String> {
   buf
     .split_whitespace()
     .filter(|word| {
-      word.len() == 4
-        && word.as_bytes()[0] == b'w'
-        && word[1..].bytes().all(|b| b.is_ascii_digit())
+      word.len() == 4 && word.as_bytes()[0] == b'w' && word[1..].bytes().all(|b| b.is_ascii_digit())
     })
     .map(|s| s.to_string())
     .collect()
@@ -370,7 +366,9 @@ fn page_rule_important_overrides_non_important() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
 
   let wrapper = page_document_wrapper(page);
@@ -398,7 +396,9 @@ fn page_rule_layers_invert_for_important() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html_normal).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
   let wrapper = page_document_wrapper(page);
   assert!(
@@ -421,7 +421,9 @@ fn page_rule_layers_invert_for_important() {
   "#;
 
   let dom = renderer.parse_html(html_important).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
   let wrapper = page_document_wrapper(page);
   assert!(
@@ -680,7 +682,9 @@ fn pagination_does_not_skip_or_duplicate_across_named_page_size_transition() {
   );
 
   assert!(
-    page_roots.iter().any(|page| (page.bounds.width() - 240.0).abs() < 0.1),
+    page_roots
+      .iter()
+      .any(|page| (page.bounds.width() - 240.0).abs() < 0.1),
     "expected at least one page with the 'b' size"
   );
 
@@ -767,17 +771,15 @@ fn named_page_size_change_mid_document_does_not_skip_or_duplicate_text() {
   let mut preface = String::new();
   for idx in 0..50 {
     preface.push_str(&format!(r#"<span class="label">[P{idx:03}]</span> "#));
-    preface.push_str(
-      "preface words that wrap differently depending on the used page size and margins ",
-    );
+    preface
+      .push_str("preface words that wrap differently depending on the used page size and margins ");
   }
 
   let mut chapter = String::new();
   for idx in 0..50 {
     chapter.push_str(&format!(r#"<span class="label">[C{idx:03}]</span> "#));
-    chapter.push_str(
-      "chapter words that wrap differently depending on the used page size and margins ",
-    );
+    chapter
+      .push_str("chapter words that wrap differently depending on the used page size and margins ");
   }
 
   let html = format!(
@@ -805,7 +807,9 @@ fn named_page_size_change_mid_document_does_not_skip_or_duplicate_text() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(&html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 800, 600, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 800, 600, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   assert!(
     page_roots.len() >= 4,
@@ -850,15 +854,11 @@ fn named_page_size_change_mid_document_does_not_skip_or_duplicate_text() {
 
   let preface_last_page = page_roots
     .iter()
-    .position(|page| {
-      find_text(page_content(page), "P049").is_some()
-    })
+    .position(|page| find_text(page_content(page), "P049").is_some())
     .expect("last preface label should exist");
   let chapter_first_page = page_roots
     .iter()
-    .position(|page| {
-      find_text(page_content(page), "C000").is_some()
-    })
+    .position(|page| find_text(page_content(page), "C000").is_some())
     .expect("first chapter label should exist");
   assert!(
     chapter_first_page > preface_last_page,
@@ -1101,7 +1101,11 @@ fn trailing_pages_with_only_fixed_content_are_suppressed() {
     .unwrap();
   let page_roots = pages(&tree);
 
-  assert_eq!(page_roots.len(), 1, "trailing margin should not force an empty extra page");
+  assert_eq!(
+    page_roots.len(),
+    1,
+    "trailing margin should not force an empty extra page"
+  );
 }
 
 #[test]
@@ -1262,8 +1266,8 @@ fn running_element_margin_box_respects_padding() {
     .find(|child| find_text(child, "Title").is_some())
     .expect("expected running element in margin box");
 
-  let text_pos = find_text_position(margin_box, "Title", (0.0, 0.0))
-    .expect("expected Title text in margin box");
+  let text_pos =
+    find_text_position(margin_box, "Title", (0.0, 0.0)).expect("expected Title text in margin box");
   let local_y = text_pos.1 - margin_box.bounds.y();
   assert!(
     local_y >= 9.0,
@@ -1306,7 +1310,9 @@ fn running_element_inside_style_containment_does_not_affect_margin_boxes() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2, "expected at least two pages");
@@ -1659,7 +1665,9 @@ fn string_set_inside_style_containment_does_not_affect_margin_boxes() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   assert!(page_roots.len() >= 2, "expected at least two pages");
 
@@ -2337,7 +2345,9 @@ fn margin_box_inherits_page_context_font_size() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 200, MediaType::Print)
+    .unwrap();
   let page = *pages(&tree).first().expect("at least one page");
   let header = find_text(page, "X").expect("margin box text");
   let style = header.get_style().expect("margin text style");
@@ -2366,7 +2376,9 @@ fn margin_box_inherits_page_context_color() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 200, MediaType::Print)
+    .unwrap();
   let page = *pages(&tree).first().expect("at least one page");
   let header = find_text(page, "X").expect("margin box text");
   let style = header.get_style().expect("margin text style");
@@ -2393,7 +2405,9 @@ fn margin_box_display_none_does_not_suppress_generation() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 200, MediaType::Print)
+    .unwrap();
   let page = *pages(&tree).first().expect("at least one page");
 
   assert!(
@@ -3937,7 +3951,9 @@ fn print_pagination_respects_widows_and_orphans() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(
@@ -3964,7 +3980,11 @@ fn print_pagination_respects_widows_and_orphans() {
     }
   }
 
-  assert_eq!(seen.len(), lines.len(), "some lines were missing from output");
+  assert_eq!(
+    seen.len(),
+    lines.len(),
+    "some lines were missing from output"
+  );
 }
 
 #[test]
@@ -3989,7 +4009,9 @@ fn print_pagination_respects_break_before_avoid_page() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -4028,7 +4050,9 @@ fn print_pagination_honors_forced_breaks_even_when_content_fits() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -4066,7 +4090,9 @@ fn print_pagination_respects_break_inside_avoid() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(page_roots.len(), 2);
@@ -4362,9 +4388,7 @@ fn tall_float_fragments_across_pages_and_clears_following_text() {
     "tall float should continue onto the second page"
   );
 
-  let float_bottom = second_page_floats
-    .into_iter()
-    .fold(0.0f32, f32::max);
+  let float_bottom = second_page_floats.into_iter().fold(0.0f32, f32::max);
   let text_pos = find_text_position(page_roots[1], "After float paragraph", (0.0, 0.0))
     .expect("paragraph should appear on the second page");
   assert!(
@@ -4435,9 +4459,7 @@ fn fixed_height_float_with_children_keeps_empty_continuation_fragments() {
     !second_page_floats.is_empty(),
     "float continuation fragment should exist on the second page even when its children are only on the first page"
   );
-  let float_bottom = second_page_floats
-    .into_iter()
-    .fold(0.0f32, f32::max);
+  let float_bottom = second_page_floats.into_iter().fold(0.0f32, f32::max);
 
   let after_pos = find_text_position(page_roots[1], "After float paragraph", (0.0, 0.0))
     .expect("paragraph should appear on the second page");
@@ -4503,9 +4525,7 @@ fn forced_break_inside_tall_float_does_not_block_main_flow() {
 
   let mut second_page_floats = Vec::new();
   collect_float_bottoms(page_roots[1], (0.0, 0.0), &mut second_page_floats);
-  let float_bottom = second_page_floats
-    .into_iter()
-    .fold(0.0f32, f32::max);
+  let float_bottom = second_page_floats.into_iter().fold(0.0f32, f32::max);
 
   let after_pos = find_text_position(page_roots[1], "After float paragraph", (0.0, 0.0))
     .expect("main-flow paragraph should remain on the second page");
@@ -5935,7 +5955,11 @@ fn footnote_float_generates_call_and_page_footnote_area() {
 
   let page2 = page_roots[1];
   let wrapper2 = page_document_wrapper(page2);
-  assert_eq!(wrapper2.children.len(), 1, "pages without footnotes should not include a footnote area");
+  assert_eq!(
+    wrapper2.children.len(),
+    1,
+    "pages without footnotes should not include a footnote area"
+  );
   assert!(find_text(page2, "Page2").is_some());
 }
 
@@ -6141,7 +6165,9 @@ fn huge_footnote_body_continues_across_pages() {
 fn mixed_footnotes_preserve_order_when_one_is_huge() {
   let mut lines = String::new();
   for idx in 1..=40 {
-    lines.push_str(&format!(r#"<span class="line">Footnote two line {idx}</span>"#));
+    lines.push_str(&format!(
+      r#"<span class="line">Footnote two line {idx}</span>"#
+    ));
   }
 
   let html = format!(

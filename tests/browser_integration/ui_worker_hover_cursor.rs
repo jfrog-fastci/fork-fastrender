@@ -86,7 +86,11 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
     .unwrap();
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, page_url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      page_url,
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   next_frame_ready(&worker.ui_rx, tab_id);
@@ -94,7 +98,11 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
   // Hover the link.
   worker
     .ui_tx
-    .send(support::pointer_move(tab_id, (15.0, 15.0), PointerButton::None))
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 15.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::Pointer);
@@ -105,13 +113,21 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
   // duplicate HoverChanged first.
   worker
     .ui_tx
-    .send(support::pointer_move(tab_id, (15.0, 15.0), PointerButton::None))
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 15.0),
+      PointerButton::None,
+    ))
     .unwrap();
 
   // Hover the input.
   worker
     .ui_tx
-    .send(support::pointer_move(tab_id, (15.0, 60.0), PointerButton::None))
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 60.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::Text);
@@ -120,7 +136,11 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
   // Move to non-interactive region: hovered_url should clear.
   worker
     .ui_tx
-    .send(support::pointer_move(tab_id, (15.0, 100.0), PointerButton::None))
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 100.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::Default);
@@ -129,7 +149,11 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
   // Hover the link again.
   worker
     .ui_tx
-    .send(support::pointer_move(tab_id, (15.0, 15.0), PointerButton::None))
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 15.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::Pointer);
@@ -138,7 +162,11 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
   // Leaving the page clears hover state.
   worker
     .ui_tx
-    .send(support::pointer_move(tab_id, (-1.0, -1.0), PointerButton::None))
+    .send(support::pointer_move(
+      tab_id,
+      (-1.0, -1.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::Default);

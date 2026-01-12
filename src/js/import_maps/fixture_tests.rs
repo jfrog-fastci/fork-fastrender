@@ -10,12 +10,8 @@ fn fixture_path(relative: &str) -> std::path::PathBuf {
 
 fn read_fixture(relative: &str) -> String {
   let path = fixture_path(relative);
-  std::fs::read_to_string(&path).unwrap_or_else(|err| {
-    panic!(
-      "failed to read fixture {}: {err}",
-      path.to_string_lossy()
-    )
-  })
+  std::fs::read_to_string(&path)
+    .unwrap_or_else(|err| panic!("failed to read fixture {}: {err}", path.to_string_lossy()))
 }
 
 fn extract_html_attr_value(tag: &str, attr_name: &str) -> Option<String> {
@@ -120,7 +116,8 @@ fn extract_first_importmap_script_json(html: &str) -> String {
     };
     let close_tag_start = content_start + close_tag_rel;
 
-    if extract_html_attr_value(open_tag, "type").is_some_and(|value| value.eq_ignore_ascii_case("importmap"))
+    if extract_html_attr_value(open_tag, "type")
+      .is_some_and(|value| value.eq_ignore_ascii_case("importmap"))
     {
       return html[content_start..close_tag_start].trim().to_string();
     }
@@ -134,7 +131,8 @@ fn extract_first_importmap_script_json(html: &str) -> String {
 fn parse_fixture_import_map(fixture_html: &str, base_url: &str) -> super::ImportMap {
   let html = read_fixture(fixture_html);
   let json = extract_first_importmap_script_json(&html);
-  let base = Url::parse(base_url).unwrap_or_else(|err| panic!("invalid base URL {base_url:?}: {err}"));
+  let base =
+    Url::parse(base_url).unwrap_or_else(|err| panic!("invalid base URL {base_url:?}: {err}"));
   let (map, _warnings) = parse_import_map_string(&json, &base).unwrap_or_else(|err| {
     panic!("failed to parse import map extracted from {fixture_html}: {err:?}\nJSON: {json}")
   });
@@ -158,7 +156,10 @@ fn extract_first_importmap_script_json_skips_importmap_shim_scripts() {
 <script type="importmap">{ "imports": { "b": "/b.js" } }</script>
 "#;
   let json = extract_first_importmap_script_json(html);
-  assert!(json.contains(r#""b""#), "unexpected import map JSON: {json}");
+  assert!(
+    json.contains(r#""b""#),
+    "unexpected import map JSON: {json}"
+  );
 }
 
 #[test]
@@ -179,7 +180,10 @@ fn fixture_import_map_parses_techcrunch() {
 
 #[test]
 fn fixture_import_map_parses_msnbc() {
-  let map = parse_fixture_import_map("tests/pages/fixtures/msnbc.com/index.html", "https://www.ms.now/");
+  let map = parse_fixture_import_map(
+    "tests/pages/fixtures/msnbc.com/index.html",
+    "https://www.ms.now/",
+  );
 
   let url = expect_import_url(&map, "@wordpress/interactivity");
   assert!(
@@ -192,15 +196,24 @@ fn fixture_import_map_parses_msnbc() {
 
 #[test]
 fn fixture_import_map_parses_bing() {
-  let map = parse_fixture_import_map("tests/pages/fixtures/bing.com/index.html", "https://www.bing.com/");
+  let map = parse_fixture_import_map(
+    "tests/pages/fixtures/bing.com/index.html",
+    "https://www.bing.com/",
+  );
 
   let url = expect_import_url(&map, "rms-answers-HomepageVNext-PeregrineWidgets");
-  assert_eq!(url.as_str(), "https://assets.msn.com/bundles/v1/bingHomepage/latest/widget-initializer.js");
+  assert_eq!(
+    url.as_str(),
+    "https://assets.msn.com/bundles/v1/bingHomepage/latest/widget-initializer.js"
+  );
 }
 
 #[test]
 fn fixture_import_map_parses_yelp() {
-  let map = parse_fixture_import_map("tests/pages/fixtures/yelp.com/index.html", "https://www.yelp.com/");
+  let map = parse_fixture_import_map(
+    "tests/pages/fixtures/yelp.com/index.html",
+    "https://www.yelp.com/",
+  );
 
   for (specifier, expected_integrity) in [
     (

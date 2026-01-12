@@ -65,7 +65,9 @@ fn collapsible_whitespace_before_abspos_does_not_create_empty_line_box() {
     .expect("layout without abspos should succeed")
     .bounds
     .height();
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   assert!(
     (fragment.bounds.height() - expected).abs() < 0.01,

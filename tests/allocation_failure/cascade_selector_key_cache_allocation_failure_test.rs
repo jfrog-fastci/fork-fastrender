@@ -1,10 +1,10 @@
+use super::{fail_next_allocation, failed_allocs, lock_allocator};
 use fastrender::css::types::StyleSheet;
 use fastrender::dom::{DomNode, DomNodeType};
 use fastrender::style::cascade::apply_style_set_with_media_target_and_imports_cached_with_deadline;
 use fastrender::style::media::MediaContext;
 use fastrender::style::style_set::StyleSet;
 use std::mem;
-use super::{fail_next_allocation, failed_allocs, lock_allocator};
 
 fn build_dom_with_many_classes(class_count: usize) -> DomNode {
   let mut class_value = String::new();
@@ -47,17 +47,7 @@ fn cascade_survives_selector_key_cache_allocation_failure() {
   fail_next_allocation(alloc_size, alloc_align);
 
   let result = apply_style_set_with_media_target_and_imports_cached_with_deadline(
-    &dom,
-    &style_set,
-    &media_ctx,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
+    &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,
   );
 
   assert_eq!(

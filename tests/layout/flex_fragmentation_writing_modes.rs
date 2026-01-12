@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{AlignContent, AlignItems, FlexDirection, FlexWrap, JustifyContent, WritingMode};
+use fastrender::style::types::{
+  AlignContent, AlignItems, FlexDirection, FlexWrap, JustifyContent, WritingMode,
+};
 use fastrender::style::values::Length;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{BoxNode, BoxTree, ComputedStyle, LayoutConfig, LayoutEngine, Size};
@@ -55,12 +57,24 @@ fn flex_pagination_vertical_writing_mode_breaks_between_wrap_lines() {
   flex_style.width_keyword = None;
   flex_style.height_keyword = None;
 
-  let child1 = BoxNode::new_block(fixed_block(10.0, 30.0), FormattingContextType::Block, vec![]);
-  let child2 = BoxNode::new_block(fixed_block(10.0, 30.0), FormattingContextType::Block, vec![]);
+  let child1 = BoxNode::new_block(
+    fixed_block(10.0, 30.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+  let child2 = BoxNode::new_block(
+    fixed_block(10.0, 30.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   // Second line has a short block-axis span child first so a naive break opportunity exists inside
   // the line when the fragmentainer boundary slices through it.
   let child3 = BoxNode::new_block(fixed_block(4.0, 30.0), FormattingContextType::Block, vec![]);
-  let child4 = BoxNode::new_block(fixed_block(10.0, 30.0), FormattingContextType::Block, vec![]);
+  let child4 = BoxNode::new_block(
+    fixed_block(10.0, 30.0),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let root = BoxNode::new_block(
     Arc::new(flex_style),
@@ -146,10 +160,22 @@ fn flex_pagination_wrap_reverse_breaks_between_physical_lines() {
   flex_style.width_keyword = None;
   flex_style.height_keyword = None;
 
-  let child1 = BoxNode::new_block(fixed_block(20.0, 20.0), FormattingContextType::Block, vec![]);
+  let child1 = BoxNode::new_block(
+    fixed_block(20.0, 20.0),
+    FormattingContextType::Block,
+    vec![],
+  );
   let child2 = BoxNode::new_block(fixed_block(20.0, 5.0), FormattingContextType::Block, vec![]);
-  let child3 = BoxNode::new_block(fixed_block(20.0, 20.0), FormattingContextType::Block, vec![]);
-  let child4 = BoxNode::new_block(fixed_block(20.0, 20.0), FormattingContextType::Block, vec![]);
+  let child3 = BoxNode::new_block(
+    fixed_block(20.0, 20.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+  let child4 = BoxNode::new_block(
+    fixed_block(20.0, 20.0),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let root = BoxNode::new_block(
     Arc::new(flex_style),

@@ -12,69 +12,90 @@ const QUIET_WINDOW: Duration = Duration::from_millis(200);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn send_noise_messages(tx: &Sender<UiToWorker>, tab_id: TabId) {
-  tx
-    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+  tx.send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
     .expect("send ViewportChanged");
-  tx
-    .send(support::scroll_msg(tab_id, (0.0, 10.0), Some((5.0, 6.0))))
+  tx.send(support::scroll_msg(tab_id, (0.0, 10.0), Some((5.0, 6.0))))
     .expect("send Scroll");
-  tx
-    .send(support::navigate_msg(
-      tab_id,
-      "about:blank".to_string(),
-      NavigationReason::TypedUrl,
-    ))
-    .expect("send Navigate");
-  tx
-    .send(support::pointer_move(
-      tab_id,
-      (5.0, 6.0),
-      PointerButton::Primary,
-    ))
-    .expect("send PointerMove");
-  tx
-    .send(support::pointer_down(
-      tab_id,
-      (5.0, 6.0),
-      PointerButton::Primary,
-    ))
-    .expect("send PointerDown");
-  tx
-    .send(support::pointer_up(
-      tab_id,
-      (5.0, 6.0),
-      PointerButton::Primary,
-    ))
-    .expect("send PointerUp");
-  tx
-    .send(support::text_input(tab_id, "hello"))
+  tx.send(support::navigate_msg(
+    tab_id,
+    "about:blank".to_string(),
+    NavigationReason::TypedUrl,
+  ))
+  .expect("send Navigate");
+  tx.send(support::pointer_move(
+    tab_id,
+    (5.0, 6.0),
+    PointerButton::Primary,
+  ))
+  .expect("send PointerMove");
+  tx.send(support::pointer_down(
+    tab_id,
+    (5.0, 6.0),
+    PointerButton::Primary,
+  ))
+  .expect("send PointerDown");
+  tx.send(support::pointer_up(
+    tab_id,
+    (5.0, 6.0),
+    PointerButton::Primary,
+  ))
+  .expect("send PointerUp");
+  tx.send(support::text_input(tab_id, "hello"))
     .expect("send TextInput");
-  tx
-    .send(support::key_action(tab_id, KeyAction::Enter))
+  tx.send(support::key_action(tab_id, KeyAction::Enter))
     .expect("send KeyAction");
-  tx
-    .send(support::request_repaint(tab_id, RepaintReason::Explicit))
+  tx.send(support::request_repaint(tab_id, RepaintReason::Explicit))
     .expect("send RequestRepaint");
 }
 
 fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
   match msg {
-    WorkerToUi::Stage { tab_id: msg_tab, .. }
-    | WorkerToUi::Favicon { tab_id: msg_tab, .. }
-    | WorkerToUi::FrameReady { tab_id: msg_tab, .. }
-    | WorkerToUi::OpenSelectDropdown { tab_id: msg_tab, .. }
-    | WorkerToUi::SelectDropdownOpened { tab_id: msg_tab, .. }
+    WorkerToUi::Stage {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::Favicon {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::FrameReady {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::OpenSelectDropdown {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::SelectDropdownOpened {
+      tab_id: msg_tab, ..
+    }
     | WorkerToUi::SelectDropdownClosed { tab_id: msg_tab }
-    | WorkerToUi::NavigationStarted { tab_id: msg_tab, .. }
-    | WorkerToUi::NavigationCommitted { tab_id: msg_tab, .. }
-    | WorkerToUi::NavigationFailed { tab_id: msg_tab, .. }
-    | WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. }
-    | WorkerToUi::LoadingState { tab_id: msg_tab, .. }
-    | WorkerToUi::Warning { tab_id: msg_tab, .. }
-    | WorkerToUi::ContextMenu { tab_id: msg_tab, .. }
-    | WorkerToUi::RequestOpenInNewTab { tab_id: msg_tab, .. }
-    | WorkerToUi::HoverChanged { tab_id: msg_tab, .. }
-    | WorkerToUi::SetClipboardText { tab_id: msg_tab, .. } => *msg_tab == tab_id,
+    | WorkerToUi::NavigationStarted {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::NavigationCommitted {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::NavigationFailed {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::ScrollStateUpdated {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::LoadingState {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::Warning {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::ContextMenu {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::RequestOpenInNewTab {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::HoverChanged {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::SetClipboardText {
+      tab_id: msg_tab, ..
+    } => *msg_tab == tab_id,
     WorkerToUi::DebugLog { .. } => false,
   }
 }
@@ -120,7 +141,9 @@ fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Durat
     }
     let remaining = deadline - now;
     match rx.recv_timeout(remaining) {
-      Ok(WorkerToUi::FrameReady { tab_id: msg_tab, .. }) if msg_tab == tab_id => return,
+      Ok(WorkerToUi::FrameReady {
+        tab_id: msg_tab, ..
+      }) if msg_tab == tab_id => return,
       Ok(_) => {}
       Err(RecvTimeoutError::Timeout) => {}
       Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected unexpectedly"),
@@ -154,8 +177,7 @@ fn messages_for_unknown_tab_are_ignored_without_panic() {
 
   // Ensure the worker thread is still alive and the existing tab still repaints after ignored
   // events for another tab.
-  tx
-    .send(support::request_repaint(tab1, RepaintReason::Explicit))
+  tx.send(support::request_repaint(tab1, RepaintReason::Explicit))
     .expect("send RequestRepaint(tab1)");
   wait_for_frame_ready(&rx, tab1, FRAME_TIMEOUT);
 

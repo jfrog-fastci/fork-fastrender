@@ -83,4 +83,3 @@ fn flex_negative_margin_overlap_preserved_in_auto_height_container() {
     fragment.bounds.height()
   );
 }
-

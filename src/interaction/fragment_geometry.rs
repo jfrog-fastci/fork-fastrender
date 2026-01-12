@@ -58,7 +58,11 @@ fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect 
 ///
 /// This mirrors `paint::display_list_builder::background_rects` so hit-testing and tests can align
 /// with the actual painted geometry (including UA default borders/padding).
-pub fn content_rect_for_border_rect(border_rect: Rect, style: &ComputedStyle, viewport_size: Size) -> Rect {
+pub fn content_rect_for_border_rect(
+  border_rect: Rect,
+  style: &ComputedStyle,
+  viewport_size: Size,
+) -> Rect {
   let font_size = style.font_size;
   let base = border_rect.width().max(0.0);
   let viewport = (viewport_size.width.is_finite() && viewport_size.height.is_finite())

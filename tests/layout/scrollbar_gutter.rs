@@ -102,8 +102,11 @@ fn scrollbar_auto_does_not_reserve_space_when_overflowing_by_default() {
     probe_style.width = Some(Length::percent(100.0));
     let probe = BoxNode::new_block(Arc::new(probe_style), FormattingContextType::Block, vec![]);
 
-    let container =
-      BoxNode::new_block(container_style, FormattingContextType::Block, vec![tall, probe]);
+    let container = BoxNode::new_block(
+      container_style,
+      FormattingContextType::Block,
+      vec![tall, probe],
+    );
 
     let bfc = BlockFormattingContext::new();
     let constraints = LayoutConstraints::definite(100.0, 50.0);
@@ -152,8 +155,11 @@ fn scrollbar_auto_cross_axis_overflow_does_not_reserve_space_by_default() {
   probe_style.width = Some(Length::percent(100.0));
   let probe = BoxNode::new_block(Arc::new(probe_style), FormattingContextType::Block, vec![]);
 
-  let container =
-    BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![wide_tall, probe]);
+  let container = BoxNode::new_block(
+    Arc::new(style),
+    FormattingContextType::Block,
+    vec![wide_tall, probe],
+  );
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(100.0, 50.0);
   let fragment = bfc

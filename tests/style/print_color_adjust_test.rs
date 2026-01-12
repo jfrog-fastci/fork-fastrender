@@ -21,7 +21,15 @@ fn styled_tree(html: &str, css: &str) -> StyledNode {
   let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
   let media = MediaContext::screen(800.0, 600.0);
   apply_styles_with_media_target_and_imports(
-    &dom, &stylesheet, &media, None, None, None, None, None, None,
+    &dom,
+    &stylesheet,
+    &media,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
   )
 }
 

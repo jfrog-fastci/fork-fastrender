@@ -1,8 +1,8 @@
 use url::Url;
 
 use super::{
-  resolve_module_specifier, ImportMap, ImportMapError, ImportMapState, ModuleIntegrityMap, ModuleSpecifierMap,
-  ScopesMap,
+  resolve_module_specifier, ImportMap, ImportMapError, ImportMapState, ModuleIntegrityMap,
+  ModuleSpecifierMap, ScopesMap,
 };
 
 fn url(input: &str) -> Url {
@@ -19,8 +19,10 @@ fn module_specifier_map(entries: Vec<(&str, Option<&str>)>) -> ModuleSpecifierMa
 }
 
 fn scopes_map(entries: Vec<(&str, ModuleSpecifierMap)>) -> ScopesMap {
-  let mut entries: Vec<(String, ModuleSpecifierMap)> =
-    entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+  let mut entries: Vec<(String, ModuleSpecifierMap)> = entries
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
   entries.sort_by(|(a, _), (b, _)| super::types::code_unit_cmp(b, a));
   ScopesMap { entries }
 }
@@ -50,7 +52,10 @@ fn resolves_scoped_over_unscoped_and_falls_back_to_less_specific_scope() {
   let import_map = ImportMap {
     imports: module_specifier_map(vec![("foo/", Some("https://cdn.example/global/foo/"))]),
     scopes: scopes_map(vec![
-      ("https://example.test/app/sub/", ModuleSpecifierMap::default()),
+      (
+        "https://example.test/app/sub/",
+        ModuleSpecifierMap::default(),
+      ),
       (
         "https://example.test/app/",
         module_specifier_map(vec![("foo/", Some("https://cdn.example/app/foo/"))]),
@@ -88,7 +93,8 @@ fn resolves_url_like_special_specifier_with_prefix_map() {
     ..ImportMapState::default()
   };
   let base_url = url("https://example.test/app/main.js");
-  let resolved = resolve_module_specifier(&mut state, "https://example.test/pkg/mod.js", &base_url).unwrap();
+  let resolved =
+    resolve_module_specifier(&mut state, "https://example.test/pkg/mod.js", &base_url).unwrap();
   assert_eq!(resolved.as_str(), "https://cdn.example/pkg/mod.js");
 }
 

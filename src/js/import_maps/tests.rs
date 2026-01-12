@@ -1,9 +1,10 @@
 use super::{
-  create_import_map_parse_result, create_import_map_parse_result_with_limits, merge_existing_and_new_import_maps,
-  merge_existing_and_new_import_maps_with_limits, parse_import_map_string, register_import_map,
-  register_import_map_with_limits, resolve_module_integrity_metadata, resolve_module_specifier, ImportMap,
-  ImportMapError, ImportMapLimits, ImportMapState, ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap,
-  ResolvedModuleSetIndex, SpecifierAsUrlKind, SpecifierResolutionRecord,
+  create_import_map_parse_result, create_import_map_parse_result_with_limits,
+  merge_existing_and_new_import_maps, merge_existing_and_new_import_maps_with_limits,
+  parse_import_map_string, register_import_map, register_import_map_with_limits,
+  resolve_module_integrity_metadata, resolve_module_specifier, ImportMap, ImportMapError,
+  ImportMapLimits, ImportMapState, ModuleIntegrityMap, ModuleSpecifierMap, ResolvedModuleSetIndex,
+  ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
 use super::merge::{merge_existing_and_new_import_maps_impl_instrumented, MergeStats};
@@ -124,21 +125,11 @@ fn conflicting_scoped_rules_are_ignored() {
     .expect("scope exists");
 
   assert_eq!(
-    scope
-      .get("foo")
-      .unwrap()
-      .as_ref()
-      .unwrap()
-      .as_str(),
+    scope.get("foo").unwrap().as_ref().unwrap().as_str(),
     "https://cdn.example/foo-v1.js"
   );
   assert_eq!(
-    scope
-      .get("bar")
-      .unwrap()
-      .as_ref()
-      .unwrap()
-      .as_str(),
+    scope.get("bar").unwrap().as_ref().unwrap().as_str(),
     "https://cdn.example/bar.js"
   );
 }
@@ -283,16 +274,20 @@ fn scope_filtering_handles_unsorted_resolved_module_set_base_url_index() {
   // `ResolvedModuleSetIndex` is normally populated incrementally as modules are resolved. Ensure
   // scope-prefix filtering still works when the base URLs are inserted in non-sorted order.
   let mut state = ImportMapState::default();
-  state.resolved_module_set.push_record(SpecifierResolutionRecord {
-    serialized_base_url: Some("https://example.com/b/main.js".to_string()),
-    specifier: "unrelated".to_string(),
-    as_url_kind: SpecifierAsUrlKind::NotUrl,
-  });
-  state.resolved_module_set.push_record(SpecifierResolutionRecord {
-    serialized_base_url: Some("https://example.com/a/main.js".to_string()),
-    specifier: "bar".to_string(),
-    as_url_kind: SpecifierAsUrlKind::NotUrl,
-  });
+  state
+    .resolved_module_set
+    .push_record(SpecifierResolutionRecord {
+      serialized_base_url: Some("https://example.com/b/main.js".to_string()),
+      specifier: "unrelated".to_string(),
+      as_url_kind: SpecifierAsUrlKind::NotUrl,
+    });
+  state
+    .resolved_module_set
+    .push_record(SpecifierResolutionRecord {
+      serialized_base_url: Some("https://example.com/a/main.js".to_string()),
+      specifier: "bar".to_string(),
+      as_url_kind: SpecifierAsUrlKind::NotUrl,
+    });
 
   let new_scoped = parse_map(
     r#"{
@@ -611,9 +606,18 @@ fn parse_import_map_integrity_entries_are_stored() {
   assert_eq!(
     import_map.integrity.entries,
     vec![
-      ("https://example.com/base/a.js".to_string(), "sha256-aaa".to_string()),
-      ("https://example.com/b.js".to_string(), "sha384-bbb".to_string()),
-      ("https://example.com/c.js".to_string(), "sha512-ccc".to_string()),
+      (
+        "https://example.com/base/a.js".to_string(),
+        "sha256-aaa".to_string()
+      ),
+      (
+        "https://example.com/b.js".to_string(),
+        "sha384-bbb".to_string()
+      ),
+      (
+        "https://example.com/c.js".to_string(),
+        "sha512-ccc".to_string()
+      ),
     ]
   );
 }
@@ -637,10 +641,7 @@ fn resolve_module_integrity_metadata_returns_match_or_empty() {
   };
 
   let a = Url::parse("https://example.com/a.js").unwrap();
-  assert_eq!(
-    resolve_module_integrity_metadata(&state, &a),
-    "sha256-aaa"
-  );
+  assert_eq!(resolve_module_integrity_metadata(&state, &a), "sha256-aaa");
 
   let missing = Url::parse("https://example.com/missing.js").unwrap();
   assert_eq!(resolve_module_integrity_metadata(&state, &missing), "");
@@ -748,7 +749,9 @@ fn merge_filters_large_resolved_module_set_without_quadratic_scans() {
   new_scope_imports.sort_by(|(a, _), (b, _)| code_unit_cmp(b.as_str(), a.as_str()));
 
   let new_import_map = ImportMap {
-    imports: ModuleSpecifierMap { entries: new_imports },
+    imports: ModuleSpecifierMap {
+      entries: new_imports,
+    },
     scopes: ScopesMap {
       entries: vec![(
         scope_prefix.clone(),
@@ -898,7 +901,11 @@ fn registering_many_import_maps_is_bounded_by_merge_limits() {
 
   assert_eq!(state.import_map.imports.len(), 2);
 
-  let third = create_import_map_parse_result_with_limits(r#"{ "imports": { "c": "/c.js" } }"#, &base, &limits);
+  let third = create_import_map_parse_result_with_limits(
+    r#"{ "imports": { "c": "/c.js" } }"#,
+    &base,
+    &limits,
+  );
   let err = register_import_map_with_limits(&mut state, third, &limits).unwrap_err();
   assert!(matches!(err, ImportMapError::LimitExceeded(_)), "{err:?}");
 
@@ -964,16 +971,25 @@ fn module_integrity_map_insert_overwrites_in_place_and_removes() {
   let mut integrity = ModuleIntegrityMap::default();
 
   assert_eq!(
-    integrity.insert("https://example.com/a.js".to_string(), "sha256-a".to_string()),
+    integrity.insert(
+      "https://example.com/a.js".to_string(),
+      "sha256-a".to_string()
+    ),
     None
   );
   assert_eq!(
-    integrity.insert("https://example.com/b.js".to_string(), "sha256-b".to_string()),
+    integrity.insert(
+      "https://example.com/b.js".to_string(),
+      "sha256-b".to_string()
+    ),
     None
   );
 
   let old = integrity
-    .insert("https://example.com/a.js".to_string(), "sha256-a2".to_string())
+    .insert(
+      "https://example.com/a.js".to_string(),
+      "sha256-a2".to_string(),
+    )
     .unwrap();
   assert_eq!(old, "sha256-a");
 

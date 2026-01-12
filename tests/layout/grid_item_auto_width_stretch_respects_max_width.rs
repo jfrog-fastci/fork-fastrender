@@ -7,8 +7,14 @@ use fastrender::style::values::Length;
 use fastrender::{BoxNode, ComputedStyle, FormattingContextType};
 use std::sync::Arc;
 
-fn find_fragment_with_id<'a>(fragment: &'a fastrender::FragmentNode, id: usize) -> Option<&'a fastrender::FragmentNode> {
-  if fragment.box_id().is_some_and(|fragment_id| fragment_id == id) {
+fn find_fragment_with_id<'a>(
+  fragment: &'a fastrender::FragmentNode,
+  id: usize,
+) -> Option<&'a fastrender::FragmentNode> {
+  if fragment
+    .box_id()
+    .is_some_and(|fragment_id| fragment_id == id)
+  {
     return Some(fragment);
   }
   for child in fragment.children.iter() {

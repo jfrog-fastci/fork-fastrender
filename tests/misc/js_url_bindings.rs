@@ -133,7 +133,10 @@ fn url_searchparams_is_live() {
   call_method(&mut rt, params, "append", &[c, d]);
 
   let href = get(&mut rt, url, "href");
-  assert_eq!(as_rust_string(&rt, href), "https://example.com/?a=b+%7E&c=d");
+  assert_eq!(
+    as_rust_string(&rt, href),
+    "https://example.com/?a=b+%7E&c=d"
+  );
   let search = get(&mut rt, url, "search");
   assert_eq!(as_rust_string(&rt, search), "?a=b+%7E&c=d");
   let s = call_method(&mut rt, params, "toString", &[]);
@@ -284,8 +287,16 @@ fn vm_js_error_debug(realm: &mut WindowRealm, err: VmError) -> String {
 fn window_realm_exec_script_url_constructor_smoke() {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
 
-  let href = exec_script(&mut realm, r#"new URL("https://example.com/path?x=1#y").href"#)
-    .unwrap_or_else(|err| panic!("exec_script failed:\n{}", vm_js_error_debug(&mut realm, err)));
+  let href = exec_script(
+    &mut realm,
+    r#"new URL("https://example.com/path?x=1#y").href"#,
+  )
+  .unwrap_or_else(|err| {
+    panic!(
+      "exec_script failed:\n{}",
+      vm_js_error_debug(&mut realm, err)
+    )
+  });
   assert_eq!(
     as_vm_js_heap_string(realm.heap(), href),
     "https://example.com/path?x=1#y"
@@ -305,8 +316,15 @@ fn window_realm_exec_script_url_constructor_smoke() {
     "https://example.com/dir/a"
   );
 
-  let origin = exec_script(&mut realm, r#"new URL("https://example.com/path?x=1#y").origin"#).unwrap();
-  assert_eq!(as_vm_js_heap_string(realm.heap(), origin), "https://example.com");
+  let origin = exec_script(
+    &mut realm,
+    r#"new URL("https://example.com/path?x=1#y").origin"#,
+  )
+  .unwrap();
+  assert_eq!(
+    as_vm_js_heap_string(realm.heap(), origin),
+    "https://example.com"
+  );
 
   // Opaque origins serialize as the string "null" (WHATWG URL).
   let opaque_origin = exec_script(&mut realm, r#"new URL("data:text/plain,hi").origin"#).unwrap();
@@ -320,8 +338,11 @@ fn window_realm_exec_script_url_constructors_require_new() {
   let typeof_url = exec_script(&mut realm, r#"typeof URL === "function""#).unwrap();
   assert_eq!(typeof_url, Value::Bool(true));
 
-  let url_proto =
-    exec_script(&mut realm, r#"URL.prototype !== null && typeof URL.prototype === "object""#).unwrap();
+  let url_proto = exec_script(
+    &mut realm,
+    r#"URL.prototype !== null && typeof URL.prototype === "object""#,
+  )
+  .unwrap();
   assert_eq!(url_proto, Value::Bool(true));
 
   let url_call_throws = exec_script(
@@ -409,7 +430,11 @@ fn window_realm_exec_script_url_searchparams_is_live_and_cached() {
     "https://example.com/?a=b+%7E&c=d"
   );
 
-  let cached = exec_script(&mut realm, r#"globalThis.u.searchParams === globalThis.u.searchParams"#).unwrap();
+  let cached = exec_script(
+    &mut realm,
+    r#"globalThis.u.searchParams === globalThis.u.searchParams"#,
+  )
+  .unwrap();
   assert_eq!(cached, Value::Bool(true));
 
   let params = exec_script(&mut realm, r#"globalThis.u.searchParams.toString()"#).unwrap();
@@ -431,7 +456,10 @@ fn window_realm_exec_script_url_origin_for_opaque_and_blob_schemes() {
     r#"new URL("blob:https://example.com/uuid").origin"#,
   )
   .unwrap();
-  assert_eq!(as_vm_js_heap_string(realm.heap(), origin), "https://example.com");
+  assert_eq!(
+    as_vm_js_heap_string(realm.heap(), origin),
+    "https://example.com"
+  );
 
   let origin = exec_script(&mut realm, r#"new URL("blob:file:///tmp/x").origin"#).unwrap();
   assert_eq!(as_vm_js_heap_string(realm.heap(), origin), "null");

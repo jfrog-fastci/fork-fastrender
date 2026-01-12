@@ -21,10 +21,8 @@ pub(crate) const DEFAULT_THREAD_POOL_CACHE_MAX: usize = 4;
 pub(crate) const THREAD_POOL_THREADS_HARD_MAX: usize = 256;
 
 pub(crate) fn thread_pool_cache_max() -> usize {
-  crate::debug::runtime::runtime_toggles().usize_with_default(
-    THREAD_POOL_CACHE_MAX_ENV,
-    DEFAULT_THREAD_POOL_CACHE_MAX,
-  )
+  crate::debug::runtime::runtime_toggles()
+    .usize_with_default(THREAD_POOL_CACHE_MAX_ENV, DEFAULT_THREAD_POOL_CACHE_MAX)
 }
 
 pub(crate) fn clamp_thread_count(requested: usize) -> usize {
@@ -50,7 +48,6 @@ mod test_lock {
 }
 
 #[cfg(test)]
-pub(crate) fn thread_pool_cache_test_lock(
-) -> parking_lot::ReentrantMutexGuard<'static, ()> {
+pub(crate) fn thread_pool_cache_test_lock() -> parking_lot::ReentrantMutexGuard<'static, ()> {
   test_lock::lock()
 }

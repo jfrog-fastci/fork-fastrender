@@ -12,7 +12,15 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   (p.red(), p.green(), p.blue(), p.alpha())
 }
 
-fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, FontContext, fastrender::tree::fragment_tree::FragmentTree) {
+fn build_display_list(
+  html: &str,
+  width: u32,
+  height: u32,
+) -> (
+  DisplayList,
+  FontContext,
+  fastrender::tree::fragment_tree::FragmentTree,
+) {
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())
     .build()
@@ -74,9 +82,10 @@ fn svg_clip_path_url_fragment_resolves_use_dependencies() {
   let (list, font_ctx, fragments) = build_display_list(html, 100, 100);
 
   assert!(
-    fragments.svg_id_defs.as_ref().is_some_and(|defs| {
-      defs.contains_key("c") && defs.contains_key("shape")
-    }),
+    fragments
+      .svg_id_defs
+      .as_ref()
+      .is_some_and(|defs| { defs.contains_key("c") && defs.contains_key("shape") }),
     "layout should retain defs required by url(#c) clip-path"
   );
 
@@ -115,7 +124,10 @@ fn svg_clip_path_url_fragment_respects_clip_path_units_object_bounding_box() {
   let (list, font_ctx, fragments) = build_display_list(html, 100, 100);
 
   assert!(
-    fragments.svg_id_defs.as_ref().is_some_and(|defs| defs.contains_key("c")),
+    fragments
+      .svg_id_defs
+      .as_ref()
+      .is_some_and(|defs| defs.contains_key("c")),
     "layout should retain defs required by url(#c) clip-path"
   );
 
@@ -155,7 +167,10 @@ fn svg_clip_path_url_fragment_serializes_css_transform_overriding_transform_attr
   let (list, font_ctx, fragments) = build_display_list(html, 100, 100);
 
   assert!(
-    fragments.svg_id_defs.as_ref().is_some_and(|defs| defs.contains_key("c")),
+    fragments
+      .svg_id_defs
+      .as_ref()
+      .is_some_and(|defs| defs.contains_key("c")),
     "layout should retain defs required by url(#c) clip-path"
   );
 

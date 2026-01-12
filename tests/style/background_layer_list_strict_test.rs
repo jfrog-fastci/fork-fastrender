@@ -98,4 +98,3 @@ fn background_layer_lists_reject_empty_items() {
     Some(BackgroundImage::Url(ref url)) if url == "b.png"
   ));
 }
-

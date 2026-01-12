@@ -5,7 +5,8 @@ use crate::paint::pixmap::{guard_allocation_bytes, new_pixmap_with_context};
 use crate::paint::svg_filter::FilterCacheConfig;
 use crate::render_control::{
   active_allocation_budget, active_deadline, active_heartbeat, active_stage, check_active,
-  check_active_periodic, DeadlineGuard, StageAllocationBudgetGuard, StageGuard, StageHeartbeatGuard,
+  check_active_periodic, DeadlineGuard, StageAllocationBudgetGuard, StageGuard,
+  StageHeartbeatGuard,
 };
 use lru::LruCache;
 use rayon::prelude::*;
@@ -2447,9 +2448,12 @@ fn tile_blur(
       if needs_new {
         self.tile = Some(new_pixmap_with_context(width, height, "tile blur tile")?);
       }
-      self.tile.as_mut().ok_or_else(|| RenderError::InvalidParameters {
-        message: "tile blur tile scratch missing after allocation".to_string(),
-      })
+      self
+        .tile
+        .as_mut()
+        .ok_or_else(|| RenderError::InvalidParameters {
+          message: "tile blur tile scratch missing after allocation".to_string(),
+        })
     }
   }
 
@@ -2865,8 +2869,8 @@ mod tests {
   use crate::paint::painter::{enable_paint_diagnostics, take_paint_diagnostics};
   use crate::paint::pixmap::new_pixmap;
   use crate::render_control::{
-    StageAllocationBudget, StageAllocationBudgetGuard, StageGuard, StageHeartbeat, StageHeartbeatGuard,
-    with_deadline, RenderDeadline,
+    with_deadline, RenderDeadline, StageAllocationBudget, StageAllocationBudgetGuard, StageGuard,
+    StageHeartbeat, StageHeartbeatGuard,
   };
   use rayon::ThreadPoolBuilder;
   use std::cell::RefCell;
@@ -3769,7 +3773,9 @@ mod tests {
       max_bytes: 64 * 1024,
     };
 
-    let output_bytes = u64::from(WIDTH).saturating_mul(u64::from(HEIGHT)).saturating_mul(4);
+    let output_bytes = u64::from(WIDTH)
+      .saturating_mul(u64::from(HEIGHT))
+      .saturating_mul(4);
     let budget = Arc::new(StageAllocationBudget::new(output_bytes.saturating_add(1)));
 
     let pool = ThreadPoolBuilder::new()

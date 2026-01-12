@@ -181,7 +181,8 @@ fn inline_svg_filter_url_from_document_css_resolves_across_roots() {
       </svg>
       "##;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 20, 20);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 20, 20);
       assert_eq!(pixel(&pixmap, 10, 10), [0, 255, 0, 255]);
     })
     .unwrap()

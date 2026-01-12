@@ -298,13 +298,23 @@ fn opaque_axis_aligned_rect_fills_snap_half_pixel_edges_like_chrome() {
 
   let p2_bottom = canvas.pixmap().pixel(2, 3).unwrap();
   assert_eq!(
-    (p2_bottom.red(), p2_bottom.green(), p2_bottom.blue(), p2_bottom.alpha()),
+    (
+      p2_bottom.red(),
+      p2_bottom.green(),
+      p2_bottom.blue(),
+      p2_bottom.alpha()
+    ),
     (255, 102, 0, 255),
     "expected min edge at 2.5px to exclude pixel 2"
   );
   let p3_bottom = canvas.pixmap().pixel(3, 3).unwrap();
   assert_eq!(
-    (p3_bottom.red(), p3_bottom.green(), p3_bottom.blue(), p3_bottom.alpha()),
+    (
+      p3_bottom.red(),
+      p3_bottom.green(),
+      p3_bottom.blue(),
+      p3_bottom.alpha()
+    ),
     (0, 255, 0, 255),
     "expected min edge at 2.5px to include pixel 3"
   );
@@ -376,7 +386,12 @@ fn source_over_trunc_rect_fill_near_integer_bounds_matches_integer() {
   // Chrome/Skia-style truncating `mul/255` compositing (0.3 over 200) yields 139.
   let expected = exact.pixel(5, 5).unwrap();
   assert_eq!(
-    (expected.red(), expected.green(), expected.blue(), expected.alpha()),
+    (
+      expected.red(),
+      expected.green(),
+      expected.blue(),
+      expected.alpha()
+    ),
     (139, 139, 139, 255)
   );
 
@@ -428,7 +443,10 @@ fn source_over_trunc_rounded_rect_fill_near_integer_translation_uses_truncation(
 
   // A fully covered pixel should use truncating `mul/255` compositing (0.3 over 200 => 139).
   let p = canvas.pixmap().pixel(5, 5).unwrap();
-  assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (139, 139, 139, 255));
+  assert_eq!(
+    (p.red(), p.green(), p.blue(), p.alpha()),
+    (139, 139, 139, 255)
+  );
 }
 
 #[test]
@@ -442,7 +460,10 @@ fn semi_transparent_source_over_rect_fills_match_chrome_blending() {
   );
 
   let p = canvas.pixmap().pixel(0, 0).unwrap();
-  assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (178, 178, 178, 255));
+  assert_eq!(
+    (p.red(), p.green(), p.blue(), p.alpha()),
+    (178, 178, 178, 255)
+  );
 }
 
 #[test]
@@ -522,7 +543,11 @@ fn opaque_axis_aligned_rounded_rect_fills_are_pixel_snapped() {
   // edges anti-alias into the next row/column and show up as blended seams in page-loop diffs.
   let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
   let radii = BorderRadii::uniform(2.0);
-  canvas.draw_rounded_rect(Rect::from_xywh(0.0, 0.0, 10.0, 51.6), radii, Rgba::rgb(0, 38, 118));
+  canvas.draw_rounded_rect(
+    Rect::from_xywh(0.0, 0.0, 10.0, 51.6),
+    radii,
+    Rgba::rgb(0, 38, 118),
+  );
   canvas.draw_rect(Rect::from_xywh(0.0, 51.6, 10.0, 8.4), Rgba::WHITE);
 
   let p51 = canvas.pixmap().pixel(5, 51).unwrap();

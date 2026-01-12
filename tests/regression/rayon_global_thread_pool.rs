@@ -12,4 +12,3 @@ fn global_rayon_thread_pool_is_initialized_with_a_safe_default() {
     .layout_document(&dom, 200, 200)
     .expect("layout document");
 }
-

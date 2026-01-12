@@ -22,20 +22,30 @@ fn grid_item_percent_height_resolves_against_definite_fr_track() {
   fixed_child_style.display = Display::Block;
   fixed_child_style.height = Some(Length::px(10.0));
   fixed_child_style.height_keyword = None;
-  let fixed_child =
-    BoxNode::new_block(Arc::new(fixed_child_style), FormattingContextType::Block, vec![]);
+  let fixed_child = BoxNode::new_block(
+    Arc::new(fixed_child_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let mut flex_style = ComputedStyle::default();
   flex_style.display = Display::Flex;
   flex_style.flex_direction = FlexDirection::Column;
   flex_style.height = Some(Length::percent(100.0));
   flex_style.height_keyword = None;
-  let flex_box =
-    BoxNode::new_block(Arc::new(flex_style), FormattingContextType::Flex, vec![fixed_child]);
+  let flex_box = BoxNode::new_block(
+    Arc::new(flex_style),
+    FormattingContextType::Flex,
+    vec![fixed_child],
+  );
 
   let mut item_style = ComputedStyle::default();
   item_style.display = Display::Block;
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![flex_box]);
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![flex_box],
+  );
 
   let mut grid_style = ComputedStyle::default();
   grid_style.display = Display::Grid;
@@ -44,7 +54,11 @@ fn grid_item_percent_height_resolves_against_definite_fr_track() {
   grid_style.height_keyword = None;
   grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
   grid_style.grid_template_rows = vec![GridTrack::Fr(1.0)];
-  let grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc

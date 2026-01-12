@@ -7,6 +7,7 @@
 #[path = "../ref/mod.rs"]
 mod r#ref;
 
+use fastrender::image_compare::encode_png;
 use fastrender::text::color_fonts::{ColorFontRenderer, ColorGlyphRaster};
 use fastrender::text::font_db::{FontStretch, FontStyle, FontWeight, LoadedFont};
 use fastrender::text::font_instance::{glyph_transform, FontInstance};
@@ -20,7 +21,6 @@ use fastrender::ComputedStyle;
 use fastrender::GlyphCache;
 use fastrender::Rgba;
 use fastrender::TextRasterizer;
-use fastrender::image_compare::encode_png;
 use image::RgbaImage;
 use r#ref::compare::{compare_images, load_png_from_bytes, CompareConfig};
 use rustybuzz::Variation;
@@ -711,24 +711,30 @@ fn color_glyph_rasters_follow_outline_transforms() {
       None,
     )
     .expect("color glyph raster");
-  let expected_raster_bounds = |transform: Transform, width: u32, height: u32| -> (i32, i32, i32, i32) {
-    let mut expected_pixmap = create_test_pixmap(width, height);
-    let paint = tiny_skia::PixmapPaint {
-      opacity: 1.0,
-      blend_mode: tiny_skia::BlendMode::SourceOver,
-      ..Default::default()
+  let expected_raster_bounds =
+    |transform: Transform, width: u32, height: u32| -> (i32, i32, i32, i32) {
+      let mut expected_pixmap = create_test_pixmap(width, height);
+      let paint = tiny_skia::PixmapPaint {
+        opacity: 1.0,
+        blend_mode: tiny_skia::BlendMode::SourceOver,
+        ..Default::default()
+      };
+      expected_pixmap.draw_pixmap(
+        0,
+        0,
+        color_raster.image.as_ref().as_ref(),
+        &paint,
+        transform,
+        None,
+      );
+      let bounds = painted_bounds(&expected_pixmap).expect("expected transformed color raster");
+      (
+        bounds.0 as i32,
+        bounds.1 as i32,
+        bounds.2 as i32,
+        bounds.3 as i32,
+      )
     };
-    expected_pixmap.draw_pixmap(
-      0,
-      0,
-      color_raster.image.as_ref().as_ref(),
-      &paint,
-      transform,
-      None,
-    );
-    let bounds = painted_bounds(&expected_pixmap).expect("expected transformed color raster");
-    (bounds.0 as i32, bounds.1 as i32, bounds.2 as i32, bounds.3 as i32)
-  };
   let expected = expected_raster_bounds(
     color_transform(
       &color_raster,
@@ -966,15 +972,15 @@ fn colrv1_color_glyph_respects_variations_in_rasterizer() {
 
   if std::env::var("UPDATE_GOLDEN").is_ok() {
     std::fs::create_dir_all(&golden_dir).expect("create golden dir");
-    std::fs::write(&base_golden_path, &base_actual_bytes)
-    .expect("write default variation golden");
+    std::fs::write(&base_golden_path, &base_actual_bytes).expect("write default variation golden");
     std::fs::write(&varied_golden_path, &varied_actual_bytes)
-    .expect("write wght=1 variation golden");
+      .expect("write wght=1 variation golden");
     return;
   }
 
   let base_actual = load_png_from_bytes(&base_actual_bytes).expect("decode default variation png");
-  let varied_actual = load_png_from_bytes(&varied_actual_bytes).expect("decode wght=1 variation png");
+  let varied_actual =
+    load_png_from_bytes(&varied_actual_bytes).expect("decode wght=1 variation png");
   let base_golden_bytes =
     std::fs::read(&base_golden_path).expect("missing default variation golden");
   let varied_golden_bytes = std::fs::read(&varied_golden_path).expect("missing wght=1 golden");

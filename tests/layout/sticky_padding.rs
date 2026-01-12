@@ -68,10 +68,9 @@ fn sticky_top_clamps_to_scroll_container_padding() {
   let options = RenderOptions::new().with_viewport(120, 80);
   let prepared = renderer.prepare_html(html, options).expect("prepare html");
 
-  let scroller_id = box_id_by_element_id(&prepared.box_tree().root, "scroller")
-    .expect("scroller box id");
-  let sticky_id =
-    box_id_by_element_id(&prepared.box_tree().root, "sticky").expect("sticky box id");
+  let scroller_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+  let sticky_id = box_id_by_element_id(&prepared.box_tree().root, "sticky").expect("sticky box id");
 
   let scroll = Point::new(0.0, 30.0);
   let scroll_state = ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, scroll)]));
@@ -79,9 +78,8 @@ fn sticky_top_clamps_to_scroll_container_padding() {
   let mut tree = prepared.fragment_tree().clone();
   renderer.apply_sticky_offsets_to_tree_with_scroll_state(&mut tree, &scroll_state);
 
-  let (scroller_origin, _) =
-    find_fragment_origin_by_box_id(&tree.root, Point::ZERO, scroller_id)
-      .expect("scroller fragment");
+  let (scroller_origin, _) = find_fragment_origin_by_box_id(&tree.root, Point::ZERO, scroller_id)
+    .expect("scroller fragment");
   let (sticky_origin, sticky_fragment) =
     find_fragment_origin_by_box_id(&tree.root, Point::ZERO, sticky_id).expect("sticky fragment");
 
@@ -128,10 +126,9 @@ fn sticky_left_clamps_to_scroll_container_padding() {
   let options = RenderOptions::new().with_viewport(80, 40);
   let prepared = renderer.prepare_html(html, options).expect("prepare html");
 
-  let scroller_id = box_id_by_element_id(&prepared.box_tree().root, "scroller")
-    .expect("scroller box id");
-  let sticky_id =
-    box_id_by_element_id(&prepared.box_tree().root, "sticky").expect("sticky box id");
+  let scroller_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+  let sticky_id = box_id_by_element_id(&prepared.box_tree().root, "sticky").expect("sticky box id");
 
   let scroll = Point::new(30.0, 0.0);
   let scroll_state = ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, scroll)]));
@@ -139,9 +136,8 @@ fn sticky_left_clamps_to_scroll_container_padding() {
   let mut tree = prepared.fragment_tree().clone();
   renderer.apply_sticky_offsets_to_tree_with_scroll_state(&mut tree, &scroll_state);
 
-  let (scroller_origin, _) =
-    find_fragment_origin_by_box_id(&tree.root, Point::ZERO, scroller_id)
-      .expect("scroller fragment");
+  let (scroller_origin, _) = find_fragment_origin_by_box_id(&tree.root, Point::ZERO, scroller_id)
+    .expect("scroller fragment");
   let (sticky_origin, sticky_fragment) =
     find_fragment_origin_by_box_id(&tree.root, Point::ZERO, sticky_id).expect("sticky fragment");
 
@@ -157,4 +153,3 @@ fn sticky_left_clamps_to_scroll_container_padding() {
     sticky_fragment.bounds
   );
 }
-

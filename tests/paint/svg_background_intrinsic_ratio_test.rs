@@ -19,7 +19,9 @@ fn svg_background_size_uses_viewbox_intrinsic_ratio() {
   let html = fs::read_to_string(HTML_PATH).expect("read fixture");
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(&html).expect("parse html");
-  let fragments = renderer.layout_document(&dom, 100, 10).expect("layout document");
+  let fragments = renderer
+    .layout_document(&dom, 100, 10)
+    .expect("layout document");
 
   let pixmap = paint_tree_with_resources_scaled_offset_backend(
     &fragments,

@@ -55,8 +55,8 @@ use crate::text::font_db::GenericFamily;
 use crate::text::font_db::LoadedFont;
 use crate::text::font_db::ScaledMetrics;
 use crate::text::font_fallback::FontId;
-use crate::text::root_font_metrics::RootFontMetrics;
 use crate::text::pipeline::DEFAULT_OBLIQUE_ANGLE_DEG;
+use crate::text::root_font_metrics::RootFontMetrics;
 use crate::text::variations::variation_hash;
 use fontdb::Database as FontDbDatabase;
 use lru::LruCache;
@@ -69,6 +69,7 @@ use rustybuzz::Face;
 use rustybuzz::Feature;
 use rustybuzz::UnicodeBuffer;
 use rustybuzz::Variation;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
 use std::hash::BuildHasherDefault;
@@ -83,7 +84,6 @@ use std::sync::Mutex;
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 use std::time::Instant;
-use std::cell::RefCell;
 use url::Url;
 use wuff::decompress_woff1;
 use wuff::decompress_woff2;
@@ -896,7 +896,11 @@ impl FontContext {
           fetcher: Arc::clone(resource_fetcher),
           resource_context: Arc::clone(&shared),
         });
-        (font_fetcher, Some(Arc::clone(resource_fetcher)), Some(shared))
+        (
+          font_fetcher,
+          Some(Arc::clone(resource_fetcher)),
+          Some(shared),
+        )
       } else {
         (Arc::clone(&self.fetcher), None, None)
       };
@@ -1267,10 +1271,12 @@ impl FontContext {
     for stretch_choice in &stretches {
       for slope in slopes {
         for weight_choice in &weights {
-          if let Some(id) = self
-            .db
-            .query_full("sans-serif", FontWeight::new(*weight_choice), *slope, *stretch_choice)
-          {
+          if let Some(id) = self.db.query_full(
+            "sans-serif",
+            FontWeight::new(*weight_choice),
+            *slope,
+            *stretch_choice,
+          ) {
             if let Some(font) = self.db.load_font(id) {
               return Some(font);
             }
@@ -1497,7 +1503,8 @@ impl FontContext {
     // We still want their fetch/decode work to overlap with blocking faces so the deferred fonts
     // have the best chance of completing within the caller's wait window. Start them immediately,
     // but gate registration into the web-font set until after blocking faces have been activated.
-    let registration_gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+    let registration_gate: Arc<(Mutex<bool>, Condvar)> =
+      Arc::new((Mutex::new(false), Condvar::new()));
     let events: Arc<Mutex<Vec<FontLoadEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let expired_jobs: Arc<Mutex<HashSet<usize>>> = Arc::new(Mutex::new(HashSet::new()));
     let render_deadline = render_control::active_deadline().filter(|d| d.is_enabled());
@@ -1600,14 +1607,8 @@ impl FontContext {
       });
       if display == FontDisplay::Swap && policy_deadline.is_some() && !has_http_source {
         let start = Instant::now();
-        let event = self.load_face_sources_with_report(
-          &family,
-          face,
-          base_url,
-          order,
-          start,
-          allow_remote,
-        );
+        let event =
+          self.load_face_sources_with_report(&family, face, base_url, order, start, allow_remote);
         record_font_event(&events, event);
         started_count += 1;
         continue;
@@ -1624,8 +1625,8 @@ impl FontContext {
               && !has_prefix_ignore_ascii_case(&resolved, "https://")
           }
         });
-      let should_block = policy_deadline.is_some()
-        && (display_block > Duration::ZERO || local_swap_sources_only);
+      let should_block =
+        policy_deadline.is_some() && (display_block > Duration::ZERO || local_swap_sources_only);
       let job_id = started_count;
       let block_deadline = if let Some(policy_deadline) = policy_deadline {
         if should_block {
@@ -1895,7 +1896,10 @@ impl FontContext {
   }
 
   #[inline]
-  fn unicode_range_merged_used_intersection_count(merged_ranges: &[(u32, u32)], used: &[u32]) -> usize {
+  fn unicode_range_merged_used_intersection_count(
+    merged_ranges: &[(u32, u32)],
+    used: &[u32],
+  ) -> usize {
     if used.is_empty() {
       return 0;
     }
@@ -1965,7 +1969,8 @@ impl FontContext {
 
         if !Self::is_full_unicode_range(&face.unicode_ranges) {
           let merged_ranges = Self::merge_unicode_ranges(&face.unicode_ranges);
-          let overlap = Self::unicode_range_merged_used_intersection_count(&merged_ranges, used_codepoints);
+          let overlap =
+            Self::unicode_range_merged_used_intersection_count(&merged_ranges, used_codepoints);
           if overlap > 0 {
             subset_candidates.push(SubsetCandidate {
               order,
@@ -2006,7 +2011,10 @@ impl FontContext {
         let mut best_idx: Option<usize> = None;
         let mut best_added = 0usize;
         for (idx, candidate) in remaining.iter().enumerate() {
-          let added = Self::unicode_range_merged_used_intersection_count(&candidate.merged_ranges, &uncovered);
+          let added = Self::unicode_range_merged_used_intersection_count(
+            &candidate.merged_ranges,
+            &uncovered,
+          );
           if added == 0 {
             continue;
           }
@@ -2057,7 +2065,11 @@ impl FontContext {
       }
 
       if indices.len() < max_subset_fonts && !remaining.is_empty() {
-        remaining.sort_by(|a, b| b.overlap.cmp(&a.overlap).then_with(|| a.order.cmp(&b.order)));
+        remaining.sort_by(|a, b| {
+          b.overlap
+            .cmp(&a.overlap)
+            .then_with(|| a.order.cmp(&b.order))
+        });
         for candidate in remaining {
           if indices.len() >= max_subset_fonts {
             break;
@@ -2173,7 +2185,9 @@ impl FontContext {
       return FontLoadEvent::skipped(family, last_source, display, "render cancelled");
     }
     match last_error {
-      Some(reason) if matches!(display, FontDisplay::Optional) && reason == OPTIONAL_SKIP_REASON => {
+      Some(reason)
+        if matches!(display, FontDisplay::Optional) && reason == OPTIONAL_SKIP_REASON =>
+      {
         FontLoadEvent::skipped(family, last_source, display, reason)
       }
       Some(reason) => FontLoadEvent::failed(family, last_source, display, reason),
@@ -2304,9 +2318,12 @@ impl FontContext {
           .or_else(|| ctx.document_url.as_deref().and_then(origin_from_url))
       });
       if let Some(origin) = request_origin.as_ref() {
-        if let Err(message) =
-          validate_cors_allow_origin(&resource, resolved_url, Some(origin), FetchCredentialsMode::Omit)
-        {
+        if let Err(message) = validate_cors_allow_origin(
+          &resource,
+          resolved_url,
+          Some(origin),
+          FetchCredentialsMode::Omit,
+        ) {
           let blocked = Error::Font(FontError::LoadFailed {
             family: family.to_string(),
             reason: message,
@@ -3456,7 +3473,8 @@ fn font_supports_feature(font: &LoadedFont, tag: [u8; 4]) -> bool {
     let base_pos = base_shape.glyph_positions().first().copied();
     let feature_pos = feature_shape.glyph_positions().first().copied();
 
-    if let (Some(bi), Some(fi), Some(bp), Some(fp)) = (base_info, feature_info, base_pos, feature_pos)
+    if let (Some(bi), Some(fi), Some(bp), Some(fp)) =
+      (base_info, feature_info, base_pos, feature_pos)
     {
       if bi.glyph_id != fi.glyph_id || bp.x_advance != fp.x_advance || bp.y_offset != fp.y_offset {
         return true;
@@ -3535,12 +3553,13 @@ fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
     // Decode at most `MAX_FONT_BYTES + 1` so oversized inline fonts fail without allocating the
     // entire payload.
     let decode_limit = (MAX_FONT_BYTES as usize).saturating_add(1);
-    let resource = crate::resource::data_url::decode_data_url_prefix(url, decode_limit).map_err(|e| {
-      Error::Font(crate::error::FontError::LoadFailed {
-        family: "data-url".into(),
-        reason: e.to_string(),
-      })
-    })?;
+    let resource =
+      crate::resource::data_url::decode_data_url_prefix(url, decode_limit).map_err(|e| {
+        Error::Font(crate::error::FontError::LoadFailed {
+          family: "data-url".into(),
+          reason: e.to_string(),
+        })
+      })?;
     enforce_font_size_for_family(resource.bytes.len() as u64, "data-url", "compressed")?;
     return Ok((resource.bytes, resource.content_type));
   }
@@ -4012,7 +4031,11 @@ mod tests {
   fn font_face_relative_url_resolves_against_declaring_stylesheet() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let font_path = manifest_dir.join("tests/fixtures/fonts/NotoSansMono-subset.ttf");
-    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    assert!(
+      font_path.is_file(),
+      "missing test font at {}",
+      font_path.display()
+    );
 
     let stylesheet_path = font_path
       .parent()
@@ -4143,7 +4166,11 @@ mod tests {
     // `font-family: serif` rendering.
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let font_path = manifest_dir.join("tests/fixtures/fonts/STIXTwoMath-Regular.otf");
-    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    assert!(
+      font_path.is_file(),
+      "missing test font at {}",
+      font_path.display()
+    );
     let font_url = url::Url::from_file_path(&font_path)
       .expect("font path is absolute")
       .to_string();
@@ -4187,7 +4214,9 @@ mod tests {
 
     let mut selected: Option<(&fontdb::FaceInfo, String)> = None;
     for face in db.faces() {
-      let Some(font) = db.load_font(face.id) else { continue };
+      let Some(font) = db.load_font(face.id) else {
+        continue;
+      };
       let Ok(parsed) = ttf_parser::Face::parse(&font.data, font.index) else {
         continue;
       };
@@ -4251,12 +4280,7 @@ mod tests {
       .find(|face| face.families.first().is_some())
       .expect("expected at least one bundled face");
 
-    let family_name = face
-      .families
-      .first()
-      .expect("missing family")
-      .0
-      .clone();
+    let family_name = face.families.first().expect("missing family").0.clone();
     let style = font_face_style_from_db(face.style);
     let weight = face.weight.0;
 
@@ -4621,7 +4645,10 @@ mod tests {
     };
 
     font_fetcher
-      .fetch("https://doc.example.com/font.woff2", Some(stylesheet_base_url))
+      .fetch(
+        "https://doc.example.com/font.woff2",
+        Some(stylesheet_base_url),
+      )
       .expect("fetch");
 
     let captured = recorder
@@ -5112,7 +5139,8 @@ mod tests {
     }
 
     let url = "https://example.com/font.ttf".to_string();
-    let bytes = Arc::new(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec());
+    let bytes =
+      Arc::new(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec());
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(FixtureFetcher {
       url: url.clone(),
       bytes,
@@ -5174,7 +5202,11 @@ mod tests {
     let block_url = "https://example.com/block.ttf".to_string();
     let swap_url = "https://example.com/swap.ttf".to_string();
     let fetcher = Arc::new(DelayedRecordingFetcher::new(vec![
-      (block_url.clone(), font_bytes.clone(), Duration::from_millis(150)),
+      (
+        block_url.clone(),
+        font_bytes.clone(),
+        Duration::from_millis(150),
+      ),
       (swap_url.clone(), font_bytes, Duration::from_millis(250)),
     ]));
     let ctx = FontContext::with_database_and_fetcher(Arc::new(FontDatabase::empty()), fetcher);
@@ -5255,7 +5287,9 @@ mod tests {
     // Use a non-empty system font database so the `local()` lookup previously "succeeded" by
     // implicitly falling back to the default `sans-serif` family.
     let ctx = FontContext::with_config(FontConfig::bundled_only());
-    ctx.load_web_fonts(&faces, None, None).expect("load web fonts");
+    ctx
+      .load_web_fonts(&faces, None, None)
+      .expect("load web fonts");
 
     let families = vec!["LocalThenUrl".to_string()];
     let loaded = ctx
@@ -5309,7 +5343,8 @@ mod tests {
     );
 
     assert!(
-      ctx.get_font_simple("TestFace", 400, FontStyle::Normal)
+      ctx
+        .get_font_simple("TestFace", 400, FontStyle::Normal)
         .is_some(),
       "expected font to load using stylesheet-relative src URL"
     );
@@ -5322,8 +5357,7 @@ mod tests {
     // visibly across large portions of the page.
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_dir = manifest_dir.join("tests/pages/fixtures/docs.rs");
-    let stylesheet_path =
-      fixture_dir.join("assets/9a57a32ce6808f0f482e185ad23a5170.css");
+    let stylesheet_path = fixture_dir.join("assets/9a57a32ce6808f0f482e185ad23a5170.css");
     if !stylesheet_path.is_file() {
       return;
     }
@@ -5332,30 +5366,29 @@ mod tests {
     let stylesheet_url = Url::from_file_path(&stylesheet_path)
       .expect("fixture stylesheet file url")
       .to_string();
-    let expected_font_url = Url::from_file_path(
-      fixture_dir.join("assets/0fe48aded097c2a11942a70bfef48510.woff2"),
-    )
-    .expect("fixture font file url")
-    .to_string();
+    let expected_font_url =
+      Url::from_file_path(fixture_dir.join("assets/0fe48aded097c2a11942a70bfef48510.woff2"))
+        .expect("fixture font file url")
+        .to_string();
 
-    let absolutized =
-      crate::css::loader::absolutize_css_urls_cow(&css, &stylesheet_url)
-        .expect("absolutize urls")
-        .into_owned();
+    let absolutized = crate::css::loader::absolutize_css_urls_cow(&css, &stylesheet_url)
+      .expect("absolutize urls")
+      .into_owned();
     assert!(
       absolutized.contains(&expected_font_url),
       "expected absolutized CSS to reference {expected_font_url}"
     );
 
     let media_ctx = MediaContext::screen(1040.0, 1240.0);
-    let mut sheet =
-      crate::css::parser::parse_stylesheet_with_media(&absolutized, &media_ctx, None)
-        .expect("parse stylesheet");
+    let mut sheet = crate::css::parser::parse_stylesheet_with_media(&absolutized, &media_ctx, None)
+      .expect("parse stylesheet");
     sheet.set_font_face_source_stylesheet_url(&stylesheet_url);
 
     let faces = sheet.collect_font_face_rules(&media_ctx);
     assert!(
-      faces.iter().any(|face| face.family.as_deref() == Some("Fira Sans")),
+      faces
+        .iter()
+        .any(|face| face.family.as_deref() == Some("Fira Sans")),
       "expected fixture stylesheet to define @font-face for Fira Sans"
     );
 
@@ -5470,7 +5503,11 @@ mod tests {
 
     let ctx = FontContext::with_config(FontConfig::bundled_only());
     ctx
-      .load_web_fonts(&[fira_regular], Some(doc_url.as_str()), Some(&[b'A' as u32]))
+      .load_web_fonts(
+        &[fira_regular],
+        Some(doc_url.as_str()),
+        Some(&[b'A' as u32]),
+      )
       .expect("load web fonts");
     assert!(
       ctx.wait_for_pending_web_fonts(Duration::from_secs(2)),
@@ -5986,8 +6023,15 @@ mod tests {
       .collect();
     let used_codepoints: Vec<u32> = (0..9).map(|i| 0xE000 + i).collect();
 
-    let selected =
-      FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 8, 64);
+    let selected = FontContext::select_web_font_faces_for_load(
+      &faces,
+      None,
+      true,
+      true,
+      &used_codepoints,
+      8,
+      64,
+    );
     assert_eq!(selected, (0..9).collect::<Vec<_>>());
   }
 
@@ -6006,8 +6050,15 @@ mod tests {
       .collect();
     let used_codepoints = vec![0x0041];
 
-    let selected =
-      FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 8, 64);
+    let selected = FontContext::select_web_font_faces_for_load(
+      &faces,
+      None,
+      true,
+      true,
+      &used_codepoints,
+      8,
+      64,
+    );
     assert_eq!(selected, (0..8).collect::<Vec<_>>());
   }
 
@@ -6142,7 +6193,11 @@ mod tests {
     // cache) even though we still skip network fetches for optional fonts.
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let font_path = manifest_dir.join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
-    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    assert!(
+      font_path.is_file(),
+      "missing test font at {}",
+      font_path.display()
+    );
     let data = fs::read(&font_path).expect("read test font");
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -6160,7 +6215,8 @@ mod tests {
       data,
       Some("font/ttf".to_string()),
     )]));
-    let ctx = FontContext::with_database_and_fetcher(Arc::new(FontDatabase::empty()), fetcher.clone());
+    let ctx =
+      FontContext::with_database_and_fetcher(Arc::new(FontDatabase::empty()), fetcher.clone());
 
     let face = FontFaceRule {
       family: Some("OptFileFace".to_string()),
@@ -6170,14 +6226,8 @@ mod tests {
       ..Default::default()
     };
 
-    let event = ctx.load_face_sources_with_report(
-      "OptFileFace",
-      &face,
-      None,
-      0,
-      Instant::now(),
-      true,
-    );
+    let event =
+      ctx.load_face_sources_with_report("OptFileFace", &face, None, 0, Instant::now(), true);
     assert!(
       matches!(event.status, FontLoadStatus::Loaded),
       "expected optional file:// font to load, got {:?}",
@@ -6679,13 +6729,18 @@ mod tests {
   fn get_font_respects_family_fallback_order() {
     let ctx = FontContext::with_config(FontConfig::bundled_only());
     let expected_serif = ctx.get_serif().expect("expected bundled serif font");
-    let expected_sans = ctx.get_sans_serif().expect("expected bundled sans-serif font");
+    let expected_sans = ctx
+      .get_sans_serif()
+      .expect("expected bundled sans-serif font");
     assert_ne!(
       expected_serif.family, expected_sans.family,
       "expected bundled serif and sans-serif fallbacks to be distinct"
     );
 
-    let families = vec!["DefinitelyMissingFontFamily123".to_string(), "serif".to_string()];
+    let families = vec![
+      "DefinitelyMissingFontFamily123".to_string(),
+      "serif".to_string(),
+    ];
     let font = ctx
       .get_font(&families, 400, false, false)
       .expect("expected font fallback to resolve");
@@ -6699,13 +6754,18 @@ mod tests {
   fn get_font_full_respects_family_fallback_order() {
     let ctx = FontContext::with_config(FontConfig::bundled_only());
     let expected_serif = ctx.get_serif().expect("expected bundled serif font");
-    let expected_sans = ctx.get_sans_serif().expect("expected bundled sans-serif font");
+    let expected_sans = ctx
+      .get_sans_serif()
+      .expect("expected bundled sans-serif font");
     assert_ne!(
       expected_serif.family, expected_sans.family,
       "expected bundled serif and sans-serif fallbacks to be distinct"
     );
 
-    let families = vec!["DefinitelyMissingFontFamily123".to_string(), "serif".to_string()];
+    let families = vec![
+      "DefinitelyMissingFontFamily123".to_string(),
+      "serif".to_string(),
+    ];
     let font = ctx
       .get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal)
       .expect("expected font fallback to resolve");
@@ -6723,7 +6783,11 @@ mod tests {
     // so `font-family: serif` can resolve to it. This mirrors the fixture harness' font patching.
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let font_path = manifest_dir.join("tests/fixtures/fonts/STIXTwoMath-Regular.otf");
-    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    assert!(
+      font_path.is_file(),
+      "missing test font at {}",
+      font_path.display()
+    );
     let stylesheet_url = url::Url::from_file_path(
       font_path
         .parent()

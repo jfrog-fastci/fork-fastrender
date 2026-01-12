@@ -46,7 +46,11 @@ fn anchor_size_parses_axis_optional_name_and_fallback() {
   let styled = styled_tree_for(html);
   let target = find_by_id(&styled, "target").expect("target element");
 
-  let width = target.styles.width_anchor_size.as_ref().expect("width anchor-size");
+  let width = target
+    .styles
+    .width_anchor_size
+    .as_ref()
+    .expect("width anchor-size");
   assert_eq!(width.axis, AnchorSizeAxis::Width);
   assert!(width.name.is_none());
   assert!(width.fallback.is_none());
@@ -93,7 +97,11 @@ fn anchor_size_parses_spec_axes_and_axis_omission() {
   let styled = styled_tree_for(html);
   let target = find_by_id(&styled, "target").expect("target element");
 
-  let width = target.styles.width_anchor_size.as_ref().expect("width anchor-size");
+  let width = target
+    .styles
+    .width_anchor_size
+    .as_ref()
+    .expect("width anchor-size");
   assert_eq!(width.axis, AnchorSizeAxis::Omitted);
   assert!(width.name.is_none());
 

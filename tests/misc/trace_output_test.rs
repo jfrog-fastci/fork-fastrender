@@ -10,8 +10,8 @@ fn trace_file_includes_pipeline_events() {
     .name("trace_file_includes_pipeline_events".to_string())
     .stack_size(STACK_SIZE)
     .spawn(|| {
-       let dir = tempfile::tempdir().expect("tempdir");
-       let trace_path = dir.path().join("trace.json");
+      let dir = tempfile::tempdir().expect("tempdir");
+      let trace_path = dir.path().join("trace.json");
 
       // Force the display-list paint backend so trace output coverage doesn't depend on ambient
       // environment variables (and so regressions in the display-list pipeline are caught).

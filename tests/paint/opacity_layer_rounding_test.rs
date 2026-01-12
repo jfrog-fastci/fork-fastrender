@@ -3,7 +3,9 @@ use tiny_skia::Pixmap;
 
 fn render(html: &str, width: u32, height: u32) -> Pixmap {
   let mut renderer = create_stacking_context_bounds_renderer();
-  renderer.render_html(html, width, height).expect("render html")
+  renderer
+    .render_html(html, width, height)
+    .expect("render html")
 }
 
 fn color_at(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
@@ -56,4 +58,3 @@ fn opacity_layers_source_over_match_chrome_without_dither() {
   assert_gray_strip(&pixmap, 20, 127); // opacity 0.5 -> alpha 128
   assert_gray_strip(&pixmap, 30, 64); // opacity 0.75 -> alpha 191
 }
-

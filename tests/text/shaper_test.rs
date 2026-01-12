@@ -89,7 +89,10 @@ fn bidi_format_chars_do_not_break_fi_ligature() {
     "expected bundled sans-serif fallback ({}) to form the default \"fi\" ligature",
     baseline_family
   );
-  assert_ne!(baseline.glyphs[0].glyph_id, 0, "ligature glyph must not be .notdef");
+  assert_ne!(
+    baseline.glyphs[0].glyph_id, 0,
+    "ligature glyph must not be .notdef"
+  );
 
   let baseline_sig = glyph_signature(&baseline);
 
@@ -131,7 +134,11 @@ fn bidi_format_chars_remap_clusters_to_original_text() {
 
   let baseline = shape_single_run("ab", &style, &font_ctx);
   let baseline_family = baseline.font.family.clone();
-  assert_eq!(baseline.glyphs.len(), 2, "expected one glyph per character for \"ab\"");
+  assert_eq!(
+    baseline.glyphs.len(),
+    2,
+    "expected one glyph per character for \"ab\""
+  );
   let baseline_ids: Vec<u32> = baseline.glyphs.iter().map(|g| g.glyph_id).collect();
 
   for (label, text) in [

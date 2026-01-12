@@ -45,4 +45,3 @@ fn box_shadow_outset_does_not_fill_transparent_interior() {
     shadow
   );
 }
-

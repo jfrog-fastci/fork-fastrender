@@ -71,4 +71,3 @@ pub(crate) fn normalize_url_reference_for_resolution(reference: &str) -> Cow<'_,
   };
   tolerant_encode_path_query_fragment(reference, start)
 }
-

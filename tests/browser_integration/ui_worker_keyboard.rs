@@ -1,10 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::interaction::KeyAction;
 use super::support::{
   create_tab_msg, key_action, navigate_msg, pointer_down, pointer_up, viewport_changed_msg,
   DEFAULT_TIMEOUT,
 };
+use fastrender::interaction::KeyAction;
 use fastrender::ui::messages::{
   NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
@@ -38,7 +38,10 @@ fn recv_until<T>(
   }
 }
 
-fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messages::RenderedFrame {
+fn wait_for_frame_ready(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> fastrender::ui::messages::RenderedFrame {
   recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => Some(frame),
     _ => None,
@@ -245,13 +248,10 @@ fn backspace_edits_focused_input_and_repaints() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-keyboard-backspace").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-keyboard-backspace").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
     .expect("ViewportChanged");
@@ -277,9 +277,7 @@ fn backspace_edits_focused_input_and_repaints() {
   // Real text editing is caret-based. The click above lands near the start of the input, so ensure
   // the caret is at the end before we press backspace (matching what the old "delete-at-end"
   // semantics were asserting).
-  ui_tx
-    .send(key_action(tab_id, KeyAction::End))
-    .expect("End");
+  ui_tx.send(key_action(tab_id, KeyAction::End)).expect("End");
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
   ui_tx
@@ -300,9 +298,7 @@ fn delete_edits_focused_input_selection_and_repaints() {
   let handle = spawn_ui_worker("fastr-ui-worker-keyboard-delete").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
     .expect("ViewportChanged");
@@ -350,9 +346,7 @@ fn focus_does_not_inject_data_fastr_focus_attribute() {
     spawn_ui_worker("fastr-ui-worker-keyboard-focus-regression").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
     .expect("ViewportChanged");
@@ -388,13 +382,10 @@ fn key_action_sets_focus_visible() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-keyboard-focus-visible").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-keyboard-focus-visible").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
     .expect("ViewportChanged");
@@ -434,13 +425,10 @@ fn tab_and_shift_tab_traverse_focus_and_wrap_in_ui_worker() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_tab_traversal_page();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-keyboard-tab-traversal").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-keyboard-tab-traversal").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (120, 120), 1.0))
     .expect("ViewportChanged");

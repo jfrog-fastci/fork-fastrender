@@ -33,4 +33,3 @@ fn transform_stacking_context_paints_above_in_flow_blocks() {
   // Region only covered by the second element (y=100..150) should remain blue.
   assert_eq!(pixel(&pixmap, 50, 125), [0, 0, 255, 255]);
 }
-

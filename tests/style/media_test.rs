@@ -8,8 +8,8 @@ use fastrender::debug::runtime::with_thread_runtime_toggles;
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::style::media::ColorScheme;
 use fastrender::style::media::ContrastPreference;
-use fastrender::style::media::DynamicRange;
 use fastrender::style::media::DisplayMode;
+use fastrender::style::media::DynamicRange;
 use fastrender::style::media::LightLevel;
 use fastrender::style::media::MediaContext;
 use fastrender::style::media::MediaQuery;
@@ -911,8 +911,9 @@ fn fastrender_scripting_enabled_config_reports_scripting_enabled() {
     <div id="mq-enabled">mq-enabled</div>
   "#;
 
-  let mut renderer = FastRender::with_config(FastRenderConfig::new().with_dom_scripting_enabled(true))
-    .expect("renderer");
+  let mut renderer =
+    FastRender::with_config(FastRenderConfig::new().with_dom_scripting_enabled(true))
+      .expect("renderer");
   let dom = renderer.parse_html(html).expect("parse");
   let tree = renderer.layout_document(&dom, 200, 100).expect("layout");
   let mut texts = Vec::new();

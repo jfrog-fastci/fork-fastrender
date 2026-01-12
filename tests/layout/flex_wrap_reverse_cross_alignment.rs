@@ -343,7 +343,8 @@ fn layout_wrap_reverse_vertical_writing_mode_rtl_column_align_items(
   tall_style.height = Some(Length::px(20.0));
   tall_style.height_keyword = None;
   tall_style.flex_shrink = 0.0;
-  let mut tall_child = BoxNode::new_block(Arc::new(tall_style), FormattingContextType::Block, vec![]);
+  let mut tall_child =
+    BoxNode::new_block(Arc::new(tall_style), FormattingContextType::Block, vec![]);
   tall_child.id = 1;
 
   let mut short_style = ComputedStyle::default();
@@ -1096,7 +1097,8 @@ fn flex_wrap_reverse_rtl_column_align_items_start_uses_inline_start_within_line(
   wide_style.height = Some(Length::px(10.0));
   wide_style.height_keyword = None;
   wide_style.flex_shrink = 0.0;
-  let mut wide_child = BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
+  let mut wide_child =
+    BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
   wide_child.id = 1;
 
   let mut narrow_style = ComputedStyle::default();
@@ -1181,7 +1183,8 @@ fn flex_wrap_reverse_rtl_column_align_items_flex_start_uses_cross_start_within_l
   wide_style.height = Some(Length::px(10.0));
   wide_style.height_keyword = None;
   wide_style.flex_shrink = 0.0;
-  let mut wide_child = BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
+  let mut wide_child =
+    BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
   wide_child.id = 1;
 
   let mut narrow_style = ComputedStyle::default();
@@ -1432,7 +1435,8 @@ fn flex_wrap_rtl_column_align_items_start_uses_inline_start_within_line() {
   wide_style.height = Some(Length::px(10.0));
   wide_style.height_keyword = None;
   wide_style.flex_shrink = 0.0;
-  let mut wide_child = BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
+  let mut wide_child =
+    BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
   wide_child.id = 1;
 
   let mut narrow_style = ComputedStyle::default();
@@ -1517,7 +1521,8 @@ fn flex_wrap_rtl_column_align_items_end_uses_inline_end_within_line() {
   wide_style.height = Some(Length::px(10.0));
   wide_style.height_keyword = None;
   wide_style.flex_shrink = 0.0;
-  let mut wide_child = BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
+  let mut wide_child =
+    BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
   wide_child.id = 1;
 
   let mut narrow_style = ComputedStyle::default();
@@ -1970,7 +1975,8 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_items_end_uses_inline_end_wi
 }
 
 #[test]
-fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_start_packs_lines_to_inline_start() {
+fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_start_packs_lines_to_inline_start(
+) {
   for writing_mode in [
     WritingMode::VerticalRl,
     WritingMode::VerticalLr,
@@ -1998,7 +2004,8 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_start_packs_
 }
 
 #[test]
-fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_start_packs_lines_to_cross_start() {
+fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_start_packs_lines_to_cross_start(
+) {
   for writing_mode in [
     WritingMode::VerticalRl,
     WritingMode::VerticalLr,
@@ -2026,7 +2033,8 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_start_p
 }
 
 #[test]
-fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_end_packs_lines_to_inline_end() {
+fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_end_packs_lines_to_inline_end()
+{
   for writing_mode in [
     WritingMode::VerticalRl,
     WritingMode::VerticalLr,
@@ -2054,7 +2062,8 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_end_packs_li
 }
 
 #[test]
-fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_end_packs_lines_to_cross_end() {
+fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_end_packs_lines_to_cross_end(
+) {
   for writing_mode in [
     WritingMode::VerticalRl,
     WritingMode::VerticalLr,
@@ -2082,7 +2091,8 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_end_pac
 }
 
 #[test]
-fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_start_uses_inline_start_within_line() {
+fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_start_uses_inline_start_within_line(
+) {
   for writing_mode in [
     WritingMode::VerticalRl,
     WritingMode::VerticalLr,
@@ -2110,7 +2120,8 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_start_uses_inl
 }
 
 #[test]
-fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_start_uses_cross_start_within_line() {
+fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_start_uses_cross_start_within_line(
+) {
   for writing_mode in [
     WritingMode::VerticalRl,
     WritingMode::VerticalLr,
@@ -2138,7 +2149,8 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_start_use
 }
 
 #[test]
-fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_end_uses_inline_end_within_line() {
+fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_end_uses_inline_end_within_line()
+{
   for writing_mode in [
     WritingMode::VerticalRl,
     WritingMode::VerticalLr,
@@ -2166,7 +2178,8 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_end_uses_inlin
 }
 
 #[test]
-fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_end_uses_cross_end_within_line() {
+fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_end_uses_cross_end_within_line(
+) {
   for writing_mode in [
     WritingMode::VerticalRl,
     WritingMode::VerticalLr,

@@ -17,12 +17,21 @@ use std::sync::Arc;
 fn find_abs_bounds_by_box_id(root: &fastrender::FragmentNode, box_id: usize) -> Option<Rect> {
   let mut stack = vec![(root, Point::ZERO)];
   while let Some((node, parent_origin)) = stack.pop() {
-    let abs_origin = Point::new(parent_origin.x + node.bounds.origin.x, parent_origin.y + node.bounds.origin.y);
+    let abs_origin = Point::new(
+      parent_origin.x + node.bounds.origin.x,
+      parent_origin.y + node.bounds.origin.y,
+    );
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -61,7 +70,8 @@ fn image_node(id: usize, size: Size, writing_mode: WritingMode) -> BoxNode {
 }
 
 #[test]
-fn abspos_descendant_inside_positioned_inline_wrapper_in_vertical_writing_mode_uses_wrapper_padding_box() {
+fn abspos_descendant_inside_positioned_inline_wrapper_in_vertical_writing_mode_uses_wrapper_padding_box(
+) {
   // Regression coverage for the historical coordinate-space mismatch between block/inline layout
   // when `writing-mode` is vertical (block axis is horizontal).
   //
@@ -146,4 +156,3 @@ fn abspos_descendant_inside_positioned_inline_wrapper_in_vertical_writing_mode_u
     abs_bounds
   );
 }
-

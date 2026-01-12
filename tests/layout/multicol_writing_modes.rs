@@ -57,8 +57,7 @@ fn multicol_vertical_rl_with_horizontal_child_writing_mode_advances_in_block_axi
   first_style.writing_mode = WritingMode::HorizontalTb;
   first_style.width = Some(Length::px(200.0));
   first_style.height = Some(Length::px(20.0));
-  let mut first =
-    BoxNode::new_block(Arc::new(first_style), FormattingContextType::Flex, vec![]);
+  let mut first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Flex, vec![]);
   first.id = 1;
 
   let mut second_style = ComputedStyle::default();
@@ -66,11 +65,14 @@ fn multicol_vertical_rl_with_horizontal_child_writing_mode_advances_in_block_axi
   second_style.writing_mode = WritingMode::VerticalRl;
   second_style.width = Some(Length::px(200.0));
   second_style.height = Some(Length::px(20.0));
-  let mut second =
-    BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let mut second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
   second.id = 2;
 
-  let mut root = BoxNode::new_block(parent_style, FormattingContextType::Block, vec![first, second]);
+  let mut root = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![first, second],
+  );
   root.id = 100;
 
   let fc = BlockFormattingContext::new();
@@ -88,13 +90,27 @@ fn multicol_vertical_rl_with_horizontal_child_writing_mode_advances_in_block_axi
 
   let first_frags = fragments_with_id(&fragment, 1);
   let second_frags = fragments_with_id(&fragment, 2);
-  assert_eq!(first_frags.len(), 1, "expected exactly one fragment for first child");
-  assert_eq!(second_frags.len(), 1, "expected exactly one fragment for second child");
+  assert_eq!(
+    first_frags.len(),
+    1,
+    "expected exactly one fragment for first child"
+  );
+  assert_eq!(
+    second_frags.len(),
+    1,
+    "expected exactly one fragment for second child"
+  );
   let first_frag = first_frags[0];
   let second_frag = second_frags[0];
 
-  assert_eq!(first_frag.fragment_index, 0, "first child should be in column 0");
-  assert_eq!(second_frag.fragment_index, 1, "second child should be in column 1");
+  assert_eq!(
+    first_frag.fragment_index, 0,
+    "first child should be in column 0"
+  );
+  assert_eq!(
+    second_frag.fragment_index, 1,
+    "second child should be in column 1"
+  );
   assert!(
     (first_frag.bounds.y() - 0.0).abs() < 0.1,
     "first column should start at y=0 (got y={})",
@@ -131,19 +147,21 @@ fn multicol_horizontal_with_vertical_child_writing_mode_advances_in_block_axis()
   first_style.writing_mode = WritingMode::VerticalRl;
   first_style.width = Some(Length::px(20.0));
   first_style.height = Some(Length::px(200.0));
-  let mut first =
-    BoxNode::new_block(Arc::new(first_style), FormattingContextType::Flex, vec![]);
+  let mut first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Flex, vec![]);
   first.id = 1;
 
   let mut second_style = ComputedStyle::default();
   second_style.display = Display::Block;
   second_style.writing_mode = WritingMode::HorizontalTb;
   second_style.height = Some(Length::px(20.0));
-  let mut second =
-    BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let mut second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
   second.id = 2;
 
-  let mut root = BoxNode::new_block(parent_style, FormattingContextType::Block, vec![first, second]);
+  let mut root = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![first, second],
+  );
   root.id = 200;
 
   let fc = BlockFormattingContext::new();
@@ -161,13 +179,27 @@ fn multicol_horizontal_with_vertical_child_writing_mode_advances_in_block_axis()
 
   let first_frags = fragments_with_id(&fragment, 1);
   let second_frags = fragments_with_id(&fragment, 2);
-  assert_eq!(first_frags.len(), 1, "expected exactly one fragment for first child");
-  assert_eq!(second_frags.len(), 1, "expected exactly one fragment for second child");
+  assert_eq!(
+    first_frags.len(),
+    1,
+    "expected exactly one fragment for first child"
+  );
+  assert_eq!(
+    second_frags.len(),
+    1,
+    "expected exactly one fragment for second child"
+  );
   let first_frag = first_frags[0];
   let second_frag = second_frags[0];
 
-  assert_eq!(first_frag.fragment_index, 0, "first child should be in column 0");
-  assert_eq!(second_frag.fragment_index, 1, "second child should be in column 1");
+  assert_eq!(
+    first_frag.fragment_index, 0,
+    "first child should be in column 0"
+  );
+  assert_eq!(
+    second_frag.fragment_index, 1,
+    "second child should be in column 1"
+  );
   assert!(
     (first_frag.bounds.x() - 0.0).abs() < 0.1,
     "first column should start at x=0 (got x={})",

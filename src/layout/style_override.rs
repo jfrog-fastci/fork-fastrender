@@ -132,10 +132,7 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut FxHasher) {
   }
 }
 
-fn hash_anchor_function(
-  func: &crate::style::types::AnchorFunction,
-  hasher: &mut FxHasher,
-) {
+fn hash_anchor_function(func: &crate::style::types::AnchorFunction, hasher: &mut FxHasher) {
   match &func.name {
     Some(name) => {
       1u8.hash(hasher);
@@ -171,7 +168,9 @@ fn hash_intrinsic_size_keyword(keyword: &IntrinsicSizeKeyword, hasher: &mut FxHa
     IntrinsicSizeKeyword::CalcSize(calc) => {
       hash_enum_discriminant(&calc.basis, hasher);
       match calc.basis {
-        crate::style::types::CalcSizeBasis::FitContent { limit } => hash_option_length(&limit, hasher),
+        crate::style::types::CalcSizeBasis::FitContent { limit } => {
+          hash_option_length(&limit, hasher)
+        }
         crate::style::types::CalcSizeBasis::Length(len) => hash_length(&len, hasher),
         _ => {}
       }

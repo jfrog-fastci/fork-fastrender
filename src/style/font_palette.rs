@@ -80,9 +80,11 @@ pub fn resolve_font_palette_for_font(
           a: 1.0,
           ..current_color
         },
-        _ => ov
-          .color
-          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark_color_scheme, forced_colors),
+        _ => ov.color.to_rgba_with_scheme_and_forced_colors(
+          current_color,
+          is_dark_color_scheme,
+          forced_colors,
+        ),
       };
       (ov.index, resolved)
     })

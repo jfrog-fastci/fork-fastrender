@@ -8,9 +8,9 @@ use fastrender::style::types::LineHeight;
 use fastrender::style::values::Length;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
+use fastrender::FormattingContextType;
 use fastrender::FragmentContent;
 use fastrender::FragmentNode;
-use fastrender::FormattingContextType;
 use std::sync::Arc;
 
 fn assert_approx(actual: f32, expected: f32, label: &str) {
@@ -111,7 +111,11 @@ fn grid_baseline_aligned_items_increase_auto_row_size() {
     .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
     .expect("layout succeeds");
 
-  assert_eq!(fragment.children.len(), 2, "grid should have two item fragments");
+  assert_eq!(
+    fragment.children.len(),
+    2,
+    "grid should have two item fragments"
+  );
   let a = &fragment.children[0];
   let b = &fragment.children[1];
 

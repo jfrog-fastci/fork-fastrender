@@ -1,4 +1,6 @@
-use super::util::{create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy};
+use super::util::{
+  create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
+};
 use fastrender::Pixmap;
 
 fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {

@@ -61,10 +61,7 @@ fn for_each_attribute<'a>(
     }
 
     let name_start = i;
-    while i < bytes.len()
-      && !bytes[i].is_ascii_whitespace()
-      && bytes[i] != b'='
-      && bytes[i] != b'>'
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>'
     {
       i += 1;
     }
@@ -86,9 +83,7 @@ fn for_each_attribute<'a>(
         i += 1;
       }
 
-      if i + 1 < bytes.len()
-        && bytes[i] == b'\\'
-        && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
+      if i + 1 < bytes.len() && bytes[i] == b'\\' && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
       {
         let quote = bytes[i + 1];
         i += 2;
@@ -498,7 +493,7 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
         let start = i;
         while i < bytes.len() {
           let b = bytes[i];
-          if b.is_ascii_whitespace() || matches!(b, b';' | b')' | b',' ) {
+          if b.is_ascii_whitespace() || matches!(b, b';' | b')' | b',') {
             break;
           }
           i += 1;
@@ -1111,9 +1106,7 @@ mod tests {
   #[test]
   fn preserves_non_ascii_whitespace_in_meta_refresh_url() {
     let nbsp = "\u{00A0}";
-    let html = format!(
-      r#"<meta http-equiv="refresh" content="0; url={nbsp}/fallback.html">"#
-    );
+    let html = format!(r#"<meta http-equiv="refresh" content="0; url={nbsp}/fallback.html">"#);
     assert_eq!(
       extract_meta_refresh_url(&html),
       Some(format!("{nbsp}/fallback.html"))

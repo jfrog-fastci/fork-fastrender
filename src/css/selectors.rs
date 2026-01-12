@@ -307,7 +307,10 @@ impl<'a> SlotAssignmentMap<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportedPartTarget {
   Element(usize),
-  Pseudo { node_id: usize, pseudo: PseudoElement },
+  Pseudo {
+    node_id: usize,
+    pseudo: PseudoElement,
+  },
 }
 
 /// Mapping from shadow hosts to their resolved part element maps.
@@ -317,10 +320,7 @@ pub struct PartExportMap {
 }
 
 impl PartExportMap {
-  pub fn exports_for_host(
-    &self,
-    host: usize,
-  ) -> Option<&HashMap<String, Vec<ExportedPartTarget>>> {
+  pub fn exports_for_host(&self, host: usize) -> Option<&HashMap<String, Vec<ExportedPartTarget>>> {
     self.hosts.get(&host)
   }
 
@@ -909,7 +909,10 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => true,
       // Progress and meter pseudo-elements (vendor-only today).
-      "-webkit-progress-bar" | "-webkit-progress-value" | "-moz-progress-bar" | "-khtml-progress-bar" => true,
+      "-webkit-progress-bar"
+      | "-webkit-progress-value"
+      | "-moz-progress-bar"
+      | "-khtml-progress-bar" => true,
       "-webkit-meter-bar"
       | "-webkit-meter-optimum-value"
       | "-webkit-meter-suboptimum-value"
@@ -1220,9 +1223,11 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     if parsing_has_argument() {
       return Err(parser.new_custom_error(SelectorParseErrorKind::InvalidState));
     }
-    Err(parser.new_custom_error(
-      SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name),
-    ))
+    Err(
+      parser.new_custom_error(SelectorParseErrorKind::UnsupportedPseudoClassOrElement(
+        name,
+      )),
+    )
   }
 
   fn parse_is_and_where(&self) -> bool {
@@ -1886,7 +1891,10 @@ mod tests {
       pseudo_for("input::-webkit-slider-thumb"),
       PseudoElement::SliderThumb
     );
-    assert_eq!(pseudo_for("input::slider-thumb"), PseudoElement::SliderThumb);
+    assert_eq!(
+      pseudo_for("input::slider-thumb"),
+      PseudoElement::SliderThumb
+    );
     assert_eq!(
       pseudo_for("input::-moz-range-thumb"),
       PseudoElement::SliderThumb
@@ -1897,7 +1905,10 @@ mod tests {
       pseudo_for("input::-webkit-slider-runnable-track"),
       PseudoElement::SliderTrack
     );
-    assert_eq!(pseudo_for("input::slider-track"), PseudoElement::SliderTrack);
+    assert_eq!(
+      pseudo_for("input::slider-track"),
+      PseudoElement::SliderTrack
+    );
     assert_eq!(
       pseudo_for("input::-moz-range-track"),
       PseudoElement::SliderTrack
@@ -2444,10 +2455,16 @@ mod tests {
   #[test]
   fn to_css_serializes_pseudo_elements() {
     let list = parse_selector_list("div::slotted(.foo)");
-    assert_eq!(list.slice().first().unwrap().to_css_string(), "div::slotted(.foo)");
+    assert_eq!(
+      list.slice().first().unwrap().to_css_string(),
+      "div::slotted(.foo)"
+    );
 
     let list = parse_selector_list("button::part(name)");
-    assert_eq!(list.slice().first().unwrap().to_css_string(), "button::part(name)");
+    assert_eq!(
+      list.slice().first().unwrap().to_css_string(),
+      "button::part(name)"
+    );
 
     assert_eq!(PseudoElement::Placeholder.to_css_string(), "::placeholder");
     assert_eq!(

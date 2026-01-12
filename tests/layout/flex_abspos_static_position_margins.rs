@@ -15,7 +15,12 @@ fn abspos_x(fragment: &FragmentNode) -> f32 {
   fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute fragment present")
     .bounds
     .x()

@@ -1,5 +1,8 @@
 use fastrender::geometry::{Point, Size};
-use fastrender::{AbsoluteLayout, AbsoluteLayoutInput, ContainingBlock, EdgeOffsets, LengthOrAuto, Position, PositionedStyle};
+use fastrender::{
+  AbsoluteLayout, AbsoluteLayoutInput, ContainingBlock, EdgeOffsets, LengthOrAuto, Position,
+  PositionedStyle,
+};
 
 fn default_style() -> PositionedStyle {
   PositionedStyle {

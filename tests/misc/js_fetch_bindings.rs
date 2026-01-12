@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use rquickjs::{Context, Runtime};
 
 use fastrender::resource::{
-  origin_from_url, FetchCredentialsMode, FetchDestination, FetchedResource,
-  HttpRequest, ReferrerPolicy, ResourceFetcher,
+  origin_from_url, FetchCredentialsMode, FetchDestination, FetchedResource, HttpRequest,
+  ReferrerPolicy, ResourceFetcher,
 };
 
 #[path = "../../src/js/legacy/quickjs/fetch.rs"]
@@ -32,7 +32,11 @@ struct StubFetcher {
 
 impl StubFetcher {
   fn with_response(mut self, url: &str, resource: FetchedResource) -> Self {
-    self.responses.get_mut().unwrap().insert(url.to_string(), resource);
+    self
+      .responses
+      .get_mut()
+      .unwrap()
+      .insert(url.to_string(), resource);
     self
   }
 
@@ -81,12 +85,10 @@ fn drain_promise_jobs(rt: &Runtime) -> Result<(), String> {
 
 #[test]
 fn fetch_text_roundtrip() {
-  let fetcher = Arc::new(
-    StubFetcher::default().with_response(
-      "https://client.example/hello",
-      FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string())),
-    ),
-  );
+  let fetcher = Arc::new(StubFetcher::default().with_response(
+    "https://client.example/hello",
+    FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string())),
+  ));
 
   let rt = Runtime::new().unwrap();
   let ctx = Context::full(&rt).unwrap();
@@ -181,12 +183,10 @@ fn headers_methods_and_iteration_are_spec_shaped() {
 
 #[test]
 fn request_init_propagates_to_fetcher() {
-  let fetcher = Arc::new(
-    StubFetcher::default().with_response(
-      "https://client.example/echo",
-      FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string())),
-    ),
-  );
+  let fetcher = Arc::new(StubFetcher::default().with_response(
+    "https://client.example/echo",
+    FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string())),
+  ));
 
   let rt = Runtime::new().unwrap();
   let ctx = Context::full(&rt).unwrap();
@@ -234,7 +234,10 @@ fn request_init_propagates_to_fetcher() {
   assert_eq!(captured.credentials_mode, FetchCredentialsMode::Include);
   assert_eq!(captured.method, "POST");
   assert!(
-    captured.headers.iter().any(|(k, v)| k == "x-test" && v == "hello"),
+    captured
+      .headers
+      .iter()
+      .any(|(k, v)| k == "x-test" && v == "hello"),
     "missing user header in {:?}",
     captured.headers
   );
@@ -243,13 +246,11 @@ fn request_init_propagates_to_fetcher() {
 
 #[test]
 fn cors_failure_rejects_with_type_error() {
-  let fetcher = Arc::new(
-    StubFetcher::default().with_response(
-      "https://other.example/res",
-      // Missing access_control_allow_origin triggers CORS rejection.
-      FetchedResource::new(b"blocked".to_vec(), Some("text/plain".to_string())),
-    ),
-  );
+  let fetcher = Arc::new(StubFetcher::default().with_response(
+    "https://other.example/res",
+    // Missing access_control_allow_origin triggers CORS rejection.
+    FetchedResource::new(b"blocked".to_vec(), Some("text/plain".to_string())),
+  ));
 
   let rt = Runtime::new().unwrap();
   let ctx = Context::full(&rt).unwrap();
@@ -296,12 +297,10 @@ fn cors_failure_rejects_with_type_error() {
 
 #[test]
 fn response_body_used_rejects_second_consumption() {
-  let fetcher = Arc::new(
-    StubFetcher::default().with_response(
-      "https://client.example/once",
-      FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string())),
-    ),
-  );
+  let fetcher = Arc::new(StubFetcher::default().with_response(
+    "https://client.example/once",
+    FetchedResource::new(b"hello".to_vec(), Some("text/plain".to_string())),
+  ));
 
   let rt = Runtime::new().unwrap();
   let ctx = Context::full(&rt).unwrap();

@@ -92,8 +92,11 @@ pub trait ScriptExecutor: Sized {
 ///
 /// HTML queues these as element tasks on the DOM manipulation task source.
 pub trait ScriptEventDispatcher: Sized {
-  fn dispatch_script_event(&mut self, event: ScriptElementEvent, spec: &ScriptElementSpec)
-    -> Result<()>;
+  fn dispatch_script_event(
+    &mut self,
+    event: ScriptElementEvent,
+    spec: &ScriptElementSpec,
+  ) -> Result<()>;
 }
 
 struct DeferredScript {
@@ -430,17 +433,19 @@ where
 
       if spec.parser_inserted {
         // Parser-inserted module scripts without `async` execute after parsing completes (defer-like).
-        self
-          .defer_scripts
-          .push(DeferredScript { spec: Some(spec), source: Some(source) });
+        self.defer_scripts.push(DeferredScript {
+          spec: Some(spec),
+          source: Some(source),
+        });
         self.queue_ready_deferred(event_loop)?;
         return Ok(());
       }
 
       // Dynamic module scripts without `async` execute in insertion order as soon as possible.
-      self
-        .module_in_order_scripts
-        .push(InOrderAsapScript { spec: Some(spec), source: Some(source) });
+      self.module_in_order_scripts.push(InOrderAsapScript {
+        spec: Some(spec),
+        source: Some(source),
+      });
       self.queue_ready_module_in_order(event_loop)?;
       return Ok(());
     }
@@ -483,15 +488,19 @@ where
 
     if spec.parser_inserted {
       let idx = self.defer_scripts.len();
-      self.defer_scripts.push(DeferredScript { spec: Some(spec), source: None });
+      self.defer_scripts.push(DeferredScript {
+        spec: Some(spec),
+        source: None,
+      });
       self.defer_by_handle.insert(handle, idx);
       return Ok(());
     }
 
     let idx = self.module_in_order_scripts.len();
-    self
-      .module_in_order_scripts
-      .push(InOrderAsapScript { spec: Some(spec), source: None });
+    self.module_in_order_scripts.push(InOrderAsapScript {
+      spec: Some(spec),
+      source: None,
+    });
     self.module_in_order_by_handle.insert(handle, idx);
     Ok(())
   }
@@ -595,10 +604,9 @@ where
           self.next_in_order_asap_to_queue
         ),
       )?;
-      let spec = entry
-        .spec
-        .take()
-        .ok_or_else(|| Error::Other("internal error: in-order-asap script missing spec".to_string()))?;
+      let spec = entry.spec.take().ok_or_else(|| {
+        Error::Other("internal error: in-order-asap script missing spec".to_string())
+      })?;
       self.next_in_order_asap_to_queue += 1;
       self.queue_script_task(event_loop, spec, source)?;
     }
@@ -901,7 +909,10 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
   }
 
   pub fn with_options(options: JsExecutionOptions) -> Self {
-    Self { options, ..Self::default() }
+    Self {
+      options,
+      ..Self::default()
+    }
   }
 
   pub fn set_options(&mut self, options: JsExecutionOptions) {
@@ -978,7 +989,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
     if !element.src_attr_present && element.inline_text.is_empty() {
       return Ok(DiscoveredScript { id, actions });
     }
- 
+
     match element.script_type {
       ScriptType::Classic => {
         if element.src_attr_present {
@@ -1042,7 +1053,10 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
           // Only parser-inserted blocking scripts are allowed to block parsing.
           if mode == ExternalMode::Blocking {
-            actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id, node_id });
+            actions.push(ScriptSchedulerAction::BlockParserUntilExecuted {
+              script_id: id,
+              node_id,
+            });
           }
         } else {
           // Inline classic scripts execute synchronously during preparation (HTML "prepare a
@@ -1189,7 +1203,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         return Ok(DiscoveredScript { id, actions });
       }
     }
- 
+
     Ok(DiscoveredScript { id, actions })
   }
 
@@ -1360,7 +1374,10 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
   ///
   /// The scheduler does not currently surface the failure reason; the host is expected to dispatch
   /// an `error` event at the script element.
-  pub fn fetch_failed(&mut self, script_id: ScriptId) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
+  pub fn fetch_failed(
+    &mut self,
+    script_id: ScriptId,
+  ) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
     let mode = {
       let Some(entry) = self.scripts.get_mut(&script_id) else {
         return Err(Error::Other(format!(
@@ -1893,7 +1910,8 @@ mod tests {
   }
 
   #[test]
-  fn non_parser_inserted_external_scripts_execute_without_waiting_for_parsing_complete() -> Result<()> {
+  fn non_parser_inserted_external_scripts_execute_without_waiting_for_parsing_complete(
+  ) -> Result<()> {
     let mut host = TestHost::new(false);
     let mut event_loop = EventLoop::<TestHost>::new();
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
@@ -1941,12 +1959,16 @@ mod tests {
     scheduler.handle_script(
       &mut host,
       &mut event_loop,
-      external_script_dynamic("A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false),
+      external_script_dynamic(
+        "A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false,
+      ),
     )?;
     scheduler.handle_script(
       &mut host,
       &mut event_loop,
-      external_script_dynamic("B", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false),
+      external_script_dynamic(
+        "B", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false,
+      ),
     )?;
 
     // Complete out-of-order: B finishes before A.
@@ -1972,12 +1994,16 @@ mod tests {
     scheduler.handle_script(
       &mut host,
       &mut event_loop,
-      external_script_dynamic("A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false),
+      external_script_dynamic(
+        "A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false,
+      ),
     )?;
     scheduler.handle_script(
       &mut host,
       &mut event_loop,
-      external_script_dynamic("B", /* async_attr */ true, /* defer_attr */ false, /* force_async */ false),
+      external_script_dynamic(
+        "B", /* async_attr */ true, /* defer_attr */ false, /* force_async */ false,
+      ),
     )?;
 
     // B is async-like and can run before A if it completes first.
@@ -1999,12 +2025,16 @@ mod tests {
     scheduler.handle_script(
       &mut host,
       &mut event_loop,
-      external_script_dynamic("A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ true),
+      external_script_dynamic(
+        "A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ true,
+      ),
     )?;
     scheduler.handle_script(
       &mut host,
       &mut event_loop,
-      external_script_dynamic("B", /* async_attr */ false, /* defer_attr */ false, /* force_async */ true),
+      external_script_dynamic(
+        "B", /* async_attr */ false, /* defer_attr */ false, /* force_async */ true,
+      ),
     )?;
 
     // Async scripts execute in completion order.
@@ -2216,7 +2246,9 @@ mod tests {
     scheduler.handle_script(
       &mut host,
       &mut event_loop,
-      external_script("a1", /* async_attr */ true, /* defer_attr */ false),
+      external_script(
+        "a1", /* async_attr */ true, /* defer_attr */ false,
+      ),
     )?;
 
     host.loader.complete_url("a1", "a1");
@@ -2570,9 +2602,20 @@ mod state_machine_tests {
     scheduler: ScriptScheduler<u32>,
     event_loop: EventLoop<Host>,
     host: Host,
-    started_fetches: Vec<(ScriptId, u32, String, FetchDestination, FetchCredentialsMode)>,
-    started_module_graph_fetches:
-      Vec<(ScriptId, u32, Option<String>, FetchDestination, FetchCredentialsMode)>,
+    started_fetches: Vec<(
+      ScriptId,
+      u32,
+      String,
+      FetchDestination,
+      FetchCredentialsMode,
+    )>,
+    started_module_graph_fetches: Vec<(
+      ScriptId,
+      u32,
+      Option<String>,
+      FetchDestination,
+      FetchCredentialsMode,
+    )>,
     blocked_parser_on: Option<ScriptId>,
     script_type_by_id: HashMap<ScriptId, ScriptType>,
   }
@@ -2615,11 +2658,18 @@ mod state_machine_tests {
             destination,
             credentials_mode,
           } => {
-            self
-              .started_module_graph_fetches
-              .push((script_id, node_id, url, destination, credentials_mode));
+            self.started_module_graph_fetches.push((
+              script_id,
+              node_id,
+              url,
+              destination,
+              credentials_mode,
+            ));
           }
-          ScriptSchedulerAction::BlockParserUntilExecuted { script_id, node_id: _ } => {
+          ScriptSchedulerAction::BlockParserUntilExecuted {
+            script_id,
+            node_id: _,
+          } => {
             self.blocked_parser_on = Some(script_id);
           }
           ScriptSchedulerAction::ExecuteNow {
@@ -2686,9 +2736,9 @@ mod state_machine_tests {
 
     fn discover_dynamic(&mut self, element: ScriptElementSpec) -> Result<ScriptId> {
       let script_type = element.script_type;
-      let discovered = self
-        .scheduler
-        .discovered_script(element, /* node_id */ 1, /* base_url_at_discovery */ None)?;
+      let discovered = self.scheduler.discovered_script(
+        element, /* node_id */ 1, /* base_url_at_discovery */ None,
+      )?;
       let id = discovered.id;
       self.script_type_by_id.insert(id, script_type);
       self.apply_actions(discovered.actions)?;
@@ -2745,8 +2795,9 @@ mod state_machine_tests {
   fn non_parser_external_scripts_are_async_by_default_and_do_not_block_parsing() -> Result<()> {
     let mut h = Harness::new();
 
-    let script_id =
-      h.discover_dynamic(classic_external_dynamic("dyn.js", false, false, /* force_async */ true))?;
+    let script_id = h.discover_dynamic(classic_external_dynamic(
+      "dyn.js", false, false, /* force_async */ true,
+    ))?;
     assert_eq!(h.started_fetches.len(), 1);
     assert!(
       h.blocked_parser_on.is_none(),
@@ -2772,10 +2823,17 @@ mod state_machine_tests {
   ) -> Result<()> {
     let mut h = Harness::new();
 
-    let a = h.discover_dynamic(classic_external_dynamic("a.js", false, false, /* force_async */ false))?;
-    let b = h.discover_dynamic(classic_external_dynamic("b.js", false, false, /* force_async */ false))?;
+    let a = h.discover_dynamic(classic_external_dynamic(
+      "a.js", false, false, /* force_async */ false,
+    ))?;
+    let b = h.discover_dynamic(classic_external_dynamic(
+      "b.js", false, false, /* force_async */ false,
+    ))?;
 
-    assert!(h.blocked_parser_on.is_none(), "dynamic scripts must not block parsing");
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "dynamic scripts must not block parsing"
+    );
     assert_eq!(
       h.started_fetches
         .iter()
@@ -2808,8 +2866,12 @@ mod state_machine_tests {
   fn async_dynamic_external_scripts_can_execute_before_in_order_asap_scripts() -> Result<()> {
     let mut h = Harness::new();
 
-    let a = h.discover_dynamic(classic_external_dynamic("a.js", false, false, /* force_async */ false))?;
-    let b = h.discover_dynamic(classic_external_dynamic("b.js", true, false, /* force_async */ false))?;
+    let a = h.discover_dynamic(classic_external_dynamic(
+      "a.js", false, false, /* force_async */ false,
+    ))?;
+    let b = h.discover_dynamic(classic_external_dynamic(
+      "b.js", true, false, /* force_async */ false,
+    ))?;
 
     // B is async-like and can run before A if it completes first.
     h.fetch_complete(b, "B")?;
@@ -2832,8 +2894,12 @@ mod state_machine_tests {
   fn force_async_true_dynamic_external_scripts_behave_like_async() -> Result<()> {
     let mut h = Harness::new();
 
-    let a = h.discover_dynamic(classic_external_dynamic("a.js", false, false, /* force_async */ true))?;
-    let b = h.discover_dynamic(classic_external_dynamic("b.js", false, false, /* force_async */ true))?;
+    let a = h.discover_dynamic(classic_external_dynamic(
+      "a.js", false, false, /* force_async */ true,
+    ))?;
+    let b = h.discover_dynamic(classic_external_dynamic(
+      "b.js", false, false, /* force_async */ true,
+    ))?;
 
     // Async scripts execute in completion order.
     h.fetch_complete(b, "B")?;
@@ -2858,8 +2924,12 @@ mod state_machine_tests {
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
 
-    let a = h.discover_dynamic(module_external_dynamic("a.js", /* async_attr */ false, /* force_async */ true))?;
-    let b = h.discover_dynamic(module_external_dynamic("b.js", /* async_attr */ false, /* force_async */ true))?;
+    let a = h.discover_dynamic(module_external_dynamic(
+      "a.js", /* async_attr */ false, /* force_async */ true,
+    ))?;
+    let b = h.discover_dynamic(module_external_dynamic(
+      "b.js", /* async_attr */ false, /* force_async */ true,
+    ))?;
 
     assert!(
       h.blocked_parser_on.is_none(),
@@ -2909,8 +2979,12 @@ mod state_machine_tests {
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
 
-    let a = h.discover_dynamic(module_inline_dynamic("A", /* async_attr */ false, /* force_async */ false))?;
-    let b = h.discover_dynamic(module_inline_dynamic("B", /* async_attr */ false, /* force_async */ false))?;
+    let a = h.discover_dynamic(module_inline_dynamic(
+      "A", /* async_attr */ false, /* force_async */ false,
+    ))?;
+    let b = h.discover_dynamic(module_inline_dynamic(
+      "B", /* async_attr */ false, /* force_async */ false,
+    ))?;
 
     // Mark B ready first; it must not execute until A is ready.
     h.module_graph_ready(b, "B")?;
@@ -2933,7 +3007,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn parser_inserted_inline_module_scripts_are_deferred_by_default_until_parsing_completed() -> Result<()> {
+  fn parser_inserted_inline_module_scripts_are_deferred_by_default_until_parsing_completed(
+  ) -> Result<()> {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
@@ -2960,8 +3035,9 @@ mod state_machine_tests {
   fn non_parser_defer_attribute_is_ignored_and_still_runs_async() -> Result<()> {
     let mut h = Harness::new();
 
-    let script_id =
-      h.discover_dynamic(classic_external_dynamic("dyn.js", false, true, /* force_async */ true))?;
+    let script_id = h.discover_dynamic(classic_external_dynamic(
+      "dyn.js", false, true, /* force_async */ true,
+    ))?;
     assert_eq!(h.started_fetches.len(), 1);
     assert!(
       h.blocked_parser_on.is_none(),
@@ -3072,7 +3148,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn nomodule_applies_to_dynamic_inserted_scripts_too_when_module_scripts_supported() -> Result<()> {
+  fn nomodule_applies_to_dynamic_inserted_scripts_too_when_module_scripts_supported() -> Result<()>
+  {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
@@ -3122,7 +3199,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn module_scripts_with_empty_src_queue_error_even_when_module_scripts_not_supported() -> Result<()> {
+  fn module_scripts_with_empty_src_queue_error_even_when_module_scripts_not_supported() -> Result<()>
+  {
     let mut h = Harness::new();
 
     h.discover(module_external("", false))?;
@@ -3278,7 +3356,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn module_external_script_fetches_with_cors_and_same_origin_credentials_by_default() -> Result<()> {
+  fn module_external_script_fetches_with_cors_and_same_origin_credentials_by_default() -> Result<()>
+  {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
@@ -3386,7 +3465,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn dynamic_module_scripts_start_fetch_in_cors_mode_with_default_same_origin_credentials() -> Result<()> {
+  fn dynamic_module_scripts_start_fetch_in_cors_mode_with_default_same_origin_credentials(
+  ) -> Result<()> {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
@@ -3415,7 +3495,8 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn dynamic_async_module_script_crossorigin_use_credentials_sets_credentials_mode_include() -> Result<()> {
+  fn dynamic_async_module_script_crossorigin_use_credentials_sets_credentials_mode_include(
+  ) -> Result<()> {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
@@ -3695,8 +3776,12 @@ mod state_machine_tests {
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
 
-    let m1 = h.discover_dynamic(module_external_dynamic("m1.js", false, /* force_async */ false))?;
-    let m2 = h.discover_dynamic(module_external_dynamic("m2.js", false, /* force_async */ false))?;
+    let m1 = h.discover_dynamic(module_external_dynamic(
+      "m1.js", false, /* force_async */ false,
+    ))?;
+    let m2 = h.discover_dynamic(module_external_dynamic(
+      "m2.js", false, /* force_async */ false,
+    ))?;
     assert_eq!(
       h.started_module_graph_fetches,
       vec![
@@ -3797,8 +3882,10 @@ mod state_machine_tests {
       "expected importmap discovery not to start any module graph fetch"
     );
 
-    h.discover_dynamic(module_external_dynamic("m.js", /* async_attr */ false, /* force_async */ false))?;
+    h.discover_dynamic(module_external_dynamic(
+      "m.js", /* async_attr */ false, /* force_async */ false,
+    ))?;
     assert_eq!(h.started_module_graph_fetches.len(), 1);
     Ok(())
   }
-} 
+}

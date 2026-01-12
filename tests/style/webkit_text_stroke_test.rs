@@ -73,4 +73,3 @@ fn webkit_text_stroke_width_negative_value_is_ignored() {
     styles.webkit_text_stroke_width
   );
 }
-

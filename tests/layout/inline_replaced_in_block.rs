@@ -1,10 +1,13 @@
 use fastrender::style::display::Display;
 use fastrender::style::types::LineHeight;
 use fastrender::style::values::Length;
+use fastrender::text::font_loader::FontContext;
 use fastrender::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::text::font_loader::FontContext;
-use fastrender::{BoxNode, BoxTree, ComputedStyle, FontConfig, FormattingContextType, LayoutConfig, LayoutEngine, Size};
+use fastrender::{
+  BoxNode, BoxTree, ComputedStyle, FontConfig, FormattingContextType, LayoutConfig, LayoutEngine,
+  Size,
+};
 use std::sync::Arc;
 
 fn find_first_line<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
@@ -23,7 +26,11 @@ fn collect_replaced<'a>(node: &'a FragmentNode, out: &mut Vec<&'a FragmentNode>)
   }
 }
 
-fn collect_replaced_abs_y<'a>(node: &'a FragmentNode, parent_y: f32, out: &mut Vec<(f32, &'a FragmentNode)>) {
+fn collect_replaced_abs_y<'a>(
+  node: &'a FragmentNode,
+  parent_y: f32,
+  out: &mut Vec<(f32, &'a FragmentNode)>,
+) {
   let abs_y = parent_y + node.bounds.y();
   if matches!(node.content, FragmentContent::Replaced { .. }) {
     out.push((abs_y, node));
@@ -171,7 +178,10 @@ fn inline_replaced_line_boxes_include_strut_descent() {
   let tree = BoxTree::new(root);
 
   let font_context = FontContext::with_config(FontConfig::bundled_only());
-  let engine = LayoutEngine::with_font_context(LayoutConfig::for_viewport(Size::new(200.0, 400.0)), font_context);
+  let engine = LayoutEngine::with_font_context(
+    LayoutConfig::for_viewport(Size::new(200.0, 400.0)),
+    font_context,
+  );
   let fragments = engine.layout_tree(&tree).expect("layout");
 
   let mut replaced = Vec::new();

@@ -191,32 +191,32 @@ pub mod tree;
 // Supporting Modules
 // ============================================================================
 
+pub mod cli_utils;
 pub mod css;
 pub mod debug;
 pub mod dom;
 pub mod dom2;
-pub mod js;
-pub mod web;
-pub mod webidl;
 pub(crate) mod fallible_vec_writer;
 pub mod html;
 pub mod image_compare;
 pub mod image_loader;
 pub mod image_output;
-pub mod pageset;
-pub(crate) mod rayon_init;
-pub mod resource;
-pub(crate) mod url_normalize;
-pub mod svg;
-pub(crate) mod svg_path;
-pub(crate) mod thread_pool_cache;
+pub mod js;
 pub mod memory;
+pub mod pageset;
 pub mod process_limits;
 pub(crate) mod rayon_global;
-pub mod system;
-pub mod cli_utils;
+pub(crate) mod rayon_init;
+pub mod resource;
 #[path = "ui/select_dropdown.rs"]
 pub mod select_dropdown;
+pub mod svg;
+pub(crate) mod svg_path;
+pub mod system;
+pub(crate) mod thread_pool_cache;
+pub(crate) mod url_normalize;
+pub mod web;
+pub mod webidl;
 
 pub mod ui;
 // ============================================================================
@@ -224,18 +224,17 @@ pub mod ui;
 // ============================================================================
 
 // Main entry point
-pub use api::CascadeDiagnostics;
-pub use api::DiagnosticsLevel;
 pub use api::BrowserDocument;
+pub use api::BrowserDocument2;
 pub use api::BrowserDocumentDom2;
 pub use api::BrowserDocumentJs;
-pub use api::RunUntilStableOutcome;
-pub use api::RunUntilStableStopReason;
-pub use api::BrowserDocument2;
 pub use api::BrowserTab;
 pub use api::BrowserTabHost;
 pub use api::BrowserTabJsExecutor;
-pub use api::VmJsBrowserTabExecutor;
+pub use api::CascadeDiagnostics;
+pub use api::ConsoleMessage;
+pub use api::ConsoleMessageLevel;
+pub use api::DiagnosticsLevel;
 pub use api::FastRender;
 pub use api::FastRenderBuilder;
 pub use api::FastRenderConfig;
@@ -243,6 +242,7 @@ pub use api::FastRenderPool;
 pub use api::FastRenderPoolConfig;
 pub use api::FontCacheConfig;
 pub use api::ImageCacheConfig;
+pub use api::JsException;
 pub use api::LayoutArtifacts;
 pub use api::LayoutDiagnostics;
 pub use api::PaintDiagnostics;
@@ -255,9 +255,6 @@ pub use api::RenderArtifactRequest;
 pub use api::RenderArtifacts;
 pub use api::RenderCounts;
 pub use api::RenderDiagnostics;
-pub use api::JsException;
-pub use api::ConsoleMessage;
-pub use api::ConsoleMessageLevel;
 pub use api::RenderOptions;
 pub use api::RenderReport;
 pub use api::RenderResult;
@@ -266,6 +263,9 @@ pub use api::RenderStats;
 pub use api::ResourceDiagnostics;
 pub use api::ResourceFetchError;
 pub use api::ResourceKind;
+pub use api::RunUntilStableOutcome;
+pub use api::RunUntilStableStopReason;
+pub use api::VmJsBrowserTabExecutor;
 pub use compat::CompatProfile;
 pub use debug::inspect::{InspectQuery, InspectionSnapshot};
 pub use render_control::CancelCallback;
@@ -278,11 +278,11 @@ pub use css::types::Transform;
 // Debug tools
 pub use debug::snapshot::{
   assert_dom2_snapshot_eq, assert_dom2_snapshot_invariants, snapshot_box_tree, snapshot_dom,
-  snapshot_dom2, snapshot_dom_from_dom2, snapshot_fragment_tree, snapshot_pipeline, snapshot_styled,
-  BoxNodeSnapshot, BoxTreeSnapshot, DisplayItemSnapshot, DisplayListSnapshot, Dom2NodeKindSnapshot,
-  Dom2NodeSnapshot, Dom2Snapshot, DomNodeSnapshot, DomSnapshot, FragmentNodeSnapshot,
-  FragmentTreeSnapshot, PipelineSnapshot, QuirksModeSnapshot, SchemaVersion, StyledNodeSnapshot,
-  StyledSnapshot,
+  snapshot_dom2, snapshot_dom_from_dom2, snapshot_fragment_tree, snapshot_pipeline,
+  snapshot_styled, BoxNodeSnapshot, BoxTreeSnapshot, DisplayItemSnapshot, DisplayListSnapshot,
+  Dom2NodeKindSnapshot, Dom2NodeSnapshot, Dom2Snapshot, DomNodeSnapshot, DomSnapshot,
+  FragmentNodeSnapshot, FragmentTreeSnapshot, PipelineSnapshot, QuirksModeSnapshot, SchemaVersion,
+  StyledNodeSnapshot, StyledSnapshot,
 };
 pub use debug::tree_printer::{
   ColorMode, DiffMode, DotExporter, EnhancedTreePrinter, JsonExportConfig, PrintConfig, TreeDiff,

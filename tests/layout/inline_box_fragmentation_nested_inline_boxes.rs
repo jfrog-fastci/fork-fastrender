@@ -42,7 +42,10 @@ fn inline_box_fragmentation_splits_nested_inline_boxes() {
   em_style.font_style = fastrender::style::types::FontStyle::Italic;
   let em_style = Arc::new(em_style);
 
-  let em = BoxNode::new_inline(em_style.clone(), vec![BoxNode::new_text(em_style, "Vogue".to_string())]);
+  let em = BoxNode::new_inline(
+    em_style.clone(),
+    vec![BoxNode::new_text(em_style, "Vogue".to_string())],
+  );
 
   // Model the post-`</em>` text as an anonymous inline wrapper, matching the box tree patterns
   // produced by our HTML/CSS box generation.
@@ -86,4 +89,3 @@ fn inline_box_fragmentation_splits_nested_inline_boxes() {
     first_line_text
   );
 }
-

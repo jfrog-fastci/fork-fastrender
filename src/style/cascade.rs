@@ -146,8 +146,11 @@ use std::time::Instant;
 
 /// User-agent stylesheet containing default browser styles
 const USER_AGENT_STYLESHEET: &str = include_str!("../user_agent.css");
-const USER_AGENT_STYLESHEET_QUIRKS: &str =
-  concat!(include_str!("../user_agent.css"), "\n", include_str!("../user_agent_quirks.css"));
+const USER_AGENT_STYLESHEET_QUIRKS: &str = concat!(
+  include_str!("../user_agent.css"),
+  "\n",
+  include_str!("../user_agent_quirks.css")
+);
 static UA_STYLESHEET: OnceLock<StyleSheet> = OnceLock::new();
 static UA_STYLESHEET_QUIRKS: OnceLock<StyleSheet> = OnceLock::new();
 static DEFAULT_COMPUTED_STYLE: OnceLock<ComputedStyle> = OnceLock::new();
@@ -754,7 +757,9 @@ fn resolve_container_query_length(
           let resolved = match term.unit {
             LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
             u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
-            u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
+            u if u.is_viewport_relative() => {
+              Length::new(term.value, u).resolve_with_viewport(vw, vh)
+            }
             LengthUnit::Em => Some(term.value * font_px),
             LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
             LengthUnit::Cap => Some(term.value * font_px * 0.7),
@@ -2673,39 +2678,37 @@ fn eval_style_range(
     StyleRangeValue::Property(name) => name.eq_ignore_ascii_case("line-height"),
     _ => false,
   };
-  let coerce_line_height_percentage = |value: NumericValue,
-                                       operand: &StyleRangeValue,
-                                       font_size: f32|
-   -> NumericValue {
-    if value.ty != NumericType::Percentage {
-      return value;
-    }
-    match operand {
-      StyleRangeValue::Property(name) if name.eq_ignore_ascii_case("line-height") => {
-        let px = font_size * (value.value / 100.0);
-        if px.is_finite() && px >= 0.0 {
-          NumericValue {
-            ty: NumericType::LengthPx,
-            value: px,
-          }
-        } else {
-          value
-        }
+  let coerce_line_height_percentage =
+    |value: NumericValue, operand: &StyleRangeValue, font_size: f32| -> NumericValue {
+      if value.ty != NumericType::Percentage {
+        return value;
       }
-      StyleRangeValue::Value(_) | StyleRangeValue::CustomProperty(_) => {
-        let px = font_size * (value.value / 100.0);
-        if px.is_finite() && px >= 0.0 {
-          NumericValue {
-            ty: NumericType::LengthPx,
-            value: px,
+      match operand {
+        StyleRangeValue::Property(name) if name.eq_ignore_ascii_case("line-height") => {
+          let px = font_size * (value.value / 100.0);
+          if px.is_finite() && px >= 0.0 {
+            NumericValue {
+              ty: NumericType::LengthPx,
+              value: px,
+            }
+          } else {
+            value
           }
-        } else {
-          value
         }
+        StyleRangeValue::Value(_) | StyleRangeValue::CustomProperty(_) => {
+          let px = font_size * (value.value / 100.0);
+          if px.is_finite() && px >= 0.0 {
+            NumericValue {
+              ty: NumericType::LengthPx,
+              value: px,
+            }
+          } else {
+            value
+          }
+        }
+        _ => value,
       }
-      _ => value,
-    }
-  };
+    };
 
   match range {
     StyleRange::Single { left, op, right } => {
@@ -4827,7 +4830,9 @@ pub(crate) fn user_agent_stylesheet() -> &'static StyleSheet {
     .get_or_init(|| parse_stylesheet(USER_AGENT_STYLESHEET).unwrap_or_else(|_| StyleSheet::new()))
 }
 
-pub(crate) fn user_agent_stylesheet_for_quirks_mode(quirks_mode: QuirksMode) -> &'static StyleSheet {
+pub(crate) fn user_agent_stylesheet_for_quirks_mode(
+  quirks_mode: QuirksMode,
+) -> &'static StyleSheet {
   match quirks_mode {
     QuirksMode::Quirks => UA_STYLESHEET_QUIRKS.get_or_init(|| {
       parse_stylesheet(USER_AGENT_STYLESHEET_QUIRKS).unwrap_or_else(|_| StyleSheet::new())
@@ -13842,7 +13847,8 @@ fn append_presentational_hints<'a>(
   if let Some(presentational_rule) = list_type_presentational_hint(node, &layer_order, 1) {
     matching_rules.push(presentational_rule);
   }
-  if let Some(presentational_rule) = alignment_presentational_hint(node, ancestors, &layer_order, 2) {
+  if let Some(presentational_rule) = alignment_presentational_hint(node, ancestors, &layer_order, 2)
+  {
     matching_rules.push(presentational_rule);
   }
   if let Some(presentational_rule) = dimension_presentational_hint(node, &layer_order, 3) {
@@ -19301,7 +19307,11 @@ mod tests {
       }
     }
 
-    fn pseudo_text(tree: &crate::tree::box_tree::BoxTree, styled_node_id: usize, pseudo: GeneratedPseudoElement) -> String {
+    fn pseudo_text(
+      tree: &crate::tree::box_tree::BoxTree,
+      styled_node_id: usize,
+      pseudo: GeneratedPseudoElement,
+    ) -> String {
       let mut out = String::new();
       collect_pseudo_text(&tree.root, styled_node_id, pseudo, &mut out);
       out
@@ -27768,10 +27778,11 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       .unwrap_or_else(|err| panic!("failed to read fixture CSS {css_path:?}: {err}"));
 
     let media_ctx = MediaContext::screen(1200.0, 800.0);
-    let base_url = Url::from_file_path(&css_path)
-      .unwrap_or_else(|()| panic!("expected CSS path {css_path:?} to be convertible to file:// URL"));
-    let rewritten = absolutize_css_urls_cow(&css, base_url.as_str())
-      .expect("fixture stylesheet URL rewriting");
+    let base_url = Url::from_file_path(&css_path).unwrap_or_else(|()| {
+      panic!("expected CSS path {css_path:?} to be convertible to file:// URL")
+    });
+    let rewritten =
+      absolutize_css_urls_cow(&css, base_url.as_str()).expect("fixture stylesheet URL rewriting");
     let stylesheet = parse_stylesheet_with_media(rewritten.as_ref(), &media_ctx, None)
       .expect("fixture stylesheet parses");
 
@@ -27811,11 +27822,11 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     // author stylesheets applied, the `#nav-toggle` element must generate a ::before pseudo-element
     // with the substituted attribute value.
     use crate::css::loader::absolutize_css_urls_cow;
-    use std::path::PathBuf;
-    use std::time::Duration;
     use crate::text::font_db::FontConfig;
     use crate::text::font_loader::FontContext;
     use crate::text::pipeline::ShapingPipeline;
+    use std::path::PathBuf;
+    use std::time::Duration;
     use url::Url;
 
     let fixture_root: PathBuf = [
@@ -27844,10 +27855,11 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       let css_path = fixture_root.join(rel);
       let css = std::fs::read_to_string(&css_path)
         .unwrap_or_else(|err| panic!("failed to read fixture CSS {css_path:?}: {err}"));
-      let base_url = Url::from_file_path(&css_path)
-        .unwrap_or_else(|()| panic!("expected CSS path {css_path:?} to be convertible to file:// URL"));
-      let rewritten = absolutize_css_urls_cow(&css, base_url.as_str())
-        .expect("fixture stylesheet URL rewriting");
+      let base_url = Url::from_file_path(&css_path).unwrap_or_else(|()| {
+        panic!("expected CSS path {css_path:?} to be convertible to file:// URL")
+      });
+      let rewritten =
+        absolutize_css_urls_cow(&css, base_url.as_str()).expect("fixture stylesheet URL rewriting");
       let sheet = parse_stylesheet_with_media(rewritten.as_ref(), &media_ctx, None)
         .unwrap_or_else(|err| panic!("failed to parse fixture stylesheet {css_path:?}: {err:?}"));
       font_faces.extend(sheet.collect_font_face_rules(&media_ctx));
@@ -27933,7 +27945,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     use std::path::PathBuf;
     use std::time::Duration;
     use url::Url;
- 
+
     let media_ctx = MediaContext::screen(1200.0, 800.0);
     let fixture_root: PathBuf = [
       env!("CARGO_MANIFEST_DIR"),
@@ -27941,35 +27953,36 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     ]
     .iter()
     .collect();
- 
+
     let css_files = [
       // Provides the offline Material Icons @font-face.
       "assets/65db03ecf48e2c4b24c7020615d9d3c9.css",
       // Contains `a.external::after { content:"   "; font-family:"material icons"; }`.
       "assets/93b28b8d918123883e925d8af5930c63.css",
     ];
- 
+
     let mut combined_rules = Vec::new();
     let mut font_faces = Vec::new();
     for rel in css_files {
       let css_path = fixture_root.join(rel);
       let css = std::fs::read_to_string(&css_path)
         .unwrap_or_else(|err| panic!("failed to read fixture CSS {css_path:?}: {err}"));
-      let base_url = Url::from_file_path(&css_path)
-        .unwrap_or_else(|()| panic!("expected CSS path {css_path:?} to be convertible to file:// URL"));
-      let rewritten = absolutize_css_urls_cow(&css, base_url.as_str())
-        .expect("fixture stylesheet URL rewriting");
+      let base_url = Url::from_file_path(&css_path).unwrap_or_else(|()| {
+        panic!("expected CSS path {css_path:?} to be convertible to file:// URL")
+      });
+      let rewritten =
+        absolutize_css_urls_cow(&css, base_url.as_str()).expect("fixture stylesheet URL rewriting");
       let sheet = parse_stylesheet_with_media(rewritten.as_ref(), &media_ctx, None)
         .unwrap_or_else(|err| panic!("failed to parse fixture stylesheet {css_path:?}: {err:?}"));
       font_faces.extend(sheet.collect_font_face_rules(&media_ctx));
       combined_rules.extend(sheet.rules);
     }
- 
+
     let stylesheet = StyleSheet {
       namespaces: Default::default(),
       rules: combined_rules,
     };
- 
+
     let dom = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
@@ -27986,7 +27999,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       .after_styles
       .as_ref()
       .expect("expected a.external::after pseudo-element");
- 
+
     let expected = format!("   {}", '\u{E89E}');
     assert_eq!(after.content_value, ContentValue::from_string(&expected));
     assert!(
@@ -27996,7 +28009,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         .any(|family| family.as_str().eq_ignore_ascii_case("material icons")),
       "expected fixture stylesheet to set font-family:'material icons' for external link icon"
     );
- 
+
     let font_ctx = FontContext::with_config(FontConfig::bundled_only());
     if !font_faces.is_empty() {
       font_ctx
@@ -28007,13 +28020,15 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         "fixture @font-face font loading timed out"
       );
     }
- 
+
     let pipeline = ShapingPipeline::new();
     let shaped_runs = pipeline
       .shape(&expected, after, &font_ctx)
       .expect("shape Material Icons PUA glyph");
     assert!(
-      shaped_runs.iter().all(|run| run.font.family == "Material Icons"),
+      shaped_runs
+        .iter()
+        .all(|run| run.font.family == "Material Icons"),
       "expected PUA glyph to resolve to the fixture Material Icons font (runs={shaped_runs:?})"
     );
   }

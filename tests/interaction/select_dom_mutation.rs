@@ -22,10 +22,14 @@ fn single_select_replaces_selection() {
 
   let mut index = DomIndex::build(&mut dom);
   index
-    .with_node_mut(o1_id, |node| assert!(node.get_attribute_ref("selected").is_none()))
+    .with_node_mut(o1_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_none())
+    })
     .unwrap();
   index
-    .with_node_mut(o2_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o2_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
 }
 
@@ -49,10 +53,14 @@ fn single_select_clicking_selected_is_noop() {
 
   let mut index = DomIndex::build(&mut dom);
   index
-    .with_node_mut(o1_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o1_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(o2_id, |node| assert!(node.get_attribute_ref("selected").is_none()))
+    .with_node_mut(o2_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_none())
+    })
     .unwrap();
 }
 
@@ -76,20 +84,28 @@ fn multiple_select_toggles_selection() {
 
   let mut index = DomIndex::build(&mut dom);
   index
-    .with_node_mut(o1_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o1_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(o2_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o2_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
 
   // Toggle back off.
   assert!(activate_select_option(&mut dom, select_id, o1_id, true));
   let mut index = DomIndex::build(&mut dom);
   index
-    .with_node_mut(o1_id, |node| assert!(node.get_attribute_ref("selected").is_none()))
+    .with_node_mut(o1_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_none())
+    })
     .unwrap();
   index
-    .with_node_mut(o2_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o2_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
 }
 
@@ -113,10 +129,14 @@ fn multiple_select_replacement_clears_other_selections() {
 
   let mut index = DomIndex::build(&mut dom);
   index
-    .with_node_mut(o1_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o1_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(o2_id, |node| assert!(node.get_attribute_ref("selected").is_none()))
+    .with_node_mut(o2_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_none())
+    })
     .unwrap();
 
   // Already the only selected option; should be a no-op.
@@ -143,10 +163,14 @@ fn disabled_option_cannot_be_selected() {
 
   let mut index = DomIndex::build(&mut dom);
   index
-    .with_node_mut(o1_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o1_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(o2_id, |node| assert!(node.get_attribute_ref("selected").is_none()))
+    .with_node_mut(o2_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_none())
+    })
     .unwrap();
 }
 
@@ -172,10 +196,14 @@ fn disabled_optgroup_blocks_option_selection() {
 
   let mut index = DomIndex::build(&mut dom);
   index
-    .with_node_mut(o1_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o1_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(o2_id, |node| assert!(node.get_attribute_ref("selected").is_none()))
+    .with_node_mut(o2_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_none())
+    })
     .unwrap();
 }
 
@@ -201,9 +229,13 @@ fn non_descendant_option_id_does_nothing() {
 
   let mut index = DomIndex::build(&mut dom);
   index
-    .with_node_mut(o1_id, |node| assert!(node.get_attribute_ref("selected").is_some()))
+    .with_node_mut(o1_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(o2_id, |node| assert!(node.get_attribute_ref("selected").is_none()))
+    .with_node_mut(o2_id, |node| {
+      assert!(node.get_attribute_ref("selected").is_none())
+    })
     .unwrap();
 }

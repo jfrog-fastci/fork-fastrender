@@ -26,9 +26,10 @@ pub fn install_document_query_selector_bindings(
     let doc = Rc::clone(&document);
     let dom_ex = dom_exception;
     let query_selector_fn = rt.alloc_function_value(move |rt, _this, args| {
-      let selectors_value = args.get(0).copied().ok_or_else(|| {
-        rt.throw_type_error("Document.querySelector requires 1 argument")
-      })?;
+      let selectors_value = args
+        .get(0)
+        .copied()
+        .ok_or_else(|| rt.throw_type_error("Document.querySelector requires 1 argument"))?;
       let selectors_value = rt.to_string(selectors_value)?;
       let selectors = value_to_rust_string(rt, selectors_value)?;
 
@@ -48,9 +49,10 @@ pub fn install_document_query_selector_bindings(
     let doc = Rc::clone(&document);
     let dom_ex = dom_exception;
     let query_selector_all_fn = rt.alloc_function_value(move |rt, _this, args| {
-      let selectors_value = args.get(0).copied().ok_or_else(|| {
-        rt.throw_type_error("Document.querySelectorAll requires 1 argument")
-      })?;
+      let selectors_value = args
+        .get(0)
+        .copied()
+        .ok_or_else(|| rt.throw_type_error("Document.querySelectorAll requires 1 argument"))?;
       let selectors_value = rt.to_string(selectors_value)?;
       let selectors = value_to_rust_string(rt, selectors_value)?;
 

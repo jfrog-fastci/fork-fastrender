@@ -35,12 +35,9 @@ fn prepare_dom_matches_prepare_html_and_render_html() {
     .expect("prepare_html");
   let pixmap_prepared_html = prepared_html.paint_default().expect("paint prepared_html");
 
-  let prepared_dom = renderer
-    .prepare_dom(&dom, options)
-    .expect("prepare_dom");
+  let prepared_dom = renderer.prepare_dom(&dom, options).expect("prepare_dom");
   let pixmap_prepared_dom = prepared_dom.paint_default().expect("paint prepared_dom");
 
   assert_pixmap_eq(&baseline, &pixmap_prepared_html);
   assert_pixmap_eq(&baseline, &pixmap_prepared_dom);
 }
-

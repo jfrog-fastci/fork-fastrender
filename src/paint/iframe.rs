@@ -9,8 +9,8 @@ use crate::paint::display_list::ImageData;
 use crate::paint::pixmap::new_pixmap;
 use crate::render_control;
 use crate::resource::{
-  ensure_http_success, origin_from_url, FetchDestination, FetchRequest, ResourceAccessPolicy,
-  ReferrerPolicy,
+  ensure_http_success, origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy,
+  ResourceAccessPolicy,
 };
 use crate::style::color::Rgba;
 use crate::style::ComputedStyle;
@@ -245,10 +245,7 @@ static IFRAME_RENDER_CACHE: OnceLock<Mutex<IframeRenderCache>> = OnceLock::new()
 fn iframe_render_cache() -> &'static Mutex<IframeRenderCache> {
   IFRAME_RENDER_CACHE.get_or_init(|| {
     let (max_entries, max_bytes) = iframe_render_cache_limits_from_env();
-    Mutex::new(IframeRenderCache::new(
-      max_entries,
-      max_bytes,
-    ))
+    Mutex::new(IframeRenderCache::new(max_entries, max_bytes))
   })
 }
 
@@ -843,8 +840,8 @@ pub(crate) fn render_iframe_src(
 mod tests {
   use super::*;
   use crate::error::Error;
-  use crate::resource::{FetchRequest, FetchedResource};
   use crate::resource::ResourceFetcher;
+  use crate::resource::{FetchRequest, FetchedResource};
   use std::io;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Mutex as StdMutex;
@@ -1037,16 +1034,36 @@ mod tests {
       <div data-fastr-test="iframe-render-cache-113"></div>
     "#;
 
-    let first = render_iframe_srcdoc(html, None, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
-      .expect("first iframe render");
+    let first = render_iframe_srcdoc(
+      html,
+      None,
+      None,
+      rect,
+      None,
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("first iframe render");
     assert_eq!(
       take_last_iframe_cache_hit(),
       Some(false),
       "first render should miss cache"
     );
 
-    let second = render_iframe_srcdoc(html, None, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
-      .expect("second iframe render");
+    let second = render_iframe_srcdoc(
+      html,
+      None,
+      None,
+      rect,
+      None,
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("second iframe render");
     assert_eq!(
       take_last_iframe_cache_hit(),
       Some(true),
@@ -1407,8 +1424,17 @@ mod tests {
     let image_cache = ImageCache::with_fetcher(fetcher.clone());
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
-    render_iframe_src(requested_url, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
-      .expect("iframe src render should succeed");
+    render_iframe_src(
+      requested_url,
+      None,
+      rect,
+      None,
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("iframe src render should succeed");
 
     let urls = fetcher
       .requests
@@ -1450,8 +1476,17 @@ mod tests {
     }));
 
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
-    render_iframe_src(iframe_url, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
-      .expect("iframe render should succeed");
+    render_iframe_src(
+      iframe_url,
+      None,
+      rect,
+      None,
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("iframe render should succeed");
 
     let seen = observed.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(
@@ -1710,7 +1745,16 @@ mod diagnostics_tests {
     let cache = test_image_cache(fetcher, diagnostics.clone());
     let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
 
-    let result = render_iframe_src("   ", None, rect, None, &cache, &test_font_context(), 1.0, 1);
+    let result = render_iframe_src(
+      "   ",
+      None,
+      rect,
+      None,
+      &cache,
+      &test_font_context(),
+      1.0,
+      1,
+    );
     assert!(result.is_none());
 
     let diag = diagnostics.into_inner();

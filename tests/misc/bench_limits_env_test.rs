@@ -41,7 +41,10 @@ fn bench_limits_parse_env_and_apply_defaults() {
   let _max_fixture = EnvGuard::set("FASTR_BENCH_MAX_FIXTURE_BYTES", "1MiB");
 
   let limits = bench_common::BenchLimits::from_env();
-  assert_eq!(limits.max_threads, 1, "max_threads should clamp to at least 1");
+  assert_eq!(
+    limits.max_threads, 1,
+    "max_threads should clamp to at least 1"
+  );
   assert_eq!(limits.max_dom_nodes, 10_000);
   assert_eq!(limits.max_display_list_items, 2000);
   assert_eq!(limits.max_depth, 64);

@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::js::import_maps::{
-  resolve_module_specifier as resolve_module_specifier_with_import_maps, ImportMapError, ImportMapState,
+  resolve_module_specifier as resolve_module_specifier_with_import_maps, ImportMapError,
+  ImportMapState,
 };
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::vm_error_format;
@@ -8,8 +9,9 @@ use crate::js::window_realm::WindowRealmHost;
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{EventLoop, JsExecutionOptions};
 use crate::resource::{
-  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
-  origin_from_url, CorsMode, DocumentOrigin, FetchDestination, FetchRequest, ResourceFetcher,
+  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success,
+  ensure_script_mime_sane, origin_from_url, CorsMode, DocumentOrigin, FetchDestination,
+  FetchRequest, ResourceFetcher,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,7 +37,10 @@ fn import_map_error_to_throw_kind_and_message(err: ImportMapError) -> (ImportMap
         .strip_prefix("import map limit exceeded:")
         .map(|s| s.trim_start())
         .unwrap_or(msg.as_str());
-      (ImportMapThrowKind::TypeError, format!("import map limit exceeded: {msg}"))
+      (
+        ImportMapThrowKind::TypeError,
+        format!("import map limit exceeded: {msg}"),
+      )
     }
     ImportMapError::Json(err) => (ImportMapThrowKind::SyntaxError, err.to_string()),
   }
@@ -193,297 +198,295 @@ impl VmJsModuleLoader {
     };
     hooks.inner.set_event_loop(event_loop);
 
-      // Attach the loader's module graph to the VM while we load + evaluate modules and while we
-      // drain microtask checkpoints. This ensures dynamic `import()` works in Promise jobs queued
-      // during module evaluation.
-      let mut module_graph_guard: Option<VmModuleGraphGuard> = None;
+    // Attach the loader's module graph to the VM while we load + evaluate modules and while we
+    // drain microtask checkpoints. This ensures dynamic `import()` works in Promise jobs queued
+    // during module evaluation.
+    let mut module_graph_guard: Option<VmModuleGraphGuard> = None;
 
-      // Track the entry module so we can abort an in-progress top-level await evaluation if the
-      // evaluation promise remains pending after draining microtasks.
-      let mut entry_module: Option<ModuleId> = None;
+    // Track the entry module so we can abort an in-progress top-level await evaluation if the
+    // evaluation promise remains pending after draining microtasks.
+    let mut entry_module: Option<ModuleId> = None;
 
-      // Persistent roots for module-loading/evaluation promises while we run microtasks.
-      let mut load_promise: Option<Value> = None;
-      let mut load_promise_root: Option<RootId> = None;
-      let mut eval_promise: Option<Value> = None;
-      let mut eval_promise_root: Option<RootId> = None;
+    // Persistent roots for module-loading/evaluation promises while we run microtasks.
+    let mut load_promise: Option<Value> = None;
+    let mut load_promise_root: Option<RootId> = None;
+    let mut eval_promise: Option<Value> = None;
+    let mut eval_promise_root: Option<RootId> = None;
 
-      let mut outcome: Result<Value> = Ok(Value::Undefined);
+    let mut outcome: Result<Value> = Ok(Value::Undefined);
 
-      // Phase 1: fetch/parse the entry module and load its static dependency graph.
-      if outcome.is_ok() {
-        let load_result: std::result::Result<(), Error> = (|| {
-          let (_vm_host, window_realm) = host.vm_host_and_window_realm();
-          let budget = window_realm.vm_budget_now();
-          let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
-          let mut vm = vm.push_budget(budget);
+    // Phase 1: fetch/parse the entry module and load its static dependency graph.
+    if outcome.is_ok() {
+      let load_result: std::result::Result<(), Error> = (|| {
+        let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+        let budget = window_realm.vm_budget_now();
+        let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
+        let mut vm = vm.push_budget(budget);
 
-          if module_graph_guard.is_none() {
-            // SAFETY: `module_graph_ptr` points to `self.module_graph`, which lives for the duration
-            // of this `evaluate_module_entry` call.
-            let module_graph = unsafe { &mut *module_graph_ptr };
-            module_graph_guard = Some(VmModuleGraphGuard::new(&mut vm, module_graph));
-          }
-
-          // Ensure immediate termination when no budget remains (deadline exceeded, interrupted, etc).
-          vm.tick()
-            .map_err(|err| vm_error_to_error_with_fresh_scope(heap, err))?;
-
-          let mut scope = heap.scope();
-          // SAFETY: see above.
+        if module_graph_guard.is_none() {
+          // SAFETY: `module_graph_ptr` points to `self.module_graph`, which lives for the duration
+          // of this `evaluate_module_entry` call.
           let module_graph = unsafe { &mut *module_graph_ptr };
+          module_graph_guard = Some(VmModuleGraphGuard::new(&mut vm, module_graph));
+        }
 
-          let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
-            EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(
-              &mut vm,
-              &mut scope,
-              module_graph,
-              url,
-              Some(hooks.document_url),
-            ),
-            EntryModule::Inline {
-              url,
-              base_url,
-              source_text,
-            } => hooks.get_or_parse_inline_module(
-              &mut vm,
-              &mut scope,
-              module_graph,
-              url,
-              base_url,
-              source_text,
-            ),
-          };
+        // Ensure immediate termination when no budget remains (deadline exceeded, interrupted, etc).
+        vm.tick()
+          .map_err(|err| vm_error_to_error_with_fresh_scope(heap, err))?;
 
-          let entry_id = match entry_id_result {
-            Ok(id) => id,
-            Err(err) => return Err(vm_error_to_error_in_scope(&mut scope, err)),
-          };
+        let mut scope = heap.scope();
+        // SAFETY: see above.
+        let module_graph = unsafe { &mut *module_graph_ptr };
 
-          hooks.module_depths.insert(entry_id, 0);
-
-          let load_promise_value = vm_js::load_requested_modules(
+        let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
+          EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(
             &mut vm,
             &mut scope,
             module_graph,
-            &mut hooks,
-            entry_id,
-            HostDefined::default(),
-          )
+            url,
+            Some(hooks.document_url),
+          ),
+          EntryModule::Inline {
+            url,
+            base_url,
+            source_text,
+          } => hooks.get_or_parse_inline_module(
+            &mut vm,
+            &mut scope,
+            module_graph,
+            url,
+            base_url,
+            source_text,
+          ),
+        };
+
+        let entry_id = match entry_id_result {
+          Ok(id) => id,
+          Err(err) => return Err(vm_error_to_error_in_scope(&mut scope, err)),
+        };
+
+        hooks.module_depths.insert(entry_id, 0);
+
+        let load_promise_value = vm_js::load_requested_modules(
+          &mut vm,
+          &mut scope,
+          module_graph,
+          &mut hooks,
+          entry_id,
+          HostDefined::default(),
+        )
+        .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+
+        // Root the promise across a possible microtask checkpoint.
+        scope
+          .push_root(load_promise_value)
+          .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+        let root = scope
+          .heap_mut()
+          .add_root(load_promise_value)
           .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
 
-          // Root the promise across a possible microtask checkpoint.
-          scope
-            .push_root(load_promise_value)
-            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
-          let root = scope
-            .heap_mut()
-            .add_root(load_promise_value)
-            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+        load_promise = Some(load_promise_value);
+        load_promise_root = Some(root);
+        entry_module = Some(entry_id);
 
-          load_promise = Some(load_promise_value);
-          load_promise_root = Some(root);
-          entry_module = Some(entry_id);
-
-          // If the graph-loading promise is already settled, we can remove the root immediately.
-          // Otherwise, keep it rooted and allow one microtask checkpoint to settle.
-          match ensure_promise_fulfilled(&mut scope, load_promise_value) {
-            Ok(()) => {
+        // If the graph-loading promise is already settled, we can remove the root immediately.
+        // Otherwise, keep it rooted and allow one microtask checkpoint to settle.
+        match ensure_promise_fulfilled(&mut scope, load_promise_value) {
+          Ok(()) => {
+            scope.heap_mut().remove_root(root);
+            load_promise = None;
+            load_promise_root = None;
+          }
+          Err(err) => {
+            // `ensure_promise_fulfilled` returns `VmError::Unimplemented` specifically for pending
+            // promises. Defer handling until after a microtask checkpoint.
+            if !matches!(err, VmError::Unimplemented(_)) {
               scope.heap_mut().remove_root(root);
               load_promise = None;
               load_promise_root = None;
-            }
-            Err(err) => {
-              // `ensure_promise_fulfilled` returns `VmError::Unimplemented` specifically for pending
-              // promises. Defer handling until after a microtask checkpoint.
-              if !matches!(err, VmError::Unimplemented(_)) {
-                scope.heap_mut().remove_root(root);
-                load_promise = None;
-                load_promise_root = None;
-                return Err(vm_error_to_error_in_scope(&mut scope, err));
-              }
+              return Err(vm_error_to_error_in_scope(&mut scope, err));
             }
           }
-          Ok(())
-        })();
+        }
+        Ok(())
+      })();
 
-        if let Err(err) = load_result {
+      if let Err(err) = load_result {
+        outcome = Err(err);
+      }
+    }
+
+    // Allow module graph loading to settle via microtasks (e.g. promise reactions).
+    if outcome.is_ok() {
+      if let (Some(load_promise_value), Some(load_root)) =
+        (load_promise.take(), load_promise_root.take())
+      {
+        let microtask_result = event_loop.perform_microtask_checkpoint(host);
+        if let Err(err) = microtask_result {
           outcome = Err(err);
         }
-      }
 
-      // Allow module graph loading to settle via microtasks (e.g. promise reactions).
-      if outcome.is_ok() {
-        if let (Some(load_promise_value), Some(load_root)) =
-          (load_promise.take(), load_promise_root.take())
-        {
-          let microtask_result = event_loop.perform_microtask_checkpoint(host);
-          if let Err(err) = microtask_result {
-            outcome = Err(err);
+        let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+        let heap = window_realm.heap_mut();
+        let mut scope = heap.scope();
+        if outcome.is_ok() {
+          if let Err(err) = ensure_promise_fulfilled(&mut scope, load_promise_value) {
+            outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
           }
+        }
+        scope.heap_mut().remove_root(load_root);
+      }
+    }
 
+    // Phase 2: link + evaluate.
+    if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
+      let eval_result: std::result::Result<(), Error> = (|| {
+        let (vm_host, window_realm) = host.vm_host_and_window_realm();
+        let budget = window_realm.vm_budget_now();
+        let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
+        let mut vm = vm.push_budget(budget);
+
+        vm.tick()
+          .map_err(|err| vm_error_to_error_with_fresh_scope(heap, err))?;
+
+        let mut scope = heap.scope();
+        // SAFETY: see above.
+        let module_graph = unsafe { &mut *module_graph_ptr };
+        let promise = module_graph
+          .evaluate_with_scope(
+            &mut vm,
+            &mut scope,
+            realm.global_object(),
+            realm.id(),
+            entry_id,
+            vm_host,
+            &mut hooks,
+          )
+          .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+
+        // Root the promise across a possible microtask checkpoint.
+        scope
+          .push_root(promise)
+          .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+        let root = scope
+          .heap_mut()
+          .add_root(promise)
+          .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
+
+        eval_promise = Some(promise);
+        eval_promise_root = Some(root);
+
+        // If the evaluation promise is already settled, we can remove the root immediately.
+        // Otherwise, keep it rooted and allow one microtask checkpoint to settle (top-level await
+        // via Promise jobs).
+        match ensure_promise_fulfilled(&mut scope, promise) {
+          Ok(()) => {
+            scope.heap_mut().remove_root(root);
+            eval_promise = None;
+            eval_promise_root = None;
+            outcome = Ok(promise);
+          }
+          Err(err) => {
+            if !matches!(err, VmError::Unimplemented(_)) {
+              scope.heap_mut().remove_root(root);
+              eval_promise = None;
+              eval_promise_root = None;
+              return Err(vm_error_to_error_in_scope(&mut scope, err));
+            }
+          }
+        }
+
+        Ok(())
+      })();
+
+      if let Err(err) = eval_result {
+        outcome = Err(err);
+      }
+    }
+
+    // Allow module evaluation to settle via microtasks (top-level await).
+    if outcome.is_ok() {
+      if let (Some(eval_promise_value), Some(eval_root), Some(entry_id)) =
+        (eval_promise.take(), eval_promise_root.take(), entry_module)
+      {
+        let mut abort_async_eval = false;
+
+        let microtask_result = event_loop.perform_microtask_checkpoint(host);
+        if let Err(err) = microtask_result {
+          abort_async_eval = true;
+          outcome = Err(err);
+        }
+
+        {
           let (_vm_host, window_realm) = host.vm_host_and_window_realm();
           let heap = window_realm.heap_mut();
           let mut scope = heap.scope();
           if outcome.is_ok() {
-            if let Err(err) = ensure_promise_fulfilled(&mut scope, load_promise_value) {
-              outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
+            match ensure_promise_fulfilled(&mut scope, eval_promise_value) {
+              Ok(()) => {
+                outcome = Ok(eval_promise_value);
+              }
+              Err(err) => {
+                abort_async_eval = matches!(err, VmError::Unimplemented(_));
+                outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
+              }
             }
           }
-          scope.heap_mut().remove_root(load_root);
+          scope.heap_mut().remove_root(eval_root);
         }
-      }
 
-      // Phase 2: link + evaluate.
-      if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
-        let eval_result: std::result::Result<(), Error> = (|| {
-          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+        if abort_async_eval {
+          let (_vm_host, window_realm) = host.vm_host_and_window_realm();
           let budget = window_realm.vm_budget_now();
-          let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
+          let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
           let mut vm = vm.push_budget(budget);
-
-          vm.tick()
-            .map_err(|err| vm_error_to_error_with_fresh_scope(heap, err))?;
-
-          let mut scope = heap.scope();
           // SAFETY: see above.
           let module_graph = unsafe { &mut *module_graph_ptr };
-          let promise = module_graph
-            .evaluate_with_scope(
-              &mut vm,
-              &mut scope,
-              realm.global_object(),
-              realm.id(),
-              entry_id,
-              vm_host,
-              &mut hooks,
-            )
-            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
-
-          // Root the promise across a possible microtask checkpoint.
-          scope
-            .push_root(promise)
-            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
-          let root = scope
-            .heap_mut()
-            .add_root(promise)
-            .map_err(|err| vm_error_to_error_in_scope(&mut scope, err))?;
-
-          eval_promise = Some(promise);
-          eval_promise_root = Some(root);
-
-          // If the evaluation promise is already settled, we can remove the root immediately.
-          // Otherwise, keep it rooted and allow one microtask checkpoint to settle (top-level await
-          // via Promise jobs).
-          match ensure_promise_fulfilled(&mut scope, promise) {
-            Ok(()) => {
-              scope.heap_mut().remove_root(root);
-              eval_promise = None;
-              eval_promise_root = None;
-              outcome = Ok(promise);
-            }
-            Err(err) => {
-              if !matches!(err, VmError::Unimplemented(_)) {
-                scope.heap_mut().remove_root(root);
-                eval_promise = None;
-                eval_promise_root = None;
-                return Err(vm_error_to_error_in_scope(&mut scope, err));
-              }
-            }
-          }
-
-          Ok(())
-        })();
-
-        if let Err(err) = eval_result {
-          outcome = Err(err);
+          module_graph.abort_tla_evaluation(&mut vm, heap, entry_id);
         }
       }
+    }
 
-      // Allow module evaluation to settle via microtasks (top-level await).
-      if outcome.is_ok() {
-        if let (Some(eval_promise_value), Some(eval_root), Some(entry_id)) = (
-          eval_promise.take(),
-          eval_promise_root.take(),
-          entry_module,
-        ) {
-          let mut abort_async_eval = false;
-
-          let microtask_result = event_loop.perform_microtask_checkpoint(host);
-          if let Err(err) = microtask_result {
-            abort_async_eval = true;
-            outcome = Err(err);
-          }
-
-          {
-            let (_vm_host, window_realm) = host.vm_host_and_window_realm();
-            let heap = window_realm.heap_mut();
-            let mut scope = heap.scope();
-            if outcome.is_ok() {
-              match ensure_promise_fulfilled(&mut scope, eval_promise_value) {
-                Ok(()) => {
-                  outcome = Ok(eval_promise_value);
-                }
-                Err(err) => {
-                  abort_async_eval = matches!(err, VmError::Unimplemented(_));
-                  outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-                }
-              }
-            }
-            scope.heap_mut().remove_root(eval_root);
-          }
-
-          if abort_async_eval {
-            let (_vm_host, window_realm) = host.vm_host_and_window_realm();
-            let budget = window_realm.vm_budget_now();
-            let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
-            let mut vm = vm.push_budget(budget);
-            // SAFETY: see above.
-            let module_graph = unsafe { &mut *module_graph_ptr };
-            module_graph.abort_tla_evaluation(&mut vm, heap, entry_id);
-          }
-        }
+    // Final cleanup: ensure any promise roots are removed even on error.
+    {
+      let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+      let heap = window_realm.heap_mut();
+      if let Some(root) = load_promise_root.take() {
+        heap.remove_root(root);
       }
-
-      // Final cleanup: ensure any promise roots are removed even on error.
-      {
-        let (_vm_host, window_realm) = host.vm_host_and_window_realm();
-        let heap = window_realm.heap_mut();
-        if let Some(root) = load_promise_root.take() {
-          heap.remove_root(root);
-        }
-        if let Some(root) = eval_promise_root.take() {
-          heap.remove_root(root);
-        }
+      if let Some(root) = eval_promise_root.take() {
+        heap.remove_root(root);
       }
+    }
 
-      let hooks_finish_err = {
-        let (_vm_host, window_realm) = host.vm_host_and_window_realm();
-        hooks.finish(window_realm.heap_mut())
-      };
+    let hooks_finish_err = {
+      let (_vm_host, window_realm) = host.vm_host_and_window_realm();
+      hooks.finish(window_realm.heap_mut())
+    };
 
-      // HTML: after executing a script/module, perform a microtask checkpoint.
-      let microtask_result = event_loop.perform_microtask_checkpoint(host);
+    // HTML: after executing a script/module, perform a microtask checkpoint.
+    let microtask_result = event_loop.perform_microtask_checkpoint(host);
 
-      // Keep the module graph attached until after the checkpoint, then restore the previous VM
-      // state as the function returns.
-      let _module_graph_guard = module_graph_guard;
+    // Keep the module graph attached until after the checkpoint, then restore the previous VM
+    // state as the function returns.
+    let _module_graph_guard = module_graph_guard;
 
-      if let Some(err) = hooks_finish_err {
+    if let Some(err) = hooks_finish_err {
+      let _ = microtask_result;
+      return Err(err);
+    }
+
+    match outcome {
+      Ok(value) => {
+        microtask_result?;
+        Ok(value)
+      }
+      Err(err) => {
         let _ = microtask_result;
-        return Err(err);
+        Err(err)
       }
-
-      match outcome {
-        Ok(value) => {
-          microtask_result?;
-          Ok(value)
-        }
-        Err(err) => {
-          let _ = microtask_result;
-          Err(err)
-        }
-      }
+    }
   }
 }
 
@@ -514,7 +517,9 @@ fn ensure_promise_fulfilled(
     )),
     PromiseState::Fulfilled => Ok(()),
     PromiseState::Rejected => {
-      let reason = heap.promise_result(promise_obj)?.unwrap_or(Value::Undefined);
+      let reason = heap
+        .promise_result(promise_obj)?
+        .unwrap_or(Value::Undefined);
       scope.push_root(reason)?;
       Err(VmError::Throw(reason))
     }
@@ -611,29 +616,34 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
 
     let module_bytes = source_text.as_bytes().len();
     let context = format!("source=module specifier={url}");
-    if let Err(err) = self.options.check_script_source_bytes(module_bytes, &context) {
+    if let Err(err) = self
+      .options
+      .check_script_source_bytes(module_bytes, &context)
+    {
       return Err(self.throw_type_error(vm, scope, &err.to_string()));
     }
 
-    let next_bytes = match self
-      .options
-      .check_module_graph_total_bytes(self.loaded_bytes, module_bytes, url)
-    {
-      Ok(next) => next,
-      Err(err) => return Err(self.throw_type_error(vm, scope, &err.to_string())),
-    };
+    let next_bytes =
+      match self
+        .options
+        .check_module_graph_total_bytes(self.loaded_bytes, module_bytes, url)
+      {
+        Ok(next) => next,
+        Err(err) => return Err(self.throw_type_error(vm, scope, &err.to_string())),
+      };
     self.loaded_modules = next_modules;
     self.loaded_bytes = next_bytes;
 
-    let source = Arc::new(vm_js::SourceText::new(url.to_string(), source_text.to_string()));
+    let source = Arc::new(vm_js::SourceText::new(
+      url.to_string(),
+      source_text.to_string(),
+    ));
     let record = vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
     let id = modules.add_module(record);
 
     self.module_id_by_url.insert(url.to_string(), id);
     self.module_url_by_id.insert(id, url.to_string());
-    self
-      .module_base_url_by_id
-      .insert(id, base_url.to_string());
+    self.module_base_url_by_id.insert(id, base_url.to_string());
 
     Ok(id)
   }
@@ -680,7 +690,9 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     let res = self
       .fetcher
       .fetch_partial_with_request(req, max_fetch)
-      .map_err(|err| self.throw_type_error(vm, scope, &format!("failed to fetch module {url}: {err}")))?;
+      .map_err(|err| {
+        self.throw_type_error(vm, scope, &format!("failed to fetch module {url}: {err}"))
+      })?;
 
     // If the fetcher followed redirects, prefer the final URL for:
     // - the module's `import.meta.url`, and
@@ -710,7 +722,12 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       .and_then(|_| ensure_script_mime_sane(&res, url))
       .and_then(|_| {
         if cors_enforcement_enabled() {
-          ensure_cors_allows_origin(self.document_origin.as_ref(), &res, url, CorsMode::Anonymous)
+          ensure_cors_allows_origin(
+            self.document_origin.as_ref(),
+            &res,
+            url,
+            CorsMode::Anonymous,
+          )
         } else {
           Ok(())
         }
@@ -722,27 +739,37 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     if let Some(import_map_state) = self.import_map_state.as_ref() {
       let integrity_metadata = Url::parse(url)
         .ok()
-        .map(|url| import_map_state.resolve_module_integrity_metadata(&url).to_string())
+        .map(|url| {
+          import_map_state
+            .resolve_module_integrity_metadata(&url)
+            .to_string()
+        })
         .unwrap_or_default();
       if !integrity_metadata.is_empty() {
         if let Err(message) = crate::js::sri::verify_integrity(&res.bytes, &integrity_metadata) {
-          return Err(self.throw_type_error(vm, scope, &format!(
-            "SRI blocked module {url}: {message}"
-          )));
+          return Err(self.throw_type_error(
+            vm,
+            scope,
+            &format!("SRI blocked module {url}: {message}"),
+          ));
         }
       }
     }
 
     let module_bytes = res.bytes.len();
     let context = format!("source=module specifier={effective_url}");
-    if let Err(err) = self.options.check_script_source_bytes(module_bytes, &context) {
+    if let Err(err) = self
+      .options
+      .check_script_source_bytes(module_bytes, &context)
+    {
       return Err(self.throw_type_error(vm, scope, &err.to_string()));
     }
 
-    let next_bytes = match self
-      .options
-      .check_module_graph_total_bytes(self.loaded_bytes, module_bytes, effective_url)
-    {
+    let next_bytes = match self.options.check_module_graph_total_bytes(
+      self.loaded_bytes,
+      module_bytes,
+      effective_url,
+    ) {
       Ok(next) => next,
       Err(err) => return Err(self.throw_type_error(vm, scope, &err.to_string())),
     };
@@ -750,20 +777,29 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     self.loaded_bytes = next_bytes;
 
     let source_text = String::from_utf8(res.bytes).map_err(|err| {
-      self.throw_type_error(vm, scope, &format!("module {url} response was not valid UTF-8: {err}"))
+      self.throw_type_error(
+        vm,
+        scope,
+        &format!("module {url} response was not valid UTF-8: {err}"),
+      )
     })?;
 
     let effective_url_owned = effective_url.to_string();
-    let source = Arc::new(vm_js::SourceText::new(effective_url_owned.clone(), source_text));
+    let source = Arc::new(vm_js::SourceText::new(
+      effective_url_owned.clone(),
+      source_text,
+    ));
     let record = vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
     let id = modules.add_module(record);
 
     self.module_id_by_url.insert(url.to_string(), id);
-    self.module_id_by_url.insert(effective_url_owned.clone(), id);
-    self.module_url_by_id.insert(id, effective_url_owned.clone());
     self
-      .module_base_url_by_id
-      .insert(id, effective_url_owned);
+      .module_id_by_url
+      .insert(effective_url_owned.clone(), id);
+    self
+      .module_url_by_id
+      .insert(id, effective_url_owned.clone());
+    self.module_base_url_by_id.insert(id, effective_url_owned);
 
     Ok(id)
   }
@@ -811,7 +847,11 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../");
     if allowed_relative {
       return resolve_url(specifier, Some(base_url)).map_err(|err| {
-        self.throw_type_error(vm, scope, &format!("failed to resolve module specifier {specifier:?}: {err}"))
+        self.throw_type_error(
+          vm,
+          scope,
+          &format!("failed to resolve module specifier {specifier:?}: {err}"),
+        )
       });
     }
 
@@ -911,7 +951,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
     promise: vm_js::PromiseHandle,
     operation: vm_js::PromiseRejectionOperation,
   ) {
-    self.inner.host_promise_rejection_tracker(promise, operation);
+    self
+      .inner
+      .host_promise_rejection_tracker(promise, operation);
   }
 
   fn host_get_import_meta_properties(
@@ -949,7 +991,10 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
   ) -> std::result::Result<(), VmError> {
     let _ = host_defined;
 
-    if let Err(err) = self.options.check_module_specifier(&module_request.specifier) {
+    if let Err(err) = self
+      .options
+      .check_module_specifier(&module_request.specifier)
+    {
       let thrown = self.throw_type_error(vm, scope, &err.to_string());
       vm.finish_loading_imported_module(
         scope,
@@ -972,7 +1017,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
       ModuleReferrer::Script(_) | ModuleReferrer::Realm(_) => self.document_url.to_string(),
     };
 
-    let resolved_url = match self.resolve_module_specifier(vm, scope, &module_request.specifier, base_url.as_str()) {
+    let resolved_url = match self.resolve_module_specifier(
+      vm,
+      scope,
+      &module_request.specifier,
+      base_url.as_str(),
+    ) {
       Ok(url) => url,
       Err(err) => {
         vm.finish_loading_imported_module(
@@ -1024,21 +1074,22 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
       return Ok(());
     }
 
-    let module_id = match self.get_or_fetch_module(vm, scope, modules, &resolved_url, Some(base_url.as_str())) {
-      Ok(id) => id,
-      Err(err) => {
-        vm.finish_loading_imported_module(
-          scope,
-          modules,
-          self,
-          referrer,
-          module_request,
-          payload,
-          Err(err),
-        )?;
-        return Ok(());
-      }
-    };
+    let module_id =
+      match self.get_or_fetch_module(vm, scope, modules, &resolved_url, Some(base_url.as_str())) {
+        Ok(id) => id,
+        Err(err) => {
+          vm.finish_loading_imported_module(
+            scope,
+            modules,
+            self,
+            referrer,
+            module_request,
+            payload,
+            Err(err),
+          )?;
+          return Ok(());
+        }
+      };
 
     self
       .module_depths
@@ -1064,19 +1115,21 @@ mod tests {
   use super::*;
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use crate::dom2;
-  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::import_maps::{
-    create_import_map_parse_result, create_import_map_parse_result_with_limits, register_import_map, ImportMapLimits,
+    create_import_map_parse_result, create_import_map_parse_result_with_limits,
+    register_import_map, ImportMapLimits,
   };
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::resource::FetchedResource;
   use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
   use base64::Engine;
   use selectors::context::QuirksMode;
   use sha2::{Digest, Sha256};
-  use std::sync::Mutex;
   use std::sync::Arc;
+  use std::sync::Mutex;
   use vm_js::{
-    Budget, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+    Budget, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
+    VmHostHooks,
   };
   use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
@@ -1102,7 +1155,8 @@ mod tests {
     }
 
     fn calls(&self) -> Vec<String> {
-      self.calls
+      self
+        .calls
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .iter()
@@ -1204,7 +1258,11 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, "https://example.com/index.html", fetcher.clone())?;
+    let mut host = crate::js::WindowHostState::new_with_fetcher(
+      dom,
+      "https://example.com/index.html",
+      fetcher.clone(),
+    )?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
 
     host
@@ -1220,7 +1278,10 @@ mod tests {
       get_global_prop_utf8(&mut host, "entryUrl").as_deref(),
       Some(entry_url)
     );
-    assert_eq!(get_global_prop_utf8(&mut host, "depUrl").as_deref(), Some(dep_url));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "depUrl").as_deref(),
+      Some(dep_url)
+    );
     Ok(())
   }
 
@@ -1251,11 +1312,17 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host =
-      crate::js::WindowHostState::new_with_fetcher(dom, "https://example.com/index.html", fetcher.clone())?;
+    let mut host = crate::js::WindowHostState::new_with_fetcher(
+      dom,
+      "https://example.com/index.html",
+      fetcher.clone(),
+    )?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
 
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html");
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
@@ -1280,9 +1347,13 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
     let err = loader
@@ -1323,9 +1394,13 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
@@ -1335,7 +1410,8 @@ mod tests {
   }
 
   #[test]
-  fn module_loader_keeps_module_graph_attached_for_microtasks_that_call_dynamic_import() -> Result<()> {
+  fn module_loader_keeps_module_graph_attached_for_microtasks_that_call_dynamic_import(
+  ) -> Result<()> {
     let entry_url = "https://example.com/entry.js";
     let dep_url = "https://example.com/dep.js";
     let document_url = "https://example.com/index.html";
@@ -1360,15 +1436,22 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     assert!(
-      matches!(get_global_prop(&mut host, "importPromise"), Value::Object(_)),
+      matches!(
+        get_global_prop(&mut host, "importPromise"),
+        Value::Object(_)
+      ),
       "expected microtask to store an import() Promise on globalThis"
     );
     Ok(())
@@ -1384,14 +1467,18 @@ mod tests {
     map.insert(
       entry_a.to_string(),
       FetchedResource::new(
-        "import { value } from './dep.js'; globalThis.a = value;".as_bytes().to_vec(),
+        "import { value } from './dep.js'; globalThis.a = value;"
+          .as_bytes()
+          .to_vec(),
         Some("application/javascript".to_string()),
       ),
     );
     map.insert(
       entry_b.to_string(),
       FetchedResource::new(
-        "import { value } from './dep.js'; globalThis.b = value;".as_bytes().to_vec(),
+        "import { value } from './dep.js'; globalThis.b = value;"
+          .as_bytes()
+          .to_vec(),
         Some("application/javascript".to_string()),
       ),
     );
@@ -1405,7 +1492,11 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, "https://example.com/index.html", fetcher.clone())?;
+    let mut host = crate::js::WindowHostState::new_with_fetcher(
+      dom,
+      "https://example.com/index.html",
+      fetcher.clone(),
+    )?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
 
     host
@@ -1452,10 +1543,17 @@ mod tests {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut js_options = crate::js::JsExecutionOptions::default();
     js_options.max_module_graph_modules = 1;
-    let mut host =
-      crate::js::WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher.clone(), js_options)?;
+    let mut host = crate::js::WindowHostState::new_with_fetcher_and_options(
+      dom,
+      document_url,
+      fetcher.clone(),
+      js_options,
+    )?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher, document_url);
     let err = loader
@@ -1485,21 +1583,34 @@ mod tests {
     let mut map = HashMap::<String, FetchedResource>::new();
     map.insert(
       entry_url.to_string(),
-      FetchedResource::new(entry_source.as_bytes().to_vec(), Some("application/javascript".to_string())),
+      FetchedResource::new(
+        entry_source.as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
     );
     map.insert(
       dep_url.to_string(),
-      FetchedResource::new(dep_source.as_bytes().to_vec(), Some("application/javascript".to_string())),
+      FetchedResource::new(
+        dep_source.as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
     );
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut js_options = crate::js::JsExecutionOptions::default();
     js_options.max_module_graph_total_bytes = total_limit;
-    let mut host =
-      crate::js::WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher.clone(), js_options)?;
+    let mut host = crate::js::WindowHostState::new_with_fetcher_and_options(
+      dom,
+      document_url,
+      fetcher.clone(),
+      js_options,
+    )?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher, document_url);
     let err = loader
@@ -1522,30 +1633,41 @@ mod tests {
     let mut map = HashMap::<String, FetchedResource>::new();
     map.insert(
       entry_url.to_string(),
-      FetchedResource::new("import './a.js';".as_bytes().to_vec(), Some("application/javascript".to_string())),
+      FetchedResource::new(
+        "import './a.js';".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
     );
     map.insert(
       a_url.to_string(),
       FetchedResource::new(
-        "import './b.js'; export const x = 1;"
-          .as_bytes()
-          .to_vec(),
+        "import './b.js'; export const x = 1;".as_bytes().to_vec(),
         Some("application/javascript".to_string()),
       ),
     );
     map.insert(
       b_url.to_string(),
-      FetchedResource::new("export const y = 1;".as_bytes().to_vec(), Some("application/javascript".to_string())),
+      FetchedResource::new(
+        "export const y = 1;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
     );
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut js_options = crate::js::JsExecutionOptions::default();
     js_options.max_module_graph_depth = 1;
-    let mut host =
-      crate::js::WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher.clone(), js_options)?;
+    let mut host = crate::js::WindowHostState::new_with_fetcher_and_options(
+      dom,
+      document_url,
+      fetcher.clone(),
+      js_options,
+    )?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher, document_url);
     let err = loader
@@ -1568,17 +1690,27 @@ mod tests {
     let mut map = HashMap::<String, FetchedResource>::new();
     map.insert(
       entry_url.to_string(),
-      FetchedResource::new(entry_source.into_bytes(), Some("application/javascript".to_string())),
+      FetchedResource::new(
+        entry_source.into_bytes(),
+        Some("application/javascript".to_string()),
+      ),
     );
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut js_options = crate::js::JsExecutionOptions::default();
     js_options.max_module_specifier_length = 32;
-    let mut host =
-      crate::js::WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher.clone(), js_options)?;
+    let mut host = crate::js::WindowHostState::new_with_fetcher_and_options(
+      dom,
+      document_url,
+      fetcher.clone(),
+      js_options,
+    )?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher, document_url);
     let err = loader
@@ -1621,17 +1753,26 @@ mod tests {
       crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
 
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     let calls = fetcher.calls_detailed();
-    let entry_call = calls.iter().find(|call| call.url == entry_url).expect("entry module fetched");
+    let entry_call = calls
+      .iter()
+      .find(|call| call.url == entry_url)
+      .expect("entry module fetched");
     assert_eq!(entry_call.destination, FetchDestination::ScriptCors);
     assert_eq!(entry_call.referrer_url.as_deref(), Some(document_url));
 
-    let dep_call = calls.iter().find(|call| call.url == dep_url).expect("dep module fetched");
+    let dep_call = calls
+      .iter()
+      .find(|call| call.url == dep_url)
+      .expect("dep module fetched");
     assert_eq!(dep_call.destination, FetchDestination::ScriptCors);
     assert_eq!(dep_call.referrer_url.as_deref(), Some(entry_url));
     Ok(())
@@ -1675,10 +1816,14 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
 
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
@@ -1707,7 +1852,10 @@ mod tests {
       .get(redirected_url)
       .expect("redirected module id");
     assert_eq!(
-      loader.module_url_by_id.get(&redirected_id).map(String::as_str),
+      loader
+        .module_url_by_id
+        .get(&redirected_id)
+        .map(String::as_str),
       Some(final_url)
     );
     assert_eq!(
@@ -1745,16 +1893,23 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host =
-      crate::js::WindowHostState::new_with_fetcher(dom, "https://example.com/index.html", fetcher.clone())?;
+    let mut host = crate::js::WindowHostState::new_with_fetcher(
+      dom,
+      "https://example.com/index.html",
+      fetcher.clone(),
+    )?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
 
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let mut import_map_state = ImportMapState::default();
     let base_url = Url::parse("https://example.com/index.html")
       .map_err(|err| Error::Other(format!("invalid test base URL: {err}")))?;
-    let parse_result = create_import_map_parse_result(r#"{"imports":{"dep":"./dep.js"}}"#, &base_url);
+    let parse_result =
+      create_import_map_parse_result(r#"{"imports":{"dep":"./dep.js"}}"#, &base_url);
     register_import_map(&mut import_map_state, parse_result)
       .map_err(|err| Error::Other(err.to_string()))?;
 
@@ -1847,13 +2002,18 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, base_url.as_str(), fetcher.clone())?;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, base_url.as_str(), fetcher.clone())?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let parse_result = create_import_map_parse_result(importmap.as_str(), &base_url);
     let mut import_map_state = ImportMapState::default();
-    register_import_map(&mut import_map_state, parse_result).map_err(|err| Error::Other(err.to_string()))?;
+    register_import_map(&mut import_map_state, parse_result)
+      .map_err(|err| Error::Other(err.to_string()))?;
 
     let mut loader = VmJsModuleLoader::new(fetcher.clone(), base_url.as_str());
     loader.evaluate_module_url_with_import_maps(
@@ -2020,13 +2180,18 @@ mod tests {
 
     let fetcher = Arc::new(MapFetcher::new(map));
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, base_url.as_str(), fetcher.clone())?;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, base_url.as_str(), fetcher.clone())?;
     let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
 
     let parse_result = create_import_map_parse_result(importmap.as_str(), &base_url);
     let mut import_map_state = ImportMapState::default();
-    register_import_map(&mut import_map_state, parse_result).map_err(|err| Error::Other(err.to_string()))?;
+    register_import_map(&mut import_map_state, parse_result)
+      .map_err(|err| Error::Other(err.to_string()))?;
 
     let mut loader = VmJsModuleLoader::new(fetcher.clone(), base_url.as_str());
     let err = loader
@@ -2079,9 +2244,13 @@ mod tests {
 
       let fetcher = Arc::new(MapFetcher::new(map));
       let dom = dom2::Document::new(QuirksMode::NoQuirks);
-      let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+      let mut host =
+        crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
       let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-      host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+      host
+        .window_mut()
+        .vm_mut()
+        .set_budget(Budget::unlimited(100));
 
       let mut loader = VmJsModuleLoader::new(fetcher, document_url);
       let err = loader
@@ -2128,9 +2297,13 @@ mod tests {
 
       let fetcher = Arc::new(MapFetcher::new(map));
       let dom = dom2::Document::new(QuirksMode::NoQuirks);
-      let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+      let mut host =
+        crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
       let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
-      host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+      host
+        .window_mut()
+        .vm_mut()
+        .set_budget(Budget::unlimited(100));
 
       let mut loader = VmJsModuleLoader::new(fetcher, document_url);
       loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
@@ -2175,6 +2348,9 @@ mod tests {
     ));
     assert_eq!(kind, ImportMapThrowKind::TypeError);
     assert_eq!(msg.match_indices("import map limit exceeded:").count(), 1);
-    assert_eq!(msg, "import map limit exceeded: \"imports\" has too many entries (3 > max 2)");
+    assert_eq!(
+      msg,
+      "import map limit exceeded: \"imports\" has too many entries (3 > max 2)"
+    );
   }
 }

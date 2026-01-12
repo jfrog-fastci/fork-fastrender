@@ -58,4 +58,3 @@ fn all_unset_inherits_inherited_properties_and_resets_non_inherited() {
   // The `all` property does not apply to direction/unicode-bidi.
   assert_eq!(target.styles.direction, Direction::Rtl);
 }
-

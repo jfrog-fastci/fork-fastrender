@@ -5,8 +5,8 @@
 //! The backing engine is currently `vm-js`, but the surface area is "realm-shaped" so a different
 //! backend could be swapped in later.
 
-use crate::render_control::RenderDeadline;
 use super::vm_error_format;
+use crate::render_control::RenderDeadline;
 use parse_js::ast::expr::lit::{LitBigIntExpr, LitNumExpr, LitStrExpr};
 use parse_js::ast::expr::{BinaryExpr, CallExpr, Expr, IdExpr};
 use parse_js::ast::node::{literal_string_code_units, Node};
@@ -530,22 +530,20 @@ impl Evaluator<'_> {
       Value::Bool(b) => Ok(ScriptValue::Bool(b)),
       Value::Number(n) => Ok(ScriptValue::Number(n)),
       Value::BigInt(b) => Ok(ScriptValue::BigInt(b.to_decimal_string())),
-      Value::String(s) => Ok(ScriptValue::String(
-        {
-          let js = heap.get_string(s).map_err(vm_error_to_runtime)?;
-          const MAX_SCRIPT_VALUE_STRING_CODE_UNITS: usize = 1 << 20;
-          if js.len_code_units() > MAX_SCRIPT_VALUE_STRING_CODE_UNITS {
-            return Err(ScriptError::Runtime {
+      Value::String(s) => Ok(ScriptValue::String({
+        let js = heap.get_string(s).map_err(vm_error_to_runtime)?;
+        const MAX_SCRIPT_VALUE_STRING_CODE_UNITS: usize = 1 << 20;
+        if js.len_code_units() > MAX_SCRIPT_VALUE_STRING_CODE_UNITS {
+          return Err(ScriptError::Runtime {
               message: format!(
                 "String value exceeded max length (len_code_units={}, limit={MAX_SCRIPT_VALUE_STRING_CODE_UNITS})",
                 js.len_code_units()
               ),
               stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
             });
-          }
-          js.to_utf8_lossy()
-        },
-      )),
+        }
+        js.to_utf8_lossy()
+      })),
       Value::Symbol(_) => Ok(ScriptValue::Symbol),
       Value::Object(_) => Ok(ScriptValue::Object),
     }
@@ -688,12 +686,14 @@ impl Evaluator<'_> {
 
   fn eval_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<Expr>) -> Result<Value, ScriptError> {
     match &*expr.stx {
-      Expr::LitBigInt(node) => self
-        .eval_lit_bigint(&node.stx)
-        .map_err(|msg| ScriptError::Runtime {
-          message: msg,
-          stack_trace: self.stack_trace_at_loc(expr.loc),
-        }),
+      Expr::LitBigInt(node) => {
+        self
+          .eval_lit_bigint(&node.stx)
+          .map_err(|msg| ScriptError::Runtime {
+            message: msg,
+            stack_trace: self.stack_trace_at_loc(expr.loc),
+          })
+      }
       Expr::LitNum(node) => self.eval_lit_num(&node.stx),
       Expr::LitBool(node) => Ok(Value::Bool(node.stx.value)),
       Expr::LitNull(_) => Ok(Value::Null),
@@ -782,10 +782,11 @@ impl Evaluator<'_> {
             message: err.to_string(),
             stack_trace: self.stack_trace_at_loc(node.loc),
           })?;
-        let eq = strict_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
-          message: err.to_string(),
-          stack_trace: self.stack_trace_at_loc(node.loc),
-        })?;
+        let eq =
+          strict_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
         Ok(Value::Bool(eq))
       }
       parse_js::operator::OperatorName::StrictInequality => {
@@ -804,10 +805,11 @@ impl Evaluator<'_> {
             message: err.to_string(),
             stack_trace: self.stack_trace_at_loc(node.loc),
           })?;
-        let eq = strict_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
-          message: err.to_string(),
-          stack_trace: self.stack_trace_at_loc(node.loc),
-        })?;
+        let eq =
+          strict_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
         Ok(Value::Bool(!eq))
       }
       parse_js::operator::OperatorName::Equality => {
@@ -826,10 +828,11 @@ impl Evaluator<'_> {
             message: err.to_string(),
             stack_trace: self.stack_trace_at_loc(node.loc),
           })?;
-        let eq = abstract_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
-          message: err.to_string(),
-          stack_trace: self.stack_trace_at_loc(node.loc),
-        })?;
+        let eq =
+          abstract_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
         Ok(Value::Bool(eq))
       }
       parse_js::operator::OperatorName::Inequality => {
@@ -848,10 +851,11 @@ impl Evaluator<'_> {
             message: err.to_string(),
             stack_trace: self.stack_trace_at_loc(node.loc),
           })?;
-        let eq = abstract_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
-          message: err.to_string(),
-          stack_trace: self.stack_trace_at_loc(node.loc),
-        })?;
+        let eq =
+          abstract_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
         Ok(Value::Bool(!eq))
       }
       parse_js::operator::OperatorName::Assignment => {
@@ -986,7 +990,9 @@ fn to_primitive(scope: &mut Scope<'_>, value: Value) -> Result<Value, VmError> {
 
 fn to_number(scope: &mut Scope<'_>, value: Value) -> Result<f64, VmError> {
   match value {
-    Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a number")),
+    Value::Symbol(_) => Err(VmError::TypeError(
+      "Cannot convert a Symbol value to a number",
+    )),
     Value::Object(_) => {
       // Per spec: ToPrimitive, then ToNumber.
       let prim = to_primitive(scope, value)?;
@@ -1064,7 +1070,9 @@ fn abstract_equality(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<bool, 
       (Bool(x), Bool(y)) => return Ok(x == y),
       (Number(x), Number(y)) => return Ok(x == y),
       (BigInt(x), BigInt(y)) => return Ok(x == y),
-      (String(x), String(y)) => return Ok(scope.heap().get_string(x)? == scope.heap().get_string(y)?),
+      (String(x), String(y)) => {
+        return Ok(scope.heap().get_string(x)? == scope.heap().get_string(y)?)
+      }
       (Symbol(x), Symbol(y)) => return Ok(x == y),
       (Object(x), Object(y)) => return Ok(x == y),
 
@@ -1426,7 +1434,9 @@ mod tests {
 
     // In sloppy mode, assignments to non-writable globals fail silently.
     assert_eq!(
-      realm.eval_script("ro.js", "undefined = 1; undefined").unwrap(),
+      realm
+        .eval_script("ro.js", "undefined = 1; undefined")
+        .unwrap(),
       ScriptValue::Undefined
     );
     assert_eq!(
@@ -1434,7 +1444,9 @@ mod tests {
       ScriptValue::Bool(false)
     );
     assert_eq!(
-      realm.eval_script("ro.js", "Infinity = 1; Infinity").unwrap(),
+      realm
+        .eval_script("ro.js", "Infinity = 1; Infinity")
+        .unwrap(),
       ScriptValue::Number(f64::INFINITY)
     );
   }
@@ -1717,7 +1729,10 @@ mod tests {
       }
     }
 
-    assert!(saw_oom, "expected heap growth to eventually hit VmError::OutOfMemory");
+    assert!(
+      saw_oom,
+      "expected heap growth to eventually hit VmError::OutOfMemory"
+    );
     assert!(
       rt.heap.used_bytes() <= max_bytes,
       "heap.used_bytes should never exceed the configured max_bytes (used={} max={})",

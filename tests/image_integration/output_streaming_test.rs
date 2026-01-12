@@ -135,7 +135,11 @@ fn jpeg_round_trip_1x1_unpremultiplies_before_dropping_alpha() {
   let px = decoded.get_pixel(0, 0).0;
 
   // If we accidentally encoded premultiplied values, we'd see something close to 10, not 255.
-  assert!(px[0] > 200, "expected bright red after unpremultiply, got {:?}", px);
+  assert!(
+    px[0] > 200,
+    "expected bright red after unpremultiply, got {:?}",
+    px
+  );
 }
 
 #[test]
@@ -153,7 +157,11 @@ fn jpeg_round_trip_2x2_basic_dimensions_and_pixels() {
     .to_rgb8();
   assert_eq!(decoded.dimensions(), (2, 2));
   let px = decoded.get_pixel(0, 0).0;
-  assert!(px[0] > 200, "expected bright red after unpremultiply, got {:?}", px);
+  assert!(
+    px[0] > 200,
+    "expected bright red after unpremultiply, got {:?}",
+    px
+  );
 }
 
 #[test]
@@ -166,7 +174,11 @@ fn webp_round_trip_1x1_unpremultiplies_and_preserves_alpha() {
   let decoded = decode_rgba(&encoded);
   let px = decoded.get_pixel(0, 0).0;
 
-  assert!(px[0] > 200, "expected bright red after unpremultiply, got {:?}", px);
+  assert!(
+    px[0] > 200,
+    "expected bright red after unpremultiply, got {:?}",
+    px
+  );
   assert!(px[3].abs_diff(10) <= 2, "expected alpha ~10, got {:?}", px);
 }
 
@@ -182,7 +194,11 @@ fn webp_round_trip_2x2_basic_dimensions_and_pixels() {
   let decoded = decode_rgba(&encoded);
   assert_eq!(decoded.dimensions(), (2, 2));
   let px = decoded.get_pixel(0, 0).0;
-  assert!(px[0] > 200, "expected bright red after unpremultiply, got {:?}", px);
+  assert!(
+    px[0] > 200,
+    "expected bright red after unpremultiply, got {:?}",
+    px
+  );
   assert!(px[3].abs_diff(10) <= 2, "expected alpha ~10, got {:?}", px);
 }
 

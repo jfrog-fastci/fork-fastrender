@@ -16,8 +16,8 @@ pub mod overload_ir;
 pub mod parse;
 pub mod parse_dictionary;
 pub mod resolve;
-pub mod type_resolution;
 pub mod semantic;
+pub mod type_resolution;
 
 pub use analyze::{
   analyze_resolved_world, AnalyzedInterface, AnalyzedInterfaceMember, AnalyzedInterfaceMixin,
@@ -187,7 +187,9 @@ pub fn extract_webidl_blocks_from_bikeshed(source: &str) -> Vec<String> {
         .map(|rel| start + rel)
         .unwrap_or(source.len());
       let tag = &source[start..line_end];
-      if !(tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\""))
+      if !(tag.contains("class=idl")
+        || tag.contains("class='idl'")
+        || tag.contains("class=\"idl\""))
       {
         i = after_name;
         continue;

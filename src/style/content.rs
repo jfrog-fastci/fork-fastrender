@@ -984,10 +984,7 @@ impl ContentContext {
         if values.first.is_some() {
           Some("")
         } else {
-          values
-            .first
-            .as_deref()
-            .or_else(|| values.start.as_deref())
+          values.first.as_deref().or_else(|| values.start.as_deref())
         }
       }
     }
@@ -1001,7 +998,9 @@ impl ContentContext {
   ) -> Option<crate::tree::fragment_tree::FragmentNode> {
     let values = self.running_elements.get(name);
     match select {
-      RunningElementSelect::First => values.and_then(|v| v.first.clone().or_else(|| v.start.clone())),
+      RunningElementSelect::First => {
+        values.and_then(|v| v.first.clone().or_else(|| v.start.clone()))
+      }
       RunningElementSelect::Start => values.and_then(|v| v.start.clone()),
       RunningElementSelect::Last => values.and_then(|v| v.last.clone().or_else(|| v.start.clone())),
       RunningElementSelect::FirstExcept => {
@@ -1720,7 +1719,10 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
       }
 
       let select = if let Some(raw_select) = parts.next() {
-        match trim_ascii_whitespace(raw_select).to_ascii_lowercase().as_str() {
+        match trim_ascii_whitespace(raw_select)
+          .to_ascii_lowercase()
+          .as_str()
+        {
           "first" => RunningElementSelect::First,
           "start" => RunningElementSelect::Start,
           "last" => RunningElementSelect::Last,

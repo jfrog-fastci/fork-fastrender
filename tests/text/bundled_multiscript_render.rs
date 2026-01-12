@@ -208,8 +208,10 @@ fn bundled_fonts_select_traditional_chinese_face_for_zh_hant() {
   let db = font_ctx.database();
 
   assert!(
-    db.faces()
-      .any(|face| face.families.iter().any(|(family, _)| family == "Noto Sans TC")),
+    db.faces().any(|face| face
+      .families
+      .iter()
+      .any(|(family, _)| family == "Noto Sans TC")),
     "bundled font set should include Noto Sans TC for zh-Hant fallback selection",
   );
 

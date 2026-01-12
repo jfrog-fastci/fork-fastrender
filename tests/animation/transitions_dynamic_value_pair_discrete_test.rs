@@ -113,7 +113,9 @@ fn render_after_class_change(transition: &str) -> Result<(FragmentTree, usize)> 
   // style-change event.
   doc.render_frame()?;
 
-  let prepared = doc.prepared().expect("expected prepared document after render");
+  let prepared = doc
+    .prepared()
+    .expect("expected prepared document after render");
   let node_id = styled_node_id_by_id(prepared.styled_tree(), "box").expect("styled id");
   let box_id = box_id_for_styled(&prepared.box_tree().root, node_id).expect("box id");
   Ok((prepared.fragment_tree().clone(), box_id))
@@ -150,8 +152,10 @@ fn dynamic_value_pair_discrete_box_shadow_flips_at_midpoint_with_allow_discrete(
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
   let shadow = first_box_shadow(&late, box_id);
-  assert!(!shadow.inset, "expected after-change box-shadow after midpoint");
+  assert!(
+    !shadow.inset,
+    "expected after-change box-shadow after midpoint"
+  );
   assert!((shadow.offset_x.to_px() - 10.0).abs() < 1e-3);
   Ok(())
 }
-

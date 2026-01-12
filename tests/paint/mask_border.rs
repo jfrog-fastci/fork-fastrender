@@ -28,7 +28,9 @@ fn assert_is_red(rgba: (u8, u8, u8, u8), msg: &str) {
 
 fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
   let mut dl = create_stacking_context_bounds_renderer();
-  let dl_pixmap = dl.render_html(html, width, height).expect("render display_list");
+  let dl_pixmap = dl
+    .render_html(html, width, height)
+    .expect("render display_list");
 
   let mut legacy = create_stacking_context_bounds_renderer_legacy();
   let legacy_pixmap = legacy
@@ -43,7 +45,8 @@ fn mask_border_transparent_source_masks_border_area() {
   // A fully transparent 3×3 image. With `mask-border-slice: 1` and `mask-border-width: 20px`,
   // the border regions of the element are masked out, while the interior remains visible (the
   // default for `mask-border-slice` without the `fill` keyword).
-  let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="3" height="3" viewBox="0 0 3 3"></svg>"#;
+  let svg =
+    r#"<svg xmlns="http://www.w3.org/2000/svg" width="3" height="3" viewBox="0 0 3 3"></svg>"#;
   let encoded = STANDARD.encode(svg);
   let data_url = format!("data:image/svg+xml;base64,{encoded}");
 
@@ -79,4 +82,3 @@ fn mask_border_transparent_source_masks_border_area() {
     );
   }
 }
-

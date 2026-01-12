@@ -93,10 +93,16 @@ fn block_floats_in_centered_container_use_container_content_origin() {
   let sample_y = 5;
 
   let (r0, g0, b0, a0) = pixel_rgba(&pixmap, 55, sample_y);
-  assert!(a0 > 250 && r0 < 20 && g0 < 20 && b0 < 20, "expected black at x=55");
+  assert!(
+    a0 > 250 && r0 < 20 && g0 < 20 && b0 < 20,
+    "expected black at x=55"
+  );
 
   let (r1, g1, b1, a1) = pixel_rgba(&pixmap, 155, sample_y);
-  assert!(a1 > 250 && r1 > 235 && g1 < 20 && b1 < 20, "expected red at x=155");
+  assert!(
+    a1 > 250 && r1 > 235 && g1 < 20 && b1 < 20,
+    "expected red at x=155"
+  );
 
   let (rw, gw, bw, aw) = pixel_rgba(&pixmap, 5, sample_y);
   assert!(

@@ -113,7 +113,9 @@ fn identity_and_selectors() {
       .unwrap();
     assert!(same);
 
-    let n: i32 = ctx.eval(r#"document.querySelectorAll("div.b").length"#).unwrap();
+    let n: i32 = ctx
+      .eval(r#"document.querySelectorAll("div.b").length"#)
+      .unwrap();
     assert_eq!(n, 2);
   });
 }
@@ -201,9 +203,8 @@ fn element_scoped_query_selectors_do_not_include_the_scope_element() {
 
 #[test]
 fn element_closest_returns_ancestors_and_null() {
-  let dom = make_dom(
-    r#"<!doctype html><html><body><div id="p"><span id="a"></span></div></body></html>"#,
-  );
+  let dom =
+    make_dom(r#"<!doctype html><html><body><div id="p"><span id="a"></span></div></body></html>"#);
 
   let rt = Runtime::new().unwrap();
   let ctx = Context::full(&rt).unwrap();
@@ -555,7 +556,8 @@ fn document_head_and_body_getters_work() {
 
 #[test]
 fn node_remove_detaches_from_dom() {
-  let dom = make_dom(r#"<!doctype html><html><body><div id="x"><span id="y"></span></div></body></html>"#);
+  let dom =
+    make_dom(r#"<!doctype html><html><body><div id="x"><span id="y"></span></div></body></html>"#);
 
   let rt = Runtime::new().unwrap();
   let ctx = Context::full(&rt).unwrap();
@@ -758,15 +760,22 @@ fn wrapper_cache_installs_finalizer_when_supported() {
     install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
 
     let has_weakref: bool = ctx.eval(r#"typeof WeakRef === "function""#).unwrap();
-    assert!(has_weakref, "WeakRef intrinsic should be installed by bindings");
+    assert!(
+      has_weakref,
+      "WeakRef intrinsic should be installed by bindings"
+    );
 
-    let has_finalization_registry: bool =
-      ctx.eval(r#"typeof FinalizationRegistry === "function""#).unwrap();
+    let has_finalization_registry: bool = ctx
+      .eval(r#"typeof FinalizationRegistry === "function""#)
+      .unwrap();
     if has_finalization_registry {
       let has_finalizer: bool = ctx
         .eval(r#"typeof globalThis.__fastrender_dom_node_cache_finalizer === "object""#)
         .unwrap();
-      assert!(has_finalizer, "expected node cache FinalizationRegistry to be installed");
+      assert!(
+        has_finalizer,
+        "expected node cache FinalizationRegistry to be installed"
+      );
 
       let has_register_fn: bool = ctx
         .eval(r#"typeof globalThis.__fastrender_dom_node_cache_register_finalizer === "function""#)

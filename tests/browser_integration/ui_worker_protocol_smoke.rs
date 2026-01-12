@@ -204,8 +204,14 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
     )
   });
 
-  assert!(nav_started.is_some(), "expected NavigationStarted, got {events:?}");
-  assert!(loading_true.is_some(), "expected LoadingState(true), got {events:?}");
+  assert!(
+    nav_started.is_some(),
+    "expected NavigationStarted, got {events:?}"
+  );
+  assert!(
+    loading_true.is_some(),
+    "expected LoadingState(true), got {events:?}"
+  );
   assert!(
     nav_committed.is_some(),
     "expected NavigationCommitted, got {events:?}"
@@ -247,11 +253,9 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
       title,
       can_go_back,
       can_go_forward,
-    } if *t == tab_id && url == "about:newtab" => Some((
-      title.clone(),
-      *can_go_back,
-      *can_go_forward,
-    )),
+    } if *t == tab_id && url == "about:newtab" => {
+      Some((title.clone(), *can_go_back, *can_go_forward))
+    }
     _ => None,
   });
   let (title, can_go_back, can_go_forward) =

@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use vm_js::{
-  GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
-  Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
+  PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 use crate::js::window_blob::{self, BlobData};
@@ -21,10 +21,7 @@ const MAX_FORM_DATA_BYTES: usize = 10 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub(crate) enum FormDataValue {
   String(String),
-  Blob {
-    data: BlobData,
-    filename: String,
-  },
+  Blob { data: BlobData, filename: String },
 }
 
 #[derive(Clone, Debug)]
@@ -91,7 +88,11 @@ fn realm_id_from_slot(value: Value) -> Option<RealmId> {
   Some(RealmId::from_raw(raw))
 }
 
-fn realm_id_for_binding_call(vm: &Vm, scope: &Scope<'_>, callee: GcObject) -> Result<RealmId, VmError> {
+fn realm_id_for_binding_call(
+  vm: &Vm,
+  scope: &Scope<'_>,
+  callee: GcObject,
+) -> Result<RealmId, VmError> {
   if let Some(realm_id) = vm.current_realm() {
     return Ok(realm_id);
   }
@@ -108,7 +109,11 @@ fn realm_id_for_binding_call(vm: &Vm, scope: &Scope<'_>, callee: GcObject) -> Re
 
 fn iter_proto_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  match slots.get(ITER_PROTO_SLOT).copied().unwrap_or(Value::Undefined) {
+  match slots
+    .get(ITER_PROTO_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
     Value::Object(obj) => Ok(obj),
     _ => Err(VmError::InvariantViolation(
       "FormData binding missing iterator prototype native slot",
@@ -124,9 +129,7 @@ fn with_realm_state_mut<R>(
 ) -> Result<R, VmError> {
   let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
 
-  let mut registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   let state = registry
     .realms
     .get_mut(&realm_id)
@@ -169,7 +172,9 @@ fn require_form_data<'a>(
 fn form_data_total_bytes(entries: &[FormDataEntry]) -> Result<usize, VmError> {
   let mut total: usize = 0;
   for entry in entries {
-    total = total.checked_add(entry.name.len()).ok_or(VmError::OutOfMemory)?;
+    total = total
+      .checked_add(entry.name.len())
+      .ok_or(VmError::OutOfMemory)?;
     match &entry.value {
       FormDataValue::String(s) => {
         total = total.checked_add(s.len()).ok_or(VmError::OutOfMemory)?;
@@ -310,7 +315,10 @@ fn form_data_append_native(
         "FormData filename exceeds maximum length",
       )?,
     };
-    FormDataValue::Blob { data: blob, filename }
+    FormDataValue::Blob {
+      data: blob,
+      filename,
+    }
   } else {
     let s = js_value_to_string(
       vm,
@@ -370,7 +378,10 @@ fn form_data_set_native(
         "FormData filename exceeds maximum length",
       )?,
     };
-    FormDataValue::Blob { data: blob, filename }
+    FormDataValue::Blob {
+      data: blob,
+      filename,
+    }
   } else {
     let s = js_value_to_string(
       vm,
@@ -541,7 +552,9 @@ fn form_data_for_each_native(
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   if !scope.heap().is_callable(callback).unwrap_or(false) {
-    return Err(VmError::TypeError("FormData.forEach callback is not callable"));
+    return Err(VmError::TypeError(
+      "FormData.forEach callback is not callable",
+    ));
   }
 
   let (form_obj, entries) = require_form_data(vm, scope, callee, this)?;
@@ -676,7 +689,10 @@ fn iterator_next_native(
   let data_desc = |value| PropertyDescriptor {
     enumerable: true,
     configurable: true,
-    kind: PropertyKind::Data { value, writable: true },
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
   };
 
   let value_key = alloc_key(scope, "value")?;
@@ -713,7 +729,11 @@ fn iterator_next_native(
           Value::String(name_s)
         }
         ITER_KIND_VALUES => js_form_data_value_to_js(vm, scope, callee, blob_proto, &entry.value)?,
-        _ => return Err(VmError::InvariantViolation("FormData iterator invalid kind")),
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "FormData iterator invalid kind",
+          ))
+        }
       };
 
       scope.define_property(result_obj, value_key, data_desc(out_value))?;
@@ -774,7 +794,11 @@ pub fn install_window_form_data_bindings(
       .unwrap_or(Value::Undefined)
     {
       Value::Object(obj) => obj,
-      _ => return Err(VmError::InvariantViolation("FormData constructor missing prototype object")),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "FormData constructor missing prototype object",
+        ))
+      }
     }
   };
   scope.push_root(Value::Object(proto))?;
@@ -804,9 +828,14 @@ pub fn install_window_form_data_bindings(
     .heap_mut()
     .object_set_prototype(next_fn, Some(intr.function_prototype()))?;
   let next_key = alloc_key(&mut scope, "next")?;
-  scope.define_property(iter_proto, next_key, data_desc(Value::Object(next_fn), true))?;
+  scope.define_property(
+    iter_proto,
+    next_key,
+    data_desc(Value::Object(next_fn), true),
+  )?;
 
-  let sym_iter_call_id: NativeFunctionId = vm.register_native_call(iterator_symbol_iterator_native)?;
+  let sym_iter_call_id: NativeFunctionId =
+    vm.register_native_call(iterator_symbol_iterator_native)?;
   let sym_iter_name = scope.alloc_string("[Symbol.iterator]")?;
   scope.push_root(Value::String(sym_iter_name))?;
   let sym_iter_fn = scope.alloc_native_function_with_slots(
@@ -822,7 +851,11 @@ pub fn install_window_form_data_bindings(
     .object_set_prototype(sym_iter_fn, Some(intr.function_prototype()))?;
   let iter_sym = intr.well_known_symbols().iterator;
   let iter_key = PropertyKey::from_symbol(iter_sym);
-  scope.define_property(iter_proto, iter_key, data_desc(Value::Object(sym_iter_fn), true))?;
+  scope.define_property(
+    iter_proto,
+    iter_key,
+    data_desc(Value::Object(sym_iter_fn), true),
+  )?;
 
   // --- FormData prototype methods -------------------------------------------
   let append_call_id: NativeFunctionId = vm.register_native_call(form_data_append_native)?;
@@ -908,7 +941,11 @@ pub fn install_window_form_data_bindings(
     .heap_mut()
     .object_set_prototype(get_all_fn, Some(intr.function_prototype()))?;
   let get_all_key = alloc_key(&mut scope, "getAll")?;
-  scope.define_property(proto, get_all_key, data_desc(Value::Object(get_all_fn), true))?;
+  scope.define_property(
+    proto,
+    get_all_key,
+    data_desc(Value::Object(get_all_fn), true),
+  )?;
 
   let has_call_id: NativeFunctionId = vm.register_native_call(form_data_has_native)?;
   let has_name = scope.alloc_string("has")?;
@@ -942,7 +979,11 @@ pub fn install_window_form_data_bindings(
     .heap_mut()
     .object_set_prototype(for_each_fn, Some(intr.function_prototype()))?;
   let for_each_key = alloc_key(&mut scope, "forEach")?;
-  scope.define_property(proto, for_each_key, data_desc(Value::Object(for_each_fn), true))?;
+  scope.define_property(
+    proto,
+    for_each_key,
+    data_desc(Value::Object(for_each_fn), true),
+  )?;
 
   let entries_call_id: NativeFunctionId = vm.register_native_call(form_data_entries_native)?;
   let entries_name = scope.alloc_string("entries")?;
@@ -962,7 +1003,11 @@ pub fn install_window_form_data_bindings(
     .heap_mut()
     .object_set_prototype(entries_fn, Some(intr.function_prototype()))?;
   let entries_key = alloc_key(&mut scope, "entries")?;
-  scope.define_property(proto, entries_key, data_desc(Value::Object(entries_fn), true))?;
+  scope.define_property(
+    proto,
+    entries_key,
+    data_desc(Value::Object(entries_fn), true),
+  )?;
 
   let keys_call_id: NativeFunctionId = vm.register_native_call(form_data_keys_native)?;
   let keys_name = scope.alloc_string("keys")?;
@@ -1005,14 +1050,16 @@ pub fn install_window_form_data_bindings(
   scope.define_property(proto, values_key, data_desc(Value::Object(values_fn), true))?;
 
   let sym_iter_key = PropertyKey::from_symbol(intr.well_known_symbols().iterator);
-  scope.define_property(proto, sym_iter_key, data_desc(Value::Object(entries_fn), true))?;
+  scope.define_property(
+    proto,
+    sym_iter_key,
+    data_desc(Value::Object(entries_fn), true),
+  )?;
 
   let ctor_key = alloc_key(&mut scope, "FormData")?;
   scope.define_property(global, ctor_key, data_desc(Value::Object(ctor), true))?;
 
-  let mut registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   registry.realms.insert(
     realm_id,
     FormDataRealmState {
@@ -1028,9 +1075,7 @@ pub fn install_window_form_data_bindings(
 }
 
 pub fn teardown_window_form_data_bindings_for_realm(realm_id: RealmId) {
-  let mut registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   registry.realms.remove(&realm_id);
 }
 
@@ -1070,9 +1115,7 @@ pub(crate) fn clone_form_data_entries_for_fetch(
     return Ok(None);
   };
 
-  let mut registry = registry()
-    .lock()
-    .unwrap_or_else(|err| err.into_inner());
+  let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
   let Some(state) = registry.realms.get_mut(&realm_id) else {
     return Ok(None);
   };

@@ -55,4 +55,3 @@ fn css_box_shadow_blur_radius_matches_display_list_item_semantics() {
     "expected HTML box-shadow output to match rendering a direct BoxShadowItem"
   );
 }
-

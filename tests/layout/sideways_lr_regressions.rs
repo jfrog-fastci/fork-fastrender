@@ -165,7 +165,10 @@ fn border_inline_color_maps_in_sideways_lr_writing_mode() {
   resolve_pending_logical_properties(&mut style);
 
   // Sideways-lr + ltr: inline axis is vertical -> start maps to bottom, end maps to top.
-  assert_eq!(style.border_bottom_color, fastrender::style::color::Rgba::RED);
+  assert_eq!(
+    style.border_bottom_color,
+    fastrender::style::color::Rgba::RED
+  );
   assert_eq!(
     style.border_top_color,
     fastrender::style::color::Rgba::GREEN

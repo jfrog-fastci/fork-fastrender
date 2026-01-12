@@ -12,7 +12,10 @@ const DEFAULT_CHARSET: &str = "charset=US-ASCII";
 // whitespace. Avoid `str::trim()` here because it removes additional Unicode whitespace like NBSP
 // (U+00A0), which should not be treated as ignorable.
 fn is_html_ascii_whitespace_char(value: char) -> bool {
-  matches!(value, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+  matches!(
+    value,
+    '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '
+  )
 }
 
 fn is_html_ascii_whitespace_byte(value: u8) -> bool {
@@ -274,10 +277,7 @@ pub(crate) fn encode_base64_data_url(media_type: &str, data: &[u8]) -> Option<St
   // Base64 expands input bytes by ~4/3; build the final URL in a single `String` allocation so we
   // can fail gracefully on OOM instead of aborting.
   let input_len = u64::try_from(data.len()).ok()?;
-  let base64_len = input_len
-    .checked_add(2)?
-    .checked_div(3)?
-    .checked_mul(4)?;
+  let base64_len = input_len.checked_add(2)?.checked_div(3)?.checked_mul(4)?;
   let base64_len = usize::try_from(base64_len).ok()?;
 
   let total_len = "data:"
@@ -299,15 +299,14 @@ pub(crate) fn encode_base64_data_url(media_type: &str, data: &[u8]) -> Option<St
     // for the base64 payload. `encode_slice` writes ASCII, so the final buffer is valid UTF-8.
     let buf = url.as_mut_vec();
     buf.set_len(start + base64_len);
-    let written = match base64::engine::general_purpose::STANDARD
-      .encode_slice(data, &mut buf[start..])
-    {
-      Ok(written) => written,
-      Err(_) => {
-        buf.set_len(start);
-        return None;
-      }
-    };
+    let written =
+      match base64::engine::general_purpose::STANDARD.encode_slice(data, &mut buf[start..]) {
+        Ok(written) => written,
+        Err(_) => {
+          buf.set_len(start);
+          return None;
+        }
+      };
     buf.truncate(start + written);
   }
 
@@ -385,7 +384,8 @@ mod tests {
   #[test]
   fn data_url_prefix_decodes_base64_with_whitespace() {
     let bytes: Vec<u8> = (0..64u8).collect();
-    let mut url = encode_base64_data_url("application/octet-stream", &bytes).expect("encode data url");
+    let mut url =
+      encode_base64_data_url("application/octet-stream", &bytes).expect("encode data url");
     let (_, payload) = url.split_once(',').expect("comma");
     let injected = payload
       .as_bytes()

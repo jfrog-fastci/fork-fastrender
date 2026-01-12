@@ -35,11 +35,19 @@ fn block_constraints_do_not_clamp_definite_width_to_viewport() {
     vec![text_node],
   );
 
-  let root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![container]);
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![container],
+  );
 
-  let constraints =
-    LayoutConstraints::new(AvailableSpace::Definite(viewport.width), AvailableSpace::Indefinite);
-  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+  let constraints = LayoutConstraints::new(
+    AvailableSpace::Definite(viewport.width),
+    AvailableSpace::Indefinite,
+  );
+  let fragment = fc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let container_fragment = fragment.children.first().expect("container fragment");
   assert!(

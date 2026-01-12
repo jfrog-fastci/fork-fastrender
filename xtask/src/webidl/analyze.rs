@@ -98,4 +98,3 @@ fn analyze_member(member: &ResolvedInterfaceMember) -> AnalyzedInterfaceMember {
     parsed,
   }
 }
-

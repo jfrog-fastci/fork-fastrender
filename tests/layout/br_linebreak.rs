@@ -28,7 +28,11 @@ fn find_first_block_with_line_children<'a>(node: &'a FragmentNode) -> Option<&'a
   None
 }
 
-fn find_first_line_y_with_text(node: &FragmentNode, origin: (f32, f32), needle: &str) -> Option<f32> {
+fn find_first_line_y_with_text(
+  node: &FragmentNode,
+  origin: (f32, f32),
+  needle: &str,
+) -> Option<f32> {
   let pos = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
   if matches!(node.content, FragmentContent::Line { .. }) {
     let mut text = String::new();

@@ -50,7 +50,8 @@ fn layout_parent_with_container_type(container_type: ContainerType) -> (f32, f32
   );
 
   let tree = BoxTree::new(root);
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -67,7 +68,8 @@ fn layout_parent_with_container_type(container_type: ContainerType) -> (f32, f32
 
 #[test]
 fn container_type_size_and_inline_size_establish_bfc() {
-  let (baseline_child_y, baseline_outer_gap) = layout_parent_with_container_type(ContainerType::Normal);
+  let (baseline_child_y, baseline_outer_gap) =
+    layout_parent_with_container_type(ContainerType::Normal);
   assert_approx(
     baseline_child_y,
     0.0,

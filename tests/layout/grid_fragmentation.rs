@@ -551,7 +551,10 @@ fn grid_pagination_forced_break_inside_single_track_item_does_not_force_siblings
       .iter()
       .map(|page| fragments_with_id(page, id).len())
       .sum();
-    assert_eq!(count, 1, "expected box id {id} to appear exactly once total");
+    assert_eq!(
+      count, 1,
+      "expected box id {id} to appear exactly once total"
+    );
   }
 }
 

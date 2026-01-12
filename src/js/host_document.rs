@@ -35,7 +35,11 @@ impl Drop for ActiveEventGuard {
       }
     }
     // Out-of-order drop should not happen, but avoid leaking active-event state if it does.
-    if let Some(pos) = stack.stack.iter().rposition(|entry| entry.event_id == self.event_id) {
+    if let Some(pos) = stack
+      .stack
+      .iter()
+      .rposition(|entry| entry.event_id == self.event_id)
+    {
       stack.stack.remove(pos);
     }
   }
@@ -58,7 +62,11 @@ impl ActiveEventStack {
     event_id: u64,
     f: impl FnOnce(&mut events::Event) -> R,
   ) -> Option<R> {
-    let ptr = self.stack.iter().rfind(|entry| entry.event_id == event_id)?.event;
+    let ptr = self
+      .stack
+      .iter()
+      .rfind(|entry| entry.event_id == event_id)?
+      .event;
     // SAFETY: entries in `ActiveEventStack` are only created for the dynamic extent of dispatch.
     Some(unsafe { f(&mut *ptr.as_ptr()) })
   }
@@ -257,12 +265,7 @@ mod tests {
 
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = RecordingExecutor::new();
-    orchestrator.execute_script_element(
-      &mut host,
-      script,
-      ScriptType::Classic,
-      &mut executor,
-    )?;
+    orchestrator.execute_script_element(&mut host, script, ScriptType::Classic, &mut executor)?;
 
     assert_eq!(executor.observed, vec![Some(script)]);
     assert_eq!(host.current_script(), Some(outer_current));

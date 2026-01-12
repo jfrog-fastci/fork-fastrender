@@ -29,26 +29,14 @@ fn flex_wrap_auto_height_expands_to_fit_lines() {
     Arc::new(style)
   }
 
-  let mut item1 = BoxNode::new_block(
-    item_style(40.0, 50.0),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let mut item1 = BoxNode::new_block(item_style(40.0, 50.0), FormattingContextType::Block, vec![]);
   item1.id = 1;
 
-  let mut item2 = BoxNode::new_block(
-    item_style(40.0, 50.0),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let mut item2 = BoxNode::new_block(item_style(40.0, 50.0), FormattingContextType::Block, vec![]);
   item2.id = 2;
 
   // Third item wraps onto a second line with a smaller cross size.
-  let mut item3 = BoxNode::new_block(
-    item_style(40.0, 30.0),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let mut item3 = BoxNode::new_block(item_style(40.0, 30.0), FormattingContextType::Block, vec![]);
   item3.id = 3;
 
   let container = BoxNode::new_block(

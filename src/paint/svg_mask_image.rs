@@ -183,7 +183,8 @@ fn collect_svg_fragment_references(fragment: &str) -> HashSet<String> {
   };
 
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    value
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
   let mut refs = HashSet::new();
@@ -362,9 +363,12 @@ pub(crate) fn defs_injection_for_svg_fragment(
   // This must be case-insensitive because HTML/SVG serialization preserves attribute casing.
   fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
     let bytes = haystack.as_bytes();
-    bytes
-      .windows(needle.len())
-      .any(|window| window.iter().zip(needle).all(|(a, b)| a.to_ascii_lowercase() == *b))
+    bytes.windows(needle.len()).any(|window| {
+      window
+        .iter()
+        .zip(needle)
+        .all(|(a, b)| a.to_ascii_lowercase() == *b)
+    })
   }
   if !contains_ascii_case_insensitive(svg_fragment, b"href")
     && !contains_ascii_case_insensitive(svg_fragment, b"url(")
@@ -619,16 +623,14 @@ pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
   }
 
   let include = svg_ids_to_inline(defs, clip_id)?;
-  let rewritten_clip_path = defs
-    .get(clip_id)
-    .and_then(|fragment| {
-      rewrite_clip_path_object_bounding_box_to_user_space_on_use(
-        fragment,
-        clip_id,
-        reference_width,
-        reference_height,
-      )
-    });
+  let rewritten_clip_path = defs.get(clip_id).and_then(|fragment| {
+    rewrite_clip_path_object_bounding_box_to_user_space_on_use(
+      fragment,
+      clip_id,
+      reference_width,
+      reference_height,
+    )
+  });
 
   let mut out = String::new();
   out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
@@ -663,8 +665,9 @@ pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
 #[cfg(test)]
 mod tests {
   use super::{
-    collect_svg_fragment_ids, collect_svg_fragment_references, collect_svg_id_defs_from_svg_document,
-    inline_svg_for_clip_path_id, inline_svg_for_clip_path_id_with_view_box, inline_svg_for_mask_id,
+    collect_svg_fragment_ids, collect_svg_fragment_references,
+    collect_svg_id_defs_from_svg_document, inline_svg_for_clip_path_id,
+    inline_svg_for_clip_path_id_with_view_box, inline_svg_for_mask_id,
     inline_svg_for_mask_id_with_view_box,
   };
   use std::collections::HashMap;
@@ -679,8 +682,9 @@ mod tests {
     assert!(refs.is_ok());
     assert!(refs.unwrap().is_empty());
 
-    let ids =
-      std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| collect_svg_fragment_ids(invalid)));
+    let ids = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      collect_svg_fragment_ids(invalid)
+    }));
     assert!(ids.is_ok());
     assert!(ids.unwrap().is_empty());
 
@@ -794,8 +798,7 @@ mod tests {
 
   #[test]
   fn svg_clip_path_image_supports_separate_view_box_and_render_size() {
-    let clip =
-      r##"<clipPath xmlns="http://www.w3.org/2000/svg" id="clip"><rect x="0" y="0" width="10" height="10"/></clipPath>"##;
+    let clip = r##"<clipPath xmlns="http://www.w3.org/2000/svg" id="clip"><rect x="0" y="0" width="10" height="10"/></clipPath>"##;
     let defs = HashMap::from([("clip".to_string(), clip.to_string())]);
 
     let svg = inline_svg_for_clip_path_id_with_view_box(&defs, "clip", 10.5, 20.25, 21, 41)

@@ -264,11 +264,7 @@ fn url_create_search_params<'js>(
   Class::instance(ctx, JsUrlSearchParams { inner })
 }
 
-fn url_set_href<'js>(
-  ctx: Ctx<'js>,
-  url: Class<'js, JsUrl>,
-  value: String,
-) -> Result<(), Error> {
+fn url_set_href<'js>(ctx: Ctx<'js>, url: Class<'js, JsUrl>, value: String) -> Result<(), Error> {
   url
     .borrow()
     .inner
@@ -277,13 +273,13 @@ fn url_set_href<'js>(
   Ok(())
 }
 
-pub fn install_url_bindings<'js>(
-  ctx: Ctx<'js>,
-  globals: &Object<'js>,
-) -> Result<(), Error> {
+pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> Result<(), Error> {
   Class::<JsUrl>::define(globals)?;
   Class::<JsUrlSearchParams>::define(globals)?;
-  globals.set("__url_create_search_params", Func::from(url_create_search_params))?;
+  globals.set(
+    "__url_create_search_params",
+    Func::from(url_create_search_params),
+  )?;
   globals.set("__url_set_href", Func::from(url_set_href))?;
 
   // Small JS shim layer to model WebIDL behaviors that aren't ergonomic to express in the Rust

@@ -46,4 +46,3 @@ fn flex_auto_height_respects_max_height() {
     fragment.bounds.height()
   );
 }
-

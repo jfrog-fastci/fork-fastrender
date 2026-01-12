@@ -14,13 +14,14 @@ pub mod conversions;
 pub mod overload_resolution;
 pub mod runtime;
 
-pub use conversions::{convert_arguments, convert_to_idl, ArgumentSchema, ConvertedValue, IntegerConversionAttrs};
+pub use conversions::{
+  convert_arguments, convert_to_idl, ArgumentSchema, ConvertedValue, IntegerConversionAttrs,
+};
 pub use overload_resolution::{
-  resolve_overload, throw_no_matching_overload, ConvertedArgument, OverloadArg, OverloadSig, Optionality,
-  ResolvedOverload, WebIdlValue,
+  resolve_overload, throw_no_matching_overload, ConvertedArgument, Optionality, OverloadArg,
+  OverloadSig, ResolvedOverload, WebIdlValue,
 };
 pub use runtime::{
-  interface_id_from_name, InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime,
-  WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
+  interface_id_from_name, InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind,
+  JsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
 };
-

@@ -28,9 +28,13 @@ fn node_is_shadow_root(kind: &NodeKind) -> bool {
 fn node_is_valid_shadow_host(kind: &NodeKind) -> bool {
   match kind {
     NodeKind::Element {
-      tag_name, namespace, ..
+      tag_name,
+      namespace,
+      ..
     } => is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
-    NodeKind::Slot { namespace, .. } => is_html_namespace(namespace) && is_valid_shadow_host_name("slot"),
+    NodeKind::Slot { namespace, .. } => {
+      is_html_namespace(namespace) && is_valid_shadow_host_name("slot")
+    }
     _ => false,
   }
 }
@@ -64,8 +68,8 @@ fn parse_shadow_root_definition(kind: &NodeKind) -> Option<(ShadowRootMode, bool
     return None;
   }
 
-  let mode_attr =
-    get_attribute(attributes, "shadowroot").or_else(|| get_attribute(attributes, "shadowrootmode"))?;
+  let mode_attr = get_attribute(attributes, "shadowroot")
+    .or_else(|| get_attribute(attributes, "shadowrootmode"))?;
   let mode = if mode_attr.eq_ignore_ascii_case("open") {
     ShadowRootMode::Open
   } else if mode_attr.eq_ignore_ascii_case("closed") {
@@ -131,21 +135,19 @@ impl Document {
         // Declarative shadow DOM only promotes the first shadow root template child of a shadow host
         // element. Additional `<template shadowroot=...>` siblings must remain inert, so we skip
         // traversing into them here.
-        let first_declarative_shadow_template =
-          if node_is_element_like(&node.kind)
-            && !node_is_template_element(&node.kind)
-            && node_is_valid_shadow_host(&node.kind)
-            && !node.children.iter().any(|&child_id| {
-              self.node(child_id).parent == Some(id) && node_is_shadow_root(&self.node(child_id).kind)
-            })
-          {
-            node.children.iter().position(|&child_id| {
-              self.node(child_id).parent == Some(id)
-                && parse_shadow_root_definition(&self.node(child_id).kind).is_some()
-            })
-          } else {
-            None
-          };
+        let first_declarative_shadow_template = if node_is_element_like(&node.kind)
+          && !node_is_template_element(&node.kind)
+          && node_is_valid_shadow_host(&node.kind)
+          && !node.children.iter().any(|&child_id| {
+            self.node(child_id).parent == Some(id) && node_is_shadow_root(&self.node(child_id).kind)
+          }) {
+          node.children.iter().position(|&child_id| {
+            self.node(child_id).parent == Some(id)
+              && parse_shadow_root_definition(&self.node(child_id).kind).is_some()
+          })
+        } else {
+          None
+        };
 
         // Push children in reverse so we traverse in tree order.
         for idx in (0..node.children.len()).rev() {
@@ -157,7 +159,8 @@ impl Document {
 
           // Template contents are inert; only the first declarative shadow DOM template is walked so
           // nested declarative shadow roots inside it can be promoted.
-          if node_is_template_element(child_kind) && first_declarative_shadow_template != Some(idx) {
+          if node_is_template_element(child_kind) && first_declarative_shadow_template != Some(idx)
+          {
             continue;
           }
 
@@ -389,19 +392,20 @@ mod tests {
       "<option id=light>Light</option>",
       "</select>",
     );
-  
+
     let expected = crate::dom::parse_html(html).unwrap();
     let doc = crate::dom2::parse_html(html).unwrap();
-  
+
     let host = find_node_by_id(&doc, "host").expect("host element not found");
     assert!(
-      doc.node(host)
+      doc
+        .node(host)
         .children
         .iter()
         .all(|&child| !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
       "invalid shadow hosts must not have shadow roots attached"
     );
-  
+
     let roundtrip = doc.to_renderer_dom();
     assert_eq!(
       snapshot_dom(&expected),
@@ -411,7 +415,8 @@ mod tests {
   }
 
   #[test]
-  fn attach_shadow_roots_ignores_invalid_shadow_hosts_with_shadowrootmode_and_matches_legacy_snapshot() {
+  fn attach_shadow_roots_ignores_invalid_shadow_hosts_with_shadowrootmode_and_matches_legacy_snapshot(
+  ) {
     let html = concat!(
       "<!doctype html>",
       "<select id=host>",
@@ -419,19 +424,20 @@ mod tests {
       "<option id=light>Light</option>",
       "</select>",
     );
- 
+
     let expected = crate::dom::parse_html(html).unwrap();
     let doc = crate::dom2::parse_html(html).unwrap();
- 
+
     let host = find_node_by_id(&doc, "host").expect("host element not found");
     assert!(
-      doc.node(host)
+      doc
+        .node(host)
         .children
         .iter()
         .all(|&child| !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
       "invalid shadow hosts must not have shadow roots attached"
     );
- 
+
     let roundtrip = doc.to_renderer_dom();
     assert_eq!(
       snapshot_dom(&expected),

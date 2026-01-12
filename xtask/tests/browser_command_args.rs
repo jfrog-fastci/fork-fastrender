@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::ffi::OsStr;
+use std::path::PathBuf;
 
 use xtask::browser::{
   build_browser_command, BrowserCommandArgs, FASTR_BROWSER_MEM_LIMIT_MB_ENV,
@@ -23,9 +23,7 @@ fn cmd_args(cmd: &std::process::Command) -> Vec<String> {
 fn cmd_env(cmd: &std::process::Command, key: &str) -> Option<String> {
   cmd
     .get_envs()
-    .find_map(|(k, v)| {
-      (k == OsStr::new(key)).then(|| v.map(|v| v.to_string_lossy().into_owned()))
-    })
+    .find_map(|(k, v)| (k == OsStr::new(key)).then(|| v.map(|v| v.to_string_lossy().into_owned())))
     .flatten()
 }
 
@@ -38,7 +36,9 @@ fn browser_command_wraps_cargo_with_run_limited_and_cargo_agent() {
 
   let args = cmd_args(&cmd);
   assert!(
-    args.iter().any(|arg| arg.ends_with("scripts/run_limited.sh")),
+    args
+      .iter()
+      .any(|arg| arg.ends_with("scripts/run_limited.sh")),
     "expected run_limited.sh in args, got {args:?}"
   );
   assert!(
@@ -50,7 +50,9 @@ fn browser_command_wraps_cargo_with_run_limited_and_cargo_agent() {
     "expected `--` separator in args, got {args:?}"
   );
   assert!(
-    args.iter().any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
+    args
+      .iter()
+      .any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
     "expected cargo_agent.sh in args, got {args:?}"
   );
   assert!(

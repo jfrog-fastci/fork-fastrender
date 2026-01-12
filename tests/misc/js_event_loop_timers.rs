@@ -184,39 +184,48 @@ fn nested_timeout_delay_clamps_after_five_nesting_levels() -> Result<()> {
 
   clock.advance(Duration::from_millis(4));
   event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
-  assert_eq!(host.times, vec![
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(4),
-  ]);
+  assert_eq!(
+    host.times,
+    vec![
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(4),
+    ]
+  );
 
   clock.advance(Duration::from_millis(4));
   event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
-  assert_eq!(host.times, vec![
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(4),
-    Duration::from_millis(8),
-  ]);
+  assert_eq!(
+    host.times,
+    vec![
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(4),
+      Duration::from_millis(8),
+    ]
+  );
 
   clock.advance(Duration::from_millis(4));
   event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
-  assert_eq!(host.times, vec![
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(0),
-    Duration::from_millis(4),
-    Duration::from_millis(8),
-    Duration::from_millis(12),
-  ]);
+  assert_eq!(
+    host.times,
+    vec![
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(0),
+      Duration::from_millis(4),
+      Duration::from_millis(8),
+      Duration::from_millis(12),
+    ]
+  );
 
   Ok(())
 }

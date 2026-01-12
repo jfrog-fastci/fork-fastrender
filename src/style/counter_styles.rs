@@ -875,12 +875,30 @@ mod tests {
     rule.symbols = Some(vec!["*".to_string(), "†".to_string()]);
     registry.register(rule);
 
-    assert_eq!(registry.format_value(1, CounterStyleName::from("footnote")), "*");
-    assert_eq!(registry.format_value(2, CounterStyleName::from("footnote")), "†");
-    assert_eq!(registry.format_value(3, CounterStyleName::from("footnote")), "**");
-    assert_eq!(registry.format_value(4, CounterStyleName::from("footnote")), "††");
-    assert_eq!(registry.format_value(5, CounterStyleName::from("footnote")), "***");
-    assert_eq!(registry.format_value(6, CounterStyleName::from("footnote")), "†††");
+    assert_eq!(
+      registry.format_value(1, CounterStyleName::from("footnote")),
+      "*"
+    );
+    assert_eq!(
+      registry.format_value(2, CounterStyleName::from("footnote")),
+      "†"
+    );
+    assert_eq!(
+      registry.format_value(3, CounterStyleName::from("footnote")),
+      "**"
+    );
+    assert_eq!(
+      registry.format_value(4, CounterStyleName::from("footnote")),
+      "††"
+    );
+    assert_eq!(
+      registry.format_value(5, CounterStyleName::from("footnote")),
+      "***"
+    );
+    assert_eq!(
+      registry.format_value(6, CounterStyleName::from("footnote")),
+      "†††"
+    );
   }
 
   #[test]
@@ -892,8 +910,17 @@ mod tests {
     rule.symbols = Some(vec!["A".to_string(), "B".to_string()]);
     registry.register(rule);
 
-    assert_eq!(registry.format_value(1, CounterStyleName::from("cyclic")), "A");
-    assert_eq!(registry.format_value(2, CounterStyleName::from("cyclic")), "B");
-    assert_eq!(registry.format_value(0, CounterStyleName::from("cyclic")), "B");
+    assert_eq!(
+      registry.format_value(1, CounterStyleName::from("cyclic")),
+      "A"
+    );
+    assert_eq!(
+      registry.format_value(2, CounterStyleName::from("cyclic")),
+      "B"
+    );
+    assert_eq!(
+      registry.format_value(0, CounterStyleName::from("cyclic")),
+      "B"
+    );
   }
 }

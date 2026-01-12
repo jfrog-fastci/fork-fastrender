@@ -139,7 +139,12 @@ impl Backend for QuickJsBackend {
     ctx.with(|ctx| -> Result<(), RunError> {
       let globals = ctx.globals();
 
-      install_window_shims(ctx.clone(), &globals, &init.test_url, Rc::clone(&cookie_jar))?;
+      install_window_shims(
+        ctx.clone(),
+        &globals,
+        &init.test_url,
+        Rc::clone(&cookie_jar),
+      )?;
       // Install minimal DOM shims so `.window.js` smoke tests can exercise DOMParsing-style APIs
       // (`innerHTML`, `outerHTML`, DocumentFragment insertion, etc.).
       install_dom_shims(ctx.clone(), &globals).map_err(|e| RunError::Js(e.to_string()))?;
@@ -167,9 +172,11 @@ impl Backend for QuickJsBackend {
 
     let source_with_url = format!("{source}\n//# sourceURL={name}\n");
 
-    let result = self
-      .ctx()?
-      .with(|ctx| ctx.eval::<(), _>(source_with_url).map_err(|e| RunError::Js(e.to_string())));
+    let result = self.ctx()?.with(|ctx| {
+      ctx
+        .eval::<(), _>(source_with_url)
+        .map_err(|e| RunError::Js(e.to_string()))
+    });
 
     match result {
       Ok(()) => {
@@ -388,7 +395,13 @@ fn install_window_shims<'js>(
   let atob = Function::new(ctx.clone(), |ctx: rquickjs::Ctx<'js>, data: String| {
     let decoded = match forgiving_base64_decode(&data) {
       Ok(bytes) => bytes,
-      Err(_) => return Err(throw_dom_exception(&ctx, "InvalidCharacterError", "The string to be decoded is not correctly encoded.")),
+      Err(_) => {
+        return Err(throw_dom_exception(
+          &ctx,
+          "InvalidCharacterError",
+          "The string to be decoded is not correctly encoded.",
+        ))
+      }
     };
     Ok(decoded.iter().map(|&b| b as char).collect::<String>())
   })
@@ -400,11 +413,23 @@ fn install_window_shims<'js>(
   let btoa = Function::new(ctx.clone(), |ctx: rquickjs::Ctx<'js>, data: String| {
     let bytes = match latin1_encode(&data) {
       Ok(bytes) => bytes,
-      Err(_) => return Err(throw_dom_exception(&ctx, "InvalidCharacterError", "The string to be encoded contains characters outside of the Latin1 range.")),
+      Err(_) => {
+        return Err(throw_dom_exception(
+          &ctx,
+          "InvalidCharacterError",
+          "The string to be encoded contains characters outside of the Latin1 range.",
+        ))
+      }
     };
     let encoded = match forgiving_base64_encode(&bytes) {
       Ok(encoded) => encoded,
-      Err(_) => return Err(throw_dom_exception(&ctx, "InvalidCharacterError", "The string to be encoded is too large.")),
+      Err(_) => {
+        return Err(throw_dom_exception(
+          &ctx,
+          "InvalidCharacterError",
+          "The string to be encoded is too large.",
+        ))
+      }
     };
     Ok(encoded)
   })

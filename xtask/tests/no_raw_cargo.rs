@@ -31,4 +31,3 @@ fn xtask_does_not_spawn_raw_cargo() {
     offenders.join("\n")
   );
 }
-

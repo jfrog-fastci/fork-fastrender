@@ -18,4 +18,3 @@ pub fn is_bidi_format_char(ch: char) -> bool {
     '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
   )
 }
-

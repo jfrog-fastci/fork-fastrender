@@ -85,4 +85,3 @@ fn content_visibility_nested_offset_regression() {
   )
   .unwrap_or_else(|e| panic!("Comparison failed: {e}"));
 }
-

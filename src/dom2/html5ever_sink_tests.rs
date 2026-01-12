@@ -29,7 +29,8 @@ fn dom2_html5ever_sink_snapshot_matches_legacy_parser() {
     "<body><div id=a class=b>Hello<span>world</span></div></body></html>"
   );
 
-  let legacy = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(true)).unwrap();
+  let legacy =
+    parse_html_with_options(html, DomParseOptions::with_scripting_enabled(true)).unwrap();
   let doc2 = parse_with_dom2_sink(html);
   let snapshot = doc2.to_renderer_dom();
 
@@ -50,7 +51,8 @@ fn dom2_html5ever_sink_snapshot_matches_legacy_parser_with_declarative_shadow_do
     "</body></html>",
   );
 
-  let legacy = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(true)).unwrap();
+  let legacy =
+    parse_html_with_options(html, DomParseOptions::with_scripting_enabled(true)).unwrap();
   let doc2 = parse_with_dom2_sink(html);
   let snapshot = doc2.to_renderer_dom();
 
@@ -82,13 +84,18 @@ fn template_contents_are_present_but_inert_for_scripting() {
     .iter()
     .enumerate()
     .find_map(|(idx, node)| match &node.kind {
-      NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template") => Some(NodeId(idx)),
+      NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template") => {
+        Some(NodeId(idx))
+      }
       _ => None,
     })
     .expect("template element not found");
 
   let template_node = doc.node(template_id);
-  assert!(template_node.inert_subtree, "<template> should mark inert_subtree");
+  assert!(
+    template_node.inert_subtree,
+    "<template> should mark inert_subtree"
+  );
   assert!(
     !template_node.children.is_empty(),
     "<template> contents should be present in the tree"
@@ -161,7 +168,10 @@ fn tokenizer_script_handles_remain_valid_in_final_document() {
   assert_eq!(scripts.len(), 2, "expected two <script> pause points");
 
   for handle in scripts {
-    assert!(handle.index() < doc.nodes_len(), "script handle must exist in final Document");
+    assert!(
+      handle.index() < doc.nodes_len(),
+      "script handle must exist in final Document"
+    );
     match &doc.node(handle).kind {
       NodeKind::Element { tag_name, .. } => assert!(tag_name.eq_ignore_ascii_case("script")),
       other => panic!("script handle should refer to an element node, got {other:?}"),
@@ -351,7 +361,9 @@ fn mathml_annotation_xml_integration_point_allows_html_parsing_inside_annotation
 
   let annotation_xml_id = saw_annotation_xml.expect("expected MathML annotation-xml element");
   assert!(
-    doc.node(annotation_xml_id).mathml_annotation_xml_integration_point,
+    doc
+      .node(annotation_xml_id)
+      .mathml_annotation_xml_integration_point,
     "annotation-xml node should be marked as a MathML annotation-xml integration point"
   );
   assert!(
@@ -402,10 +414,12 @@ fn declarative_shadow_rootmode_attaches_and_routes_template_contents() {
     "ShadowRoot should be the first child of the host"
   );
   assert!(
-    doc.node(host)
+    doc
+      .node(host)
       .children
       .iter()
-      .all(|&child| child == shadow_root || !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
+      .all(|&child| child == shadow_root
+        || !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
     "host should only have one shadow root child"
   );
 
@@ -424,7 +438,8 @@ fn declarative_shadow_rootmode_attaches_and_routes_template_contents() {
   }
 
   assert!(
-    doc.node(shadow_root)
+    doc
+      .node(shadow_root)
       .children
       .iter()
       .any(|&child| matches!(doc.node(child).kind, NodeKind::Slot { .. })),
@@ -570,7 +585,9 @@ fn pausable_parser_attaches_shadowrootmode_during_parse_before_script_pause() {
   let host_id = dom.get_element_by_id("host").expect("host element missing");
   let shadow_root = find_shadow_root_child(&dom, host_id).expect("expected ShadowRoot child");
   assert!(
-    dom.ancestors(script_id).any(|ancestor| ancestor == shadow_root),
+    dom
+      .ancestors(script_id)
+      .any(|ancestor| ancestor == shadow_root),
     "expected paused <script> to be a descendant of the attached ShadowRoot"
   );
 

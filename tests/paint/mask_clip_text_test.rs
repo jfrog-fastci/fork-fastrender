@@ -37,10 +37,14 @@ fn assert_is_red(rgba: (u8, u8, u8, u8), msg: &str) {
 
 fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
   let mut dl = create_stacking_context_bounds_renderer();
-  let dl_pixmap = dl.render_html(html, width, height).expect("render display_list");
+  let dl_pixmap = dl
+    .render_html(html, width, height)
+    .expect("render display_list");
 
   let mut legacy = create_stacking_context_bounds_renderer_legacy();
-  let legacy_pixmap = legacy.render_html(html, width, height).expect("render legacy");
+  let legacy_pixmap = legacy
+    .render_html(html, width, height)
+    .expect("render legacy");
 
   (dl_pixmap, legacy_pixmap)
 }
@@ -98,7 +102,9 @@ fn mask_clip_text_clips_mask_to_glyph_shapes() {
     for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
       assert_is_white(
         rgba_at(&pixmap, 10, 90),
-        &format!("{label}/{backend}: mask-clip:text should mask out the element outside glyph shapes"),
+        &format!(
+          "{label}/{backend}: mask-clip:text should mask out the element outside glyph shapes"
+        ),
       );
     }
 
@@ -117,7 +123,10 @@ fn mask_clip_text_clips_mask_to_glyph_shapes() {
 fn deterministic_toggles() -> RuntimeToggles {
   // Keep the captured display list stable. (This test only cares about paint tiling determinism.)
   RuntimeToggles::from_map(HashMap::from([
-    ("FASTR_PAINT_BACKEND".to_string(), "display_list".to_string()),
+    (
+      "FASTR_PAINT_BACKEND".to_string(),
+      "display_list".to_string(),
+    ),
     ("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string()),
   ]))
 }
@@ -173,7 +182,11 @@ fn mask_clip_text_is_deterministic_under_parallel_tiling() {
     .with_runtime_toggles(deterministic_toggles())
     .with_default_viewport(WIDTH, HEIGHT)
     .with_font_sources(FontConfig::bundled_only())
-    .with_resource_policy(ResourcePolicy::default().allow_http(false).allow_https(false))
+    .with_resource_policy(
+      ResourcePolicy::default()
+        .allow_http(false)
+        .allow_https(false),
+    )
     // Ensure we're only testing paint tiling; the captured display list should be stable.
     .with_paint_parallelism(PaintParallelism::disabled())
     .with_layout_parallelism(LayoutParallelism::disabled());

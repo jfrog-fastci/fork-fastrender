@@ -12,18 +12,19 @@ use fastrender::dom::DomNodeType;
 use fastrender::geometry::{Point, Rect};
 use fastrender::image_output::encode_image;
 use fastrender::pageset::{pageset_short_hash, pageset_stem};
-use fastrender::text::font_db::FontConfig;
-#[cfg(feature = "disk_cache")]
-use fastrender::HttpFetcher;
 #[cfg(not(feature = "disk_cache"))]
 use fastrender::resource::CachingFetcher;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::{
-  CachingFetcherConfig, ResourceFetcher, ResourcePolicy, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  CachingFetcherConfig, ResourceFetcher, ResourcePolicy, DEFAULT_ACCEPT_LANGUAGE,
+  DEFAULT_USER_AGENT,
 };
+use fastrender::text::font_db::FontConfig;
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
+#[cfg(feature = "disk_cache")]
+use fastrender::HttpFetcher;
 use fastrender::{snapshot_pipeline, OutputFormat, RenderArtifactRequest, RenderOptions};
 use serde_json;
 use std::collections::{HashMap, HashSet};
@@ -130,7 +131,12 @@ struct Args {
   custom_property_prefix: Vec<String>,
 
   /// Maximum number of custom properties to dump (after filtering/sorting).
-  #[arg(long, default_value_t = 512, value_name = "N", requires = "dump_custom_properties")]
+  #[arg(
+    long,
+    default_value_t = 512,
+    value_name = "N",
+    requires = "dump_custom_properties"
+  )]
   custom_properties_limit: usize,
 
   /// Print a combined pipeline snapshot JSON to stdout.
@@ -1389,7 +1395,8 @@ fn run(args: Args) -> Result<(), DynError> {
   let raw_runtime = std::env::vars()
     .filter(|(k, _)| k.starts_with("FASTR_"))
     .collect::<HashMap<_, _>>();
-  let runtime_toggles = inspect_runtime_toggles_from_env_map(raw_runtime, args.patch_html_for_chrome_baseline);
+  let runtime_toggles =
+    inspect_runtime_toggles_from_env_map(raw_runtime, args.patch_html_for_chrome_baseline);
   let _runtime_guard = runtime::set_runtime_toggles(Arc::new(runtime_toggles.clone()));
 
   let fetcher = build_fetcher(&args)?;
@@ -1838,7 +1845,10 @@ mod tests {
   #[test]
   fn patch_html_for_chrome_baseline_defaults_replaced_max_width_compat_off() {
     let toggles = inspect_runtime_toggles_from_env_map(HashMap::new(), true);
-    assert_eq!(toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), Some("0"));
+    assert_eq!(
+      toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"),
+      Some("0")
+    );
 
     let mut raw = HashMap::new();
     raw.insert(
@@ -1846,7 +1856,10 @@ mod tests {
       "1".to_string(),
     );
     let toggles = inspect_runtime_toggles_from_env_map(raw, true);
-    assert_eq!(toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), Some("1"));
+    assert_eq!(
+      toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"),
+      Some("1")
+    );
   }
 
   #[test]
@@ -1910,9 +1923,7 @@ mod tests {
     let args = Args::try_parse_from(["inspect_frag", html_path.to_str().unwrap(), "--offline"])
       .expect("parse args");
 
-    let err = build_fetcher(&args)
-      .err()
-      .expect("expected offline error");
+    let err = build_fetcher(&args).err().expect("expected offline error");
     assert!(
       err.to_string().contains("disk_cache"),
       "error should mention disk_cache: {err}"

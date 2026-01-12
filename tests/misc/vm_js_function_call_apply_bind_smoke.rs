@@ -150,9 +150,9 @@ fn function_call_apply_bind_smoke() -> Result<(), VmError> {
       };
       scope.push_root(Value::Object(bound_this))?;
 
-      let result = rt
-        .vm
-        .call_without_host(&mut scope, Value::Object(bound_this), Value::Undefined, &[])?;
+      let result =
+        rt.vm
+          .call_without_host(&mut scope, Value::Object(bound_this), Value::Undefined, &[])?;
       assert_eq!(result, Value::Object(this_obj));
 
       // Bind `thisArg` + a leading argument.

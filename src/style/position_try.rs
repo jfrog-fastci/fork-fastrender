@@ -74,7 +74,9 @@ impl PositionTryRegistry {
     let filtered: Vec<Declaration> = declarations
       .into_iter()
       .filter(|decl| {
-        !decl.important && !decl.property.is_custom() && Self::is_accepted_property(decl.property.as_str())
+        !decl.important
+          && !decl.property.is_custom()
+          && Self::is_accepted_property(decl.property.as_str())
       })
       .collect();
     self.rules.insert(name, Arc::from(filtered));

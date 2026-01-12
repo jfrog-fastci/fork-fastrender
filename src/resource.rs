@@ -2624,7 +2624,11 @@ impl CachedHttpMetadata {
     age <= lifetime.saturating_add(window)
   }
 
-  fn within_stale_while_revalidate(&self, now: SystemTime, freshness_cap: Option<Duration>) -> bool {
+  fn within_stale_while_revalidate(
+    &self,
+    now: SystemTime,
+    freshness_cap: Option<Duration>,
+  ) -> bool {
     let Some(window) = self.stale_while_revalidate else {
       return false;
     };
@@ -4296,9 +4300,7 @@ fn cors_preflight_validate_allow_methods(
   let allow_methods = allow_methods.unwrap_or(&[]);
   let explicit_allowed = cors_preflight_contains_token(allow_methods, request_method);
   let wildcard_allowed = cors_preflight_contains_star(allow_methods);
-  if !explicit_allowed
-    && (credentials_mode == FetchCredentialsMode::Include || !wildcard_allowed)
-  {
+  if !explicit_allowed && (credentials_mode == FetchCredentialsMode::Include || !wildcard_allowed) {
     return Err(response_resource_error(
       response,
       requested_url,
@@ -5360,9 +5362,12 @@ impl HttpFetcher {
       started,
     )?;
 
-    if let Err(message) =
-      validate_cors_allow_origin(&preflight_response, url, Some(client_origin), credentials_mode)
-    {
+    if let Err(message) = validate_cors_allow_origin(
+      &preflight_response,
+      url,
+      Some(client_origin),
+      credentials_mode,
+    ) {
       return Err(response_resource_error(&preflight_response, url, message));
     }
 
@@ -6970,9 +6975,8 @@ impl HttpFetcher {
         }
         merge_system_request_headers(&current, &mut headers, system_headers)?;
         if !redirect_suppressed_headers.is_empty() {
-          headers.retain(|(name, _)| {
-            !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
-          });
+          headers
+            .retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
         }
 
         let mut network_timer = start_network_fetch_diagnostics();
@@ -7293,7 +7297,9 @@ impl HttpFetcher {
         let response_headers = collect_response_headers(response.headers());
         let mut allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
-        if current_method.eq_ignore_ascii_case("HEAD") || current_method.eq_ignore_ascii_case("OPTIONS") {
+        if current_method.eq_ignore_ascii_case("HEAD")
+          || current_method.eq_ignore_ascii_case("OPTIONS")
+        {
           allows_empty_body = true;
         }
         let substitute_captcha_image =
@@ -7761,9 +7767,8 @@ impl HttpFetcher {
         }
         merge_system_request_headers(&current, &mut headers, system_headers)?;
         if !redirect_suppressed_headers.is_empty() {
-          headers.retain(|(name, _)| {
-            !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
-          });
+          headers
+            .retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
         }
 
         let reqwest_method =
@@ -8022,7 +8027,9 @@ impl HttpFetcher {
         let response_headers = collect_response_headers(response.headers());
         let mut allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
-        if current_method.eq_ignore_ascii_case("HEAD") || current_method.eq_ignore_ascii_case("OPTIONS") {
+        if current_method.eq_ignore_ascii_case("HEAD")
+          || current_method.eq_ignore_ascii_case("OPTIONS")
+        {
           allows_empty_body = true;
         }
         let substitute_empty_image_body =
@@ -13098,11 +13105,7 @@ mod tests {
 
   #[test]
   fn http_browser_origin_and_referer_wraps_ipv6_zone_identifiers() {
-    let origin = DocumentOrigin::new(
-      "https".to_string(),
-      Some("fe80::1%25en0".to_string()),
-      None,
-    );
+    let origin = DocumentOrigin::new("https".to_string(), Some("fe80::1%25en0".to_string()), None);
     let (origin_str, referer) =
       http_browser_origin_and_referer_for_origin(&origin).expect("origin+referer");
     assert_eq!(origin_str, "https://[fe80::1%25en0]");
@@ -13114,11 +13117,7 @@ mod tests {
     let origin = origin_from_url("https://[::1]/").expect("origin");
     assert_eq!(origin.to_string(), "https://[::1]:443");
 
-    let origin = DocumentOrigin::new(
-      "https".to_string(),
-      Some("fe80::1%25en0".to_string()),
-      None,
-    );
+    let origin = DocumentOrigin::new("https".to_string(), Some("fe80::1%25en0".to_string()), None);
     assert_eq!(origin.to_string(), "https://[fe80::1%25en0]:443");
   }
 
@@ -18012,9 +18011,9 @@ mod tests {
       return;
     }
 
-    let Some(listener) = try_bind_localhost(
-      "http_fetcher_preflights_redirect_followups_for_non_simple_cors_requests",
-    ) else {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_preflights_redirect_followups_for_non_simple_cors_requests")
+    else {
       return;
     };
     let addr = listener.local_addr().unwrap();
@@ -23362,10 +23361,7 @@ mod tests {
   #[test]
   fn parse_http_cache_policy_parses_s_maxage_and_swr() {
     let mut headers = HeaderMap::new();
-    headers.append(
-      "cache-control",
-      http::HeaderValue::from_static("max-age=0"),
-    );
+    headers.append("cache-control", http::HeaderValue::from_static("max-age=0"));
     headers.append(
       "cache-control",
       http::HeaderValue::from_static("s-maxage=60, stale-while-revalidate=3600"),

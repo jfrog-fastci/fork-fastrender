@@ -122,9 +122,18 @@ impl DocumentWriteState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentWriteLimitError {
   NotParsing,
-  TooManyCalls { limit: usize },
-  PerCallBytesExceeded { len: usize, limit: usize },
-  TotalBytesExceeded { current: usize, add: usize, limit: usize },
+  TooManyCalls {
+    limit: usize,
+  },
+  PerCallBytesExceeded {
+    len: usize,
+    limit: usize,
+  },
+  TotalBytesExceeded {
+    current: usize,
+    add: usize,
+    limit: usize,
+  },
 }
 
 thread_local! {
@@ -190,4 +199,3 @@ pub(crate) fn current_document_write_state_mut() -> Option<&'static mut Document
   // SAFETY: `with_document_write_state` installs a valid pointer for the duration of the call.
   Some(unsafe { &mut *ptr })
 }
-

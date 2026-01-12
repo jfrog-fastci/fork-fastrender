@@ -69,4 +69,3 @@ fn nth_last_child_of_argument_specificity_beats_source_order() {
     "inline"
   );
 }
-

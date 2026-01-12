@@ -149,7 +149,10 @@ fn openssl_sys_dependency_chains(metadata: &CargoMetadata, scope: Scope) -> Resu
     .as_ref()
     .context("cargo metadata did not include a resolved dependency graph")?;
 
-  let fastrender_pkg = metadata.packages.iter().find(|pkg| pkg.name == "fastrender");
+  let fastrender_pkg = metadata
+    .packages
+    .iter()
+    .find(|pkg| pkg.name == "fastrender");
   if matches!(scope, Scope::Fastrender) && fastrender_pkg.is_none() {
     bail!("cargo metadata did not include a `fastrender` package entry");
   }
@@ -169,7 +172,11 @@ fn openssl_sys_dependency_chains(metadata: &CargoMetadata, scope: Scope) -> Resu
   // Keep a parent map so we can print a useful dependency chain if `openssl-sys` shows up.
   let root_ids: Vec<&str> = match scope {
     Scope::Fastrender => vec![fastrender_pkg.unwrap().id.as_str()],
-    Scope::Workspace => metadata.workspace_members.iter().map(|id| id.as_str()).collect(),
+    Scope::Workspace => metadata
+      .workspace_members
+      .iter()
+      .map(|id| id.as_str())
+      .collect(),
   };
 
   let mut queue: VecDeque<&str> = VecDeque::new();
@@ -261,15 +268,15 @@ mod tests {
     )
     .expect("parse synthetic cargo metadata JSON");
 
-    let fastrender_only = openssl_sys_dependency_chains(&metadata, Scope::Fastrender)
-      .expect("scan fastrender scope");
+    let fastrender_only =
+      openssl_sys_dependency_chains(&metadata, Scope::Fastrender).expect("scan fastrender scope");
     assert!(
       fastrender_only.is_empty(),
       "expected fastrender scope to ignore helper's deps; got {fastrender_only:?}"
     );
 
-    let workspace = openssl_sys_dependency_chains(&metadata, Scope::Workspace)
-      .expect("scan workspace scope");
+    let workspace =
+      openssl_sys_dependency_chains(&metadata, Scope::Workspace).expect("scan workspace scope");
     assert_eq!(
       workspace,
       vec!["helper@0.1.0 -> native-tls@0.2.0 -> openssl-sys@0.9.99".to_string()]

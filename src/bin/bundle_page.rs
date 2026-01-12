@@ -26,12 +26,11 @@ use fastrender::resource::bundle::{
 };
 use fastrender::resource::{
   canonicalize_vary_header_value, compute_vary_key_for_request, ensure_font_mime_sane,
-  ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane, ensure_stylesheet_mime_sane,
-  offline_placeholder_png_bytes, offline_placeholder_png_content_type, offline_placeholder_woff2_bytes,
-  origin_from_url, CorsMode, DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchDestination,
-  FetchRequest, FetchedResource, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
-  DEFAULT_ACCEPT_LANGUAGE,
-  DEFAULT_USER_AGENT,
+  ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane,
+  ensure_stylesheet_mime_sane, offline_placeholder_png_bytes, offline_placeholder_png_content_type,
+  offline_placeholder_woff2_bytes, origin_from_url, CorsMode, DocumentOrigin, FetchContextKind,
+  FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy,
+  ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::{
@@ -1125,30 +1124,28 @@ fn cache_bundle_disk_cache(args: CacheArgs) -> Result<()> {
     }
     Some(entry.url)
   });
-  let base_hint = pageset_url_hint
-    .clone()
-    .unwrap_or_else(|| {
-      let abs = html_path.canonicalize().unwrap_or_else(|_| {
-        if html_path.is_absolute() {
-          html_path.to_path_buf()
-        } else {
-          std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join(&html_path)
-        }
-      });
-      url::Url::from_file_path(&abs)
-        .map(|u| u.to_string())
-        .unwrap_or_else(|()| {
-          let mut url = url::Url::parse("file:///").expect("file base url");
-          let mut path_str = abs.to_string_lossy().replace('\\', "/");
-          if !path_str.starts_with('/') {
-            path_str.insert(0, '/');
-          }
-          url.set_path(&path_str);
-          url.to_string()
-        })
+  let base_hint = pageset_url_hint.clone().unwrap_or_else(|| {
+    let abs = html_path.canonicalize().unwrap_or_else(|_| {
+      if html_path.is_absolute() {
+        html_path.to_path_buf()
+      } else {
+        std::env::current_dir()
+          .unwrap_or_else(|_| std::path::PathBuf::from("."))
+          .join(&html_path)
+      }
     });
+    url::Url::from_file_path(&abs)
+      .map(|u| u.to_string())
+      .unwrap_or_else(|()| {
+        let mut url = url::Url::parse("file:///").expect("file base url");
+        let mut path_str = abs.to_string_lossy().replace('\\', "/");
+        if !path_str.starts_with('/') {
+          path_str.insert(0, '/');
+        }
+        url.set_path(&path_str);
+        url.to_string()
+      })
+  });
 
   let mut document_resource = FetchedResource::with_final_url(
     html_bytes,
@@ -1937,7 +1934,14 @@ fn crawl_document(
     html: &str,
     base_url: &str,
     dom_compat_mode: fastrender::dom::DomCompatibilityMode,
-  ) -> Result<Vec<(String, FetchDestination, FetchCredentialsMode, Option<ReferrerPolicy>)>> {
+  ) -> Result<
+    Vec<(
+      String,
+      FetchDestination,
+      FetchCredentialsMode,
+      Option<ReferrerPolicy>,
+    )>,
+  > {
     let dom = parse_html_with_options(
       html,
       DomParseOptions {
@@ -1946,8 +1950,12 @@ fn crawl_document(
       },
     )?;
 
-    let mut out: Vec<(String, FetchDestination, FetchCredentialsMode, Option<ReferrerPolicy>)> =
-      Vec::new();
+    let mut out: Vec<(
+      String,
+      FetchDestination,
+      FetchCredentialsMode,
+      Option<ReferrerPolicy>,
+    )> = Vec::new();
     let mut seen: HashSet<(String, FetchDestination, FetchCredentialsMode)> = HashSet::new();
     let mut stack: Vec<&fastrender::dom::DomNode> = vec![&dom];
 
@@ -2522,9 +2530,7 @@ fn crawl_document(
           }
         })
       }
-      FetchDestination::Other
-      | FetchDestination::Fetch
-      => Ok(()),
+      FetchDestination::Other | FetchDestination::Fetch => Ok(()),
     };
     if let Err(err) = validation {
       handle_crawl_failure(
@@ -4983,7 +4989,8 @@ mod tests {
     assert!(
       calls
         .iter()
-        .any(|(url, dest, _)| url == "https://example.com/font.woff2" && *dest == FetchDestination::Font),
+        .any(|(url, dest, _)| url == "https://example.com/font.woff2"
+          && *dest == FetchDestination::Font),
       "expected woff2 font URL to be fetched as a font, got: {calls:?}"
     );
     assert!(

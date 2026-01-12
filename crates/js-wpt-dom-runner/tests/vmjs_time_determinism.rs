@@ -1,6 +1,8 @@
 #![cfg(feature = "vmjs")]
 
-use js_wpt_dom_runner::{discover_tests, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs};
+use js_wpt_dom_runner::{
+  discover_tests, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs,
+};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;

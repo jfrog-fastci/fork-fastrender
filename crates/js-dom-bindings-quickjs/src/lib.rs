@@ -9,7 +9,7 @@ use std::ffi::CString;
 use std::rc::Rc;
 
 use fastrender::dom::HTML_NAMESPACE;
-use fastrender::dom2::{DomError, Document, NodeId, NodeKind};
+use fastrender::dom2::{Document, DomError, NodeId, NodeKind};
 use fastrender::web::dom::DomException;
 use rquickjs::class::{Trace, Tracer};
 use rquickjs::function::{Args, Constructor, Rest};
@@ -201,10 +201,7 @@ const NODE_CACHE_FINALIZER_SHIM: &str = r#"
 ///
 /// The bindings are intentionally minimal and are designed to support common site bootstraps:
 /// element creation, tree mutation, selector queries, and `classList`.
-pub fn install_dom_bindings<'js>(
-  ctx: Ctx<'js>,
-  dom: Rc<RefCell<Document>>,
-) -> JsResult<()> {
+pub fn install_dom_bindings<'js>(ctx: Ctx<'js>, dom: Rc<RefCell<Document>>) -> JsResult<()> {
   ensure_weakref_intrinsic(&ctx)?;
   ctx.eval::<(), _>(DOM_EXCEPTION_SHIM)?;
 
@@ -228,8 +225,9 @@ pub fn install_dom_bindings<'js>(
   let document_obj = state.wrap_node(ctx.clone(), root)?;
   ctx.globals().set("document", document_obj.clone())?;
   ctx.eval::<(), _>(DOM_NULLABLE_SHIM)?;
-  if let Ok(Some(patch_fn)) =
-    ctx.globals().get::<_, Option<Function<'js>>>("__fastrender_patch_node_nullables")
+  if let Ok(Some(patch_fn)) = ctx
+    .globals()
+    .get::<_, Option<Function<'js>>>("__fastrender_patch_node_nullables")
   {
     // Best-effort; if the shim fails to patch, callers will still see `undefined` which most
     // scripts treat as nullish.
@@ -266,8 +264,9 @@ impl DomState {
       },
     )?;
     let obj: Object<'js> = inst.into_inner();
-    if let Ok(Some(patch_fn)) =
-      ctx.globals().get::<_, Option<Function<'js>>>("__fastrender_patch_node_nullables")
+    if let Ok(Some(patch_fn)) = ctx
+      .globals()
+      .get::<_, Option<Function<'js>>>("__fastrender_patch_node_nullables")
     {
       let _ = patch_fn.call::<_, ()>((obj.clone(),));
     }
@@ -418,9 +417,7 @@ impl Node {
       )
     });
     drop(dom);
-    parent
-      .map(|id| self.state.wrap_node(ctx, id))
-      .transpose()
+    parent.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
   #[qjs(get, rename = "children")]
@@ -475,9 +472,7 @@ impl Node {
         )
       });
     drop(dom);
-    found
-      .map(|id| self.state.wrap_node(ctx, id))
-      .transpose()
+    found.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
   #[qjs(get, rename = "lastElementChild")]
@@ -495,9 +490,7 @@ impl Node {
         )
       });
     drop(dom);
-    found
-      .map(|id| self.state.wrap_node(ctx, id))
-      .transpose()
+    found.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
   #[qjs(get, rename = "previousElementSibling")]
@@ -526,9 +519,7 @@ impl Node {
       }
     }
     drop(dom);
-    found
-      .map(|id| self.state.wrap_node(ctx, id))
-      .transpose()
+    found.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
   #[qjs(get, rename = "nextElementSibling")]
@@ -557,9 +548,7 @@ impl Node {
       }
     }
     drop(dom);
-    found
-      .map(|id| self.state.wrap_node(ctx, id))
-      .transpose()
+    found.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
   // ===========================================================================
@@ -664,9 +653,7 @@ impl Node {
       .remove_child(parent, self.node_id)
       .map_err(|e| dom_error_to_js(&ctx, e))?;
     drop(dom);
-    self
-      .state
-      .maybe_sync_cached_child_nodes(ctx, parent)?;
+    self.state.maybe_sync_cached_child_nodes(ctx, parent)?;
     Ok(())
   }
 
@@ -828,11 +815,7 @@ impl Node {
   }
 
   #[qjs(rename = "querySelector")]
-  fn query_selector<'js>(
-    &self,
-    ctx: Ctx<'js>,
-    selectors: String,
-  ) -> JsResult<Option<Object<'js>>> {
+  fn query_selector<'js>(&self, ctx: Ctx<'js>, selectors: String) -> JsResult<Option<Object<'js>>> {
     let allow_scope = selector_mentions_scope(&selectors);
     let (scope, filter_self) = {
       let dom = self.state.dom.borrow();
@@ -1068,9 +1051,7 @@ impl Node {
       .map_err(|e| dom_error_to_js(&ctx, e))?;
 
     if let Some(parent) = parent {
-      self
-        .state
-        .maybe_sync_cached_child_nodes(ctx, parent)?;
+      self.state.maybe_sync_cached_child_nodes(ctx, parent)?;
     }
     Ok(())
   }
@@ -1183,12 +1164,7 @@ impl DOMTokenList {
   }
 
   #[qjs(rename = "toggle")]
-  fn toggle_token<'js>(
-    &self,
-    ctx: Ctx<'js>,
-    token: String,
-    force: Rest<bool>,
-  ) -> JsResult<bool> {
+  fn toggle_token<'js>(&self, ctx: Ctx<'js>, token: String, force: Rest<bool>) -> JsResult<bool> {
     validate_token_or_throw(&ctx, &token)?;
 
     let force = force.0.get(0).copied();
@@ -1332,8 +1308,12 @@ fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Erro
     DomException::NoModificationAllowedError { message } => {
       throw_dom_exception(ctx, "NoModificationAllowedError", &message)
     }
-    DomException::NotSupportedError { message } => throw_dom_exception(ctx, "NotSupportedError", &message),
-    DomException::InvalidStateError { message } => throw_dom_exception(ctx, "InvalidStateError", &message),
+    DomException::NotSupportedError { message } => {
+      throw_dom_exception(ctx, "NotSupportedError", &message)
+    }
+    DomException::InvalidStateError { message } => {
+      throw_dom_exception(ctx, "InvalidStateError", &message)
+    }
   }
 }
 
@@ -1482,10 +1462,7 @@ mod tests {
       ctx.eval::<(), _>(DOM_EXCEPTION_SHIM).unwrap();
 
       let state = Rc::new(DomState { dom });
-      let bogus = Node {
-        state,
-        node_id,
-      };
+      let bogus = Node { state, node_id };
       let inst = rquickjs::Class::instance(ctx.clone(), bogus).unwrap();
       let obj: Object<'_> = inst.into_inner();
       ctx.globals().set("bogus", obj).unwrap();

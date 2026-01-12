@@ -1,6 +1,8 @@
 use fastrender::js::bindings::{install_window_bindings, BindingValue, WebHostBindings};
-use fastrender::js::webidl::{InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlHooks, WebIdlLimits};
 use fastrender::js::webidl::WebIdlBindingsRuntime;
+use fastrender::js::webidl::{
+  InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlHooks, WebIdlLimits,
+};
 use vm_js::{Heap, HeapLimits, JsRuntime as VmJsScriptRuntime, Value, Vm, VmError, VmOptions};
 
 #[derive(Default)]
@@ -121,7 +123,8 @@ fn vm_js_webidl_generated_constructors_require_new() -> Result<(), VmError> {
   assert_eq!(url_new_works, Value::Bool(true));
 
   // URLSearchParams
-  let typeof_sp = runtime.exec_script_with_host(&mut host, r#"typeof URLSearchParams === "function""#)?;
+  let typeof_sp =
+    runtime.exec_script_with_host(&mut host, r#"typeof URLSearchParams === "function""#)?;
   assert_eq!(typeof_sp, Value::Bool(true));
 
   let sp_len = runtime.exec_script_with_host(&mut host, r#"URLSearchParams.length === 0"#)?;

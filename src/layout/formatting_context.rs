@@ -1194,7 +1194,11 @@ fn layout_cache_key(
   let containing_blocks_hash = if include_positioned_cb || include_fixed_cb {
     let mut h = DefaultHasher::default();
     let hash_f32 = |val: f32, hasher: &mut DefaultHasher| {
-      let bits = if val == 0.0 { 0.0f32.to_bits() } else { val.to_bits() };
+      let bits = if val == 0.0 {
+        0.0f32.to_bits()
+      } else {
+        val.to_bits()
+      };
       bits.hash(hasher);
     };
     // Tag the variants so they cannot collide when only one of the two is present.
@@ -2237,7 +2241,10 @@ mod tests {
     let mut override_style = ComputedStyle::default();
     override_style.width_keyword = Some(IntrinsicSizeKeyword::MinContent);
     crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
-      assert_eq!(intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent), None);
+      assert_eq!(
+        intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
+        None
+      );
     });
 
     intrinsic_cache_use_epoch(1, true);
@@ -2660,7 +2667,8 @@ mod tests {
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
 
-    let mut abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    let mut abs_child =
+      BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
     abs_child.id = 2;
 
     let mut node = BoxNode::new_block(
@@ -2687,9 +2695,27 @@ mod tests {
       cb_a,
       cb_a,
     );
-    assert!(layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb_a, cb_a).is_some());
+    assert!(layout_cache_lookup(
+      &node,
+      fc_type,
+      &constraints,
+      Point::ZERO,
+      viewport,
+      cb_a,
+      cb_a
+    )
+    .is_some());
     assert!(
-      layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb_b, cb_a).is_none(),
+      layout_cache_lookup(
+        &node,
+        fc_type,
+        &constraints,
+        Point::ZERO,
+        viewport,
+        cb_b,
+        cb_a
+      )
+      .is_none(),
       "expected cache miss when the positioned containing block differs for absolute descendants"
     );
 
@@ -2708,7 +2734,8 @@ mod tests {
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
 
-    let mut abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    let mut abs_child =
+      BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
     abs_child.id = 2;
 
     let mut node = BoxNode::new_block(
@@ -2782,9 +2809,27 @@ mod tests {
       cb_a,
       cb_a,
     );
-    assert!(layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb_a, cb_a).is_some());
+    assert!(layout_cache_lookup(
+      &node,
+      fc_type,
+      &constraints,
+      Point::ZERO,
+      viewport,
+      cb_a,
+      cb_a
+    )
+    .is_some());
     assert!(
-      layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb_a, cb_b).is_none(),
+      layout_cache_lookup(
+        &node,
+        fc_type,
+        &constraints,
+        Point::ZERO,
+        viewport,
+        cb_a,
+        cb_b
+      )
+      .is_none(),
       "expected cache miss when the fixed containing block differs for fixed descendants"
     );
 
@@ -2802,8 +2847,10 @@ mod tests {
     let cb = ContainingBlock::viewport(viewport);
     let fc_type = FormattingContextType::Block;
 
-    let constraints_a = LayoutConstraints::definite(800.0, 600.0).with_block_percentage_base(Some(600.0));
-    let constraints_b = LayoutConstraints::definite(800.0, 600.0).with_block_percentage_base(Some(300.0));
+    let constraints_a =
+      LayoutConstraints::definite(800.0, 600.0).with_block_percentage_base(Some(600.0));
+    let constraints_b =
+      LayoutConstraints::definite(800.0, 600.0).with_block_percentage_base(Some(300.0));
 
     layout_cache_store(
       &node,
@@ -2816,7 +2863,16 @@ mod tests {
       cb,
     );
     assert!(
-      layout_cache_lookup(&node, fc_type, &constraints_b, Point::ZERO, viewport, cb, cb).is_none(),
+      layout_cache_lookup(
+        &node,
+        fc_type,
+        &constraints_b,
+        Point::ZERO,
+        viewport,
+        cb,
+        cb
+      )
+      .is_none(),
       "changing block_percentage_base must invalidate the cached entry"
     );
 
@@ -2922,7 +2978,16 @@ mod tests {
       cb,
     );
     assert!(
-      layout_cache_lookup(&node, fc_type, &constraints_b, Point::ZERO, viewport, cb, cb).is_none(),
+      layout_cache_lookup(
+        &node,
+        fc_type,
+        &constraints_b,
+        Point::ZERO,
+        viewport,
+        cb,
+        cb
+      )
+      .is_none(),
       "changing constraints must invalidate the cached entry"
     );
 
@@ -2956,7 +3021,16 @@ mod tests {
     );
 
     assert!(
-      layout_cache_lookup(&node_b, fc_type, &constraints, Point::ZERO, viewport, cb, cb).is_none(),
+      layout_cache_lookup(
+        &node_b,
+        fc_type,
+        &constraints,
+        Point::ZERO,
+        viewport,
+        cb,
+        cb
+      )
+      .is_none(),
       "layout cache entries must not be reused across different box ids"
     );
 
@@ -3060,10 +3134,16 @@ mod tests {
     let mut changed_node = BoxNode::new_block(Arc::new(style), fc_type, vec![]);
     changed_node.id = node.id;
 
-    assert!(
-      layout_cache_lookup(&changed_node, fc_type, &constraints, Point::ZERO, viewport, cb, cb)
-        .is_none()
-    );
+    assert!(layout_cache_lookup(
+      &changed_node,
+      fc_type,
+      &constraints,
+      Point::ZERO,
+      viewport,
+      cb,
+      cb
+    )
+    .is_none());
     layout_cache_store(
       &changed_node,
       fc_type,
@@ -3077,9 +3157,16 @@ mod tests {
 
     LAYOUT_RESULT_CACHE.with(|cache| assert_eq!(cache.borrow().len(), 1));
 
-    let updated =
-      layout_cache_lookup(&changed_node, fc_type, &constraints, Point::ZERO, viewport, cb, cb)
-        .unwrap();
+    let updated = layout_cache_lookup(
+      &changed_node,
+      fc_type,
+      &constraints,
+      Point::ZERO,
+      viewport,
+      cb,
+      cb,
+    )
+    .unwrap();
     assert_eq!(updated.bounds.width(), 60.0);
 
     let (lookups, hits, stores, evictions, _clones) = layout_cache_stats();
@@ -3117,7 +3204,9 @@ mod tests {
     // Worker threads should observe the change and drop any stale TLS cache entries.
     LAYOUT_CACHE_GLOBAL_EPOCH.store(2, Ordering::Relaxed);
 
-    assert!(layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb).is_none());
+    assert!(
+      layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb).is_none()
+    );
     LAYOUT_RESULT_CACHE.with(|cache| assert!(cache.borrow().is_empty()));
 
     let (lookups, hits, stores, evictions, _clones) = layout_cache_stats();

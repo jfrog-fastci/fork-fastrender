@@ -273,8 +273,12 @@ where
   Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>
     + 'static,
 {
-  let mut start_fetches: Vec<(ScriptId, String, crate::resource::FetchDestination, FetchCredentialsMode)> =
-    Vec::new();
+  let mut start_fetches: Vec<(
+    ScriptId,
+    String,
+    crate::resource::FetchDestination,
+    FetchCredentialsMode,
+  )> = Vec::new();
   let mut blocking: HashSet<ScriptId> = HashSet::new();
 
   for action in actions {
@@ -444,12 +448,12 @@ where
           let base_tracker = BaseUrlTracker::new(base_url_at_this_point.as_deref());
           build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker)
         };
- 
+
         // This driver is intentionally classic-only: skip module scripts and import maps.
         if spec.script_type != ScriptType::Classic {
           continue;
         }
- 
+
         let should_run = {
           let mut doc = parser.document_mut().ok_or_else(|| {
             Error::Other("html_script_processing: parser document unavailable".to_string())
@@ -458,7 +462,8 @@ where
         };
 
         if should_run {
-          let discovered = scheduler.discovered_parser_script(spec, script, base_url_at_this_point)?;
+          let discovered =
+            scheduler.discovered_parser_script(spec, script, base_url_at_this_point)?;
           let mut host_wrapper = ParserHost {
             inner: host,
             parser: &parser,

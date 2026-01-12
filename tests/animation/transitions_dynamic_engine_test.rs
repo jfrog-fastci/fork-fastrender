@@ -1,9 +1,9 @@
 use fastrender::animation;
 use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use fastrender::geometry::Point;
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::interaction::InteractionEngine;
-use fastrender::geometry::Point;
 use fastrender::scroll::ScrollState;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
@@ -102,11 +102,7 @@ fn fragment_opacity(tree: &FragmentTree, box_id: usize) -> f32 {
 
 fn fragment_color(tree: &FragmentTree, box_id: usize) -> Rgba {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
-  frag
-    .style
-    .as_ref()
-    .map(|s| s.color)
-    .expect("style present")
+  frag.style.as_ref().map(|s| s.color).expect("style present")
 }
 
 fn fragment_border_top_color(tree: &FragmentTree, box_id: usize) -> Rgba {
@@ -690,12 +686,18 @@ fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()>
   let mut early = base_tree.clone();
   let viewport = early.viewport_size();
   animation::apply_transitions(&mut early, 400.0, viewport);
-  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_style(&early, box_id),
+    BorderStyle::Solid
+  );
 
   let mut late = base_tree.clone();
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
-  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&late, box_id),
+    BorderStyle::Dashed
+  );
 
   Ok(())
 }
@@ -734,8 +736,8 @@ fn transitions_are_keyed_by_pseudo_element() -> Result<()> {
 
   let prepared = doc.prepared().expect("prepared");
   let styled_id = styled_node_id_by_id(prepared.styled_tree(), "box").expect("styled id");
-  let main_box_id = box_id_for_styled_and_pseudo(&prepared.box_tree().root, styled_id, None)
-    .expect("main box id");
+  let main_box_id =
+    box_id_for_styled_and_pseudo(&prepared.box_tree().root, styled_id, None).expect("main box id");
   let before_box_id = box_id_for_styled_and_pseudo(
     &prepared.box_tree().root,
     styled_id,
@@ -923,15 +925,22 @@ fn transition_parameters_from_after_change_style_control_started_transition() ->
   let mut interaction = InteractionEngine::new();
   let scroll = ScrollState::default();
 
-  doc.render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
+  doc
+    .render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
   // Hover the box to start the transition at t=0.
   doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-    let changed =
-      interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, Point::new(10.0, 10.0));
+    let changed = interaction.pointer_move(
+      dom,
+      box_tree,
+      fragment_tree,
+      &scroll,
+      Point::new(10.0, 10.0),
+    );
     (changed, ())
   })?;
   // Keep time at t=0 so this frame records the transition start time.
-  doc.render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
+  doc
+    .render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
 
   let prepared = doc.prepared().expect("prepared");
   let box_id = box_id_by_element_id(prepared, "box");
@@ -953,11 +962,17 @@ fn transition_parameters_from_after_change_style_control_started_transition() ->
   // Start the reverse transition at t=2000ms.
   doc.set_animation_time_ms(2000.0);
   doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-    let changed =
-      interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, Point::new(150.0, 150.0));
+    let changed = interaction.pointer_move(
+      dom,
+      box_tree,
+      fragment_tree,
+      &scroll,
+      Point::new(150.0, 150.0),
+    );
     (changed, ())
   })?;
-  doc.render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
+  doc
+    .render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
 
   let prepared = doc.prepared().expect("prepared");
   let box_id = box_id_by_element_id(prepared, "box");
@@ -1119,7 +1134,11 @@ fn transition_all_includes_registered_custom_properties_on_class_change() -> Res
     Some(CustomPropertyTypedValue::Number(v)) => assert!((v - 0.5).abs() < 1e-3, "v={v}"),
     other => panic!("expected typed number, got {other:?}"),
   }
-  assert!((style.opacity - 0.5).abs() < 1e-3, "opacity={}", style.opacity);
+  assert!(
+    (style.opacity - 0.5).abs() < 1e-3,
+    "opacity={}",
+    style.opacity
+  );
 
   Ok(())
 }
@@ -1159,7 +1178,11 @@ fn inherited_color_tracks_parent_transition_even_through_line_fragments() -> Res
   animation::apply_transitions(&mut sampled, 500.0, viewport);
 
   let expected = Rgba::new(128, 128, 128, 1.0);
-  assert_eq!(fragment_color(&sampled, parent_id), expected, "parent color");
+  assert_eq!(
+    fragment_color(&sampled, parent_id),
+    expected,
+    "parent color"
+  );
   assert_eq!(
     fragment_color(&sampled, child_id),
     expected,
@@ -1208,7 +1231,11 @@ fn currentcolor_dependent_border_color_tracks_color_transition() -> Result<()> {
   animation::apply_transitions(&mut sampled, 500.0, viewport);
 
   let expected = Rgba::new(128, 128, 128, 1.0);
-  assert_eq!(fragment_color(&sampled, box_id), expected, "animated text color");
+  assert_eq!(
+    fragment_color(&sampled, box_id),
+    expected,
+    "animated text color"
+  );
   assert_eq!(
     fragment_border_top_color(&sampled, box_id),
     expected,
@@ -1258,7 +1285,11 @@ fn currentcolor_border_tracks_color_transition_when_color_is_var() -> Result<()>
   animation::apply_transitions(&mut sampled, 500.0, viewport);
 
   let expected = Rgba::new(128, 128, 128, 1.0);
-  assert_eq!(fragment_color(&sampled, box_id), expected, "animated text color");
+  assert_eq!(
+    fragment_color(&sampled, box_id),
+    expected,
+    "animated text color"
+  );
   assert_eq!(
     fragment_border_top_color(&sampled, box_id),
     expected,
@@ -1312,7 +1343,11 @@ fn currentcolor_dependent_border_color_tracks_color_transition_through_color_mix
   animation::apply_transitions(&mut sampled, 500.0, viewport);
 
   let expected = Rgba::new(128, 128, 128, 1.0);
-  assert_eq!(fragment_color(&sampled, box_id), expected, "animated text color");
+  assert_eq!(
+    fragment_color(&sampled, box_id),
+    expected,
+    "animated text color"
+  );
   assert_eq!(
     fragment_border_top_color(&sampled, box_id),
     expected,
@@ -1360,7 +1395,11 @@ fn currentcolor_color_mix_background_tracks_color_transition() -> Result<()> {
   animation::apply_transitions(&mut sampled, 500.0, viewport);
 
   let expected_color = Rgba::new(128, 128, 128, 1.0);
-  assert_eq!(fragment_color(&sampled, box_id), expected_color, "animated text color");
+  assert_eq!(
+    fragment_color(&sampled, box_id),
+    expected_color,
+    "animated text color"
+  );
 
   let expected_bg = Rgba::new(64, 64, 192, 1.0);
   assert_eq!(

@@ -21,9 +21,15 @@ fn find_fragment_global_by_box_id<'a>(
   let y = offset_y + fragment.bounds.y();
   let matches_id = match &fragment.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_id {
@@ -66,8 +72,7 @@ fn abspos_inset_zero_uses_padding_box_origin() {
   abs_style.bottom = InsetValue::Length(Length::px(0.0));
   abs_style.left = InsetValue::Length(Length::px(0.0));
 
-  let mut abs_child =
-    BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let mut abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
   abs_child.id = 2;
   let mut container = BoxNode::new_block(
     Arc::new(container_style),
@@ -84,12 +89,14 @@ fn abspos_inset_zero_uses_padding_box_origin() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(400.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let (container_x, container_y, _) = find_fragment_global_by_box_id(&fragment, 1, 0.0, 0.0)
     .expect("container fragment should exist");
-  let (abs_x, abs_y, _) = find_fragment_global_by_box_id(&fragment, 2, 0.0, 0.0)
-    .expect("abspos fragment should exist");
+  let (abs_x, abs_y, _) =
+    find_fragment_global_by_box_id(&fragment, 2, 0.0, 0.0).expect("abspos fragment should exist");
 
   let rel_x = abs_x - container_x;
   let rel_y = abs_y - container_y;
@@ -105,4 +112,3 @@ fn abspos_inset_zero_uses_padding_box_origin() {
     rel_y
   );
 }
-

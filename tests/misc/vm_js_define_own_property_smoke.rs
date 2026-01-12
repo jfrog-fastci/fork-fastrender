@@ -10,7 +10,8 @@ use vm_js::{
 // accidental regressions when updating `vendor/ecma-rs`.
 
 #[test]
-fn define_own_property_rejects_changing_enumerable_on_non_configurable_property() -> Result<(), VmError> {
+fn define_own_property_rejects_changing_enumerable_on_non_configurable_property(
+) -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
   let (obj, key) = {
@@ -199,7 +200,8 @@ fn define_own_property_respects_non_extensible_object() -> Result<(), VmError> {
 }
 
 #[test]
-fn define_own_property_rejects_data_accessor_conversion_when_non_configurable() -> Result<(), VmError> {
+fn define_own_property_rejects_data_accessor_conversion_when_non_configurable(
+) -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
   let (obj, key) = {

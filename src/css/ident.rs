@@ -39,4 +39,3 @@ pub(crate) fn parse_ident_function_contents<'i, 't>(
 
   Ok(out)
 }
-

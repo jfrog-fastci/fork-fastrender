@@ -21,7 +21,10 @@ fn count_colored_pixels(pixmap: &Pixmap) -> usize {
 fn renderer_with_subpixel_aa() -> FastRender {
   crate::rayon_test_util::init_rayon_for_tests(2);
   let toggles = RuntimeToggles::from_map(HashMap::from([
-    ("FASTR_PAINT_BACKEND".to_string(), "display_list".to_string()),
+    (
+      "FASTR_PAINT_BACKEND".to_string(),
+      "display_list".to_string(),
+    ),
     ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string()),
   ]));
   let config = FastRenderConfig::new()
@@ -75,4 +78,3 @@ fn webkit_font_smoothing_disables_subpixel_aa() {
     "expected -webkit-font-smoothing: antialiased to disable subpixel AA tinting"
   );
 }
-

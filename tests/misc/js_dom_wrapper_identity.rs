@@ -44,7 +44,8 @@ fn make_runtime_with_dom(html: &str) -> Result<JsRuntime, vm_js::VmError> {
 #[test]
 fn dom_node_wrapper_identity_is_stable() -> Result<(), vm_js::VmError> {
   let mut rt = make_runtime_with_dom(r#"<!doctype html><div></div>"#)?;
-  let value = rt.exec_script(r#"document.querySelector("div") === document.querySelector("div")"#)?;
+  let value =
+    rt.exec_script(r#"document.querySelector("div") === document.querySelector("div")"#)?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }

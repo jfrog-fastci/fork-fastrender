@@ -13,7 +13,10 @@ fn supports_declaration_accepts_targeted_vendor_properties() {
   assert!(supports_declaration("-moz-appearance", "none"));
   assert!(supports_declaration("-ms-appearance", "none"));
   assert!(supports_declaration("-o-appearance", "none"));
-  assert!(supports_declaration("-webkit-column-break-before", "always"));
+  assert!(supports_declaration(
+    "-webkit-column-break-before",
+    "always"
+  ));
   assert!(supports_declaration("-webkit-column-break-inside", "avoid"));
   assert!(supports_declaration("-webkit-page-break-before", "always"));
   assert!(supports_declaration("-webkit-page-break-inside", "avoid"));

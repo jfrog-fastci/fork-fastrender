@@ -3,8 +3,7 @@ use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use fastrender::style::cascade::apply_styles;
 use fastrender::style::color::Rgba;
 use fastrender::style::values::{
-  CustomPropertyListSeparator, CustomPropertySyntax, CustomPropertyTypedValue, Length,
-  LengthUnit,
+  CustomPropertyListSeparator, CustomPropertySyntax, CustomPropertyTypedValue, Length, LengthUnit,
 };
 
 fn dom_with_child() -> DomNode {
@@ -66,7 +65,11 @@ fn registered_custom_property_union_syntax_accepts_length_and_color() {
     Some(CustomPropertyTypedValue::Length(Length::px(10.0)))
   );
 
-  let child_value = child.styles.custom_properties.get("--x").expect("child value");
+  let child_value = child
+    .styles
+    .custom_properties
+    .get("--x")
+    .expect("child value");
   match &child_value.typed {
     Some(CustomPropertyTypedValue::Color(color)) => {
       assert_eq!(color.to_rgba(Rgba::BLACK), Rgba::RED);
@@ -91,7 +94,11 @@ fn invalid_union_custom_property_value_falls_back_to_initial_value() {
   let styled = apply_styles(&dom, &sheet);
   let child = styled.children.first().expect("child");
 
-  let child_value = child.styles.custom_properties.get("--x").expect("child value");
+  let child_value = child
+    .styles
+    .custom_properties
+    .get("--x")
+    .expect("child value");
   match &child_value.typed {
     Some(CustomPropertyTypedValue::Length(len)) => {
       assert_eq!(len.value, 0.0);
@@ -180,4 +187,3 @@ fn registered_custom_property_list_syntax_parses_comma_separated_values() {
     other => panic!("expected typed list value, got {other:?}"),
   }
 }
-

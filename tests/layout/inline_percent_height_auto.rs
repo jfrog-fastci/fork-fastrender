@@ -8,12 +8,21 @@ use fastrender::tree::box_tree::BoxNode;
 use fastrender::{FragmentContent, FragmentNode};
 use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let matches = match &fragment.content {
     FragmentContent::Block { box_id: Some(id) } => *id == box_id,
-    FragmentContent::Inline { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Text { box_id: Some(id), .. } => *id == box_id,
+    FragmentContent::Inline {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Text {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches {
@@ -28,8 +37,8 @@ fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Opt
 }
 
 #[test]
-fn percent_height_in_inline_formatting_context_computes_to_auto_when_containing_block_height_is_auto()
-{
+fn percent_height_in_inline_formatting_context_computes_to_auto_when_containing_block_height_is_auto(
+) {
   // Regression test motivated by `dropbox.com` CTA buttons: an inline formatting context can have a
   // definite available height (e.g. viewport), but percentage heights on inline-level formatting
   // contexts (`display:inline-grid`) must not resolve unless the containing block's height is
@@ -39,8 +48,11 @@ fn percent_height_in_inline_formatting_context_computes_to_auto_when_containing_
   fixed_child_style.display = Display::Block;
   fixed_child_style.height = Some(Length::px(10.0));
   fixed_child_style.height_keyword = None;
-  let fixed_child =
-    BoxNode::new_block(Arc::new(fixed_child_style), FormattingContextType::Block, vec![]);
+  let fixed_child = BoxNode::new_block(
+    Arc::new(fixed_child_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let mut grid_style = ComputedStyle::default();
   grid_style.display = Display::InlineGrid;
@@ -65,7 +77,9 @@ fn percent_height_in_inline_formatting_context_computes_to_auto_when_containing_
     AvailableSpace::Definite(100.0),
   );
   let ifc = InlineFormattingContext::new();
-  let fragment = ifc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = ifc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let grid_fragment = find_fragment_by_box_id(&fragment, 1).expect("grid fragment");
   assert!(
@@ -74,4 +88,3 @@ fn percent_height_in_inline_formatting_context_computes_to_auto_when_containing_
     grid_fragment.bounds.height()
   );
 }
-

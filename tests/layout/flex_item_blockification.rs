@@ -12,7 +12,10 @@ fn build_renderer() -> FastRender {
     .expect("build renderer")
 }
 
-fn layout_html(renderer: &mut FastRender, html: &str) -> fastrender::tree::fragment_tree::FragmentTree {
+fn layout_html(
+  renderer: &mut FastRender,
+  html: &str,
+) -> fastrender::tree::fragment_tree::FragmentTree {
   let dom = renderer.parse_html(html).expect("parse HTML");
   renderer.layout_document(&dom, 200, 200).expect("layout")
 }

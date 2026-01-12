@@ -37,7 +37,11 @@ fn normalize_url_path(path: &str) -> String {
 }
 
 fn base_url_dir(url_path: &str) -> String {
-  let url_path = if url_path.starts_with('/') { url_path } else { "/" };
+  let url_path = if url_path.starts_with('/') {
+    url_path
+  } else {
+    "/"
+  };
   match url_path.rsplit_once('/') {
     Some(("", _)) => "/".to_string(),
     Some((dir, _)) => format!("{dir}/"),
@@ -151,8 +155,7 @@ fn extract_html_refs(source: &str) -> Vec<String> {
 
   // Any `src=...` attribute. This is a best-effort scan; the curated corpus should keep HTML
   // simple and deterministic.
-  let src_attr_quoted =
-    Regex::new(r#"(?i)\ssrc\s*=\s*["'](?P<url>[^"'>]+)["']"#).unwrap();
+  let src_attr_quoted = Regex::new(r#"(?i)\ssrc\s*=\s*["'](?P<url>[^"'>]+)["']"#).unwrap();
   let src_attr_unquoted = Regex::new(r#"(?i)\ssrc\s*=\s*(?P<url>[^\s"'>]+)"#).unwrap();
   for caps in src_attr_quoted.captures_iter(source) {
     if let Some(url) = caps.name("url").map(|m| m.as_str()) {
@@ -167,8 +170,7 @@ fn extract_html_refs(source: &str) -> Vec<String> {
 
   // `<link href=...>` only when `rel` implies a fetch.
   let link_tag = Regex::new(r#"(?is)<link\b[^>]*>"#).unwrap();
-  let rel_attr =
-    Regex::new(r#"(?is)(?:^|\s)rel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap();
+  let rel_attr = Regex::new(r#"(?is)(?:^|\s)rel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap();
   let href_attr =
     Regex::new(r#"(?is)(?:^|\s)href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap();
   for m in link_tag.find_iter(source) {
@@ -229,7 +231,11 @@ fn file_url_path(tests_root: &Path, resources_root: &Path, path: &Path) -> Optio
   None
 }
 
-fn resolve_to_fs_path(tests_root: &Path, resources_root: &Path, resolved_url_path: &str) -> PathBuf {
+fn resolve_to_fs_path(
+  tests_root: &Path,
+  resources_root: &Path,
+  resolved_url_path: &str,
+) -> PathBuf {
   if let Some(rest) = resolved_url_path.strip_prefix("/resources/") {
     resources_root.join(rest)
   } else {

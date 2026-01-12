@@ -1,5 +1,7 @@
 use fastrender::geometry::Rect;
-use fastrender::paint::display_list::{DisplayItem, DisplayList, ImageData, ImageFilterQuality, ImageItem};
+use fastrender::paint::display_list::{
+  DisplayItem, DisplayList, ImageData, ImageFilterQuality, ImageItem,
+};
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::style::color::Rgba;
 use fastrender::text::font_loader::FontContext;

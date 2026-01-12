@@ -27,7 +27,11 @@ fn fixture(isolated: bool) -> String {
 
 fn assert_pixmap_eq(label: &str, expected: &Pixmap, actual: &Pixmap) {
   assert_eq!(expected.width(), actual.width(), "{label}: width mismatch");
-  assert_eq!(expected.height(), actual.height(), "{label}: height mismatch");
+  assert_eq!(
+    expected.height(),
+    actual.height(),
+    "{label}: height mismatch"
+  );
 
   let expected_data = expected.data();
   let actual_data = actual.data();

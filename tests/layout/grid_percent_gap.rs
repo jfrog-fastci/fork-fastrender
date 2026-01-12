@@ -128,4 +128,3 @@ fn column_gap_percentage_inherits_to_column_subgrid() {
   assert_approx(second.bounds.x(), 50.0, "second column offset includes gap");
   assert_approx(second.bounds.width(), 40.0, "second column width");
 }
-

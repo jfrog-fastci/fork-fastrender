@@ -47,14 +47,21 @@ where
     BindingValue::Number(n) => Ok(rt.js_number(n)),
     BindingValue::String(s) => rt.js_string(&s),
     BindingValue::Object(v) => Ok(v),
-    BindingValue::Callback(_) => Err(rt.throw_type_error("cannot return callback handles to JavaScript")),
+    BindingValue::Callback(_) => {
+      Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
+    }
     BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
       let obj = rt.create_array(values.len())?;
       rt.with_stack_roots(&[obj], |rt| {
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       })
@@ -64,7 +71,12 @@ where
       rt.with_stack_roots(&[obj], |rt| {
         for (key, item) in map {
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       })
@@ -74,7 +86,12 @@ where
       rt.with_stack_roots(&[obj], |rt| {
         for (key, item) in entries {
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       })

@@ -120,4 +120,3 @@ fn text_multiscript_emoji_line_matches_golden() {
   compare_pngs(GOLDEN_NAME, &rendered, &golden, &compare_config, &diff_dir)
     .unwrap_or_else(|e| panic!("{}", e));
 }
-

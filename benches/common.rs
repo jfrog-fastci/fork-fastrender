@@ -298,13 +298,14 @@ pub fn bench_print_config_once(bench_name: &str, extras: &[(&str, String)]) {
 }
 
 /// Read a fixture file, failing if it exceeds `max_bytes`.
-pub fn read_fixture_bytes_skip(path: impl AsRef<std::path::Path>, max_bytes: usize) -> io::Result<Vec<u8>> {
+pub fn read_fixture_bytes_skip(
+  path: impl AsRef<std::path::Path>,
+  max_bytes: usize,
+) -> io::Result<Vec<u8>> {
   let max_plus_one = max_bytes.saturating_add(1);
   let file = File::open(path.as_ref())?;
   let mut buf = Vec::new();
-  file
-    .take(max_plus_one as u64)
-    .read_to_end(&mut buf)?;
+  file.take(max_plus_one as u64).read_to_end(&mut buf)?;
   if buf.len() > max_bytes {
     return Err(io::Error::new(
       io::ErrorKind::Other,

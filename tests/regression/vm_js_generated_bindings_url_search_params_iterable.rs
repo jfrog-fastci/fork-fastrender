@@ -92,10 +92,7 @@ impl UrlSearchParamsHost {
     Ok(obj)
   }
 
-  fn make_string_iterator(
-    rt: &mut VmJsRuntime,
-    items: Vec<String>,
-  ) -> Result<Value, VmError> {
+  fn make_string_iterator(rt: &mut VmJsRuntime, items: Vec<String>) -> Result<Value, VmError> {
     let items = Rc::new(items);
     let idx = Rc::new(Cell::new(0usize));
 
@@ -290,9 +287,9 @@ impl WebHostBindings<VmJsRuntime> for UrlSearchParamsHost {
           }
 
           Some(_) => {
-            return Err(rt.throw_type_error(
-              "URLSearchParams constructor failed: unsupported init type",
-            ))
+            return Err(
+              rt.throw_type_error("URLSearchParams constructor failed: unsupported init type"),
+            )
           }
         };
 
@@ -429,7 +426,8 @@ fn collect_pairs_iterable(
   };
 
   // [Symbol.iterator] is a generated wrapper (aliases `entries`).
-  let mut record = rt.with_host_context(host, |rt| rt.get_iterator_from_method(params, iter_method))?;
+  let mut record =
+    rt.with_host_context(host, |rt| rt.get_iterator_from_method(params, iter_method))?;
 
   let mut out = Vec::new();
   while let Some(pair) = rt.iterator_step_value(&mut record)? {
@@ -462,8 +460,7 @@ fn generated_webidl_bindings_install_iterable_url_search_params() -> Result<(), 
   let res = install_window_bindings(&mut rt, &mut host);
   expect_ok(&mut rt, "install_window_bindings", res);
 
-  let res =
-    <VmJsRuntime as WebIdlBindingsRuntime<UrlSearchParamsHost>>::global_object(&mut rt);
+  let res = <VmJsRuntime as WebIdlBindingsRuntime<UrlSearchParamsHost>>::global_object(&mut rt);
   let global = expect_ok(&mut rt, "global_object", res);
   let res = get_method(&mut rt, global, "URLSearchParams");
   let ctor = expect_ok(&mut rt, "get URLSearchParams ctor", res);
@@ -487,9 +484,8 @@ fn generated_webidl_bindings_install_iterable_url_search_params() -> Result<(), 
   };
   let res = rt.heap_mut().add_root(params);
   let _ = expect_ok(&mut rt, "root params object", res);
-  let parsed = UrlSearchParams::parse("a=1&b=2", &host.limits).map_err(|e| {
-    rt.throw_type_error(&format!("URLSearchParams parse failed: {e}"))
-  })?;
+  let parsed = UrlSearchParams::parse("a=1&b=2", &host.limits)
+    .map_err(|e| rt.throw_type_error(&format!("URLSearchParams parse failed: {e}")))?;
   host.params.insert(params_obj, parsed);
 
   // typeof URLSearchParams.prototype[Symbol.iterator] === "function"
@@ -527,22 +523,25 @@ fn generated_webidl_bindings_install_iterable_url_search_params() -> Result<(), 
   };
   assert_eq!(
     pairs,
-    vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
+    vec![
+      ("a".to_string(), "1".to_string()),
+      ("b".to_string(), "2".to_string())
+    ]
   );
 
   Ok(())
 }
 
 #[test]
-fn generated_webidl_bindings_url_origin_getter_returns_tuple_origin_and_null_for_opaque() -> Result<(), VmError> {
+fn generated_webidl_bindings_url_origin_getter_returns_tuple_origin_and_null_for_opaque(
+) -> Result<(), VmError> {
   let mut rt = VmJsRuntime::new();
   let mut host = UrlSearchParamsHost::default();
 
   let res = install_window_bindings(&mut rt, &mut host);
   expect_ok(&mut rt, "install_window_bindings", res);
 
-  let res =
-    <VmJsRuntime as WebIdlBindingsRuntime<UrlSearchParamsHost>>::global_object(&mut rt);
+  let res = <VmJsRuntime as WebIdlBindingsRuntime<UrlSearchParamsHost>>::global_object(&mut rt);
   let global = expect_ok(&mut rt, "global_object", res);
 
   let res = get_method(&mut rt, global, "URL");
@@ -576,8 +575,7 @@ fn generated_webidl_bindings_url_origin_getter_returns_tuple_origin_and_null_for
   host.urls.insert(handle, url);
 
   let origin_key: PropertyKey = rt.property_key_from_str("origin")?;
-  let origin_val =
-    rt.with_host_context(&mut host, |rt| rt.get(url_obj, origin_key))?;
+  let origin_val = rt.with_host_context(&mut host, |rt| rt.get(url_obj, origin_key))?;
   let origin_s = UrlSearchParamsHost::value_to_rust_string(&mut rt, origin_val)?;
   assert_eq!(origin_s, "https://example.com");
 
@@ -596,8 +594,7 @@ fn generated_webidl_bindings_url_origin_getter_returns_tuple_origin_and_null_for
     .map_err(|e| rt.throw_type_error(&format!("file URL parse failed: {e}")))?;
   host.urls.insert(file_handle, file_url);
 
-  let origin_val =
-    rt.with_host_context(&mut host, |rt| rt.get(file_obj, origin_key))?;
+  let origin_val = rt.with_host_context(&mut host, |rt| rt.get(file_obj, origin_key))?;
   let origin_s = UrlSearchParamsHost::value_to_rust_string(&mut rt, origin_val)?;
   assert_eq!(origin_s, "null");
 

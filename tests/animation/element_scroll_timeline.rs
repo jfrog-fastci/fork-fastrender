@@ -8,7 +8,6 @@ use fastrender::css::types::{
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::ScrollState;
 use fastrender::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
-use fastrender::Length;
 use fastrender::style::types::{
   AnimationDirection, AnimationFillMode, AnimationIterationCount, AnimationPlayState,
   AnimationRange, AnimationTimeline, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
@@ -17,6 +16,7 @@ use fastrender::style::types::{
 };
 use fastrender::style::ComputedStyle;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
+use fastrender::Length;
 
 fn fade_keyframes(name: &str) -> KeyframesRule {
   KeyframesRule {

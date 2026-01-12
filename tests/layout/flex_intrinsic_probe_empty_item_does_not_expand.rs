@@ -102,4 +102,3 @@ fn flex_intrinsic_probe_empty_item_does_not_expand() {
     "expected trailing flex item to stay within container, right edge {right_edge} > container {container_width}"
   );
 }
-

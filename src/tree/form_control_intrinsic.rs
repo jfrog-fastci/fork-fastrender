@@ -106,7 +106,10 @@ pub(crate) fn intrinsic_content_size_for_form_control(
       if matches!(style.field_sizing, FieldSizing::Content)
         && matches!(
           kind,
-          TextControlKind::Plain | TextControlKind::Password | TextControlKind::Number | TextControlKind::Date
+          TextControlKind::Plain
+            | TextControlKind::Password
+            | TextControlKind::Number
+            | TextControlKind::Date
         )
       {
         let value_is_empty = value.is_empty();
@@ -136,7 +139,13 @@ pub(crate) fn intrinsic_content_size_for_form_control(
         };
 
         if let Some(text) = measure_text.as_ref() {
-          let mut width = measure_text_width(text.as_ref(), measure_style, font_context, shaper, char_width);
+          let mut width = measure_text_width(
+            text.as_ref(),
+            measure_style,
+            font_context,
+            shaper,
+            char_width,
+          );
           if !matches!(control.appearance, Appearance::None) {
             match kind {
               TextControlKind::Number => width += TEXT_CONTROL_NUMBER_AFFORDANCE_SPACE_PX,
@@ -181,7 +190,13 @@ pub(crate) fn intrinsic_content_size_for_form_control(
 
         for line in raw_text.split('\n') {
           line_count += 1;
-          max_width = max_width.max(measure_text_width(line, measure_style, font_context, shaper, char_width));
+          max_width = max_width.max(measure_text_width(
+            line,
+            measure_style,
+            font_context,
+            shaper,
+            char_width,
+          ));
         }
         if line_count == 0 {
           line_count = 1;

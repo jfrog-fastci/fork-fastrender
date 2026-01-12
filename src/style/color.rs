@@ -1029,15 +1029,18 @@ impl RelativeComponent {
       // Per CSS Color, missing components behave as zero values for most computations
       // (outside of interpolation/carry-forward rules).
       RelativeComponent::Neg(expr) => Some(-eval_or_zero(expr, source_channels, source_alpha)),
-      RelativeComponent::Add(a, b) => {
-        Some(eval_or_zero(a, source_channels, source_alpha) + eval_or_zero(b, source_channels, source_alpha))
-      }
-      RelativeComponent::Sub(a, b) => {
-        Some(eval_or_zero(a, source_channels, source_alpha) - eval_or_zero(b, source_channels, source_alpha))
-      }
-      RelativeComponent::Mul(a, b) => {
-        Some(eval_or_zero(a, source_channels, source_alpha) * eval_or_zero(b, source_channels, source_alpha))
-      }
+      RelativeComponent::Add(a, b) => Some(
+        eval_or_zero(a, source_channels, source_alpha)
+          + eval_or_zero(b, source_channels, source_alpha),
+      ),
+      RelativeComponent::Sub(a, b) => Some(
+        eval_or_zero(a, source_channels, source_alpha)
+          - eval_or_zero(b, source_channels, source_alpha),
+      ),
+      RelativeComponent::Mul(a, b) => Some(
+        eval_or_zero(a, source_channels, source_alpha)
+          * eval_or_zero(b, source_channels, source_alpha),
+      ),
       RelativeComponent::Div(a, b) => {
         let denom = eval_or_zero(b, source_channels, source_alpha);
         if denom == 0.0 {
@@ -1123,11 +1126,9 @@ impl Color {
 
         best.map(|(c, _)| c).unwrap_or(visible_background)
       }
-      Color::Relative(relative) => relative.to_rgba_with_scheme_and_forced_colors(
-        current_color,
-        is_dark,
-        forced_colors,
-      ),
+      Color::Relative(relative) => {
+        relative.to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors)
+      }
       Color::LightDark { light, dark } => {
         if is_dark {
           dark.to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors)
@@ -1145,9 +1146,7 @@ impl Color {
       Color::System(_) => true,
       Color::Mix { components, .. } => components.iter().any(|(c, _)| c.uses_system_color()),
       Color::Contrast { against, options } => {
-        against
-          .as_ref()
-          .is_some_and(|c| c.uses_system_color())
+        against.as_ref().is_some_and(|c| c.uses_system_color())
           || options.iter().any(|c| c.uses_system_color())
       }
       Color::Relative(relative) => relative.base.uses_system_color(),
@@ -1366,9 +1365,10 @@ impl RelativeColor {
     is_dark: bool,
     forced_colors: bool,
   ) -> Rgba {
-    let base = self
-      .base
-      .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors);
+    let base =
+      self
+        .base
+        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors);
     let (source_channels, source_alpha) = rgba_to_relative_space(self.space, base);
 
     let mut channels = [0.0; 3];
@@ -2485,8 +2485,8 @@ fn parse_relative_color_function(
   // SAFETY: `starts_with_from_keyword` ensures the first token is exactly `from`, so the first
   // four bytes belong to the keyword (ASCII).
   let body = trim_ascii_whitespace_start(&inner[4..]);
-  let (source_str, rest) =
-    split_relative_function_source(body).ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+  let (source_str, rest) = split_relative_function_source(body)
+    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
 
   let source_color = Color::parse(&source_str)?;
 
@@ -2912,10 +2912,7 @@ fn rgba_to_hwb(color: Rgba) -> (f32, f32, f32, f32) {
 
 fn rgba_to_relative_space(space: RelativeColorSpace, color: Rgba) -> ([f32; 3], f32) {
   match space {
-    RelativeColorSpace::Rgb => (
-      [color.r as f32, color.g as f32, color.b as f32],
-      color.a,
-    ),
+    RelativeColorSpace::Rgb => ([color.r as f32, color.g as f32, color.b as f32], color.a),
     RelativeColorSpace::Srgb => (
       [
         color.r as f32 / 255.0,
@@ -3007,7 +3004,9 @@ fn relative_space_to_rgba(space: RelativeColorSpace, values: [f32; 3], alpha: f3
     ),
     RelativeColorSpace::Hsl => Hsla::new(values[0], values[1], values[2], alpha).to_rgba(),
     RelativeColorSpace::Hwb => hwb_to_rgba(values[0], values[1], values[2], alpha),
-    RelativeColorSpace::Lab => lab_to_rgba(values[0].clamp(0.0, 100.0), values[1], values[2], alpha),
+    RelativeColorSpace::Lab => {
+      lab_to_rgba(values[0].clamp(0.0, 100.0), values[1], values[2], alpha)
+    }
     RelativeColorSpace::Lch => {
       let l = values[0].clamp(0.0, 100.0);
       let c = values[1].max(0.0);
@@ -3265,10 +3264,16 @@ fn mix_colors(
       )
     }
     ColorMixSpace::Lab => {
-      let (l0, a0, b0, alpha0) =
-        rgba_to_lab(first.0.to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors));
-      let (l1, a1, b1, alpha1) =
-        rgba_to_lab(second.0.to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors));
+      let (l0, a0, b0, alpha0) = rgba_to_lab(first.0.to_rgba_with_scheme_and_forced_colors(
+        current,
+        is_dark,
+        forced_colors,
+      ));
+      let (l1, a1, b1, alpha1) = rgba_to_lab(second.0.to_rgba_with_scheme_and_forced_colors(
+        current,
+        is_dark,
+        forced_colors,
+      ));
       let l = l0 * w0 + l1 * w1;
       let a = a0 * w0 + a1 * w1;
       let b = b0 * w0 + b1 * w1;
@@ -3276,10 +3281,16 @@ fn mix_colors(
       lab_to_rgba(l, a, b, alpha)
     }
     ColorMixSpace::Lch => {
-      let (l0, a0, b0, alpha0) =
-        rgba_to_lab(first.0.to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors));
-      let (l1, a1, b1, alpha1) =
-        rgba_to_lab(second.0.to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors));
+      let (l0, a0, b0, alpha0) = rgba_to_lab(first.0.to_rgba_with_scheme_and_forced_colors(
+        current,
+        is_dark,
+        forced_colors,
+      ));
+      let (l1, a1, b1, alpha1) = rgba_to_lab(second.0.to_rgba_with_scheme_and_forced_colors(
+        current,
+        is_dark,
+        forced_colors,
+      ));
       let c0 = (a0 * a0 + b0 * b0).sqrt();
       let c1 = (a1 * a1 + b1 * b1).sqrt();
       let h0 = b0.atan2(a0);
@@ -3291,16 +3302,16 @@ fn mix_colors(
       lab_to_rgba(l, a_vec, b_vec, alpha)
     }
     ColorMixSpace::Oklab => {
-      let (l0, a0, b0, alpha0) = rgba_to_oklab(
-        first
-          .0
-          .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors),
-      );
-      let (l1, a1, b1, alpha1) = rgba_to_oklab(
-        second
-          .0
-          .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors),
-      );
+      let (l0, a0, b0, alpha0) = rgba_to_oklab(first.0.to_rgba_with_scheme_and_forced_colors(
+        current,
+        is_dark,
+        forced_colors,
+      ));
+      let (l1, a1, b1, alpha1) = rgba_to_oklab(second.0.to_rgba_with_scheme_and_forced_colors(
+        current,
+        is_dark,
+        forced_colors,
+      ));
       let l = l0 * w0 + l1 * w1;
       let a = a0 * w0 + a1 * w1;
       let b = b0 * w0 + b1 * w1;
@@ -3308,16 +3319,16 @@ fn mix_colors(
       oklab_to_rgba(l, a, b, alpha)
     }
     ColorMixSpace::Oklch => {
-      let (l0, a0, b0, alpha0) = rgba_to_oklab(
-        first
-          .0
-          .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors),
-      );
-      let (l1, a1, b1, alpha1) = rgba_to_oklab(
-        second
-          .0
-          .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors),
-      );
+      let (l0, a0, b0, alpha0) = rgba_to_oklab(first.0.to_rgba_with_scheme_and_forced_colors(
+        current,
+        is_dark,
+        forced_colors,
+      ));
+      let (l1, a1, b1, alpha1) = rgba_to_oklab(second.0.to_rgba_with_scheme_and_forced_colors(
+        current,
+        is_dark,
+        forced_colors,
+      ));
       let c0 = (a0 * a0 + b0 * b0).sqrt();
       let c1 = (a1 * a1 + b1 * b1).sqrt();
       let h0 = b0.atan2(a0);

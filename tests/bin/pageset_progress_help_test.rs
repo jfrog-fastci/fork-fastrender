@@ -87,7 +87,10 @@ fn pageset_progress_worker_help_mentions_memory_guardrails() {
     .args(["worker", "--help"])
     .output()
     .expect("run pageset_progress worker --help");
-  assert!(output.status.success(), "expected success for worker --help");
+  assert!(
+    output.status.success(),
+    "expected success for worker --help"
+  );
 
   let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
   assert!(

@@ -15,7 +15,10 @@ fn approx_eq(a: f32, b: f32) -> bool {
 
 fn render_display_list_forced_colors(html: &str, width: u32, height: u32) -> DisplayList {
   let toggles = RuntimeToggles::from_map(HashMap::from([
-    ("FASTR_PAINT_BACKEND".to_string(), "display_list".to_string()),
+    (
+      "FASTR_PAINT_BACKEND".to_string(),
+      "display_list".to_string(),
+    ),
     ("FASTR_FORCED_COLORS".to_string(), "active".to_string()),
   ]));
 
@@ -45,12 +48,16 @@ fn find_unique_fill_rect(list: &DisplayList, color: Rgba, width: f32, height: f3
   for item in list.items() {
     let candidate = match item {
       DisplayItem::FillRect(fill)
-        if fill.color == color && approx_eq(fill.rect.width(), width) && approx_eq(fill.rect.height(), height) =>
+        if fill.color == color
+          && approx_eq(fill.rect.width(), width)
+          && approx_eq(fill.rect.height(), height) =>
       {
         Some(fill.rect)
       }
       DisplayItem::FillRoundedRect(fill)
-        if fill.color == color && approx_eq(fill.rect.width(), width) && approx_eq(fill.rect.height(), height) =>
+        if fill.color == color
+          && approx_eq(fill.rect.width(), width)
+          && approx_eq(fill.rect.height(), height) =>
       {
         Some(fill.rect)
       }

@@ -1,5 +1,5 @@
-use crate::css::selectors::FastRenderSelectorImpl;
 use crate::css::selectors::ExportedPartTarget;
+use crate::css::selectors::FastRenderSelectorImpl;
 use crate::css::selectors::PartExportMap;
 use crate::css::selectors::PseudoClass;
 use crate::css::selectors::PseudoElement;
@@ -1725,7 +1725,9 @@ pub fn resolve_first_strong_direction(node: &DomNode) -> Option<TextDirection> {
     for ch in s.chars() {
       match bidi_class(ch) {
         unicode_bidi::BidiClass::L => return Some(TextDirection::Ltr),
-        unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL => return Some(TextDirection::Rtl),
+        unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL => {
+          return Some(TextDirection::Rtl)
+        }
         _ => {}
       }
     }
@@ -2371,18 +2373,24 @@ fn parse_html_to_domnode(html: &str, scripting_enabled: bool) -> Result<(DomNode
     scripting_enabled: bool,
     deadline_counter: &mut usize,
   ) -> Result<DomNode> {
-    convert_handle_to_node(handle, quirks_mode, scripting_enabled, deadline_counter)?.ok_or_else(|| {
-      Error::Parse(ParseError::InvalidHtml {
-        message: "DOM conversion produced no document root node".to_string(),
-        line: 0,
-      })
-    })
+    convert_handle_to_node(handle, quirks_mode, scripting_enabled, deadline_counter)?.ok_or_else(
+      || {
+        Error::Parse(ParseError::InvalidHtml {
+          message: "DOM conversion produced no document root node".to_string(),
+          line: 0,
+        })
+      },
+    )
   }
 
   let convert_timer = dom_parse_diagnostics_timer();
   let mut deadline_counter = 0usize;
-  let root =
-    convert_document_handle_to_root(&dom.document, quirks_mode, scripting_enabled, &mut deadline_counter)?;
+  let root = convert_document_handle_to_root(
+    &dom.document,
+    quirks_mode,
+    scripting_enabled,
+    &mut deadline_counter,
+  )?;
   if let Some(start) = convert_timer {
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     with_dom_parse_diagnostics(|diag| {
@@ -2470,7 +2478,9 @@ pub(crate) fn clone_dom_with_deadline(node: &DomNode, stage: RenderStage) -> Res
         .children
         .last_mut()
         .map(|node| node as *mut DomNode)
-        .ok_or_else(|| Error::Other("clone_dom_with_deadline: child node missing after push".into()))?;
+        .ok_or_else(|| {
+          Error::Other("clone_dom_with_deadline: child node missing after push".into())
+        })?;
 
       stack.push(frame);
       stack.push(Frame {
@@ -2598,7 +2608,9 @@ pub(crate) fn clone_dom_with_deadline_and_top_layer_hint(
         .last_mut()
         .map(|node| node as *mut DomNode)
         .ok_or_else(|| {
-          Error::Other("clone_dom_with_deadline_and_top_layer_hint: child node missing after push".into())
+          Error::Other(
+            "clone_dom_with_deadline_and_top_layer_hint: child node missing after push".into(),
+          )
         })?;
 
       let child_scan_suppressed = frame.scan_children_suppressed;
@@ -3477,7 +3489,8 @@ pub fn img_src_is_placeholder(value: &str) -> bool {
   }
 
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    value
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
   fn contains_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
@@ -3675,7 +3688,8 @@ pub fn img_src_is_placeholder(value: &str) -> bool {
 
 pub(crate) fn srcset_is_placeholder(value: &str) -> bool {
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    value
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
   let value = trim_ascii_whitespace(value);
@@ -3687,7 +3701,9 @@ pub(crate) fn srcset_is_placeholder(value: &str) -> bool {
   if candidates.is_empty() {
     return true;
   }
-  candidates.iter().all(|candidate| img_src_is_placeholder(&candidate.url))
+  candidates
+    .iter()
+    .all(|candidate| img_src_is_placeholder(&candidate.url))
 }
 
 /// Optional DOM compatibility tweaks applied after HTML parsing.
@@ -3702,7 +3718,8 @@ pub(crate) fn apply_dom_compatibility_mutations(
   deadline_counter: &mut usize,
 ) -> Result<()> {
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    value
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
   fn first_non_empty_attr(attrs: &[(String, String)], names: &[&str]) -> Option<String> {
@@ -4001,7 +4018,11 @@ pub(crate) fn apply_dom_compatibility_mutations(
     }
   }
 
-  fn copy_picture_attrs(target: &mut DomNode, fallback_picture: Option<&DomNode>, fallback_img: &DomNode) {
+  fn copy_picture_attrs(
+    target: &mut DomNode,
+    fallback_picture: Option<&DomNode>,
+    fallback_img: &DomNode,
+  ) {
     if !is_html_element_tag(target, "picture") {
       return;
     }
@@ -4932,12 +4953,18 @@ fn convert_handle_to_node(
         let handle = content.children.borrow().get(frame.next_child).cloned();
         handle.ok_or_else(|| {
           Error::Parse(ParseError::InvalidHtml {
-            message: "DOM conversion encountered an out-of-bounds template content child".to_string(),
+            message: "DOM conversion encountered an out-of-bounds template content child"
+              .to_string(),
             line: 0,
           })
         })?
       } else {
-        let handle = frame.handle.children.borrow().get(frame.next_child).cloned();
+        let handle = frame
+          .handle
+          .children
+          .borrow()
+          .get(frame.next_child)
+          .cloned();
         handle.ok_or_else(|| {
           Error::Parse(ParseError::InvalidHtml {
             message: "DOM conversion encountered an out-of-bounds child".to_string(),
@@ -4954,9 +4981,11 @@ fn convert_handle_to_node(
         RenderStage::DomParse,
       )?;
 
-      let Some(child_type) =
-        node_type_for_handle(&child_handle, document_quirks_mode, document_scripting_enabled)
-      else {
+      let Some(child_type) = node_type_for_handle(
+        &child_handle,
+        document_quirks_mode,
+        document_scripting_enabled,
+      ) else {
         continue;
       };
 
@@ -5215,7 +5244,10 @@ impl DomNode {
 }
 
 fn is_ascii_whitespace_html(c: char) -> bool {
-  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+  matches!(
+    c,
+    '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+  )
 }
 
 fn trim_ascii_whitespace_html(value: &str) -> &str {
@@ -6603,7 +6635,8 @@ impl<'a> ElementRef<'a> {
         .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
     });
 
-    let Some(form) = Self::resolve_form_owner_for_node(self.node, nearest_form_ancestor, &forms_by_id)
+    let Some(form) =
+      Self::resolve_form_owner_for_node(self.node, nearest_form_ancestor, &forms_by_id)
     else {
       return false;
     };
@@ -6631,8 +6664,11 @@ impl<'a> ElementRef<'a> {
       match entry.state {
         TraversalState::Enter => {
           if ElementRef::is_default_submit_candidate(entry.node, &ancestors) {
-            let owner =
-              Self::resolve_form_owner_for_node(entry.node, entry.nearest_form_ancestor, &forms_by_id);
+            let owner = Self::resolve_form_owner_for_node(
+              entry.node,
+              entry.nearest_form_ancestor,
+              &forms_by_id,
+            );
             if owner.is_some_and(|owner| ptr::eq(owner, form)) {
               return ptr::eq(entry.node, self.node);
             }
@@ -6810,7 +6846,11 @@ impl<'a> ElementRef<'a> {
   fn is_target(&self) -> bool {
     // Template contents are inert and not part of the document tree for fragment navigation, so
     // nodes inside a `<template>` must never match `:target`.
-    if self.all_ancestors.iter().any(|ancestor| ancestor.is_template_element()) {
+    if self
+      .all_ancestors
+      .iter()
+      .any(|ancestor| ancestor.is_template_element())
+    {
       return false;
     }
     current_target_fragment()
@@ -6941,7 +6981,10 @@ pub(crate) fn textarea_current_value(node: &DomNode) -> String {
   textarea_value(node)
 }
 
-pub(crate) fn textarea_current_value_from_text_content(node: &DomNode, text_content: String) -> String {
+pub(crate) fn textarea_current_value_from_text_content(
+  node: &DomNode,
+  text_content: String,
+) -> String {
   if let Some(value) = node.get_attribute_ref("data-fastr-value") {
     return normalize_textarea_newlines(value.to_string());
   }
@@ -7109,7 +7152,10 @@ fn node_hidden_for_select(node: &DomNode) -> bool {
 
 pub(crate) fn strip_and_collapse_ascii_whitespace(value: &str) -> String {
   fn is_ascii_ws(c: char) -> bool {
-    matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+    matches!(
+      c,
+      '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+    )
   }
 
   let mut out = String::with_capacity(value.len());
@@ -7206,7 +7252,9 @@ fn single_select_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode>
   single_select_selected_option_and_disabled(select).map(|(node, _)| node)
 }
 
-fn single_select_selected_option_and_disabled<'a>(select: &'a DomNode) -> Option<(&'a DomNode, bool)> {
+fn single_select_selected_option_and_disabled<'a>(
+  select: &'a DomNode,
+) -> Option<(&'a DomNode, bool)> {
   let mut first_option: Option<(&'a DomNode, bool)> = None;
   let mut first_enabled_option: Option<(&'a DomNode, bool)> = None;
   let mut last_selected_option: Option<(&'a DomNode, bool)> = None;
@@ -7311,7 +7359,8 @@ fn select_placeholder_label_option<'a>(select: &'a DomNode) -> Option<&'a DomNod
 
 fn select_has_non_disabled_selected_option(select: &DomNode) -> bool {
   if select.get_attribute_ref("multiple").is_none() {
-    return single_select_selected_option_and_disabled(select).is_some_and(|(_, disabled)| !disabled);
+    return single_select_selected_option_and_disabled(select)
+      .is_some_and(|(_, disabled)| !disabled);
   }
 
   let mut stack: Vec<(&DomNode, bool)> = Vec::new();
@@ -7599,11 +7648,9 @@ impl<'a> Element for ElementRef<'a> {
     _context: &mut selectors::matching::MatchingContext<Self::Impl>,
   ) -> bool {
     match pseudo {
-      PseudoClass::Has(relative) => {
-        _context.with_featureless(false, |context| {
-          matches_has_relative(self, relative, context)
-        })
-      }
+      PseudoClass::Has(relative) => _context.with_featureless(false, |context| {
+        matches_has_relative(self, relative, context)
+      }),
       PseudoClass::Host(selectors) => {
         if !_context
           .extra_data
@@ -7657,11 +7704,9 @@ impl<'a> Element for ElementRef<'a> {
           false
         })
       }
-      PseudoClass::Root => {
-        self
-          .parent
-          .is_some_and(|parent| matches!(parent.node_type, DomNodeType::Document { .. }))
-      }
+      PseudoClass::Root => self
+        .parent
+        .is_some_and(|parent| matches!(parent.node_type, DomNodeType::Document { .. })),
       PseudoClass::Defined => {
         if _context.extra_data.treat_custom_elements_as_defined {
           true
@@ -8029,9 +8074,7 @@ impl<'a> Element for ElementRef<'a> {
     _context: &mut selectors::matching::MatchingContext<Self::Impl>,
   ) -> bool {
     match pseudo {
-      PseudoElement::Placeholder => {
-        self.is_html_element() && self.is_placeholder_shown()
-      }
+      PseudoElement::Placeholder => self.is_html_element() && self.is_placeholder_shown(),
       PseudoElement::FileSelectorButton => {
         if !self.is_html_element() {
           return false;
@@ -8476,70 +8519,17 @@ fn matches_has_relative(
         }
 
         let quirks_mode = ctx.quirks_mode();
-         if selector.match_hint.is_descendant_direction() {
-           if let Some(summary) = anchor_summary {
-             let should_prune = if matches!(quirks_mode, QuirksMode::Quirks) {
-               let hashes = relative_selector_bloom_hashes(selector, quirks_mode);
-               !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
-             } else {
-               let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
-               !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
-             };
+        if selector.match_hint.is_descendant_direction() {
+          if let Some(summary) = anchor_summary {
+            let should_prune = if matches!(quirks_mode, QuirksMode::Quirks) {
+              let hashes = relative_selector_bloom_hashes(selector, quirks_mode);
+              !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+            } else {
+              let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
+              !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+            };
 
-             if should_prune {
-               record_has_prune();
-               ctx.selector_caches.relative_selector.add(
-                 anchor.opaque(),
-                 selector,
-                 RelativeSelectorCachedMatch::NotMatched,
-               );
-               continue;
-             }
-           }
-         }
-
-         if !selector.match_hint.is_descendant_direction() {
-           let parent = match anchor.parent {
-             Some(parent) => parent,
-             None => {
-               record_has_prune();
-               ctx.selector_caches.relative_selector.add(
-                 anchor.opaque(),
-                 selector,
-                 RelativeSelectorCachedMatch::NotMatched,
-               );
-               continue;
-             }
-           };
-           if parent.template_contents_are_inert() {
-             record_has_prune();
-             ctx.selector_caches.relative_selector.add(
-               anchor.opaque(),
-               selector,
-               RelativeSelectorCachedMatch::NotMatched,
-             );
-             continue;
-           }
- 
-           let mut seen_anchor = false;
-           let mut next_sibling: Option<&DomNode> = None;
-           for sibling in parent
-             .traversal_children()
-             .iter()
-             .filter(|c| c.is_element())
-           {
-             if ptr::eq(sibling, anchor.node) {
-               seen_anchor = true;
-               continue;
-             }
-             if !seen_anchor {
-               continue;
-             }
-             next_sibling = Some(sibling);
-             break;
-           }
- 
-            let Some(next_sibling) = next_sibling else {
+            if should_prune {
               record_has_prune();
               ctx.selector_caches.relative_selector.add(
                 anchor.opaque(),
@@ -8547,42 +8537,97 @@ fn matches_has_relative(
                 RelativeSelectorCachedMatch::NotMatched,
               );
               continue;
-            };
-  
-            if selector.match_hint.is_next_sibling() {
-              if let Some(store) = ctx.extra_data.selector_blooms {
-                let sibling_id = ctx
+            }
+          }
+        }
+
+        if !selector.match_hint.is_descendant_direction() {
+          let parent = match anchor.parent {
+            Some(parent) => parent,
+            None => {
+              record_has_prune();
+              ctx.selector_caches.relative_selector.add(
+                anchor.opaque(),
+                selector,
+                RelativeSelectorCachedMatch::NotMatched,
+              );
+              continue;
+            }
+          };
+          if parent.template_contents_are_inert() {
+            record_has_prune();
+            ctx.selector_caches.relative_selector.add(
+              anchor.opaque(),
+              selector,
+              RelativeSelectorCachedMatch::NotMatched,
+            );
+            continue;
+          }
+
+          let mut seen_anchor = false;
+          let mut next_sibling: Option<&DomNode> = None;
+          for sibling in parent
+            .traversal_children()
+            .iter()
+            .filter(|c| c.is_element())
+          {
+            if ptr::eq(sibling, anchor.node) {
+              seen_anchor = true;
+              continue;
+            }
+            if !seen_anchor {
+              continue;
+            }
+            next_sibling = Some(sibling);
+            break;
+          }
+
+          let Some(next_sibling) = next_sibling else {
+            record_has_prune();
+            ctx.selector_caches.relative_selector.add(
+              anchor.opaque(),
+              selector,
+              RelativeSelectorCachedMatch::NotMatched,
+            );
+            continue;
+          };
+
+          if selector.match_hint.is_next_sibling() {
+            if let Some(store) = ctx.extra_data.selector_blooms {
+              let sibling_id = ctx.extra_data.node_id_for(next_sibling).or_else(|| {
+                ctx
                   .extra_data
-                  .node_id_for(next_sibling)
-                  .or_else(|| ctx.extra_data.slot_map.and_then(|map| map.node_id(next_sibling)));
-                if let Some(sibling_id) = sibling_id {
-                  if let Some(summary) = store.summary_for_id(sibling_id) {
-                    let should_prune = if matches!(quirks_mode, QuirksMode::Quirks) {
-                      let hashes = relative_selector_bloom_hashes(selector, quirks_mode);
-                      !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
-                    } else {
-                      let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
-                      !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
-                    };
-                    if should_prune {
-                      record_has_prune();
-                      ctx.selector_caches.relative_selector.add(
-                        anchor.opaque(),
-                        selector,
-                        RelativeSelectorCachedMatch::NotMatched,
-                      );
-                      continue;
-                    }
+                  .slot_map
+                  .and_then(|map| map.node_id(next_sibling))
+              });
+              if let Some(sibling_id) = sibling_id {
+                if let Some(summary) = store.summary_for_id(sibling_id) {
+                  let should_prune = if matches!(quirks_mode, QuirksMode::Quirks) {
+                    let hashes = relative_selector_bloom_hashes(selector, quirks_mode);
+                    !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+                  } else {
+                    let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
+                    !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+                  };
+                  if should_prune {
+                    record_has_prune();
+                    ctx.selector_caches.relative_selector.add(
+                      anchor.opaque(),
+                      selector,
+                      RelativeSelectorCachedMatch::NotMatched,
+                    );
+                    continue;
                   }
                 }
               }
             }
           }
- 
-         if selector_bloom_enabled()
-           && ctx
-             .selector_caches
-             .relative_selector_filter_map
+        }
+
+        if selector_bloom_enabled()
+          && ctx
+            .selector_caches
+            .relative_selector_filter_map
             .fast_reject(anchor, selector, ctx.quirks_mode())
         {
           if ctx.extra_data.deadline_error.is_some() {
@@ -9322,14 +9367,24 @@ mod tests {
 
     let invalid_value = element_with_attrs(
       "input",
-      vec![("type", "range"), ("min", "0"), ("max", "10"), ("value", "oops")],
+      vec![
+        ("type", "range"),
+        ("min", "0"),
+        ("max", "10"),
+        ("value", "oops"),
+      ],
       vec![],
     );
     assert_eq!(input_range_value(&invalid_value), Some(5.0));
 
     let clamped = element_with_attrs(
       "input",
-      vec![("type", "range"), ("min", "0"), ("max", "10"), ("value", "20")],
+      vec![
+        ("type", "range"),
+        ("min", "0"),
+        ("max", "10"),
+        ("value", "20"),
+      ],
       vec![],
     );
     assert_eq!(input_range_value(&clamped), Some(10.0));
@@ -9382,22 +9437,16 @@ mod tests {
       "simple colors should be accepted and normalized to lowercase"
     );
 
-    let invalid_name = element_with_attrs(
-      "input",
-      vec![("type", "color"), ("value", "red")],
-      vec![],
-    );
+    let invalid_name =
+      element_with_attrs("input", vec![("type", "color"), ("value", "red")], vec![]);
     assert_eq!(
       input_color_value_string(&invalid_name).as_deref(),
       Some("#000000"),
       "named colors are not valid simple colors for <input type=color>"
     );
 
-    let invalid_shorthand = element_with_attrs(
-      "input",
-      vec![("type", "color"), ("value", "#f60")],
-      vec![],
-    );
+    let invalid_shorthand =
+      element_with_attrs("input", vec![("type", "color"), ("value", "#f60")], vec![]);
     assert_eq!(
       input_color_value_string(&invalid_shorthand).as_deref(),
       Some("#000000"),
@@ -9488,7 +9537,10 @@ mod tests {
     assert!(ElementRef::with_ancestors(first, &ancestors).is_option_selected());
     assert!(!ElementRef::with_ancestors(second, &ancestors).is_option_selected());
 
-    assert_eq!(ElementRef::new(&select).select_value().as_deref(), Some("a"));
+    assert_eq!(
+      ElementRef::new(&select).select_value().as_deref(),
+      Some("a")
+    );
   }
 
   #[test]
@@ -9535,13 +9587,11 @@ mod tests {
     assert!(select_is_listbox(&multi_default));
     assert_eq!(select_effective_size(&multi_default), 4);
 
-    let multi_size0 =
-      element_with_attrs("select", vec![("multiple", ""), ("size", "0")], vec![]);
+    let multi_size0 = element_with_attrs("select", vec![("multiple", ""), ("size", "0")], vec![]);
     assert!(select_is_listbox(&multi_size0));
     assert_eq!(select_effective_size(&multi_size0), 4);
 
-    let multi_size3 =
-      element_with_attrs("select", vec![("multiple", ""), ("size", "3")], vec![]);
+    let multi_size3 = element_with_attrs("select", vec![("multiple", ""), ("size", "3")], vec![]);
     assert!(select_is_listbox(&multi_size3));
     assert_eq!(select_effective_size(&multi_size3), 3);
   }
@@ -9575,7 +9625,8 @@ mod tests {
 
   #[test]
   fn img_src_is_placeholder_accepts_blank_svg_data_urls() {
-    let plain = "data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>";
+    let plain =
+      "data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>";
     assert!(img_src_is_placeholder(plain));
 
     let percent_encoded =
@@ -9820,8 +9871,9 @@ mod tests {
 
     let comment = comment.expect("expected html5ever to create a comment node");
     let mut deadline_counter = 0usize;
-    let converted = convert_handle_to_node(&comment, QuirksMode::NoQuirks, true, &mut deadline_counter)
-      .expect("convert handle");
+    let converted =
+      convert_handle_to_node(&comment, QuirksMode::NoQuirks, true, &mut deadline_counter)
+        .expect("convert handle");
     assert!(converted.is_none());
   }
 
@@ -9869,7 +9921,8 @@ mod tests {
 
   #[test]
   fn parse_html_inserts_implicit_tbody_for_table_rows() {
-    let dom = parse_html("<!doctype html><table id=t><tr id=r1><td></td></tr></table>").expect("parse");
+    let dom =
+      parse_html("<!doctype html><table id=t><tr id=r1><td></td></tr></table>").expect("parse");
     let table = find_node_by_id(&dom, "t").expect("table element");
 
     // HTML table parsing inserts a `<tbody>` element when `<tr>` appears directly under `<table>`.
@@ -9877,14 +9930,17 @@ mod tests {
     let tbody = table
       .children
       .iter()
-      .find(|child| child.tag_name().is_some_and(|tag| tag.eq_ignore_ascii_case("tbody")))
+      .find(|child| {
+        child
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("tbody"))
+      })
       .expect("expected implicit <tbody> element");
 
     assert!(
-      !table
-        .children
-        .iter()
-        .any(|child| child.tag_name().is_some_and(|tag| tag.eq_ignore_ascii_case("tr"))),
+      !table.children.iter().any(|child| child
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("tr"))),
       "expected <tr> elements to be children of <tbody>, not direct children of <table>"
     );
 
@@ -10017,7 +10073,8 @@ mod tests {
 
   #[test]
   fn declarative_shadow_dom_requires_valid_shadow_host_name() {
-    let invalid = "<a id='host'><template shadowroot='open'><p id='shadow'>shadow</p></template></a>";
+    let invalid =
+      "<a id='host'><template shadowroot='open'><p id='shadow'>shadow</p></template></a>";
     let dom = parse_html(invalid).expect("parse html");
     let host = find_element_by_id(&dom, "host").expect("host element");
     assert!(
@@ -10028,11 +10085,15 @@ mod tests {
       "invalid shadow host names must not have declarative shadow roots attached"
     );
     assert!(
-      host.children.iter().any(|child| child.is_template_element()),
+      host
+        .children
+        .iter()
+        .any(|child| child.is_template_element()),
       "declarative shadow templates on invalid hosts should remain in the light DOM"
     );
 
-    let custom_element_host = "<x-host id='host'><template shadowroot='open'><p id='shadow'>shadow</p></template></x-host>";
+    let custom_element_host =
+      "<x-host id='host'><template shadowroot='open'><p id='shadow'>shadow</p></template></x-host>";
     let dom = parse_html(custom_element_host).expect("parse html");
     let host = find_element_by_id(&dom, "host").expect("custom element host");
     assert!(
@@ -10043,7 +10104,10 @@ mod tests {
       "valid custom element names should be treated as valid shadow hosts for declarative shadow DOM"
     );
     assert!(
-      host.children.iter().all(|child| !child.is_template_element()),
+      host
+        .children
+        .iter()
+        .all(|child| !child.is_template_element()),
       "shadowroot template should be promoted to a shadow root on valid hosts"
     );
   }
@@ -10630,7 +10694,11 @@ mod tests {
   fn option_text_ignores_script_descendants() {
     let option = element(
       "option",
-      vec![text("Foo "), element("script", vec![text("BAR")]), text(" Baz")],
+      vec![
+        text("Foo "),
+        element("script", vec![text("BAR")]),
+        text(" Baz"),
+      ],
     );
     assert_eq!(option_value_from_node(&option), "Foo Baz");
   }
@@ -10655,7 +10723,10 @@ mod tests {
     let select = element_with_attrs(
       "select",
       vec![("multiple", "")],
-      vec![element("option", vec![text("One")]), element("option", vec![text("Two")])],
+      vec![
+        element("option", vec![text("One")]),
+        element("option", vec![text("Two")]),
+      ],
     );
 
     let value = ElementRef::new(&select).control_value();
@@ -10667,7 +10738,10 @@ mod tests {
     let select = element_with_attrs(
       "select",
       vec![("multiple", ""), ("required", "")],
-      vec![element("option", vec![text("One")]), element("option", vec![text("Two")])],
+      vec![
+        element("option", vec![text("One")]),
+        element("option", vec![text("Two")]),
+      ],
     );
 
     assert!(!ElementRef::new(&select).is_valid_control());
@@ -10679,7 +10753,11 @@ mod tests {
       "select",
       vec![("multiple", ""), ("required", "")],
       vec![
-        element_with_attrs("option", vec![("selected", ""), ("disabled", "")], vec![text("One")]),
+        element_with_attrs(
+          "option",
+          vec![("selected", ""), ("disabled", "")],
+          vec![text("One")],
+        ),
         element("option", vec![text("Two")]),
       ],
     );
@@ -10693,7 +10771,11 @@ mod tests {
       "select",
       vec![("multiple", ""), ("required", "")],
       vec![
-        element_with_attrs("option", vec![("selected", ""), ("disabled", "")], vec![text("One")]),
+        element_with_attrs(
+          "option",
+          vec![("selected", ""), ("disabled", "")],
+          vec![text("One")],
+        ),
         element_with_attrs("option", vec![("selected", "")], vec![text("Two")]),
       ],
     );
@@ -10710,7 +10792,10 @@ mod tests {
         Some(raw),
         "non-finite number values are preserved by value sanitization (raw={raw})"
       );
-      assert_eq!(ElementRef::new(&input).control_value().as_deref(), Some(raw));
+      assert_eq!(
+        ElementRef::new(&input).control_value().as_deref(),
+        Some(raw)
+      );
 
       let state =
         forms_validation::validity_state(&ElementRef::new(&input)).expect("validity state");
@@ -10811,7 +10896,10 @@ mod tests {
   fn number_value_attribute_invalid_sanitizes_to_empty_and_does_not_set_bad_input() {
     let number = element_with_attrs("input", vec![("type", "number"), ("value", "abc")], vec![]);
     assert_eq!(input_number_value_string(&number), Some(String::new()));
-    assert_eq!(ElementRef::new(&number).control_value(), Some(String::new()));
+    assert_eq!(
+      ElementRef::new(&number).control_value(),
+      Some(String::new())
+    );
 
     let state =
       forms_validation::validity_state(&ElementRef::new(&number)).expect("validity state");
@@ -10819,16 +10907,22 @@ mod tests {
     assert!(state.valid);
     assert!(!state.value_missing);
 
-    let whitespace =
-      element_with_attrs("input", vec![("type", "number"), ("value", "  5\t")], vec![]);
+    let whitespace = element_with_attrs(
+      "input",
+      vec![("type", "number"), ("value", "  5\t")],
+      vec![],
+    );
     assert_eq!(
       input_number_value_string(&whitespace).as_deref(),
       Some("5"),
       "number inputs should trim ASCII whitespace"
     );
 
-    let required =
-      element_with_attrs("input", vec![("type", "number"), ("value", "abc"), ("required", "")], vec![]);
+    let required = element_with_attrs(
+      "input",
+      vec![("type", "number"), ("value", "abc"), ("required", "")],
+      vec![],
+    );
     let state =
       forms_validation::validity_state(&ElementRef::new(&required)).expect("validity state");
     assert!(!state.bad_input);
@@ -10838,7 +10932,11 @@ mod tests {
 
   #[test]
   fn date_time_value_attribute_invalid_sanitizes_to_empty_and_does_not_set_bad_input() {
-    let date = element_with_attrs("input", vec![("type", "date"), ("value", "2020-13-01")], vec![]);
+    let date = element_with_attrs(
+      "input",
+      vec![("type", "date"), ("value", "2020-13-01")],
+      vec![],
+    );
     assert_eq!(input_date_value_string(&date), Some(String::new()));
     assert_eq!(ElementRef::new(&date).control_value(), Some(String::new()));
     let state = forms_validation::validity_state(&ElementRef::new(&date)).expect("validity state");
@@ -10846,8 +10944,11 @@ mod tests {
     assert!(state.valid);
     assert!(!state.value_missing);
 
-    let date_unpadded =
-      element_with_attrs("input", vec![("type", "date"), ("value", "2020-1-01")], vec![]);
+    let date_unpadded = element_with_attrs(
+      "input",
+      vec![("type", "date"), ("value", "2020-1-01")],
+      vec![],
+    );
     assert_eq!(
       input_date_value_string(&date_unpadded),
       Some(String::new()),
@@ -10875,7 +10976,10 @@ mod tests {
       vec![("type", "datetime-local"), ("value", "2020-01-01T25:00")],
       vec![],
     );
-    assert_eq!(input_datetime_local_value_string(&datetime_local), Some(String::new()));
+    assert_eq!(
+      input_datetime_local_value_string(&datetime_local),
+      Some(String::new())
+    );
     assert_eq!(
       ElementRef::new(&datetime_local).control_value(),
       Some(String::new())
@@ -10897,7 +11001,11 @@ mod tests {
       "datetime-local inputs should require properly formatted date/time values"
     );
 
-    let month = element_with_attrs("input", vec![("type", "month"), ("value", "2020-13")], vec![]);
+    let month = element_with_attrs(
+      "input",
+      vec![("type", "month"), ("value", "2020-13")],
+      vec![],
+    );
     assert_eq!(input_month_value_string(&month), Some(String::new()));
     assert_eq!(ElementRef::new(&month).control_value(), Some(String::new()));
     let state = forms_validation::validity_state(&ElementRef::new(&month)).expect("validity state");
@@ -10905,15 +11013,22 @@ mod tests {
     assert!(state.valid);
     assert!(!state.value_missing);
 
-    let month_unpadded =
-      element_with_attrs("input", vec![("type", "month"), ("value", "2020-1")], vec![]);
+    let month_unpadded = element_with_attrs(
+      "input",
+      vec![("type", "month"), ("value", "2020-1")],
+      vec![],
+    );
     assert_eq!(
       input_month_value_string(&month_unpadded),
       Some(String::new()),
       "month inputs should require zero-padded month components"
     );
 
-    let week = element_with_attrs("input", vec![("type", "week"), ("value", "2020-W99")], vec![]);
+    let week = element_with_attrs(
+      "input",
+      vec![("type", "week"), ("value", "2020-W99")],
+      vec![],
+    );
     assert_eq!(input_week_value_string(&week), Some(String::new()));
     assert_eq!(ElementRef::new(&week).control_value(), Some(String::new()));
     let state = forms_validation::validity_state(&ElementRef::new(&week)).expect("validity state");
@@ -10921,8 +11036,11 @@ mod tests {
     assert!(state.valid);
     assert!(!state.value_missing);
 
-    let week_unpadded =
-      element_with_attrs("input", vec![("type", "week"), ("value", "2020-W1")], vec![]);
+    let week_unpadded = element_with_attrs(
+      "input",
+      vec![("type", "week"), ("value", "2020-W1")],
+      vec![],
+    );
     assert_eq!(
       input_week_value_string(&week_unpadded),
       Some(String::new()),
@@ -10969,7 +11087,11 @@ mod tests {
           vec![("selected", ""), ("disabled", ""), ("value", "")],
           vec![text("Choose...")],
         ),
-        element_with_attrs("option", vec![("selected", ""), ("value", "two")], vec![text("Two")]),
+        element_with_attrs(
+          "option",
+          vec![("selected", ""), ("value", "two")],
+          vec![text("Two")],
+        ),
       ],
     );
 
@@ -10988,7 +11110,10 @@ mod tests {
       ],
     );
 
-    assert_eq!(ElementRef::new(&select).control_value(), Some("Two".to_string()));
+    assert_eq!(
+      ElementRef::new(&select).control_value(),
+      Some("Two".to_string())
+    );
 
     let ancestors: [&DomNode; 1] = [&select];
     let option_one_ref = ElementRef::with_ancestors(&select.children[0], &ancestors);
@@ -12477,11 +12602,7 @@ mod tests {
   fn non_ascii_whitespace_imported_part_does_not_trim_nbsp_in_exportparts() {
     let nbsp = "\u{00A0}";
     let exportparts = format!("{nbsp}label");
-    let node = element_with_attrs(
-      "div",
-      vec![("exportparts", exportparts.as_str())],
-      vec![],
-    );
+    let node = element_with_attrs("div", vec![("exportparts", exportparts.as_str())], vec![]);
     let element = ElementRef::new(&node);
     assert_eq!(
       element.imported_part(&CssString::from("label")),
@@ -13004,11 +13125,7 @@ mod tests {
 
   #[test]
   fn dir_auto_on_input_uses_current_value() {
-    let input = element_with_attrs(
-      "input",
-      vec![("dir", "auto"), ("value", "שלום")],
-      vec![],
-    );
+    let input = element_with_attrs("input", vec![("dir", "auto"), ("value", "שלום")], vec![]);
 
     assert_eq!(
       resolve_first_strong_direction(&input),
@@ -13032,8 +13149,16 @@ mod tests {
       Some(TextDirection::Rtl),
       "textarea dir=auto should resolve direction from data-fastr-value when present"
     );
-    assert!(matches(&textarea, &[], &PseudoClass::Dir(TextDirection::Rtl)));
-    assert!(!matches(&textarea, &[], &PseudoClass::Dir(TextDirection::Ltr)));
+    assert!(matches(
+      &textarea,
+      &[],
+      &PseudoClass::Dir(TextDirection::Rtl)
+    ));
+    assert!(!matches(
+      &textarea,
+      &[],
+      &PseudoClass::Dir(TextDirection::Ltr)
+    ));
   }
 
   #[test]
@@ -13101,8 +13226,16 @@ mod tests {
     let ancestors: Vec<&DomNode> = vec![&root, &root.children[0]];
     let node = &root.children[0].children[1];
 
-    assert!(matches(node, &ancestors, &PseudoClass::Dir(TextDirection::Rtl)));
-    assert!(!matches(node, &ancestors, &PseudoClass::Dir(TextDirection::Ltr)));
+    assert!(matches(
+      node,
+      &ancestors,
+      &PseudoClass::Dir(TextDirection::Rtl)
+    ));
+    assert!(!matches(
+      node,
+      &ancestors,
+      &PseudoClass::Dir(TextDirection::Ltr)
+    ));
   }
 
   #[test]
@@ -13304,11 +13437,8 @@ mod tests {
 
   #[test]
   fn legacy_vendor_placeholder_pseudos_inside_not_match_like_placeholder_shown() {
-    let placeholder_empty = element_with_attrs(
-      "input",
-      vec![("placeholder", "x"), ("value", "")],
-      vec![],
-    );
+    let placeholder_empty =
+      element_with_attrs("input", vec![("placeholder", "x"), ("value", "")], vec![]);
     let placeholder_empty_ref = ElementRef::new(&placeholder_empty);
 
     let placeholder_filled = element_with_attrs(
@@ -13536,8 +13666,18 @@ mod tests {
       children: vec![],
     };
     let state = InteractionState::default();
-    assert!(matches_with_interaction(&unvisited, &[], &PseudoClass::Link, &state));
-    assert!(!matches_with_interaction(&unvisited, &[], &PseudoClass::Visited, &state));
+    assert!(matches_with_interaction(
+      &unvisited,
+      &[],
+      &PseudoClass::Link,
+      &state
+    ));
+    assert!(!matches_with_interaction(
+      &unvisited,
+      &[],
+      &PseudoClass::Visited,
+      &state
+    ));
 
     let visited = DomNode {
       node_type: DomNodeType::Element {
@@ -13549,8 +13689,18 @@ mod tests {
     };
     let mut visited_state = InteractionState::default();
     visited_state.visited_links.insert(1);
-    assert!(!matches_with_interaction(&visited, &[], &PseudoClass::Link, &visited_state));
-    assert!(matches_with_interaction(&visited, &[], &PseudoClass::Visited, &visited_state));
+    assert!(!matches_with_interaction(
+      &visited,
+      &[],
+      &PseudoClass::Link,
+      &visited_state
+    ));
+    assert!(matches_with_interaction(
+      &visited,
+      &[],
+      &PseudoClass::Visited,
+      &visited_state
+    ));
   }
 
   #[test]
@@ -13565,8 +13715,18 @@ mod tests {
     };
     assert!(matches(&unvisited, &[], &PseudoClass::AnyLink));
     let state = InteractionState::default();
-    assert!(matches_with_interaction(&unvisited, &[], &PseudoClass::Link, &state));
-    assert!(!matches_with_interaction(&unvisited, &[], &PseudoClass::Visited, &state));
+    assert!(matches_with_interaction(
+      &unvisited,
+      &[],
+      &PseudoClass::Link,
+      &state
+    ));
+    assert!(!matches_with_interaction(
+      &unvisited,
+      &[],
+      &PseudoClass::Visited,
+      &state
+    ));
 
     let visited = DomNode {
       node_type: DomNodeType::Element {
@@ -13578,8 +13738,18 @@ mod tests {
     };
     let mut visited_state = InteractionState::default();
     visited_state.visited_links.insert(1);
-    assert!(!matches_with_interaction(&visited, &[], &PseudoClass::Link, &visited_state));
-    assert!(matches_with_interaction(&visited, &[], &PseudoClass::Visited, &visited_state));
+    assert!(!matches_with_interaction(
+      &visited,
+      &[],
+      &PseudoClass::Link,
+      &visited_state
+    ));
+    assert!(matches_with_interaction(
+      &visited,
+      &[],
+      &PseudoClass::Visited,
+      &visited_state
+    ));
   }
 
   #[test]
@@ -13604,7 +13774,12 @@ mod tests {
     };
     let mut state = InteractionState::default();
     state.active_chain = vec![1];
-    assert!(matches_with_interaction(&active, &[], &PseudoClass::Active, &state));
+    assert!(matches_with_interaction(
+      &active,
+      &[],
+      &PseudoClass::Active,
+      &state
+    ));
   }
 
   #[test]
@@ -13619,8 +13794,18 @@ mod tests {
     };
     let mut hover_state = InteractionState::default();
     hover_state.hover_chain = vec![1];
-    assert!(matches_with_interaction(&hover, &[], &PseudoClass::Hover, &hover_state));
-    assert!(!matches_with_interaction(&hover, &[], &PseudoClass::Focus, &hover_state));
+    assert!(matches_with_interaction(
+      &hover,
+      &[],
+      &PseudoClass::Hover,
+      &hover_state
+    ));
+    assert!(!matches_with_interaction(
+      &hover,
+      &[],
+      &PseudoClass::Focus,
+      &hover_state
+    ));
 
     let focus = DomNode {
       node_type: DomNodeType::Element {
@@ -13633,8 +13818,18 @@ mod tests {
     let mut focus_state = InteractionState::default();
     focus_state.focused = Some(1);
     focus_state.focus_chain = vec![1];
-    assert!(!matches_with_interaction(&focus, &[], &PseudoClass::Hover, &focus_state));
-    assert!(matches_with_interaction(&focus, &[], &PseudoClass::Focus, &focus_state));
+    assert!(!matches_with_interaction(
+      &focus,
+      &[],
+      &PseudoClass::Hover,
+      &focus_state
+    ));
+    assert!(matches_with_interaction(
+      &focus,
+      &[],
+      &PseudoClass::Focus,
+      &focus_state
+    ));
   }
 
   #[test]
@@ -13666,7 +13861,12 @@ mod tests {
     let mut state = InteractionState::default();
     state.focused = Some(1);
     state.focus_chain = vec![1];
-    assert!(!matches_with_interaction(&svg, &[], &PseudoClass::Focus, &state));
+    assert!(!matches_with_interaction(
+      &svg,
+      &[],
+      &PseudoClass::Focus,
+      &state
+    ));
   }
 
   #[test]
@@ -13682,7 +13882,12 @@ mod tests {
     let mut state = InteractionState::default();
     state.focused = Some(1);
     state.focus_chain = vec![1];
-    assert!(matches_with_interaction(&svg, &[], &PseudoClass::Focus, &state));
+    assert!(matches_with_interaction(
+      &svg,
+      &[],
+      &PseudoClass::Focus,
+      &state
+    ));
   }
 
   #[test]
@@ -13699,7 +13904,12 @@ mod tests {
     let mut state = InteractionState::default();
     state.focused = Some(1);
     state.focus_chain = vec![1];
-    assert!(!matches_with_interaction(&svg, &[], &PseudoClass::Focus, &state));
+    assert!(!matches_with_interaction(
+      &svg,
+      &[],
+      &PseudoClass::Focus,
+      &state
+    ));
   }
 
   #[test]
@@ -13716,7 +13926,12 @@ mod tests {
     let mut state = InteractionState::default();
     state.focused = Some(1);
     state.focus_chain = vec![1];
-    assert!(matches_with_interaction(&focused, &[], &PseudoClass::FocusWithin, &state));
+    assert!(matches_with_interaction(
+      &focused,
+      &[],
+      &PseudoClass::FocusWithin,
+      &state
+    ));
   }
 
   #[test]
@@ -13745,7 +13960,12 @@ mod tests {
     // pre-order ids: parent=1, child=2
     state.focused = Some(2);
     state.focus_chain = vec![2, 1];
-    assert!(matches_with_interaction(&parent, &[], &PseudoClass::FocusWithin, &state));
+    assert!(matches_with_interaction(
+      &parent,
+      &[],
+      &PseudoClass::FocusWithin,
+      &state
+    ));
   }
 
   #[test]
@@ -13771,7 +13991,12 @@ mod tests {
     parent.children.push(svg_unfocusable);
 
     let state = InteractionState::default();
-    assert!(!matches_with_interaction(&parent, &[], &PseudoClass::FocusWithin, &state));
+    assert!(!matches_with_interaction(
+      &parent,
+      &[],
+      &PseudoClass::FocusWithin,
+      &state
+    ));
 
     let mut parent_focusable = DomNode {
       node_type: DomNodeType::Element {
@@ -13820,7 +14045,12 @@ mod tests {
     state.focused = Some(1);
     state.focus_chain = vec![1];
     state.focus_visible = true;
-    assert!(matches_with_interaction(&dom, &[], &PseudoClass::FocusVisible, &state));
+    assert!(matches_with_interaction(
+      &dom,
+      &[],
+      &PseudoClass::FocusVisible,
+      &state
+    ));
   }
 
   #[test]
@@ -13838,7 +14068,12 @@ mod tests {
     state.focused = Some(1);
     state.focus_chain = vec![1];
     state.focus_visible = false;
-    assert!(!matches_with_interaction(&dom, &[], &PseudoClass::FocusVisible, &state));
+    assert!(!matches_with_interaction(
+      &dom,
+      &[],
+      &PseudoClass::FocusVisible,
+      &state
+    ));
   }
 
   #[test]
@@ -14324,7 +14559,12 @@ mod tests {
         vec![("id", "f")],
         vec![element_with_attrs(
           "input",
-          vec![("type", "radio"), ("name", "g"), ("id", "in"), ("checked", "")],
+          vec![
+            ("type", "radio"),
+            ("name", "g"),
+            ("id", "in"),
+            ("checked", ""),
+          ],
           vec![],
         )],
       ),
@@ -14364,7 +14604,12 @@ mod tests {
         vec![("id", "f2")],
         vec![element_with_attrs(
           "input",
-          vec![("type", "radio"), ("name", "g"), ("id", "r2"), ("checked", "")],
+          vec![
+            ("type", "radio"),
+            ("name", "g"),
+            ("id", "r2"),
+            ("checked", ""),
+          ],
           vec![],
         )],
       ),
@@ -14389,7 +14634,12 @@ mod tests {
       vec![
         element_with_attrs(
           "input",
-          vec![("type", "radio"), ("name", "g"), ("id", "light"), ("checked", "")],
+          vec![
+            ("type", "radio"),
+            ("name", "g"),
+            ("id", "light"),
+            ("checked", ""),
+          ],
           vec![],
         ),
         element(
@@ -14401,7 +14651,12 @@ mod tests {
             },
             children: vec![element_with_attrs(
               "input",
-              vec![("type", "radio"), ("name", "g"), ("id", "shadow"), ("checked", "")],
+              vec![
+                ("type", "radio"),
+                ("name", "g"),
+                ("id", "shadow"),
+                ("checked", ""),
+              ],
               vec![],
             )],
           }],
@@ -15033,7 +15288,11 @@ mod tests {
       matches(select_ref, &select_ancestors, &PseudoClass::Enabled),
       "select inside the first legend of a disabled fieldset should not be disabled"
     );
-    assert!(!matches(select_ref, &select_ancestors, &PseudoClass::Disabled));
+    assert!(!matches(
+      select_ref,
+      &select_ancestors,
+      &PseudoClass::Disabled
+    ));
 
     let optgroup_ancestors: Vec<&DomNode> = vec![&fieldset_with_select, legend_ref, select_ref];
     assert!(matches(
@@ -15047,14 +15306,18 @@ mod tests {
       &PseudoClass::Disabled
     ));
 
-    let option_ancestors: Vec<&DomNode> = vec![
-      &fieldset_with_select,
-      legend_ref,
-      select_ref,
-      optgroup_ref,
-    ];
-    assert!(matches(option_ref, &option_ancestors, &PseudoClass::Enabled));
-    assert!(!matches(option_ref, &option_ancestors, &PseudoClass::Disabled));
+    let option_ancestors: Vec<&DomNode> =
+      vec![&fieldset_with_select, legend_ref, select_ref, optgroup_ref];
+    assert!(matches(
+      option_ref,
+      &option_ancestors,
+      &PseudoClass::Enabled
+    ));
+    assert!(!matches(
+      option_ref,
+      &option_ancestors,
+      &PseudoClass::Disabled
+    ));
   }
 
   #[test]
@@ -15120,11 +15383,7 @@ mod tests {
       matches(&required_newline_only, &[], &PseudoClass::Invalid),
       "text-like inputs must sanitize newlines, so a newline-only value behaves like missing for requiredness"
     );
-    assert!(!matches(
-      &required_newline_only,
-      &[],
-      &PseudoClass::Valid
-    ));
+    assert!(!matches(&required_newline_only, &[], &PseudoClass::Valid));
 
     let required_file_with_value = DomNode {
       node_type: DomNodeType::Element {
@@ -15133,7 +15392,10 @@ mod tests {
         attributes: vec![
           ("type".to_string(), "file".to_string()),
           ("required".to_string(), "true".to_string()),
-          ("value".to_string(), "C:\\\\fakepath\\\\hello.txt".to_string()),
+          (
+            "value".to_string(),
+            "C:\\\\fakepath\\\\hello.txt".to_string(),
+          ),
         ],
       },
       children: vec![],
@@ -15178,11 +15440,7 @@ mod tests {
       matches(&email_newline_only, &[], &PseudoClass::Valid),
       "newline-only email values sanitize to empty and should not trigger type mismatch"
     );
-    assert!(!matches(
-      &email_newline_only,
-      &[],
-      &PseudoClass::Invalid
-    ));
+    assert!(!matches(&email_newline_only, &[], &PseudoClass::Invalid));
 
     let number_in_range = DomNode {
       node_type: DomNodeType::Element {
@@ -15216,7 +15474,11 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&number_out_of_range, &[], &PseudoClass::Invalid));
-    assert!(!matches(&number_out_of_range, &[], &PseudoClass::UserInvalid));
+    assert!(!matches(
+      &number_out_of_range,
+      &[],
+      &PseudoClass::UserInvalid
+    ));
     assert!(matches(&number_out_of_range, &[], &PseudoClass::OutOfRange));
     assert!(!matches(&number_out_of_range, &[], &PseudoClass::InRange));
 
@@ -15265,16 +15527,8 @@ mod tests {
       },
       children: vec![],
     };
-    assert!(matches(
-      &required_date_invalid,
-      &[],
-      &PseudoClass::Invalid
-    ));
-    assert!(!matches(
-      &required_date_invalid,
-      &[],
-      &PseudoClass::Valid
-    ));
+    assert!(matches(&required_date_invalid, &[], &PseudoClass::Invalid));
+    assert!(!matches(&required_date_invalid, &[], &PseudoClass::Valid));
 
     let disabled_input = DomNode {
       node_type: DomNodeType::Element {
@@ -15701,7 +15955,11 @@ mod tests {
       vec![element_with_attrs(
         "optgroup",
         vec![("hidden", ""), ("label", "g")],
-        vec![element_with_attrs("option", vec![("selected", ""), ("value", "x")], vec![])],
+        vec![element_with_attrs(
+          "option",
+          vec![("selected", ""), ("value", "x")],
+          vec![],
+        )],
       )],
     );
     assert!(
@@ -15759,11 +16017,8 @@ mod tests {
       "later inline display declaration should override earlier ones"
     );
 
-    let invalid_then_none = element_with_attrs(
-      "option",
-      vec![("style", "display:; display:none")],
-      vec![],
-    );
+    let invalid_then_none =
+      element_with_attrs("option", vec![("style", "display:; display:none")], vec![]);
     assert!(
       node_hidden_for_select(&invalid_then_none),
       "invalid inline display declarations should not mask later valid ones"
@@ -15871,7 +16126,11 @@ mod tests {
     let fieldset = element_with_attrs(
       "fieldset",
       vec![("disabled", "disabled")],
-      vec![element_with_attrs("div", vec![("contenteditable", "true")], vec![])],
+      vec![element_with_attrs(
+        "div",
+        vec![("contenteditable", "true")],
+        vec![],
+      )],
     );
     let editable = &fieldset.children[0];
     let ancestors: Vec<&DomNode> = vec![&fieldset];
@@ -16040,7 +16299,11 @@ mod tests {
         "expected :target to ignore inert <template> contents"
       );
       assert!(
-        !matches(inner_ref, &[&root, template_ref], &PseudoClass::TargetWithin),
+        !matches(
+          inner_ref,
+          &[&root, template_ref],
+          &PseudoClass::TargetWithin
+        ),
         "expected :target-within to ignore inert <template> contents"
       );
       assert!(
@@ -16398,8 +16661,8 @@ mod tests {
 
   #[test]
   fn parse_html_standard_mode_does_not_inject_webflow_w_mod_js() {
-    let dom = parse_html(r#"<html data-wf-page="x" data-wf-site="y"><body></body></html>"#)
-      .expect("parse");
+    let dom =
+      parse_html(r#"<html data-wf-page="x" data-wf-site="y"><body></body></html>"#).expect("parse");
     let html = dom
       .children
       .iter()

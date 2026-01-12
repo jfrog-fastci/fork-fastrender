@@ -100,7 +100,10 @@ fn file_document_base_like_text_in_script_does_not_override_inferred_origin() {
     .find(|request| request.destination == FetchDestination::Style)
     .expect("stylesheet request");
   assert_eq!(stylesheet_request.url, stylesheet_url);
-  assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    stylesheet_request.referrer_url.as_deref(),
+    Some(document_url)
+  );
 }
 
 #[test]
@@ -141,7 +144,10 @@ fn file_document_index_html_does_not_infer_origin_from_canonical() {
     .find(|request| request.destination == FetchDestination::Style)
     .expect("stylesheet request");
   assert_eq!(stylesheet_request.url, stylesheet_url);
-  assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    stylesheet_request.referrer_url.as_deref(),
+    Some(document_url)
+  );
 }
 
 #[test]
@@ -182,7 +188,10 @@ fn file_document_relative_base_href_resolves_against_inferred_origin() {
     .find(|request| request.destination == FetchDestination::Style)
     .expect("stylesheet request");
   assert_eq!(stylesheet_request.url, stylesheet_url);
-  assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    stylesheet_request.referrer_url.as_deref(),
+    Some(document_url)
+  );
 }
 
 #[test]
@@ -224,7 +233,10 @@ fn file_document_relative_canonical_influences_relative_base_href_resolution() {
     .find(|request| request.destination == FetchDestination::Style)
     .expect("stylesheet request");
   assert_eq!(stylesheet_request.url, stylesheet_url);
-  assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    stylesheet_request.referrer_url.as_deref(),
+    Some(document_url)
+  );
 }
 
 #[test]
@@ -266,5 +278,8 @@ fn file_document_relative_og_url_influences_relative_base_href_resolution() {
     .find(|request| request.destination == FetchDestination::Style)
     .expect("stylesheet request");
   assert_eq!(stylesheet_request.url, stylesheet_url);
-  assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    stylesheet_request.referrer_url.as_deref(),
+    Some(document_url)
+  );
 }

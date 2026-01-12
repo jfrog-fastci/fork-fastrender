@@ -155,14 +155,14 @@ pub(crate) fn resolve_length_for_paint(
     len.value
   };
 
-  if resolved.is_finite() { resolved } else { 0.0 }
+  if resolved.is_finite() {
+    resolved
+  } else {
+    0.0
+  }
 }
 
-fn outline_bounds(
-  style: &ComputedStyle,
-  rect: Rect,
-  viewport: Option<(f32, f32)>,
-) -> Option<Rect> {
+fn outline_bounds(style: &ComputedStyle, rect: Rect, viewport: Option<(f32, f32)>) -> Option<Rect> {
   let width = resolve_length_for_paint(
     &style.outline_width,
     style.font_size,
@@ -355,15 +355,15 @@ fn resolve_border_image_widths(
     match value {
       BorderImageWidthValue::Auto => border,
       BorderImageWidthValue::Number(n) => clamp_non_negative_finite(n * border),
-      BorderImageWidthValue::Length(len) => clamp_non_negative_finite(resolve_length_for_border_image(
-        &len,
-        axis,
-        font_size,
-        root_font_size,
-        viewport,
-      )),
+      BorderImageWidthValue::Length(len) => clamp_non_negative_finite(
+        resolve_length_for_border_image(&len, axis, font_size, root_font_size, viewport),
+      ),
       BorderImageWidthValue::Percentage(p) => {
-        let axis = if axis.is_finite() && axis > 0.0 { axis } else { 0.0 };
+        let axis = if axis.is_finite() && axis > 0.0 {
+          axis
+        } else {
+          0.0
+        };
         clamp_non_negative_finite((p / 100.0) * axis)
       }
     }
@@ -387,13 +387,9 @@ fn resolve_border_image_outset(
   let resolve_single = |value: BorderImageOutsetValue, border: f32| -> f32 {
     match value {
       BorderImageOutsetValue::Number(n) => clamp_non_negative_finite(n * border),
-      BorderImageOutsetValue::Length(len) => clamp_non_negative_finite(resolve_length_for_border_image(
-        &len,
-        border.max(1.0),
-        font_size,
-        root_font_size,
-        viewport,
-      )),
+      BorderImageOutsetValue::Length(len) => clamp_non_negative_finite(
+        resolve_length_for_border_image(&len, border.max(1.0), font_size, root_font_size, viewport),
+      ),
     }
   };
 
@@ -508,8 +504,7 @@ mod tests {
   #[test]
   fn border_image_viewport_units_require_viewport() {
     let len = Length::new(10.0, LengthUnit::Vw);
-    let resolved =
-      resolve_length_for_border_image(&len, 100.0, 16.0, 16.0, Some((200.0, 100.0)));
+    let resolved = resolve_length_for_border_image(&len, 100.0, 16.0, 16.0, Some((200.0, 100.0)));
     assert!((resolved - 20.0).abs() < 1e-6);
 
     let unresolved = resolve_length_for_border_image(&len, 100.0, 16.0, 16.0, None);

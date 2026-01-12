@@ -53,7 +53,10 @@ fn flex_basis_calc_resolves_against_container_inner_main_size() {
   let fragment = fc
     .layout(
       &container,
-      &LayoutConstraints::new(AvailableSpace::Definite(container_width), AvailableSpace::Indefinite),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(container_width),
+        AvailableSpace::Indefinite,
+      ),
     )
     .expect("layout should succeed");
 
@@ -70,4 +73,3 @@ fn flex_basis_calc_resolves_against_container_inner_main_size() {
     b.bounds.width()
   );
 }
-

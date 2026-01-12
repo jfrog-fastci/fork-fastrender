@@ -64,7 +64,9 @@ fn linux_pie_stackmaps_link_succeeds_without_textrels() {
     return;
   }
   if !tool_exists("llvm-objcopy-18") && !tool_exists("llvm-objcopy") {
-    eprintln!("skipping: llvm-objcopy not found in PATH (expected `llvm-objcopy-18` or `llvm-objcopy`)");
+    eprintln!(
+      "skipping: llvm-objcopy not found in PATH (expected `llvm-objcopy-18` or `llvm-objcopy`)"
+    );
     return;
   }
   if !tool_exists("readelf") {
@@ -185,7 +187,9 @@ int main(void) {
   // Ensure we produced a PIE executable.
   let elf_header = read_to_string(Command::new("readelf").arg("-h").arg(&out), "readelf -h");
   assert!(
-    elf_header.lines().any(|line| line.trim_start().starts_with("Type:") && line.contains("DYN")),
+    elf_header
+      .lines()
+      .any(|line| line.trim_start().starts_with("Type:") && line.contains("DYN")),
     "expected PIE (ET_DYN) output, got:\n{elf_header}",
   );
 

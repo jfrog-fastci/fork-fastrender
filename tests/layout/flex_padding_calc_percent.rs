@@ -72,4 +72,3 @@ fn flex_padding_calc_with_percentage_resolves_against_containing_block() {
     child_frag.bounds.x()
   );
 }
-

@@ -48,9 +48,15 @@ fn find_box_id_for_styled_node_id(node: &BoxNode, styled_node_id: usize) -> Opti
 fn find_fragment_width_for_box_id(node: &FragmentNode, box_id: usize) -> Option<f32> {
   let matches_box = match &node.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_box {
@@ -80,8 +86,8 @@ fn element_width_with_config(
 
   let styled_node_id =
     find_styled_node_id_for_dom_id(&intermediates.styled_tree, element_id).expect("styled id");
-  let box_id = find_box_id_for_styled_node_id(&intermediates.box_tree.root, styled_node_id)
-    .expect("box id");
+  let box_id =
+    find_box_id_for_styled_node_id(&intermediates.box_tree.root, styled_node_id).expect("box id");
   find_fragment_width_for_box_id(&intermediates.fragment_tree.root, box_id).expect("fragment width")
 }
 
@@ -282,4 +288,3 @@ fn container_query_length_uses_root_metrics_for_rlh() {
     bbb
   );
 }
-

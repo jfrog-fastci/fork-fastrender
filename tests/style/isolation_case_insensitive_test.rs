@@ -29,4 +29,3 @@ fn isolation_keyword_is_ascii_case_insensitive() {
   let target = find_by_id(&styled, "target").expect("target element");
   assert_eq!(target.styles.isolation, Isolation::Isolate);
 }
-

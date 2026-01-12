@@ -217,8 +217,11 @@ fn align_content_stretch_stretches_line_cross_sizes() {
 
 #[test]
 fn align_content_center_centers_single_line_in_wrapping_container() {
-  let (first_y, second_y) =
-    layout_single_line_with_align_content(AlignContent::Center, FlexWrap::Wrap, AlignItems::FlexStart);
+  let (first_y, second_y) = layout_single_line_with_align_content(
+    AlignContent::Center,
+    FlexWrap::Wrap,
+    AlignItems::FlexStart,
+  );
   let eps = 1e-3;
   let expected = (100.0 - 10.0) / 2.0;
   assert!(
@@ -233,8 +236,11 @@ fn align_content_center_centers_single_line_in_wrapping_container() {
 
 #[test]
 fn align_content_flex_end_packs_single_line_to_end_in_wrapping_container() {
-  let (first_y, second_y) =
-    layout_single_line_with_align_content(AlignContent::FlexEnd, FlexWrap::Wrap, AlignItems::FlexStart);
+  let (first_y, second_y) = layout_single_line_with_align_content(
+    AlignContent::FlexEnd,
+    FlexWrap::Wrap,
+    AlignItems::FlexStart,
+  );
   let eps = 1e-3;
   let expected = 100.0 - 10.0;
   assert!(
@@ -305,8 +311,11 @@ fn align_content_space_around_centers_single_line_in_wrapping_container() {
 
 #[test]
 fn align_content_stretch_increases_single_line_cross_size() {
-  let (first_y, second_y) =
-    layout_single_line_with_align_content(AlignContent::Stretch, FlexWrap::Wrap, AlignItems::FlexEnd);
+  let (first_y, second_y) = layout_single_line_with_align_content(
+    AlignContent::Stretch,
+    FlexWrap::Wrap,
+    AlignItems::FlexEnd,
+  );
   let eps = 1e-3;
   let expected = 100.0 - 10.0;
   assert!(
@@ -321,8 +330,11 @@ fn align_content_stretch_increases_single_line_cross_size() {
 
 #[test]
 fn align_content_center_has_no_effect_on_no_wrap_flex_container() {
-  let (first_y, second_y) =
-    layout_single_line_with_align_content(AlignContent::Center, FlexWrap::NoWrap, AlignItems::FlexStart);
+  let (first_y, second_y) = layout_single_line_with_align_content(
+    AlignContent::Center,
+    FlexWrap::NoWrap,
+    AlignItems::FlexStart,
+  );
   let eps = 1e-3;
   assert!(
     first_y.abs() < eps,
@@ -336,8 +348,11 @@ fn align_content_center_has_no_effect_on_no_wrap_flex_container() {
 
 #[test]
 fn align_content_flex_end_has_no_effect_on_no_wrap_flex_container() {
-  let (first_y, second_y) =
-    layout_single_line_with_align_content(AlignContent::FlexEnd, FlexWrap::NoWrap, AlignItems::FlexStart);
+  let (first_y, second_y) = layout_single_line_with_align_content(
+    AlignContent::FlexEnd,
+    FlexWrap::NoWrap,
+    AlignItems::FlexStart,
+  );
   let eps = 1e-3;
   assert!(
     first_y.abs() < eps,

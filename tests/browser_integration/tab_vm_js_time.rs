@@ -4,7 +4,11 @@ use fastrender::{BrowserTab, Error, RenderOptions, Result};
 use std::sync::Arc;
 use std::time::Duration;
 
-fn attr(doc: &fastrender::dom2::Document, node: fastrender::dom2::NodeId, name: &str) -> Result<Option<String>> {
+fn attr(
+  doc: &fastrender::dom2::Document,
+  node: fastrender::dom2::NodeId,
+  name: &str,
+) -> Result<Option<String>> {
   doc
     .get_attribute(node, name)
     .map(|value| value.map(|s| s.to_string()))
@@ -52,7 +56,10 @@ fn tab_vm_js_time_apis_follow_event_loop_clock() -> Result<()> {
     .get_element_by_id("marker")
     .ok_or_else(|| Error::Other("missing marker element".to_string()))?;
 
-  assert_eq!(attr(tab.dom(), marker, "data-origin")?.as_deref(), Some("0"));
+  assert_eq!(
+    attr(tab.dom(), marker, "data-origin")?.as_deref(),
+    Some("0")
+  );
   assert_eq!(
     attr(tab.dom(), marker, "data-now")?.as_deref(),
     Some("5000"),

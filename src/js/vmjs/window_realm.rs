@@ -4,24 +4,27 @@ use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
+use crate::js::document_write::{current_document_write_state_mut, DocumentWriteLimitError};
 use crate::js::dom_platform::{DomInterface, DomPlatform};
+use crate::js::host_document::ActiveEventGuard;
 use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
 use crate::js::time::{TimeBindings, WebTime};
-use crate::js::document_write::{current_document_write_state_mut, DocumentWriteLimitError};
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
-use crate::js::{
-  CurrentScriptStateHandle, DocumentHostState, EventLoop, ScriptOrchestrator, ScriptType, TaskSource,
-  WindowHostState,
+use crate::js::window_timers::{
+  event_loop_mut_from_hooks, hooks_have_event_loop, VmJsEventLoopHooks,
 };
-use crate::js::host_document::ActiveEventGuard;
-use crate::js::window_timers::{event_loop_mut_from_hooks, hooks_have_event_loop, VmJsEventLoopHooks};
 use crate::js::JsExecutionOptions;
+use crate::js::{
+  CurrentScriptStateHandle, DocumentHostState, EventLoop, ScriptOrchestrator, ScriptType,
+  TaskSource, WindowHostState,
+};
 use crate::render_control;
 use crate::resource::{
-  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
-  origin_from_url, CorsMode, FetchDestination, FetchRequest, ReferrerPolicy, ResourceFetcher,
+  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success,
+  ensure_script_mime_sane, origin_from_url, CorsMode, FetchDestination, FetchRequest,
+  ReferrerPolicy, ResourceFetcher,
 };
 use crate::style::media::MediaContext;
 use crate::web::events as web_events;
@@ -39,12 +42,12 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use url::Url;
 use vm_js::{
-  GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, PropertyDescriptor,
-  ModuleGraph, PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm,
+  GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
+  PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm,
   VmError, VmHost, VmHostHooks, VmOptions,
 };
-use webidl_vm_js::WebIdlBindingsHost;
 use webidl_vm_js::VmJsHostHooksPayload;
+use webidl_vm_js::WebIdlBindingsHost;
 
 pub type ConsoleSink =
   Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -460,7 +463,9 @@ impl WindowRealm {
     let vm = self.vm_mut();
     let graph_ptr: *mut ModuleGraph = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::InvariantViolation("window realm missing user data"));
+        return Err(VmError::InvariantViolation(
+          "window realm missing user data",
+        ));
       };
       if data.module_graph.is_none() {
         data.module_graph = Some(Box::new(ModuleGraph::new()));
@@ -555,7 +560,8 @@ impl WindowRealm {
     // If the realm does not have module loading enabled, skip the extra execution-context work:
     // dynamic `import()` will reject immediately and module loading hooks will never be invoked.
     if self.runtime.vm.module_graph_ptr().is_none() {
-      return self.with_vm_budget(|rt| rt.exec_script_source_with_host_and_hooks(host, hooks, source));
+      return self
+        .with_vm_budget(|rt| rt.exec_script_source_with_host_and_hooks(host, hooks, source));
     }
 
     let script_id = vm_js::ScriptId::from_raw(self.next_script_id_raw);
@@ -567,7 +573,9 @@ impl WindowRealm {
       source.name.to_string()
     } else {
       let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::InvariantViolation("window realm missing user data"));
+        return Err(VmError::InvariantViolation(
+          "window realm missing user data",
+        ));
       };
       data
         .base_url
@@ -637,13 +645,8 @@ impl WindowRealm {
         }
       }
 
-      let _guard = ScriptReferrerGuard::new(
-        &mut rt.vm,
-        module_loader,
-        realm_id,
-        script_id,
-        script_url,
-      )?;
+      let _guard =
+        ScriptReferrerGuard::new(&mut rt.vm, module_loader, realm_id, script_id, script_url)?;
 
       rt.exec_script_source_with_host_and_hooks(host, hooks, source)
     })
@@ -1169,7 +1172,13 @@ fn illegal_dom_constructor_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(throw_type_error(vm, scope, host, hooks, "Illegal constructor"))
+  Err(throw_type_error(
+    vm,
+    scope,
+    host,
+    hooks,
+    "Illegal constructor",
+  ))
 }
 
 fn illegal_dom_constructor_construct_native(
@@ -1696,12 +1705,20 @@ fn unregister_current_script_source(id: u64) {
   });
 }
 
-fn event_active_event_id(scope: &mut Scope<'_>, event_obj: GcObject) -> Result<Option<u64>, VmError> {
+fn event_active_event_id(
+  scope: &mut Scope<'_>,
+  event_obj: GcObject,
+) -> Result<Option<u64>, VmError> {
   let key = alloc_key(scope, EVENT_ID_KEY)?;
-  Ok(match scope.heap().object_get_own_data_property_value(event_obj, &key)? {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Some(n as u64),
-    _ => None,
-  })
+  Ok(
+    match scope
+      .heap()
+      .object_get_own_data_property_value(event_obj, &key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Some(n as u64),
+      _ => None,
+    },
+  )
 }
 
 fn push_active_event_for_host(
@@ -1894,7 +1911,11 @@ fn console_call_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  let level = match slots.get(CONSOLE_LEVEL_SLOT).copied().unwrap_or(Value::Undefined) {
+  let level = match slots
+    .get(CONSOLE_LEVEL_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
     Value::Number(n) => match n as u8 {
       1 => ConsoleMessageLevel::Info,
       2 => ConsoleMessageLevel::Warn,
@@ -1906,7 +1927,11 @@ fn console_call_native(
   };
   let console_obj = match this {
     Value::Object(obj) => obj,
-    _ => match slots.get(CONSOLE_THIS_SLOT).copied().unwrap_or(Value::Undefined) {
+    _ => match slots
+      .get(CONSOLE_THIS_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
       Value::Object(obj) => obj,
       _ => return Ok(Value::Undefined),
     },
@@ -2274,8 +2299,8 @@ fn request_location_navigation(
   let resolved = crate::js::url_resolve::resolve_url(&url_input, base_url.as_deref())
     .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
 
-  let parsed =
-    Url::parse(&resolved).map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
+  let parsed = Url::parse(&resolved)
+    .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
   match parsed.scheme() {
     "http" | "https" | "file" | "data" | "about" => {}
     other => {
@@ -2304,7 +2329,10 @@ fn request_location_navigation(
         "window realm missing user data",
       ));
     };
-    data.pending_navigation = Some(LocationNavigationRequest { url: resolved, replace });
+    data.pending_navigation = Some(LocationNavigationRequest {
+      url: resolved,
+      replace,
+    });
   }
 
   // Abort the currently running script so the embedding can commit navigation synchronously (e.g.
@@ -2326,12 +2354,15 @@ fn window_location_set_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  let location_obj = slots.get(LOCATION_ACCESSOR_LOCATION_OBJ_SLOT).copied().and_then(|value| {
-    let Value::Object(obj) = value else {
-      return None;
-    };
-    Some(obj)
-  });
+  let location_obj = slots
+    .get(LOCATION_ACCESSOR_LOCATION_OBJ_SLOT)
+    .copied()
+    .and_then(|value| {
+      let Value::Object(obj) = value else {
+        return None;
+      };
+      Some(obj)
+    });
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
   request_location_navigation(vm, scope, host, hooks, location_obj, url_value, false)
 }
@@ -2408,7 +2439,11 @@ fn history_state_change_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  let history_obj = match slots.get(HISTORY_OBJ_SLOT).copied().unwrap_or(Value::Undefined) {
+  let history_obj = match slots
+    .get(HISTORY_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
     Value::Object(obj) => obj,
     _ => return Ok(Value::Undefined),
   };
@@ -2429,7 +2464,10 @@ fn history_state_change_native(
     _ => return Ok(Value::Undefined),
   };
   let _replace = matches!(
-    slots.get(HISTORY_REPLACE_SLOT).copied().unwrap_or(Value::Undefined),
+    slots
+      .get(HISTORY_REPLACE_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined),
     Value::Bool(true)
   );
 
@@ -2444,7 +2482,9 @@ fn history_state_change_native(
   if !matches!(url_value, Value::Undefined) {
     let current_document_url = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::InvariantViolation("window realm missing user data"));
+        return Err(VmError::InvariantViolation(
+          "window realm missing user data",
+        ));
       };
       data.document_url.clone()
     };
@@ -2458,8 +2498,8 @@ fn history_state_change_native(
 
     let resolved = crate::js::url_resolve::resolve_url(&url_input, Some(&current_document_url))
       .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
-    let parsed =
-      Url::parse(&resolved).map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
+    let parsed = Url::parse(&resolved)
+      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
 
     match parsed.scheme() {
       "http" | "https" | "file" | "data" | "about" => {}
@@ -2479,8 +2519,8 @@ fn history_state_change_native(
     //
     // For opaque origins (serialized as "null") we also require the scheme to remain stable since
     // multiple schemes share the same serialized origin.
-    let current =
-      Url::parse(&current_document_url).map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
+    let current = Url::parse(&current_document_url)
+      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
     let current_origin = match current.scheme() {
       "http" | "https" => current.origin().ascii_serialization(),
       _ => "null".to_string(),
@@ -2489,7 +2529,9 @@ fn history_state_change_native(
       "http" | "https" => parsed.origin().ascii_serialization(),
       _ => "null".to_string(),
     };
-    if current_origin != new_origin || (current_origin == "null" && current.scheme() != parsed.scheme()) {
+    if current_origin != new_origin
+      || (current_origin == "null" && current.scheme() != parsed.scheme())
+    {
       return Err(throw_type_error(
         vm,
         scope,
@@ -2510,18 +2552,29 @@ fn history_state_change_native(
       scope.push_root(Value::Object(document_obj))?;
 
       let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
-      scope.define_property(location_obj, location_url_key, data_desc(Value::String(resolved_s)))?;
+      scope.define_property(
+        location_obj,
+        location_url_key,
+        data_desc(Value::String(resolved_s)),
+      )?;
 
       let doc_url_key = alloc_key(&mut scope, "URL")?;
-      scope.define_property(document_obj, doc_url_key, data_desc(Value::String(resolved_s)))?;
+      scope.define_property(
+        document_obj,
+        doc_url_key,
+        data_desc(Value::String(resolved_s)),
+      )?;
     }
 
     {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::InvariantViolation("window realm missing user data"));
+        return Err(VmError::InvariantViolation(
+          "window realm missing user data",
+        ));
       };
       let old_doc_url = std::mem::replace(&mut data.document_url, resolved.clone());
-      let update_base = data.base_url.is_none() || data.base_url.as_deref() == Some(old_doc_url.as_str());
+      let update_base =
+        data.base_url.is_none() || data.base_url.as_deref() == Some(old_doc_url.as_str());
       if update_base {
         data.base_url = Some(resolved);
       }
@@ -2809,8 +2862,7 @@ fn dom_ptr_for_event_registry(host: &mut dyn VmHost) -> Option<NonNull<dom2::Doc
 }
 
 fn dom_platform_mut(vm: &mut Vm) -> Option<&mut DomPlatform> {
-  vm
-    .user_data_mut::<WindowRealmUserData>()
+  vm.user_data_mut::<WindowRealmUserData>()
     .and_then(|data| data.dom_platform.as_mut())
 }
 fn get_or_create_node_wrapper(
@@ -2922,99 +2974,147 @@ fn get_or_create_node_wrapper(
   };
   let src_get = {
     let key = alloc_key(scope, ELEMENT_SRC_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let src_set = {
     let key = alloc_key(scope, ELEMENT_SRC_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let srcset_get = {
     let key = alloc_key(scope, ELEMENT_SRCSET_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let srcset_set = {
     let key = alloc_key(scope, ELEMENT_SRCSET_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let sizes_get = {
     let key = alloc_key(scope, ELEMENT_SIZES_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let sizes_set = {
     let key = alloc_key(scope, ELEMENT_SIZES_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let href_get = {
     let key = alloc_key(scope, ELEMENT_HREF_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let href_set = {
     let key = alloc_key(scope, ELEMENT_HREF_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let rel_get = {
     let key = alloc_key(scope, ELEMENT_REL_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let rel_set = {
     let key = alloc_key(scope, ELEMENT_REL_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let type_get = {
     let key = alloc_key(scope, ELEMENT_TYPE_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let type_set = {
     let key = alloc_key(scope, ELEMENT_TYPE_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let charset_get = {
     let key = alloc_key(scope, ELEMENT_CHARSET_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let charset_set = {
     let key = alloc_key(scope, ELEMENT_CHARSET_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let cross_origin_get = {
     let key = alloc_key(scope, ELEMENT_CROSS_ORIGIN_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let cross_origin_set = {
     let key = alloc_key(scope, ELEMENT_CROSS_ORIGIN_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let async_get = {
     let key = alloc_key(scope, ELEMENT_ASYNC_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let async_set = {
     let key = alloc_key(scope, ELEMENT_ASYNC_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let defer_get = {
     let key = alloc_key(scope, ELEMENT_DEFER_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let defer_set = {
     let key = alloc_key(scope, ELEMENT_DEFER_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let height_get = {
     let key = alloc_key(scope, ELEMENT_HEIGHT_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let height_set = {
     let key = alloc_key(scope, ELEMENT_HEIGHT_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let width_get = {
     let key = alloc_key(scope, ELEMENT_WIDTH_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let width_set = {
     let key = alloc_key(scope, ELEMENT_WIDTH_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let append_child = {
     let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
@@ -3168,55 +3268,81 @@ fn get_or_create_node_wrapper(
   };
   let style_get_property_value = {
     let key = alloc_key(scope, STYLE_GET_PROPERTY_VALUE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_set_property = {
     let key = alloc_key(scope, STYLE_SET_PROPERTY_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_remove_property = {
     let key = alloc_key(scope, STYLE_REMOVE_PROPERTY_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_css_text_get = {
     let key = alloc_key(scope, STYLE_CSS_TEXT_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_css_text_set = {
     let key = alloc_key(scope, STYLE_CSS_TEXT_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_display_get = {
     let key = alloc_key(scope, STYLE_DISPLAY_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_display_set = {
     let key = alloc_key(scope, STYLE_DISPLAY_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_cursor_get = {
     let key = alloc_key(scope, STYLE_CURSOR_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_cursor_set = {
     let key = alloc_key(scope, STYLE_CURSOR_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_height_get = {
     let key = alloc_key(scope, STYLE_HEIGHT_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_height_set = {
     let key = alloc_key(scope, STYLE_HEIGHT_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_width_get = {
     let key = alloc_key(scope, STYLE_WIDTH_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_width_set = {
     let key = alloc_key(scope, STYLE_WIDTH_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
 
   let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
@@ -3404,7 +3530,8 @@ fn get_or_create_node_wrapper(
     )?;
   }
 
-  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (cross_origin_get, cross_origin_set) {
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (cross_origin_get, cross_origin_set)
+  {
     let key = alloc_key(scope, "crossOrigin")?;
     scope.define_property(
       wrapper,
@@ -3622,7 +3749,11 @@ fn get_or_create_node_wrapper(
       )?;
 
       let set_property_key = alloc_key(scope, "setProperty")?;
-      scope.define_property(style, set_property_key, data_desc(Value::Object(set_property)))?;
+      scope.define_property(
+        style,
+        set_property_key,
+        data_desc(Value::Object(set_property)),
+      )?;
 
       let remove_property_key = alloc_key(scope, "removeProperty")?;
       scope.define_property(
@@ -3795,7 +3926,8 @@ fn get_or_create_node_wrapper(
     )?;
   }
 
-  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (text_content_get, text_content_set) {
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (text_content_get, text_content_set)
+  {
     let key = alloc_key(scope, "textContent")?;
     scope.define_property(
       wrapper,
@@ -3943,7 +4075,10 @@ fn sync_child_nodes_array(
   scope.push_root(Value::Object(array))?;
 
   let length_key = alloc_key(scope, "length")?;
-  let old_len = match scope.heap().object_get_own_data_property_value(array, &length_key)? {
+  let old_len = match scope
+    .heap()
+    .object_get_own_data_property_value(array, &length_key)?
+  {
     Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
     _ => 0,
   };
@@ -4058,7 +4193,11 @@ fn queue_mutation_observer_microtask(
       .object_get_own_data_property_value(global, &key)?
       .or_else(|| {
         let key = alloc_key(scope, "queueMicrotask").ok()?;
-        scope.heap().object_get_own_data_property_value(global, &key).ok().flatten()
+        scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)
+          .ok()
+          .flatten()
       })
       .unwrap_or(Value::Undefined)
   };
@@ -5070,15 +5209,15 @@ fn promise_rejection_event_constructor_native(
   scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
 
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(
-    obj,
-    default_prevented_key,
-    data_desc(Value::Bool(false)),
-  )?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
 
-  scope.define_property(obj, promise_key, read_only_data_desc(Value::Object(promise_obj)))?;
+  scope.define_property(
+    obj,
+    promise_key,
+    read_only_data_desc(Value::Object(promise_obj)),
+  )?;
   scope.define_property(obj, reason_key, read_only_data_desc(reason))?;
 
   Ok(Value::Object(obj))
@@ -5343,7 +5482,8 @@ fn event_prototype_stop_immediate_propagation_native(
   };
 
   if let Some(event_id) = event_active_event_id(scope, event_obj)? {
-    if with_active_event_for_host(host, event_id, |event| event.stop_immediate_propagation()).is_some()
+    if with_active_event_for_host(host, event_id, |event| event.stop_immediate_propagation())
+      .is_some()
     {
       let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
       scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
@@ -5408,10 +5548,14 @@ fn event_target_constructor_construct_native(
   let parent_value = args.get(0).copied().unwrap_or(Value::Undefined);
   if !matches!(parent_value, Value::Undefined | Value::Null) {
     let Value::Object(parent_obj) = parent_value else {
-      return Err(VmError::TypeError("EventTarget parent must be an EventTarget object"));
+      return Err(VmError::TypeError(
+        "EventTarget parent must be an EventTarget object",
+      ));
     };
     if !is_branded_event_target(scope, parent_obj)? {
-      return Err(VmError::TypeError("EventTarget parent must be an EventTarget object"));
+      return Err(VmError::TypeError(
+        "EventTarget parent must be an EventTarget object",
+      ));
     }
 
     let parent_key = alloc_key(scope, EVENT_TARGET_PARENT_KEY)?;
@@ -5473,18 +5617,24 @@ fn event_target_constructor_construct_native(
           .ok()
           .map(|(resolved, _dom_ptr)| resolved.target_id)
           .or_else(|| {
-            is_branded_event_target(scope, parent_obj).ok().and_then(|is_branded| {
-              is_branded.then_some(web_events::EventTargetId::Opaque(gc_object_id(parent_obj)))
-            })
+            is_branded_event_target(scope, parent_obj)
+              .ok()
+              .and_then(|is_branded| {
+                is_branded.then_some(web_events::EventTargetId::Opaque(gc_object_id(parent_obj)))
+              })
           });
 
         let Some(parent_target) = parent_target else {
-          return Err(VmError::TypeError("EventTarget parent must be an EventTarget"));
+          return Err(VmError::TypeError(
+            "EventTarget parent must be an EventTarget",
+          ));
         };
 
         if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
           if let Some(dom) = dom_from_vm_host(host) {
-            dom.events().set_opaque_parent(child_id, Some(parent_target));
+            dom
+              .events()
+              .set_opaque_parent(child_id, Some(parent_target));
           } else {
             data
               .events_dom_fallback
@@ -5493,7 +5643,11 @@ fn event_target_constructor_construct_native(
           }
         }
       }
-      _ => return Err(VmError::TypeError("EventTarget parent must be an EventTarget")),
+      _ => {
+        return Err(VmError::TypeError(
+          "EventTarget parent must be an EventTarget",
+        ))
+      }
     }
   }
   Ok(Value::Object(obj))
@@ -5585,19 +5739,27 @@ fn mutation_observer_constructor_construct_native(
 fn mutation_observer_id_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<u64, VmError> {
   scope.push_root(Value::Object(obj))?;
   let id_key = alloc_key(scope, MUTATION_OBSERVER_ID_KEY)?;
-  match scope.heap().object_get_own_data_property_value(obj, &id_key)? {
+  match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &id_key)?
+  {
     Some(Value::Number(n)) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => Ok(n as u64),
     _ => Err(VmError::TypeError("Illegal invocation")),
   }
 }
 
-fn mutation_observer_document_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<GcObject>, VmError> {
+fn mutation_observer_document_from_obj(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+) -> Result<Option<GcObject>, VmError> {
   scope.push_root(Value::Object(obj))?;
   let key = alloc_key(scope, MUTATION_OBSERVER_DOCUMENT_KEY)?;
-  Ok(match scope.heap().object_get_own_data_property_value(obj, &key)? {
-    Some(Value::Object(doc)) => Some(doc),
-    _ => None,
-  })
+  Ok(
+    match scope.heap().object_get_own_data_property_value(obj, &key)? {
+      Some(Value::Object(doc)) => Some(doc),
+      _ => None,
+    },
+  )
 }
 
 fn mutation_observer_parse_options(
@@ -5623,9 +5785,9 @@ fn mutation_observer_parse_options(
     scope.push_root(Value::Object(obj))?;
 
     let mut get_bool_opt = |vm: &mut Vm,
-                         scope: &mut Scope<'_>,
-                         obj: GcObject,
-                         name: &str|
+                            scope: &mut Scope<'_>,
+                            obj: GcObject,
+                            name: &str|
      -> Result<Option<bool>, VmError> {
       let key = alloc_key(scope, name)?;
       let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, key)?;
@@ -5943,9 +6105,9 @@ fn mutation_observer_observe_native(
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
     "MutationObserver.observe requires a DOM-backed node",
   ))?;
-  let target_id = dom.node_id_from_index(node_index).map_err(|_| {
-    VmError::TypeError("MutationObserver.observe requires a DOM-backed node")
-  })?;
+  let target_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("MutationObserver.observe requires a DOM-backed node"))?;
 
   if let Err(err) = dom.mutation_observer_observe(observer_id, target_id, options) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
@@ -5961,7 +6123,11 @@ fn mutation_observer_observe_native(
   // Remember which document this observer is associated with so `disconnect()`/`takeRecords()` can
   // find the right `dom2::Document`.
   let doc_key = alloc_key(scope, MUTATION_OBSERVER_DOCUMENT_KEY)?;
-  scope.define_property(observer_obj, doc_key, data_desc(Value::Object(document_obj)))?;
+  scope.define_property(
+    observer_obj,
+    doc_key,
+    data_desc(Value::Object(document_obj)),
+  )?;
 
   Ok(Value::Undefined)
 }
@@ -6108,14 +6274,17 @@ fn mutation_observer_notify_native(
       let dom_for_wrappers = dom_from_vm_host(host);
       alloc_mutation_records_array(vm, scope, document_obj, dom_for_wrappers, &records)?
     };
-    let args = [
-      Value::Object(records_array),
-      Value::Object(observer_obj),
-    ];
+    let args = [Value::Object(records_array), Value::Object(observer_obj)];
     // Per web platform behavior, exceptions from mutation observer callbacks should not abort the
     // checkpoint.
-    let _ =
-      vm.call_with_host_and_hooks(host, scope, hooks, callback, Value::Object(observer_obj), &args);
+    let _ = vm.call_with_host_and_hooks(
+      host,
+      scope,
+      hooks,
+      callback,
+      Value::Object(observer_obj),
+      &args,
+    );
   }
 
   Ok(Value::Undefined)
@@ -6126,14 +6295,16 @@ fn event_target_default_this_from_callee(
   callee: GcObject,
 ) -> Result<Option<GcObject>, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  Ok(match slots
-    .get(EVENT_TARGET_DEFAULT_THIS_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined)
-  {
-    Value::Object(obj) => Some(obj),
-    _ => None,
-  })
+  Ok(
+    match slots
+      .get(EVENT_TARGET_DEFAULT_THIS_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    },
+  )
 }
 
 fn event_target_context_global_from_callee(
@@ -6279,7 +6450,9 @@ fn is_branded_abort_signal(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool,
 fn abort_signal_is_aborted(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
   let aborted_key = alloc_key(scope, "aborted")?;
   Ok(matches!(
-    scope.heap().object_get_own_data_property_value(obj, &aborted_key)?,
+    scope
+      .heap()
+      .object_get_own_data_property_value(obj, &aborted_key)?,
     Some(Value::Bool(true))
   ))
 }
@@ -6405,9 +6578,14 @@ fn parse_event_listener_capture(scope: &mut Scope<'_>, value: Value) -> Result<b
   })
 }
 
-fn get_or_create_event_listener_roots(scope: &mut Scope<'_>, owner_obj: GcObject) -> Result<GcObject, VmError> {
+fn get_or_create_event_listener_roots(
+  scope: &mut Scope<'_>,
+  owner_obj: GcObject,
+) -> Result<GcObject, VmError> {
   let key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)?;
-  if let Some(Value::Object(obj)) = scope.heap().object_get_own_data_property_value(owner_obj, &key)?
+  if let Some(Value::Object(obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(owner_obj, &key)?
   {
     return Ok(obj);
   }
@@ -6460,7 +6638,9 @@ fn remove_listener_root_if_unused(
   };
 
   let roots_key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)?;
-  let Some(Value::Object(roots)) = scope.heap().object_get_own_data_property_value(roots_owner_obj, &roots_key)?
+  let Some(Value::Object(roots)) = scope
+    .heap()
+    .object_get_own_data_property_value(roots_owner_obj, &roots_key)?
   else {
     return Ok(());
   };
@@ -6540,7 +6720,10 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
 
     let prev = self.event_loop;
     self.event_loop = Some(NonNull::from(event_loop));
-    let mut guard = EventLoopSwapGuard { invoker: self, prev };
+    let mut guard = EventLoopSwapGuard {
+      invoker: self,
+      prev,
+    };
     f(&mut *guard.invoker)
   }
 
@@ -6603,7 +6786,11 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     scope.define_property(event_obj, type_key, data_desc(Value::String(type_s)))?;
 
     let bubbles_key = alloc_key(scope, "bubbles")?;
-    scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(event.bubbles)))?;
+    scope.define_property(
+      event_obj,
+      bubbles_key,
+      data_desc(Value::Bool(event.bubbles)),
+    )?;
 
     let cancelable_key = alloc_key(scope, "cancelable")?;
     scope.define_property(
@@ -6613,7 +6800,11 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     )?;
 
     let composed_key = alloc_key(scope, "composed")?;
-    scope.define_property(event_obj, composed_key, data_desc(Value::Bool(event.composed)))?;
+    scope.define_property(
+      event_obj,
+      composed_key,
+      data_desc(Value::Bool(event.composed)),
+    )?;
 
     if let Some(detail) = event.detail {
       let detail_key = alloc_key(scope, "detail")?;
@@ -6635,12 +6826,19 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     scope.push_root(Value::Object(event_obj))?;
 
     let target_key = alloc_key(scope, "target")?;
-    let target_v = Self::js_value_for_target(vm, scope, window_obj, document_obj, dom, event.target)?;
+    let target_v =
+      Self::js_value_for_target(vm, scope, window_obj, document_obj, dom, event.target)?;
     scope.define_property(event_obj, target_key, data_desc(target_v))?;
 
     let current_target_key = alloc_key(scope, "currentTarget")?;
-    let current_target_v =
-      Self::js_value_for_target(vm, scope, window_obj, document_obj, dom, event.current_target)?;
+    let current_target_v = Self::js_value_for_target(
+      vm,
+      scope,
+      window_obj,
+      document_obj,
+      dom,
+      event.current_target,
+    )?;
     scope.define_property(event_obj, current_target_key, data_desc(current_target_v))?;
 
     let event_phase_key = alloc_key(scope, "eventPhase")?;
@@ -6730,7 +6928,9 @@ fn sync_rust_event_from_js_event_object(
   Ok(())
 }
 
-impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker<Host> {
+impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker
+  for WindowRealmDomEventListenerInvoker<Host>
+{
   fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
     Some(self)
   }
@@ -6845,7 +7045,7 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
       event_obj,
       event,
     )
-      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
     let current_target = match event.current_target {
       Some(t) => Self::js_value_for_target(
@@ -6942,16 +7142,13 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
     }
 
     // Best-effort cleanup: remove callback roots for `{ once: true }` listeners.
-    if let Some(registry) = (&*vm)
-      .user_data::<WindowRealmUserData>()
-      .map(|data| {
-        if let Some(dom) = dom_from_vm_host(host_ctx) {
-          dom.events()
-        } else {
-          data.events_dom_fallback.events()
-        }
-      })
-    {
+    if let Some(registry) = (&*vm).user_data::<WindowRealmUserData>().map(|data| {
+      if let Some(dom) = dom_from_vm_host(host_ctx) {
+        dom.events()
+      } else {
+        data.events_dom_fallback.events()
+      }
+    }) {
       let _ = remove_listener_root_if_unused(&mut scope, document_obj, registry, listener_id, None);
     }
 
@@ -6978,9 +7175,11 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
   fn opaque_target_obj_for_id(&mut self, id: u64) -> Option<GcObject> {
     let scope = unsafe { &mut *self.scope };
     let registry = unsafe { &*self.registry };
-    registry
-      .opaque_target_object(scope.heap(), id)
-      .or_else(|| self.opaque_target_obj.filter(|obj| gc_object_id(*obj) == id))
+    registry.opaque_target_object(scope.heap(), id).or_else(|| {
+      self
+        .opaque_target_obj
+        .filter(|obj| gc_object_id(*obj) == id)
+    })
   }
 
   fn js_value_for_target(
@@ -7014,7 +7213,11 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
 
     let current_target_key = alloc_key(scope, "currentTarget")?;
     let current_target_v = self.js_value_for_target(event.current_target)?;
-    scope.define_property(self.event_obj, current_target_key, data_desc(current_target_v))?;
+    scope.define_property(
+      self.event_obj,
+      current_target_key,
+      data_desc(current_target_v),
+    )?;
 
     let event_phase_key = alloc_key(scope, "eventPhase")?;
     scope.define_property(
@@ -7150,7 +7353,11 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
         else {
           return Ok(());
         };
-        (owner_obj, roots, Some(web_events::EventTargetId::Opaque(id)))
+        (
+          owner_obj,
+          roots,
+          Some(web_events::EventTargetId::Opaque(id)),
+        )
       }
       _ => (self.document_obj, self.document_listener_roots, None),
     };
@@ -7174,8 +7381,8 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
     let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
     let _active_guard = push_active_event_for_host(vm_host, event_id, event);
 
-    let event_id_key = alloc_key(scope, EVENT_ID_KEY)
-      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let event_id_key =
+      alloc_key(scope, EVENT_ID_KEY).map_err(|e| web_events::DomError::new(e.to_string()))?;
     scope
       .define_property(
         self.event_obj,
@@ -7205,17 +7412,32 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
     let call_result = (|| -> Result<(), VmError> {
       let event_value = Value::Object(self.event_obj);
       if scope.heap().is_callable(callback)? {
-        vm.call_with_host_and_hooks(vm_host, scope, hooks, callback, current_target, &[event_value])?;
+        vm.call_with_host_and_hooks(
+          vm_host,
+          scope,
+          hooks,
+          callback,
+          current_target,
+          &[event_value],
+        )?;
         Ok(())
       } else if let Value::Object(callback_obj) = callback {
         let handle_event_key = alloc_key(scope, "handleEvent")?;
-        let handle_event = vm.get_with_host_and_hooks(vm_host, scope, hooks, callback_obj, handle_event_key)?;
+        let handle_event =
+          vm.get_with_host_and_hooks(vm_host, scope, hooks, callback_obj, handle_event_key)?;
         if !scope.heap().is_callable(handle_event)? {
           return Err(VmError::TypeError(
             "EventTarget listener callback has no callable handleEvent",
           ));
         }
-        vm.call_with_host_and_hooks(vm_host, scope, hooks, handle_event, callback, &[event_value])?;
+        vm.call_with_host_and_hooks(
+          vm_host,
+          scope,
+          hooks,
+          handle_event,
+          callback,
+          &[event_value],
+        )?;
         Ok(())
       } else {
         Err(VmError::TypeError(
@@ -7435,9 +7657,11 @@ fn abort_signal_listener_cleanup_native(
     }
   };
   let listener_raw = scope.heap().get_string(listener_id_s)?.to_utf8_lossy();
-  let listener_id = web_events::ListenerId::new(listener_raw.parse::<u64>().map_err(|_| {
-    VmError::InvariantViolation("AbortSignal cleanup has invalid listener id")
-  })?);
+  let listener_id = web_events::ListenerId::new(
+    listener_raw
+      .parse::<u64>()
+      .map_err(|_| VmError::InvariantViolation("AbortSignal cleanup has invalid listener id"))?,
+  );
 
   let capture = match slots
     .get(ABORT_SIGNAL_CLEANUP_CAPTURE_SLOT)
@@ -7459,8 +7683,8 @@ fn abort_signal_listener_cleanup_native(
     ));
   };
 
-  let mut dom_ptr =
-    dom_ptr_for_event_registry(host).unwrap_or_else(|| NonNull::from(&mut data.events_dom_fallback));
+  let mut dom_ptr = dom_ptr_for_event_registry(host)
+    .unwrap_or_else(|| NonNull::from(&mut data.events_dom_fallback));
 
   // SAFETY: `dom_ptr` is derived from the current `VmHost` (or the realm's fallback document) and
   // is only used for the duration of this native call.
@@ -7544,9 +7768,10 @@ fn event_target_add_event_listener_native(
   // SAFETY: `dom_ptr` is derived from the current `VmHost` (or the realm's fallback document) and
   // is only used for the duration of this native call.
   let dom = unsafe { dom_ptr.as_mut() };
-  let added = dom
-    .events_mut()
-    .add_event_listener(resolved.target_id, &type_name, listener_id, options);
+  let added =
+    dom
+      .events_mut()
+      .add_event_listener(resolved.target_id, &type_name, listener_id, options);
 
   // Root the callback while it's registered so it survives GC.
   let roots = get_or_create_event_listener_roots(scope, listener_roots_owner)?;
@@ -7672,17 +7897,12 @@ fn event_target_remove_event_listener_native(
   // SAFETY: `dom_ptr` is derived from the current `VmHost` (or the realm's fallback document) and
   // is only used for the duration of this native call.
   let dom = unsafe { dom_ptr.as_mut() };
-  let removed = dom
-    .events_mut()
-    .remove_event_listener(resolved.target_id, &type_name, listener_id, capture);
+  let removed =
+    dom
+      .events_mut()
+      .remove_event_listener(resolved.target_id, &type_name, listener_id, capture);
   if removed {
-    remove_listener_root_if_unused(
-      scope,
-      listener_roots_owner,
-      dom.events(),
-      listener_id,
-      None,
-    )?;
+    remove_listener_root_if_unused(scope, listener_roots_owner, dom.events(), listener_id, None)?;
   }
 
   Ok(Value::Undefined)
@@ -7728,11 +7948,11 @@ fn event_target_dispatch_event_native(
         let dom = unsafe { dom_ptr.as_ref() };
         get_or_create_node_wrapper(vm, scope, resolved.document_obj, Some(dom), node_id)?
       }
-      web_events::EventTargetId::Opaque(_) => Value::Object(
-        opaque_target_obj.ok_or_else(|| {
+      web_events::EventTargetId::Opaque(_) => {
+        Value::Object(opaque_target_obj.ok_or_else(|| {
           VmError::InvariantViolation("opaque EventTarget is missing required JS object handle")
-        })?,
-      ),
+        })?)
+      }
     };
     scope.define_property(event_obj, target_key, data_desc(target_v))?;
 
@@ -7803,7 +8023,11 @@ fn event_target_dispatch_event_native(
           let _active_guard = push_active_event_for_host(vm_host, event_id, &mut rust_event);
 
           let event_id_key = alloc_key(scope, EVENT_ID_KEY)?;
-          scope.define_property(event_obj, event_id_key, data_desc(Value::Number(event_id as f64)))?;
+          scope.define_property(
+            event_obj,
+            event_id_key,
+            data_desc(Value::Number(event_id as f64)),
+          )?;
 
           let call_result = vm.call_with_host_and_hooks(
             vm_host,
@@ -8029,14 +8253,7 @@ fn node_append_child_native(
     }
   }
   if child_is_fragment {
-    sync_cached_child_nodes_for_wrapper(
-      vm,
-      scope,
-      document_obj,
-      dom,
-      child_obj,
-      child_node_id,
-    )?;
+    sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, child_obj, child_node_id)?;
   }
 
   let inserted_roots: Vec<NodeId> = if child_is_fragment {
@@ -8117,28 +8334,28 @@ fn node_insert_before_native(
   };
 
   let reference_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let (reference_obj, reference_index) = if matches!(reference_value, Value::Null | Value::Undefined)
-  {
-    (None, None)
-  } else {
-    let Value::Object(reference_obj) = reference_value else {
-      return Err(VmError::TypeError(
-        "Node.insertBefore requires a reference node argument",
-      ));
-    };
-    let index = match scope
-      .heap()
-      .object_get_own_data_property_value(reference_obj, &node_id_key)?
-    {
-      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-      _ => {
+  let (reference_obj, reference_index) =
+    if matches!(reference_value, Value::Null | Value::Undefined) {
+      (None, None)
+    } else {
+      let Value::Object(reference_obj) = reference_value else {
         return Err(VmError::TypeError(
           "Node.insertBefore requires a reference node argument",
         ));
-      }
+      };
+      let index = match scope
+        .heap()
+        .object_get_own_data_property_value(reference_obj, &node_id_key)?
+      {
+        Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+        _ => {
+          return Err(VmError::TypeError(
+            "Node.insertBefore requires a reference node argument",
+          ));
+        }
+      };
+      (Some(reference_obj), Some(index))
     };
-    (Some(reference_obj), Some(index))
-  };
 
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
     "Node.insertBefore requires a DOM-backed document",
@@ -8161,18 +8378,17 @@ fn node_insert_before_native(
   };
 
   let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
-  let new_child_document_obj = node_wrapper_document_obj(scope, new_child_obj, new_child_node_id)
-    .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
+  let new_child_document_obj =
+    node_wrapper_document_obj(scope, new_child_obj, new_child_node_id)
+      .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
   if new_child_document_obj != document_obj {
     return Err(VmError::TypeError(
       "Node.insertBefore cannot move nodes between documents",
     ));
   }
   if let (Some(reference_obj), Some(reference_node_id)) = (reference_obj, reference_node_id) {
-    let reference_document_obj =
-      node_wrapper_document_obj(scope, reference_obj, reference_node_id).map_err(|_| {
-        VmError::TypeError("Node.insertBefore requires a reference node argument")
-      })?;
+    let reference_document_obj = node_wrapper_document_obj(scope, reference_obj, reference_node_id)
+      .map_err(|_| VmError::TypeError("Node.insertBefore requires a reference node argument"))?;
     if reference_document_obj != document_obj {
       return Err(VmError::TypeError(
         "Node.insertBefore cannot move nodes between documents",
@@ -8181,7 +8397,10 @@ fn node_insert_before_native(
   }
 
   let old_parent = dom.parent_node(new_child_node_id);
-  let new_child_is_fragment = matches!(&dom.node(new_child_node_id).kind, NodeKind::DocumentFragment);
+  let new_child_is_fragment = matches!(
+    &dom.node(new_child_node_id).kind,
+    NodeKind::DocumentFragment
+  );
   let fragment_children = if new_child_is_fragment {
     dom.node(new_child_node_id).children.clone()
   } else {
@@ -8410,15 +8629,17 @@ fn node_replace_child_native(
     .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
 
   let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
-  let new_child_document_obj = node_wrapper_document_obj(scope, new_child_obj, new_child_node_id)
-    .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+  let new_child_document_obj =
+    node_wrapper_document_obj(scope, new_child_obj, new_child_node_id)
+      .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
   if new_child_document_obj != document_obj {
     return Err(VmError::TypeError(
       "Node.replaceChild cannot move nodes between documents",
     ));
   }
-  let old_child_document_obj = node_wrapper_document_obj(scope, old_child_obj, old_child_node_id)
-    .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+  let old_child_document_obj =
+    node_wrapper_document_obj(scope, old_child_obj, old_child_node_id)
+      .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
   if old_child_document_obj != document_obj {
     return Err(VmError::TypeError(
       "Node.replaceChild cannot move nodes between documents",
@@ -8426,7 +8647,10 @@ fn node_replace_child_native(
   }
 
   let old_parent = dom.parent_node(new_child_node_id);
-  let new_child_is_fragment = matches!(&dom.node(new_child_node_id).kind, NodeKind::DocumentFragment);
+  let new_child_is_fragment = matches!(
+    &dom.node(new_child_node_id).kind,
+    NodeKind::DocumentFragment
+  );
   let fragment_children = if new_child_is_fragment {
     dom.node(new_child_node_id).children.clone()
   } else {
@@ -8444,7 +8668,14 @@ fn node_replace_child_native(
     }
   }
   if new_child_is_fragment {
-    sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, new_child_obj, new_child_node_id)?;
+    sync_cached_child_nodes_for_wrapper(
+      vm,
+      scope,
+      document_obj,
+      dom,
+      new_child_obj,
+      new_child_node_id,
+    )?;
   }
 
   let inserted_roots: Vec<NodeId> = if new_child_is_fragment {
@@ -8598,7 +8829,9 @@ fn node_previous_sibling_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(vm, scope, host, this, |dom, node| dom.previous_sibling(node))
+  node_traversal_getter(vm, scope, host, this, |dom, node| {
+    dom.previous_sibling(node)
+  })
 }
 
 fn node_next_sibling_get_native(
@@ -8826,7 +9059,9 @@ fn node_contains_native(
 
   let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  Ok(Value::Bool(dom.ancestors(other_id).any(|ancestor| ancestor == node_id)))
+  Ok(Value::Bool(
+    dom.ancestors(other_id).any(|ancestor| ancestor == node_id),
+  ))
 }
 
 fn node_child_nodes_get_native(
@@ -9002,8 +9237,10 @@ fn node_text_content_get_native(
           continue;
         }
         // `ShadowRoot` is not part of the light DOM tree for `textContent` semantics.
-        if matches!(&root_node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
-          && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
+        if matches!(
+          &root_node.kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        ) && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
         {
           continue;
         }
@@ -9080,7 +9317,7 @@ fn node_text_content_set_native(
         .heap()
         .get_string(s)
         .map(|s| s.to_utf8_lossy())
-      .unwrap_or_default()
+        .unwrap_or_default()
     }
   };
 
@@ -9109,9 +9346,11 @@ fn node_text_content_set_native(
     NodeKind::Element { .. } | NodeKind::Slot { .. } => TextContentTarget::ReplaceChildren {
       preserve_shadow_roots: true,
     },
-    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
-      preserve_shadow_roots: false,
-    },
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
+      TextContentTarget::ReplaceChildren {
+        preserve_shadow_roots: false,
+      }
+    }
     NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
   };
 
@@ -9272,7 +9511,15 @@ fn text_data_set_native(
     .filter(|&parent| is_html_script_element(dom, parent));
 
   if let Some(parent) = maybe_script_parent {
-    run_dynamic_script_children_changed_steps(vm, scope, host, hooks, document_obj, dom_ptr, parent)?;
+    run_dynamic_script_children_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      parent,
+    )?;
   }
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
@@ -9304,7 +9551,9 @@ fn element_tag_name_get_native(
     NodeKind::Slot { .. } => "slot",
     _ => return Err(VmError::TypeError("Illegal invocation")),
   };
-  Ok(Value::String(scope.alloc_string(&tag.to_ascii_uppercase())?))
+  Ok(Value::String(
+    scope.alloc_string(&tag.to_ascii_uppercase())?,
+  ))
 }
 
 fn element_class_name_get_native(
@@ -9555,7 +9804,11 @@ fn element_reflected_string_get_native(
   let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
     return Ok(Value::Undefined);
   };
-  let value = dom.get_attribute(node_id, &attr).ok().flatten().unwrap_or("");
+  let value = dom
+    .get_attribute(node_id, &attr)
+    .ok()
+    .flatten()
+    .unwrap_or("");
   Ok(Value::String(scope.alloc_string(value)?))
 }
 
@@ -9646,7 +9899,9 @@ fn element_reflected_bool_get_native(
     let async_attr = dom.has_attribute(node_id, "async").unwrap_or(false);
     return Ok(Value::Bool(force_async || async_attr));
   }
-  Ok(Value::Bool(dom.has_attribute(node_id, &attr).unwrap_or(false)))
+  Ok(Value::Bool(
+    dom.has_attribute(node_id, &attr).unwrap_or(false),
+  ))
 }
 
 fn element_reflected_bool_set_native(
@@ -9713,7 +9968,9 @@ fn element_reflected_bool_set_native(
 fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
   match &dom.node(node_id).kind {
     dom2::NodeKind::Element {
-      tag_name, namespace, ..
+      tag_name,
+      namespace,
+      ..
     } => {
       tag_name.eq_ignore_ascii_case("script")
         && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
@@ -9723,8 +9980,7 @@ fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
 }
 
 fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
-  vm
-    .user_data::<WindowRealmUserData>()
+  vm.user_data::<WindowRealmUserData>()
     .and_then(|data| data.base_url.clone())
 }
 
@@ -9758,7 +10014,10 @@ impl CurrentScriptOverrideGuard {
       state.current_script = new_current;
       prev
     });
-    Self { handle, previous: previous.flatten() }
+    Self {
+      handle,
+      previous: previous.flatten(),
+    }
   }
 }
 
@@ -9812,7 +10071,8 @@ fn execute_dynamic_inline_script(
     // SAFETY: `dom_ptr` points at the active `dom2::Document` for this JS call turn and is only used
     // within this function call.
     let dom = unsafe { dom_ptr.as_ref() };
-    (dom.is_connected_for_scripting(script) && !node_root_is_shadow_root(dom, script)).then_some(script)
+    (dom.is_connected_for_scripting(script) && !node_root_is_shadow_root(dom, script))
+      .then_some(script)
   };
   let _current_script_guard = CurrentScriptOverrideGuard::new(state_handle, new_current_script);
 
@@ -9850,8 +10110,14 @@ fn execute_dynamic_inline_script(
 
   // Call with an undefined receiver. For non-strict functions created by `Function()`, the VM's
   // normal `this` coercion will treat this as the global object (matching script execution).
-  match vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(func_obj), Value::Undefined, &[])
-  {
+  match vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    Value::Object(func_obj),
+    Value::Undefined,
+    &[],
+  ) {
     Ok(_) => Ok(()),
     Err(err) => {
       if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
@@ -9874,7 +10140,12 @@ fn schedule_dynamic_script_via_browser_tab_host(
   let base_url_at_discovery = spec.base_url.clone();
   event_loop
     .queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-      let _ = host.register_and_schedule_dynamic_script(script, spec, base_url_at_discovery, event_loop)?;
+      let _ = host.register_and_schedule_dynamic_script(
+        script,
+        spec,
+        base_url_at_discovery,
+        event_loop,
+      )?;
       Ok(())
     })
     .is_ok()
@@ -10044,7 +10315,8 @@ fn prepare_dynamic_script_element(
       .is_ok()
     } else {
       let source_name = format!("<script {}>", script.index());
-      queue_dynamic_script_task_inline(hooks, script, source_name, inline_text, nomodule_attr).is_ok()
+      queue_dynamic_script_task_inline(hooks, script, source_name, inline_text, nomodule_attr)
+        .is_ok()
     };
 
     if scheduled {
@@ -10203,7 +10475,8 @@ fn queue_dynamic_script_task_inline(
 
       let new_current_script = {
         let dom = host.dom();
-        (dom.is_connected_for_scripting(script) && !node_root_is_shadow_root(dom, script)).then_some(script)
+        (dom.is_connected_for_scripting(script) && !node_root_is_shadow_root(dom, script))
+          .then_some(script)
       };
 
       let current_script_state = host.document_host().current_script_handle().clone();
@@ -10817,7 +11090,14 @@ fn element_class_list_add_native(
   match dom.class_list_add(node_id, &token_refs) {
     Ok(_) => {
       let needs_microtask = dom.take_mutation_observer_microtask_needed();
-      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+      maybe_queue_mutation_observer_microtask(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        needs_microtask,
+      )?;
       Ok(Value::Undefined)
     }
     Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
@@ -10906,7 +11186,14 @@ fn element_class_list_remove_native(
   match dom.class_list_remove(node_id, &token_refs) {
     Ok(_) => {
       let needs_microtask = dom.take_mutation_observer_microtask_needed();
-      maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+      maybe_queue_mutation_observer_microtask(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        needs_microtask,
+      )?;
       Ok(Value::Undefined)
     }
     Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
@@ -11250,9 +11537,9 @@ fn element_set_attribute_native(
     "Element.setAttribute requires a DOM-backed document",
   ))?;
   let mut dom_ptr = NonNull::from(&mut *dom);
-  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
-    VmError::TypeError("Element.setAttribute must be called on an element object")
-  })?;
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.setAttribute must be called on an element object"))?;
   if let Err(err) = dom.set_attribute(node_id, &name, &value) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
@@ -11887,7 +12174,9 @@ fn document_ready_state_get_native(
     return Ok(Value::String(scope.alloc_string("complete")?));
   };
 
-  Ok(Value::String(scope.alloc_string(dom.ready_state().as_str())?))
+  Ok(Value::String(
+    scope.alloc_string(dom.ready_state().as_str())?,
+  ))
 }
 
 fn document_base_uri_get_native(
@@ -11903,7 +12192,12 @@ fn document_base_uri_get_native(
   // embedder has not yet installed a base URL, fall back to the realm's document URL.
   let base_url = vm
     .user_data_mut::<WindowRealmUserData>()
-    .map(|data| data.base_url.clone().unwrap_or_else(|| data.document_url.clone()))
+    .map(|data| {
+      data
+        .base_url
+        .clone()
+        .unwrap_or_else(|| data.document_url.clone())
+    })
     .unwrap_or_default();
   Ok(Value::String(scope.alloc_string(&base_url)?))
 }
@@ -12205,7 +12499,11 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(assign_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(assign_func))?;
-  scope.define_property(location_obj, assign_key, data_desc(Value::Object(assign_func)))?;
+  scope.define_property(
+    location_obj,
+    assign_key,
+    data_desc(Value::Object(assign_func)),
+  )?;
 
   let replace_call_id = vm.register_native_call(location_replace_native)?;
   let replace_name = scope.alloc_string("replace")?;
@@ -12215,7 +12513,11 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(replace_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(replace_func))?;
-  scope.define_property(location_obj, replace_key, data_desc(Value::Object(replace_func)))?;
+  scope.define_property(
+    location_obj,
+    replace_key,
+    data_desc(Value::Object(replace_func)),
+  )?;
 
   let location_set_call_id = vm.register_native_call(location_set_unimplemented_native)?;
   let location_set_name = scope.alloc_string("set location")?;
@@ -12523,7 +12825,8 @@ fn init_window_globals(
     },
   )?;
 
-  let mutation_observer_notify_call_id = vm.register_native_call(mutation_observer_notify_native)?;
+  let mutation_observer_notify_call_id =
+    vm.register_native_call(mutation_observer_notify_native)?;
   let mutation_observer_notify_name = scope.alloc_string("notify mutation observers")?;
   scope.push_root(Value::String(mutation_observer_notify_name))?;
   let mutation_observer_notify_func = scope.alloc_native_function_with_slots(
@@ -12696,22 +12999,24 @@ fn init_window_globals(
   let write_name = scope.alloc_string("write")?;
   scope.push_root(Value::String(write_name))?;
   let write_func = scope.alloc_native_function(write_call_id, None, write_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    write_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(write_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(write_func))?;
-  scope.define_property(document_obj, write_key, data_desc(Value::Object(write_func)))?;
+  scope.define_property(
+    document_obj,
+    write_key,
+    data_desc(Value::Object(write_func)),
+  )?;
 
   let writeln_key = alloc_key(&mut scope, "writeln")?;
   let writeln_call_id = vm.register_native_call(document_writeln_native)?;
   let writeln_name = scope.alloc_string("writeln")?;
   scope.push_root(Value::String(writeln_name))?;
   let writeln_func = scope.alloc_native_function(writeln_call_id, None, writeln_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    writeln_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writeln_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(writeln_func))?;
   scope.define_property(
     document_obj,
@@ -12754,7 +13059,8 @@ fn init_window_globals(
 
   // Document.textContent (from Node): always null.
   let document_text_content_key = alloc_key(&mut scope, "textContent")?;
-  let document_text_content_get_call_id = vm.register_native_call(document_text_content_get_native)?;
+  let document_text_content_get_call_id =
+    vm.register_native_call(document_text_content_get_native)?;
   let document_text_content_get_name = scope.alloc_string("get textContent")?;
   scope.push_root(Value::String(document_text_content_get_name))?;
   let document_text_content_get_func = scope.alloc_native_function(
@@ -12769,7 +13075,8 @@ fn init_window_globals(
   )?;
   scope.push_root(Value::Object(document_text_content_get_func))?;
 
-  let document_text_content_set_call_id = vm.register_native_call(document_text_content_set_native)?;
+  let document_text_content_set_call_id =
+    vm.register_native_call(document_text_content_set_native)?;
   let document_text_content_set_name = scope.alloc_string("set textContent")?;
   scope.push_root(Value::String(document_text_content_set_name))?;
   let document_text_content_set_func = scope.alloc_native_function(
@@ -12878,22 +13185,24 @@ fn init_window_globals(
   let write_name = scope.alloc_string("write")?;
   scope.push_root(Value::String(write_name))?;
   let write_func = scope.alloc_native_function(write_call_id, None, write_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    write_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(write_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(write_func))?;
-  scope.define_property(document_obj, write_key, data_desc(Value::Object(write_func)))?;
+  scope.define_property(
+    document_obj,
+    write_key,
+    data_desc(Value::Object(write_func)),
+  )?;
 
   let writeln_key = alloc_key(&mut scope, "writeln")?;
   let writeln_call_id = vm.register_native_call(document_writeln_native)?;
   let writeln_name = scope.alloc_string("writeln")?;
   scope.push_root(Value::String(writeln_name))?;
   let writeln_func = scope.alloc_native_function(writeln_call_id, None, writeln_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    writeln_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writeln_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(writeln_func))?;
   scope.define_property(
     document_obj,
@@ -13011,7 +13320,8 @@ fn init_window_globals(
 
   // document.createDocumentFragment
   let create_fragment_key = alloc_key(&mut scope, "createDocumentFragment")?;
-  let create_fragment_call_id = vm.register_native_call(document_create_document_fragment_native)?;
+  let create_fragment_call_id =
+    vm.register_native_call(document_create_document_fragment_native)?;
   let create_fragment_name = scope.alloc_string("createDocumentFragment")?;
   scope.push_root(Value::String(create_fragment_name))?;
   let create_fragment_func =
@@ -13485,17 +13795,20 @@ fn init_window_globals(
         name,
         0,
       )?;
-      scope.heap_mut().object_set_prototype(
-        func,
-        Some(realm.intrinsics().function_prototype()),
-      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
       Ok(func)
     };
 
     // Node constructor + constants.
     let node_ctor = make_illegal_ctor(&mut scope, "Node")?;
     scope.push_root(Value::Object(node_ctor))?;
-    scope.define_property(node_ctor, prototype_key, data_desc(Value::Object(node_proto)))?;
+    scope.define_property(
+      node_ctor,
+      prototype_key,
+      data_desc(Value::Object(node_proto)),
+    )?;
     scope.define_property(
       node_proto,
       constructor_key,
@@ -13538,11 +13851,7 @@ fn init_window_globals(
       data_desc(Value::Object(element_ctor)),
     )?;
     let element_key = alloc_key(&mut scope, "Element")?;
-    scope.define_property(
-      global,
-      element_key,
-      data_desc(Value::Object(element_ctor)),
-    )?;
+    scope.define_property(global, element_key, data_desc(Value::Object(element_ctor)))?;
 
     let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
     scope.push_root(Value::Object(document_ctor))?;
@@ -13584,7 +13893,11 @@ fn init_window_globals(
 
     let text_ctor = make_illegal_ctor(&mut scope, "Text")?;
     scope.push_root(Value::Object(text_ctor))?;
-    scope.define_property(text_ctor, prototype_key, data_desc(Value::Object(text_proto)))?;
+    scope.define_property(
+      text_ctor,
+      prototype_key,
+      data_desc(Value::Object(text_proto)),
+    )?;
     scope.define_property(
       text_proto,
       constructor_key,
@@ -13717,12 +14030,8 @@ fn init_window_globals(
     let parent_element_get_call_id = vm.register_native_call(node_parent_element_get_native)?;
     let parent_element_get_name = scope.alloc_string("get parentElement")?;
     scope.push_root(Value::String(parent_element_get_name))?;
-    let parent_element_get_func = scope.alloc_native_function(
-      parent_element_get_call_id,
-      None,
-      parent_element_get_name,
-      0,
-    )?;
+    let parent_element_get_func =
+      scope.alloc_native_function(parent_element_get_call_id, None, parent_element_get_name, 0)?;
     scope.heap_mut().object_set_prototype(
       parent_element_get_func,
       Some(realm.intrinsics().function_prototype()),
@@ -13770,23 +14079,22 @@ fn init_window_globals(
     let contains_name = scope.alloc_string("contains")?;
     scope.push_root(Value::String(contains_name))?;
     let contains_func = scope.alloc_native_function(contains_call_id, None, contains_name, 1)?;
-    scope.heap_mut().object_set_prototype(
-      contains_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(contains_func, Some(realm.intrinsics().function_prototype()))?;
     scope.push_root(Value::Object(contains_func))?;
     let contains_key = alloc_key(&mut scope, "contains")?;
-    scope.define_property(node_proto, contains_key, data_desc(Value::Object(contains_func)))?;
+    scope.define_property(
+      node_proto,
+      contains_key,
+      data_desc(Value::Object(contains_func)),
+    )?;
 
     let has_child_nodes_call_id = vm.register_native_call(node_has_child_nodes_native)?;
     let has_child_nodes_name = scope.alloc_string("hasChildNodes")?;
     scope.push_root(Value::String(has_child_nodes_name))?;
-    let has_child_nodes_func = scope.alloc_native_function(
-      has_child_nodes_call_id,
-      None,
-      has_child_nodes_name,
-      0,
-    )?;
+    let has_child_nodes_func =
+      scope.alloc_native_function(has_child_nodes_call_id, None, has_child_nodes_name, 0)?;
     scope.heap_mut().object_set_prototype(
       has_child_nodes_func,
       Some(realm.intrinsics().function_prototype()),
@@ -13889,7 +14197,8 @@ fn init_window_globals(
   let mutation_observer_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(mutation_observer_proto))?;
 
-  let mutation_observer_observe_call_id = vm.register_native_call(mutation_observer_observe_native)?;
+  let mutation_observer_observe_call_id =
+    vm.register_native_call(mutation_observer_observe_native)?;
   let mutation_observer_observe_name = scope.alloc_string("observe")?;
   scope.push_root(Value::String(mutation_observer_observe_name))?;
   let mutation_observer_observe_func = scope.alloc_native_function(
@@ -13954,7 +14263,8 @@ fn init_window_globals(
     data_desc(Value::Object(mutation_observer_take_records_func)),
   )?;
 
-  let mutation_observer_ctor_call_id = vm.register_native_call(mutation_observer_constructor_native)?;
+  let mutation_observer_ctor_call_id =
+    vm.register_native_call(mutation_observer_constructor_native)?;
   let mutation_observer_ctor_construct_id =
     vm.register_native_construct(mutation_observer_constructor_construct_native)?;
   let mutation_observer_ctor_name = scope.alloc_string("MutationObserver")?;
@@ -14206,12 +14516,8 @@ fn init_window_globals(
   let text_content_get_call_id = vm.register_native_call(node_text_content_get_native)?;
   let text_content_get_name = scope.alloc_string("get textContent")?;
   scope.push_root(Value::String(text_content_get_name))?;
-  let text_content_get_func = scope.alloc_native_function(
-    text_content_get_call_id,
-    None,
-    text_content_get_name,
-    0,
-  )?;
+  let text_content_get_func =
+    scope.alloc_native_function(text_content_get_call_id, None, text_content_get_name, 0)?;
   scope.heap_mut().object_set_prototype(
     text_content_get_func,
     Some(realm.intrinsics().function_prototype()),
@@ -14227,12 +14533,8 @@ fn init_window_globals(
   let text_content_set_call_id = vm.register_native_call(node_text_content_set_native)?;
   let text_content_set_name = scope.alloc_string("set textContent")?;
   scope.push_root(Value::String(text_content_set_name))?;
-  let text_content_set_func = scope.alloc_native_function(
-    text_content_set_call_id,
-    None,
-    text_content_set_name,
-    1,
-  )?;
+  let text_content_set_func =
+    scope.alloc_native_function(text_content_set_call_id, None, text_content_set_name, 1)?;
   scope.heap_mut().object_set_prototype(
     text_content_set_func,
     Some(realm.intrinsics().function_prototype()),
@@ -14378,12 +14680,8 @@ fn init_window_globals(
   let remove_attribute_call_id = vm.register_native_call(element_remove_attribute_native)?;
   let remove_attribute_name = scope.alloc_string("removeAttribute")?;
   scope.push_root(Value::String(remove_attribute_name))?;
-  let remove_attribute_func = scope.alloc_native_function(
-    remove_attribute_call_id,
-    None,
-    remove_attribute_name,
-    1,
-  )?;
+  let remove_attribute_func =
+    scope.alloc_native_function(remove_attribute_call_id, None, remove_attribute_name, 1)?;
   scope.heap_mut().object_set_prototype(
     remove_attribute_func,
     Some(realm.intrinsics().function_prototype()),
@@ -14553,27 +14851,54 @@ fn init_window_globals(
   )?;
 
   // Store shared reflected attribute accessors on `document` so wrappers can reuse them.
-  let reflected_string_get_call_id = vm.register_native_call(element_reflected_string_get_native)?;
-  let reflected_string_set_call_id = vm.register_native_call(element_reflected_string_set_native)?;
+  let reflected_string_get_call_id =
+    vm.register_native_call(element_reflected_string_get_native)?;
+  let reflected_string_set_call_id =
+    vm.register_native_call(element_reflected_string_set_native)?;
   let reflected_bool_get_call_id = vm.register_native_call(element_reflected_bool_get_native)?;
   let reflected_bool_set_call_id = vm.register_native_call(element_reflected_bool_set_native)?;
 
   for (prop, attr, get_key_name, set_key_name) in [
     ("src", "src", ELEMENT_SRC_GET_KEY, ELEMENT_SRC_SET_KEY),
-    ("srcset", "srcset", ELEMENT_SRCSET_GET_KEY, ELEMENT_SRCSET_SET_KEY),
-    ("sizes", "sizes", ELEMENT_SIZES_GET_KEY, ELEMENT_SIZES_SET_KEY),
+    (
+      "srcset",
+      "srcset",
+      ELEMENT_SRCSET_GET_KEY,
+      ELEMENT_SRCSET_SET_KEY,
+    ),
+    (
+      "sizes",
+      "sizes",
+      ELEMENT_SIZES_GET_KEY,
+      ELEMENT_SIZES_SET_KEY,
+    ),
     ("href", "href", ELEMENT_HREF_GET_KEY, ELEMENT_HREF_SET_KEY),
     ("rel", "rel", ELEMENT_REL_GET_KEY, ELEMENT_REL_SET_KEY),
     ("type", "type", ELEMENT_TYPE_GET_KEY, ELEMENT_TYPE_SET_KEY),
-    ("charset", "charset", ELEMENT_CHARSET_GET_KEY, ELEMENT_CHARSET_SET_KEY),
+    (
+      "charset",
+      "charset",
+      ELEMENT_CHARSET_GET_KEY,
+      ELEMENT_CHARSET_SET_KEY,
+    ),
     (
       "crossOrigin",
       "crossorigin",
       ELEMENT_CROSS_ORIGIN_GET_KEY,
       ELEMENT_CROSS_ORIGIN_SET_KEY,
     ),
-    ("height", "height", ELEMENT_HEIGHT_GET_KEY, ELEMENT_HEIGHT_SET_KEY),
-    ("width", "width", ELEMENT_WIDTH_GET_KEY, ELEMENT_WIDTH_SET_KEY),
+    (
+      "height",
+      "height",
+      ELEMENT_HEIGHT_GET_KEY,
+      ELEMENT_HEIGHT_SET_KEY,
+    ),
+    (
+      "width",
+      "width",
+      ELEMENT_WIDTH_GET_KEY,
+      ELEMENT_WIDTH_SET_KEY,
+    ),
   ] {
     let attr_s = scope.alloc_string(attr)?;
     scope.push_root(Value::String(attr_s))?;
@@ -14612,8 +14937,18 @@ fn init_window_globals(
   }
 
   for (prop, attr, get_key_name, set_key_name) in [
-    ("async", "async", ELEMENT_ASYNC_GET_KEY, ELEMENT_ASYNC_SET_KEY),
-    ("defer", "defer", ELEMENT_DEFER_GET_KEY, ELEMENT_DEFER_SET_KEY),
+    (
+      "async",
+      "async",
+      ELEMENT_ASYNC_GET_KEY,
+      ELEMENT_ASYNC_SET_KEY,
+    ),
+    (
+      "defer",
+      "defer",
+      ELEMENT_DEFER_GET_KEY,
+      ELEMENT_DEFER_SET_KEY,
+    ),
   ] {
     let attr_s = scope.alloc_string(attr)?;
     scope.push_root(Value::String(attr_s))?;
@@ -14996,29 +15331,30 @@ fn init_window_globals(
 
   let define_console_method =
     |scope: &mut Scope<'_>, name: &str, level: ConsoleMessageLevel| -> Result<Value, VmError> {
-    let level_slot = Value::Number(match level {
-      ConsoleMessageLevel::Log => 0.0,
-      ConsoleMessageLevel::Info => 1.0,
-      ConsoleMessageLevel::Warn => 2.0,
-      ConsoleMessageLevel::Error => 3.0,
-      ConsoleMessageLevel::Debug => 4.0,
-    });
+      let level_slot = Value::Number(match level {
+        ConsoleMessageLevel::Log => 0.0,
+        ConsoleMessageLevel::Info => 1.0,
+        ConsoleMessageLevel::Warn => 2.0,
+        ConsoleMessageLevel::Error => 3.0,
+        ConsoleMessageLevel::Debug => 4.0,
+      });
 
-    let slots = [
-      level_slot,
-      Value::Object(console_obj),
-      Value::String(sink_id_key_s),
-    ];
+      let slots = [
+        level_slot,
+        Value::Object(console_obj),
+        Value::String(sink_id_key_s),
+      ];
 
-    let name_s = scope.alloc_string(name)?;
-    scope.push_root(Value::String(name_s))?;
-    let func = scope.alloc_native_function_with_slots(console_call_id, None, name_s, 0, &slots)?;
-    scope
-      .heap_mut()
-      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
-    scope.push_root(Value::Object(func))?;
-    Ok(Value::Object(func))
-  };
+      let name_s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(name_s))?;
+      let func =
+        scope.alloc_native_function_with_slots(console_call_id, None, name_s, 0, &slots)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+      scope.push_root(Value::Object(func))?;
+      Ok(Value::Object(func))
+    };
 
   let log_key = alloc_key(&mut scope, "log")?;
   let info_key = alloc_key(&mut scope, "info")?;
@@ -15064,8 +15400,16 @@ fn init_window_globals(
   let history_key = alloc_key(&mut scope, "history")?;
   let history_state_key = alloc_key(&mut scope, "state")?;
   let history_length_key = alloc_key(&mut scope, "length")?;
-  scope.define_property(history_obj, history_state_key, read_only_data_desc(Value::Null))?;
-  scope.define_property(history_obj, history_length_key, read_only_data_desc(Value::Number(1.0)))?;
+  scope.define_property(
+    history_obj,
+    history_state_key,
+    read_only_data_desc(Value::Null),
+  )?;
+  scope.define_property(
+    history_obj,
+    history_length_key,
+    read_only_data_desc(Value::Number(1.0)),
+  )?;
 
   let history_state_call_id = vm.register_native_call(history_state_change_native)?;
   let history_noop_call_id = vm.register_native_call(history_noop_native)?;
@@ -15091,7 +15435,11 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(push_state_func))?;
-  scope.define_property(history_obj, push_state_key, data_desc(Value::Object(push_state_func)))?;
+  scope.define_property(
+    history_obj,
+    push_state_key,
+    data_desc(Value::Object(push_state_func)),
+  )?;
 
   let replace_state_key = alloc_key(&mut scope, "replaceState")?;
   let replace_state_name = scope.alloc_string("replaceState")?;
@@ -15134,10 +15482,9 @@ fn init_window_globals(
   let forward_name = scope.alloc_string("forward")?;
   scope.push_root(Value::String(forward_name))?;
   let forward_func = scope.alloc_native_function(history_noop_call_id, None, forward_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    forward_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(forward_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(forward_func))?;
   scope.define_property(
     history_obj,
@@ -15155,7 +15502,11 @@ fn init_window_globals(
   scope.push_root(Value::Object(go_func))?;
   scope.define_property(history_obj, go_key, data_desc(Value::Object(go_func)))?;
 
-  scope.define_property(global, history_key, read_only_data_desc(Value::Object(history_obj)))?;
+  scope.define_property(
+    global,
+    history_key,
+    read_only_data_desc(Value::Object(history_obj)),
+  )?;
 
   scope.define_property(
     global,
@@ -15378,8 +15729,8 @@ fn init_window_globals(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::clock::VirtualClock;
+  use crate::js::window_env::FASTRENDER_USER_AGENT;
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
   use std::time::Duration;
 
@@ -15542,9 +15893,7 @@ mod tests {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let Some(any) = hooks.as_any_mut() else {
-      return Err(VmError::TypeError(
-        "VmHostHooks::as_any_mut returned None",
-      ));
+      return Err(VmError::TypeError("VmHostHooks::as_any_mut returned None"));
     };
     let Some(payload) = any.downcast_mut::<VmJsHostHooksPayload>() else {
       return Err(VmError::TypeError(
@@ -15589,7 +15938,8 @@ mod tests {
 
     // `WindowRealm` does not install the full HTML event loop / `queueMicrotask` bindings by
     // default, but Promise jobs still enqueue microtasks into the VM-owned microtask queue.
-    realm.exec_script("globalThis.__x = 0; Promise.resolve().then(() => { globalThis.__x = 1; });")?;
+    realm
+      .exec_script("globalThis.__x = 0; Promise.resolve().then(() => { globalThis.__x = 1; });")?;
     assert_eq!(realm.exec_script("globalThis.__x")?, Value::Number(0.0));
 
     realm.perform_microtask_checkpoint()?;
@@ -15600,7 +15950,8 @@ mod tests {
   #[test]
   fn window_env_shims_exist_and_match_media_evaluates() -> Result<(), VmError> {
     let media = MediaContext::screen(800.0, 600.0).with_device_pixel_ratio(2.0);
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/").with_media_context(media))?;
+    let mut realm =
+      new_realm(WindowRealmConfig::new("https://example.com/").with_media_context(media))?;
 
     let dpr = realm.exec_script("devicePixelRatio")?;
     assert!(matches!(dpr, Value::Number(v) if (v - 2.0).abs() < f64::EPSILON));
@@ -15808,7 +16159,10 @@ mod tests {
         return u.href;\n\
       })()",
     )?;
-    assert_eq!(get_string(realm.heap(), href), "https://example.com/dir/file");
+    assert_eq!(
+      get_string(realm.heap(), href),
+      "https://example.com/dir/file"
+    );
 
     Ok(())
   }
@@ -15845,10 +16199,22 @@ mod tests {
     )?;
 
     clock.set_now(Duration::from_millis(0));
-    assert_eq!(realm.exec_script("typeof Date === 'function'")?, Value::Bool(true));
-    assert_eq!(realm.exec_script("typeof Date.now === 'function'")?, Value::Bool(true));
-    assert_eq!(realm.exec_script("new Date(123).getTime()")?, Value::Number(123.0));
-    assert_eq!(realm.exec_script("new Date().getTime()")?, Value::Number(1_000.0));
+    assert_eq!(
+      realm.exec_script("typeof Date === 'function'")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("typeof Date.now === 'function'")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("new Date(123).getTime()")?,
+      Value::Number(123.0)
+    );
+    assert_eq!(
+      realm.exec_script("new Date().getTime()")?,
+      Value::Number(1_000.0)
+    );
     assert_eq!(
       realm.exec_script("performance.timeOrigin")?,
       Value::Number(web_time.time_origin_unix_ms as f64)
@@ -15859,7 +16225,10 @@ mod tests {
     // Advance to a deterministic non-integer millisecond.
     clock.set_now(Duration::from_nanos(1_234_567_890)); // 1234.56789ms
     assert_eq!(realm.exec_script("Date.now()")?, Value::Number(2_234.0));
-    assert_eq!(realm.exec_script("new Date().getTime()")?, Value::Number(2_234.0));
+    assert_eq!(
+      realm.exec_script("new Date().getTime()")?,
+      Value::Number(2_234.0)
+    );
     let Value::Number(perf_now) = realm.exec_script("performance.now()")? else {
       panic!("expected performance.now() to return a number");
     };
@@ -15892,7 +16261,10 @@ mod tests {
 
     for (state, expected) in [
       (crate::web::dom::DocumentReadyState::Loading, "loading"),
-      (crate::web::dom::DocumentReadyState::Interactive, "interactive"),
+      (
+        crate::web::dom::DocumentReadyState::Interactive,
+        "interactive",
+      ),
       (crate::web::dom::DocumentReadyState::Complete, "complete"),
     ] {
       host.dom_mut().set_ready_state(state);
@@ -15921,8 +16293,8 @@ mod tests {
   }
 
   #[test]
-  fn domless_window_and_document_event_targets_dispatch_via_fallback_registry() -> Result<(), VmError>
-  {
+  fn domless_window_and_document_event_targets_dispatch_via_fallback_registry(
+  ) -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
     let order = realm.exec_script(
@@ -16118,12 +16490,11 @@ mod tests {
     let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
       Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
     let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
-    let mut invoker =
-      WindowRealmDomEventListenerInvoker::<DummyHost>::new(
-        &mut realm_slot,
-        &mut vm_host_slot,
-        &mut webidl_bindings_host_slot,
-      );
+    let mut invoker = WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+      &mut realm_slot,
+      &mut vm_host_slot,
+      &mut webidl_bindings_host_slot,
+    );
 
     let mut event = web_events::Event::new(
       "x",
@@ -16158,7 +16529,10 @@ mod tests {
       script_or_module: None,
     });
     let global = realm_ref.global_object();
-    assert_eq!(get_prop(&mut vm, &mut scope, global, "__ran")?, Value::Bool(false));
+    assert_eq!(
+      get_prop(&mut vm, &mut scope, global, "__ran")?,
+      Value::Bool(false)
+    );
 
     Ok(())
   }
@@ -16464,7 +16838,8 @@ mod tests {
       Value::Object(obj) => obj,
       other => panic!("expected Event object, got {other:?}"),
     };
-    let document_listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+    let document_listener_roots =
+      super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
     let dom_ptr = NonNull::from(host.dom_mut());
     let vm_host = (&mut host as &mut dyn VmHost) as *mut dyn VmHost;
     let mut hooks = NoopHostHooks::default();
@@ -16536,7 +16911,8 @@ mod tests {
       Value::Object(obj) => obj,
       other => panic!("expected Event object, got {other:?}"),
     };
-    let document_listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+    let document_listener_roots =
+      super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
     let dom_ptr = NonNull::from(host.dom_mut());
     let vm_host = (&mut host as &mut dyn VmHost) as *mut dyn VmHost;
     let mut hooks = NoopHostHooks::default();
@@ -16603,7 +16979,11 @@ mod tests {
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
 
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
-    exec_script_with_dom_host(&mut realm, &mut host, "document.documentElement.className = 'hello'")?;
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.documentElement.className = 'hello'",
+    )?;
 
     let doc_el = host
       .dom()
@@ -16640,7 +17020,10 @@ mod tests {
     )?;
     assert_eq!(ok, Value::Bool(true));
 
-    let target = host.dom().get_element_by_id("target").expect("missing #target");
+    let target = host
+      .dom()
+      .get_element_by_id("target")
+      .expect("missing #target");
     assert_eq!(host.dom().element_class_name(target), "f c d e");
     Ok(())
   }
@@ -16675,8 +17058,14 @@ mod tests {
     )?;
     assert_eq!(ok, Value::Bool(true));
 
-    let target = host.dom().get_element_by_id("target").expect("missing #target");
-    assert_eq!(host.dom().get_attribute(target, "data-foo-bar").unwrap(), None);
+    let target = host
+      .dom()
+      .get_element_by_id("target")
+      .expect("missing #target");
+    assert_eq!(
+      host.dom().get_attribute(target, "data-foo-bar").unwrap(),
+      None
+    );
     Ok(())
   }
 
@@ -16715,8 +17104,14 @@ mod tests {
       host.dom().get_attribute(script, "src").unwrap(),
       Some("https://example.com/app.js")
     );
-    assert_eq!(host.dom().get_attribute(script, "type").unwrap(), Some("module"));
-    assert_eq!(host.dom().get_attribute(script, "charset").unwrap(), Some("utf-8"));
+    assert_eq!(
+      host.dom().get_attribute(script, "type").unwrap(),
+      Some("module")
+    );
+    assert_eq!(
+      host.dom().get_attribute(script, "charset").unwrap(),
+      Some("utf-8")
+    );
     assert_eq!(
       host.dom().get_attribute(script, "crossorigin").unwrap(),
       Some("anonymous")
@@ -16757,10 +17152,9 @@ mod tests {
 
   #[test]
   fn parser_inserted_script_defaults_to_async_false() -> Result<(), VmError> {
-    let renderer_dom = crate::dom::parse_html(
-      "<!doctype html><html><body><script id=s></script></body></html>",
-    )
-    .unwrap();
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><script id=s></script></body></html>")
+        .unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
 
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
@@ -16814,10 +17208,9 @@ mod tests {
 
   #[test]
   fn dom_shims_mutate_host_dom() -> Result<(), VmError> {
-    let renderer_dom = crate::dom::parse_html(
-      "<!doctype html><html><body><div id=target></div></body></html>",
-    )
-    .unwrap();
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
 
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
@@ -16833,8 +17226,14 @@ mod tests {
       })()",
     )?;
 
-    let target = host.dom().get_element_by_id("target").expect("missing #target");
-    assert_eq!(host.dom().get_attribute(target, "data-x").unwrap(), Some("y"));
+    let target = host
+      .dom()
+      .get_element_by_id("target")
+      .expect("missing #target");
+    assert_eq!(
+      host.dom().get_attribute(target, "data-x").unwrap(),
+      Some("y")
+    );
     assert_eq!(host.dom().element_class_name(target), "a");
     assert_eq!(host.dom().style_get_property_value(target, "color"), "red");
     Ok(())
@@ -16854,11 +17253,17 @@ mod tests {
       &mut host,
       "document.getElementById('target').innerHTML = '<span>hi</span>'",
     )?;
-    let inner =
-      exec_script_with_dom_host(&mut realm, &mut host, "document.getElementById('target').innerHTML")?;
+    let inner = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.getElementById('target').innerHTML",
+    )?;
     assert_eq!(get_string(realm.heap(), inner), "<span>hi</span>");
 
-    let target = host.dom().get_element_by_id("target").expect("missing #target");
+    let target = host
+      .dom()
+      .get_element_by_id("target")
+      .expect("missing #target");
     assert_eq!(host.dom().inner_html(target).unwrap(), "<span>hi</span>");
     Ok(())
   }
@@ -16883,7 +17288,11 @@ mod tests {
     let root = host.dom().get_element_by_id("root").expect("missing #root");
     assert_eq!(host.dom().inner_html(root).unwrap(), "<p>one</p><p>two</p>");
 
-    let outer = exec_script_with_dom_host(&mut realm, &mut host, "document.getElementById('root').outerHTML")?;
+    let outer = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.getElementById('root').outerHTML",
+    )?;
     assert_eq!(
       get_string(realm.heap(), outer),
       r#"<div id="root"><p>one</p><p>two</p></div>"#
@@ -16908,7 +17317,10 @@ mod tests {
     )?;
     assert_eq!(result, Value::Undefined);
 
-    let target = host.dom().get_element_by_id("target").expect("missing #target");
+    let target = host
+      .dom()
+      .get_element_by_id("target")
+      .expect("missing #target");
     assert_eq!(host.dom().inner_html(target).unwrap(), "<b>hi</b>");
 
     let err_name = exec_script_with_dom_host(
@@ -16936,7 +17348,10 @@ mod tests {
       "document.getElementById('target').insertAdjacentText('afterbegin', 'x')",
     )?;
 
-    let target = host.dom().get_element_by_id("target").expect("missing #target");
+    let target = host
+      .dom()
+      .get_element_by_id("target")
+      .expect("missing #target");
     assert_eq!(host.dom().inner_html(target).unwrap(), "x");
     Ok(())
   }
@@ -17102,7 +17517,10 @@ mod tests {
     assert_eq!(ok, Value::Bool(true));
 
     let root = host.dom().get_element_by_id("root").expect("missing #root");
-    assert_eq!(host.dom().inner_html(root).unwrap(), r#"<b id="other"></b>"#);
+    assert_eq!(
+      host.dom().inner_html(root).unwrap(),
+      r#"<b id="other"></b>"#
+    );
 
     Ok(())
   }
@@ -17255,7 +17673,10 @@ mod tests {
     assert_eq!(ok, Value::Bool(true));
 
     let root = host.dom().get_element_by_id("root").expect("missing #root");
-    assert_eq!(host.dom().inner_html(root).unwrap(), r#"<span id="b"></span>"#);
+    assert_eq!(
+      host.dom().inner_html(root).unwrap(),
+      r#"<span id="b"></span>"#
+    );
 
     Ok(())
   }
@@ -17574,8 +17995,8 @@ mod tests {
 
       let mut js_options = JsExecutionOptions::default();
       js_options.max_vm_heap_bytes = Some(max_bytes);
-      let mut config = WindowRealmConfig::new("https://example.com/")
-        .with_js_execution_options(js_options);
+      let mut config =
+        WindowRealmConfig::new("https://example.com/").with_js_execution_options(js_options);
       config.console_sink = Some(sink.clone());
 
       let res = WindowRealm::new(config);
@@ -17673,7 +18094,9 @@ mod tests {
           Value::Symbol(_) => CapturedConsoleArg::Symbol,
         })
         .collect();
-      captured_for_sink.lock().push(CapturedConsoleCall { level, args });
+      captured_for_sink
+        .lock()
+        .push(CapturedConsoleCall { level, args });
     });
 
     let mut config = WindowRealmConfig::new(url);

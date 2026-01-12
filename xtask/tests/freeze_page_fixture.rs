@@ -96,12 +96,18 @@ fn planned_prefetch_assets_command_includes_prefetch_scripts_when_enabled() {
     cmd.args
   );
   assert!(
-    cmd.args.iter().any(|arg| arg == "--prefetch-css-url-assets"),
+    cmd
+      .args
+      .iter()
+      .any(|arg| arg == "--prefetch-css-url-assets"),
     "expected command to enable --prefetch-css-url-assets; got: {:?}",
     cmd.args
   );
   assert!(
-    cmd.args.iter().any(|arg| arg == "--disk-cache-allow-no-store"),
+    cmd
+      .args
+      .iter()
+      .any(|arg| arg == "--disk-cache-allow-no-store"),
     "expected command to include --disk-cache-allow-no-store; got: {:?}",
     cmd.args
   );

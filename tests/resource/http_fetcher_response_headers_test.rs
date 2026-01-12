@@ -1,6 +1,6 @@
+use crate::test_support;
 use fastrender::resource::HttpFetcher;
 use fastrender::ResourceFetcher;
-use crate::test_support;
 
 use std::io;
 use std::io::Read;
@@ -95,11 +95,15 @@ fn http_fetcher_captures_full_response_headers() {
     .as_ref()
     .expect("expected response headers for http:// fetch");
   assert!(
-    raw.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-test")),
+    raw
+      .iter()
+      .any(|(name, _)| name.eq_ignore_ascii_case("x-test")),
     "expected raw header list to include X-Test"
   );
   assert!(
-    raw.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-other")),
+    raw
+      .iter()
+      .any(|(name, _)| name.eq_ignore_ascii_case("x-other")),
     "expected raw header list to include X-Other"
   );
 
@@ -110,7 +114,8 @@ fn http_fetcher_captures_full_response_headers() {
   // Duplicate headers should be preserved (notably Set-Cookie).
   assert_eq!(res.header_values("set-cookie"), vec!["a=1", "b=2"]);
   assert_eq!(
-    raw.iter()
+    raw
+      .iter()
       .filter(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
       .count(),
     2,

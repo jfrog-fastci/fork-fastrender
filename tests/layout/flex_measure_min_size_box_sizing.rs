@@ -47,7 +47,10 @@ fn flex_measure_min_height_border_box_does_not_double_apply_padding() {
   let fragment = fc
     .layout(
       &container,
-      &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Definite(200.0)),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(200.0),
+        AvailableSpace::Definite(200.0),
+      ),
     )
     .expect("layout should succeed");
 

@@ -4,21 +4,30 @@ use fastrender::css::types::{Declaration, PropertyName, PropertyValue};
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::position_try::PositionTryRegistry;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
+use fastrender::style::position_try::PositionTryRegistry;
 use fastrender::style::types::{AlignItems, PositionAnchor, PositionArea, WritingMode};
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::ComputedStyle;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   fragment.iter_fragments().find(|node| match &node.content {
     FragmentContent::Block { box_id: Some(id) } => *id == box_id,
-    FragmentContent::Inline { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Text { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    FragmentContent::Inline {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Text {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   })
 }
@@ -58,11 +67,18 @@ fn position_area_block_start_places_above_anchor_and_centers_inline() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 200;
 
   let fc = BlockFormattingContext::new();
@@ -134,11 +150,17 @@ fn position_area_anchor_center_overrides_track_alignment() {
     style
   };
 
-  let mut default_overlay =
-    BoxNode::new_block(Arc::new(overlay_style(false)), FormattingContextType::Block, vec![]);
+  let mut default_overlay = BoxNode::new_block(
+    Arc::new(overlay_style(false)),
+    FormattingContextType::Block,
+    vec![],
+  );
   default_overlay.id = default_overlay_id;
-  let mut centered_overlay =
-    BoxNode::new_block(Arc::new(overlay_style(true)), FormattingContextType::Block, vec![]);
+  let mut centered_overlay = BoxNode::new_block(
+    Arc::new(overlay_style(true)),
+    FormattingContextType::Block,
+    vec![],
+  );
   centered_overlay.id = centered_overlay_id;
 
   let mut container = BoxNode::new_block(
@@ -225,11 +247,18 @@ fn position_area_flip_block_try_fallback_switches_to_block_end() {
   overlay_style.height = Some(Length::px(20.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 201;
 
   let fc = BlockFormattingContext::new();
@@ -301,11 +330,18 @@ fn position_area_position_try_rule_changes_area_across_candidates() {
   overlay_style.height = Some(Length::px(20.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 203;
 
   let fc = BlockFormattingContext::new();
@@ -366,11 +402,18 @@ fn position_area_vertical_rl_block_start_places_on_block_start_side() {
   overlay_style.height = Some(Length::px(10.0));
   overlay_style.width_keyword = None;
   overlay_style.height_keyword = None;
-  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  let mut overlay = BoxNode::new_block(
+    Arc::new(overlay_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   overlay.id = overlay_id;
 
-  let mut container =
-    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
   container.id = 202;
 
   let fc = BlockFormattingContext::new();

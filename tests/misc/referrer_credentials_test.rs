@@ -1,4 +1,6 @@
-use fastrender::resource::{FetchDestination, FetchRequest, HttpFetcher, ReferrerPolicy, ResourceFetcher};
+use fastrender::resource::{
+  FetchDestination, FetchRequest, HttpFetcher, ReferrerPolicy, ResourceFetcher,
+};
 use std::ffi::OsString;
 
 struct EnvVarGuard {

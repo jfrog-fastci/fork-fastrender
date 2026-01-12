@@ -88,8 +88,11 @@ fn justify_content_flex_start_row_reverse_is_not_double_inverted() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let mut container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let mut container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
   container.id = 100;
 
   let fc = FlexFormattingContext::new();
@@ -182,8 +185,11 @@ fn justify_content_flex_start_rtl_row_is_not_double_inverted() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -218,8 +224,11 @@ fn justify_content_flex_start_column_reverse_is_not_double_inverted() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -252,8 +261,11 @@ fn justify_content_flex_end_rtl_row_is_not_double_inverted() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -285,8 +297,11 @@ fn justify_content_flex_end_column_reverse_is_not_double_inverted() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -319,8 +334,11 @@ fn justify_content_flex_start_rtl_row_reverse_is_not_double_inverted() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -353,8 +371,11 @@ fn justify_content_flex_end_rtl_row_reverse_is_not_double_inverted() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -387,8 +408,11 @@ fn justify_content_flex_start_vertical_rl_column_aligns_to_block_start_edge() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -421,8 +445,11 @@ fn justify_content_flex_end_vertical_rl_column_aligns_to_block_end_edge() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -455,8 +482,11 @@ fn justify_content_flex_start_vertical_rl_column_reverse_aligns_to_block_end_edg
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -489,8 +519,11 @@ fn justify_content_flex_end_vertical_rl_column_reverse_aligns_to_block_start_edg
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -523,8 +556,11 @@ fn justify_content_flex_start_vertical_lr_column_aligns_to_block_start_edge() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -557,8 +593,11 @@ fn justify_content_flex_end_vertical_lr_column_aligns_to_block_end_edge() {
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -591,8 +630,11 @@ fn justify_content_flex_start_vertical_lr_column_reverse_aligns_to_block_end_edg
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -625,8 +667,11 @@ fn justify_content_flex_end_vertical_lr_column_reverse_aligns_to_block_start_edg
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -659,8 +704,11 @@ fn justify_content_flex_start_vertical_rl_row_reverse_aligns_to_inline_end_edge(
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -693,8 +741,11 @@ fn justify_content_flex_end_vertical_rl_row_reverse_aligns_to_inline_start_edge(
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   child.id = 1;
 
-  let container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
 
   let fc = FlexFormattingContext::new();
   let fragment = fc

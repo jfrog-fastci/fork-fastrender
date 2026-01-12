@@ -129,10 +129,12 @@ fn select_picture_source<'a>(
 }
 
 fn descriptor_kind(candidates: &[SrcsetCandidate]) -> DescriptorKind {
-  if candidates
-    .iter()
-    .any(|c| matches!(c.descriptor, SrcsetDescriptor::Width(_) | SrcsetDescriptor::WidthHeight { .. }))
-  {
+  if candidates.iter().any(|c| {
+    matches!(
+      c.descriptor,
+      SrcsetDescriptor::Width(_) | SrcsetDescriptor::WidthHeight { .. }
+    )
+  }) {
     DescriptorKind::Width
   } else {
     DescriptorKind::Density
@@ -245,9 +247,9 @@ fn select_from_srcset<'a>(
   let include_default_source = if kind == DescriptorKind::Density {
     let src = default_source.unwrap_or("");
     !trim_ascii_whitespace(src).is_empty()
-      && !srcset.iter().any(|candidate| {
-        matches!(candidate.descriptor, SrcsetDescriptor::Density(d) if d == 1.0)
-      })
+      && !srcset
+        .iter()
+        .any(|candidate| matches!(candidate.descriptor, SrcsetDescriptor::Density(d) if d == 1.0))
   } else {
     false
   };

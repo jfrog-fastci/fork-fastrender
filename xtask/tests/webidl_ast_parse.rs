@@ -52,7 +52,8 @@ fn parses_complex_operation_signature() {
 
 #[test]
 fn parses_typedef_union_with_generics() {
-  let idl = "typedef (sequence<sequence<ByteString>> or record<ByteString, ByteString>) HeadersInit;";
+  let idl =
+    "typedef (sequence<sequence<ByteString>> or record<ByteString, ByteString>) HeadersInit;";
   let parsed = parse_webidl(idl).unwrap();
   let td = match parsed.definitions.first() {
     Some(ParsedDefinition::Typedef(td)) => td,

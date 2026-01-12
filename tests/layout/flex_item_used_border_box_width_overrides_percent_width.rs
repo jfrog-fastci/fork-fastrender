@@ -26,8 +26,16 @@ fn flex_item_used_border_box_width_overrides_percent_width_for_descendant_layout
   inner_style.width = Some(Length::percent(100.0));
   inner_style.height = Some(Length::px(10.0));
 
-  let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, Vec::new());
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![inner]);
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Block,
+    Vec::new(),
+  );
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -60,4 +68,3 @@ fn flex_item_used_border_box_width_overrides_percent_width_for_descendant_layout
     inner_fragment.bounds.width()
   );
 }
-

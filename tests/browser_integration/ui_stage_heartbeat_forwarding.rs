@@ -4,8 +4,8 @@ use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::messages::{
   NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
-use fastrender::ui::RenderWorker;
 use fastrender::ui::spawn_ui_worker;
+use fastrender::ui::RenderWorker;
 use fastrender::{PreparedPaintOptions, RenderOptions};
 use tempfile::tempdir;
 
@@ -81,7 +81,10 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
     messages
       .iter()
       .filter_map(|msg| match msg {
-        WorkerToUi::Stage { tab_id: msg_tab, stage } if *msg_tab == tab_id => Some(*stage),
+        WorkerToUi::Stage {
+          tab_id: msg_tab,
+          stage,
+        } if *msg_tab == tab_id => Some(*stage),
         _ => None,
       })
       .collect::<Vec<_>>()
@@ -157,9 +160,7 @@ fn stage_heartbeats_forwarded_from_ui_worker_for_navigation_and_repaints() {
     .split();
   let tab_id = TabId::new();
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("ViewportChanged");
@@ -217,10 +218,7 @@ fn stage_heartbeats_forwarded_from_ui_worker_for_navigation_and_repaints() {
   let stages: Vec<StageHeartbeat> = messages
     .iter()
     .filter_map(|msg| match msg {
-      WorkerToUi::Stage {
-        tab_id: got,
-        stage,
-      } if *got == tab_id => Some(*stage),
+      WorkerToUi::Stage { tab_id: got, stage } if *got == tab_id => Some(*stage),
       _ => None,
     })
     .collect();
@@ -261,7 +259,10 @@ fn stage_heartbeats_forwarded_from_ui_worker_for_navigation_and_repaints() {
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
   }
-  assert!(saw_frame_after_input, "expected FrameReady after PointerMove");
+  assert!(
+    saw_frame_after_input,
+    "expected FrameReady after PointerMove"
+  );
   assert!(
     !stages_after_input.is_empty(),
     "expected stage heartbeats during PointerMove repaint"
@@ -380,10 +381,7 @@ fn stage_heartbeats_forwarded_from_history_ui_worker_for_navigation_and_repaints
   let stages: Vec<StageHeartbeat> = messages
     .iter()
     .filter_map(|msg| match msg {
-      WorkerToUi::Stage {
-        tab_id: got,
-        stage,
-      } if *got == tab_id => Some(*stage),
+      WorkerToUi::Stage { tab_id: got, stage } if *got == tab_id => Some(*stage),
       _ => None,
     })
     .collect();

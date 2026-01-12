@@ -62,7 +62,11 @@ fn flex_column_align_items_center_auto_width_wraps_and_clamps_to_available_inlin
   item_style.display = Display::Block;
   item_style.width = None;
   item_style.width_keyword = None;
-  let mut item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![inline]);
+  let mut item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![inline],
+  );
   item.id = 2;
 
   let container = BoxNode::new_block(

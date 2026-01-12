@@ -56,4 +56,3 @@ fn flex_intrinsic_margins_vertical_writing_mode_include_top_bottom() {
     "expected inline-size≈81, got {inline}"
   );
 }
-

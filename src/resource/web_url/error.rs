@@ -74,9 +74,16 @@ impl std::fmt::Display for WebUrlError {
       WebUrlError::InvalidBase { base, source } => {
         write!(f, "invalid base URL {base:?}: {source}")
       }
-      WebUrlError::Parse { input, base, source } => {
+      WebUrlError::Parse {
+        input,
+        base,
+        source,
+      } => {
         if let Some(base) = base {
-          write!(f, "failed to parse URL {input:?} with base {base:?}: {source}")
+          write!(
+            f,
+            "failed to parse URL {input:?} with base {base:?}: {source}"
+          )
         } else {
           write!(f, "failed to parse URL {input:?}: {source}")
         }

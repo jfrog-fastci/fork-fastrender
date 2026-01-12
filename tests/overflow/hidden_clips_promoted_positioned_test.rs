@@ -59,4 +59,3 @@ fn overflow_hidden_clips_promoted_positioned_descendants() {
   assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));
 }
-

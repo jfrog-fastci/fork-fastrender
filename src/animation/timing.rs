@@ -99,7 +99,11 @@ pub struct DocumentTimeline {
 impl DocumentTimeline {
   pub fn new(origin_time: f64) -> Self {
     Self {
-      origin_time: if origin_time.is_finite() { origin_time } else { 0.0 },
+      origin_time: if origin_time.is_finite() {
+        origin_time
+      } else {
+        0.0
+      },
       current_time: TimeValue::UNRESOLVED,
       active: origin_time.is_finite(),
     }
@@ -263,7 +267,8 @@ impl AnimationTimingState {
         // resolve a start time.
         return;
       };
-      let start_time = timeline_time.checked_sub(self.hold_time.checked_div_f64(self.playback_rate));
+      let start_time =
+        timeline_time.checked_sub(self.hold_time.checked_div_f64(self.playback_rate));
       if start_time.is_resolved() {
         self.start_time = start_time;
         self.hold_time = TimeValue::UNRESOLVED;
@@ -273,7 +278,10 @@ impl AnimationTimingState {
 
     // Start playing from current time 0 when we have no existing timing
     // information.
-    if self.start_time.is_unresolved() && self.hold_time.is_unresolved() && timeline_time.is_resolved() {
+    if self.start_time.is_unresolved()
+      && self.hold_time.is_unresolved()
+      && timeline_time.is_resolved()
+    {
       self.start_time = timeline_time;
     }
   }
@@ -291,8 +299,10 @@ impl AnimationTimingState {
       return;
     }
 
-    let is_playing =
-      self.hold_time.is_unresolved() && self.start_time.is_resolved() && timeline_time.is_resolved() && self.playback_rate != 0.0;
+    let is_playing = self.hold_time.is_unresolved()
+      && self.start_time.is_resolved()
+      && timeline_time.is_resolved()
+      && self.playback_rate != 0.0;
 
     if is_playing {
       // start_time = timeline_time - seek_time / playback_rate
@@ -317,7 +327,12 @@ impl AnimationTimingState {
   /// `timeline_is_monotonic` is `true` for document timelines. For non-monotonic
   /// timelines (e.g. scroll-driven timelines), WA1 specifies additional
   /// machinery involving pending playback rates which is not implemented yet.
-  pub fn set_playback_rate(&mut self, new_rate: f64, timeline_time: TimeValue, timeline_is_monotonic: bool) {
+  pub fn set_playback_rate(
+    &mut self,
+    new_rate: f64,
+    timeline_time: TimeValue,
+    timeline_is_monotonic: bool,
+  ) {
     self.timeline_time = timeline_time;
     if !new_rate.is_finite() {
       return;
@@ -500,7 +515,9 @@ mod tests {
     };
     state.set_timeline_time(TimeValue::resolved(12.0));
 
-    state.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ false);
+    state.update_finished_state(
+      /* associated_effect_end */ 10.0, /* did_seek */ false,
+    );
 
     assert_eq!(state.hold_time(), TimeValue::resolved(10.0));
     assert_eq!(state.previous_current_time(), TimeValue::resolved(10.0));
@@ -515,7 +532,9 @@ mod tests {
     };
     state.set_timeline_time(TimeValue::resolved(12.0));
 
-    state.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ false);
+    state.update_finished_state(
+      /* associated_effect_end */ 10.0, /* did_seek */ false,
+    );
 
     assert_eq!(state.hold_time(), TimeValue::resolved(0.0));
     assert_eq!(state.previous_current_time(), TimeValue::resolved(0.0));
@@ -530,7 +549,9 @@ mod tests {
     };
     state.set_timeline_time(TimeValue::resolved(12.0));
 
-    state.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ true);
+    state.update_finished_state(
+      /* associated_effect_end */ 10.0, /* did_seek */ true,
+    );
 
     assert_eq!(state.hold_time(), TimeValue::resolved(12.0));
     assert_eq!(state.previous_current_time(), TimeValue::resolved(12.0));
@@ -546,7 +567,9 @@ mod tests {
     };
     positive.set_timeline_time(TimeValue::resolved(12.0));
 
-    positive.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ false);
+    positive.update_finished_state(
+      /* associated_effect_end */ 10.0, /* did_seek */ false,
+    );
     assert_eq!(positive.hold_time(), TimeValue::resolved(13.0));
 
     let mut negative = AnimationTimingState {
@@ -557,7 +580,9 @@ mod tests {
     };
     negative.set_timeline_time(TimeValue::resolved(12.0));
 
-    negative.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ false);
+    negative.update_finished_state(
+      /* associated_effect_end */ 10.0, /* did_seek */ false,
+    );
     assert_eq!(negative.hold_time(), TimeValue::resolved(-5.0));
   }
 }

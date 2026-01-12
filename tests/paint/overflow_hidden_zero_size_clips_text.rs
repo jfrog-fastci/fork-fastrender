@@ -45,4 +45,3 @@ fn overflow_hidden_with_zero_sized_padding_box_clips_descendants() {
 
   assert_eq!(pixel(&pixmap, 2, 2), (255, 255, 255, 255));
 }
-

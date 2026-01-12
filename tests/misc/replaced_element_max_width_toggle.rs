@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 const ENV_COMPAT_REPLACED_MAX_WIDTH_100: &str = "FASTR_COMPAT_REPLACED_MAX_WIDTH_100";
-const REPLACED_ELEMENTS: [&str; 7] = ["img", "video", "audio", "canvas", "iframe", "embed", "object"];
+const REPLACED_ELEMENTS: [&str; 7] = [
+  "img", "video", "audio", "canvas", "iframe", "embed", "object",
+];
 
 fn element(tag_name: &str) -> DomNode {
   DomNode {

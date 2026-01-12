@@ -38,17 +38,20 @@ fn take_sequence<'a>(
 
   let out: Vec<String> = rt.with_stack_roots(&[v0], |rt| {
     let mut iterator_record = rt.get_iterator(host, v0)?;
-    rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
-      let mut out = Vec::<String>::new();
-      while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
-        if out.len() >= rt.limits().max_sequence_length {
-          return Err(rt.throw_range_error("sequence exceeds maximum length"));
+    rt.with_stack_roots(
+      &[iterator_record.iterator, iterator_record.next_method],
+      |rt| {
+        let mut out = Vec::<String>::new();
+        while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
+          if out.len() >= rt.limits().max_sequence_length {
+            return Err(rt.throw_range_error("sequence exceeds maximum length"));
+          }
+          let s = rt.to_string(host, next)?;
+          out.push(rt.js_string_to_rust_string(s)?);
         }
-        let s = rt.to_string(host, next)?;
-        out.push(rt.js_string_to_rust_string(s)?);
-      }
-      Ok(out)
-    })
+        Ok(out)
+      },
+    )
   })?;
 
   host.last = out;
@@ -83,7 +86,9 @@ fn iterator_next_call(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("iterator.next called with non-object receiver"));
+    return Err(VmError::TypeError(
+      "iterator.next called with non-object receiver",
+    ));
   };
 
   let items_key = alloc_key(scope, "items")?;
@@ -185,7 +190,9 @@ fn make_custom_iterator(
     &[a, Value::Number(2.0), Value::Bool(true)],
   )?;
   let Value::Object(items_obj) = items else {
-    return Err(VmError::InvariantViolation("Array constructor returned non-object"));
+    return Err(VmError::InvariantViolation(
+      "Array constructor returned non-object",
+    ));
   };
   scope.push_root(items)?;
 
@@ -269,7 +276,11 @@ fn make_custom_iterator(
   Ok(Value::Object(iterator_obj))
 }
 
-fn assert_range_error(scope: &mut Scope<'_>, realm: &vm_js::Realm, err: VmError) -> Result<(), VmError> {
+fn assert_range_error(
+  scope: &mut Scope<'_>,
+  realm: &vm_js::Realm,
+  err: VmError,
+) -> Result<(), VmError> {
   let Some(thrown) = err.thrown_value() else {
     return Err(VmError::TypeError("expected thrown JS value"));
   };
@@ -336,11 +347,23 @@ fn vmjs_sequence_domstring_via_iterator_protocol_and_limits() -> Result<(), VmEr
     &[Value::String(s_x), Value::Number(2.0), Value::Bool(true)],
   )?;
   scope.push_root(arr)?;
-  vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, take_fn, Value::Undefined, &[arr])?;
+  vm.call_with_host_and_hooks(
+    &mut host,
+    &mut scope,
+    &mut hooks,
+    take_fn,
+    Value::Undefined,
+    &[arr],
+  )?;
   assert_eq!(host.last, vec!["x", "2", "true"]);
 
   // --- custom iterator input ------------------------------------------------
-  let custom_iter = make_custom_iterator(vm, &mut scope, intr.object_prototype(), intr.well_known_symbols().iterator)?;
+  let custom_iter = make_custom_iterator(
+    vm,
+    &mut scope,
+    intr.object_prototype(),
+    intr.well_known_symbols().iterator,
+  )?;
   scope.push_root(custom_iter)?;
   vm.call_with_host_and_hooks(
     &mut host,
@@ -355,7 +378,14 @@ fn vmjs_sequence_domstring_via_iterator_protocol_and_limits() -> Result<(), VmEr
   // --- limit enforcement ----------------------------------------------------
   state.limits.max_sequence_length = 2;
   let err = vm
-    .call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, take_fn, Value::Undefined, &[arr])
+    .call_with_host_and_hooks(
+      &mut host,
+      &mut scope,
+      &mut hooks,
+      take_fn,
+      Value::Undefined,
+      &[arr],
+    )
     .unwrap_err();
   assert_range_error(&mut scope, realm, err)?;
 

@@ -237,7 +237,10 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
 
     let mut current = obj;
     for _ in 0..MAX_THROWN_OBJECT_PROTOTYPE_CHAIN {
-      match scope.heap().object_get_own_data_property_value(current, &key) {
+      match scope
+        .heap()
+        .object_get_own_data_property_value(current, &key)
+      {
         Ok(Some(Value::String(s))) => {
           let js = scope.heap().get_string(s).ok()?;
           if js.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
@@ -293,7 +296,10 @@ fn get_thrown_stack_property(heap: &mut Heap, value: Value) -> Option<String> {
 
   let mut current = obj;
   for _ in 0..MAX_THROWN_OBJECT_PROTOTYPE_CHAIN {
-    match scope.heap().object_get_own_data_property_value(current, &key) {
+    match scope
+      .heap()
+      .object_get_own_data_property_value(current, &key)
+    {
       Ok(Some(Value::String(s))) => {
         let js = scope.heap().get_string(s).ok()?;
         if js.len_code_units() > MAX_STACK_PROPERTY_CODE_UNITS {
@@ -346,7 +352,8 @@ pub(crate) fn vm_error_to_string(heap: &mut Heap, err: VmError) -> String {
   }
 
   if let Some(value) = err.thrown_value() {
-    let mut msg = format_thrown_value(heap, value).unwrap_or_else(|| "uncaught exception".to_string());
+    let mut msg =
+      format_thrown_value(heap, value).unwrap_or_else(|| "uncaught exception".to_string());
 
     let stack = err
       .thrown_stack()
@@ -372,7 +379,10 @@ pub(crate) fn vm_error_to_string(heap: &mut Heap, err: VmError) -> String {
 ///
 /// Unlike [`vm_error_to_string`], this preserves the stack as a separate field so callers can record
 /// it in structured diagnostics.
-pub(crate) fn vm_error_to_message_and_stack(heap: &mut Heap, err: VmError) -> (String, Option<String>) {
+pub(crate) fn vm_error_to_message_and_stack(
+  heap: &mut Heap,
+  err: VmError,
+) -> (String, Option<String>) {
   if let VmError::Termination(term) = &err {
     let msg = err.to_string();
     let stack = format_stack_trace_limited(&term.stack);
@@ -427,8 +437,7 @@ pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) 
     if idx > 0 {
       push_truncated(&mut out, " ", MAX_CONSOLE_MESSAGE_BYTES);
     }
-    let formatted =
-      format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
+    let formatted = format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
     push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
     if out.len() >= MAX_CONSOLE_MESSAGE_BYTES {
       break;
@@ -577,7 +586,9 @@ mod tests {
     let name_s = scope.alloc_string("Error").expect("alloc name");
     scope.push_root(Value::String(name_s)).expect("root name");
     let name_key_s = scope.alloc_string("name").expect("alloc key");
-    scope.push_root(Value::String(name_key_s)).expect("root key");
+    scope
+      .push_root(Value::String(name_key_s))
+      .expect("root key");
     let name_key = PropertyKey::from_string(name_key_s);
     scope
       .define_property(
@@ -595,7 +606,9 @@ mod tests {
       .expect("define prototype name");
 
     let message_s = scope.alloc_string("boom").expect("alloc message");
-    scope.push_root(Value::String(message_s)).expect("root message");
+    scope
+      .push_root(Value::String(message_s))
+      .expect("root message");
     let msg_key_s = scope.alloc_string("message").expect("alloc key");
     scope.push_root(Value::String(msg_key_s)).expect("root key");
     let msg_key = PropertyKey::from_string(msg_key_s);
@@ -694,7 +707,9 @@ mod tests {
   fn syntax_error_is_formatted_without_debug_noise() {
     let mut realm =
       WindowRealm::new(WindowRealmConfig::new("https://example.com/")).expect("create realm");
-    let err = realm.exec_script("function(").expect_err("expected syntax error");
+    let err = realm
+      .exec_script("function(")
+      .expect_err("expected syntax error");
     let msg = vm_error_to_string(realm.heap_mut(), err);
     assert!(
       msg.starts_with("syntax error:"),
@@ -710,7 +725,9 @@ mod tests {
   fn syntax_error_output_is_bounded_and_truncated() {
     let mut realm =
       WindowRealm::new(WindowRealmConfig::new("https://example.com/")).expect("create realm");
-    let err = realm.exec_script("function(").expect_err("expected syntax error");
+    let err = realm
+      .exec_script("function(")
+      .expect_err("expected syntax error");
     let VmError::Syntax(mut diags) = err else {
       panic!("expected VmError::Syntax");
     };
@@ -829,7 +846,9 @@ mod tests {
     let name_s = scope.alloc_string("foo").expect("alloc name");
     scope.push_root(Value::String(name_s)).expect("root name");
     let name_key_s = scope.alloc_string("name").expect("alloc key");
-    scope.push_root(Value::String(name_key_s)).expect("root key");
+    scope
+      .push_root(Value::String(name_key_s))
+      .expect("root key");
     let name_key = PropertyKey::from_string(name_key_s);
     scope
       .define_property(

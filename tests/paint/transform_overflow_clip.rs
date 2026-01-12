@@ -41,4 +41,3 @@ fn overflow_clip_is_transformed_with_stacking_context() {
   // Pixel (50, 25) is inside the diamond and should be clipped in (blue).
   assert_eq!(pixel(&pixmap, 50, 25), [0, 0, 255, 255]);
 }
-

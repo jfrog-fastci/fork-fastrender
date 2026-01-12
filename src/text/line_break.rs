@@ -333,12 +333,12 @@ pub fn find_break_opportunities(text: &str) -> Vec<BreakOpportunity> {
     //
     // Keep a mandatory break at the end only when the final character itself is a newline-like
     // codepoint.
-    let break_type = if byte_offset == text_len && break_type == BreakType::Mandatory && !ends_with_newline
-    {
-      BreakType::Allowed
-    } else {
-      break_type
-    };
+    let break_type =
+      if byte_offset == text_len && break_type == BreakType::Mandatory && !ends_with_newline {
+        BreakType::Allowed
+      } else {
+        break_type
+      };
 
     opportunities.push(BreakOpportunity::with_hyphen_and_kind(
       byte_offset,
@@ -393,14 +393,17 @@ fn with_icu_word_segmenter(f: impl FnOnce(&WordSegmenter)) {
   })
 }
 
-fn sort_and_dedup_break_opportunities(mut opportunities: Vec<BreakOpportunity>) -> Vec<BreakOpportunity> {
+fn sort_and_dedup_break_opportunities(
+  mut opportunities: Vec<BreakOpportunity>,
+) -> Vec<BreakOpportunity> {
   opportunities.sort_by(|a, b| a.byte_offset.cmp(&b.byte_offset));
 
   let mut deduped: Vec<BreakOpportunity> = Vec::with_capacity(opportunities.len());
   for opportunity in opportunities {
     if let Some(last) = deduped.last_mut() {
       if last.byte_offset == opportunity.byte_offset {
-        if opportunity.break_type == BreakType::Mandatory && last.break_type != BreakType::Mandatory {
+        if opportunity.break_type == BreakType::Mandatory && last.break_type != BreakType::Mandatory
+        {
           last.break_type = BreakType::Mandatory;
           last.kind = BreakOpportunityKind::Normal;
         }

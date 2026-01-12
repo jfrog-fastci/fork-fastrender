@@ -281,7 +281,10 @@ fn collect_pair_iterator(
     };
     let k = vm.get(scope, pair_obj, key0)?;
     let v = vm.get(scope, pair_obj, key1)?;
-    out.push((value_to_rust_string(scope, k)?, value_to_rust_string(scope, v)?));
+    out.push((
+      value_to_rust_string(scope, k)?,
+      value_to_rust_string(scope, v)?,
+    ));
   }
   Ok(out)
 }
@@ -314,14 +317,18 @@ fn generated_webidl_bindings_install_iterable_url_search_params_in_realm() -> Re
   let ctor = vm.get(&mut scope, global, ctor_key)?;
   scope.push_root(ctor)?;
   let Value::Object(ctor_obj) = ctor else {
-    return Err(VmError::TypeError("URLSearchParams constructor is not an object"));
+    return Err(VmError::TypeError(
+      "URLSearchParams constructor is not an object",
+    ));
   };
 
   let proto_key = alloc_key(&mut scope, "prototype")?;
   let proto = vm.get(&mut scope, ctor_obj, proto_key)?;
   scope.push_root(proto)?;
   let Value::Object(proto_obj) = proto else {
-    return Err(VmError::TypeError("URLSearchParams.prototype is not an object"));
+    return Err(VmError::TypeError(
+      "URLSearchParams.prototype is not an object",
+    ));
   };
 
   // typeof URLSearchParams.prototype[Symbol.iterator] === "function"
@@ -329,12 +336,16 @@ fn generated_webidl_bindings_install_iterable_url_search_params_in_realm() -> Re
   let sym_iter_key = PropertyKey::from_symbol(sym_iter);
   let iter = vm.get(&mut scope, proto_obj, sym_iter_key)?;
   let Value::Object(iter_obj) = iter else {
-    return Err(VmError::TypeError("URLSearchParams.prototype[Symbol.iterator] is not an object"));
+    return Err(VmError::TypeError(
+      "URLSearchParams.prototype[Symbol.iterator] is not an object",
+    ));
   };
   scope
     .heap()
     .get_function_native_slots(iter_obj)
-    .map_err(|_| VmError::TypeError("URLSearchParams.prototype[Symbol.iterator] is not callable"))?;
+    .map_err(|_| {
+      VmError::TypeError("URLSearchParams.prototype[Symbol.iterator] is not callable")
+    })?;
 
   // URLSearchParams.prototype[Symbol.iterator] should alias `entries`.
   let entries_key = alloc_key(&mut scope, "entries")?;
@@ -346,14 +357,20 @@ fn generated_webidl_bindings_install_iterable_url_search_params_in_realm() -> Re
   let for_each_key = alloc_key(&mut scope, "forEach")?;
   let for_each = vm.get(&mut scope, proto_obj, for_each_key)?;
   let Value::Object(for_each_obj) = for_each else {
-    return Err(VmError::TypeError("URLSearchParams.prototype.forEach is not an object"));
+    return Err(VmError::TypeError(
+      "URLSearchParams.prototype.forEach is not an object",
+    ));
   };
   let for_each_len = vm.get(&mut scope, for_each_obj, length_key)?;
   assert_eq!(for_each_len, Value::Number(1.0));
 
   let keys_key = alloc_key(&mut scope, "keys")?;
   let values_key = alloc_key(&mut scope, "values")?;
-  for (name, key) in [("entries", entries_key), ("keys", keys_key), ("values", values_key)] {
+  for (name, key) in [
+    ("entries", entries_key),
+    ("keys", keys_key),
+    ("values", values_key),
+  ] {
     let func = vm.get(&mut scope, proto_obj, key)?;
     let Value::Object(func_obj) = func else {
       return Err(VmError::TypeError("expected function object"));
@@ -367,9 +384,7 @@ fn generated_webidl_bindings_install_iterable_url_search_params_in_realm() -> Re
   scope.push_root(Value::Object(params_obj))?;
   let params = UrlSearchParams::parse("a=1&b=2", &host.limits)
     .expect("UrlSearchParams parse should succeed for fixed input");
-  host
-    .params
-    .insert(WeakGcObject::from(params_obj), params);
+  host.params.insert(WeakGcObject::from(params_obj), params);
   let params_val = Value::Object(params_obj);
 
   // Iterate keys/values/entries by repeatedly calling `.next()`.
@@ -380,21 +395,28 @@ fn generated_webidl_bindings_install_iterable_url_search_params_in_realm() -> Re
   let key1 = alloc_key(&mut scope, "1")?;
 
   let keys_method = vm.get(&mut scope, params_obj, keys_key)?;
-  let keys_iter = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, keys_method, params_val, &[])?;
-  let keys = collect_string_iterator(
-    &mut vm,
+  let keys_iter = vm.call_with_host_and_hooks(
+    &mut host,
     &mut scope,
     &mut hooks,
-    &mut host,
-    keys_iter,
-    next_key,
-    done_key,
-    value_key,
+    keys_method,
+    params_val,
+    &[],
+  )?;
+  let keys = collect_string_iterator(
+    &mut vm, &mut scope, &mut hooks, &mut host, keys_iter, next_key, done_key, value_key,
   )?;
   assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
 
   let values_method = vm.get(&mut scope, params_obj, values_key)?;
-  let values_iter = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, values_method, params_val, &[])?;
+  let values_iter = vm.call_with_host_and_hooks(
+    &mut host,
+    &mut scope,
+    &mut hooks,
+    values_method,
+    params_val,
+    &[],
+  )?;
   let values = collect_string_iterator(
     &mut vm,
     &mut scope,
@@ -408,22 +430,24 @@ fn generated_webidl_bindings_install_iterable_url_search_params_in_realm() -> Re
   assert_eq!(values, vec!["1".to_string(), "2".to_string()]);
 
   let iter_method = vm.get(&mut scope, params_obj, sym_iter_key)?;
-  let pairs_iter = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, iter_method, params_val, &[])?;
-  let pairs = collect_pair_iterator(
-    &mut vm,
+  let pairs_iter = vm.call_with_host_and_hooks(
+    &mut host,
     &mut scope,
     &mut hooks,
-    &mut host,
-    pairs_iter,
-    next_key,
-    done_key,
-    value_key,
-    key0,
+    iter_method,
+    params_val,
+    &[],
+  )?;
+  let pairs = collect_pair_iterator(
+    &mut vm, &mut scope, &mut hooks, &mut host, pairs_iter, next_key, done_key, value_key, key0,
     key1,
   )?;
   assert_eq!(
     pairs,
-    vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
+    vec![
+      ("a".to_string(), "1".to_string()),
+      ("b".to_string(), "2".to_string())
+    ]
   );
 
   drop(scope);

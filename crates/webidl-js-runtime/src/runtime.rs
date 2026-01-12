@@ -6,8 +6,8 @@
 //! layer the bindings-facing API on top.
 
 pub use webidl_bindings_core::runtime::{
-  interface_id_from_name, InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime,
-  WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
+  interface_id_from_name, InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind,
+  JsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
 };
 
 use webidl_vm_js::CallbackHandle;
@@ -23,12 +23,13 @@ use webidl_vm_js::CallbackHandle;
 /// The binding callbacks are expressed as plain function pointers rather than closures so they can
 /// take an explicit `&mut Host` parameter. This keeps the binding layer free of global state and
 /// avoids needing runtime-specific "host pointer" plumbing in generated code.
-pub type NativeHostFunction<R, Host> = fn(
-  rt: &mut R,
-  host: &mut Host,
-  this: <R as JsRuntime>::JsValue,
-  args: &[<R as JsRuntime>::JsValue],
-) -> Result<<R as JsRuntime>::JsValue, <R as JsRuntime>::Error>;
+pub type NativeHostFunction<R, Host> =
+  fn(
+    rt: &mut R,
+    host: &mut Host,
+    this: <R as JsRuntime>::JsValue,
+    args: &[<R as JsRuntime>::JsValue],
+  ) -> Result<<R as JsRuntime>::JsValue, <R as JsRuntime>::Error>;
 
 pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
   fn js_bool(&self, value: bool) -> Self::JsValue {
@@ -118,14 +119,20 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
   /// Root and return a WebIDL callback function handle.
   ///
   /// Generated bindings use this to pass callbacks to the host in a GC-safe way.
-  fn root_callback_function(&mut self, _value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+  fn root_callback_function(
+    &mut self,
+    _value: Self::JsValue,
+  ) -> Result<CallbackHandle, Self::Error> {
     Err(self.throw_type_error("Callback functions are not supported by this runtime"))
   }
 
   /// Root and return a WebIDL callback interface handle.
   ///
   /// Callback interfaces accept callable functions or objects with a callable `handleEvent` method.
-  fn root_callback_interface(&mut self, _value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+  fn root_callback_interface(
+    &mut self,
+    _value: Self::JsValue,
+  ) -> Result<CallbackHandle, Self::Error> {
     Err(self.throw_type_error("Callback interfaces are not supported by this runtime"))
   }
 

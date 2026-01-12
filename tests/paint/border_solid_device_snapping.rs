@@ -39,4 +39,3 @@ fn solid_border_edges_snap_to_device_pixels() {
     "expected border edge to snap and paint a fully covered pixel"
   );
 }
-

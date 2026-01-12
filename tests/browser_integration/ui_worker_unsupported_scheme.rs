@@ -4,7 +4,9 @@ use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
-use super::support::{create_tab_msg, drain_for, format_messages, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  create_tab_msg, drain_for, format_messages, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
+};
 
 #[test]
 fn ui_worker_rejects_unsupported_schemes_without_rendering_error_page() {
@@ -15,19 +17,28 @@ fn ui_worker_rejects_unsupported_schemes_without_rendering_error_page() {
     .split();
 
   let tab_id = TabId::new();
-  ui_tx.send(create_tab_msg(tab_id, None)).expect("create tab");
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("create tab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("viewport");
 
   let url = "javascript:alert(1)".to_string();
   ui_tx
-    .send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("navigate");
 
-  let Some(msg) = super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationFailed { url: failed, .. } if failed == &url)
-  }) else {
+  let Some(msg) = super::support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    DEFAULT_TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationFailed { url: failed, .. } if failed == &url),
+  ) else {
     panic!("timed out waiting for NavigationFailed for {url}");
   };
 
@@ -42,9 +53,9 @@ fn ui_worker_rejects_unsupported_schemes_without_rendering_error_page() {
   // Unsupported URL schemes should fail fast without rendering an `about:error` fallback page.
   let drained = drain_for(&ui_rx, Duration::from_millis(200));
   assert!(
-    !drained
-      .iter()
-      .any(|msg| matches!(msg, WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id)),
+    !drained.iter().any(
+      |msg| matches!(msg, WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id)
+    ),
     "expected no FrameReady after unsupported-scheme navigation; got:\n{}",
     format_messages(&drained)
   );
@@ -52,4 +63,3 @@ fn ui_worker_rejects_unsupported_schemes_without_rendering_error_page() {
   drop(ui_tx);
   join.join().expect("join ui worker");
 }
-

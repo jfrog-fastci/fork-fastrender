@@ -1,7 +1,9 @@
 use fastrender::api::{FastRender, FastRenderConfig, RenderOptions};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::error::{Error, Result};
-use fastrender::resource::{origin_from_url, DocumentOrigin, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+use fastrender::resource::{
+  origin_from_url, DocumentOrigin, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -24,9 +26,10 @@ struct RecordingRequestFetcher {
 
 impl RecordingRequestFetcher {
   fn with_entry(mut self, url: &str, bytes: Vec<u8>, content_type: &str) -> Self {
-    self
-      .responses
-      .insert(url.to_string(), (bytes, Some(content_type.to_string()), None));
+    self.responses.insert(
+      url.to_string(),
+      (bytes, Some(content_type.to_string()), None),
+    );
     self
   }
 
@@ -224,9 +227,8 @@ fn web_font_fetch_uses_document_referrer_for_inline_styles_even_with_base_href()
   let base_href = "https://b.test/base/";
   let font_url = "https://b.test/base/font.ttf";
 
-  let fetcher = Arc::new(
-    RecordingRequestFetcher::default().with_entry(font_url, font_bytes, "font/ttf"),
-  );
+  let fetcher =
+    Arc::new(RecordingRequestFetcher::default().with_entry(font_url, font_bytes, "font/ttf"));
 
   let toggles = RuntimeToggles::from_map(HashMap::from([
     ("FASTR_FETCH_LINK_CSS".to_string(), "1".to_string()),

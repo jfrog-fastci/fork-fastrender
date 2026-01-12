@@ -1,4 +1,6 @@
-use vm_js::{Heap, HeapLimits, Job, PropertyKey, Scope, Value, Vm, VmError, VmHostHooks, VmOptions};
+use vm_js::{
+  Heap, HeapLimits, Job, PropertyKey, Scope, Value, Vm, VmError, VmHostHooks, VmOptions,
+};
 use webidl_vm_js::{
   invoke_callback_function, invoke_callback_interface, to_callback_function, to_callback_interface,
 };

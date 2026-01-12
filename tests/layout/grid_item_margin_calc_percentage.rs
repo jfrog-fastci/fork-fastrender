@@ -64,4 +64,3 @@ fn grid_item_margin_left_calc_percentage_resolves_against_grid_area_width() {
   assert_approx(child.bounds.x(), 25.0, "grid item x offset");
   assert_approx(child.bounds.width(), 0.0, "grid item width");
 }
-

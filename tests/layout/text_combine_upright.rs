@@ -1,5 +1,5 @@
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::style::types::TextOrientation;
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{FastRender, FontConfig};
 
 fn collect_text(node: &FragmentNode, out: &mut String) {
@@ -98,7 +98,9 @@ fn text_combine_upright_is_measured_as_1em_square_with_centered_baseline() {
 
   let frag = find_first_text_fragment(&fragments.root, "12").expect("combined text fragment");
   let (baseline_offset, bounds) = match &frag.content {
-    FragmentContent::Text { baseline_offset, .. } => (*baseline_offset, frag.bounds),
+    FragmentContent::Text {
+      baseline_offset, ..
+    } => (*baseline_offset, frag.bounds),
     other => panic!("expected FragmentContent::Text, got {other:?}"),
   };
 
@@ -149,7 +151,9 @@ fn text_combine_upright_digits_combines_single_digit() {
   assert_eq!(style.text_orientation, TextOrientation::Upright);
 
   let (baseline_offset, bounds) = match &frag.content {
-    FragmentContent::Text { baseline_offset, .. } => (*baseline_offset, frag.bounds),
+    FragmentContent::Text {
+      baseline_offset, ..
+    } => (*baseline_offset, frag.bounds),
     other => panic!("expected FragmentContent::Text, got {other:?}"),
   };
 

@@ -5,6 +5,6 @@
 #[path = "paint/rayon_test_util.rs"]
 mod rayon_test_util;
 
-mod paint;
 mod backdrop;
+mod paint;
 mod r#ref;

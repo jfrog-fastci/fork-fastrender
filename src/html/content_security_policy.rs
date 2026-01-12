@@ -233,7 +233,10 @@ impl CspPolicy {
       }
 
       if let Some(nonce) = nonce.and_then(non_empty_trimmed_ascii) {
-        if list.iter().any(|s| matches!(s, CspSource::Nonce(n) if n == nonce)) {
+        if list
+          .iter()
+          .any(|s| matches!(s, CspSource::Nonce(n) if n == nonce))
+        {
           return true;
         }
       }
@@ -243,7 +246,10 @@ impl CspPolicy {
   }
 }
 
-fn directive_sources_for_set(set: &CspDirectiveSet, directive: CspDirective) -> Option<&Vec<CspSource>> {
+fn directive_sources_for_set(
+  set: &CspDirectiveSet,
+  directive: CspDirective,
+) -> Option<&Vec<CspSource>> {
   match directive {
     CspDirective::ScriptSrcElem => set
       .directives
@@ -297,8 +303,7 @@ fn set_allows_url(
   if matches!(
     directive,
     CspDirective::ScriptSrc | CspDirective::ScriptSrcElem | CspDirective::ScriptSrcAttr
-  )
-    && list.iter().any(|s| matches!(s, CspSource::StrictDynamic))
+  ) && list.iter().any(|s| matches!(s, CspSource::StrictDynamic))
     && list
       .iter()
       .any(|s| matches!(s, CspSource::Nonce(_) | CspSource::Sha256(_)))
@@ -327,7 +332,10 @@ fn set_allows_url(
           return true;
         }
       }
-      CspSource::UnsafeInline | CspSource::StrictDynamic | CspSource::Nonce(_) | CspSource::Sha256(_) => {
+      CspSource::UnsafeInline
+      | CspSource::StrictDynamic
+      | CspSource::Nonce(_)
+      | CspSource::Sha256(_) => {
         // Not applicable to URL-based checks.
       }
       CspSource::Scheme(scheme) => {
@@ -365,9 +373,7 @@ fn set_allows_url(
         };
         let host = host.trim_end_matches('.').to_ascii_lowercase();
         let host_matches = match &host_source.host {
-          CspHostPattern::Exact(expected) => {
-            host == *expected
-          }
+          CspHostPattern::Exact(expected) => host == *expected,
           CspHostPattern::SubdomainWildcard(base) => {
             let suffix = format!(".{base}");
             host.ends_with(&suffix) && host != *base
@@ -559,7 +565,10 @@ fn set_allows_inline_script(set: &CspDirectiveSet, nonce: Option<&str>, source_t
     .any(|s| matches!(s, CspSource::Nonce(_) | CspSource::Sha256(_)));
 
   if let Some(nonce) = nonce {
-    if list.iter().any(|s| matches!(s, CspSource::Nonce(n) if n == nonce)) {
+    if list
+      .iter()
+      .any(|s| matches!(s, CspSource::Nonce(n) if n == nonce))
+    {
       return true;
     }
   }
@@ -616,7 +625,10 @@ fn set_allows_inline_style_element(
     .any(|s| matches!(s, CspSource::Nonce(_) | CspSource::Sha256(_)));
 
   if let Some(nonce) = nonce {
-    if list.iter().any(|s| matches!(s, CspSource::Nonce(n) if n == nonce)) {
+    if list
+      .iter()
+      .any(|s| matches!(s, CspSource::Nonce(n) if n == nonce))
+    {
       return true;
     }
   }
@@ -707,10 +719,7 @@ fn parse_host_source(token: &str) -> Option<CspHostSource> {
 
 fn parse_host_source_manual(token: &str) -> Option<CspHostSource> {
   let (scheme, rest) = match token.find("://") {
-    Some(pos) => (
-      Some(token[..pos].to_ascii_lowercase()),
-      &token[pos + 3..],
-    ),
+    Some(pos) => (Some(token[..pos].to_ascii_lowercase()), &token[pos + 3..]),
     None => (None, token),
   };
   let host_port_end = rest
@@ -724,7 +733,13 @@ fn parse_host_source_manual(token: &str) -> Option<CspHostSource> {
     .get(host_port_end..)
     .and_then(|tail| tail.strip_prefix('/'))
     .map(|tail| format!("/{tail}"))
-    .map(|path| path.split(|c| matches!(c, '?' | '#')).next().unwrap_or("").to_string())
+    .map(|path| {
+      path
+        .split(|c| matches!(c, '?' | '#'))
+        .next()
+        .unwrap_or("")
+        .to_string()
+    })
     .and_then(|path| normalize_csp_source_path(&path));
 
   let (host, port) = if host_port.starts_with('[') {
@@ -863,9 +878,7 @@ fn for_each_attribute<'a>(
         i += 1;
       }
 
-      if i + 1 < bytes.len()
-        && bytes[i] == b'\\'
-        && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
+      if i + 1 < bytes.len() && bytes[i] == b'\\' && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
       {
         let quote = bytes[i + 1];
         i += 2;
@@ -1053,7 +1066,8 @@ fn extract_csp_impl(
 
   while let Some(node) = stack.pop() {
     if let Some(counter) = deadline_counter.as_deref_mut() {
-      check_active_periodic(counter, CSP_DEADLINE_STRIDE, RenderStage::DomParse).map_err(Error::Render)?;
+      check_active_periodic(counter, CSP_DEADLINE_STRIDE, RenderStage::DomParse)
+        .map_err(Error::Render)?;
     }
 
     if let DomNodeType::ShadowRoot { .. } = node.node_type {
@@ -1086,7 +1100,8 @@ fn extract_csp_impl(
 
   while let Some((node, in_foreign_namespace)) = stack.pop() {
     if let Some(counter) = deadline_counter.as_deref_mut() {
-      check_active_periodic(counter, CSP_DEADLINE_STRIDE, RenderStage::DomParse).map_err(Error::Render)?;
+      check_active_periodic(counter, CSP_DEADLINE_STRIDE, RenderStage::DomParse)
+        .map_err(Error::Render)?;
     }
 
     let next_in_foreign_namespace = in_foreign_namespace
@@ -1147,7 +1162,12 @@ mod tests {
   #[test]
   fn none_blocks() {
     let policy = CspPolicy::from_values(["img-src 'none'"]).expect("parse");
-    assert!(!allows(&policy, CspDirective::ImgSrc, "https://example.com/", "https://example.com/a.png"));
+    assert!(!allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/a.png"
+    ));
   }
 
   #[test]
@@ -1272,7 +1292,8 @@ mod tests {
 
   #[test]
   fn host_source_path_exact_matching() {
-    let policy = CspPolicy::from_values(["img-src https://example.com/images/logo.png"]).expect("parse");
+    let policy =
+      CspPolicy::from_values(["img-src https://example.com/images/logo.png"]).expect("parse");
     assert!(allows(
       &policy,
       CspDirective::ImgSrc,
@@ -1316,7 +1337,8 @@ mod tests {
   #[test]
   fn script_src_elem_overrides_script_src_for_script_elements() {
     // `script-src-elem` takes precedence over `script-src` regardless of order.
-    let policy = CspPolicy::from_values(["script-src-elem https:; script-src 'none'"]).expect("parse");
+    let policy =
+      CspPolicy::from_values(["script-src-elem https:; script-src 'none'"]).expect("parse");
     let url = Url::parse("https://example.com/a.js").expect("url");
     assert!(policy.allows_script_url(Some(&doc_origin("https://example.com/")), None, &url));
   }
@@ -1324,7 +1346,8 @@ mod tests {
   #[test]
   fn style_src_elem_overrides_style_src_for_stylesheet_resources() {
     // `style-src-elem` takes precedence over `style-src` regardless of order.
-    let policy = CspPolicy::from_values(["style-src-elem https:; style-src 'none'"]).expect("parse");
+    let policy =
+      CspPolicy::from_values(["style-src-elem https:; style-src 'none'"]).expect("parse");
     assert!(allows(
       &policy,
       CspDirective::StyleSrcElem,

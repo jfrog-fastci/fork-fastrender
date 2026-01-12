@@ -43,4 +43,3 @@ fn overflow_hidden_clips_transformed_descendant() {
   // This pixel lies within the clip box and should be painted (blue).
   assert_eq!(pixel(&pixmap, 30, 50), [0, 0, 255, 255]);
 }
-

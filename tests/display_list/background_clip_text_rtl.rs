@@ -92,7 +92,9 @@ fn assert_bounds_close(label: &str, reference: Bounds, actual: Bounds, tolerance
 }
 
 fn render(renderer: &mut FastRender, html: &str, width: u32, height: u32) -> Pixmap {
-  renderer.render_html(html, width, height).expect("render html")
+  renderer
+    .render_html(html, width, height)
+    .expect("render html")
 }
 
 #[test]
@@ -168,7 +170,12 @@ fn display_list_background_clip_text_rtl_matches_text_ink_bounds() {
   assert!(
     !is_black(clipped_px),
     "expected clipped text to include an ink pixel at ({sample_x},{sample_y}); got {:?}",
-    (clipped_px.red(), clipped_px.green(), clipped_px.blue(), clipped_px.alpha())
+    (
+      clipped_px.red(),
+      clipped_px.green(),
+      clipped_px.blue(),
+      clipped_px.alpha()
+    )
   );
 
   let mid_y = (reference_bounds.min_y + reference_bounds.max_y) / 2;
@@ -265,6 +272,11 @@ fn display_list_background_clip_text_mixed_direction_preserves_rtl_run_position(
   assert!(
     !is_black(clipped_px),
     "expected clipped text to include Hebrew ink pixel at ({sample_x},{sample_y}); got {:?}",
-    (clipped_px.red(), clipped_px.green(), clipped_px.blue(), clipped_px.alpha())
+    (
+      clipped_px.red(),
+      clipped_px.green(),
+      clipped_px.blue(),
+      clipped_px.alpha()
+    )
   );
 }

@@ -1,8 +1,8 @@
 use crate::css::selectors::FastRenderSelectorImpl;
 use crate::dom::HTML_NAMESPACE;
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
-use crate::web::dom::DocumentReadyState;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
+use crate::web::dom::DocumentReadyState;
 use crate::web::dom::DomException;
 use crate::web::events as web_events;
 use rustc_hash::FxHashSet;
@@ -33,10 +33,11 @@ mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
 
-pub use scripting_parser::parse_html_with_scripting_dom2;
 pub use mutation_observer::{
-  MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord, MutationRecordType,
+  MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord,
+  MutationRecordType,
 };
+pub use scripting_parser::parse_html_with_scripting_dom2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -222,7 +223,10 @@ fn kind_is_html_script(kind: &NodeKind) -> bool {
       tag_name,
       namespace,
       ..
-    } => tag_name.eq_ignore_ascii_case("script") && (namespace.is_empty() || namespace == HTML_NAMESPACE),
+    } => {
+      tag_name.eq_ignore_ascii_case("script")
+        && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+    }
     _ => false,
   }
 }
@@ -1919,17 +1923,17 @@ mod inner_html_tests;
 #[cfg(test)]
 mod mapping_tests;
 #[cfg(test)]
-mod mutation_tests;
-#[cfg(test)]
 mod mutation_generation_tests;
 #[cfg(test)]
+mod mutation_tests;
+#[cfg(test)]
 mod query_tests;
+#[cfg(test)]
+mod script_internal_slots_tests;
 #[cfg(test)]
 mod selector_query_tests;
 #[cfg(test)]
 mod selectors_detached_tests;
-#[cfg(test)]
-mod script_internal_slots_tests;
 #[cfg(test)]
 mod wbr_tests;
 

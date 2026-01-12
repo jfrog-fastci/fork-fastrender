@@ -52,4 +52,3 @@ fn min_content_intrinsic_width_allows_percent_sized_replaced_to_shrink() {
     min
   );
 }
-

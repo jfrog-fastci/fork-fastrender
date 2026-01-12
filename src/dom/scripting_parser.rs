@@ -146,23 +146,22 @@ impl ScriptingHtmlParser {
   pub fn resume(&mut self) {}
 
   pub fn snapshot_dom(&self) -> Result<crate::dom::DomNode> {
-      // We don't yet expose the real quirks mode mid-parse; it is not needed for script pausing
-      // invariants and is recovered precisely in `finish()`.
-      let quirks_mode = selectors::context::QuirksMode::NoQuirks;
-      let mut deadline_counter = 0usize;
-      let root =
-      super::convert_handle_to_node(
-        &self.tokenizer.sink.sink.document,
-        quirks_mode,
-        true,
-        &mut deadline_counter,
-      )?
-        .ok_or_else(|| {
-          Error::Parse(ParseError::InvalidHtml {
-            message: "DOM conversion produced no document root node".to_string(),
-            line: 0,
-          })
-        })?;
+    // We don't yet expose the real quirks mode mid-parse; it is not needed for script pausing
+    // invariants and is recovered precisely in `finish()`.
+    let quirks_mode = selectors::context::QuirksMode::NoQuirks;
+    let mut deadline_counter = 0usize;
+    let root = super::convert_handle_to_node(
+      &self.tokenizer.sink.sink.document,
+      quirks_mode,
+      true,
+      &mut deadline_counter,
+    )?
+    .ok_or_else(|| {
+      Error::Parse(ParseError::InvalidHtml {
+        message: "DOM conversion produced no document root node".to_string(),
+        line: 0,
+      })
+    })?;
     Ok(root)
   }
 
@@ -195,12 +194,12 @@ impl ScriptingHtmlParser {
       true,
       &mut deadline_counter,
     )?
-      .ok_or_else(|| {
-        Error::Parse(ParseError::InvalidHtml {
-          message: "DOM conversion produced no document root node".to_string(),
-          line: 0,
-        })
-      })?;
+    .ok_or_else(|| {
+      Error::Parse(ParseError::InvalidHtml {
+        message: "DOM conversion produced no document root node".to_string(),
+        line: 0,
+      })
+    })?;
     super::attach_shadow_roots(&mut root, &mut deadline_counter)?;
     Ok(root)
   }
@@ -327,7 +326,10 @@ mod tests {
       Ok(())
     })
     .unwrap();
-    assert!(!saw_script, "unexpected <script> pause for <noscript> input");
+    assert!(
+      !saw_script,
+      "unexpected <script> pause for <noscript> input"
+    );
 
     let noscript_enabled = find_first_tag(&dom_enabled, "noscript").expect("noscript missing");
     assert!(

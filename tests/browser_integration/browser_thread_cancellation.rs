@@ -96,13 +96,14 @@ fn rapid_navigation_cancels_stale_navigation_without_emitting_stale_commits_or_f
     match rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::NavigationStarted {
-            tab_id: got,
-            url,
-          } if *got == tab_id && url == &heavy_url => {
+          WorkerToUi::NavigationStarted { tab_id: got, url }
+            if *got == tab_id && url == &heavy_url =>
+          {
             saw_heavy_started = true;
           }
-          WorkerToUi::Stage { tab_id: got, .. } if *got == tab_id && saw_heavy_started && !sent_cancel => {
+          WorkerToUi::Stage { tab_id: got, .. }
+            if *got == tab_id && saw_heavy_started && !sent_cancel =>
+          {
             // Cancel the in-flight heavy navigation before the worker can emit its commit/frame.
             cancel.bump_nav();
             tx.send(support::navigate_msg(
@@ -114,9 +115,7 @@ fn rapid_navigation_cancels_stale_navigation_without_emitting_stale_commits_or_f
             sent_cancel = true;
           }
           WorkerToUi::NavigationCommitted {
-            tab_id: got,
-            url,
-            ..
+            tab_id: got, url, ..
           } if *got == tab_id => {
             last_committed = Some(url.clone());
             if url == &cheap_url {
@@ -153,32 +152,41 @@ fn rapid_navigation_cancels_stale_navigation_without_emitting_stale_commits_or_f
   let drained = support::drain_for(&rx, Duration::from_secs(1));
   captured.extend(drained);
 
-  let saw_heavy_committed = captured.iter().any(|msg| matches!(
-    msg,
-    WorkerToUi::NavigationCommitted { tab_id: got, url, .. }
-      if *got == tab_id && url == &heavy_url
-  ));
+  let saw_heavy_committed = captured.iter().any(|msg| {
+    matches!(
+      msg,
+      WorkerToUi::NavigationCommitted { tab_id: got, url, .. }
+        if *got == tab_id && url == &heavy_url
+    )
+  });
   assert!(
     !saw_heavy_committed,
     "expected no NavigationCommitted for cancelled heavy navigation; messages:\n{}",
     support::format_messages(&captured)
   );
 
-  let saw_heavy_failed = captured.iter().any(|msg| matches!(
-    msg,
-    WorkerToUi::NavigationFailed { tab_id: got, url, .. }
-      if *got == tab_id && url == &heavy_url
-  ));
+  let saw_heavy_failed = captured.iter().any(|msg| {
+    matches!(
+      msg,
+      WorkerToUi::NavigationFailed { tab_id: got, url, .. }
+        if *got == tab_id && url == &heavy_url
+    )
+  });
   assert!(
     !saw_heavy_failed,
     "expected cancellation to be silent (no NavigationFailed for heavy URL); messages:\n{}",
     support::format_messages(&captured)
   );
 
-  let frame_count = captured.iter().filter(|msg| matches!(
-    msg,
-    WorkerToUi::FrameReady { tab_id: got, .. } if *got == tab_id
-  )).count();
+  let frame_count = captured
+    .iter()
+    .filter(|msg| {
+      matches!(
+        msg,
+        WorkerToUi::FrameReady { tab_id: got, .. } if *got == tab_id
+      )
+    })
+    .count();
   assert_eq!(
     frame_count,
     1,
@@ -190,4 +198,3 @@ fn rapid_navigation_cancels_stale_navigation_without_emitting_stale_commits_or_f
   drop(rx);
   join.join().unwrap();
 }
-

@@ -9,7 +9,10 @@ fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
       return Some(node);
     }
   }
-  node.children.iter().find_map(|child| find_first(child, tag))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_first(child, tag))
 }
 
 fn render_div_display(css: &str) -> String {
@@ -55,4 +58,3 @@ fn supports_timeline_scope_rejects_non_dashed_ident() {
   ";
   assert_eq!(render_div_display(css), "block");
 }
-

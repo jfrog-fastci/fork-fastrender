@@ -122,7 +122,12 @@ impl AnchorIndex {
     self.by_box_id.get(&box_id).copied()
   }
 
-  pub(crate) fn insert_names_for_box(&mut self, box_id: usize, names: &[String], anchor: AnchorBox) {
+  pub(crate) fn insert_names_for_box(
+    &mut self,
+    box_id: usize,
+    names: &[String],
+    anchor: AnchorBox,
+  ) {
     self.by_box_id.entry(box_id).or_insert(anchor);
     let scope_chain = self
       .scope_chain_by_box_id
@@ -185,7 +190,13 @@ impl AnchorIndex {
     scope_stack: &mut Vec<ScopeEntry>,
   ) {
     for fragment in fragments {
-      self.collect_from_fragment(fragment, parent_origin, parent_transform, viewport, scope_stack);
+      self.collect_from_fragment(
+        fragment,
+        parent_origin,
+        parent_transform,
+        viewport,
+        scope_stack,
+      );
     }
   }
 

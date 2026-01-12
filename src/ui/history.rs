@@ -145,13 +145,21 @@ impl TabHistory {
   pub fn go_back_forward_to(&mut self, target_url: &str) -> Option<&HistoryEntry> {
     let i = self.index?;
 
-    if i > 0 && self.entries.get(i - 1).is_some_and(|entry| entry.url == target_url) {
+    if i > 0
+      && self
+        .entries
+        .get(i - 1)
+        .is_some_and(|entry| entry.url == target_url)
+    {
       self.index = Some(i - 1);
       return self.current();
     }
 
     if i + 1 < self.entries.len()
-      && self.entries.get(i + 1).is_some_and(|entry| entry.url == target_url)
+      && self
+        .entries
+        .get(i + 1)
+        .is_some_and(|entry| entry.url == target_url)
     {
       self.index = Some(i + 1);
       return self.current();

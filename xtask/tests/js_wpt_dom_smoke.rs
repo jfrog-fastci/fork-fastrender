@@ -98,4 +98,3 @@ fn js_wpt_dom_smoke_writes_report_and_honors_fail_on() {
     report_xfail_all.display()
   );
 }
-

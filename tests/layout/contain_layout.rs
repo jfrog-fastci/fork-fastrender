@@ -3,13 +3,13 @@ use std::sync::Arc;
 use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::types::BorderStyle;
 use fastrender::style::types::Containment;
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::ComputedStyle;
+use fastrender::FormattingContext;
 
 fn container_with_child(containment: Containment) -> BoxNode {
   let mut child_style = ComputedStyle::default();

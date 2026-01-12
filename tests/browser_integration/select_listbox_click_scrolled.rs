@@ -2,8 +2,8 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, PointerModifiers, RepaintReason, RenderedFrame, TabId, UiToWorker,
-  WorkerToUi,
+  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId,
+  UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -22,7 +22,12 @@ fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> Re
       "timed out waiting for FrameReady\n{}",
       support::format_messages(&seen)
     );
-    let msg = support::recv_for_tab(rx, tab_id, remaining.min(Duration::from_millis(200)), |_| true);
+    let msg = support::recv_for_tab(
+      rx,
+      tab_id,
+      remaining.min(Duration::from_millis(200)),
+      |_| true,
+    );
     let Some(msg) = msg else {
       continue;
     };

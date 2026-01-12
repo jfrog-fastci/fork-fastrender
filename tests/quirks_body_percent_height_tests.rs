@@ -93,4 +93,3 @@ fn quirks_percent_height_enables_flex_vertical_centering() {
     .join()
     .unwrap();
 }
-

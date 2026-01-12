@@ -142,8 +142,7 @@ fn assert_wpt_pass(id: &str) {
 
 #[test]
 fn reports_subtest_failures() {
-  for (backend, result) in run_test_id_all_backends("smoke/sync-fail.html", smoke_config())
-  {
+  for (backend, result) in run_test_id_all_backends("smoke/sync-fail.html", smoke_config()) {
     match &result.outcome {
       RunOutcome::Fail(_msg) => {}
       other => panic!("sync-fail.html should fail under backend {backend}, got {other:?}"),
@@ -258,9 +257,9 @@ fn meta_timeout_long_overrides_runner_default_timeout() {
       RunOutcome::Pass,
       "timeout_long should pass under backend {backend}"
     );
-    let report = result
-      .wpt_report
-      .unwrap_or_else(|| panic!("timeout_long should include report payload under backend {backend}"));
+    let report = result.wpt_report.unwrap_or_else(|| {
+      panic!("timeout_long should include report payload under backend {backend}")
+    });
     assert_eq!(report.file_status, "pass");
     assert!(
       !report.subtests.is_empty(),
@@ -271,8 +270,7 @@ fn meta_timeout_long_overrides_runner_default_timeout() {
 
 #[test]
 fn discovers_worker_tests_but_skips_them() {
-  for (backend, result) in run_test_id_all_backends("smoke/unsupported.worker.js", smoke_config())
-  {
+  for (backend, result) in run_test_id_all_backends("smoke/unsupported.worker.js", smoke_config()) {
     match result.outcome {
       RunOutcome::Skip(reason) => {
         assert!(
@@ -287,10 +285,9 @@ fn discovers_worker_tests_but_skips_them() {
 
 #[test]
 fn discovers_serviceworker_tests_but_skips_them() {
-  for (backend, result) in run_test_id_all_backends(
-    "smoke/unsupported.serviceworker.js",
-    smoke_config(),
-  ) {
+  for (backend, result) in
+    run_test_id_all_backends("smoke/unsupported.serviceworker.js", smoke_config())
+  {
     match result.outcome {
       RunOutcome::Skip(reason) => {
         assert!(
@@ -305,10 +302,9 @@ fn discovers_serviceworker_tests_but_skips_them() {
 
 #[test]
 fn discovers_sharedworker_tests_but_skips_them() {
-  for (backend, result) in run_test_id_all_backends(
-    "smoke/unsupported.sharedworker.js",
-    smoke_config(),
-  ) {
+  for (backend, result) in
+    run_test_id_all_backends("smoke/unsupported.sharedworker.js", smoke_config())
+  {
     match result.outcome {
       RunOutcome::Skip(reason) => {
         assert!(
@@ -408,7 +404,10 @@ fn runs_urlsearchparams_live_test_vmjs() {
   );
   for st in &report.subtests {
     assert!(!st.name.is_empty());
-    assert!(matches!(st.status.as_str(), "pass" | "fail" | "timeout" | "error"));
+    assert!(matches!(
+      st.status.as_str(),
+      "pass" | "fail" | "timeout" | "error"
+    ));
   }
 }
 

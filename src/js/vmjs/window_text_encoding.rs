@@ -117,7 +117,10 @@ fn require_intrinsics(vm: &Vm) -> Result<Intrinsics, VmError> {
   ))
 }
 
-fn receiver_host_slots<'a>(scope: &'a Scope<'_>, obj: vm_js::GcObject) -> Result<HostSlots, VmError> {
+fn receiver_host_slots<'a>(
+  scope: &'a Scope<'_>,
+  obj: vm_js::GcObject,
+) -> Result<HostSlots, VmError> {
   scope
     .heap()
     .object_host_slots(obj)?
@@ -126,7 +129,10 @@ fn receiver_host_slots<'a>(scope: &'a Scope<'_>, obj: vm_js::GcObject) -> Result
     ))
 }
 
-fn require_text_encoder_receiver(scope: &Scope<'_>, this: Value) -> Result<vm_js::GcObject, VmError> {
+fn require_text_encoder_receiver(
+  scope: &Scope<'_>,
+  this: Value,
+) -> Result<vm_js::GcObject, VmError> {
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError(
       "TextEncoder.prototype.encode called on non-object",
@@ -142,7 +148,10 @@ fn require_text_encoder_receiver(scope: &Scope<'_>, this: Value) -> Result<vm_js
   Ok(obj)
 }
 
-fn require_text_decoder_receiver(scope: &Scope<'_>, this: Value) -> Result<(vm_js::GcObject, u64), VmError> {
+fn require_text_decoder_receiver(
+  scope: &Scope<'_>,
+  this: Value,
+) -> Result<(vm_js::GcObject, u64), VmError> {
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError(
       "TextDecoder.prototype.decode called on non-object",
@@ -161,9 +170,7 @@ fn utf8_len_from_utf16_units(units: &[u16]) -> Result<usize, VmError> {
   let mut len: usize = 0;
   for unit in char::decode_utf16(units.iter().copied()) {
     let ch = unit.unwrap_or('\u{FFFD}');
-    len = len
-      .checked_add(ch.len_utf8())
-      .ok_or(VmError::OutOfMemory)?;
+    len = len.checked_add(ch.len_utf8()).ok_or(VmError::OutOfMemory)?;
   }
   Ok(len)
 }
@@ -260,9 +267,13 @@ fn text_encoder_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
-  scope
-    .heap_mut()
-    .object_set_host_slots(obj, HostSlots { a: TEXT_ENCODER_HOST_TAG, b: 0 })?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: TEXT_ENCODER_HOST_TAG,
+      b: 0,
+    },
+  )?;
   Ok(Value::Object(obj))
 }
 
@@ -302,9 +313,11 @@ fn text_decoder_construct(
       let label_units = scope.heap().get_string(label_string)?.as_code_units();
       let ok = label_is_utf8(label_units)?;
       if !ok {
-        return Err(VmError::Throw(
-          new_range_error(&mut scope, intr, "The encoding label provided is invalid.")?,
-        ));
+        return Err(VmError::Throw(new_range_error(
+          &mut scope,
+          intr,
+          "The encoding label provided is invalid.",
+        )?));
       }
     }
   }
@@ -316,7 +329,8 @@ fn text_decoder_construct(
       scope.push_root(Value::Object(options_obj))?;
 
       let fatal_key = alloc_key(&mut scope, "fatal")?;
-      let fatal_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, fatal_key)?;
+      let fatal_value =
+        vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, fatal_key)?;
       if scope.heap().to_boolean(fatal_value)? {
         flags |= TEXT_DECODER_FLAG_FATAL;
       }
@@ -346,9 +360,13 @@ fn text_decoder_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
-  scope
-    .heap_mut()
-    .object_set_host_slots(obj, HostSlots { a: TEXT_DECODER_HOST_TAG, b: flags })?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: TEXT_DECODER_HOST_TAG,
+      b: flags,
+    },
+  )?;
 
   Ok(Value::Object(obj))
 }
@@ -579,9 +597,10 @@ fn text_encoder_encode_into(
       if written_bytes + encoded.len() > dest_len {
         break;
       }
-      let wrote = scope
-        .heap_mut()
-        .uint8_array_write(dest_obj, written_bytes, encoded.as_bytes())?;
+      let wrote =
+        scope
+          .heap_mut()
+          .uint8_array_write(dest_obj, written_bytes, encoded.as_bytes())?;
       debug_assert_eq!(
         wrote,
         encoded.len(),
@@ -611,7 +630,11 @@ fn text_encoder_encode_into(
 
   let read_key = alloc_key(scope, "read")?;
   let written_key = alloc_key(scope, "written")?;
-  scope.define_property(result, read_key, data_desc(Value::Number(read_units as f64)))?;
+  scope.define_property(
+    result,
+    read_key,
+    data_desc(Value::Number(read_units as f64)),
+  )?;
   scope.define_property(
     result,
     written_key,
@@ -737,7 +760,8 @@ pub(crate) fn install_window_text_encoding_bindings(
   let encode_key = alloc_key(&mut scope, "encode")?;
   scope.define_property(te_proto, encode_key, data_desc(Value::Object(te_encode_fn)))?;
 
-  let te_encode_into_call_id: NativeFunctionId = vm.register_native_call(text_encoder_encode_into)?;
+  let te_encode_into_call_id: NativeFunctionId =
+    vm.register_native_call(text_encoder_encode_into)?;
   let te_encode_into_name_s = scope.alloc_string("encodeInto")?;
   scope.push_root(Value::String(te_encode_into_name_s))?;
   let te_encode_into_fn =
@@ -748,10 +772,15 @@ pub(crate) fn install_window_text_encoding_bindings(
     .object_set_prototype(te_encode_into_fn, Some(intr.function_prototype()))?;
 
   let encode_into_key = alloc_key(&mut scope, "encodeInto")?;
-  scope.define_property(te_proto, encode_into_key, data_desc(Value::Object(te_encode_into_fn)))?;
+  scope.define_property(
+    te_proto,
+    encode_into_key,
+    data_desc(Value::Object(te_encode_into_fn)),
+  )?;
 
   // `TextEncoder.prototype.encoding` (read-only accessor property).
-  let te_encoding_get_call_id: NativeFunctionId = vm.register_native_call(text_encoder_get_encoding)?;
+  let te_encoding_get_call_id: NativeFunctionId =
+    vm.register_native_call(text_encoder_get_encoding)?;
   let te_encoding_get_name_s = scope.alloc_string("get encoding")?;
   scope.push_root(Value::String(te_encoding_get_name_s))?;
   let te_encoding_get_slots = [Value::String(utf8_s)];
@@ -831,7 +860,8 @@ pub(crate) fn install_window_text_encoding_bindings(
   scope.define_property(td_proto, decode_key, data_desc(Value::Object(td_decode_fn)))?;
 
   // `TextDecoder.prototype.encoding` / `fatal` / `ignoreBOM` (read-only accessor properties).
-  let td_encoding_get_call_id: NativeFunctionId = vm.register_native_call(text_decoder_get_encoding)?;
+  let td_encoding_get_call_id: NativeFunctionId =
+    vm.register_native_call(text_decoder_get_encoding)?;
   let td_encoding_get_name_s = scope.alloc_string("get encoding")?;
   scope.push_root(Value::String(td_encoding_get_name_s))?;
   let td_encoding_get_slots = [Value::String(utf8_s)];
@@ -856,7 +886,8 @@ pub(crate) fn install_window_text_encoding_bindings(
   let td_fatal_get_call_id: NativeFunctionId = vm.register_native_call(text_decoder_get_fatal)?;
   let td_fatal_get_name_s = scope.alloc_string("get fatal")?;
   scope.push_root(Value::String(td_fatal_get_name_s))?;
-  let td_fatal_get_fn = scope.alloc_native_function(td_fatal_get_call_id, None, td_fatal_get_name_s, 0)?;
+  let td_fatal_get_fn =
+    scope.alloc_native_function(td_fatal_get_call_id, None, td_fatal_get_name_s, 0)?;
   scope.push_root(Value::Object(td_fatal_get_fn))?;
   scope
     .heap_mut()
@@ -868,7 +899,8 @@ pub(crate) fn install_window_text_encoding_bindings(
     accessor_desc(Value::Object(td_fatal_get_fn), Value::Undefined),
   )?;
 
-  let td_ignore_bom_get_call_id: NativeFunctionId = vm.register_native_call(text_decoder_get_ignore_bom)?;
+  let td_ignore_bom_get_call_id: NativeFunctionId =
+    vm.register_native_call(text_decoder_get_ignore_bom)?;
   let td_ignore_bom_get_name_s = scope.alloc_string("get ignoreBOM")?;
   scope.push_root(Value::String(td_ignore_bom_get_name_s))?;
   let td_ignore_bom_get_fn =
@@ -930,7 +962,9 @@ mod tests {
     };
     let enc = vm.construct_without_host(&mut scope, ctor, &[], ctor)?;
     let Value::Object(enc_obj) = enc else {
-      return Err(VmError::InvariantViolation("TextEncoder construct must return object"));
+      return Err(VmError::InvariantViolation(
+        "TextEncoder construct must return object",
+      ));
     };
     scope.push_root(Value::Object(enc_obj))?;
 
@@ -982,7 +1016,9 @@ mod tests {
     let decoder_ctor = vm.get(&mut scope, global, decoder_ctor_key)?;
     let decoder = vm.construct_without_host(&mut scope, decoder_ctor, &[], decoder_ctor)?;
     let Value::Object(decoder_obj) = decoder else {
-      return Err(VmError::InvariantViolation("TextDecoder must construct object"));
+      return Err(VmError::InvariantViolation(
+        "TextDecoder must construct object",
+      ));
     };
     scope.push_root(Value::Object(decoder_obj))?;
 
@@ -999,7 +1035,9 @@ mod tests {
       Value::Object(u8_ctor_obj),
     )?;
     let Value::Object(u8_obj) = u8 else {
-      return Err(VmError::InvariantViolation("Uint8Array construct must return object"));
+      return Err(VmError::InvariantViolation(
+        "Uint8Array construct must return object",
+      ));
     };
     scope.push_root(Value::Object(u8_obj))?;
 
@@ -1007,11 +1045,23 @@ mod tests {
     let key0_s = scope.alloc_string("0")?;
     scope.push_root(Value::String(key0_s))?;
     let key0 = PropertyKey::from_string(key0_s);
-    scope.ordinary_set(&mut vm, u8_obj, key0, Value::Number(111.0), Value::Object(u8_obj))?;
+    scope.ordinary_set(
+      &mut vm,
+      u8_obj,
+      key0,
+      Value::Number(111.0),
+      Value::Object(u8_obj),
+    )?;
     let key1_s = scope.alloc_string("1")?;
     scope.push_root(Value::String(key1_s))?;
     let key1 = PropertyKey::from_string(key1_s);
-    scope.ordinary_set(&mut vm, u8_obj, key1, Value::Number(107.0), Value::Object(u8_obj))?;
+    scope.ordinary_set(
+      &mut vm,
+      u8_obj,
+      key1,
+      Value::Number(107.0),
+      Value::Object(u8_obj),
+    )?;
 
     let decode_key = alloc_key(&mut scope, "decode")?;
     let decode_fn = vm.get(&mut scope, decoder_obj, decode_key)?;
@@ -1047,7 +1097,9 @@ mod tests {
     };
     let enc = vm.construct_without_host(&mut scope, ctor, &[], Value::Object(ctor_obj))?;
     let Value::Object(enc_obj) = enc else {
-      return Err(VmError::InvariantViolation("TextEncoder construct must return object"));
+      return Err(VmError::InvariantViolation(
+        "TextEncoder construct must return object",
+      ));
     };
     scope.push_root(Value::Object(enc_obj))?;
 
@@ -1064,7 +1116,9 @@ mod tests {
       Value::Object(u8_ctor_obj),
     )?;
     let Value::Object(dest_obj) = dest else {
-      return Err(VmError::InvariantViolation("Uint8Array must construct object"));
+      return Err(VmError::InvariantViolation(
+        "Uint8Array must construct object",
+      ));
     };
     scope.push_root(Value::Object(dest_obj))?;
 
@@ -1120,7 +1174,9 @@ mod tests {
     };
     let enc = vm.construct_without_host(&mut scope, ctor, &[], Value::Object(ctor_obj))?;
     let Value::Object(enc_obj) = enc else {
-      return Err(VmError::InvariantViolation("TextEncoder construct must return object"));
+      return Err(VmError::InvariantViolation(
+        "TextEncoder construct must return object",
+      ));
     };
     scope.push_root(Value::Object(enc_obj))?;
 
@@ -1137,7 +1193,9 @@ mod tests {
       Value::Object(u8_ctor_obj),
     )?;
     let Value::Object(dest_obj) = dest else {
-      return Err(VmError::InvariantViolation("Uint8Array must construct object"));
+      return Err(VmError::InvariantViolation(
+        "Uint8Array must construct object",
+      ));
     };
     scope.push_root(Value::Object(dest_obj))?;
 
@@ -1233,7 +1291,9 @@ mod tests {
     let td_ctor_key = alloc_key(&mut scope, "TextDecoder")?;
     let td_ctor = vm.get(&mut scope, global, td_ctor_key)?;
     let Value::Object(td_ctor_obj) = td_ctor else {
-      return Err(VmError::InvariantViolation("TextDecoder constructor missing"));
+      return Err(VmError::InvariantViolation(
+        "TextDecoder constructor missing",
+      ));
     };
     scope.push_root(Value::Object(td_ctor_obj))?;
 
@@ -1255,16 +1315,30 @@ mod tests {
         "TextDecoder.prototype.encoding missing",
       ))?;
     assert!(
-      matches!(enc_desc.kind, PropertyKind::Accessor { set: Value::Undefined, .. }),
+      matches!(
+        enc_desc.kind,
+        PropertyKind::Accessor {
+          set: Value::Undefined,
+          ..
+        }
+      ),
       "expected encoding to be a read-only accessor property"
     );
 
     let fatal_desc = scope
       .heap()
       .object_get_own_property(td_proto_obj, &fatal_key)?
-      .ok_or(VmError::InvariantViolation("TextDecoder.prototype.fatal missing"))?;
+      .ok_or(VmError::InvariantViolation(
+        "TextDecoder.prototype.fatal missing",
+      ))?;
     assert!(
-      matches!(fatal_desc.kind, PropertyKind::Accessor { set: Value::Undefined, .. }),
+      matches!(
+        fatal_desc.kind,
+        PropertyKind::Accessor {
+          set: Value::Undefined,
+          ..
+        }
+      ),
       "expected fatal to be a read-only accessor property"
     );
 
@@ -1275,7 +1349,13 @@ mod tests {
         "TextDecoder.prototype.ignoreBOM missing",
       ))?;
     assert!(
-      matches!(ignore_desc.kind, PropertyKind::Accessor { set: Value::Undefined, .. }),
+      matches!(
+        ignore_desc.kind,
+        PropertyKind::Accessor {
+          set: Value::Undefined,
+          ..
+        }
+      ),
       "expected ignoreBOM to be a read-only accessor property"
     );
 
@@ -1285,12 +1365,19 @@ mod tests {
       .ok_or(VmError::InvariantViolation(
         "TextDecoder.prototype @@toStringTag missing",
       ))?;
-    let PropertyKind::Data { value: Value::String(td_tag), writable: false } = tag_desc.kind else {
+    let PropertyKind::Data {
+      value: Value::String(td_tag),
+      writable: false,
+    } = tag_desc.kind
+    else {
       return Err(VmError::InvariantViolation(
         "TextDecoder @@toStringTag must be a non-writable data property",
       ));
     };
-    assert_eq!(get_string(scope.heap(), Value::String(td_tag)), "TextDecoder");
+    assert_eq!(
+      get_string(scope.heap(), Value::String(td_tag)),
+      "TextDecoder"
+    );
 
     // Construct a decoder with `{ fatal: true, ignoreBOM: true }` and ensure it does not get own
     // data properties for those attributes (they should be inherited accessors).
@@ -1341,7 +1428,10 @@ mod tests {
 
     let encoding_val = vm.get(&mut scope, decoder_obj, encoding_key)?;
     assert_eq!(get_string(scope.heap(), encoding_val), "utf-8");
-    assert_eq!(vm.get(&mut scope, decoder_obj, fatal_key)?, Value::Bool(true));
+    assert_eq!(
+      vm.get(&mut scope, decoder_obj, fatal_key)?,
+      Value::Bool(true)
+    );
     assert_eq!(
       vm.get(&mut scope, decoder_obj, ignore_bom_key)?,
       Value::Bool(true)
@@ -1351,7 +1441,9 @@ mod tests {
     let te_ctor_key = alloc_key(&mut scope, "TextEncoder")?;
     let te_ctor = vm.get(&mut scope, global, te_ctor_key)?;
     let Value::Object(te_ctor_obj) = te_ctor else {
-      return Err(VmError::InvariantViolation("TextEncoder constructor missing"));
+      return Err(VmError::InvariantViolation(
+        "TextEncoder constructor missing",
+      ));
     };
     scope.push_root(Value::Object(te_ctor_obj))?;
 
@@ -1384,14 +1476,22 @@ mod tests {
       .ok_or(VmError::InvariantViolation(
         "TextEncoder.prototype @@toStringTag missing",
       ))?;
-    let PropertyKind::Data { value: Value::String(te_tag), writable: false } = te_tag_desc.kind else {
+    let PropertyKind::Data {
+      value: Value::String(te_tag),
+      writable: false,
+    } = te_tag_desc.kind
+    else {
       return Err(VmError::InvariantViolation(
         "TextEncoder @@toStringTag must be a non-writable data property",
       ));
     };
-    assert_eq!(get_string(scope.heap(), Value::String(te_tag)), "TextEncoder");
+    assert_eq!(
+      get_string(scope.heap(), Value::String(te_tag)),
+      "TextEncoder"
+    );
 
-    let encoder = vm.construct_without_host(&mut scope, te_ctor, &[], Value::Object(te_ctor_obj))?;
+    let encoder =
+      vm.construct_without_host(&mut scope, te_ctor, &[], Value::Object(te_ctor_obj))?;
     let Value::Object(encoder_obj) = encoder else {
       return Err(VmError::InvariantViolation(
         "TextEncoder constructor must return object",

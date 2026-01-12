@@ -37,9 +37,9 @@ use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation;
 use crate::layout::fragmentation::FragmentationOptions;
 use crate::render_control::{
-  active_allocation_budget, active_stage, active_stage_heartbeat, check_active, deadline_stack_snapshot,
-  DeadlineGuard, DeadlineStackGuard, RenderDeadline, StageAllocationBudgetGuard, StageGuard,
-  StageHeartbeatGuard,
+  active_allocation_budget, active_stage, active_stage_heartbeat, check_active,
+  deadline_stack_snapshot, DeadlineGuard, DeadlineStackGuard, RenderDeadline,
+  StageAllocationBudgetGuard, StageGuard, StageHeartbeatGuard,
 };
 use crate::style::display::FormattingContextType;
 use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal};
@@ -428,8 +428,8 @@ thread_local! {
     const { RefCell::new(None) };
 }
 
-pub(crate) fn current_layout_parallel_debug_collector(
-) -> Option<Arc<LayoutParallelDebugCollector>> {
+pub(crate) fn current_layout_parallel_debug_collector() -> Option<Arc<LayoutParallelDebugCollector>>
+{
   LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| cell.borrow().clone())
 }
 
@@ -865,13 +865,14 @@ impl LayoutEngine {
       crate::geometry::Rect::new(Point::ZERO, config.initial_containing_block),
       viewport_size,
     );
-    let factory = FormattingContextFactory::with_font_context_and_viewport(font_context.clone(), viewport_size)
-      .with_positioned_cb(positioned_cb)
-      .with_viewport_fixed_size(config.viewport_fixed_containing_block)
-      .with_image_cache(image_cache)
-      .with_viewport_scroll(config.viewport_scroll)
-      .with_quirks_mode(config.quirks_mode)
-      .with_parallelism(config.parallelism);
+    let factory =
+      FormattingContextFactory::with_font_context_and_viewport(font_context.clone(), viewport_size)
+        .with_positioned_cb(positioned_cb)
+        .with_viewport_fixed_size(config.viewport_fixed_containing_block)
+        .with_image_cache(image_cache)
+        .with_viewport_scroll(config.viewport_scroll)
+        .with_quirks_mode(config.quirks_mode)
+        .with_parallelism(config.parallelism);
     let parallel_pool = config
       .parallelism
       .max_threads
@@ -1073,8 +1074,11 @@ impl LayoutEngine {
     // (`rex`/`rch`/`rcap`/`ric`/`rlh`) can resolve against the actual root font.
     let viewport_size = factory.viewport_size();
     let font_context = factory.font_context();
-    let root_metrics =
-      crate::layout::utils::compute_root_font_metrics(&box_tree.root.style, viewport_size, font_context);
+    let root_metrics = crate::layout::utils::compute_root_font_metrics(
+      &box_tree.root.style,
+      viewport_size,
+      font_context,
+    );
     font_context.set_root_font_metrics(root_metrics);
 
     // Create root constraints from initial containing block, preferring explicit
@@ -1137,10 +1141,15 @@ impl LayoutEngine {
     // The initial containing block establishes a definite percentage basis in the block axis (CSS2.1
     // §10.5). This is required for the common `html, body { height: 100% }` pattern used by many
     // pageset targets.
-    let block_percentage_base = if block_is_horizontal { base_width } else { base_height };
+    let block_percentage_base = if block_is_horizontal {
+      base_width
+    } else {
+      base_height
+    };
     let constraints = LayoutConstraints::definite(base_width, base_height)
       .with_block_percentage_base(Some(block_percentage_base));
-    let root_fragment = self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?;
+    let root_fragment =
+      self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?;
 
     // Collect form-control metadata for `appearance: none` controls that were laid out as normal
     // boxes. Replaced controls carry this metadata in `ReplacedType::FormControl`, but non-replaced

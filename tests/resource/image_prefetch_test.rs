@@ -39,4 +39,3 @@ fn image_prefetch_discovers_video_poster_from_wrapper_data_poster_url() {
     }]
   );
 }
-

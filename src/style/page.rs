@@ -10,8 +10,7 @@ use crate::style::display::Display;
 use crate::style::position::Position;
 use crate::style::properties::{
   apply_container_type_implied_containment, apply_content_visibility_implied_containment,
-  apply_declaration_with_base,
-  resolve_pending_logical_properties,
+  apply_declaration_with_base, resolve_pending_logical_properties,
 };
 use crate::style::types::TextAlign;
 use crate::style::values::{Length, LengthUnit};
@@ -344,25 +343,41 @@ pub fn resolve_page_style(
   .unwrap_or(0.0)
   .max(0.0);
 
-  let padding_left =
-    resolve_length_on_axis(&page_style.padding_left, page_width, fallback_size, root_font_size)
-      .unwrap_or(0.0)
-      .max(0.0);
-  let padding_right =
-    resolve_length_on_axis(&page_style.padding_right, page_width, fallback_size, root_font_size)
-      .unwrap_or(0.0)
-      .max(0.0);
-  let padding_top =
-    resolve_length_on_axis(&page_style.padding_top, page_height, fallback_size, root_font_size)
-      .unwrap_or(0.0)
-      .max(0.0);
-  let padding_bottom =
-    resolve_length_on_axis(&page_style.padding_bottom, page_height, fallback_size, root_font_size)
-      .unwrap_or(0.0)
-      .max(0.0);
+  let padding_left = resolve_length_on_axis(
+    &page_style.padding_left,
+    page_width,
+    fallback_size,
+    root_font_size,
+  )
+  .unwrap_or(0.0)
+  .max(0.0);
+  let padding_right = resolve_length_on_axis(
+    &page_style.padding_right,
+    page_width,
+    fallback_size,
+    root_font_size,
+  )
+  .unwrap_or(0.0)
+  .max(0.0);
+  let padding_top = resolve_length_on_axis(
+    &page_style.padding_top,
+    page_height,
+    fallback_size,
+    root_font_size,
+  )
+  .unwrap_or(0.0)
+  .max(0.0);
+  let padding_bottom = resolve_length_on_axis(
+    &page_style.padding_bottom,
+    page_height,
+    fallback_size,
+    root_font_size,
+  )
+  .unwrap_or(0.0)
+  .max(0.0);
 
-  let content_width = (page_box_width - border_left - border_right - padding_left - padding_right)
-    .max(0.0);
+  let content_width =
+    (page_box_width - border_left - border_right - padding_left - padding_right).max(0.0);
   let content_height =
     (page_box_height - border_top - border_bottom - padding_top - padding_bottom).max(0.0);
 
@@ -899,18 +914,62 @@ mod tests {
   #[test]
   fn page_size_parses_named_sizes_from_css_page_3() {
     let cases: &[(&str, PageNamedSize, Size)] = &[
-      ("A5", PageNamedSize::A5, Size::new(mm_to_px(148.0), mm_to_px(210.0))),
-      ("A4", PageNamedSize::A4, Size::new(mm_to_px(210.0), mm_to_px(297.0))),
-      ("A3", PageNamedSize::A3, Size::new(mm_to_px(297.0), mm_to_px(420.0))),
-      ("B5", PageNamedSize::B5, Size::new(mm_to_px(176.0), mm_to_px(250.0))),
-      ("B4", PageNamedSize::B4, Size::new(mm_to_px(250.0), mm_to_px(353.0))),
-      ("JIS-B5", PageNamedSize::JisB5, Size::new(mm_to_px(182.0), mm_to_px(257.0))),
-      ("JIS-B4", PageNamedSize::JisB4, Size::new(mm_to_px(257.0), mm_to_px(364.0))),
-      ("letter", PageNamedSize::Letter, Size::new(in_to_px(8.5), in_to_px(11.0))),
-      ("legal", PageNamedSize::Legal, Size::new(in_to_px(8.5), in_to_px(14.0))),
-      ("ledger", PageNamedSize::Ledger, Size::new(in_to_px(11.0), in_to_px(17.0))),
+      (
+        "A5",
+        PageNamedSize::A5,
+        Size::new(mm_to_px(148.0), mm_to_px(210.0)),
+      ),
+      (
+        "A4",
+        PageNamedSize::A4,
+        Size::new(mm_to_px(210.0), mm_to_px(297.0)),
+      ),
+      (
+        "A3",
+        PageNamedSize::A3,
+        Size::new(mm_to_px(297.0), mm_to_px(420.0)),
+      ),
+      (
+        "B5",
+        PageNamedSize::B5,
+        Size::new(mm_to_px(176.0), mm_to_px(250.0)),
+      ),
+      (
+        "B4",
+        PageNamedSize::B4,
+        Size::new(mm_to_px(250.0), mm_to_px(353.0)),
+      ),
+      (
+        "JIS-B5",
+        PageNamedSize::JisB5,
+        Size::new(mm_to_px(182.0), mm_to_px(257.0)),
+      ),
+      (
+        "JIS-B4",
+        PageNamedSize::JisB4,
+        Size::new(mm_to_px(257.0), mm_to_px(364.0)),
+      ),
+      (
+        "letter",
+        PageNamedSize::Letter,
+        Size::new(in_to_px(8.5), in_to_px(11.0)),
+      ),
+      (
+        "legal",
+        PageNamedSize::Legal,
+        Size::new(in_to_px(8.5), in_to_px(14.0)),
+      ),
+      (
+        "ledger",
+        PageNamedSize::Ledger,
+        Size::new(in_to_px(11.0), in_to_px(17.0)),
+      ),
       // `tabloid` is a widely-used alias for `ledger` and should parse to the same dimensions.
-      ("tabloid", PageNamedSize::Ledger, Size::new(in_to_px(11.0), in_to_px(17.0))),
+      (
+        "tabloid",
+        PageNamedSize::Ledger,
+        Size::new(in_to_px(11.0), in_to_px(17.0)),
+      ),
     ];
 
     for (keyword, expected_named, expected_size) in cases {

@@ -17,7 +17,10 @@ fn render_text(gamma: Option<f32>) -> Pixmap {
   let mut raw = HashMap::new();
   raw.insert("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string());
   if let Some(gamma) = gamma {
-    raw.insert("FASTR_TEXT_SUBPIXEL_AA_GAMMA".to_string(), gamma.to_string());
+    raw.insert(
+      "FASTR_TEXT_SUBPIXEL_AA_GAMMA".to_string(),
+      gamma.to_string(),
+    );
   }
   let _guard = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(raw)));
 

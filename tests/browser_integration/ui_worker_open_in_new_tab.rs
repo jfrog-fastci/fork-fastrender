@@ -92,8 +92,10 @@ fn link_activation_can_request_open_in_new_tab() {
     .unwrap();
 
   // Wait for an initial frame so hit-testing has prepared layout artifacts.
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page1_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page1_url}"));
 
   // Drain any follow-up messages from the initial navigation to keep assertions scoped to the click.
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));

@@ -45,9 +45,15 @@ fn find_box_id_for_styled_node_id(node: &BoxNode, styled_node_id: usize) -> Opti
 fn find_fragment_width_for_box_id(node: &FragmentNode, box_id: usize) -> Option<f32> {
   let matches_box = match &node.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_box {

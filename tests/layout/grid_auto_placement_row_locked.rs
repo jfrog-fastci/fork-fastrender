@@ -102,4 +102,3 @@ fn grid_auto_placement_does_not_skip_rows_before_row_locked_items() {
     b_bounds.y()
   );
 }
-

@@ -1,12 +1,12 @@
+use super::{
+  fail_next_allocation, failed_allocs, lock_allocator, recorded_allocation_layout,
+  reset_recorded_allocation_layout,
+};
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom::{DomNode, DomNodeType};
 use fastrender::style::cascade::apply_style_set_with_media_target_and_imports_cached_with_deadline;
 use fastrender::style::media::MediaContext;
 use fastrender::style::style_set::StyleSet;
-use super::{
-  fail_next_allocation, failed_allocs, lock_allocator, recorded_allocation_layout,
-  reset_recorded_allocation_layout,
-};
 
 fn build_stylesheet_with_rules(rule_count: usize) -> fastrender::css::types::StyleSheet {
   let mut css = String::new();
@@ -59,17 +59,7 @@ fn cascade_survives_rule_index_allocation_failure() {
   fail_next_allocation(alloc_size, alloc_align);
 
   let result = apply_style_set_with_media_target_and_imports_cached_with_deadline(
-    &dom,
-    &style_set,
-    &media_ctx,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
+    &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,
   );
 
   assert_eq!(

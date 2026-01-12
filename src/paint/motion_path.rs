@@ -550,7 +550,9 @@ mod tests {
     };
     style.offset_distance = Length::new(50.0, crate::style::values::LengthUnit::Vw);
 
-    assert!(compute_motion_transform(&style, Rect::from_xywh(0.0, 0.0, 10.0, 10.0), None).is_none());
+    assert!(
+      compute_motion_transform(&style, Rect::from_xywh(0.0, 0.0, 10.0, 10.0), None).is_none()
+    );
   }
 
   #[test]

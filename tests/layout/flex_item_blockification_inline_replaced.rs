@@ -82,4 +82,3 @@ fn flex_items_blockify_inline_replaced_children_before_anonymous_fixup() {
     "expected flex container height to be 37px after blockification, got {height}"
   );
 }
-

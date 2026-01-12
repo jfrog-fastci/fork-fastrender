@@ -61,7 +61,10 @@ fn container_type_folds_implied_containment_into_computed_style() {
   assert!(!inline.styles.containment.paint);
 
   let scroll = find_by_id(&styled, "scroll").expect("scroll element");
-  assert_eq!(scroll.styles.containment, fastrender::style::types::Containment::none());
+  assert_eq!(
+    scroll.styles.containment,
+    fastrender::style::types::Containment::none()
+  );
 
   let size_scroll = find_by_id(&styled, "size_scroll").expect("size_scroll element");
   assert!(size_scroll.styles.containment.size);
@@ -85,5 +88,8 @@ fn container_type_folds_implied_containment_into_computed_style() {
   assert!(!combo.styles.containment.paint);
 
   let normal = find_by_id(&styled, "normal").expect("normal element");
-  assert_eq!(normal.styles.containment, fastrender::style::types::Containment::none());
+  assert_eq!(
+    normal.styles.containment,
+    fastrender::style::types::Containment::none()
+  );
 }

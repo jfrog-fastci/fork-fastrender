@@ -55,7 +55,10 @@ fn grid_item_height_fit_content_does_not_clamp_to_auto_row_probe() {
   let flex_auto = BoxNode::new_block(
     Arc::new(flex_base_style.clone()),
     FormattingContextType::Flex,
-    vec![make_wrapping_text_box(&long_text), make_wrapping_text_box(&long_text)],
+    vec![
+      make_wrapping_text_box(&long_text),
+      make_wrapping_text_box(&long_text),
+    ],
   );
 
   let factory = FormattingContextFactory::new();
@@ -78,7 +81,10 @@ fn grid_item_height_fit_content_does_not_clamp_to_auto_row_probe() {
   let flex_fit = BoxNode::new_block(
     Arc::new(flex_fit_style),
     FormattingContextType::Flex,
-    vec![make_wrapping_text_box(&long_text), make_wrapping_text_box(&long_text)],
+    vec![
+      make_wrapping_text_box(&long_text),
+      make_wrapping_text_box(&long_text),
+    ],
   );
 
   let mut second_style = ComputedStyle::default();
@@ -94,18 +100,28 @@ fn grid_item_height_fit_content_does_not_clamp_to_auto_row_probe() {
   grid_style.display = Display::Grid;
   grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
   grid_style.grid_template_rows = vec![GridTrack::Auto, GridTrack::Auto];
-  let grid =
-    BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![flex_fit, second]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![flex_fit, second],
+  );
 
   let grid_fc = GridFormattingContext::new();
   let fragment = grid_fc
     .layout(
       &grid,
-      &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Definite(500.0)),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(200.0),
+        AvailableSpace::Definite(500.0),
+      ),
     )
     .expect("grid layout");
 
-  assert_eq!(fragment.children.len(), 2, "expected two grid item fragments");
+  assert_eq!(
+    fragment.children.len(),
+    2,
+    "expected two grid item fragments"
+  );
   let fit_fragment = &fragment.children[0];
   let second_fragment = &fragment.children[1];
 

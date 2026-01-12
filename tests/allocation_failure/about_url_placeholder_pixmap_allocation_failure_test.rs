@@ -1,7 +1,7 @@
+use super::{fail_next_allocation, failed_allocs, lock_allocator};
 use fastrender::error::{Error, RenderError};
 use fastrender::image_loader::ImageCache;
 use fastrender::style::types::OrientationTransform;
-use super::{fail_next_allocation, failed_allocs, lock_allocator};
 
 #[test]
 fn about_url_placeholder_pixmap_survives_allocation_failure() {

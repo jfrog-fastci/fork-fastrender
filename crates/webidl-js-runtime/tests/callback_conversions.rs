@@ -1,7 +1,9 @@
-use webidl_ir::{IdlType, NamedType, NamedTypeKind, TypeAnnotation};
-use webidl_js_runtime::conversions::{convert_to_callback, invoke_callback_interface, to_callback_function};
-use webidl_js_runtime::{JsRuntime, VmJsRuntime};
 use vm_js::Value;
+use webidl_ir::{IdlType, NamedType, NamedTypeKind, TypeAnnotation};
+use webidl_js_runtime::conversions::{
+  convert_to_callback, invoke_callback_interface, to_callback_function,
+};
+use webidl_js_runtime::{JsRuntime, VmJsRuntime};
 
 fn callback_interface_type(name: &str) -> IdlType {
   IdlType::Named(NamedType {
@@ -38,7 +40,8 @@ fn callback_interface_conversion_accepts_object_with_handle_event_method() {
 
   let obj = rt.alloc_object_value().unwrap();
   let key = rt.property_key_from_str("handleEvent").unwrap();
-  rt.define_data_property(obj, key, handle_event, true).unwrap();
+  rt.define_data_property(obj, key, handle_event, true)
+    .unwrap();
 
   let ty = callback_interface_type("EventListener");
   let got = convert_to_callback(&mut rt, obj, &ty).unwrap();
@@ -123,7 +126,8 @@ fn invoke_callback_interface_calls_handle_event_with_object_this() {
     .unwrap();
 
   let key = rt.property_key_from_str("handleEvent").unwrap();
-  rt.define_data_property(obj, key, handle_event, true).unwrap();
+  rt.define_data_property(obj, key, handle_event, true)
+    .unwrap();
 
   let result = invoke_callback_interface(&mut rt, obj, &[event]).unwrap();
   assert_eq!(result, Value::Number(2.0));

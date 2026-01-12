@@ -1,13 +1,13 @@
+use fastrender::geometry::Size;
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::geometry::Size;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
 use fastrender::style::types::{
-  AlignContent, AlignItems, BorderStyle, BoxSizing, Direction, FlexDirection, FlexWrap, JustifyContent,
-  WritingMode,
+  AlignContent, AlignItems, BorderStyle, BoxSizing, Direction, FlexDirection, FlexWrap,
+  JustifyContent, WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -101,7 +101,12 @@ fn find_abs_bounds_by_box_id(
   let abs_x = offset_x + fragment.bounds.x();
   let abs_y = offset_y + fragment.bounds.y();
   if fragment_box_id(fragment) == Some(box_id) {
-    return Some((abs_x, abs_y, fragment.bounds.width(), fragment.bounds.height()));
+    return Some((
+      abs_x,
+      abs_y,
+      fragment.bounds.width(),
+      fragment.bounds.height(),
+    ));
   }
   for child in &fragment.children {
     if let Some(found) = find_abs_bounds_by_box_id(child, abs_x, abs_y, box_id) {
@@ -400,7 +405,8 @@ fn abspos_static_position_space_evenly_negative_free_space_falls_back_to_safe_st
 }
 
 #[test]
-fn abspos_static_position_space_evenly_negative_free_space_falls_back_to_safe_start_in_row_reverse() {
+fn abspos_static_position_space_evenly_negative_free_space_falls_back_to_safe_start_in_row_reverse()
+{
   // Like the test above, but with a reversed main axis. The fallback is `safe center`, which under
   // safe overflow alignment becomes physical start (not main-start), so the item should start-align
   // to x≈0 even though `row-reverse` main-start is on the right.
@@ -444,7 +450,8 @@ fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_st
 }
 
 #[test]
-fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_start_in_row_reverse() {
+fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_start_in_row_reverse()
+{
   // With negative free space, `space-around` falls back to `safe center`, which becomes physical
   // start under safe overflow alignment. Ensure this uses physical start even when the main axis is
   // reversed.
@@ -467,7 +474,8 @@ fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_st
 }
 
 #[test]
-fn abspos_static_position_space_between_negative_free_space_falls_back_to_safe_start_in_column_reverse() {
+fn abspos_static_position_space_between_negative_free_space_falls_back_to_safe_start_in_column_reverse(
+) {
   // Same as `abspos_static_position_space_between_negative_free_space_falls_back_to_safe_start`, but
   // with a vertical (reversed) main axis.
   //
@@ -492,7 +500,8 @@ fn abspos_static_position_space_between_negative_free_space_falls_back_to_safe_s
 }
 
 #[test]
-fn abspos_static_position_space_evenly_negative_free_space_falls_back_to_safe_start_in_column_reverse() {
+fn abspos_static_position_space_evenly_negative_free_space_falls_back_to_safe_start_in_column_reverse(
+) {
   // Like the space-between test above, but for the Box Alignment `space-evenly` keyword.
   // `space-evenly` falls back to `safe center` under negative free space, which becomes physical
   // start alignment.
@@ -515,7 +524,8 @@ fn abspos_static_position_space_evenly_negative_free_space_falls_back_to_safe_st
 }
 
 #[test]
-fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_start_in_column_reverse() {
+fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_start_in_column_reverse(
+) {
   // `space-around` falls back to `safe center` under negative free space, which becomes physical
   // start alignment. Cover a reversed vertical main axis.
   let mut container_style = ComputedStyle::default();
@@ -588,7 +598,11 @@ fn abspos_static_position_in_nested_zero_sized_flex_item() {
   root_style.height = Some(Length::px(100.0));
   root_style.justify_content = JustifyContent::Center;
   root_style.align_items = AlignItems::Center;
-  let mut root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Flex, vec![item]);
+  let mut root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Flex,
+    vec![item],
+  );
   root.id = 1;
 
   let constraints = LayoutConstraints::definite(100.0, 100.0);
@@ -597,17 +611,49 @@ fn abspos_static_position_in_nested_zero_sized_flex_item() {
   let first = fc.layout(&root, &constraints).expect("flex layout");
   let (item_x, item_y, item_w, item_h) =
     find_abs_bounds_by_box_id(&first, 0.0, 0.0, 2).expect("nested item fragment");
-  assert!(item_w.abs() < 0.1, "expected nested item width≈0, got {}", item_w);
-  assert!(item_h.abs() < 0.1, "expected nested item height≈0, got {}", item_h);
-  assert!((item_x - 50.0).abs() < 0.1, "expected nested item x≈50, got {}", item_x);
-  assert!((item_y - 50.0).abs() < 0.1, "expected nested item y≈50, got {}", item_y);
+  assert!(
+    item_w.abs() < 0.1,
+    "expected nested item width≈0, got {}",
+    item_w
+  );
+  assert!(
+    item_h.abs() < 0.1,
+    "expected nested item height≈0, got {}",
+    item_h
+  );
+  assert!(
+    (item_x - 50.0).abs() < 0.1,
+    "expected nested item x≈50, got {}",
+    item_x
+  );
+  assert!(
+    (item_y - 50.0).abs() < 0.1,
+    "expected nested item y≈50, got {}",
+    item_y
+  );
 
   let (abs_x, abs_y, abs_w, abs_h) =
     find_abs_bounds_by_box_id(&first, 0.0, 0.0, 3).expect("abspos fragment");
-  assert!((abs_w - 10.0).abs() < 0.1, "expected abspos width≈10, got {}", abs_w);
-  assert!((abs_h - 20.0).abs() < 0.1, "expected abspos height≈20, got {}", abs_h);
-  assert!((abs_x - 45.0).abs() < 0.1, "expected abspos x≈45, got {}", abs_x);
-  assert!((abs_y - 40.0).abs() < 0.1, "expected abspos y≈40, got {}", abs_y);
+  assert!(
+    (abs_w - 10.0).abs() < 0.1,
+    "expected abspos width≈10, got {}",
+    abs_w
+  );
+  assert!(
+    (abs_h - 20.0).abs() < 0.1,
+    "expected abspos height≈20, got {}",
+    abs_h
+  );
+  assert!(
+    (abs_x - 45.0).abs() < 0.1,
+    "expected abspos x≈45, got {}",
+    abs_x
+  );
+  assert!(
+    (abs_y - 40.0).abs() < 0.1,
+    "expected abspos y≈40, got {}",
+    abs_y
+  );
 
   // Run layout again to guard against template-cache reuse producing different results.
   let second = fc.layout(&root, &constraints).expect("flex layout");
@@ -1027,7 +1073,8 @@ fn abspos_static_position_respects_rtl_direction_in_vertical_lr_writing_mode_for
 }
 
 #[test]
-fn abspos_static_position_respects_start_end_keywords_in_vertical_lr_writing_mode_rtl_row_reverse() {
+fn abspos_static_position_respects_start_end_keywords_in_vertical_lr_writing_mode_rtl_row_reverse()
+{
   // `start`/`end` alignment keywords resolve against the inline-start/inline-end edges (affected by
   // `direction`), but are independent of `flex-direction` reversal.
   //
@@ -1059,7 +1106,8 @@ fn abspos_static_position_respects_start_end_keywords_in_vertical_lr_writing_mod
 }
 
 #[test]
-fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_vertical_lr_writing_mode_rtl_column() {
+fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_vertical_lr_writing_mode_rtl_column(
+) {
   // In a vertical writing mode, `direction` flips the inline axis even though it is vertical.
   // When wrapping, our flex adapter runs Taffy with a positive-physical cross axis and mirrors item
   // positions after layout to emulate negative-physical axes. `start`/`end` are physical keywords
@@ -1092,7 +1140,8 @@ fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_verti
 }
 
 #[test]
-fn abspos_static_position_respects_self_start_end_under_wrap_in_vertical_lr_writing_mode_rtl_column() {
+fn abspos_static_position_respects_self_start_end_under_wrap_in_vertical_lr_writing_mode_rtl_column(
+) {
   // Similar to the test above, but with `self-start`/`self-end` which resolve against the *item's*
   // own writing-mode/direction rather than the flex container's. Use a horizontal writing mode on
   // the abspos child so its block-start is physical top.
@@ -1209,7 +1258,8 @@ fn abspos_static_position_respects_wrap_reverse_in_vertical_lr_writing_mode() {
 }
 
 #[test]
-fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertical_lr_writing_mode() {
+fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertical_lr_writing_mode()
+{
   // `start`/`end` align to the writing-mode block-start/block-end edges and must not mirror with
   // `wrap-reverse` (unlike `flex-start`/`flex-end`).
   for (align_items, expected_x) in [(AlignItems::Start, 0.0), (AlignItems::End, 90.0)] {
@@ -1238,7 +1288,8 @@ fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertica
 }
 
 #[test]
-fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_on_align_self_in_vertical_lr_writing_mode() {
+fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_on_align_self_in_vertical_lr_writing_mode(
+) {
   // Same as `abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertical_lr_writing_mode`,
   // but with `align-self` overriding `align-items`.
   for (align_self, expected_x) in [(AlignItems::Start, 0.0), (AlignItems::End, 90.0)] {
@@ -1268,7 +1319,8 @@ fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_on_align_s
 }
 
 #[test]
-fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertical_lr_writing_mode_column() {
+fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertical_lr_writing_mode_column(
+) {
   // Similar to `abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertical_lr_writing_mode`,
   // but with a vertical cross axis (`flex-direction: column`). This exercises `start`/`end` in the
   // inline axis for a vertical writing mode.
@@ -1299,7 +1351,8 @@ fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertica
 }
 
 #[test]
-fn abspos_static_position_respects_self_start_end_under_wrap_reverse_in_vertical_lr_writing_mode_column() {
+fn abspos_static_position_respects_self_start_end_under_wrap_reverse_in_vertical_lr_writing_mode_column(
+) {
   // `self-start`/`self-end` resolve against the item's writing-mode/direction. Ensure the
   // wrap-reverse mirroring pass does not flip the child's interpretation.
   for (align_self, expected_y) in [(AlignItems::SelfStart, 90.0), (AlignItems::SelfEnd, 0.0)] {
@@ -1419,7 +1472,8 @@ fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_verti
 }
 
 #[test]
-fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_vertical_writing_mode_on_align_self() {
+fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_vertical_writing_mode_on_align_self(
+) {
   // Same as above, but with `align-self` overriding the container's `align-items`.
   for (align_self, expected_x) in [(AlignItems::Start, 90.0), (AlignItems::End, 0.0)] {
     let mut container_style = ComputedStyle::default();
@@ -1526,7 +1580,8 @@ fn abspos_static_position_respects_wrap_reverse_in_negative_cross_axis_writing_m
 }
 
 #[test]
-fn abspos_static_position_respects_wrap_reverse_in_negative_cross_axis_writing_mode_on_align_self() {
+fn abspos_static_position_respects_wrap_reverse_in_negative_cross_axis_writing_mode_on_align_self()
+{
   // Same as above, but with `align-self` overriding the container's `align-items`.
   for (align_self, expected_x) in [(AlignItems::FlexStart, 0.0), (AlignItems::FlexEnd, 90.0)] {
     let mut container_style = ComputedStyle::default();
@@ -1799,7 +1854,8 @@ fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis_insid
 }
 
 #[test]
-fn abspos_static_position_respects_align_items_flex_end_under_wrap_reverse_with_horizontal_cross_axis() {
+fn abspos_static_position_respects_align_items_flex_end_under_wrap_reverse_with_horizontal_cross_axis(
+) {
   // In a column flex container, the cross axis is horizontal. Under `wrap-reverse` the flex
   // cross-end edge becomes the physical left edge, so `align-items:flex-end` should place the child
   // at x≈0.
@@ -1824,7 +1880,8 @@ fn abspos_static_position_respects_align_items_flex_end_under_wrap_reverse_with_
 }
 
 #[test]
-fn abspos_static_position_respects_align_self_flex_start_under_wrap_reverse_with_horizontal_cross_axis() {
+fn abspos_static_position_respects_align_self_flex_start_under_wrap_reverse_with_horizontal_cross_axis(
+) {
   // `align-self` should override `align-items` and still respect the wrap-reverse cross-start edge
   // for the `flex-start` keyword when the cross axis is horizontal.
   let mut container_style = ComputedStyle::default();
@@ -1849,7 +1906,8 @@ fn abspos_static_position_respects_align_self_flex_start_under_wrap_reverse_with
 }
 
 #[test]
-fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_on_align_self_with_horizontal_cross_axis() {
+fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_on_align_self_with_horizontal_cross_axis(
+) {
   for (align_self, expected_x) in [(AlignItems::Start, 0.0), (AlignItems::End, 90.0)] {
     let mut container_style = ComputedStyle::default();
     container_style.display = Display::Flex;

@@ -266,8 +266,9 @@ fn flex_item_height_calc_percent_resolves_against_container_inner_height() {
   );
 
   // Simulate block layout passing the resolved used border-box height.
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite)
-    .with_used_border_box_size(Some(200.0), Some(200.0));
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite)
+      .with_used_border_box_size(Some(200.0), Some(200.0));
 
   let fc = FlexFormattingContext::new();
   let fragment = fc
@@ -314,11 +315,14 @@ fn flex_container_padding_calc_percent_resolves_against_containing_block_and_cla
   );
 
   // Simulate block layout passing the resolved used border-box width.
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite)
-    .with_used_border_box_size(Some(200.0), None);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite)
+      .with_used_border_box_size(Some(200.0), None);
 
   let fc = FlexFormattingContext::new();
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
   assert!(
     (fragment.bounds.width() - 200.0).abs() < 0.5,
     "expected container border-box width ≈ 200px, got {}",

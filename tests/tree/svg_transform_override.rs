@@ -67,4 +67,3 @@ fn css_transform_none_removes_svg_transform_attribute_in_serialized_svg() {
     .expect("g element");
   assert!(g.attribute("transform").is_none());
 }
-

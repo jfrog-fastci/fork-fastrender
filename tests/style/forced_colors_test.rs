@@ -29,7 +29,15 @@ fn styled_with_forced_colors(css: &str, forced: bool) -> StyledNode {
     .with_color_scheme(ColorScheme::Light)
     .with_forced_colors(forced);
   apply_styles_with_media_target_and_imports(
-    &dom, &stylesheet, &media, None, None, None, None, None, None,
+    &dom,
+    &stylesheet,
+    &media,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
   )
 }
 
@@ -40,7 +48,15 @@ fn styled_with_forced_colors_html(html: &str, css: &str, forced: bool) -> Styled
     .with_color_scheme(ColorScheme::Light)
     .with_forced_colors(forced);
   apply_styles_with_media_target_and_imports(
-    &dom, &stylesheet, &media, None, None, None, None, None, None,
+    &dom,
+    &stylesheet,
+    &media,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
   )
 }
 
@@ -157,7 +173,10 @@ fn system_color_text_is_not_overridden_by_forced_colors_policy() {
 
   let styled = styled_with_forced_colors(css, true);
   let node = find_by_id(&styled, "t").expect("node");
-  assert_eq!(node.styles.color, SystemColor::LinkText.to_rgba(false, true));
+  assert_eq!(
+    node.styles.color,
+    SystemColor::LinkText.to_rgba(false, true)
+  );
 }
 
 #[test]
@@ -223,5 +242,8 @@ fn ua_link_default_color_uses_system_palette_in_forced_colors_mode() {
   let html = r#"<a id="t" href="https://example.com">link</a>"#;
   let styled = styled_with_forced_colors_html(html, "", true);
   let node = find_by_id(&styled, "t").expect("node");
-  assert_eq!(node.styles.color, SystemColor::LinkText.to_rgba(false, true));
+  assert_eq!(
+    node.styles.color,
+    SystemColor::LinkText.to_rgba(false, true)
+  );
 }

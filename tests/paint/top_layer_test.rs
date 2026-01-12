@@ -15,7 +15,10 @@ fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
   {
     return Some(node);
   }
-  node.children.iter().find_map(|child| find_dom_by_id(child, id))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_dom_by_id(child, id))
 }
 
 #[test]
@@ -52,8 +55,8 @@ fn modal_dialog_adds_backdrop_and_inert() {
   );
 
   let renderer = FastRender::new().expect("renderer");
-  let mut doc =
-    BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(120, 120)).expect("doc");
+  let mut doc = BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(120, 120))
+    .expect("doc");
   let ids = enumerate_dom_ids(doc.dom());
   let btn = find_dom_by_id(doc.dom(), "btn").expect("button");
   let btn_id = *ids.get(&(btn as *const DomNode)).expect("node id");
@@ -91,8 +94,8 @@ fn non_modal_dialog_allows_focus() {
   "#;
 
   let renderer = FastRender::new().expect("renderer");
-  let mut doc =
-    BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(120, 120)).expect("doc");
+  let mut doc = BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(120, 120))
+    .expect("doc");
   let ids = enumerate_dom_ids(doc.dom());
   let btn = find_dom_by_id(doc.dom(), "btn").expect("button");
   let btn_id = *ids.get(&(btn as *const DomNode)).expect("node id");

@@ -1,7 +1,7 @@
 #![cfg(test)]
 
-use super::Document;
 use super::parse_html;
+use super::Document;
 use selectors::context::QuirksMode;
 
 #[test]
@@ -74,7 +74,9 @@ fn query_selector_traverses_svg_template_contents() {
     "</body></html>",
   );
   let mut doc = parse_html(html).unwrap();
-  let hit = doc.get_element_by_id("hit").expect("expected #hit inside SVG template");
+  let hit = doc
+    .get_element_by_id("hit")
+    .expect("expected #hit inside SVG template");
   assert_eq!(doc.query_selector("#hit", None).unwrap(), Some(hit));
   assert_eq!(doc.query_selector_all("#hit", None).unwrap(), vec![hit]);
   assert!(doc.matches_selector(hit, "#hit").unwrap());

@@ -125,4 +125,3 @@ fn html_label_association_for_and_wrapping() {
   let second_target = find_by_id(&tree, "second-target").expect("second-target");
   assert_eq!(second_target.name, None);
 }
-

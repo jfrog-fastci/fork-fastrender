@@ -1,7 +1,7 @@
 //! SVG integration tests consolidated from tests/svg_*.rs
 
-mod document_css_policy_test;
 mod css_transform_style_support;
+mod document_css_policy_test;
 mod filter_region;
 mod filter_tests;
 mod filter_turbulence;

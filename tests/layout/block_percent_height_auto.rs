@@ -12,12 +12,21 @@ use fastrender::tree::box_tree::{BoxNode, ReplacedType};
 use fastrender::{FragmentContent, FragmentNode, Size};
 use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let matches = match &fragment.content {
     FragmentContent::Block { box_id: Some(id) } => *id == box_id,
-    FragmentContent::Inline { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Text { box_id: Some(id), .. } => *id == box_id,
+    FragmentContent::Inline {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Text {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches {
@@ -42,19 +51,30 @@ fn percent_height_in_auto_height_block_container_computes_to_auto() {
   fixed_child_style.display = Display::Block;
   fixed_child_style.height = Some(Length::px(10.0));
   fixed_child_style.height_keyword = None;
-  let fixed_child =
-    BoxNode::new_block(Arc::new(fixed_child_style), FormattingContextType::Block, vec![]);
+  let fixed_child = BoxNode::new_block(
+    Arc::new(fixed_child_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let mut flex_style = ComputedStyle::default();
   flex_style.display = Display::Flex;
   flex_style.flex_direction = FlexDirection::Column;
   flex_style.height = Some(Length::percent(100.0));
   flex_style.height_keyword = None;
-  let flex_box = BoxNode::new_block(Arc::new(flex_style), FormattingContextType::Flex, vec![fixed_child]);
+  let flex_box = BoxNode::new_block(
+    Arc::new(flex_style),
+    FormattingContextType::Flex,
+    vec![fixed_child],
+  );
 
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Block;
-  let parent = BoxNode::new_block(Arc::new(parent_style), FormattingContextType::Block, vec![flex_box]);
+  let parent = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Block,
+    vec![flex_box],
+  );
 
   let fc = BlockFormattingContext::new();
   let fragment = fc

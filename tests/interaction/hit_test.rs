@@ -102,9 +102,31 @@ fn image_map_fixture() -> (DomNode, BoxTree, FragmentTree, usize, usize, usize, 
         "map",
         vec![("id", "m")],
         vec![
-          elem("area", vec![("id", "a1"), ("shape", "rect"), ("coords", "0,0,10,10"), ("href", "/first")], vec![]),
-          elem("area", vec![("id", "a2"), ("shape", "rect"), ("coords", "0,0,10,10"), ("href", "/second")], vec![]),
-          elem("area", vec![("id", "dead"), ("shape", "rect"), ("coords", "20,20,30,30")], vec![]),
+          elem(
+            "area",
+            vec![
+              ("id", "a1"),
+              ("shape", "rect"),
+              ("coords", "0,0,10,10"),
+              ("href", "/first"),
+            ],
+            vec![],
+          ),
+          elem(
+            "area",
+            vec![
+              ("id", "a2"),
+              ("shape", "rect"),
+              ("coords", "0,0,10,10"),
+              ("href", "/second"),
+            ],
+            vec![],
+          ),
+          elem(
+            "area",
+            vec![("id", "dead"), ("shape", "rect"), ("coords", "20,20,30,30")],
+            vec![],
+          ),
         ],
       ),
     ],
@@ -116,8 +138,11 @@ fn image_map_fixture() -> (DomNode, BoxTree, FragmentTree, usize, usize, usize, 
   let area1_id = ids[&(&dom.children[0].children[1].children[0] as *const DomNode)];
   let dead_id = ids[&(&dom.children[0].children[1].children[2] as *const DomNode)];
 
-  let mut img_box =
-    BoxNode::new_block(default_style(), fastrender::FormattingContextType::Block, vec![]);
+  let mut img_box = BoxNode::new_block(
+    default_style(),
+    fastrender::FormattingContextType::Block,
+    vec![],
+  );
   img_box.styled_node_id = Some(img_id);
   let mut container_box = BoxNode::new_block(
     default_style(),
@@ -129,8 +154,11 @@ fn image_map_fixture() -> (DomNode, BoxTree, FragmentTree, usize, usize, usize, 
   let img_box_id = box_tree.root.children[0].id;
 
   // Root fragment is offset to ensure image-map coordinate mapping accounts for ancestor offsets.
-  let img_fragment =
-    FragmentNode::new_block_with_id(Rect::from_xywh(10.0, 10.0, 100.0, 100.0), img_box_id, vec![]);
+  let img_fragment = FragmentNode::new_block_with_id(
+    Rect::from_xywh(10.0, 10.0, 100.0, 100.0),
+    img_box_id,
+    vec![],
+  );
   let root_fragment = FragmentNode::new_block_with_id(
     Rect::from_xywh(50.0, 50.0, 200.0, 200.0),
     box_tree.root.id,
@@ -138,15 +166,22 @@ fn image_map_fixture() -> (DomNode, BoxTree, FragmentTree, usize, usize, usize, 
   );
   let fragment_tree = FragmentTree::new(root_fragment);
 
-  (dom, box_tree, fragment_tree, img_box_id, img_id, area1_id, dead_id)
+  (
+    dom,
+    box_tree,
+    fragment_tree,
+    img_box_id,
+    img_id,
+    area1_id,
+    dead_id,
+  )
 }
 
 #[test]
 fn hit_test_dom_resolves_img_usemap_area_links() {
   let (dom, box_tree, fragment_tree, img_box_id, img_id, area1_id, _) = image_map_fixture();
 
-  let result =
-    hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(65.0, 65.0)).expect("hit");
+  let result = hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(65.0, 65.0)).expect("hit");
   assert_eq!(result.box_id, img_box_id);
   assert_eq!(result.styled_node_id, img_id);
   assert_eq!(result.dom_node_id, area1_id);
@@ -158,8 +193,7 @@ fn hit_test_dom_resolves_img_usemap_area_links() {
 fn hit_test_dom_resolves_img_usemap_area_without_href_as_other() {
   let (dom, box_tree, fragment_tree, _, _, _, dead_id) = image_map_fixture();
 
-  let result =
-    hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(85.0, 85.0)).expect("hit");
+  let result = hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(85.0, 85.0)).expect("hit");
   assert_eq!(result.dom_node_id, dead_id);
   assert_eq!(result.kind, HitTestKind::Other);
   assert_eq!(result.href, None);

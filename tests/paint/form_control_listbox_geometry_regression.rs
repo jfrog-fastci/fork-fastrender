@@ -125,7 +125,9 @@ fn listbox_select_uses_border_box_geometry_once() {
   }
 
   assert!(
-    items.iter().any(|item| matches!(item, DisplayItem::Text(_))),
+    items
+      .iter()
+      .any(|item| matches!(item, DisplayItem::Text(_))),
     "listbox select should paint option text"
   );
 }

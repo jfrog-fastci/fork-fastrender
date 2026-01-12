@@ -9,7 +9,10 @@ fn find_text_fragment_abs_bounds(
   let abs_x = origin.0 + node.bounds.x();
   let abs_y = origin.1 + node.bounds.y();
 
-  if let FragmentContent::Text { text, is_marker, .. } = &node.content {
+  if let FragmentContent::Text {
+    text, is_marker, ..
+  } = &node.content
+  {
     if predicate(text, *is_marker) {
       return Some((abs_x, abs_y, node.bounds.width(), node.bounds.height()));
     }
@@ -41,7 +44,9 @@ fn find_line_containing_background<'a>(
   node: &'a FragmentNode,
   color: Rgba,
 ) -> Option<&'a FragmentNode> {
-  if matches!(node.content, FragmentContent::Line { .. }) && subtree_contains_background(node, color) {
+  if matches!(node.content, FragmentContent::Line { .. })
+    && subtree_contains_background(node, color)
+  {
     return Some(node);
   }
   for child in node.children.iter() {
@@ -52,7 +57,10 @@ fn find_line_containing_background<'a>(
   None
 }
 
-fn find_fragment_by_background<'a>(node: &'a FragmentNode, color: Rgba) -> Option<&'a FragmentNode> {
+fn find_fragment_by_background<'a>(
+  node: &'a FragmentNode,
+  color: Rgba,
+) -> Option<&'a FragmentNode> {
   if node
     .style
     .as_ref()

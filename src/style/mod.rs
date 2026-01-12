@@ -51,8 +51,8 @@ use counters::CounterProperties;
 use display::Display;
 use font_feature_values::FontFeatureValuesRegistry;
 use font_palette::FontPaletteRegistry;
-use position_try::PositionTryRegistry;
 use position::Position;
+use position_try::PositionTryRegistry;
 use smallvec::SmallVec;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -61,6 +61,7 @@ use types::AccentColor;
 use types::AlignContent;
 use types::AlignItems;
 use types::AnchorScope;
+use types::AnchorSizeFunction;
 use types::AnimationComposition;
 use types::AnimationDirection;
 use types::AnimationFillMode;
@@ -92,7 +93,6 @@ use types::ClipPath;
 use types::ClipRect;
 use types::ColorOrNone;
 use types::ColorSchemePreference;
-use types::DynamicRangeLimit;
 use types::ColumnFill;
 use types::ColumnSpan;
 use types::ContainIntrinsicSizeAxis;
@@ -102,9 +102,10 @@ use types::ContentVisibility;
 use types::CursorImage;
 use types::CursorKeyword;
 use types::Direction;
+use types::DynamicRangeLimit;
 use types::EmptyCells;
-use types::FillRule;
 use types::FieldSizing;
+use types::FillRule;
 use types::FilterFunction;
 use types::FlexBasis;
 use types::FlexDirection;
@@ -115,9 +116,9 @@ use types::FontLanguageOverride;
 use types::FontOpticalSizing;
 use types::FontPalette;
 use types::FontSizeAdjust;
+use types::FontSmoothing;
 use types::FontStretch;
 use types::FontStyle;
-use types::FontSmoothing;
 use types::FontSynthesis;
 use types::FontVariant;
 use types::FontVariantAlternates;
@@ -130,7 +131,6 @@ use types::FontVariantPosition;
 use types::FontVariationSetting;
 use types::FontWeight;
 use types::ForcedColorAdjust;
-use types::PrintColorAdjust;
 use types::GridTrack;
 use types::HyphensMode;
 use types::ImageOrientation;
@@ -147,13 +147,13 @@ use types::LineHeight;
 use types::ListStyleImage;
 use types::ListStylePosition;
 use types::ListStyleType;
- use types::MaskClip;
- use types::MaskComposite;
- use types::MaskBorder;
- use types::MaskLayer;
- use types::MaskMode;
- use types::MaskOrigin;
- use types::MixBlendMode;
+use types::MaskBorder;
+use types::MaskClip;
+use types::MaskComposite;
+use types::MaskLayer;
+use types::MaskMode;
+use types::MaskOrigin;
+use types::MixBlendMode;
 use types::ObjectFit;
 use types::ObjectPosition;
 use types::OffsetAnchor;
@@ -162,15 +162,15 @@ use types::OffsetRotate;
 use types::OutlineColor;
 use types::OutlineStyle;
 use types::Overflow;
-use types::OverflowClipMargin;
 use types::OverflowAnchor;
+use types::OverflowClipMargin;
 use types::OverflowWrap;
-use types::AnchorSizeFunction;
 use types::OverscrollBehavior;
 use types::PointerEvents;
-use types::PositionArea;
 use types::PositionAnchor;
+use types::PositionArea;
 use types::PositionTryOrder;
+use types::PrintColorAdjust;
 use types::Resize;
 use types::RubyAlign;
 use types::RubyMerge;
@@ -690,10 +690,7 @@ thread_local! {
 }
 
 /// Execute `f` with the given cascade origin set for `LogicalState` order tracking.
-pub(crate) fn with_cascade_order_origin<R>(
-  origin: CascadeOrderOrigin,
-  f: impl FnOnce() -> R,
-) -> R {
+pub(crate) fn with_cascade_order_origin<R>(origin: CascadeOrderOrigin, f: impl FnOnce() -> R) -> R {
   struct Guard(u8);
   impl Drop for Guard {
     fn drop(&mut self) {
@@ -1407,7 +1404,8 @@ pub struct ComputedStyle {
   ///
   /// This stores the pre-resolution value so dependent properties can be recomputed after paint
   /// time mutations to `color` (e.g. transitions/animations, inherited color updates).
-  pub current_color_dependent_declarations: Arc<HashMap<&'static str, CurrentColorDependentDeclaration>>,
+  pub current_color_dependent_declarations:
+    Arc<HashMap<&'static str, CurrentColorDependentDeclaration>>,
 
   // Generated content (for ::before and ::after pseudo-elements)
   pub content: String,

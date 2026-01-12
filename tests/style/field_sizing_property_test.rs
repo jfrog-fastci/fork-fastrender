@@ -41,12 +41,12 @@ fn field_sizing_parses_fixed_and_content() {
 
 #[test]
 fn field_sizing_invalid_value_is_ignored() {
-  let dom = dom::parse_html(r#"<input style="field-sizing: content; field-sizing: no-such-value">"#)
-    .unwrap();
+  let dom =
+    dom::parse_html(r#"<input style="field-sizing: content; field-sizing: no-such-value">"#)
+      .unwrap();
   let stylesheet = parse_stylesheet("").unwrap();
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
   let input = find_first(&styled, "input").expect("input");
   assert_eq!(input.styles.field_sizing, FieldSizing::Content);
 }
-

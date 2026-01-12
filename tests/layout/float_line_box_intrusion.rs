@@ -4,7 +4,9 @@ use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::style::float::{Clear, Float};
 use fastrender::style::values::Length;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{BoxNode, ComputedStyle, FastRender, FontConfig, FormattingContext, FormattingContextType};
+use fastrender::{
+  BoxNode, ComputedStyle, FastRender, FontConfig, FormattingContext, FormattingContextType,
+};
 use std::sync::Arc;
 
 fn find_block_with_line_children_and_width<'a>(
@@ -236,7 +238,9 @@ fn clear_breaks_margin_collapse_and_pushes_below_float() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 1000.0);
-  let fragment = bfc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   assert_eq!(fragment.children.len(), 2);
   let float_fragment = &fragment.children[0];

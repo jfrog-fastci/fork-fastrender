@@ -133,22 +133,24 @@ impl Headers {
     }
 
     let current_total = self.total_header_bytes();
-    let entry_bytes = name
-      .as_str()
-      .len()
-      .checked_add(value.len())
-      .ok_or(WebFetchError::LimitExceeded {
-        kind: WebFetchLimitKind::TotalHeaderBytes,
-        limit: self.limits.max_total_header_bytes,
-        attempted: usize::MAX,
-      })?;
-    let next_total = current_total
-      .checked_add(entry_bytes)
-      .ok_or(WebFetchError::LimitExceeded {
-        kind: WebFetchLimitKind::TotalHeaderBytes,
-        limit: self.limits.max_total_header_bytes,
-        attempted: usize::MAX,
-      })?;
+    let entry_bytes =
+      name
+        .as_str()
+        .len()
+        .checked_add(value.len())
+        .ok_or(WebFetchError::LimitExceeded {
+          kind: WebFetchLimitKind::TotalHeaderBytes,
+          limit: self.limits.max_total_header_bytes,
+          attempted: usize::MAX,
+        })?;
+    let next_total =
+      current_total
+        .checked_add(entry_bytes)
+        .ok_or(WebFetchError::LimitExceeded {
+          kind: WebFetchLimitKind::TotalHeaderBytes,
+          limit: self.limits.max_total_header_bytes,
+          attempted: usize::MAX,
+        })?;
     if next_total > self.limits.max_total_header_bytes {
       return Err(WebFetchError::LimitExceeded {
         kind: WebFetchLimitKind::TotalHeaderBytes,
@@ -157,9 +159,10 @@ impl Headers {
       });
     }
 
-    self
-      .header_list
-      .push(Header { name, value: value.to_string() });
+    self.header_list.push(Header {
+      name,
+      value: value.to_string(),
+    });
 
     if self.guard == HeadersGuard::RequestNoCors {
       self.remove_privileged_no_cors_request_headers();
@@ -227,7 +230,9 @@ impl Headers {
       return Ok(());
     }
 
-    if self.guard == HeadersGuard::RequestNoCors && !is_no_cors_safelisted_request_header(&name, value) {
+    if self.guard == HeadersGuard::RequestNoCors
+      && !is_no_cors_safelisted_request_header(&name, value)
+    {
       return Ok(());
     }
 
@@ -253,20 +258,22 @@ impl Headers {
         let mut removed_bytes: usize = 0;
         for idx in &to_remove {
           if let Some(header) = self.header_list.get(*idx) {
-            let entry_bytes = name_len
-              .checked_add(header.value.len())
-              .ok_or(WebFetchError::LimitExceeded {
-                kind: WebFetchLimitKind::TotalHeaderBytes,
-                limit: self.limits.max_total_header_bytes,
-                attempted: usize::MAX,
-              })?;
-            removed_bytes = removed_bytes
-              .checked_add(entry_bytes)
-              .ok_or(WebFetchError::LimitExceeded {
-                kind: WebFetchLimitKind::TotalHeaderBytes,
-                limit: self.limits.max_total_header_bytes,
-                attempted: usize::MAX,
-              })?;
+            let entry_bytes =
+              name_len
+                .checked_add(header.value.len())
+                .ok_or(WebFetchError::LimitExceeded {
+                  kind: WebFetchLimitKind::TotalHeaderBytes,
+                  limit: self.limits.max_total_header_bytes,
+                  attempted: usize::MAX,
+                })?;
+            removed_bytes =
+              removed_bytes
+                .checked_add(entry_bytes)
+                .ok_or(WebFetchError::LimitExceeded {
+                  kind: WebFetchLimitKind::TotalHeaderBytes,
+                  limit: self.limits.max_total_header_bytes,
+                  attempted: usize::MAX,
+                })?;
           }
         }
 
@@ -292,41 +299,42 @@ impl Headers {
             limit: self.limits.max_total_header_bytes,
             attempted: usize::MAX,
           })?;
-        let next_count = self
-          .header_list
-          .len()
-          .checked_sub(to_remove.len())
-          .ok_or(WebFetchError::LimitExceeded {
+        let next_count = self.header_list.len().checked_sub(to_remove.len()).ok_or(
+          WebFetchError::LimitExceeded {
             kind: WebFetchLimitKind::HeaderCount,
             limit: self.limits.max_header_count,
             attempted: usize::MAX,
-          })?;
+          },
+        )?;
         (next_count, next_total)
       }
       None => {
-        let next_count = self
-          .header_list
-          .len()
-          .checked_add(1)
-          .ok_or(WebFetchError::LimitExceeded {
-            kind: WebFetchLimitKind::HeaderCount,
-            limit: self.limits.max_header_count,
-            attempted: usize::MAX,
-          })?;
-        let entry_bytes = name_len
-          .checked_add(next_value_len)
-          .ok_or(WebFetchError::LimitExceeded {
-            kind: WebFetchLimitKind::TotalHeaderBytes,
-            limit: self.limits.max_total_header_bytes,
-            attempted: usize::MAX,
-          })?;
-        let next_total = current_total
-          .checked_add(entry_bytes)
-          .ok_or(WebFetchError::LimitExceeded {
-            kind: WebFetchLimitKind::TotalHeaderBytes,
-            limit: self.limits.max_total_header_bytes,
-            attempted: usize::MAX,
-          })?;
+        let next_count =
+          self
+            .header_list
+            .len()
+            .checked_add(1)
+            .ok_or(WebFetchError::LimitExceeded {
+              kind: WebFetchLimitKind::HeaderCount,
+              limit: self.limits.max_header_count,
+              attempted: usize::MAX,
+            })?;
+        let entry_bytes =
+          name_len
+            .checked_add(next_value_len)
+            .ok_or(WebFetchError::LimitExceeded {
+              kind: WebFetchLimitKind::TotalHeaderBytes,
+              limit: self.limits.max_total_header_bytes,
+              attempted: usize::MAX,
+            })?;
+        let next_total =
+          current_total
+            .checked_add(entry_bytes)
+            .ok_or(WebFetchError::LimitExceeded {
+              kind: WebFetchLimitKind::TotalHeaderBytes,
+              limit: self.limits.max_total_header_bytes,
+              attempted: usize::MAX,
+            })?;
         (next_count, next_total)
       }
     };
@@ -507,7 +515,11 @@ impl Headers {
       len = len.saturating_add(header.value.len());
       count = count.saturating_add(1);
     }
-    if count == 0 { None } else { Some(len) }
+    if count == 0 {
+      None
+    } else {
+      Some(len)
+    }
   }
 
   fn header_list_delete(&mut self, name: &HeaderName) {
@@ -565,8 +577,7 @@ fn validate_header_name(name: &str) -> Result<HeaderName> {
 
 fn normalize_header_value(value: &str) -> &str {
   // https://fetch.spec.whatwg.org/#concept-header-value-normalize
-  value
-    .trim_matches(|c| c == ' ' || c == '\t')
+  value.trim_matches(|c| c == ' ' || c == '\t')
 }
 
 fn trim_http_whitespace(value: &str) -> &str {
@@ -680,7 +691,10 @@ fn is_forbidden_request_header(name: &HeaderName, value: &str) -> bool {
 }
 
 fn is_forbidden_method(method: &str) -> bool {
-  matches!(method.to_ascii_uppercase().as_str(), "CONNECT" | "TRACE" | "TRACK")
+  matches!(
+    method.to_ascii_uppercase().as_str(),
+    "CONNECT" | "TRACE" | "TRACK"
+  )
 }
 
 fn is_no_cors_safelisted_request_header_name(name: &HeaderName) -> bool {
@@ -710,7 +724,11 @@ pub(crate) fn is_cors_safelisted_request_header(name: &HeaderName, value: &str) 
   }
 
   match name.as_str() {
-    "accept" => !value.as_bytes().iter().copied().any(is_cors_unsafe_request_header_byte),
+    "accept" => !value
+      .as_bytes()
+      .iter()
+      .copied()
+      .any(is_cors_unsafe_request_header_byte),
     "accept-language" | "content-language" => value
       .as_bytes()
       .iter()
@@ -726,7 +744,8 @@ pub(crate) fn is_cors_safelisted_request_header(name: &HeaderName, value: &str) 
         return false;
       }
 
-      let essence = trim_http_whitespace(value.split(';').next().unwrap_or("")).to_ascii_lowercase();
+      let essence =
+        trim_http_whitespace(value.split(';').next().unwrap_or("")).to_ascii_lowercase();
 
       matches!(
         essence.as_str(),
@@ -745,8 +764,7 @@ fn is_cors_unsafe_request_header_byte(byte: u8) -> bool {
   }
   matches!(
     byte,
-    0x22 | 0x28 | 0x29 | 0x3A | 0x3C | 0x3E | 0x3F | 0x40 | 0x5B | 0x5C | 0x5D | 0x7B | 0x7D
-      | 0x7F
+    0x22 | 0x28 | 0x29 | 0x3A | 0x3C | 0x3E | 0x3F | 0x40 | 0x5B | 0x5C | 0x5D | 0x7B | 0x7D | 0x7F
   )
 }
 

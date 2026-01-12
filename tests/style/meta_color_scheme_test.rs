@@ -31,7 +31,10 @@ fn find_element<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
       return Some(node);
     }
   }
-  node.children.iter().find_map(|child| find_element(child, tag))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_element(child, tag))
 }
 
 #[test]
@@ -108,4 +111,3 @@ fn author_color_scheme_overrides_meta_color_scheme() {
   assert!(!html_node.styles.used_dark_color_scheme);
   assert_eq!(html_node.styles.color, Rgba::rgb(255, 0, 0));
 }
-

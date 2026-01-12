@@ -47,4 +47,3 @@ fn intrinsic_block_size_does_not_clamp_replaced_to_zero_for_percent_max_width() 
   // 200px wide at a 2:1 aspect ratio => 100px tall.
   assert_approx_eq(block, 100.0);
 }
-

@@ -1,6 +1,7 @@
 use fastrender::geometry::Rect;
 use fastrender::paint::display_list::{
-  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter, StackingContextItem,
+  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter,
+  StackingContextItem,
 };
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
 use fastrender::style::types::{BackfaceVisibility, TransformStyle};
@@ -82,4 +83,3 @@ fn backdrop_filter_parallel_tiles_do_not_index_past_backdrop_root_bounds() {
     far.blue()
   );
 }
-

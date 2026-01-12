@@ -58,8 +58,7 @@ fn sticky_top_does_not_shift_when_border_box_within_view_rect() {
   let options = RenderOptions::new().with_viewport(200, 200);
   let prepared = renderer.prepare_html(html, options).expect("prepare html");
 
-  let sticky_id =
-    box_id_by_element_id(&prepared.box_tree().root, "sticky").expect("sticky box id");
+  let sticky_id = box_id_by_element_id(&prepared.box_tree().root, "sticky").expect("sticky box id");
 
   let mut tree = prepared.fragment_tree().clone();
   let (before_origin, _) =
@@ -103,8 +102,7 @@ fn sticky_clamp_does_not_reduce_margins_that_are_within_containing_block() {
   let options = RenderOptions::new().with_viewport(200, 200);
   let prepared = renderer.prepare_html(html, options).expect("prepare html");
 
-  let sticky_id =
-    box_id_by_element_id(&prepared.box_tree().root, "sticky").expect("sticky box id");
+  let sticky_id = box_id_by_element_id(&prepared.box_tree().root, "sticky").expect("sticky box id");
 
   let mut tree = prepared.fragment_tree().clone();
   let (before_origin, _) =

@@ -1,10 +1,10 @@
 use fastrender::animation;
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
-use fastrender::{BrowserDocument, RenderOptions, Result};
+use fastrender::style::cascade::StyledNode;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
-use fastrender::style::cascade::StyledNode;
+use fastrender::{BrowserDocument, RenderOptions, Result};
 
 fn styled_node_id_by_id(styled: &StyledNode, target_id: &str) -> Option<usize> {
   if styled
@@ -49,7 +49,8 @@ fn find_fragment<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a Fr
     }
   }
   if let fastrender::tree::fragment_tree::FragmentContent::RunningAnchor { snapshot, .. }
-  | fastrender::tree::fragment_tree::FragmentContent::FootnoteAnchor { snapshot } = &fragment.content
+  | fastrender::tree::fragment_tree::FragmentContent::FootnoteAnchor { snapshot } =
+    &fragment.content
   {
     return find_fragment(snapshot, box_id);
   }
@@ -65,7 +66,11 @@ fn fragment_opacity(tree: &FragmentTree, box_id: usize) -> f32 {
     .expect("style present")
 }
 
-fn sample_opacity(prepared: &fastrender::api::PreparedDocument, time_ms: f32, box_id: usize) -> f32 {
+fn sample_opacity(
+  prepared: &fastrender::api::PreparedDocument,
+  time_ms: f32,
+  box_id: usize,
+) -> f32 {
   let mut sampled = prepared.fragment_tree().clone();
   let viewport = sampled.viewport_size();
   animation::apply_transitions(&mut sampled, time_ms, viewport);
@@ -95,7 +100,9 @@ fn browser_document_transition_state_tracks_style_changes_across_frames() -> Res
 
   let mut doc = BrowserDocument::from_html(
     html,
-    RenderOptions::new().with_viewport(16, 16).with_animation_time(0.0),
+    RenderOptions::new()
+      .with_viewport(16, 16)
+      .with_animation_time(0.0),
   )?;
 
   // First frame seeds layout; no transitions yet because style hasn't changed.
@@ -122,7 +129,9 @@ fn browser_document_transition_state_tracks_style_changes_across_frames() -> Res
 
   // Advance time without restyling; the transition should progress without restarting.
   doc.set_animation_time_ms(600.0);
-  doc.render_if_needed()?.expect("expected repaint at new time");
+  doc
+    .render_if_needed()?
+    .expect("expected repaint at new time");
   let prepared = doc.prepared().expect("prepared document");
   let box_id = box_id_for_prepared(prepared, "box");
   assert!((sample_opacity(prepared, 600.0, box_id) - 0.5).abs() < 1e-3);

@@ -522,15 +522,9 @@ fn turbulence(
       // Update stitch values. Subtracting PerlinN before the multiplication and adding it
       // afterward simplifies to subtracting it once.
       stitch.width = stitch.width.wrapping_mul(2);
-      stitch.wrap_x = stitch
-        .wrap_x
-        .wrapping_mul(2)
-        .wrapping_sub(PERLIN_N);
+      stitch.wrap_x = stitch.wrap_x.wrapping_mul(2).wrapping_sub(PERLIN_N);
       stitch.height = stitch.height.wrapping_mul(2);
-      stitch.wrap_y = stitch
-        .wrap_y
-        .wrapping_mul(2)
-        .wrapping_sub(PERLIN_N);
+      stitch.wrap_y = stitch.wrap_y.wrapping_mul(2).wrapping_sub(PERLIN_N);
     }
   }
 

@@ -4,9 +4,7 @@ use super::types::{CellOccupancyMatrix, CellOccupancyState, GridItem};
 use super::{NamedLineResolver, OriginZeroLine};
 use crate::geometry::Line;
 use crate::geometry::{AbsoluteAxis, InBothAbsAxis};
-use crate::style::{
-  AlignItems, GridAreaAxis, GridAutoFlow, OriginZeroGridPlacementWithNamedSpan,
-};
+use crate::style::{AlignItems, GridAreaAxis, GridAutoFlow, OriginZeroGridPlacementWithNamedSpan};
 use crate::tree::NodeId;
 use crate::util::check_layout_abort;
 use crate::util::sys::Vec;
@@ -128,9 +126,9 @@ fn fixed_indefinite_span<S: crate::CheapCloneStr>(
   use OriginZeroGridPlacementWithNamedSpan as GP;
   match (&placement.start, &placement.end) {
     (GP::Auto, GP::Auto) => 1,
-    (GP::Auto, GP::Span(span))
-    | (GP::Span(span), GP::Auto)
-    | (GP::Span(span), GP::Span(_)) => *span,
+    (GP::Auto, GP::Span(span)) | (GP::Span(span), GP::Auto) | (GP::Span(span), GP::Span(_)) => {
+      *span
+    }
     (GP::NamedSpan(_, _), _) | (_, GP::NamedSpan(_, _)) => {
       panic!("fixed_indefinite_span cannot be computed for NamedSpan placements")
     }
@@ -338,8 +336,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       )
     } else {
       // Primary axis definite, secondary auto
-      let primary_placement =
-        resolve_definite_grid_lines(axis_item(child_placement, primary_axis));
+      let primary_placement = resolve_definite_grid_lines(axis_item(child_placement, primary_axis));
       let secondary_start = match grid_auto_flow.is_dense() {
         true => cell_occupancy_matrix
           .track_counts(primary_axis.other_axis())
@@ -454,8 +451,7 @@ fn place_definite_grid_item<I: crate::CheapCloneStr>(
 ) -> (Line<OriginZeroLine>, Line<OriginZeroLine>) {
   // Resolve spans to tracks
   let primary_span = resolve_definite_grid_lines(axis_item(placement, primary_axis));
-  let secondary_span =
-    resolve_definite_grid_lines(axis_item(placement, primary_axis.other_axis()));
+  let secondary_span = resolve_definite_grid_lines(axis_item(placement, primary_axis.other_axis()));
 
   (primary_span, secondary_span)
 }
@@ -471,8 +467,7 @@ fn place_definite_secondary_axis_item<I: crate::CheapCloneStr>(
   let primary_axis = auto_flow.primary_axis();
   let secondary_axis = primary_axis.other_axis();
 
-  let secondary_axis_placement =
-    resolve_definite_grid_lines(axis_item(placement, secondary_axis));
+  let secondary_axis_placement = resolve_definite_grid_lines(axis_item(placement, secondary_axis));
   let primary_axis_grid_start_line = cell_occupancy_matrix
     .track_counts(primary_axis)
     .implicit_start_line();
@@ -488,7 +483,8 @@ fn place_definite_secondary_axis_item<I: crate::CheapCloneStr>(
   };
 
   let primary_axis_placement_spec = axis_item(placement, primary_axis);
-  let mut position: OriginZeroLine = initial_candidate(primary_axis_placement_spec, starting_position);
+  let mut position: OriginZeroLine =
+    initial_candidate(primary_axis_placement_spec, starting_position);
   loop {
     check_layout_abort();
     let primary_axis_placement = resolve_indefinite_grid_lines(

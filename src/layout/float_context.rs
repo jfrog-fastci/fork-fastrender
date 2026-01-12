@@ -44,8 +44,8 @@ use crate::layout::float_shape::FloatShape;
 use crate::layout::formatting_context::LayoutError;
 use crate::render_control::check_active_periodic;
 use crate::style::float::Float;
-use crate::style::types::{Direction, WritingMode};
 use crate::style::inline_axis_positive;
+use crate::style::types::{Direction, WritingMode};
 use std::cell::{Cell, RefCell};
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -108,7 +108,11 @@ pub enum FloatSide {
 ///
 /// The returned side is *flow-relative* (inline-start/end). Physical `left`/`right` are mapped
 /// into flow-relative sides using the provided `writing_mode`/`direction`.
-pub(crate) fn resolve_float_side(float: Float, writing_mode: WritingMode, direction: Direction) -> Option<FloatSide> {
+pub(crate) fn resolve_float_side(
+  float: Float,
+  writing_mode: WritingMode,
+  direction: Direction,
+) -> Option<FloatSide> {
   match float {
     Float::None | Float::Footnote => None,
     Float::InlineStart => Some(FloatSide::Left),
@@ -793,7 +797,10 @@ impl FloatContext {
         }
       }
     }
-    (left_edge.max(containing_left), right_edge.min(containing_right))
+    (
+      left_edge.max(containing_left),
+      right_edge.min(containing_right),
+    )
   }
 
   fn edges_in_range_with_state(
@@ -902,8 +909,13 @@ impl FloatContext {
 
       let next = self.next_float_boundary_after_internal(&scan_state, scan_start);
       let boundary = next.min(end);
-      let (left_edge, right_edge) =
-        self.edges_in_range_with_state(&mut scan_state, scan_start, boundary, containing_left, containing_right);
+      let (left_edge, right_edge) = self.edges_in_range_with_state(
+        &mut scan_state,
+        scan_start,
+        boundary,
+        containing_left,
+        containing_right,
+      );
       let width = (right_edge - left_edge).max(0.0);
       if width < best_width - f32::EPSILON
         || (width - best_width).abs() < f32::EPSILON && left_edge > best_left
@@ -926,7 +938,13 @@ impl FloatContext {
 
   fn edges_in_range_min_width(&self, start: f32, end: f32) -> (f32, f32, f32) {
     let mut state = self.ensure_sweep_state(start);
-    self.edges_in_range_min_width_with_state(&mut state, start, end, 0.0, self.containing_block_width)
+    self.edges_in_range_min_width_with_state(
+      &mut state,
+      start,
+      end,
+      0.0,
+      self.containing_block_width,
+    )
   }
 
   fn next_event_y(&self, state: &FloatSweepState) -> f32 {
@@ -1185,8 +1203,12 @@ impl FloatContext {
     let containing_right = containing_left + containing_width;
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
-    let (left_edge, right_edge) =
-      self.edges_at_in_containing_block_with_state(&mut state, y, containing_left, containing_right);
+    let (left_edge, right_edge) = self.edges_at_in_containing_block_with_state(
+      &mut state,
+      y,
+      containing_left,
+      containing_right,
+    );
     let available_width = (right_edge - left_edge).max(0.0);
     (left_edge, available_width)
   }
@@ -1231,8 +1253,13 @@ impl FloatContext {
     let containing_width = clamp_positive_finite(containing_block_width);
     let containing_right = containing_left + containing_width;
     let mut state = self.ensure_sweep_state(y_start);
-    let (left_edge, right_edge, _) =
-      self.edges_in_range_min_width_with_state(&mut state, y_start, end, containing_left, containing_right);
+    let (left_edge, right_edge, _) = self.edges_in_range_min_width_with_state(
+      &mut state,
+      y_start,
+      end,
+      containing_left,
+      containing_right,
+    );
     (left_edge, (right_edge - left_edge).max(0.0))
   }
 
@@ -1247,7 +1274,11 @@ impl FloatContext {
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
     let next = self.next_float_boundary_after_internal(&*state, y);
-    if next.is_finite() && next > y { next } else { y }
+    if next.is_finite() && next > y {
+      next
+    } else {
+      y
+    }
   }
 
   /// Find the first Y position where a box of given dimensions would fit within a specific
@@ -1466,7 +1497,14 @@ impl FloatContext {
     let containing_width = clamp_positive_finite(containing_block_width);
     let containing_right = containing_left + containing_width;
 
-    self.compute_float_position_in_span(side, width, height, min_y, containing_left, containing_right)
+    self.compute_float_position_in_span(
+      side,
+      width,
+      height,
+      min_y,
+      containing_left,
+      containing_right,
+    )
   }
 
   fn compute_float_position_in_span(
@@ -1613,8 +1651,13 @@ impl FloatContext {
       }
 
       let range_end = y + target_height;
-      let (left_edge, right_edge, next_boundary) =
-        self.edges_in_range_min_width_with_state(&mut state, y, range_end, 0.0, self.containing_block_width);
+      let (left_edge, right_edge, next_boundary) = self.edges_in_range_min_width_with_state(
+        &mut state,
+        y,
+        range_end,
+        0.0,
+        self.containing_block_width,
+      );
       let available_width = (right_edge - left_edge).max(0.0);
 
       if available_width >= target_width {

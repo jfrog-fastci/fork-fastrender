@@ -109,4 +109,3 @@ fn importer_sniffs_woff2_magic_and_preserves_bytes_when_manifest_labels_as_html(
     "expected importer to preserve font bytes (no lossy HTML rewrite)"
   );
 }
-

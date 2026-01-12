@@ -92,4 +92,3 @@ fn legacy_frameborder_zero_removes_border() {
   let pixmap = render_iframe("legacy", Some("0"));
   assert_frameborder_zero_removes_border(&pixmap);
 }
-

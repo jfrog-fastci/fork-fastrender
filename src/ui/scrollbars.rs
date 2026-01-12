@@ -100,7 +100,11 @@ impl OverlayScrollbar {
       return 0.0;
     }
     let delta_css = drag_delta_points / travel_points * range_css;
-    if delta_css.is_finite() { delta_css } else { 0.0 }
+    if delta_css.is_finite() {
+      delta_css
+    } else {
+      0.0
+    }
   }
 
   /// If `pos_points` is on the track *outside* the thumb, return a page-up/down delta in CSS pixels.
@@ -171,7 +175,12 @@ fn sanitize_scroll_bounds(bounds: ScrollBounds) -> ScrollBounds {
   }
 }
 
-fn thumb_length_points(track_len_points: f32, viewport_extent_css: f32, scroll_range_css: f32, min_thumb: f32) -> f32 {
+fn thumb_length_points(
+  track_len_points: f32,
+  viewport_extent_css: f32,
+  scroll_range_css: f32,
+  min_thumb: f32,
+) -> f32 {
   if !track_len_points.is_finite() || track_len_points <= 0.0 {
     return 0.0;
   }
@@ -197,11 +206,21 @@ fn thumb_length_points(track_len_points: f32, viewport_extent_css: f32, scroll_r
   if !len.is_finite() {
     len = 0.0;
   }
-  let min_thumb = if min_thumb.is_finite() { min_thumb.max(0.0) } else { 0.0 };
+  let min_thumb = if min_thumb.is_finite() {
+    min_thumb.max(0.0)
+  } else {
+    0.0
+  };
   len.clamp(min_thumb, track_len_points)
 }
 
-fn thumb_offset_points(track_len_points: f32, thumb_len_points: f32, min_scroll_css: f32, max_scroll_css: f32, scroll_pos_css: f32) -> f32 {
+fn thumb_offset_points(
+  track_len_points: f32,
+  thumb_len_points: f32,
+  min_scroll_css: f32,
+  max_scroll_css: f32,
+  scroll_pos_css: f32,
+) -> f32 {
   let range = max_scroll_css - min_scroll_css;
   if !range.is_finite() || range <= 0.0 {
     return 0.0;
@@ -263,7 +282,11 @@ pub fn overlay_scrollbars_for_viewport_with_config(
   let mut out = OverlayScrollbars::default();
 
   if show_vertical {
-    let corner = if show_horizontal { thickness + padding } else { 0.0 };
+    let corner = if show_horizontal {
+      thickness + padding
+    } else {
+      0.0
+    };
 
     let x0 = page_rect_points.max_x() - padding - thickness;
     let x1 = page_rect_points.max_x() - padding;
@@ -297,7 +320,11 @@ pub fn overlay_scrollbars_for_viewport_with_config(
   }
 
   if show_horizontal {
-    let corner = if show_vertical { thickness + padding } else { 0.0 };
+    let corner = if show_vertical {
+      thickness + padding
+    } else {
+      0.0
+    };
 
     let x0 = page_rect_points.min_x() + padding;
     let x1 = page_rect_points.max_x() - padding - corner;

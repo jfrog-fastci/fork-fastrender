@@ -23,14 +23,20 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String
 
   match msg {
     WorkerToUi::NavigationCommitted { url, .. } => url,
-    WorkerToUi::NavigationFailed { url, error, .. } => panic!("navigation failed for {url}: {error}"),
-    other => panic!("unexpected WorkerToUi message while waiting for NavigationCommitted: {other:?}"),
+    WorkerToUi::NavigationFailed { url, error, .. } => {
+      panic!("navigation failed for {url}: {error}")
+    }
+    other => {
+      panic!("unexpected WorkerToUi message while waiting for NavigationCommitted: {other:?}")
+    }
   }
 }
 
 fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
 
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
@@ -52,12 +58,7 @@ html, body {{ margin: 0; padding: 0; }}
 html.index, body.index {{ background: rgb({},{},{}); }}
 html.next, body.next {{ background: rgb({},{},{}); }}
 "#,
-      index_bg_rgb.0,
-      index_bg_rgb.1,
-      index_bg_rgb.2,
-      next_bg_rgb.0,
-      next_bg_rgb.1,
-      next_bg_rgb.2,
+      index_bg_rgb.0, index_bg_rgb.1, index_bg_rgb.2, next_bg_rgb.0, next_bg_rgb.1, next_bg_rgb.2,
     ),
   );
 
@@ -153,7 +154,10 @@ fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
     .expect("navigate tab1");
   assert_eq!(next_navigation_committed(&ui_rx, tab1), a_index);
   let frame_a_index = next_frame_ready(&ui_rx, tab1);
-  assert_eq!(support::rgba_at(&frame_a_index.pixmap, 150, 80), [0, 0, 255, 255]);
+  assert_eq!(
+    support::rgba_at(&frame_a_index.pixmap, 150, 80),
+    [0, 0, 255, 255]
+  );
 
   ui_tx
     .send(UiToWorker::Navigate {
@@ -188,7 +192,10 @@ fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
     .expect("pointer up tab1");
   assert_eq!(next_navigation_committed(&ui_rx, tab1), a_next);
   let frame_a_next = next_frame_ready(&ui_rx, tab1);
-  assert_eq!(support::rgba_at(&frame_a_next.pixmap, 150, 80), [0, 255, 0, 255]);
+  assert_eq!(
+    support::rgba_at(&frame_a_next.pixmap, 150, 80),
+    [0, 255, 0, 255]
+  );
 
   // Now tab1 is the most recent navigation. Clicking in tab2 must still resolve using site B's base.
   ui_tx

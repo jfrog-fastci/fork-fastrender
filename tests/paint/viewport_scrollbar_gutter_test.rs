@@ -109,7 +109,10 @@ fn viewport_fixed_elements_paint_into_scrollbar_gutter() {
 #[test]
 fn hide_scrollbars_disables_scrollbar_gutter_stable() {
   let toggles = RuntimeToggles::from_map(HashMap::from([
-    ("FASTR_PAINT_BACKEND".to_string(), "display_list".to_string()),
+    (
+      "FASTR_PAINT_BACKEND".to_string(),
+      "display_list".to_string(),
+    ),
     ("FASTR_HIDE_SCROLLBARS".to_string(), "1".to_string()),
   ]));
   let config = FastRenderConfig::new().with_runtime_toggles(toggles);

@@ -322,9 +322,7 @@ pub fn enable_taffy_counters(enabled: bool) -> TaffyUsageCountersGuard {
     cell.set(enabled);
     prev
   });
-  TaffyUsageCountersGuard {
-    prev_enabled,
-  }
+  TaffyUsageCountersGuard { prev_enabled }
 }
 
 pub fn set_taffy_counters_enabled(enabled: bool) {

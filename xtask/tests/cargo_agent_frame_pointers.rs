@@ -20,8 +20,7 @@ mod unix_tests {
       .unwrap_or_else(|e| panic!("stat {}: {e}", path.display()))
       .permissions();
     perms.set_mode(0o755);
-    fs::set_permissions(path, perms)
-      .unwrap_or_else(|e| panic!("chmod {}: {e}", path.display()));
+    fs::set_permissions(path, perms).unwrap_or_else(|e| panic!("chmod {}: {e}", path.display()));
   }
 
   fn run_cargo_agent_with_stub(
@@ -129,7 +128,14 @@ echo "RUSTFLAGS=${RUSTFLAGS-}"
       let (stdout, _stderr) = run_cargo_agent_with_stub(
         &repo,
         &script,
-        &["check", "-p", "parse-js", "--", "--manifest-path", "ignored"],
+        &[
+          "check",
+          "-p",
+          "parse-js",
+          "--",
+          "--manifest-path",
+          "ignored",
+        ],
         r#"#!/usr/bin/env bash
 set -euo pipefail
 echo "PWD=$(pwd -P)"

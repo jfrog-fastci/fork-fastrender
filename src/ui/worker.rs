@@ -98,7 +98,13 @@ impl UiThreadWorkerHandle {
     self.join()
   }
 
-  pub fn into_parts(self) -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
+  pub fn into_parts(
+    self,
+  ) -> (
+    Sender<UiToWorker>,
+    Receiver<WorkerToUi>,
+    std::thread::JoinHandle<()>,
+  ) {
     self.split()
   }
 }

@@ -7,7 +7,9 @@ use fastrender::style::position::Position;
 use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::{BoxNode, CrossOriginAttribute, ImageDecodingAttribute, ReplacedType, SrcsetCandidate};
+use fastrender::tree::box_tree::{
+  BoxNode, CrossOriginAttribute, ImageDecodingAttribute, ReplacedType, SrcsetCandidate,
+};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::sync::Arc;
 
@@ -20,9 +22,15 @@ fn find_fragment_by_box_id_abs<'a>(
   let abs_bounds = Rect::new(abs_origin, fragment.bounds.size);
   let matches_id = match &fragment.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_id {
@@ -109,4 +117,3 @@ fn abspos_top_bottom_auto_height_depends_on_used_containing_block_height() {
     cb_abs_bounds.size.height
   );
 }
-

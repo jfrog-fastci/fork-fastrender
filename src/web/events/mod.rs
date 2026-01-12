@@ -14,8 +14,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use thiserror::Error;
-use vm_js::{GcObject, Heap, WeakGcObject};
 use vm_js::Value as JsValue;
+use vm_js::{GcObject, Heap, WeakGcObject};
 
 #[derive(Debug, Error)]
 pub enum DomError {
@@ -160,7 +160,11 @@ impl ListenerId {
 }
 
 pub trait EventListenerInvoker {
-  fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> std::result::Result<(), DomError>;
+  fn invoke(
+    &mut self,
+    listener_id: ListenerId,
+    event: &mut Event,
+  ) -> std::result::Result<(), DomError>;
 
   /// Optional downcasting hook for embeddings that need invoker-specific dynamic context.
   ///
@@ -340,7 +344,10 @@ impl std::fmt::Debug for EventListenerRegistry {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let snapshot = self.listeners.try_borrow().ok().map(|listeners| {
       let targets = listeners.len();
-      let event_types = listeners.values().map(|by_type| by_type.len()).sum::<usize>();
+      let event_types = listeners
+        .values()
+        .map(|by_type| by_type.len())
+        .sum::<usize>();
       let listener_count = listeners
         .values()
         .flat_map(|by_type| by_type.values())
@@ -356,7 +363,13 @@ impl std::fmt::Debug for EventListenerRegistry {
         .try_borrow()
         .map(|m| m.len())
         .unwrap_or(0);
-      (targets, event_types, listener_count, opaque_parents, opaque_targets)
+      (
+        targets,
+        event_types,
+        listener_count,
+        opaque_parents,
+        opaque_targets,
+      )
     });
 
     let mut ds = f.debug_struct("EventListenerRegistry");
@@ -622,7 +635,10 @@ fn build_event_path(
   }
 
   rev.reverse();
-  rev.into_iter().map(|target| EventPathEntry { target }).collect()
+  rev
+    .into_iter()
+    .map(|target| EventPathEntry { target })
+    .collect()
 }
 
 fn invoke_listeners(
@@ -652,12 +668,7 @@ fn invoke_listeners(
     }
 
     if listener.options.once {
-      registry.remove_event_listener(
-        target,
-        &event.type_,
-        listener.id,
-        listener.options.capture,
-      );
+      registry.remove_event_listener(target, &event.type_, listener.id, listener.options.capture);
     }
 
     let prev_passive = event.in_passive_listener;
@@ -737,12 +748,7 @@ pub fn dispatch_event(
 }
 
 impl EventListenerRegistry {
-  fn listener_record_registered(
-    &self,
-    target: EventTargetId,
-    type_: &str,
-    record_id: u64,
-  ) -> bool {
+  fn listener_record_registered(&self, target: EventTargetId, type_: &str, record_id: u64) -> bool {
     let target = target.normalize();
     self
       .listeners
@@ -777,15 +783,11 @@ impl EventListenerRegistry {
     listener_id: ListenerId,
   ) -> bool {
     let target = target.normalize();
-    self
-      .listeners
-      .borrow()
-      .get(&target)
-      .is_some_and(|by_type| {
-        by_type
-          .values()
-          .any(|listeners| listeners.iter().any(|l| l.id == listener_id))
-      })
+    self.listeners.borrow().get(&target).is_some_and(|by_type| {
+      by_type
+        .values()
+        .any(|listeners| listeners.iter().any(|l| l.id == listener_id))
+    })
   }
 }
 

@@ -1,6 +1,6 @@
-use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 use crate::web::dom::DomException;
 use vm_js::{GcString, PropertyKey, Value, VmError};
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
 #[derive(Debug, Clone, Copy)]
 pub struct DomExceptionClass {
@@ -32,9 +32,9 @@ impl DomExceptionClass {
     // Minimal `DOMException.prototype.toString()`.
     let to_string_fn = rt.alloc_function_value(move |rt, this, _args| {
       if !rt.is_object(this) {
-        return Err(rt.throw_type_error(
-          "DOMException.prototype.toString called with non-object receiver",
-        ));
+        return Err(
+          rt.throw_type_error("DOMException.prototype.toString called with non-object receiver"),
+        );
       }
 
       let name = rt.get(this, key_name)?;
@@ -107,14 +107,22 @@ impl DomExceptionClass {
     Ok(obj)
   }
 
-  pub fn from_dom_exception(&self, rt: &mut VmJsRuntime, err: &DomException) -> Result<Value, VmError> {
+  pub fn from_dom_exception(
+    &self,
+    rt: &mut VmJsRuntime,
+    err: &DomException,
+  ) -> Result<Value, VmError> {
     match err {
       DomException::SyntaxError { message } => self.new_instance(rt, message, "SyntaxError"),
       DomException::NoModificationAllowedError { message } => {
         self.new_instance(rt, message, "NoModificationAllowedError")
       }
-      DomException::NotSupportedError { message } => self.new_instance(rt, message, "NotSupportedError"),
-      DomException::InvalidStateError { message } => self.new_instance(rt, message, "InvalidStateError"),
+      DomException::NotSupportedError { message } => {
+        self.new_instance(rt, message, "NotSupportedError")
+      }
+      DomException::InvalidStateError { message } => {
+        self.new_instance(rt, message, "InvalidStateError")
+      }
     }
   }
 }

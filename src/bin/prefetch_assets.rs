@@ -205,9 +205,8 @@ mod disk_cache_main {
   const DEFAULT_ASSET_DIR: &str = "fetches/assets";
 
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| {
-      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
-    })
+    value
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
   #[derive(Parser, Debug)]
@@ -945,14 +944,9 @@ mod disk_cache_main {
           });
 
           match crossorigin {
-            Some(mode) => record_cors_script_candidate(
-              all,
-              cors_scripts,
-              &resolved,
-              mode,
-              max_total,
-              max_total,
-            ),
+            Some(mode) => {
+              record_cors_script_candidate(all, cors_scripts, &resolved, mode, max_total, max_total)
+            }
             None => record_script_candidate(all, scripts, &resolved, max_total, max_total),
           }
         } else if tag.eq_ignore_ascii_case("link") {
@@ -994,14 +988,9 @@ mod disk_cache_main {
           });
 
           match crossorigin {
-            Some(mode) => record_cors_script_candidate(
-              all,
-              cors_scripts,
-              &resolved,
-              mode,
-              max_total,
-              max_total,
-            ),
+            Some(mode) => {
+              record_cors_script_candidate(all, cors_scripts, &resolved, mode, max_total, max_total)
+            }
             None => record_script_candidate(all, scripts, &resolved, max_total, max_total),
           }
         }
@@ -3822,7 +3811,14 @@ mod disk_cache_main {
 
       #[derive(Default)]
       struct RecordingFetcher {
-        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy, FetchCredentialsMode)>>,
+        calls: Mutex<
+          Vec<(
+            String,
+            FetchDestination,
+            ReferrerPolicy,
+            FetchCredentialsMode,
+          )>,
+        >,
       }
 
       impl ResourceFetcher for RecordingFetcher {
@@ -3922,7 +3918,14 @@ mod disk_cache_main {
 
       #[derive(Default)]
       struct RecordingFetcher {
-        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy, FetchCredentialsMode)>>,
+        calls: Mutex<
+          Vec<(
+            String,
+            FetchDestination,
+            ReferrerPolicy,
+            FetchCredentialsMode,
+          )>,
+        >,
       }
 
       impl ResourceFetcher for RecordingFetcher {

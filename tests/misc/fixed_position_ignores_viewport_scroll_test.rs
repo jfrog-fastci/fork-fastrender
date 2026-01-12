@@ -3,8 +3,8 @@ use fastrender::geometry::{Point, Rect};
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::scroll::ScrollState;
-use fastrender::style::values::Length;
 use fastrender::style::position::Position;
+use fastrender::style::values::Length;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{ComputedStyle, Rgba};
@@ -43,16 +43,10 @@ fn base_scene_with_fixed_root() -> FragmentNode {
   red_fixed_style.position = Position::Fixed;
   let red_fixed_style = Arc::new(red_fixed_style);
 
-  let stripe_a = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 8.0, 2.0),
-    vec![],
-    green_style,
-  );
-  let stripe_b = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 2.0, 8.0, 2.0),
-    vec![],
-    blue_style,
-  );
+  let stripe_a =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 8.0, 2.0), vec![], green_style);
+  let stripe_b =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 2.0, 8.0, 2.0), vec![], blue_style);
   let fixed = FragmentNode::new_block_styled(
     // Cover the left half so we can check both covered/uncovered pixels.
     Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
@@ -61,7 +55,10 @@ fn base_scene_with_fixed_root() -> FragmentNode {
   );
 
   // Place the fixed element last so it paints over the scrolled content.
-  FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 8.0, 8.0), vec![stripe_a, stripe_b, fixed])
+  FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
+    vec![stripe_a, stripe_b, fixed],
+  )
 }
 
 fn scene_with_fixed_containing_block() -> FragmentNode {
@@ -82,21 +79,12 @@ fn scene_with_fixed_containing_block() -> FragmentNode {
   red_fixed_style.position = Position::Fixed;
   let red_fixed_style = Arc::new(red_fixed_style);
 
-  let stripe_a = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 8.0, 2.0),
-    vec![],
-    green_style,
-  );
-  let stripe_b = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 2.0, 8.0, 2.0),
-    vec![],
-    blue_style,
-  );
-  let fixed = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
-    vec![],
-    red_fixed_style,
-  );
+  let stripe_a =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 8.0, 2.0), vec![], green_style);
+  let stripe_b =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 2.0, 8.0, 2.0), vec![], blue_style);
+  let fixed =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 4.0, 2.0), vec![], red_fixed_style);
 
   let container = FragmentNode::new_block_styled(
     Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
@@ -125,21 +113,12 @@ fn scene_with_transformed_fixed_containing_block() -> FragmentNode {
   red_fixed_style.position = Position::Fixed;
   let red_fixed_style = Arc::new(red_fixed_style);
 
-  let stripe_a = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 8.0, 2.0),
-    vec![],
-    green_style,
-  );
-  let stripe_b = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 2.0, 8.0, 2.0),
-    vec![],
-    blue_style,
-  );
-  let fixed = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
-    vec![],
-    red_fixed_style,
-  );
+  let stripe_a =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 8.0, 2.0), vec![], green_style);
+  let stripe_b =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 2.0, 8.0, 2.0), vec![], blue_style);
+  let fixed =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 4.0, 2.0), vec![], red_fixed_style);
 
   let container = FragmentNode::new_block_styled(
     Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
@@ -168,21 +147,12 @@ fn scene_with_perspective_fixed_containing_block() -> FragmentNode {
   red_fixed_style.position = Position::Fixed;
   let red_fixed_style = Arc::new(red_fixed_style);
 
-  let stripe_a = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 8.0, 2.0),
-    vec![],
-    green_style,
-  );
-  let stripe_b = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 2.0, 8.0, 2.0),
-    vec![],
-    blue_style,
-  );
-  let fixed = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
-    vec![],
-    red_fixed_style,
-  );
+  let stripe_a =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 8.0, 2.0), vec![], green_style);
+  let stripe_b =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 2.0, 8.0, 2.0), vec![], blue_style);
+  let fixed =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 4.0, 2.0), vec![], red_fixed_style);
 
   let container = FragmentNode::new_block_styled(
     Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
@@ -212,16 +182,10 @@ fn scene_with_nested_fixed_elements() -> FragmentNode {
   inner_fixed_style.position = Position::Fixed;
   let inner_fixed_style = Arc::new(inner_fixed_style);
 
-  let stripe_a = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 8.0, 2.0),
-    vec![],
-    blue_style,
-  );
-  let stripe_b = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 2.0, 8.0, 2.0),
-    vec![],
-    black_style,
-  );
+  let stripe_a =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 8.0, 2.0), vec![], blue_style);
+  let stripe_b =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 2.0, 8.0, 2.0), vec![], black_style);
 
   // Nested fixed elements remain positioned relative to the viewport. Model the nested fixed
   // element by giving it an origin relative to the outer fixed element such that its absolute

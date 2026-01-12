@@ -34,8 +34,14 @@ fn animation_range_ignores_invalid_comma_list() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
-  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
+  assert_eq!(
+    div.styles.animation_ranges[0].start,
+    RangeOffset::Progress(0.2)
+  );
+  assert_eq!(
+    div.styles.animation_ranges[0].end,
+    RangeOffset::Progress(0.8)
+  );
 }
 
 #[test]
@@ -53,8 +59,14 @@ fn animation_range_start_ignores_invalid_comma_list() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
-  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
+  assert_eq!(
+    div.styles.animation_ranges[0].start,
+    RangeOffset::Progress(0.2)
+  );
+  assert_eq!(
+    div.styles.animation_ranges[0].end,
+    RangeOffset::Progress(0.8)
+  );
 }
 
 #[test]
@@ -72,6 +84,12 @@ fn animation_range_end_ignores_invalid_comma_list() {
   let div = find_by_tag(&styled, "div").expect("div present");
 
   assert_eq!(div.styles.animation_ranges.len(), 1);
-  assert_eq!(div.styles.animation_ranges[0].start, RangeOffset::Progress(0.2));
-  assert_eq!(div.styles.animation_ranges[0].end, RangeOffset::Progress(0.8));
+  assert_eq!(
+    div.styles.animation_ranges[0].start,
+    RangeOffset::Progress(0.2)
+  );
+  assert_eq!(
+    div.styles.animation_ranges[0].end,
+    RangeOffset::Progress(0.8)
+  );
 }

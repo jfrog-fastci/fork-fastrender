@@ -53,8 +53,9 @@ fn flex_root_rerun_avoids_child_drift_after_root_width_correction() {
   // Simulate the original bug: Taffy can compute a near-zero root width for percentage-sized
   // roots during certain probes. The flex layout pipeline corrects the root to a definite width
   // (percentage base), but must rerun Taffy so children use the corrected line size.
-  let constraints = LayoutConstraints::new(AvailableSpace::Definite(0.0), AvailableSpace::Indefinite)
-    .with_inline_percentage_base(Some(500.0));
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(0.0), AvailableSpace::Indefinite)
+      .with_inline_percentage_base(Some(500.0));
 
   let fragment = fc
     .layout(&container, &constraints)

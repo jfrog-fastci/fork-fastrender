@@ -28,7 +28,11 @@ fn find_block_child<'a>(fragment: &'a FragmentNode, box_id: usize) -> &'a Fragme
     .unwrap_or_else(|| {
       panic!(
         "missing fragment for box_id={box_id}; got children ids={:?}",
-        fragment.children.iter().map(|c| c.box_id()).collect::<Vec<_>>()
+        fragment
+          .children
+          .iter()
+          .map(|c| c.box_id())
+          .collect::<Vec<_>>()
       )
     })
 }
@@ -113,9 +117,24 @@ fn align_content_space_evenly_respects_row_gap_between_lines() {
   let first_line_y = 25.0 / 3.0;
   let second_line_y = first_line_y + 10.0 + 5.0 + first_line_y;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), first_line_y, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), first_line_y, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), second_line_y, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -148,9 +167,24 @@ fn align_content_space_around_respects_row_gap_between_lines() {
   let first_line_y = space_per_line / 2.0;
   let second_line_y = first_line_y + 10.0 + 5.0 + space_per_line;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), first_line_y, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), first_line_y, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), second_line_y, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -180,9 +214,24 @@ fn align_content_space_between_respects_row_gap_between_lines() {
   let first_line_y = 0.0;
   let second_line_y = 10.0 + 5.0 + 30.0;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), first_line_y, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), first_line_y, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), second_line_y, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -258,9 +307,24 @@ fn vertical_writing_mode_space_evenly_respects_row_gap_between_lines() {
   let first_line_x = 25.0 / 3.0;
   let second_line_x = first_line_x + 10.0 + 5.0 + first_line_x;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.x(), first_line_x, epsilon, "child1 x");
-  assert_approx(find_block_child(&fragment, 2).bounds.x(), first_line_x, epsilon, "child2 x");
-  assert_approx(find_block_child(&fragment, 3).bounds.x(), second_line_x, epsilon, "child3 x");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.x(),
+    first_line_x,
+    epsilon,
+    "child1 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.x(),
+    first_line_x,
+    epsilon,
+    "child2 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.x(),
+    second_line_x,
+    epsilon,
+    "child3 x",
+  );
 }
 
 #[test]
@@ -289,9 +353,24 @@ fn row_reverse_space_evenly_respects_row_gap_between_lines() {
   let first_line_y = 25.0 / 3.0;
   let second_line_y = first_line_y + 10.0 + 5.0 + first_line_y;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), first_line_y, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), first_line_y, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), second_line_y, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -321,14 +400,44 @@ fn column_reverse_space_evenly_respects_column_gap_between_lines() {
   let first_line_x = 25.0 / 3.0;
   let second_line_x = first_line_x + 10.0 + 5.0 + first_line_x;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.x(), first_line_x, epsilon, "child1 x");
-  assert_approx(find_block_child(&fragment, 2).bounds.x(), first_line_x, epsilon, "child2 x");
-  assert_approx(find_block_child(&fragment, 3).bounds.x(), second_line_x, epsilon, "child3 x");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.x(),
+    first_line_x,
+    epsilon,
+    "child1 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.x(),
+    first_line_x,
+    epsilon,
+    "child2 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.x(),
+    second_line_x,
+    epsilon,
+    "child3 x",
+  );
 
   // Column-reverse stacks items from the bottom edge when the column is exactly filled.
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), 30.0, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), 0.0, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), 30.0, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    30.0,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    0.0,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    30.0,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -362,9 +471,24 @@ fn vertical_writing_mode_column_direction_space_evenly_respects_column_gap_betwe
   let first_line_y = 25.0 / 3.0;
   let second_line_y = first_line_y + 10.0 + 5.0 + first_line_y;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), first_line_y, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), first_line_y, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), second_line_y, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -490,9 +614,24 @@ fn vertical_rl_writing_mode_space_evenly_respects_row_gap_between_lines() {
   let first_line_x = 50.0 - 10.0 - first_line_from_left;
   let second_line_x = 50.0 - 10.0 - second_line_from_left;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.x(), first_line_x, epsilon, "child1 x");
-  assert_approx(find_block_child(&fragment, 2).bounds.x(), first_line_x, epsilon, "child2 x");
-  assert_approx(find_block_child(&fragment, 3).bounds.x(), second_line_x, epsilon, "child3 x");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.x(),
+    first_line_x,
+    epsilon,
+    "child1 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.x(),
+    first_line_x,
+    epsilon,
+    "child2 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.x(),
+    second_line_x,
+    epsilon,
+    "child3 x",
+  );
 }
 
 #[test]
@@ -521,9 +660,24 @@ fn vertical_rl_writing_mode_align_content_start_packs_lines_against_cross_start(
   // Two lines (10px wide) plus 5px row-gap => total cross span 25px.
   // Packed against cross-start (right): line 1 at x=40, line 2 at x=25.
   let epsilon = 0.6;
-  assert_approx(find_block_child(&fragment, 1).bounds.x(), 40.0, epsilon, "child1 x");
-  assert_approx(find_block_child(&fragment, 2).bounds.x(), 40.0, epsilon, "child2 x");
-  assert_approx(find_block_child(&fragment, 3).bounds.x(), 25.0, epsilon, "child3 x");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.x(),
+    40.0,
+    epsilon,
+    "child1 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.x(),
+    40.0,
+    epsilon,
+    "child2 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.x(),
+    25.0,
+    epsilon,
+    "child3 x",
+  );
 }
 
 #[test]
@@ -552,9 +706,24 @@ fn vertical_rl_writing_mode_align_content_end_packs_lines_against_cross_end() {
   // Two lines (10px wide) plus 5px row-gap => total cross span 25px.
   // Packed against cross-end (left): second line at x=0, first line at x=15.
   let epsilon = 0.6;
-  assert_approx(find_block_child(&fragment, 1).bounds.x(), 15.0, epsilon, "child1 x");
-  assert_approx(find_block_child(&fragment, 2).bounds.x(), 15.0, epsilon, "child2 x");
-  assert_approx(find_block_child(&fragment, 3).bounds.x(), 0.0, epsilon, "child3 x");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.x(),
+    15.0,
+    epsilon,
+    "child1 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.x(),
+    15.0,
+    epsilon,
+    "child2 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.x(),
+    0.0,
+    epsilon,
+    "child3 x",
+  );
 }
 
 #[test]
@@ -583,9 +752,24 @@ fn vertical_lr_writing_mode_align_content_start_packs_lines_against_cross_start(
   // Two lines (10px wide) plus 5px row-gap => total cross span 25px.
   // Packed against cross-start (left): first line at x=0, second line at x=15.
   let epsilon = 0.6;
-  assert_approx(find_block_child(&fragment, 1).bounds.x(), 0.0, epsilon, "child1 x");
-  assert_approx(find_block_child(&fragment, 2).bounds.x(), 0.0, epsilon, "child2 x");
-  assert_approx(find_block_child(&fragment, 3).bounds.x(), 15.0, epsilon, "child3 x");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.x(),
+    0.0,
+    epsilon,
+    "child1 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.x(),
+    0.0,
+    epsilon,
+    "child2 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.x(),
+    15.0,
+    epsilon,
+    "child3 x",
+  );
 }
 
 #[test]
@@ -614,9 +798,24 @@ fn vertical_lr_writing_mode_align_content_end_packs_lines_against_cross_end() {
   // Two lines (10px wide) plus 5px row-gap => total cross span 25px.
   // Packed against cross-end (right): first line at x=25, second line at x=40.
   let epsilon = 0.6;
-  assert_approx(find_block_child(&fragment, 1).bounds.x(), 25.0, epsilon, "child1 x");
-  assert_approx(find_block_child(&fragment, 2).bounds.x(), 25.0, epsilon, "child2 x");
-  assert_approx(find_block_child(&fragment, 3).bounds.x(), 40.0, epsilon, "child3 x");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.x(),
+    25.0,
+    epsilon,
+    "child1 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.x(),
+    25.0,
+    epsilon,
+    "child2 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.x(),
+    40.0,
+    epsilon,
+    "child3 x",
+  );
 }
 
 #[test]
@@ -720,9 +919,24 @@ fn wrap_reverse_space_evenly_respects_row_gap_between_lines() {
   let first_line_y = 25.0 / 3.0;
   let second_line_y = first_line_y + 10.0 + 5.0 + first_line_y;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), second_line_y, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), second_line_y, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), first_line_y, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -752,9 +966,24 @@ fn wrap_reverse_space_around_respects_row_gap_between_lines() {
   let first_line_y = space_per_line / 2.0;
   let second_line_y = first_line_y + 10.0 + 5.0 + space_per_line;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), second_line_y, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), second_line_y, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), first_line_y, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    second_line_y,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    first_line_y,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -788,9 +1017,24 @@ fn wrap_reverse_space_between_respects_row_gap_between_lines() {
   let bottom_line_y = 55.0 - 10.0;
   let top_line_y = 0.0;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), bottom_line_y, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), bottom_line_y, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), top_line_y, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    bottom_line_y,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    bottom_line_y,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    top_line_y,
+    epsilon,
+    "child3 y",
+  );
 }
 
 #[test]
@@ -823,13 +1067,43 @@ fn column_direction_space_evenly_respects_column_gap_between_lines() {
   let first_line_x = 25.0 / 3.0;
   let second_line_x = first_line_x + 10.0 + 5.0 + first_line_x;
 
-  assert_approx(find_block_child(&fragment, 1).bounds.x(), first_line_x, epsilon, "child1 x");
-  assert_approx(find_block_child(&fragment, 2).bounds.x(), first_line_x, epsilon, "child2 x");
-  assert_approx(find_block_child(&fragment, 3).bounds.x(), second_line_x, epsilon, "child3 x");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.x(),
+    first_line_x,
+    epsilon,
+    "child1 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.x(),
+    first_line_x,
+    epsilon,
+    "child2 x",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.x(),
+    second_line_x,
+    epsilon,
+    "child3 x",
+  );
 
   // Wrap should start the new column at y=0; only the cross-axis x offsets change with
   // `align-content`.
-  assert_approx(find_block_child(&fragment, 1).bounds.y(), 0.0, epsilon, "child1 y");
-  assert_approx(find_block_child(&fragment, 2).bounds.y(), 30.0, epsilon, "child2 y");
-  assert_approx(find_block_child(&fragment, 3).bounds.y(), 0.0, epsilon, "child3 y");
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    0.0,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    30.0,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    0.0,
+    epsilon,
+    "child3 y",
+  );
 }

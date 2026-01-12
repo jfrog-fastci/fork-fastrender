@@ -1,8 +1,8 @@
 use fastrender::dom::parse_html;
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation::{
-  activate_radio, append_text_to_input, append_text_to_textarea, backspace_input, backspace_textarea,
-  remove_attr, set_attr, toggle_checkbox,
+  activate_radio, append_text_to_input, append_text_to_textarea, backspace_input,
+  backspace_textarea, remove_attr, set_attr, toggle_checkbox,
 };
 
 fn textarea_text(node: &fastrender::dom::DomNode) -> String {
@@ -83,10 +83,14 @@ fn radio_activation_unchecks_others_in_same_group() {
   let r1_id = *index.id_by_element_id.get("r1").unwrap();
   let r2_id = *index.id_by_element_id.get("r2").unwrap();
   index
-    .with_node_mut(r1_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .with_node_mut(r1_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_none())
+    })
     .unwrap();
   index
-    .with_node_mut(r2_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(r2_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
 }
 
@@ -108,10 +112,14 @@ fn radio_activation_missing_name_groups_as_empty_string() {
   let r1_id = *index.id_by_element_id.get("r1").unwrap();
   let r2_id = *index.id_by_element_id.get("r2").unwrap();
   index
-    .with_node_mut(r1_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .with_node_mut(r1_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_none())
+    })
     .unwrap();
   index
-    .with_node_mut(r2_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(r2_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
 }
 
@@ -139,13 +147,19 @@ fn radio_activation_is_scoped_to_nearest_form() {
   let a2_id = *index.id_by_element_id.get("a2").unwrap();
   let b1_id = *index.id_by_element_id.get("b1").unwrap();
   index
-    .with_node_mut(a1_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .with_node_mut(a1_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_none())
+    })
     .unwrap();
   index
-    .with_node_mut(a2_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(a2_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(b1_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(b1_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
 }
 
@@ -171,13 +185,19 @@ fn radio_activation_supports_form_attribute_association() {
   let other_id = *index.id_by_element_id.get("other").unwrap();
 
   index
-    .with_node_mut(in_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .with_node_mut(in_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_none())
+    })
     .unwrap();
   index
-    .with_node_mut(out_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(out_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(other_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(other_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
 }
 
@@ -207,16 +227,24 @@ fn radio_activation_does_not_cross_shadow_root_boundary() {
   let s1_id = *index.id_by_element_id.get("s1").unwrap();
   let s2_id = *index.id_by_element_id.get("s2").unwrap();
   index
-    .with_node_mut(l1_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .with_node_mut(l1_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_none())
+    })
     .unwrap();
   index
-    .with_node_mut(l2_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(l2_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(s1_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(s1_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(s2_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .with_node_mut(s2_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_none())
+    })
     .unwrap();
 
   assert!(activate_radio(&mut dom, s2_id));
@@ -226,13 +254,19 @@ fn radio_activation_does_not_cross_shadow_root_boundary() {
   let s1_id = *index.id_by_element_id.get("s1").unwrap();
   let s2_id = *index.id_by_element_id.get("s2").unwrap();
   index
-    .with_node_mut(l2_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(l2_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
   index
-    .with_node_mut(s1_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .with_node_mut(s1_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_none())
+    })
     .unwrap();
   index
-    .with_node_mut(s2_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .with_node_mut(s2_id, |node| {
+      assert!(node.get_attribute_ref("checked").is_some())
+    })
     .unwrap();
 }
 

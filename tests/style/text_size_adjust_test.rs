@@ -44,4 +44,3 @@ fn text_size_adjust_parses_percent_length_token() {
     matches!(target.styles.text_size_adjust, TextSizeAdjust::Percentage(p) if (p - 125.0).abs() < f32::EPSILON)
   );
 }
-

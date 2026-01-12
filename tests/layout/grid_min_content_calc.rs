@@ -56,7 +56,11 @@ fn min_content_row_considers_calc_font_relative_heights() {
     .layout(&container, &LayoutConstraints::definite(200.0, 400.0))
     .expect("grid layout");
 
-  assert_eq!(fragment.children.len(), 2, "grid should have two item fragments");
+  assert_eq!(
+    fragment.children.len(),
+    2,
+    "grid should have two item fragments"
+  );
   let banner_fragment = &fragment.children[0];
   let header_fragment = &fragment.children[1];
 

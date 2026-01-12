@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use xtask::webidl::{extract_webidl_blocks, parse_webidl, ParsedDefinition};
 use xtask::webidl::resolve::resolve_webidl_world;
+use xtask::webidl::{extract_webidl_blocks, parse_webidl, ParsedDefinition};
 
 #[test]
 fn combined_webidl_includes_url_and_fetch_surfaces() {
@@ -119,7 +119,10 @@ fn combined_webidl_includes_url_and_fetch_surfaces() {
     }
   }
 
-  fn parse_sources(repo_root: &Path, rel_paths: &[&str]) -> (String, xtask::webidl::ParsedWebIdlWorld) {
+  fn parse_sources(
+    repo_root: &Path,
+    rel_paths: &[&str],
+  ) -> (String, xtask::webidl::ParsedWebIdlWorld) {
     let mut combined_idl = String::new();
     let mut state = BalanceState::default();
     for rel in rel_paths {

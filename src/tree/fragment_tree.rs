@@ -56,12 +56,12 @@
 //!   deep clone events, and traversal counts when translation routines walk subtrees. Enable it when
 //!   validating structural sharing or cache reuse.
 
+use crate::animation::TransitionState;
 use crate::css::types::KeyframesRule;
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::scroll::ScrollMetadata;
-use crate::animation::TransitionState;
 use crate::style::color::Rgba;
 use crate::style::types::{BorderStyle, Overflow};
 use crate::style::ComputedStyle;
@@ -71,8 +71,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroU64;
-use std::ops::{Deref, DerefMut};
 use std::ops::Range;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -579,7 +579,11 @@ impl TableCollapsedBorders {
       return None;
     }
     let start = self.row_line_positions.get(row).copied().unwrap_or(0.0);
-    let end = self.row_line_positions.get(row + 1).copied().unwrap_or(start);
+    let end = self
+      .row_line_positions
+      .get(row + 1)
+      .copied()
+      .unwrap_or(start);
     let prev_half = self.horizontal_line_width(row) * 0.5;
     let next_half = self.horizontal_line_width(row + 1) * 0.5;
     Some((end - start - prev_half - next_half).max(0.0))

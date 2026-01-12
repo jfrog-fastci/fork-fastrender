@@ -61,11 +61,12 @@ impl ResourceFetcher for RecordingFetcher {
         referrer_policy: req.referrer_policy,
       });
 
-    self
-      .responses
-      .get(req.url)
-      .cloned()
-      .ok_or_else(|| Error::Io(io::Error::new(io::ErrorKind::NotFound, format!("missing {req:?}"))))
+    self.responses.get(req.url).cloned().ok_or_else(|| {
+      Error::Io(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("missing {req:?}"),
+      ))
+    })
   }
 }
 
@@ -101,11 +102,9 @@ fn stylesheet_referrer_policy_header_applies_to_import_requests() {
     "1".to_string(),
   )]));
   let config = FastRenderConfig::default().with_runtime_toggles(toggles);
-  let mut renderer = FastRender::with_config_and_fetcher(
-    config,
-    Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
-  )
-  .unwrap();
+  let mut renderer =
+    FastRender::with_config_and_fetcher(config, Some(fetcher.clone() as Arc<dyn ResourceFetcher>))
+      .unwrap();
 
   renderer
     .render_html_with_stylesheets(
@@ -187,11 +186,9 @@ fn nested_stylesheet_referrer_policy_headers_override_for_grandchild_imports() {
     "1".to_string(),
   )]));
   let config = FastRenderConfig::default().with_runtime_toggles(toggles);
-  let mut renderer = FastRender::with_config_and_fetcher(
-    config,
-    Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
-  )
-  .unwrap();
+  let mut renderer =
+    FastRender::with_config_and_fetcher(config, Some(fetcher.clone() as Arc<dyn ResourceFetcher>))
+      .unwrap();
 
   renderer
     .render_html_with_stylesheets(
@@ -208,16 +205,23 @@ fn nested_stylesheet_referrer_policy_headers_override_for_grandchild_imports() {
   let requests = fetcher.requests();
   let first_request = requests
     .iter()
-    .find(|request| request.url == first_import_url && request.destination == FetchDestination::Style)
+    .find(|request| {
+      request.url == first_import_url && request.destination == FetchDestination::Style
+    })
     .expect("expected first @import stylesheet fetch");
   assert_eq!(first_request.referrer_url.as_deref(), Some(stylesheet_url));
   assert_eq!(first_request.referrer_policy, ReferrerPolicy::Origin);
 
   let second_request = requests
     .iter()
-    .find(|request| request.url == second_import_url && request.destination == FetchDestination::Style)
+    .find(|request| {
+      request.url == second_import_url && request.destination == FetchDestination::Style
+    })
     .expect("expected nested @import stylesheet fetch");
-  assert_eq!(second_request.referrer_url.as_deref(), Some(first_final_url));
+  assert_eq!(
+    second_request.referrer_url.as_deref(),
+    Some(first_final_url)
+  );
   assert_eq!(second_request.referrer_policy, ReferrerPolicy::NoReferrer);
 
   assert!(
@@ -267,11 +271,9 @@ fn stylesheet_referrer_policy_header_applies_to_font_requests() {
     "1".to_string(),
   )]));
   let config = FastRenderConfig::default().with_runtime_toggles(toggles);
-  let mut renderer = FastRender::with_config_and_fetcher(
-    config,
-    Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
-  )
-  .unwrap();
+  let mut renderer =
+    FastRender::with_config_and_fetcher(config, Some(fetcher.clone() as Arc<dyn ResourceFetcher>))
+      .unwrap();
 
   renderer
     .render_html_with_stylesheets(
@@ -347,11 +349,9 @@ fn nested_stylesheet_referrer_policy_headers_override_for_font_requests() {
     "1".to_string(),
   )]));
   let config = FastRenderConfig::default().with_runtime_toggles(toggles);
-  let mut renderer = FastRender::with_config_and_fetcher(
-    config,
-    Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
-  )
-  .unwrap();
+  let mut renderer =
+    FastRender::with_config_and_fetcher(config, Some(fetcher.clone() as Arc<dyn ResourceFetcher>))
+      .unwrap();
 
   renderer
     .render_html_with_stylesheets(

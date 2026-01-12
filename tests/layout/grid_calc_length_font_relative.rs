@@ -60,8 +60,11 @@ fn grid_resolves_calc_lengths_with_rem_units_in_track_sizing() {
   let second_fragment = &fragment.children[1];
 
   // `5.625rem` with a 16px root font size is exactly 90px, so the calc is 91px.
-  assert_approx(first_fragment.bounds.height(), 91.0, "first grid row track size");
+  assert_approx(
+    first_fragment.bounds.height(),
+    91.0,
+    "first grid row track size",
+  );
   assert_approx(second_fragment.bounds.y(), 91.0, "second row offset");
   assert_approx(second_fragment.bounds.height(), 10.0, "second row height");
 }
-

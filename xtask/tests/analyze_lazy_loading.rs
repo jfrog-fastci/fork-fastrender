@@ -50,4 +50,3 @@ fn analyze_lazy_loading_reports_common_data_attrs() {
     "JSON report should contain img.data_url_attrs[\"data-gl-src\"]; got:\n{raw}"
   );
 }
-

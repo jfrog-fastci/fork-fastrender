@@ -86,31 +86,38 @@ fn select_dropdown_arrow_keys_skip_hidden_options_when_box_tree_is_available() -
   let click_viewport_point = Point::new(select_rect.x() + 5.0, select_rect.y() + 5.0);
 
   let mut engine = InteractionEngine::new();
-  let (after_down, after_up) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-    let mut changed = false;
+  let (after_down, after_up) =
+    doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let mut changed = false;
 
-    changed |= engine.pointer_down(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point);
-    let (up_changed, _action) = engine.pointer_up_with_scroll(
-      dom,
-      box_tree,
-      fragment_tree,
-      &scroll_state,
-      click_viewport_point,
-      PointerButton::Primary,
-      PointerModifiers::NONE,
-      "",
-      "",
-    );
-    changed |= up_changed;
+      changed |= engine.pointer_down(
+        dom,
+        box_tree,
+        fragment_tree,
+        &scroll_state,
+        click_viewport_point,
+      );
+      let (up_changed, _action) = engine.pointer_up_with_scroll(
+        dom,
+        box_tree,
+        fragment_tree,
+        &scroll_state,
+        click_viewport_point,
+        PointerButton::Primary,
+        PointerModifiers::NONE,
+        "",
+        "",
+      );
+      changed |= up_changed;
 
-    changed |= engine.key_action_with_box_tree(dom, Some(box_tree), KeyAction::ArrowDown);
-    let after_down = selected_option_indices(dom);
+      changed |= engine.key_action_with_box_tree(dom, Some(box_tree), KeyAction::ArrowDown);
+      let after_down = selected_option_indices(dom);
 
-    changed |= engine.key_action_with_box_tree(dom, Some(box_tree), KeyAction::ArrowUp);
-    let after_up = selected_option_indices(dom);
+      changed |= engine.key_action_with_box_tree(dom, Some(box_tree), KeyAction::ArrowUp);
+      let after_up = selected_option_indices(dom);
 
-    (changed, (after_down, after_up))
-  })?;
+      (changed, (after_down, after_up))
+    })?;
 
   assert_eq!(
     after_down,

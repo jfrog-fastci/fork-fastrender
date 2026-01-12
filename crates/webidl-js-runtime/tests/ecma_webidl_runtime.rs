@@ -2,7 +2,9 @@ use std::rc::Rc;
 
 use vm_js::{HeapLimits, Value};
 use webidl::{convert_js_to_idl, IdlType, IdlValue};
-use webidl_js_runtime::{JsRuntime as LegacyJsRuntime, VmJsRuntime, WebIdlJsRuntime as LegacyWebIdlJsRuntime};
+use webidl_js_runtime::{
+  JsRuntime as LegacyJsRuntime, VmJsRuntime, WebIdlJsRuntime as LegacyWebIdlJsRuntime,
+};
 
 #[test]
 fn vm_js_runtime_implements_ecma_webidl_jsruntime_for_sequence_conversion() {
@@ -26,7 +28,11 @@ fn vm_js_runtime_implements_ecma_webidl_jsruntime_for_sequence_conversion() {
         _ => 0,
       };
       let done = idx >= items_for_next.len();
-      let value = if done { Value::Undefined } else { items_for_next[idx] };
+      let value = if done {
+        Value::Undefined
+      } else {
+        items_for_next[idx]
+      };
 
       rt.define_data_property(this, idx_key, Value::Number((idx + 1) as f64), true)?;
 
@@ -71,4 +77,3 @@ fn vm_js_runtime_implements_ecma_webidl_jsruntime_for_sequence_conversion() {
     .collect::<Vec<_>>();
   assert_eq!(nums, vec![1.0, 2.0, 3.0]);
 }
-

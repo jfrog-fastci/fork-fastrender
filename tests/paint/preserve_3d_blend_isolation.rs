@@ -64,7 +64,10 @@ fn preserve_3d_isolated_root_scopes_mix_blend_mode_backdrop() {
   list.push(DisplayItem::PopStackingContext);
 
   let mut raw = HashMap::new();
-  raw.insert("FASTR_PRESERVE3D_DISABLE_SCENE".to_string(), "0".to_string());
+  raw.insert(
+    "FASTR_PRESERVE3D_DISABLE_SCENE".to_string(),
+    "0".to_string(),
+  );
   let toggles = Arc::new(RuntimeToggles::from_map(raw));
 
   let pixmap = with_thread_runtime_toggles(toggles, || {

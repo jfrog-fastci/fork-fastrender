@@ -53,4 +53,3 @@ fn stacking_context_layer_bounds_include_descendant_svg_filter_outset() {
     p.alpha()
   );
 }
-

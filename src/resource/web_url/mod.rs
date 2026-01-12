@@ -60,7 +60,11 @@ mod tests {
       max_query_pairs: 16,
       max_total_query_bytes: 1024,
     };
-    assert!(!WebUrl::can_parse("a", Some("https://example.com/"), &limits));
+    assert!(!WebUrl::can_parse(
+      "a",
+      Some("https://example.com/"),
+      &limits
+    ));
     let err = WebUrl::parse("a", Some("https://example.com/"), &limits).unwrap_err();
     assert!(matches!(
       err,

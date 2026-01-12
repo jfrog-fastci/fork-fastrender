@@ -1,10 +1,10 @@
 use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{FastRender, FastRenderConfig, Result};
 use fastrender::resource::{FetchedResource, ResourceFetcher};
+use fastrender::{FastRender, FastRenderConfig, Result};
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 struct MapFetcher {
   resources: HashMap<String, Vec<u8>>,
@@ -47,8 +47,7 @@ fn render_single_img(
   let config = FastRenderConfig::new()
     .with_default_viewport(width, height)
     .with_runtime_toggles(toggles);
-  let mut renderer =
-    FastRender::with_config_and_fetcher(config, Some(fetcher)).expect("renderer");
+  let mut renderer = FastRender::with_config_and_fetcher(config, Some(fetcher)).expect("renderer");
   renderer.render_html(html, width, height)
 }
 
@@ -72,9 +71,14 @@ fn img_decoding_async_defers_only_for_large_destinations() {
       </style>
       <img decoding="async" src="test://big.png">
     "#;
-  let pixmap_async_small =
-    render_single_img(html_async_small, Arc::clone(&fetcher), 448, 299, "display_list")
-      .expect("render async small");
+  let pixmap_async_small = render_single_img(
+    html_async_small,
+    Arc::clone(&fetcher),
+    448,
+    299,
+    "display_list",
+  )
+  .expect("render async small");
   let px = pixmap_async_small.pixel(224, 149).expect("pixel");
   assert_eq!(
     (px.red(), px.green(), px.blue()),
@@ -92,9 +96,8 @@ fn img_decoding_async_defers_only_for_large_destinations() {
       </style>
       <img decoding="async" src="test://big.png">
     "#;
-  let pixmap_async =
-    render_single_img(html_async, Arc::clone(&fetcher), 512, 512, "display_list")
-      .expect("render async");
+  let pixmap_async = render_single_img(html_async, Arc::clone(&fetcher), 512, 512, "display_list")
+    .expect("render async");
   let px = pixmap_async.pixel(256, 256).expect("pixel");
   assert_eq!(
     (px.red(), px.green(), px.blue()),
@@ -112,9 +115,14 @@ fn img_decoding_async_defers_only_for_large_destinations() {
       </style>
       <img loading="eager" decoding="async" src="test://big.png">
     "#;
-  let pixmap_async_eager =
-    render_single_img(html_async_eager, Arc::clone(&fetcher), 512, 512, "display_list")
-      .expect("render async eager");
+  let pixmap_async_eager = render_single_img(
+    html_async_eager,
+    Arc::clone(&fetcher),
+    512,
+    512,
+    "display_list",
+  )
+  .expect("render async eager");
   let px = pixmap_async_eager.pixel(256, 256).expect("pixel");
   assert_eq!(
     (px.red(), px.green(), px.blue()),
@@ -192,9 +200,14 @@ fn img_loading_lazy_defers_only_when_offscreen() {
         <div class="spacer"></div>
         <img loading="lazy" src="test://img.png">
       "#;
-    let pixmap_lazy_offscreen =
-      render_single_img(html_lazy_offscreen, fetcher.clone(), 100, 100, paint_backend)
-        .unwrap_or_else(|_| panic!("render lazy offscreen (backend={paint_backend})"));
+    let pixmap_lazy_offscreen = render_single_img(
+      html_lazy_offscreen,
+      fetcher.clone(),
+      100,
+      100,
+      paint_backend,
+    )
+    .unwrap_or_else(|_| panic!("render lazy offscreen (backend={paint_backend})"));
     let px = pixmap_lazy_offscreen.pixel(50, 50).expect("pixel");
     assert_eq!(
       (px.red(), px.green(), px.blue()),

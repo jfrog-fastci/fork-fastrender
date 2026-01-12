@@ -307,7 +307,10 @@ fn paged_table_footers_do_not_push_rows_out_of_page() {
       "page {idx} contains table rows but is missing the repeated footer"
     );
 
-    for frag in texts.iter().filter(|t| t.text.contains("Row") || t.text.contains("Footer")) {
+    for frag in texts
+      .iter()
+      .filter(|t| t.text.contains("Row") || t.text.contains("Footer"))
+    {
       assert!(
         frag.y + frag.height <= page_bottom + 0.5,
         "table content should not extend beyond the page content box (page {idx}, text={:?}, y={}, h={}, page_bottom={})",
@@ -425,10 +428,7 @@ fn table_headers_repeat_in_multicol() {
 
   let header_fragments: Vec<&TextFragment> =
     texts.iter().filter(|t| t.text.contains("Header")).collect();
-  let header_positions: Vec<f32> = header_fragments
-    .iter()
-    .map(|t| t.x)
-    .collect();
+  let header_positions: Vec<f32> = header_fragments.iter().map(|t| t.x).collect();
   assert!(
     header_positions.len() >= 2,
     "header should repeat for each column fragment"
@@ -559,12 +559,16 @@ fn table_headers_repeat_in_multicol_vertical_writing() {
   let header_fragments: Vec<&TextFragment> =
     texts.iter().filter(|t| t.text.contains("Header")).collect();
   let header_physical: Vec<(f32, f32)> = header_fragments.iter().map(|t| (t.x, t.y)).collect();
-  let (min_x, max_x) = header_fragments.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
-    (acc.0.min(t.x), acc.1.max(t.x))
-  });
-  let (min_y, max_y) = header_fragments.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
-    (acc.0.min(t.y), acc.1.max(t.y))
-  });
+  let (min_x, max_x) = header_fragments
+    .iter()
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
+      (acc.0.min(t.x), acc.1.max(t.x))
+    });
+  let (min_y, max_y) = header_fragments
+    .iter()
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
+      (acc.0.min(t.y), acc.1.max(t.y))
+    });
   let x_spread = max_x - min_x;
   let y_spread = max_y - min_y;
   let column_axis: fn(&TextFragment) -> f32 = if x_spread >= y_spread {
@@ -572,10 +576,7 @@ fn table_headers_repeat_in_multicol_vertical_writing() {
   } else {
     |t: &TextFragment| t.y
   };
-  let header_positions: Vec<f32> = header_fragments
-    .iter()
-    .map(|t| column_axis(t))
-    .collect();
+  let header_positions: Vec<f32> = header_fragments.iter().map(|t| column_axis(t)).collect();
   assert!(
     header_positions.len() >= 2,
     "header should repeat for each column fragment"
@@ -770,20 +771,21 @@ fn top_caption_appears_only_in_first_column_fragment() {
     header_fragments.len() >= 2,
     "header should repeat for each column fragment"
   );
-  let (min_x, max_x) =
-    header_fragments
-      .iter()
-      .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
-        (acc.0.min(t.x), acc.1.max(t.x))
-      });
+  let (min_x, max_x) = header_fragments
+    .iter()
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
+      (acc.0.min(t.x), acc.1.max(t.x))
+    });
   assert!(
     (max_x - min_x) > 10.0,
     "headers should appear in distinct columns"
   );
 
   let midpoint = (min_x + max_x) / 2.0;
-  let caption_fragments: Vec<&TextFragment> =
-    texts.iter().filter(|t| t.text.contains("Caption")).collect();
+  let caption_fragments: Vec<&TextFragment> = texts
+    .iter()
+    .filter(|t| t.text.contains("Caption"))
+    .collect();
   assert!(
     !caption_fragments.is_empty(),
     "expected to find caption fragment(s)"
@@ -859,20 +861,21 @@ fn bottom_caption_appears_only_in_last_column_fragment() {
     header_fragments.len() >= 2,
     "header should repeat for each column fragment"
   );
-  let (min_x, max_x) =
-    header_fragments
-      .iter()
-      .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
-        (acc.0.min(t.x), acc.1.max(t.x))
-      });
+  let (min_x, max_x) = header_fragments
+    .iter()
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
+      (acc.0.min(t.x), acc.1.max(t.x))
+    });
   assert!(
     (max_x - min_x) > 10.0,
     "headers should appear in distinct columns"
   );
 
   let midpoint = (min_x + max_x) / 2.0;
-  let caption_fragments: Vec<&TextFragment> =
-    texts.iter().filter(|t| t.text.contains("Caption")).collect();
+  let caption_fragments: Vec<&TextFragment> = texts
+    .iter()
+    .filter(|t| t.text.contains("Caption"))
+    .collect();
   assert!(
     !caption_fragments.is_empty(),
     "expected to find caption fragment(s)"

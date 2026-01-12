@@ -256,7 +256,12 @@ fn write_stub_executable(target_dir: &Path, profile: &str, name: &str, script: &
 }
 
 fn write_stub_render_fixtures(target_dir: &Path) -> PathBuf {
-  write_stub_executable(target_dir, "release", "render_fixtures", STUB_RENDER_FIXTURES)
+  write_stub_executable(
+    target_dir,
+    "release",
+    "render_fixtures",
+    STUB_RENDER_FIXTURES,
+  )
 }
 
 fn write_stub_render_fixtures_debug(target_dir: &Path) -> PathBuf {

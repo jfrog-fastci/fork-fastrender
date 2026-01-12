@@ -97,7 +97,8 @@ fn looks_like_url(value: &str) -> bool {
   if value.contains("://") || value.starts_with('/') {
     return true;
   }
-  if starts_with_ignore_ascii_case(value, "data:") || starts_with_ignore_ascii_case(value, "blob:") {
+  if starts_with_ignore_ascii_case(value, "data:") || starts_with_ignore_ascii_case(value, "blob:")
+  {
     return true;
   }
   value.contains('.')
@@ -115,8 +116,15 @@ fn url_from_jsonish(value: &str) -> Option<String> {
       }
       serde_json::Value::Array(values) => values.iter().find_map(extract),
       serde_json::Value::Object(map) => {
-        const PRIORITY_KEYS: [&str; 7] =
-          ["url", "src", "poster", "href", "poster_url", "posterUrl", "imageUrl"];
+        const PRIORITY_KEYS: [&str; 7] = [
+          "url",
+          "src",
+          "poster",
+          "href",
+          "poster_url",
+          "posterUrl",
+          "imageUrl",
+        ];
         for key in PRIORITY_KEYS {
           if let Some(value) = map.get(key) {
             if let Some(url) = extract(value) {
@@ -142,13 +150,20 @@ fn url_from_jsonish(value: &str) -> Option<String> {
   extract(&parsed)
 }
 
-fn discover_fixture_dirs(fixtures_root: &Path, filter: &[String]) -> Result<Vec<(String, PathBuf)>> {
+fn discover_fixture_dirs(
+  fixtures_root: &Path,
+  filter: &[String],
+) -> Result<Vec<(String, PathBuf)>> {
   if !filter.is_empty() {
     let mut out = Vec::with_capacity(filter.len());
     for name in filter {
       let dir = fixtures_root.join(name);
       if !dir.is_dir() {
-        bail!("fixture directory {} does not exist under {}", name, fixtures_root.display());
+        bail!(
+          "fixture directory {} does not exist under {}",
+          name,
+          fixtures_root.display()
+        );
       }
       out.push((name.clone(), dir));
     }
@@ -261,10 +276,8 @@ fn analyze_srcset(stats: &mut ElementStats, value: Option<&str>) {
         return;
       }
 
-      let candidates = fastrender::html::image_attrs::parse_srcset_with_limit(
-        trimmed,
-        MAX_SRCSET_CANDIDATES,
-      );
+      let candidates =
+        fastrender::html::image_attrs::parse_srcset_with_limit(trimmed, MAX_SRCSET_CANDIDATES);
       if candidates.is_empty() {
         stats.srcset_unparseable += 1;
         return;
@@ -374,8 +387,11 @@ fn print_element_summary(label: &str, stats: &ElementStats, top: usize) {
     );
   }
 
-  let srcset_total =
-    stats.srcset_missing + stats.srcset_empty + stats.srcset_unparseable + stats.srcset_placeholder_only + stats.srcset_non_placeholder;
+  let srcset_total = stats.srcset_missing
+    + stats.srcset_empty
+    + stats.srcset_unparseable
+    + stats.srcset_placeholder_only
+    + stats.srcset_non_placeholder;
   if srcset_total > 0 {
     println!(
       "  srcset placeholder-only: {} ({}) [missing={}, empty={}, unparseable={}, non-placeholder={}]",
@@ -441,8 +457,8 @@ pub fn run_analyze_lazy_loading(args: AnalyzeLazyLoadingArgs) -> Result<()> {
       .with_context(|| format!("discover HTML files under fixture {fixture_name}"))?;
     for html_path in html_files {
       report.html_files += 1;
-      let html = fs::read_to_string(&html_path)
-        .with_context(|| format!("read {}", html_path.display()))?;
+      let html =
+        fs::read_to_string(&html_path).with_context(|| format!("read {}", html_path.display()))?;
       let dom = fastrender::dom::parse_html(&html)
         .with_context(|| format!("parse DOM from {}", html_path.display()))?;
       analyze_dom(&dom, &mut report);
@@ -475,12 +491,11 @@ pub fn run_analyze_lazy_loading(args: AnalyzeLazyLoadingArgs) -> Result<()> {
     let json_path = resolve_repo_path(&repo_root, &json_path_arg);
     if let Some(parent) = json_path.parent() {
       if !parent.as_os_str().is_empty() {
-        fs::create_dir_all(parent)
-          .with_context(|| format!("create {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
       }
     }
-    let file = fs::File::create(&json_path)
-      .with_context(|| format!("create {}", json_path.display()))?;
+    let file =
+      fs::File::create(&json_path).with_context(|| format!("create {}", json_path.display()))?;
     serde_json::to_writer_pretty(file, &report).context("serialize JSON report")?;
     println!("Wrote JSON report to {}", json_path.display());
   }

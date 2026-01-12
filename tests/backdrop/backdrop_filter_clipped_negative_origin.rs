@@ -90,4 +90,3 @@ fn backdrop_filter_blur_clips_rounded_corners_with_negative_origin() {
   // Outside the overlay region should remain untouched.
   assert_eq!(pixel(&pixmap, WIDTH - 1, HEIGHT / 2), (0, 255, 0, 255));
 }
-

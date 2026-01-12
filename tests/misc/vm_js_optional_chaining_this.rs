@@ -44,7 +44,9 @@ fn optional_call_does_not_evaluate_arguments_when_short_circuited() {
 fn optional_call_on_identifier_uses_function_call_this_binding_rules() {
   // `f?.()` is an optional call on an IdentifierReference, so it should behave like `f()`.
   let mut rt = new_runtime();
-  let value = rt.exec_script(r#"function f(){ return this === globalThis; } f?.()"#).unwrap();
+  let value = rt
+    .exec_script(r#"function f(){ return this === globalThis; } f?.()"#)
+    .unwrap();
   assert_eq!(value, Value::Bool(true));
 
   let mut rt = new_runtime();
@@ -53,4 +55,3 @@ fn optional_call_on_identifier_uses_function_call_this_binding_rules() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-

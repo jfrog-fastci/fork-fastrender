@@ -55,4 +55,3 @@ fn overflow_hidden_clips_stacking_context_children() {
   // Pixel inside both parent+child paints red.
   assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));
 }
-

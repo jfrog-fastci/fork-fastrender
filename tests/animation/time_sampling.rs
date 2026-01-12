@@ -82,7 +82,10 @@ fn time_based_opacity_animation_samples_at_multiple_timestamps_and_settles_witho
     .paint_with_options(PreparedPaintOptions::new().with_background(bg))
     .expect("paint settled B");
   assert_eq!(pixel(&pixmap_settled_a, 5, 5), (255, 0, 0, 255));
-  assert_eq!(pixel(&pixmap_settled_a, 5, 5), pixel(&pixmap_settled_b, 5, 5));
+  assert_eq!(
+    pixel(&pixmap_settled_a, 5, 5),
+    pixel(&pixmap_settled_b, 5, 5)
+  );
 }
 
 #[test]

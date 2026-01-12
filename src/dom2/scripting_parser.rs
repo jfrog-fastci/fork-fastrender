@@ -76,7 +76,9 @@ mod tests {
     let mut stack: Vec<NodeId> = vec![root];
     while let Some(id) = stack.pop() {
       match &doc.node(id).kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case(tag) => return Some(id),
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case(tag) => {
+          return Some(id)
+        }
         _ => {}
       }
       for &child in doc.node(id).children.iter().rev() {
@@ -132,7 +134,10 @@ mod tests {
       Ok(())
     })
     .unwrap();
-    assert!(!saw_script, "unexpected <script> pause for <noscript> input");
+    assert!(
+      !saw_script,
+      "unexpected <script> pause for <noscript> input"
+    );
 
     let noscript_enabled =
       find_first_tag(&doc_enabled, doc_enabled.root(), "noscript").expect("noscript missing");
@@ -163,11 +168,12 @@ mod tests {
     let document_url = "https://example.com/dir/page.html";
 
     let mut seen = None;
-    let _doc = parse_html_with_scripting_dom2(html, Some(document_url), |_doc, _script_id, spec| {
-      seen = Some(spec);
-      Ok(())
-    })
-    .unwrap();
+    let _doc =
+      parse_html_with_scripting_dom2(html, Some(document_url), |_doc, _script_id, spec| {
+        seen = Some(spec);
+        Ok(())
+      })
+      .unwrap();
 
     let spec = seen.expect("expected script pause");
     assert_eq!(spec.base_url.as_deref(), Some(document_url));

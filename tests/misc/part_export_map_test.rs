@@ -81,9 +81,7 @@ fn part_export_map_nested_host_reexports_into_ancestor_host() {
   let exports = map
     .exports_for_host(outer_host_id)
     .expect("outer host exports");
-  let targets = exports
-    .get("reexported")
-    .expect("reexported part exports");
+  let targets = exports.get("reexported").expect("reexported part exports");
   assert!(
     targets.contains(&ExportedPartTarget::Element(inner_part_id)),
     "reexported part exports must contain forwarded element target"
@@ -150,9 +148,9 @@ fn part_export_map_does_not_leak_nested_shadow_without_exportparts() {
     .exports_for_host(outer_host_id)
     .expect("outer host exports");
   assert!(
-    exports.values().all(|targets| {
-      !targets.contains(&ExportedPartTarget::Element(inner_part_id))
-    }),
+    exports
+      .values()
+      .all(|targets| { !targets.contains(&ExportedPartTarget::Element(inner_part_id)) }),
     "outer host exports must not include inner shadow part without exportparts"
   );
 }
@@ -263,9 +261,7 @@ fn part_export_map_includes_exportparts_pseudo_elements() {
   let p_id = node_id_by_html_id(&dom, &ids, "p");
 
   let exports = map.exports_for_host(host_id).expect("host exports");
-  let targets = exports
-    .get("preceding-text")
-    .expect("pseudo part exports");
+  let targets = exports.get("preceding-text").expect("pseudo part exports");
   assert!(
     targets.contains(&ExportedPartTarget::Pseudo {
       node_id: p_id,

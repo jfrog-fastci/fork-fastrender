@@ -4,8 +4,8 @@ use std::path::Path;
 use xtask::webidl::generate::{rustfmt, FORBIDDEN_TOKENS};
 use xtask::webidl::resolve::ExposureTarget;
 use xtask::webidl_bindings_codegen::{
-  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend, WebIdlBindingsCodegenConfig,
-  WebIdlBindingsGenerationMode,
+  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend,
+  WebIdlBindingsCodegenConfig, WebIdlBindingsGenerationMode,
 };
 
 const EXPECTED_LEGACY: &str = include_str!("goldens/webidl_bindings_codegen_expected.rs");

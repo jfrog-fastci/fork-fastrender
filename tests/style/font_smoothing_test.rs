@@ -28,9 +28,8 @@ fn styled_root(html: &str) -> StyledNode {
 
 #[test]
 fn webkit_font_smoothing_antialiased_is_parsed_and_inherited() {
-  let styled = styled_root(
-    r#"<div style="-webkit-font-smoothing: antialiased"><span></span></div>"#,
-  );
+  let styled =
+    styled_root(r#"<div style="-webkit-font-smoothing: antialiased"><span></span></div>"#);
   let div = find_first(&styled, "div").expect("div");
   let span = find_first(div, "span").expect("span");
   assert_eq!(div.styles.font_smoothing, FontSmoothing::Grayscale);
@@ -39,24 +38,31 @@ fn webkit_font_smoothing_antialiased_is_parsed_and_inherited() {
 
 #[test]
 fn moz_osx_font_smoothing_grayscale_is_parsed() {
-  let styled = styled_root(
-    r#"<div style="-moz-osx-font-smoothing: grayscale"><span></span></div>"#,
-  );
+  let styled =
+    styled_root(r#"<div style="-moz-osx-font-smoothing: grayscale"><span></span></div>"#);
   let div = find_first(&styled, "div").expect("div");
   assert_eq!(div.styles.font_smoothing, FontSmoothing::Grayscale);
 }
 
 #[test]
 fn supports_font_smoothing_declarations() {
-  assert!(supports_declaration("-webkit-font-smoothing", "antialiased"));
-  assert!(supports_declaration("-webkit-font-smoothing", "subpixel-antialiased"));
+  assert!(supports_declaration(
+    "-webkit-font-smoothing",
+    "antialiased"
+  ));
+  assert!(supports_declaration(
+    "-webkit-font-smoothing",
+    "subpixel-antialiased"
+  ));
   assert!(!supports_declaration("-webkit-font-smoothing", "bogus"));
 
   assert!(supports_declaration("-moz-osx-font-smoothing", "grayscale"));
-  assert!(!supports_declaration("-moz-osx-font-smoothing", "subpixel-antialiased"));
+  assert!(!supports_declaration(
+    "-moz-osx-font-smoothing",
+    "subpixel-antialiased"
+  ));
 
   assert!(supports_declaration("font-smooth", "never"));
   assert!(supports_declaration("font-smooth", "always"));
   assert!(!supports_declaration("font-smooth", "auto auto"));
 }
-

@@ -404,7 +404,8 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
     text_style,
     "Intrinsic sizing keywords should clamp absolute positioned width".to_string(),
   );
-  let mut abs_child = BoxNode::new_block(abs_style.clone(), FormattingContextType::Inline, vec![text]);
+  let mut abs_child =
+    BoxNode::new_block(abs_style.clone(), FormattingContextType::Inline, vec![text]);
   abs_child.id = abs_id;
 
   // Intrinsic sizing for absolute positioning is measured on a temporary "static" relayout style.
@@ -435,8 +436,11 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
   abs_style.right = InsetValue::Length(Length::px(right));
   let abs_style = Arc::new(abs_style);
 
-  let mut abs_child =
-    BoxNode::new_block(abs_style.clone(), FormattingContextType::Inline, abs_child.children.clone());
+  let mut abs_child = BoxNode::new_block(
+    abs_style.clone(),
+    FormattingContextType::Inline,
+    abs_child.children.clone(),
+  );
   abs_child.id = abs_id;
 
   let mut container = BoxNode::new_block(
@@ -767,7 +771,11 @@ fn relative_position_vertical_rl_offsets_apply_to_physical_axes() {
   let make_tree = |child_style: Arc<ComputedStyle>| {
     let mut child = BoxNode::new_block(child_style, FormattingContextType::Block, vec![]);
     child.id = 2;
-    let mut root = BoxNode::new_block(root_style.clone(), FormattingContextType::Block, vec![child]);
+    let mut root = BoxNode::new_block(
+      root_style.clone(),
+      FormattingContextType::Block,
+      vec![child],
+    );
     // Treat the test root as the document root so block-start margins do not collapse away.
     root.id = 1;
     root

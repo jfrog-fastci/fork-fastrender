@@ -254,7 +254,11 @@ fn build_block_stack_with_viewport_fixed() -> (BoxTree, usize) {
   let root = BoxNode::new_block(
     Arc::new(root_style),
     FormattingContextType::Block,
-    vec![spacer("spacer-0", &spacer_style), spacer("spacer-1", &spacer_style), host],
+    vec![
+      spacer("spacer-0", &spacer_style),
+      spacer("spacer-1", &spacer_style),
+      host,
+    ],
   );
   let tree = BoxTree::new(root);
   let fixed_id =
@@ -370,7 +374,11 @@ fn build_block_stack_with_content_visibility_auto_descendant() -> (BoxTree, usiz
   let root = BoxNode::new_block(
     Arc::new(root_style),
     FormattingContextType::Block,
-    vec![spacer("spacer-0", &spacer_style), spacer("spacer-1", &spacer_style), host],
+    vec![
+      spacer("spacer-0", &spacer_style),
+      spacer("spacer-1", &spacer_style),
+      host,
+    ],
   );
   let tree = BoxTree::new(root);
   let auto_id = find_box_id_by_content_visibility(&tree.root, ContentVisibility::Auto)
@@ -541,8 +549,12 @@ fn find_fragment_by_box_id<'a>(
     | FragmentContentSnapshot::Inline {
       box_id: Some(id), ..
     }
-    | FragmentContentSnapshot::Text { box_id: Some(id), .. }
-    | FragmentContentSnapshot::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContentSnapshot::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContentSnapshot::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches {
@@ -568,7 +580,10 @@ fn find_tree_fragment_by_box_id<'a>(
   None
 }
 
-fn find_box_id_by_content_visibility(node: &BoxNode, visibility: ContentVisibility) -> Option<usize> {
+fn find_box_id_by_content_visibility(
+  node: &BoxNode,
+  visibility: ContentVisibility,
+) -> Option<usize> {
   if node.style.content_visibility == visibility {
     return Some(node.id);
   }
@@ -714,16 +729,18 @@ fn parallel_block_children_preserve_viewport_fixed_fragments() {
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), FontContext::new());
   let parallel_engine = LayoutEngine::with_font_context(
-    LayoutConfig::for_viewport(viewport).with_parallelism(
-      LayoutParallelism::enabled(2).with_max_threads(Some(available_threads())),
-    ),
+    LayoutConfig::for_viewport(viewport)
+      .with_parallelism(LayoutParallelism::enabled(2).with_max_threads(Some(available_threads()))),
     FontContext::new(),
   );
 
   let serial_snapshot =
     snapshot_fragment_tree(&serial_engine.layout_tree(&box_tree).expect("serial layout"));
-  let parallel_snapshot =
-    snapshot_fragment_tree(&parallel_engine.layout_tree(&box_tree).expect("parallel layout"));
+  let parallel_snapshot = snapshot_fragment_tree(
+    &parallel_engine
+      .layout_tree(&box_tree)
+      .expect("parallel layout"),
+  );
 
   if let Some(diff) = diff_trees(&serial_snapshot, &parallel_snapshot) {
     panic!("serial vs parallel diff: {diff}");
@@ -757,16 +774,18 @@ fn parallel_block_children_preserve_external_fixed_containing_blocks() {
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), FontContext::new());
   let parallel_engine = LayoutEngine::with_font_context(
-    LayoutConfig::for_viewport(viewport).with_parallelism(
-      LayoutParallelism::enabled(2).with_max_threads(Some(available_threads())),
-    ),
+    LayoutConfig::for_viewport(viewport)
+      .with_parallelism(LayoutParallelism::enabled(2).with_max_threads(Some(available_threads()))),
     FontContext::new(),
   );
 
   let serial_snapshot =
     snapshot_fragment_tree(&serial_engine.layout_tree(&box_tree).expect("serial layout"));
-  let parallel_snapshot =
-    snapshot_fragment_tree(&parallel_engine.layout_tree(&box_tree).expect("parallel layout"));
+  let parallel_snapshot = snapshot_fragment_tree(
+    &parallel_engine
+      .layout_tree(&box_tree)
+      .expect("parallel layout"),
+  );
 
   if let Some(diff) = diff_trees(&serial_snapshot, &parallel_snapshot) {
     panic!("serial vs parallel diff: {diff}");
@@ -809,9 +828,8 @@ fn parallel_block_children_respect_content_visibility_auto_in_descendants() {
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), FontContext::new());
   let parallel_engine = LayoutEngine::with_font_context(
-    LayoutConfig::for_viewport(viewport).with_parallelism(
-      LayoutParallelism::enabled(2).with_max_threads(Some(available_threads())),
-    ),
+    LayoutConfig::for_viewport(viewport)
+      .with_parallelism(LayoutParallelism::enabled(2).with_max_threads(Some(available_threads()))),
     FontContext::new(),
   );
 

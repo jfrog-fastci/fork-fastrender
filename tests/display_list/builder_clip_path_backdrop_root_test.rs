@@ -30,7 +30,8 @@ fn clip_path_establishes_backdrop_root_even_when_resolved_none() {
   let child_style = Arc::new(child_style);
 
   let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
-  let root = FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+  let root =
+    FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
 
   let list = DisplayListBuilder::new()
     .with_parallelism(&PaintParallelism::disabled())
@@ -63,4 +64,3 @@ fn clip_path_establishes_backdrop_root_even_when_resolved_none() {
     "expected degenerate clip-path to omit PushClip(Path) emission"
   );
 }
-

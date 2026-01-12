@@ -56,7 +56,8 @@ fn run_axis_mirroring_test(writing_mode: WritingMode) {
   flow_style.grid_column_end = 3;
   flow_style.grid_row_start = 2;
   flow_style.grid_row_end = 3;
-  let mut flow_child = BoxNode::new_block(Arc::new(flow_style), FormattingContextType::Block, vec![]);
+  let mut flow_child =
+    BoxNode::new_block(Arc::new(flow_style), FormattingContextType::Block, vec![]);
   flow_child.id = 1;
 
   let mut abs_style = ComputedStyle::default();
@@ -106,4 +107,3 @@ fn grid_abspos_static_position_matches_in_flow_under_vertical_rl() {
 fn grid_abspos_static_position_matches_in_flow_under_sideways_rl() {
   run_axis_mirroring_test(WritingMode::SidewaysRl);
 }
-

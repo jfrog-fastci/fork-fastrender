@@ -228,9 +228,7 @@ impl Layout {
     let fastrender_dir = out_root.join("fastrender");
     let fastrender_png = fastrender_dir.join(format!("{fixture_stem}.png"));
     let fastrender_metadata = fastrender_dir.join(format!("{fixture_stem}.json"));
-    let fastrender_snapshot = fastrender_dir
-      .join(fixture_stem)
-      .join("snapshot.json");
+    let fastrender_snapshot = fastrender_dir.join(fixture_stem).join("snapshot.json");
 
     let overlay_dir = out_root.join("overlay");
     let overlay_png = overlay_dir.join(format!("{fixture_stem}.png"));
@@ -353,11 +351,17 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     println!("  html: {}", layout.fixture_html.display());
     println!("  out_dir: {}", layout.root.display());
     println!("  fastrender_png: {}", layout.fastrender_png.display());
-    println!("  fastrender_metadata: {}", layout.fastrender_metadata.display());
+    println!(
+      "  fastrender_metadata: {}",
+      layout.fastrender_metadata.display()
+    );
     println!("  jobs: {}", args.jobs);
     println!("  timeout: {}s", timeout);
     if args.write_snapshot {
-      println!("  fastrender_snapshot: {}", layout.fastrender_snapshot.display());
+      println!(
+        "  fastrender_snapshot: {}",
+        layout.fastrender_snapshot.display()
+      );
     }
     if args.overlay {
       println!("  overlay_png: {}", layout.overlay_png.display());
@@ -458,7 +462,9 @@ fn validate_args(args: &PageLoopArgs, fixture_stem: &str) -> Result<()> {
   if (args.inspect_filter_selector.is_some() || args.inspect_filter_id.is_some())
     && !(args.overlay || args.inspect_dump_json)
   {
-    bail!("--inspect-filter-selector/--inspect-filter-id require --overlay and/or --inspect-dump-json");
+    bail!(
+      "--inspect-filter-selector/--inspect-filter-id require --overlay and/or --inspect-dump-json"
+    );
   }
   Ok(())
 }
@@ -753,7 +759,11 @@ fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {
   }
 }
 
-fn build_chrome_baseline_command(repo_root: &Path, layout: &Layout, args: &PageLoopArgs) -> Result<Command> {
+fn build_chrome_baseline_command(
+  repo_root: &Path,
+  layout: &Layout,
+  args: &PageLoopArgs,
+) -> Result<Command> {
   let xtask = std::env::current_exe().context("resolve current xtask executable path")?;
   let mut cmd = crate::cmd::run_limited_xtask_command(repo_root);
   cmd.arg(xtask);
@@ -787,9 +797,7 @@ fn build_diff_renders_command(repo_root: &Path, layout: &Layout, debug: bool) ->
   cmd.arg("--json").arg(&layout.report_json);
   cmd.args(["--tolerance", "0"]);
   cmd.args(["--max-diff-percent", "0"]);
-  cmd
-    .arg("--sort-by")
-    .arg("percent");
+  cmd.arg("--sort-by").arg("percent");
   Ok(cmd)
 }
 

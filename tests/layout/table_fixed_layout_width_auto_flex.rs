@@ -86,7 +86,12 @@ fn flex_item_table_layout_fixed_width_auto_uses_auto_layout() {
   let table = find_table(&tree.root).expect("expected table fragment");
   let mut cells = Vec::new();
   collect_cells(table, &mut cells);
-  assert_eq!(cells.len(), 4, "expected 4 table cells, got {}", cells.len());
+  assert_eq!(
+    cells.len(),
+    4,
+    "expected 4 table cells, got {}",
+    cells.len()
+  );
 
   let max_cell_width = cells
     .iter()
@@ -190,7 +195,10 @@ fn flex_item_table_layout_fixed_width_auto_uses_auto_layout_rtl() {
     narrow.x()
   );
   let gap = wide.x() - (narrow.x() + narrow.width());
-  assert!(gap.abs() < 0.1, "expected columns to be adjacent in RTL (gap={gap})");
+  assert!(
+    gap.abs() < 0.1,
+    "expected columns to be adjacent in RTL (gap={gap})"
+  );
 }
 
 #[test]
@@ -238,7 +246,12 @@ fn flex_item_table_layout_fixed_width_auto_uses_auto_layout_collapsed_border_mod
   let table = find_table(&tree.root).expect("expected table fragment");
   let mut cells = Vec::new();
   collect_cells(table, &mut cells);
-  assert_eq!(cells.len(), 4, "expected 4 table cells, got {}", cells.len());
+  assert_eq!(
+    cells.len(),
+    4,
+    "expected 4 table cells, got {}",
+    cells.len()
+  );
 
   let max_cell_width = cells
     .iter()
@@ -341,5 +354,8 @@ fn flex_item_table_layout_fixed_width_auto_uses_auto_layout_collapsed_border_mod
     narrow.x()
   );
   let gap = wide.x() - (narrow.x() + narrow.width());
-  assert!(gap.abs() < 0.1, "expected columns to be adjacent in RTL (gap={gap})");
+  assert!(
+    gap.abs() < 0.1,
+    "expected columns to be adjacent in RTL (gap={gap})"
+  );
 }

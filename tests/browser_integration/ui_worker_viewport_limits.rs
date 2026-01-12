@@ -17,7 +17,9 @@ impl EnvGuard {
   fn set(key: &'static str, value: &'static str) -> Self {
     let prev = std::env::var_os(key);
     std::env::set_var(key, value);
-    Self { vars: vec![(key, prev)] }
+    Self {
+      vars: vec![(key, prev)],
+    }
   }
 
   fn with(mut self, key: &'static str, value: &'static str) -> Self {
@@ -46,8 +48,8 @@ fn absurd_viewport_changed_is_clamped_before_pixmap_allocation() {
 
   // Keep this test cheap and deterministic: clamp to a small pixmap limit so we don't allocate
   // hundreds of MiB on CI.
-  let _env = EnvGuard::set("FASTR_BROWSER_MAX_PIXELS", "1_000_000")
-    .with("FASTR_BROWSER_MAX_DIM_PX", "2048");
+  let _env =
+    EnvGuard::set("FASTR_BROWSER_MAX_PIXELS", "1_000_000").with("FASTR_BROWSER_MAX_DIM_PX", "2048");
 
   let handle = spawn_ui_worker("fastr-ui-worker-viewport-limits").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
@@ -90,7 +92,9 @@ fn absurd_viewport_changed_is_clamped_before_pixmap_allocation() {
 
   let frame = match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
-    WorkerToUi::NavigationFailed { url, error, .. } => panic!("navigation failed for {url}: {error}"),
+    WorkerToUi::NavigationFailed { url, error, .. } => {
+      panic!("navigation failed for {url}: {error}")
+    }
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   };
 

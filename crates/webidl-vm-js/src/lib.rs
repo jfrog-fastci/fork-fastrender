@@ -14,7 +14,8 @@ use std::any::{Any, TypeId};
 use std::ptr::NonNull;
 use vm_js::{
   ExecutionContext, GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime,
-  PropertyKey as VmPropertyKey, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  PropertyKey as VmPropertyKey, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks,
 };
 use webidl::{
   InterfaceId, IteratorResult, JsOwnPropertyDescriptor, JsPropertyKind, PropertyKey, WebIdlHooks,
@@ -373,7 +374,12 @@ pub struct CallbackHandle {
 
 impl CallbackHandle {
   /// Creates a new handle by registering `value` as a persistent root.
-  pub fn new(heap: &mut Heap, kind: CallbackKind, value: Value, realm: Option<RealmId>) -> Result<Self, VmError> {
+  pub fn new(
+    heap: &mut Heap,
+    kind: CallbackKind,
+    value: Value,
+    realm: Option<RealmId>,
+  ) -> Result<Self, VmError> {
     let root = heap.add_root(value)?;
     Ok(Self { kind, root, realm })
   }
@@ -392,7 +398,9 @@ impl CallbackHandle {
       return Ok(None);
     }
     if !heap.is_callable(value)? {
-      return Err(VmError::TypeError("Value is not a callable callback function"));
+      return Err(VmError::TypeError(
+        "Value is not a callable callback function",
+      ));
     }
     Ok(Some(Self::new(
       heap,
@@ -426,7 +434,9 @@ impl CallbackHandle {
     }
 
     let Value::Object(obj) = value else {
-      return Err(VmError::TypeError("Value is not a callback interface object"));
+      return Err(VmError::TypeError(
+        "Value is not a callback interface object",
+      ));
     };
 
     // Ensure `value` stays alive across key allocation and any user code invoked by accessors.
@@ -509,14 +519,18 @@ impl CallbackHandle {
 
     let mut call = |vm: &mut Vm, scope: &mut Scope<'_>| -> Result<Value, VmError> {
       match self.kind {
-        CallbackKind::Function => vm.call_with_host_and_hooks(host, scope, hooks, callback, this, args),
+        CallbackKind::Function => {
+          vm.call_with_host_and_hooks(host, scope, hooks, callback, this, args)
+        }
         CallbackKind::Interface => {
           if scope.heap().is_callable(callback)? {
             return vm.call_with_host_and_hooks(host, scope, hooks, callback, this, args);
           }
 
           let Value::Object(obj) = callback else {
-            return Err(VmError::TypeError("Callback interface value is not an object"));
+            return Err(VmError::TypeError(
+              "Callback interface value is not an object",
+            ));
           };
 
           // `handleEvent`
@@ -740,11 +754,15 @@ impl<'a> VmJsWebIdlCx<'a> {
       (None, Some(mut hooks)) => {
         // SAFETY: see above.
         let hooks = unsafe { hooks.as_mut() };
-        self.vm.call_with_host(&mut self.scope, hooks, callee, this, args)
+        self
+          .vm
+          .call_with_host(&mut self.scope, hooks, callee, this, args)
       }
       (None, None) => {
         let mut dummy_host = ();
-        self.vm.call(&mut dummy_host, &mut self.scope, callee, this, args)
+        self
+          .vm
+          .call(&mut dummy_host, &mut self.scope, callee, this, args)
       }
     }
   }
@@ -807,7 +825,11 @@ impl<'a> VmJsWebIdlCx<'a> {
   /// This can invoke user code (`@@toPrimitive`, `valueOf`, `toString`) and therefore must call into
   /// JS via `call_js` (so host hooks overrides / embedder host context are preserved when
   /// available).
-  fn to_primitive(&mut self, value: Value, preferred_type: ToPrimitiveHint) -> Result<Value, VmError> {
+  fn to_primitive(
+    &mut self,
+    value: Value,
+    preferred_type: ToPrimitiveHint,
+  ) -> Result<Value, VmError> {
     let Value::Object(obj) = value else {
       return Ok(value);
     };
@@ -822,7 +844,9 @@ impl<'a> VmJsWebIdlCx<'a> {
     let exotic = webidl::JsRuntime::get_method(self, obj, to_prim_key)?;
     if let Some(exotic) = exotic {
       // 2.a. Let hint be "default"/"string"/"number".
-      let hint_s = self.scope.alloc_string(Self::to_primitive_hint_str(preferred_type))?;
+      let hint_s = self
+        .scope
+        .alloc_string(Self::to_primitive_hint_str(preferred_type))?;
       // 2.b. Let result be ? Call(exoticToPrim, input, « hint »).
       let result = self.call_js(exotic, Value::Object(obj), &[Value::String(hint_s)])?;
       // 2.c. If result is not an Object, return result.
@@ -831,7 +855,9 @@ impl<'a> VmJsWebIdlCx<'a> {
         return Ok(result);
       }
       // 2.d. Throw a TypeError exception.
-      return Err(VmError::TypeError("Cannot convert object to primitive value"));
+      return Err(VmError::TypeError(
+        "Cannot convert object to primitive value",
+      ));
     }
 
     // OrdinaryToPrimitive (spec-shaped ordering).
@@ -861,7 +887,9 @@ impl<'a> VmJsWebIdlCx<'a> {
       }
     }
 
-    Err(VmError::TypeError("Cannot convert object to primitive value"))
+    Err(VmError::TypeError(
+      "Cannot convert object to primitive value",
+    ))
   }
 }
 
@@ -1124,7 +1152,9 @@ impl webidl::JsRuntime for VmJsWebIdlCx<'_> {
     self.root(value)?;
 
     let key = Self::to_vm_property_key(key);
-    self.scope.create_data_property_or_throw(object, key, value)?;
+    self
+      .scope
+      .create_data_property_or_throw(object, key, value)?;
     Ok(())
   }
 
@@ -1202,7 +1232,11 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
     // Minimal ECMAScript `ToBigInt`: support BigInt, boolean, and integral finite numbers.
     let out = match value {
       Value::BigInt(_) => value,
-      Value::Bool(b) => Value::BigInt(if b { JsBigInt::from_u128(1) } else { JsBigInt::zero() }),
+      Value::Bool(b) => Value::BigInt(if b {
+        JsBigInt::from_u128(1)
+      } else {
+        JsBigInt::zero()
+      }),
       Value::Number(n) => {
         if !n.is_finite() {
           return Err(self.throw_range_error("Cannot convert non-finite number to a BigInt"));
@@ -1236,11 +1270,20 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
           _ => (false, trimmed),
         };
 
-        let (radix, digits) = if let Some(rest) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+        let (radix, digits) = if let Some(rest) = digits
+          .strip_prefix("0x")
+          .or_else(|| digits.strip_prefix("0X"))
+        {
           (16u32, rest)
-        } else if let Some(rest) = digits.strip_prefix("0o").or_else(|| digits.strip_prefix("0O")) {
+        } else if let Some(rest) = digits
+          .strip_prefix("0o")
+          .or_else(|| digits.strip_prefix("0O"))
+        {
           (8u32, rest)
-        } else if let Some(rest) = digits.strip_prefix("0b").or_else(|| digits.strip_prefix("0B")) {
+        } else if let Some(rest) = digits
+          .strip_prefix("0b")
+          .or_else(|| digits.strip_prefix("0B"))
+        {
           (2u32, rest)
         } else {
           (10u32, digits)
@@ -1291,11 +1334,7 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
     };
 
     let key = Self::to_vm_property_key(key);
-    let Some(desc) = self
-      .scope
-      .heap()
-      .object_get_own_property(object, &key)?
-    else {
+    let Some(desc) = self.scope.heap().object_get_own_property(object, &key)? else {
       return Ok(None);
     };
 
@@ -1527,7 +1566,11 @@ pub fn invoke_callback_interface(
   vm.call_with_host(&mut scope, hooks, method, Value::Object(obj), args)
 }
 
-fn fallback_error_object(scope: &mut Scope<'_>, name: &str, message: &str) -> Result<Value, VmError> {
+fn fallback_error_object(
+  scope: &mut Scope<'_>,
+  name: &str,
+  message: &str,
+) -> Result<Value, VmError> {
   let err = scope.alloc_object()?;
   scope.push_root(Value::Object(err))?;
 
@@ -1651,7 +1694,10 @@ impl webidl_bindings_core::JsRuntime for VmJsWebIdlCx<'_> {
     matches!(key, VmPropertyKey::String(_))
   }
 
-  fn property_key_to_js_string(&mut self, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
+  fn property_key_to_js_string(
+    &mut self,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error> {
     match key {
       VmPropertyKey::String(s) => {
         self.scope.push_root(Value::String(s))?;
@@ -1765,14 +1811,16 @@ impl webidl_bindings_core::JsRuntime for VmJsWebIdlCx<'_> {
     // These pointers are created by `from_native_call(_unchecked)` and are only used for the
     // duration of this call, so it is safe to rehydrate them into `&mut` references here.
     let host = self.host.map(|mut host| unsafe { host.as_mut() });
-    let hooks = self
-      .host_hooks
-      .map(|mut hooks| unsafe { hooks.as_mut() });
+    let hooks = self.host_hooks.map(|mut hooks| unsafe { hooks.as_mut() });
 
     let obj = match (host, hooks) {
       (Some(host), Some(hooks)) => self.scope.to_object(self.vm, host, hooks, value)?,
-      (Some(host), None) => self.scope.to_object(self.vm, host, &mut dummy_hooks, value)?,
-      (None, Some(hooks)) => self.scope.to_object(self.vm, &mut dummy_host, hooks, value)?,
+      (Some(host), None) => self
+        .scope
+        .to_object(self.vm, host, &mut dummy_hooks, value)?,
+      (None, Some(hooks)) => self
+        .scope
+        .to_object(self.vm, &mut dummy_host, hooks, value)?,
       (None, None) => self
         .scope
         .to_object(self.vm, &mut dummy_host, &mut dummy_hooks, value)?,
@@ -1832,7 +1880,11 @@ impl webidl_bindings_core::JsRuntime for VmJsWebIdlCx<'_> {
     webidl::WebIdlJsRuntime::to_numeric(self, value)
   }
 
-  fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
+  fn get(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error> {
     let Value::Object(object) = obj else {
       return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
         self,
@@ -1867,7 +1919,10 @@ impl webidl_bindings_core::JsRuntime for VmJsWebIdlCx<'_> {
     Ok(value)
   }
 
-  fn own_property_keys(&mut self, obj: Self::JsValue) -> Result<Vec<Self::PropertyKey>, Self::Error> {
+  fn own_property_keys(
+    &mut self,
+    obj: Self::JsValue,
+  ) -> Result<Vec<Self::PropertyKey>, Self::Error> {
     let Value::Object(obj) = obj else {
       return Err(webidl_bindings_core::WebIdlJsRuntime::throw_type_error(
         self,
@@ -2013,7 +2068,10 @@ impl webidl_bindings_core::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
     Ok(VmPropertyKey::from_symbol(sym))
   }
 
-  fn symbol_to_property_key(&mut self, symbol: Self::JsValue) -> Result<Self::PropertyKey, Self::Error> {
+  fn symbol_to_property_key(
+    &mut self,
+    symbol: Self::JsValue,
+  ) -> Result<Self::PropertyKey, Self::Error> {
     let Value::Symbol(sym) = symbol else {
       return Err(self.throw_type_error("expected a Symbol value"));
     };
@@ -2062,7 +2120,10 @@ impl webidl_bindings_core::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
     None
   }
 
-  fn platform_object_to_js_value(&mut self, value: &webidl_ir::PlatformObject) -> Option<Self::JsValue> {
+  fn platform_object_to_js_value(
+    &mut self,
+    value: &webidl_ir::PlatformObject,
+  ) -> Option<Self::JsValue> {
     value.downcast_ref::<Value>().copied()
   }
 
@@ -2302,7 +2363,10 @@ mod tests {
         }
       })
       .collect::<Vec<_>>();
-    assert_eq!(keys, vec!["0".to_string(), "1".to_string(), "length".to_string()]);
+    assert_eq!(
+      keys,
+      vec!["0".to_string(), "1".to_string(), "length".to_string()]
+    );
     Ok(())
   }
 
@@ -2365,7 +2429,9 @@ mod tests {
     let string_keys = keys
       .into_iter()
       .filter_map(|k| match k {
-        WebIdlPropertyKey::String(s) => Some(cx.scope.heap().get_string(s).unwrap().to_utf8_lossy()),
+        WebIdlPropertyKey::String(s) => {
+          Some(cx.scope.heap().get_string(s).unwrap().to_utf8_lossy())
+        }
         WebIdlPropertyKey::Symbol(_) => None,
       })
       .collect::<Vec<_>>();
@@ -2447,7 +2513,7 @@ mod tests {
 
     // Create a method function and a getter function.
     let method;
-      let getter;
+    let getter;
     {
       let noop_id: NativeFunctionId = vm.register_native_call(noop_call_handler)?;
       let getter_id: NativeFunctionId = vm.register_native_call(getter_call_handler)?;
@@ -2747,7 +2813,9 @@ mod tests {
 
       let iter_name = cx.scope.alloc_string("iterator")?;
       let iter_id = cx.vm.register_native_call(iterator_method_call_handler)?;
-      let iter_fn = cx.scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      let iter_fn = cx
+        .scope
+        .alloc_native_function(iter_id, None, iter_name, 0)?;
 
       let sym = cx.well_known_symbol(webidl::WellKnownSymbol::Iterator)?;
       let key = VmPropertyKey::from_symbol(sym);
@@ -2913,7 +2981,7 @@ mod tests {
         hooks.to_primitive_calls += 1;
       }
     }
- 
+
     let hint = args.get(0).copied().unwrap_or(Value::Undefined);
     let Value::String(hint_s) = hint else {
       return Err(VmError::TypeError("@@toPrimitive hint is not a string"));
@@ -2943,7 +3011,7 @@ mod tests {
         hooks.to_primitive_calls += 1;
       }
     }
- 
+
     let hint = args.get(0).copied().unwrap_or(Value::Undefined);
     let Value::String(hint_s) = hint else {
       return Err(VmError::TypeError("@@toPrimitive hint is not a string"));
@@ -2991,8 +3059,12 @@ mod tests {
       cx.scope.push_root(Value::Object(iterable))?;
 
       let iter_name = cx.scope.alloc_string("iterator")?;
-      let iter_id = cx.vm.register_native_call(iterator_method_observes_host_hooks)?;
-      let iter_fn = cx.scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      let iter_id = cx
+        .vm
+        .register_native_call(iterator_method_observes_host_hooks)?;
+      let iter_fn = cx
+        .scope
+        .alloc_native_function(iter_id, None, iter_name, 0)?;
       cx.scope.push_root(Value::Object(iter_fn))?;
 
       let sym = cx.well_known_symbol(webidl::WellKnownSymbol::Iterator)?;
@@ -3049,7 +3121,9 @@ mod tests {
       let iter_id = cx
         .vm
         .register_native_call(iterator_method_observes_host_ctx_and_hooks)?;
-      let iter_fn = cx.scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      let iter_fn = cx
+        .scope
+        .alloc_native_function(iter_id, None, iter_name, 0)?;
       cx.scope.push_root(Value::Object(iter_fn))?;
 
       let sym = cx.well_known_symbol(webidl::WellKnownSymbol::Iterator)?;
@@ -3291,18 +3365,18 @@ mod tests {
     let webidl_hooks = NoHooks;
     let limits = WebIdlLimits::default();
     let mut host_hooks = TestHostHooks::default();
- 
+
     let result = vm.with_host_hooks_override(&mut host_hooks, |vm| -> Result<(), VmError> {
       let to_prim_id = vm.register_native_call(to_primitive_observes_host_hooks)?;
- 
+
       let mut scope = heap.scope();
       let obj = scope.alloc_object()?;
       scope.push_root(Value::Object(obj))?;
- 
+
       let to_prim_name = scope.alloc_string("[Symbol.toPrimitive]")?;
       let to_prim_fn = scope.alloc_native_function(to_prim_id, None, to_prim_name, 1)?;
       scope.push_root(Value::Object(to_prim_fn))?;
- 
+
       let sym = vm
         .intrinsics()
         .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
@@ -3321,13 +3395,13 @@ mod tests {
           },
         },
       )?;
- 
+
       let mut cx = VmJsWebIdlCx::new_in_scope(vm, &mut scope, limits, &webidl_hooks);
       cx.scope.push_root(Value::Object(obj))?;
       assert_eq!(cx.to_number(Value::Object(obj))?, 42.0);
       Ok(())
     });
- 
+
     realm.teardown(&mut heap);
     result?;
     assert_eq!(host_hooks.to_primitive_calls, 1);
@@ -3335,24 +3409,25 @@ mod tests {
   }
 
   #[test]
-  fn to_number_calls_to_primitive_propagates_host_context_from_native_call() -> Result<(), VmError> {
+  fn to_number_calls_to_primitive_propagates_host_context_from_native_call() -> Result<(), VmError>
+  {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let webidl_hooks = NoHooks;
     let limits = WebIdlLimits::default();
- 
+
     let result = (|| -> Result<(TestHostCtx, TestHostHooks), VmError> {
       let to_prim_id = vm.register_native_call(to_primitive_observes_host_ctx_and_hooks)?;
- 
+
       let mut scope = heap.scope();
       let obj = scope.alloc_object()?;
       scope.push_root(Value::Object(obj))?;
- 
+
       let to_prim_name = scope.alloc_string("[Symbol.toPrimitive]")?;
       let to_prim_fn = scope.alloc_native_function(to_prim_id, None, to_prim_name, 1)?;
       scope.push_root(Value::Object(to_prim_fn))?;
- 
+
       let sym = vm
         .intrinsics()
         .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
@@ -3371,7 +3446,7 @@ mod tests {
           },
         },
       )?;
- 
+
       let mut host_ctx = TestHostCtx::default();
       let mut host_hooks = TestHostHooks::default();
       let mut cx = VmJsWebIdlCx::from_native_call(
@@ -3387,7 +3462,7 @@ mod tests {
       drop(cx);
       Ok((host_ctx, host_hooks))
     })();
- 
+
     realm.teardown(&mut heap);
     let (host_ctx, host_hooks) = result?;
     assert_eq!(host_ctx.host_calls, 1);
@@ -3412,8 +3487,12 @@ mod tests {
       cx.scope.push_root(Value::Object(iterable))?;
 
       let iter_name = cx.scope.alloc_string("iterator")?;
-      let iter_id = cx.vm.register_native_call(iterator_method_observes_host_hooks)?;
-      let iter_fn = cx.scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      let iter_id = cx
+        .vm
+        .register_native_call(iterator_method_observes_host_hooks)?;
+      let iter_fn = cx
+        .scope
+        .alloc_native_function(iter_id, None, iter_name, 0)?;
       cx.scope.push_root(Value::Object(iter_fn))?;
 
       // fn = iter_fn
@@ -3433,7 +3512,9 @@ mod tests {
 
       // get [Symbol.iterator]() { return this.fn }
       let getter_name = cx.scope.alloc_string("getIterator")?;
-      let getter_id: NativeFunctionId = cx.vm.register_native_call(iterator_getter_observes_host_hooks)?;
+      let getter_id: NativeFunctionId = cx
+        .vm
+        .register_native_call(iterator_getter_observes_host_hooks)?;
       let getter_fn = cx
         .scope
         .alloc_native_function(getter_id, None, getter_name, 0)?;
@@ -3520,7 +3601,10 @@ mod tests {
     let Value::String(name_s) = name_v else {
       return Err(VmError::TypeError("name is not a string"));
     };
-    assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), expected_name);
+    assert_eq!(
+      scope.heap().get_string(name_s)?.to_utf8_lossy(),
+      expected_name
+    );
 
     // message
     let msg_key_s = scope.alloc_string("message")?;

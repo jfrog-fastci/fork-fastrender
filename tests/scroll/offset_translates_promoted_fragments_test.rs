@@ -15,7 +15,10 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   (px.red(), px.green(), px.blue(), px.alpha())
 }
 
-fn render(promote_as_stacking_context: bool, scroller_is_stacking_context: bool) -> tiny_skia::Pixmap {
+fn render(
+  promote_as_stacking_context: bool,
+  scroller_is_stacking_context: bool,
+) -> tiny_skia::Pixmap {
   let mut scroller_style = ComputedStyle::default();
   scroller_style.overflow_x = Overflow::Hidden;
   scroller_style.overflow_y = Overflow::Scroll;
@@ -33,16 +36,9 @@ fn render(promote_as_stacking_context: bool, scroller_is_stacking_context: bool)
   blue_style.background_color = Rgba::BLUE;
   let blue_style = Arc::new(blue_style);
 
-  let red = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 4.0, 3.0),
-    vec![],
-    red_style,
-  );
-  let blue = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 3.0, 4.0, 3.0),
-    vec![],
-    blue_style,
-  );
+  let red = FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 4.0, 3.0), vec![], red_style);
+  let blue =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 3.0, 4.0, 3.0), vec![], blue_style);
 
   let mut child_style = ComputedStyle::default();
   child_style.position = Position::Relative;
@@ -66,10 +62,8 @@ fn render(promote_as_stacking_context: bool, scroller_is_stacking_context: bool)
 
   let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 8.0, 8.0), vec![scroller]);
 
-  let scroll_state = ScrollState::from_parts(
-    Point::ZERO,
-    HashMap::from([(1usize, Point::new(0.0, 2.0))]),
-  );
+  let scroll_state =
+    ScrollState::from_parts(Point::ZERO, HashMap::from([(1usize, Point::new(0.0, 2.0))]));
   let list = DisplayListBuilder::new()
     .with_scroll_state(scroll_state)
     .build_with_stacking_tree(&root);

@@ -37,7 +37,10 @@ fn render_artifacts_display_list_uses_stacking_context_builder() {
     .render_html_with_options_and_artifacts(html, options, &mut artifacts)
     .expect("render html");
 
-  let list = artifacts.display_list.take().expect("display list artifact");
+  let list = artifacts
+    .display_list
+    .take()
+    .expect("display list artifact");
   assert!(
     list.items().iter().any(|item| matches!(
       item,
@@ -46,4 +49,3 @@ fn render_artifacts_display_list_uses_stacking_context_builder() {
     "expected display list artifact to contain a PushStackingContext for `mix-blend-mode: color-burn`"
   );
 }
-

@@ -4,7 +4,11 @@ use super::DomError;
 use super::{Document, NodeId, NodeKind};
 
 impl Document {
-  fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
+  fn clone_node_shallow(
+    &mut self,
+    src: NodeId,
+    parent: Option<NodeId>,
+  ) -> Result<NodeId, DomError> {
     self.node_checked(src)?;
 
     let (
@@ -109,7 +113,8 @@ impl Document {
     let dst = self.push_node(kind, parent, inert_subtree);
 
     // Preserve HTML parser flags that affect future parsing behavior.
-    self.nodes[dst.index()].mathml_annotation_xml_integration_point = mathml_annotation_xml_integration_point;
+    self.nodes[dst.index()].mathml_annotation_xml_integration_point =
+      mathml_annotation_xml_integration_point;
 
     if is_html_script {
       // HTML: script element cloning steps copy the "already started" flag only.
@@ -200,7 +205,8 @@ impl Document {
       return Err(DomError::HierarchyRequestError);
     }
 
-    if matches!(parent_kind, NodeKind::Document { .. }) && matches!(child_kind, NodeKind::Text { .. })
+    if matches!(parent_kind, NodeKind::Document { .. })
+      && matches!(child_kind, NodeKind::Text { .. })
     {
       return Err(DomError::HierarchyRequestError);
     }
@@ -495,7 +501,10 @@ impl Document {
 
     let (previous_sibling, next_sibling) = {
       let siblings = self.nodes[old_parent.index()].children.as_slice();
-      let prev = pos.checked_sub(1).and_then(|idx| siblings.get(idx)).copied();
+      let prev = pos
+        .checked_sub(1)
+        .and_then(|idx| siblings.get(idx))
+        .copied();
       let next = siblings.get(pos + 1).copied();
       (prev, next)
     };
@@ -615,11 +624,7 @@ impl Document {
     Ok(self.node_checked(node)?.children.as_slice())
   }
 
-  pub fn index_of_child(
-    &self,
-    parent: NodeId,
-    child: NodeId,
-  ) -> Result<Option<usize>, DomError> {
+  pub fn index_of_child(&self, parent: NodeId, child: NodeId) -> Result<Option<usize>, DomError> {
     self.index_of_child_internal(parent, child)
   }
 
@@ -665,7 +670,10 @@ impl Document {
       }
     };
 
-    if matches!(self.nodes[new_child.index()].kind, NodeKind::DocumentFragment) {
+    if matches!(
+      self.nodes[new_child.index()].kind,
+      NodeKind::DocumentFragment
+    ) {
       // DocumentFragment insertion is transparent: insert its children in order, then empty it.
       // Pre-validate all children before mutating to ensure atomicity.
       let frag_children_len = self.nodes[new_child.index()].children.len();
@@ -844,7 +852,10 @@ impl Document {
       (prev, next)
     };
 
-    if matches!(self.nodes[new_child.index()].kind, NodeKind::DocumentFragment) {
+    if matches!(
+      self.nodes[new_child.index()].kind,
+      NodeKind::DocumentFragment
+    ) {
       // DocumentFragment insertion is transparent: insert its children before `old_child`, then
       // remove `old_child`.
       //
@@ -888,7 +899,9 @@ impl Document {
         .splice(old_child_idx..old_child_idx, children_to_move);
 
       // `old_child` has been shifted to the right by `inserted_len`.
-      self.nodes[parent.index()].children.remove(old_child_idx + inserted_len);
+      self.nodes[parent.index()]
+        .children
+        .remove(old_child_idx + inserted_len);
       self.nodes[old_child.index()].parent = None;
 
       self.record_child_list_mutation(parent);

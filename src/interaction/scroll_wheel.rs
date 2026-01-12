@@ -13,7 +13,11 @@ pub struct ScrollWheelInput {
 }
 
 fn sanitize_delta(delta: f32) -> f32 {
-  if delta.is_finite() { delta } else { 0.0 }
+  if delta.is_finite() {
+    delta
+  } else {
+    0.0
+  }
 }
 
 fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
@@ -25,7 +29,11 @@ fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect 
   )
 }
 
-fn select_content_rect(border_rect: Rect, style: &crate::style::ComputedStyle, viewport_size: Size) -> Rect {
+fn select_content_rect(
+  border_rect: Rect,
+  style: &crate::style::ComputedStyle,
+  viewport_size: Size,
+) -> Rect {
   let base = border_rect.width().max(0.0);
   let viewport = if viewport_size.width.is_finite() && viewport_size.height.is_finite() {
     (viewport_size.width, viewport_size.height)
@@ -95,7 +103,13 @@ fn select_content_rect(border_rect: Rect, style: &crate::style::ComputedStyle, v
     Some(viewport),
   );
 
-  let padding_rect = inset_rect(border_rect, border_left, border_top, border_right, border_bottom);
+  let padding_rect = inset_rect(
+    border_rect,
+    border_left,
+    border_top,
+    border_right,
+    border_bottom,
+  );
   inset_rect(
     padding_rect,
     padding_left,
@@ -261,8 +275,13 @@ pub fn apply_wheel_scroll_at_point(
     HitTestRoot::Root => {
       let mut chain = build_scroll_chain(&fragment_tree.root, viewport_size, &path);
       if chain.is_empty() {
-        next.viewport =
-          apply_viewport_delta(fragment_tree, viewport_size, original_viewport, delta, options);
+        next.viewport = apply_viewport_delta(
+          fragment_tree,
+          viewport_size,
+          original_viewport,
+          delta,
+          options,
+        );
         return next;
       }
 
@@ -288,8 +307,13 @@ pub fn apply_wheel_scroll_at_point(
     }
     HitTestRoot::Additional(idx) => {
       let Some(root) = fragment_tree.additional_fragments.get(idx) else {
-        next.viewport =
-          apply_viewport_delta(fragment_tree, viewport_size, original_viewport, delta, options);
+        next.viewport = apply_viewport_delta(
+          fragment_tree,
+          viewport_size,
+          original_viewport,
+          delta,
+          options,
+        );
         return next;
       };
 

@@ -58,11 +58,7 @@ fn get_method(rt: &mut VmJsRuntime, obj: Value, name: &str) -> Result<Value, VmE
   Ok(func)
 }
 
-fn assert_options_dict(
-  dict: &BTreeMap<String, BindingValue<Value>>,
-  capture: bool,
-  once: bool,
-) {
+fn assert_options_dict(dict: &BTreeMap<String, BindingValue<Value>>, capture: bool, once: bool) {
   match dict.get("capture") {
     Some(BindingValue::Bool(v)) => assert_eq!(*v, capture, "capture mismatch"),
     Some(other) => panic!("expected capture bool, got {:?}", other),
@@ -73,19 +69,25 @@ fn assert_options_dict(
     Some(other) => panic!("expected once bool, got {:?}", other),
     None => panic!("missing once"),
   }
-  assert!(!dict.contains_key("passive"), "passive should be omitted when unset");
-  assert!(!dict.contains_key("signal"), "signal should be omitted when unset");
+  assert!(
+    !dict.contains_key("passive"),
+    "passive should be omitted when unset"
+  );
+  assert!(
+    !dict.contains_key("signal"),
+    "signal should be omitted when unset"
+  );
 }
 
 #[test]
-fn generated_webidl_bindings_event_target_add_event_listener_options_defaults() -> Result<(), VmError> {
+fn generated_webidl_bindings_event_target_add_event_listener_options_defaults(
+) -> Result<(), VmError> {
   let mut rt = VmJsRuntime::new();
   let mut host = EventTargetHost::default();
 
   install_window_bindings(&mut rt, &mut host)?;
 
-  let global =
-    <VmJsRuntime as WebIdlBindingsRuntime<EventTargetHost>>::global_object(&mut rt)?;
+  let global = <VmJsRuntime as WebIdlBindingsRuntime<EventTargetHost>>::global_object(&mut rt)?;
   let ctor = get_method(&mut rt, global, "EventTarget")?;
   // `EventTarget` is a WebIDL interface object: calling it without `new` is illegal.
   // `webidl_js_runtime::VmJsRuntime` does not model `[[Construct]]`, so create a wrapper object
@@ -134,7 +136,10 @@ fn generated_webidl_bindings_event_target_add_event_listener_options_defaults() 
   rt.with_host_context(&mut host, |rt| {
     rt.call(add_event_listener, target, &[ty, listener])
   })?;
-  let args = host.last_args.take().expect("host call recorded (default options)");
+  let args = host
+    .last_args
+    .take()
+    .expect("host call recorded (default options)");
   let options = match &args[2] {
     BindingValue::Union { member_type, value } => {
       assert_eq!(member_type, "AddEventListenerOptions");

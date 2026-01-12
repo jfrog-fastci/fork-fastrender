@@ -1,7 +1,9 @@
 use super::merge_existing_and_new_import_maps;
 use super::parse_import_map_string;
 use super::strings::cmp_code_units;
-use super::types::{is_code_unit_prefix, ImportMap, ImportMapState, ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap};
+use super::types::{
+  is_code_unit_prefix, ImportMap, ImportMapState, ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap,
+};
 use std::cmp::Ordering;
 use url::Url;
 
@@ -28,7 +30,12 @@ fn parse_sorts_module_specifier_map_descending_by_utf16_code_units() {
   .unwrap();
   assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
 
-  let keys: Vec<&str> = map.imports.entries.iter().map(|(k, _)| k.as_str()).collect();
+  let keys: Vec<&str> = map
+    .imports
+    .entries
+    .iter()
+    .map(|(k, _)| k.as_str())
+    .collect();
   assert_eq!(keys, vec!["\u{E000}", "😀"]);
 }
 

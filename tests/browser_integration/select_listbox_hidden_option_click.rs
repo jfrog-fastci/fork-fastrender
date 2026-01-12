@@ -105,19 +105,24 @@ fn select_listbox_hidden_option_click_selects_first_visible_option_and_marks_use
 
   let mut engine = InteractionEngine::new();
   doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-    let _ = engine.pointer_down(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point);
-    let (changed, _action) =
-      engine.pointer_up_with_scroll(
-        dom,
-        box_tree,
-        fragment_tree,
-        &scroll_state,
-        click_viewport_point,
-        PointerButton::Primary,
-        PointerModifiers::NONE,
-        "",
-        "",
-      );
+    let _ = engine.pointer_down(
+      dom,
+      box_tree,
+      fragment_tree,
+      &scroll_state,
+      click_viewport_point,
+    );
+    let (changed, _action) = engine.pointer_up_with_scroll(
+      dom,
+      box_tree,
+      fragment_tree,
+      &scroll_state,
+      click_viewport_point,
+      PointerButton::Primary,
+      PointerModifiers::NONE,
+      "",
+      "",
+    );
     (changed, ())
   })?;
 
@@ -138,8 +143,7 @@ fn select_listbox_hidden_option_click_selects_first_visible_option_and_marks_use
     "expected click on first visible row to select the first visible <option> (skipping hidden rows)"
   );
   assert_eq!(
-    find_select(doc.dom())
-      .and_then(|node| node.get_attribute_ref("data-fastr-user-validity")),
+    find_select(doc.dom()).and_then(|node| node.get_attribute_ref("data-fastr-user-validity")),
     None,
     "renderer must not inject data-fastr-user-validity onto the DOM"
   );

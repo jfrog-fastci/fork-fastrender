@@ -1,6 +1,9 @@
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::paint::painter::{paint_tree_with_resources_scaled_offset, paint_tree_with_resources_scaled_offset_backend, PaintBackend};
+use fastrender::paint::painter::{
+  paint_tree_with_resources_scaled_offset, paint_tree_with_resources_scaled_offset_backend,
+  PaintBackend,
+};
 use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
 

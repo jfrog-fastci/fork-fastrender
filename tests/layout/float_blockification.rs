@@ -66,4 +66,3 @@ fn floats_blockify_inline_elements_with_block_children() {
   let _inner =
     find_box_with_id(float, "inner").expect("expected block child to remain inside float");
 }
-

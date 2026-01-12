@@ -9,14 +9,23 @@ use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let mut stack = vec![fragment];
   while let Some(node) = stack.pop() {
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -48,10 +57,12 @@ fn inline_float_negative_margin_left_affects_float_fit() {
   let mut second_style = first_style.clone();
   second_style.margin_left = Some(Length::px(-1.0));
 
-  let mut first = BoxNode::new_inline_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let mut first =
+    BoxNode::new_inline_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
   first.id = 2;
 
-  let mut second = BoxNode::new_inline_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let mut second =
+    BoxNode::new_inline_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
   second.id = 3;
 
   let mut root = BoxNode::new_block(
@@ -63,10 +74,14 @@ fn inline_float_negative_margin_left_affects_float_fit() {
 
   let constraints = LayoutConstraints::definite(199.0, 100.0);
   let fc = BlockFormattingContext::new();
-  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
-  let first_fragment = find_fragment_by_box_id(&fragment, 2).expect("first float fragment should exist");
-  let second_fragment = find_fragment_by_box_id(&fragment, 3).expect("second float fragment should exist");
+  let first_fragment =
+    find_fragment_by_box_id(&fragment, 2).expect("first float fragment should exist");
+  let second_fragment =
+    find_fragment_by_box_id(&fragment, 3).expect("second float fragment should exist");
 
   assert!(
     first_fragment.bounds.y().abs() < 0.5,
@@ -84,4 +99,3 @@ fn inline_float_negative_margin_left_affects_float_fit() {
     second_fragment.bounds
   );
 }
-

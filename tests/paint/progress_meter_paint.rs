@@ -1,5 +1,6 @@
 use super::util::{
-  bounding_box_for_color, create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
+  bounding_box_for_color, create_stacking_context_bounds_renderer,
+  create_stacking_context_bounds_renderer_legacy,
 };
 use std::cmp::max;
 use tiny_skia::Pixmap;
@@ -12,7 +13,10 @@ fn rgba_at(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 fn assert_is_track_gray(rgba: (u8, u8, u8, u8), msg: &str) {
   let (r, g, b, a) = rgba;
   assert!(
-    a > 240 && (r as i32 - 200).abs() <= 15 && (g as i32 - 200).abs() <= 15 && (b as i32 - 200).abs() <= 15,
+    a > 240
+      && (r as i32 - 200).abs() <= 15
+      && (g as i32 - 200).abs() <= 15
+      && (b as i32 - 200).abs() <= 15,
     "{msg}: expected gray track, got rgba=({r},{g},{b},{a})"
   );
 }
@@ -51,7 +55,9 @@ fn assert_is_yellow(rgba: (u8, u8, u8, u8), msg: &str) {
 
 fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
   let mut dl = create_stacking_context_bounds_renderer();
-  let dl_pixmap = dl.render_html(html, width, height).expect("render display_list");
+  let dl_pixmap = dl
+    .render_html(html, width, height)
+    .expect("render display_list");
 
   let mut legacy = create_stacking_context_bounds_renderer_legacy();
   let legacy_pixmap = legacy
@@ -119,16 +125,20 @@ fn progress_and_meter_paint_fill_proportion_and_accent_color() {
     );
 
     // Bounding boxes for fill regions encode the expected proportions (roughly).
-    let green_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| a > 240 && g > 220 && r < 80 && b < 80)
-      .expect("expected green pixels for 25% progress");
+    let green_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| {
+      a > 240 && g > 220 && r < 80 && b < 80
+    })
+    .expect("expected green pixels for 25% progress");
     let green_width = green_bbox.2.saturating_sub(green_bbox.0) + 1;
     assert!(
       (green_width as i32 - 50).abs() <= 2,
       "{backend}: expected ~50px green fill width, got {green_width} (bbox={green_bbox:?})"
     );
 
-    let red_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| a > 240 && r > 220 && g < 80 && b < 80)
-      .expect("expected red pixels for 75% progress");
+    let red_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| {
+      a > 240 && r > 220 && g < 80 && b < 80
+    })
+    .expect("expected red pixels for 75% progress");
     let red_width = red_bbox.2.saturating_sub(red_bbox.0) + 1;
     assert!(
       (red_width as i32 - 150).abs() <= 2,
@@ -136,8 +146,10 @@ fn progress_and_meter_paint_fill_proportion_and_accent_color() {
     );
 
     // Meter's blue fill should be roughly half the bar width.
-    let blue_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| a > 240 && b > 220 && r < 80 && g < 80)
-      .expect("expected blue pixels for 50% meter");
+    let blue_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| {
+      a > 240 && b > 220 && r < 80 && g < 80
+    })
+    .expect("expected blue pixels for 50% meter");
     let blue_width = blue_bbox.2.saturating_sub(blue_bbox.0) + 1;
     assert!(
       (blue_width as i32 - 100).abs() <= 2,
@@ -195,8 +207,10 @@ fn progress_and_meter_paint_respects_direction_rtl() {
       &format!("{backend}: rtl meter@50% fill sample"),
     );
 
-    let green_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| a > 240 && g > 220 && r < 80 && b < 80)
-      .expect("expected green pixels for rtl 25% progress");
+    let green_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| {
+      a > 240 && g > 220 && r < 80 && b < 80
+    })
+    .expect("expected green pixels for rtl 25% progress");
     let green_width = green_bbox.2.saturating_sub(green_bbox.0) + 1;
     assert!(
       (green_width as i32 - 50).abs() <= 2,
@@ -211,8 +225,10 @@ fn progress_and_meter_paint_respects_direction_rtl() {
       "{backend}: expected rtl progress fill to start near 150px, got bbox={green_bbox:?}"
     );
 
-    let blue_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| a > 240 && b > 220 && r < 80 && g < 80)
-      .expect("expected blue pixels for rtl 50% meter");
+    let blue_bbox = bounding_box_for_color(pixmap, |(r, g, b, a)| {
+      a > 240 && b > 220 && r < 80 && g < 80
+    })
+    .expect("expected blue pixels for rtl 50% meter");
     let blue_width = blue_bbox.2.saturating_sub(blue_bbox.0) + 1;
     assert!(
       (blue_width as i32 - 100).abs() <= 2,
@@ -269,16 +285,40 @@ fn progress_and_meter_paint_respects_vendor_pseudo_element_backgrounds() {
 
   let (dl, legacy) = render_both(html, 220, 120);
   for (backend, pixmap) in [("display_list", &dl), ("legacy", &legacy)] {
-    assert_is_green(rgba_at(pixmap, 10, 10), &format!("{backend}: progress fill"));
-    assert_is_blue(rgba_at(pixmap, 190, 10), &format!("{backend}: progress track"));
+    assert_is_green(
+      rgba_at(pixmap, 10, 10),
+      &format!("{backend}: progress fill"),
+    );
+    assert_is_blue(
+      rgba_at(pixmap, 190, 10),
+      &format!("{backend}: progress track"),
+    );
 
-    assert_is_green(rgba_at(pixmap, 10, 40), &format!("{backend}: meter optimum fill"));
-    assert_is_blue(rgba_at(pixmap, 190, 40), &format!("{backend}: meter optimum track"));
+    assert_is_green(
+      rgba_at(pixmap, 10, 40),
+      &format!("{backend}: meter optimum fill"),
+    );
+    assert_is_blue(
+      rgba_at(pixmap, 190, 40),
+      &format!("{backend}: meter optimum track"),
+    );
 
-    assert_is_yellow(rgba_at(pixmap, 10, 70), &format!("{backend}: meter suboptimum fill"));
-    assert_is_blue(rgba_at(pixmap, 190, 70), &format!("{backend}: meter suboptimum track"));
+    assert_is_yellow(
+      rgba_at(pixmap, 10, 70),
+      &format!("{backend}: meter suboptimum fill"),
+    );
+    assert_is_blue(
+      rgba_at(pixmap, 190, 70),
+      &format!("{backend}: meter suboptimum track"),
+    );
 
-    assert_is_red(rgba_at(pixmap, 170, 100), &format!("{backend}: meter even-less-good fill"));
-    assert_is_blue(rgba_at(pixmap, 190, 100), &format!("{backend}: meter even-less-good track"));
+    assert_is_red(
+      rgba_at(pixmap, 170, 100),
+      &format!("{backend}: meter even-less-good fill"),
+    );
+    assert_is_blue(
+      rgba_at(pixmap, 190, 100),
+      &format!("{backend}: meter even-less-good track"),
+    );
   }
 }

@@ -1,6 +1,6 @@
-use fastrender::{FastRender, FastRenderConfig, InspectQuery, ResourceFetcher};
 use fastrender::resource::FetchedResource;
 use fastrender::style::media::MediaType;
+use fastrender::{FastRender, FastRenderConfig, InspectQuery, ResourceFetcher};
 use std::sync::Arc;
 
 #[test]

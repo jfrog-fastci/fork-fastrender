@@ -163,7 +163,8 @@ fn dictionary_defaults_and_required_members() {
   let obj = rt.alloc_object_value().unwrap();
   let req_key = rt.property_key_from_str("req").unwrap();
   let req_val = rt.alloc_string_value("hello").unwrap();
-  rt.define_data_property(obj, req_key, req_val, true).unwrap();
+  rt.define_data_property(obj, req_key, req_val, true)
+    .unwrap();
 
   let converted = convert_to_idl(&mut rt, obj, &dict_ty, &ctx).unwrap();
   let ConvertedValue::Dictionary { name, members } = converted else {
@@ -173,7 +174,10 @@ fn dictionary_defaults_and_required_members() {
 
   let expected = BTreeMap::from([
     ("opt".to_string(), ConvertedValue::Long(5)),
-    ("req".to_string(), ConvertedValue::String("hello".to_string())),
+    (
+      "req".to_string(),
+      ConvertedValue::String("hello".to_string()),
+    ),
   ]);
   assert_eq!(members, expected);
 }
@@ -406,7 +410,10 @@ fn convert_arguments_treats_defaulted_params_as_optional() {
 
   let args = vec![Value::Number(1.0)];
   let converted = convert_arguments(&mut rt, &args, &params, &ctx).unwrap();
-  assert_eq!(converted, vec![ConvertedValue::Long(1), ConvertedValue::Long(5)]);
+  assert_eq!(
+    converted,
+    vec![ConvertedValue::Long(1), ConvertedValue::Long(5)]
+  );
 }
 
 #[test]
@@ -432,7 +439,9 @@ fn union_conversion_prefers_matching_interface_member() {
   let ctx = TypeContext::default();
 
   let _opaque = 123u64;
-  let obj = rt.alloc_platform_object_value("Node", &[], _opaque).unwrap();
+  let obj = rt
+    .alloc_platform_object_value("Node", &[], _opaque)
+    .unwrap();
 
   let interface_ty = IdlType::Named(NamedType {
     name: "Node".to_string(),
@@ -503,7 +512,8 @@ fn dictionary_inheritance_includes_base_members_and_defaults() {
   let obj = rt.alloc_object_value().unwrap();
   let req_key = rt.property_key_from_str("req").unwrap();
   let req_val = rt.alloc_string_value("hello").unwrap();
-  rt.define_data_property(obj, req_key, req_val, true).unwrap();
+  rt.define_data_property(obj, req_key, req_val, true)
+    .unwrap();
 
   let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
   let ConvertedValue::Dictionary { name, members } = converted else {
@@ -513,7 +523,10 @@ fn dictionary_inheritance_includes_base_members_and_defaults() {
   let expected = BTreeMap::from([
     ("base".to_string(), ConvertedValue::Long(1)),
     ("derived".to_string(), ConvertedValue::Long(2)),
-    ("req".to_string(), ConvertedValue::String("hello".to_string())),
+    (
+      "req".to_string(),
+      ConvertedValue::String("hello".to_string()),
+    ),
   ]);
   assert_eq!(members, expected);
 }
@@ -829,8 +842,5 @@ fn conversion_limits_are_enforced() {
   let ConvertedValue::Record { entries, .. } = converted else {
     panic!("expected record, got {converted:?}");
   };
-  assert_eq!(
-    entries,
-    vec![("a".to_string(), ConvertedValue::Long(1))]
-  );
+  assert_eq!(entries, vec![("a".to_string(), ConvertedValue::Long(1))]);
 }

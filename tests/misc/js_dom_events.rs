@@ -63,7 +63,10 @@ fn node_wrapper_identity_is_stable_for_same_node() {
     .create_node_wrapper(&mut rt, body_id)
     .expect("body wrapper (second time)");
 
-  assert_eq!(a, b, "wrapper identity should be stable for the same NodeId");
+  assert_eq!(
+    a, b,
+    "wrapper identity should be stable for the same NodeId"
+  );
 }
 
 #[test]
@@ -104,13 +107,25 @@ fn capture_and_bubble_listener_order_document_body_target() {
   };
 
   add_listener(&mut rt, realm.window, "window_capture", true, log.clone());
-  add_listener(&mut rt, realm.document, "document_capture", true, log.clone());
+  add_listener(
+    &mut rt,
+    realm.document,
+    "document_capture",
+    true,
+    log.clone(),
+  );
   add_listener(&mut rt, body, "body_capture", true, log.clone());
   add_listener(&mut rt, target, "target_capture", true, log.clone());
 
   add_listener(&mut rt, target, "target_bubble", false, log.clone());
   add_listener(&mut rt, body, "body_bubble", false, log.clone());
-  add_listener(&mut rt, realm.document, "document_bubble", false, log.clone());
+  add_listener(
+    &mut rt,
+    realm.document,
+    "document_bubble",
+    false,
+    log.clone(),
+  );
   add_listener(&mut rt, realm.window, "window_bubble", false, log.clone());
 
   // Create a bubbling event.

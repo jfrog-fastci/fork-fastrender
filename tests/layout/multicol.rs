@@ -18,8 +18,10 @@ use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
-use fastrender::{FastRender, FastRenderConfig, RenderArtifactRequest, RenderArtifacts, RenderOptions};
 use fastrender::FormattingContext;
+use fastrender::{
+  FastRender, FastRenderConfig, RenderArtifactRequest, RenderArtifacts, RenderOptions,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -580,7 +582,11 @@ fn column_rules_only_between_adjacent_non_empty_columns() {
   let first = BoxNode::new_block(child_style(40.0), FormattingContextType::Block, vec![]);
   let second = BoxNode::new_block(child_style(40.0), FormattingContextType::Block, vec![]);
 
-  let root = BoxNode::new_block(parent_style, FormattingContextType::Block, vec![first, second]);
+  let root = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![first, second],
+  );
 
   let fc = BlockFormattingContext::new();
   let fragment = fc
@@ -989,7 +995,11 @@ fn float_that_fits_is_not_split_or_clipped_across_columns() {
   // Penalize the boundary at the float start so the analyzer prefers a later line break that
   // overlaps the float when the float is not treated as atomic.
   leading_style.break_after = BreakBetween::AvoidColumn;
-  let mut leading = BoxNode::new_block(Arc::new(leading_style), FormattingContextType::Block, vec![]);
+  let mut leading = BoxNode::new_block(
+    Arc::new(leading_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   leading.id = 80;
 
   let mut float_style = ComputedStyle::default();
@@ -1083,8 +1093,11 @@ fn too_tall_avoid_column_block_can_still_fragment() {
   );
   avoid_block.id = 93;
 
-  let mut parent =
-    BoxNode::new_block(parent_style, FormattingContextType::Block, vec![avoid_block.clone()]);
+  let mut parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![avoid_block.clone()],
+  );
   parent.id = 94;
 
   let fc = BlockFormattingContext::new();
@@ -1247,7 +1260,9 @@ fn render_multicol_overflow(overflow: &str) -> tiny_skia::Pixmap {
       </div>"#
   );
 
-  renderer.render_html(&html, 400, 100).expect("render multicol")
+  renderer
+    .render_html(&html, 400, 100)
+    .expect("render multicol")
 }
 
 #[test]
@@ -1314,7 +1329,10 @@ fn column_width_without_count_generates_auto_columns() {
 
   let tree = render_tree_with_artifacts(html, 800, 200);
   let container = find_first_multicol_container(&tree.root).expect("multicol container");
-  let info = container.fragmentation.as_ref().expect("fragmentation info");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
 
   assert_eq!(info.column_count, 2);
   assert!((info.column_gap - 16.0).abs() < 0.1, "expected 1em gap");
@@ -1337,7 +1355,10 @@ fn columns_shorthand_single_length_sets_column_width() {
 
   let tree = render_tree_with_artifacts(html, 800, 200);
   let container = find_first_multicol_container(&tree.root).expect("multicol container");
-  let info = container.fragmentation.as_ref().expect("fragmentation info");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
 
   assert_eq!(info.column_count, 2);
   assert!((info.column_gap - 16.0).abs() < 0.1);
@@ -1361,7 +1382,10 @@ fn columns_shorthand_single_number_sets_column_count() {
 
   let tree = render_tree_with_artifacts(html, 900, 200);
   let container = find_first_multicol_container(&tree.root).expect("multicol container");
-  let info = container.fragmentation.as_ref().expect("fragmentation info");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
 
   assert_eq!(info.column_count, 4);
   assert!(
@@ -1383,7 +1407,10 @@ fn columns_shorthand_number_and_length_treats_count_as_maximum() {
 
   let tree = render_tree_with_artifacts(html, 800, 200);
   let container = find_first_multicol_container(&tree.root).expect("multicol container");
-  let info = container.fragmentation.as_ref().expect("fragmentation info");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
 
   assert_eq!(info.column_count, 4);
   assert!(
@@ -1406,7 +1433,10 @@ fn column_gap_em_resolves_against_font_size() {
 
   let tree = render_tree_with_artifacts(html, 600, 200);
   let container = find_first_multicol_container(&tree.root).expect("multicol container");
-  let info = container.fragmentation.as_ref().expect("fragmentation info");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
 
   assert_eq!(info.column_count, 5);
   assert!(

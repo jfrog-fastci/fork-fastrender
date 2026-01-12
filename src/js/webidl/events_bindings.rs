@@ -268,9 +268,9 @@ fn install_event_target_prototype(
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, args| {
       let Some(target_id) = ctx.event_target_id_for_value(this) else {
-        return Err(rt.throw_type_error(
-          "EventTarget.addEventListener: receiver is not an EventTarget",
-        ));
+        return Err(
+          rt.throw_type_error("EventTarget.addEventListener: receiver is not an EventTarget"),
+        );
       };
 
       let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -281,9 +281,7 @@ fn install_event_target_prototype(
         return Ok(Value::Undefined);
       }
       if !rt.is_callable(callback) {
-        return Err(rt.throw_type_error(
-          "EventTarget.addEventListener: callback is not callable",
-        ));
+        return Err(rt.throw_type_error("EventTarget.addEventListener: callback is not callable"));
       }
 
       let Some(listener_id) = ctx.listener_id_for_callback(callback) else {
@@ -315,9 +313,9 @@ fn install_event_target_prototype(
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, args| {
       let Some(target_id) = ctx.event_target_id_for_value(this) else {
-        return Err(rt.throw_type_error(
-          "EventTarget.removeEventListener: receiver is not an EventTarget",
-        ));
+        return Err(
+          rt.throw_type_error("EventTarget.removeEventListener: receiver is not an EventTarget"),
+        );
       };
 
       let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -328,9 +326,9 @@ fn install_event_target_prototype(
         return Ok(Value::Undefined);
       }
       if !rt.is_callable(callback) {
-        return Err(rt.throw_type_error(
-          "EventTarget.removeEventListener: callback is not callable",
-        ));
+        return Err(
+          rt.throw_type_error("EventTarget.removeEventListener: callback is not callable"),
+        );
       }
       let Some(listener_id) = ctx.listener_id_for_callback(callback) else {
         return Ok(Value::Undefined);
@@ -355,9 +353,9 @@ fn install_event_target_prototype(
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, args| {
       let Some(target_id) = ctx.event_target_id_for_value(this) else {
-        return Err(rt.throw_type_error(
-          "EventTarget.dispatchEvent: receiver is not an EventTarget",
-        ));
+        return Err(
+          rt.throw_type_error("EventTarget.dispatchEvent: receiver is not an EventTarget"),
+        );
       };
 
       let event_obj = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -372,14 +370,20 @@ fn install_event_target_prototype(
       }
 
       impl EventListenerInvoker for JsInvoker<'_> {
-        fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> std::result::Result<(), DomError> {
+        fn invoke(
+          &mut self,
+          listener_id: ListenerId,
+          event: &mut Event,
+        ) -> std::result::Result<(), DomError> {
           let entry = self
             .ctx
             .listeners
             .borrow()
             .get(&listener_id)
             .copied()
-            .ok_or_else(|| DomError::new(format!("missing JS callback for listener {listener_id:?}")))?;
+            .ok_or_else(|| {
+              DomError::new(format!("missing JS callback for listener {listener_id:?}"))
+            })?;
           let this_arg = self
             .ctx
             .object_for_event_target(self.rt, event.current_target)
@@ -480,9 +484,13 @@ fn install_event_prototype(
   let get_type = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      let ty = with_event_ref(rt, &ctx, this, "Event.type: receiver is not an Event", |_rt, event| {
-        Ok(event.type_.clone())
-      })?;
+      let ty = with_event_ref(
+        rt,
+        &ctx,
+        this,
+        "Event.type: receiver is not an Event",
+        |_rt, event| Ok(event.type_.clone()),
+      )?;
       rt.alloc_string_value(&ty)
     })?
   };
@@ -490,18 +498,26 @@ fn install_event_prototype(
   let get_bubbles = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      with_event_ref(rt, &ctx, this, "Event.bubbles: receiver is not an Event", |_rt, event| {
-        Ok(Value::Bool(event.bubbles))
-      })
+      with_event_ref(
+        rt,
+        &ctx,
+        this,
+        "Event.bubbles: receiver is not an Event",
+        |_rt, event| Ok(Value::Bool(event.bubbles)),
+      )
     })?
   };
 
   let get_cancelable = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      with_event_ref(rt, &ctx, this, "Event.cancelable: receiver is not an Event", |_rt, event| {
-        Ok(Value::Bool(event.cancelable))
-      })
+      with_event_ref(
+        rt,
+        &ctx,
+        this,
+        "Event.cancelable: receiver is not an Event",
+        |_rt, event| Ok(Value::Bool(event.cancelable)),
+      )
     })?
   };
 
@@ -521,24 +537,34 @@ fn install_event_prototype(
   let get_event_phase = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      with_event_ref(rt, &ctx, this, "Event.eventPhase: receiver is not an Event", |_rt, event| {
-        let phase = match event.event_phase {
-          EventPhase::None => 0,
-          EventPhase::Capturing => 1,
-          EventPhase::AtTarget => 2,
-          EventPhase::Bubbling => 3,
-        };
-        Ok(Value::Number(phase as f64))
-      })
+      with_event_ref(
+        rt,
+        &ctx,
+        this,
+        "Event.eventPhase: receiver is not an Event",
+        |_rt, event| {
+          let phase = match event.event_phase {
+            EventPhase::None => 0,
+            EventPhase::Capturing => 1,
+            EventPhase::AtTarget => 2,
+            EventPhase::Bubbling => 3,
+          };
+          Ok(Value::Number(phase as f64))
+        },
+      )
     })?
   };
 
   let get_target = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      with_event_ref(rt, &ctx, this, "Event.target: receiver is not an Event", |rt, event| {
-        ctx.object_for_event_target(rt, event.target)
-      })
+      with_event_ref(
+        rt,
+        &ctx,
+        this,
+        "Event.target: receiver is not an Event",
+        |rt, event| ctx.object_for_event_target(rt, event.target),
+      )
     })?
   };
 

@@ -91,7 +91,9 @@ fn get_non_placeholder_attr<'a>(node: &'a DomNode, name: &str) -> Option<&'a str
 }
 
 fn get_first_non_placeholder_attr<'a>(node: &'a DomNode, names: &[&str]) -> Option<&'a str> {
-  names.iter().find_map(|name| get_non_placeholder_attr(node, name))
+  names
+    .iter()
+    .find_map(|name| get_non_placeholder_attr(node, name))
 }
 
 fn get_img_src_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
@@ -259,9 +261,12 @@ fn estimate_source_size(sizes: Option<&SizesList>, ctx: ImageSelectionContext<'_
 }
 
 fn srcset_has_width_descriptors(srcset: &[crate::tree::box_tree::SrcsetCandidate]) -> bool {
-  srcset
-    .iter()
-    .any(|c| matches!(c.descriptor, SrcsetDescriptor::Width(_) | SrcsetDescriptor::WidthHeight { .. }))
+  srcset.iter().any(|c| {
+    matches!(
+      c.descriptor,
+      SrcsetDescriptor::Width(_) | SrcsetDescriptor::WidthHeight { .. }
+    )
+  })
 }
 
 fn link_rel_is_preload_image(rel_tokens: &[String], as_attr: Option<&str>) -> bool {
@@ -1001,7 +1006,11 @@ mod tests {
 
     assert_eq!(
       out.urls[0],
-      Url::parse("https://example.com/").unwrap().join("good.png").unwrap().to_string()
+      Url::parse("https://example.com/")
+        .unwrap()
+        .join("good.png")
+        .unwrap()
+        .to_string()
     );
   }
 
@@ -1360,8 +1369,7 @@ mod tests {
 
   #[test]
   fn falls_back_from_blank_svg_data_src_to_data_src() {
-    let html =
-      r#"<img src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>" data-src="a.jpg">"#;
+    let html = r#"<img src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>" data-src="a.jpg">"#;
     let dom = parse_html(html).unwrap();
 
     let media_ctx = media_ctx_for((800.0, 600.0), 1.0);

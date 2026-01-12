@@ -67,4 +67,3 @@ fn text_emphasis_string_uses_vertical_advances_in_vertical_typographic_modes() {
     "expected emphasis string glyphs to use vertical advances (y_advance), got {advances:?}"
   );
 }
-

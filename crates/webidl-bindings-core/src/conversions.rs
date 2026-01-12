@@ -16,7 +16,8 @@ use crate::{JsRuntime, WebIdlJsRuntime};
 use std::collections::BTreeMap;
 use webidl_ir::{
   eval_default_value, DefaultValue, DictionaryMemberSchema, IdlType, NamedType, NamedTypeKind,
-  NumericType, PlatformObject, StringType, TypeAnnotation, TypeContext, WebIdlException, WebIdlValue,
+  NumericType, PlatformObject, StringType, TypeAnnotation, TypeContext, WebIdlException,
+  WebIdlValue,
 };
 
 pub use webidl::IntegerConversionAttrs;
@@ -114,7 +115,8 @@ pub fn convert_arguments<R: WebIdlJsRuntime>(
         if values.len() >= rt.limits().max_sequence_length {
           return Err(rt.throw_range_error("sequence exceeds maximum length"));
         }
-        let converted = rt.with_stack_roots(&roots, |rt| convert_to_idl(rt, item, &param.ty, ctx))?;
+        let converted =
+          rt.with_stack_roots(&roots, |rt| convert_to_idl(rt, item, &param.ty, ctx))?;
         append_converted_value_roots(&mut roots, &converted);
         values.push(converted);
       }
@@ -149,7 +151,14 @@ pub fn convert_to_idl<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
   let mut typedef_stack = Vec::<String>::new();
-  convert_to_idl_inner(rt, v, ty, ctx, &mut typedef_stack, ConversionState::default())
+  convert_to_idl_inner(
+    rt,
+    v,
+    ty,
+    ctx,
+    &mut typedef_stack,
+    ConversionState::default(),
+  )
 }
 
 fn throw_webidl_exception<R: WebIdlJsRuntime>(rt: &mut R, err: WebIdlException) -> R::Error {
@@ -202,9 +211,9 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
         }
       }
       if out_state.int_attrs.clamp && out_state.int_attrs.enforce_range {
-        return Err(rt.throw_type_error(
-          "[Clamp] and [EnforceRange] cannot both apply to the same type",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp] and [EnforceRange] cannot both apply to the same type"),
+        );
       }
       convert_to_idl_inner(rt, v, inner, ctx, typedef_stack, out_state)
     }
@@ -223,27 +232,27 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
 
     IdlType::Union(members) => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to a union type",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to a union type"),
+        );
       }
       convert_to_union(rt, v, members, ctx, typedef_stack)
     }
 
     IdlType::Any => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `any`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `any`"),
+        );
       }
       Ok(ConvertedValue::Any(v))
     }
 
     IdlType::Undefined => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `undefined`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `undefined`"),
+        );
       }
       if rt.is_undefined(v) {
         Ok(ConvertedValue::Undefined)
@@ -254,9 +263,9 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
 
     IdlType::Boolean => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `boolean`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `boolean`"),
+        );
       }
       Ok(ConvertedValue::Boolean(rt.to_boolean(v)?))
     }
@@ -267,9 +276,9 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
 
     IdlType::Object => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `object`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `object`"),
+        );
       }
       let obj = rt.to_object(v)?;
       Ok(ConvertedValue::Object(obj))
@@ -277,9 +286,9 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
 
     IdlType::Symbol => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `symbol`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `symbol`"),
+        );
       }
       if !rt.is_symbol(v) {
         return Err(rt.throw_type_error("value is not a symbol"));
@@ -289,9 +298,9 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
 
     IdlType::BigInt => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `bigint`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `bigint`"),
+        );
       }
       let bigint = if rt.is_bigint(v) { v } else { rt.to_bigint(v)? };
       Ok(ConvertedValue::Any(bigint))
@@ -301,34 +310,35 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
 
     IdlType::Sequence(elem_ty) => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `sequence`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `sequence`"),
+        );
       }
       convert_to_sequence(rt, v, elem_ty, ctx, typedef_stack)
     }
 
     IdlType::FrozenArray(elem_ty) => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `FrozenArray`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `FrozenArray`"),
+        );
       }
       convert_to_sequence(rt, v, elem_ty, ctx, typedef_stack)
     }
 
     IdlType::Record(key_ty, value_ty) => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to `record`",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `record`"),
+        );
       }
       convert_to_record(rt, v, key_ty, value_ty, ctx, typedef_stack)
     }
 
     // Non-MVP types.
-    IdlType::AsyncSequence(_)
-    | IdlType::Promise(_) => Err(rt.throw_type_error("WebIDL type conversion is not supported yet")),
+    IdlType::AsyncSequence(_) | IdlType::Promise(_) => {
+      Err(rt.throw_type_error("WebIDL type conversion is not supported yet"))
+    }
   }
 }
 
@@ -356,18 +366,18 @@ fn convert_to_named_type<R: WebIdlJsRuntime>(
 
   if ctx.enums.contains_key(name) {
     if !state.int_attrs.is_empty() {
-      return Err(rt.throw_type_error(
-        "[Clamp]/[EnforceRange] annotations cannot apply to an enum type",
-      ));
+      return Err(
+        rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to an enum type"),
+      );
     }
     return convert_to_enum(rt, v, name, ctx);
   }
 
   if ctx.dictionaries.contains_key(name) {
     if !state.int_attrs.is_empty() {
-      return Err(rt.throw_type_error(
-        "[Clamp]/[EnforceRange] annotations cannot apply to a dictionary type",
-      ));
+      return Err(
+        rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to a dictionary type"),
+      );
     }
     return convert_to_dictionary(rt, v, name, ctx, typedef_stack);
   }
@@ -387,11 +397,16 @@ fn convert_to_named_type<R: WebIdlJsRuntime>(
     }
     NamedTypeKind::CallbackFunction | NamedTypeKind::CallbackInterface => {
       if !state.int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations cannot apply to a callback type",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to a callback type"),
+        );
       }
-      let cb = convert_to_callback_internal(rt, v, &IdlType::Named(named.clone()), state.legacy_treat_non_object_as_null)?;
+      let cb = convert_to_callback_internal(
+        rt,
+        v,
+        &IdlType::Named(named.clone()),
+        state.legacy_treat_non_object_as_null,
+      )?;
       if rt.is_null(cb) {
         Ok(ConvertedValue::Null)
       } else {
@@ -422,9 +437,9 @@ fn convert_to_string<R: WebIdlJsRuntime>(
     StringType::DomString => Ok(ConvertedValue::String(string_to_rust_string_with_limits(
       rt, string_val,
     )?)),
-    StringType::UsvString => Ok(ConvertedValue::String(usv_string_to_rust_string_with_limits(
-      rt, string_val,
-    )?)),
+    StringType::UsvString => Ok(ConvertedValue::String(
+      usv_string_to_rust_string_with_limits(rt, string_val)?,
+    )),
     StringType::ByteString => {
       let s = string_to_rust_string_with_limits(rt, string_val)?;
       if s.chars().any(|c| (c as u32) > 0xFF) {
@@ -442,7 +457,9 @@ fn string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
   let max_units = rt.limits().max_string_code_units;
   let result = rt.with_string_code_units(string, |units| {
     if units.len() > max_units {
-      return Err(WebIdlException::range_error("string exceeds maximum length"));
+      return Err(WebIdlException::range_error(
+        "string exceeds maximum length",
+      ));
     }
     Ok(String::from_utf16_lossy(units))
   })?;
@@ -456,7 +473,9 @@ fn usv_string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
   let max_units = rt.limits().max_string_code_units;
   let result = rt.with_string_code_units(string, |units| {
     if units.len() > max_units {
-      return Err(WebIdlException::range_error("string exceeds maximum length"));
+      return Err(WebIdlException::range_error(
+        "string exceeds maximum length",
+      ));
     }
     Ok(usv_string_from_utf16_code_units(units))
   })?;
@@ -508,9 +527,9 @@ fn convert_to_numeric<R: WebIdlJsRuntime>(
   match numeric_type {
     NumericType::Float => {
       if !int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations only apply to integer types",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations only apply to integer types"),
+        );
       }
       let x = rt.to_number(v)?;
       if x.is_nan() || x.is_infinite() {
@@ -527,13 +546,15 @@ fn convert_to_numeric<R: WebIdlJsRuntime>(
     }
     NumericType::UnrestrictedFloat => {
       if !int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations only apply to integer types",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations only apply to integer types"),
+        );
       }
       let x = rt.to_number(v)?;
       if x.is_nan() {
-        return Ok(ConvertedValue::UnrestrictedFloat(f32::from_bits(0x7fc0_0000)));
+        return Ok(ConvertedValue::UnrestrictedFloat(f32::from_bits(
+          0x7fc0_0000,
+        )));
       }
       let mut y = x as f32;
       if y == 0.0 && x.is_sign_negative() {
@@ -543,9 +564,9 @@ fn convert_to_numeric<R: WebIdlJsRuntime>(
     }
     NumericType::Double => {
       if !int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations only apply to integer types",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations only apply to integer types"),
+        );
       }
       let x = rt.to_number(v)?;
       if x.is_nan() || x.is_infinite() {
@@ -555,9 +576,9 @@ fn convert_to_numeric<R: WebIdlJsRuntime>(
     }
     NumericType::UnrestrictedDouble => {
       if !int_attrs.is_empty() {
-        return Err(rt.throw_type_error(
-          "[Clamp]/[EnforceRange] annotations only apply to integer types",
-        ));
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations only apply to integer types"),
+        );
       }
       let x = rt.to_number(v)?;
       if x.is_nan() {
@@ -714,9 +735,9 @@ pub fn to_callback_interface<R: WebIdlJsRuntime>(
     let handle_event_key = rt.property_key_from_str("handleEvent")?;
     match rt.get_method(value, handle_event_key)? {
       Some(_) => Ok(value),
-      None => Err(rt.throw_type_error(
-        "Callback interface object is missing a callable handleEvent method",
-      )),
+      None => Err(
+        rt.throw_type_error("Callback interface object is missing a callable handleEvent method"),
+      ),
     }
   })
 }
@@ -753,13 +774,11 @@ pub fn to_interface_opaque<R: WebIdlJsRuntime>(
       "Value is not a platform object implementing interface `{interface}`"
     )));
   }
-  rt
-    .platform_object_opaque(value)
-    .ok_or_else(|| {
-      rt.throw_type_error(&format!(
-        "Platform object implementing interface `{interface}` does not expose an opaque id"
-      ))
-    })
+  rt.platform_object_opaque(value).ok_or_else(|| {
+    rt.throw_type_error(&format!(
+      "Platform object implementing interface `{interface}` does not expose an opaque id"
+    ))
+  })
 }
 
 fn convert_to_callback_internal<R: WebIdlJsRuntime>(
@@ -907,9 +926,9 @@ pub fn invoke_callback_interface<R: WebIdlJsRuntime>(
   rt.with_stack_roots(&roots, |rt| {
     let handle_event_key = rt.property_key_from_str("handleEvent")?;
     let Some(handle_event) = rt.get_method(callback, handle_event_key)? else {
-      return Err(rt.throw_type_error(
-        "Callback interface object is missing a callable handleEvent method",
-      ));
+      return Err(
+        rt.throw_type_error("Callback interface object is missing a callable handleEvent method"),
+      );
     };
 
     rt.call(handle_event, callback, args)
@@ -944,7 +963,11 @@ fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
   let mut iterator_record = rt.get_iterator_from_method(iterable, method)?;
   rt.with_stack_roots(
-    &[iterable, iterator_record.iterator, iterator_record.next_method],
+    &[
+      iterable,
+      iterator_record.iterator,
+      iterator_record.next_method,
+    ],
     |rt| {
       let mut values = Vec::<ConvertedValue<R::JsValue>>::new();
       // Roots for any JS values stored in `values` so far. These are not otherwise visible to the GC.
@@ -953,7 +976,9 @@ fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
       loop {
         // Ensure any previously-converted JS values remain alive while we perform the next
         // `IteratorStepValue` (which allocates and can trigger GC).
-        let next = rt.with_stack_roots(&value_roots, |rt| rt.iterator_step_value(&mut iterator_record))?;
+        let next = rt.with_stack_roots(&value_roots, |rt| {
+          rt.iterator_step_value(&mut iterator_record)
+        })?;
         let Some(next) = next else {
           break;
         };
@@ -1114,7 +1139,8 @@ fn convert_to_dictionary<R: WebIdlJsRuntime>(
       }
 
       if let Some(default) = default {
-        let evaluated = eval_default_value(&ty, &default, ctx).map_err(|e| throw_webidl_exception(rt, e))?;
+        let evaluated =
+          eval_default_value(&ty, &default, ctx).map_err(|e| throw_webidl_exception(rt, e))?;
         return Ok(Some(converted_from_webidl_value::<R::JsValue>(evaluated)));
       }
 
@@ -1146,7 +1172,9 @@ fn convert_to_union<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
-  rt.with_stack_roots(&[v], |rt| convert_to_union_inner(rt, v, members, ctx, typedef_stack))
+  rt.with_stack_roots(&[v], |rt| {
+    convert_to_union_inner(rt, v, members, ctx, typedef_stack)
+  })
 }
 
 fn convert_to_union_inner<R: WebIdlJsRuntime>(
@@ -1172,8 +1200,8 @@ fn convert_to_union_inner<R: WebIdlJsRuntime>(
     && union_includes_nullable_type(rt, members, ctx, typedef_stack)?
   {
     // WebIDL uses the nullable member as the "specific type" for null.
-    let nullable_inner = find_nullable_union_inner_type(rt, members, ctx, typedef_stack)?
-      .unwrap_or(IdlType::Any);
+    let nullable_inner =
+      find_nullable_union_inner_type(rt, members, ctx, typedef_stack)?.unwrap_or(IdlType::Any);
     return Ok(ConvertedValue::Union {
       member_ty: Box::new(IdlType::Nullable(Box::new(nullable_inner))),
       value: Box::new(ConvertedValue::Null),
@@ -1251,7 +1279,10 @@ fn convert_to_union_inner<R: WebIdlJsRuntime>(
     }
 
     // record
-    if let Some(record_ty) = flattened.iter().find(|t| matches!(t, IdlType::Record(_, _))) {
+    if let Some(record_ty) = flattened
+      .iter()
+      .find(|t| matches!(t, IdlType::Record(_, _)))
+    {
       let converted = convert_to_idl_inner(
         rt,
         v,
@@ -1444,8 +1475,12 @@ fn number_of_nullable_member_types<R: WebIdlJsRuntime>(
         }
         typedef_stack.push(name.clone());
         n += match td {
-          IdlType::Union(inner_members) => number_of_nullable_member_types(rt, inner_members, ctx, typedef_stack)?,
-          other => number_of_nullable_member_types(rt, std::slice::from_ref(other), ctx, typedef_stack)?,
+          IdlType::Union(inner_members) => {
+            number_of_nullable_member_types(rt, inner_members, ctx, typedef_stack)?
+          }
+          other => {
+            number_of_nullable_member_types(rt, std::slice::from_ref(other), ctx, typedef_stack)?
+          }
         };
         typedef_stack.pop();
         continue;
@@ -1486,8 +1521,12 @@ fn find_nullable_union_inner_type<R: WebIdlJsRuntime>(
         }
         typedef_stack.push(name.clone());
         let out = match td {
-          IdlType::Union(inner_members) => find_nullable_union_inner_type(rt, inner_members, ctx, typedef_stack)?,
-          other => find_nullable_union_inner_type(rt, std::slice::from_ref(other), ctx, typedef_stack)?,
+          IdlType::Union(inner_members) => {
+            find_nullable_union_inner_type(rt, inner_members, ctx, typedef_stack)?
+          }
+          other => {
+            find_nullable_union_inner_type(rt, std::slice::from_ref(other), ctx, typedef_stack)?
+          }
         };
         typedef_stack.pop();
         if out.is_some() {

@@ -44,9 +44,7 @@ fn set_attribute(node: &mut DomNode, name: &str, value: &str) {
         attributes.push((name.to_string(), value.to_string()));
       }
     }
-    DomNodeType::Document { .. }
-    | DomNodeType::ShadowRoot { .. }
-    | DomNodeType::Text { .. } => {}
+    DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } | DomNodeType::Text { .. } => {}
   }
 }
 
@@ -79,7 +77,9 @@ fn prepare_dom_with_options_round_trips_focus_state() -> Result<()> {
     node
       .tag_name()
       .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-      && node.get_attribute_ref("id").is_some_and(|id| id == "target")
+      && node
+        .get_attribute_ref("id")
+        .is_some_and(|id| id == "target")
   })
   .expect("input element");
   let input_id = *ids.get(&(input as *const DomNode)).expect("node id");
@@ -88,7 +88,8 @@ fn prepare_dom_with_options_round_trips_focus_state() -> Result<()> {
     focused: Some(input_id),
     ..InteractionState::default()
   };
-  let _frame = doc.render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))?;
+  let _frame =
+    doc.render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))?;
   let prepared = doc.prepared().expect("prepared");
   let control =
     find_first_form_control(&prepared.box_tree().root).expect("form control replaced box");
@@ -112,7 +113,8 @@ fn prepare_dom_with_options_round_trips_text_value_attribute() -> Result<()> {
   .expect("input element");
   set_attribute(input, "value", "after");
 
-  let report = renderer.prepare_dom_with_options(dom, None, RenderOptions::new().with_viewport(64, 64))?;
+  let report =
+    renderer.prepare_dom_with_options(dom, None, RenderOptions::new().with_viewport(64, 64))?;
   let control =
     find_first_form_control(&report.document.box_tree().root).expect("form control replaced box");
   match &control.control {

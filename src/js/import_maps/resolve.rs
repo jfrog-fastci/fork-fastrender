@@ -2,8 +2,8 @@ use url::Url;
 
 use super::parse::resolve_url_like_module_specifier;
 use super::types::{
-  code_unit_prefix_candidates_ending_with_slash, is_code_unit_prefix, ImportMapError, ImportMapState,
-  ModuleSpecifierMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
+  code_unit_prefix_candidates_ending_with_slash, is_code_unit_prefix, ImportMapError,
+  ImportMapState, ModuleSpecifierMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
 fn is_special_url(url: &Url) -> bool {
@@ -91,11 +91,13 @@ pub fn add_module_to_resolved_module_set(
     Some(_) => SpecifierAsUrlKind::NonSpecial,
   };
 
-  state.resolved_module_set.push_record(SpecifierResolutionRecord {
-    serialized_base_url: Some(serialized_base_url),
-    specifier: normalized_specifier,
-    as_url_kind,
-  });
+  state
+    .resolved_module_set
+    .push_record(SpecifierResolutionRecord {
+      serialized_base_url: Some(serialized_base_url),
+      specifier: normalized_specifier,
+      as_url_kind,
+    });
 }
 
 /// WHATWG HTML: "resolve a module specifier" (host-facing entry point).
@@ -115,8 +117,11 @@ pub fn resolve_module_specifier(
   let mut result: Option<Url> = None;
 
   if let Some(scope_imports) = state.import_map.scopes.get(&serialized_base_url) {
-    let match_result =
-      resolve_imports_match_impl(normalized_specifier.as_str(), as_url.as_ref(), scope_imports)?;
+    let match_result = resolve_imports_match_impl(
+      normalized_specifier.as_str(),
+      as_url.as_ref(),
+      scope_imports,
+    )?;
     if match_result.is_some() {
       result = match_result;
     }

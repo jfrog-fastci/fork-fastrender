@@ -20,7 +20,9 @@ use std::sync::Arc;
 
 fn first_baseline_offset(fragment: &FragmentNode) -> Option<f32> {
   if let Some(style) = fragment.style.as_deref() {
-    if style.running_position.is_some() || matches!(style.position, Position::Absolute | Position::Fixed) {
+    if style.running_position.is_some()
+      || matches!(style.position, Position::Absolute | Position::Fixed)
+    {
       return None;
     }
   }
@@ -31,7 +33,9 @@ fn first_baseline_offset(fragment: &FragmentNode) -> Option<f32> {
 
   match &fragment.content {
     FragmentContent::Line { baseline } => Some(*baseline),
-    FragmentContent::Text { baseline_offset, .. } => Some(*baseline_offset),
+    FragmentContent::Text {
+      baseline_offset, ..
+    } => Some(*baseline_offset),
     FragmentContent::Replaced { .. } => Some(fragment.bounds.height()),
     _ => {
       for child in fragment.children.iter() {
@@ -47,7 +51,10 @@ fn first_baseline_offset(fragment: &FragmentNode) -> Option<f32> {
 fn block_axis_is_horizontal(wm: WritingMode) -> bool {
   matches!(
     wm,
-    WritingMode::VerticalRl | WritingMode::VerticalLr | WritingMode::SidewaysRl | WritingMode::SidewaysLr
+    WritingMode::VerticalRl
+      | WritingMode::VerticalLr
+      | WritingMode::SidewaysRl
+      | WritingMode::SidewaysLr
   )
 }
 
@@ -57,7 +64,9 @@ fn block_axis_positive(wm: WritingMode) -> bool {
 
 fn find_first_baseline_offset_x(fragment: &FragmentNode, block_positive: bool) -> Option<f32> {
   if let Some(style) = fragment.style.as_deref() {
-    if style.running_position.is_some() || matches!(style.position, Position::Absolute | Position::Fixed) {
+    if style.running_position.is_some()
+      || matches!(style.position, Position::Absolute | Position::Fixed)
+    {
       return None;
     }
   }
@@ -78,7 +87,9 @@ fn find_first_baseline_offset_x(fragment: &FragmentNode, block_positive: bool) -
   }
   match &fragment.content {
     FragmentContent::Line { baseline } => return Some(resolve_from_block_start(*baseline, extent)),
-    FragmentContent::Text { baseline_offset, .. } => return Some(resolve_from_block_start(*baseline_offset, extent)),
+    FragmentContent::Text {
+      baseline_offset, ..
+    } => return Some(resolve_from_block_start(*baseline_offset, extent)),
     FragmentContent::Replaced { .. } => return Some(resolve_from_block_start(extent, extent)),
     _ => {}
   }
@@ -115,7 +126,11 @@ fn flex_align_items_baseline_influences_cross_size() {
   child_a_style.display = Display::Block;
   child_a_style.width = Some(Length::px(10.0));
   child_a_style.height = Some(Length::px(100.0));
-  let child_a = BoxNode::new_block(Arc::new(child_a_style), FormattingContextType::Block, vec![]);
+  let child_a = BoxNode::new_block(
+    Arc::new(child_a_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   // Child B has a baseline near the top (text at y=0) but a large fixed height, so baseline
   // alignment should push it down and increase the line's cross size beyond 100px.
@@ -128,8 +143,11 @@ fn flex_align_items_baseline_influences_cross_size() {
   child_b_style.display = Display::Block;
   child_b_style.width = Some(Length::px(10.0));
   child_b_style.height = Some(Length::px(100.0));
-  let child_b =
-    BoxNode::new_block(Arc::new(child_b_style), FormattingContextType::Block, vec![text]);
+  let child_b = BoxNode::new_block(
+    Arc::new(child_b_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -204,7 +222,11 @@ fn flex_align_items_baseline_aligns_baselines_in_wrap_reverse_row_multiline() {
     text_style.line_height = LineHeight::Length(Length::px(line_height));
     let text_child = BoxNode::new_text(Arc::new(text_style), "Hello".to_string());
 
-    BoxNode::new_block(wrapper_style, FormattingContextType::Inline, vec![text_child])
+    BoxNode::new_block(
+      wrapper_style,
+      FormattingContextType::Inline,
+      vec![text_child],
+    )
   };
 
   let child_large = make_item(20.0);
@@ -260,7 +282,9 @@ fn flex_align_items_baseline_aligns_baselines_in_wrap_reverse_row_multiline() {
   );
 }
 
-fn run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(writing_mode: WritingMode) {
+fn run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(
+  writing_mode: WritingMode,
+) {
   let fc = FlexFormattingContext::new();
 
   let mut container_style = ComputedStyle::default();
@@ -287,7 +311,11 @@ fn run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(wri
     text_style.line_height = LineHeight::Length(Length::px(line_height));
     let text_child = BoxNode::new_text(Arc::new(text_style), "A".to_string());
 
-    BoxNode::new_block(wrapper_style, FormattingContextType::Inline, vec![text_child])
+    BoxNode::new_block(
+      wrapper_style,
+      FormattingContextType::Inline,
+      vec![text_child],
+    )
   };
 
   let child_large = make_item(20.0);
@@ -302,7 +330,10 @@ fn run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(wri
   let fragment = fc
     .layout(
       &container,
-      &LayoutConstraints::new(AvailableSpace::Definite(300.0), AvailableSpace::Definite(200.0)),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(300.0),
+        AvailableSpace::Definite(200.0),
+      ),
     )
     .expect("layout should succeed");
 
@@ -373,7 +404,11 @@ fn run_flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_wri
     text_style.line_height = LineHeight::Length(Length::px(line_height));
     let text_child = BoxNode::new_text(Arc::new(text_style), "A".to_string());
 
-    BoxNode::new_block(wrapper_style, FormattingContextType::Inline, vec![text_child])
+    BoxNode::new_block(
+      wrapper_style,
+      FormattingContextType::Inline,
+      vec![text_child],
+    )
   };
 
   let child_large = make_item(20.0);
@@ -428,26 +463,35 @@ fn run_flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_wri
 
 #[test]
 fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_vertical_lr() {
-  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::VerticalLr);
+  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(
+    WritingMode::VerticalLr,
+  );
 }
 
 #[test]
 fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_vertical_rl() {
-  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::VerticalRl);
+  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(
+    WritingMode::VerticalRl,
+  );
 }
 
 #[test]
 fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_sideways_lr() {
-  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::SidewaysLr);
+  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(
+    WritingMode::SidewaysLr,
+  );
 }
 
 #[test]
 fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_sideways_rl() {
-  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::SidewaysRl);
+  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(
+    WritingMode::SidewaysRl,
+  );
 }
 
 #[test]
-fn flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode_vertical_lr_rtl() {
+fn flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode_vertical_lr_rtl(
+) {
   run_flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode(
     WritingMode::VerticalLr,
     Direction::Rtl,
@@ -455,7 +499,8 @@ fn flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing
 }
 
 #[test]
-fn flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode_vertical_rl() {
+fn flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode_vertical_rl()
+{
   run_flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode(
     WritingMode::VerticalRl,
     Direction::Ltr,

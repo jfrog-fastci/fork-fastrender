@@ -35,9 +35,13 @@ fn rounded_overflow_clip_does_not_bleed_into_adjacent_pixels() {
   // clip mask, the anti-aliased edge partially covers this row.
   let outside = pixmap.pixel(20, 10).expect("outside pixel");
   assert_eq!(
-    (outside.red(), outside.green(), outside.blue(), outside.alpha()),
+    (
+      outside.red(),
+      outside.green(),
+      outside.blue(),
+      outside.alpha()
+    ),
     (255, 255, 255, 255),
     "expected pixel above rounded clip to remain the page background"
   );
 }
-

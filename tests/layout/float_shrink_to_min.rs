@@ -43,19 +43,24 @@ fn float_auto_width_with_content_clamps_to_min_width() {
   let mut float_style = ComputedStyle::default();
   float_style.float = Float::Left;
   float_style.min_width = Some(Length::px(80.0));
-  let text_child = BoxNode::new_text(
-    Arc::new(ComputedStyle::default()),
-    "hi".to_string(),
+  let text_child = BoxNode::new_text(Arc::new(ComputedStyle::default()), "hi".to_string());
+  let float_box = BoxNode::new_block(
+    Arc::new(float_style),
+    FormattingContextType::Block,
+    vec![text_child],
   );
-  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![
-    text_child,
-  ]);
 
-  let container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![float_box]);
+  let container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![float_box],
+  );
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 1000.0);
-  let fragment = bfc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   assert_eq!(fragment.children.len(), 1);
   let float_fragment = &fragment.children[0];
@@ -124,11 +129,17 @@ fn float_auto_width_can_exceed_containing_block_when_intrinsic_min_exceeds_avail
     FormattingContextType::Block,
     vec![child_box],
   );
-  let container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![float_box]);
+  let container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![float_box],
+  );
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(100.0, 1000.0);
-  let fragment = bfc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   assert_eq!(fragment.children.len(), 1);
   let float_fragment = &fragment.children[0];
@@ -162,7 +173,9 @@ fn inherited_float_context_is_scoped_to_containing_block_width() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 1000.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   // Find the float fragment (it may not be a direct child due to float reparenting).
   fn find_float<'a>(
@@ -194,16 +207,25 @@ fn float_auto_width_includes_floated_children_in_intrinsic_widths() {
   let inner_box = BoxNode::new_block(
     Arc::new(inner_style),
     FormattingContextType::Block,
-    vec![BoxNode::new_text(Arc::new(ComputedStyle::default()), "x".to_string())],
+    vec![BoxNode::new_text(
+      Arc::new(ComputedStyle::default()),
+      "x".to_string(),
+    )],
   );
 
   let mut outer_style = ComputedStyle::default();
   outer_style.float = Float::Left;
-  let outer_box = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![
-    inner_box,
-  ]);
+  let outer_box = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner_box],
+  );
 
-  let container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![outer_box]);
+  let container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![outer_box],
+  );
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(500.0, 1000.0);
@@ -242,8 +264,11 @@ fn float_auto_width_does_not_shrink_to_remaining_space() {
   inline_a_style.display = fastrender::style::display::Display::InlineBlock;
   inline_a_style.width = Some(Length::px(60.0));
   inline_a_style.height = Some(Length::px(10.0));
-  let inline_a =
-    BoxNode::new_inline_block(Arc::new(inline_a_style), FormattingContextType::Block, vec![]);
+  let inline_a = BoxNode::new_inline_block(
+    Arc::new(inline_a_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let space = BoxNode::new_text(Arc::new(ComputedStyle::default()), " ".to_string());
 
@@ -251,8 +276,11 @@ fn float_auto_width_does_not_shrink_to_remaining_space() {
   inline_b_style.display = fastrender::style::display::Display::InlineBlock;
   inline_b_style.width = Some(Length::px(60.0));
   inline_b_style.height = Some(Length::px(10.0));
-  let inline_b =
-    BoxNode::new_inline_block(Arc::new(inline_b_style), FormattingContextType::Block, vec![]);
+  let inline_b = BoxNode::new_inline_block(
+    Arc::new(inline_b_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let mut second_style = ComputedStyle::default();
   second_style.float = Float::Left;

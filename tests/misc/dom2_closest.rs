@@ -119,7 +119,9 @@ fn get_element_by_id_does_not_traverse_shadow_roots() {
   // The element still exists in the underlying tree; it's just not reachable by `getElementById`.
   let shadow = find_node_by_id_attr(&doc, "shadow");
   assert!(
-    doc.ancestors(shadow).any(|ancestor| matches!(doc.node(ancestor).kind, NodeKind::ShadowRoot { .. })),
+    doc
+      .ancestors(shadow)
+      .any(|ancestor| matches!(doc.node(ancestor).kind, NodeKind::ShadowRoot { .. })),
     "expected #shadow to be inside a shadow root"
   );
 }

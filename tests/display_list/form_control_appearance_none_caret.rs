@@ -1,7 +1,9 @@
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::interaction::InteractionState;
-use fastrender::{BrowserDocument, FastRender, FastRenderConfig, RenderArtifactRequest, RenderOptions};
+use fastrender::{
+  BrowserDocument, FastRender, FastRenderConfig, RenderArtifactRequest, RenderOptions,
+};
 use std::collections::HashMap;
 use tiny_skia::Pixmap;
 

@@ -150,7 +150,10 @@ struct SubpixelAAScratch {
 impl std::fmt::Debug for SubpixelAAScratch {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("SubpixelAAScratch")
-      .field("allocated", &self.pixmap.as_ref().map(|p| (p.width(), p.height())))
+      .field(
+        "allocated",
+        &self.pixmap.as_ref().map(|p| (p.width(), p.height())),
+      )
       .finish()
   }
 }
@@ -162,7 +165,11 @@ impl SubpixelAAScratch {
       None => true,
     };
     if needs_new {
-      self.pixmap = Some(new_pixmap_with_context(width, height, "text subpixel AA mask")?);
+      self.pixmap = Some(new_pixmap_with_context(
+        width,
+        height,
+        "text subpixel AA mask",
+      )?);
     }
     let pixmap = self
       .pixmap
@@ -502,7 +509,13 @@ impl GlyphCache {
     font_size: f32,
     hinting: bool,
   ) -> Option<&CachedGlyph> {
-    let key = GlyphCacheKey::new(font, glyph_id, instance.variation_hash(), font_size, hinting);
+    let key = GlyphCacheKey::new(
+      font,
+      glyph_id,
+      instance.variation_hash(),
+      font_size,
+      hinting,
+    );
     let generation = self.bump_generation();
 
     if self.caching_disabled() {
@@ -724,7 +737,10 @@ impl ColorGlyphCache {
     // outlines. Negative entries are tiny (no pixmap bytes) but they still occupy an LRU slot, so
     // keep the default entry budget comfortably above the number of likely "text glyphs" to avoid
     // crowding out actual color rasters on pages that mix emoji fonts with normal text.
-    Self::with_limits(DEFAULT_COLOR_GLYPH_CACHE_ITEMS, DEFAULT_COLOR_GLYPH_CACHE_BYTES)
+    Self::with_limits(
+      DEFAULT_COLOR_GLYPH_CACHE_ITEMS,
+      DEFAULT_COLOR_GLYPH_CACHE_BYTES,
+    )
   }
 
   fn caching_disabled(&self) -> bool {
@@ -961,7 +977,9 @@ pub(crate) fn shared_color_cache() -> Arc<Mutex<ColorGlyphCache>> {
   CACHE
     .get_or_init(|| {
       let (max_items, max_bytes) = shared_color_glyph_cache_limits_from_env();
-      Arc::new(Mutex::new(ColorGlyphCache::with_limits(max_items, max_bytes)))
+      Arc::new(Mutex::new(ColorGlyphCache::with_limits(
+        max_items, max_bytes,
+      )))
     })
     .clone()
 }
@@ -1233,10 +1251,12 @@ impl TextRasterizer {
     // Avoid applying it when the glyph is rotated/skewed, which would map "horizontal" subpixels
     // onto a non-horizontal edge.
     if transform.kx.abs() > 1e-6 || transform.ky.abs() > 1e-6 {
-      return Err(RenderError::RasterizationFailed {
-        reason: "subpixel AA unsupported for non-axis-aligned glyph transform".to_string(),
-      }
-      .into());
+      return Err(
+        RenderError::RasterizationFailed {
+          reason: "subpixel AA unsupported for non-axis-aligned glyph transform".to_string(),
+        }
+        .into(),
+      );
     }
 
     let Some((min_x, min_y, max_x, max_y)) = Self::transformed_bounds(path, transform) else {
@@ -1257,11 +1277,11 @@ impl TextRasterizer {
     }
     let width_px = width_px_i32 as u32;
     let height_px = height_px_i32 as u32;
-    let width_sub = width_px
-      .checked_mul(SUBPIXEL_AA_SCALE_X)
-      .ok_or_else(|| RenderError::RasterizationFailed {
+    let width_sub = width_px.checked_mul(SUBPIXEL_AA_SCALE_X).ok_or_else(|| {
+      RenderError::RasterizationFailed {
         reason: "subpixel AA mask width overflow".to_string(),
-      })?;
+      }
+    })?;
 
     let mask_pixmap = self.subpixel_scratch.get_or_resize(width_sub, height_px)?;
     mask_pixmap.fill(Color::TRANSPARENT);
@@ -1273,7 +1293,10 @@ impl TextRasterizer {
 
     let subpixel_scale = Transform::from_scale(SUBPIXEL_AA_SCALE_X as f32, 1.0);
     let transform_sub = concat_transforms(subpixel_scale, transform);
-    let local_translate = Transform::from_translate(-(origin_x as f32) * SUBPIXEL_AA_SCALE_X as f32, -(origin_y as f32));
+    let local_translate = Transform::from_translate(
+      -(origin_x as f32) * SUBPIXEL_AA_SCALE_X as f32,
+      -(origin_y as f32),
+    );
     let mask_transform = concat_transforms(local_translate, transform_sub);
 
     mask_pixmap.fill_path(path, &mask_paint, FillRule::Winding, mask_transform, None);
@@ -1283,12 +1306,16 @@ impl TextRasterizer {
     let dst_w_usize = dst.width() as usize;
     let mask_data = mask_pixmap.data();
     let clip_data = match clip_mask {
-      Some(mask) if mask.width() == dst.width() && mask.height() == dst.height() => Some(mask.data()),
+      Some(mask) if mask.width() == dst.width() && mask.height() == dst.height() => {
+        Some(mask.data())
+      }
       Some(_) => {
-        return Err(RenderError::RasterizationFailed {
-          reason: "subpixel AA clip mask size mismatch".to_string(),
-        }
-        .into());
+        return Err(
+          RenderError::RasterizationFailed {
+            reason: "subpixel AA clip mask size mismatch".to_string(),
+          }
+          .into(),
+        );
       }
       None => None,
     };
@@ -1676,7 +1703,10 @@ impl TextRasterizer {
 
     let antialias_enabled = !matches!(state.font_smoothing, FontSmoothing::None);
     let allow_subpixel_aa = state.allow_subpixel_aa
-      && matches!(state.font_smoothing, FontSmoothing::Auto | FontSmoothing::Subpixel);
+      && matches!(
+        state.font_smoothing,
+        FontSmoothing::Auto | FontSmoothing::Subpixel
+      );
 
     // Create paint with fill color
     let mut paint = Paint::default();
@@ -1808,7 +1838,13 @@ impl TextRasterizer {
           if diag_enabled {
             let before = cache.stats();
             let path = cache
-              .get_or_build(font, &instance, glyph.glyph_id, font_size, self.hinting_enabled)
+              .get_or_build(
+                font,
+                &instance,
+                glyph.glyph_id,
+                font_size,
+                self.hinting_enabled,
+              )
               .and_then(|glyph| glyph.path.clone());
             let after = cache.stats();
             let delta = after.delta_from(&before);
@@ -1819,7 +1855,13 @@ impl TextRasterizer {
             path
           } else {
             cache
-              .get_or_build(font, &instance, glyph.glyph_id, font_size, self.hinting_enabled)
+              .get_or_build(
+                font,
+                &instance,
+                glyph.glyph_id,
+                font_size,
+                self.hinting_enabled,
+              )
               .and_then(|glyph| glyph.path.clone())
           }
         };
@@ -2191,7 +2233,13 @@ impl TextRasterizer {
         .cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get_or_build(font, &instance, glyph.glyph_id, font_size, self.hinting_enabled)
+        .get_or_build(
+          font,
+          &instance,
+          glyph.glyph_id,
+          font_size,
+          self.hinting_enabled,
+        )
         .and_then(|glyph| glyph.path.clone());
       if let Some(path) = cached_path {
         let mut transform = glyph_transform(scale, synthetic_oblique, glyph_x, glyph_y);
@@ -3541,7 +3589,14 @@ mod tests {
       let rect = tiny_skia::Rect::from_xywh(0.0, 0.0, 5.1, 4.0).unwrap();
       let path = tiny_skia::PathBuilder::from_rect(rect);
       rasterizer
-        .fill_path_subpixel_aa(&mut pixmap, &path, Transform::identity(), 1.0, Rgba::WHITE, None)
+        .fill_path_subpixel_aa(
+          &mut pixmap,
+          &path,
+          Transform::identity(),
+          1.0,
+          Rgba::WHITE,
+          None,
+        )
         .unwrap();
 
       let mut fringe = false;
@@ -3574,12 +3629,10 @@ mod tests {
           None,
         )
         .unwrap();
-      assert!(
-        transparent
-          .data()
-          .chunks_exact(4)
-          .any(|px| px[3] > 0 && px[3] < 255)
-      );
+      assert!(transparent
+        .data()
+        .chunks_exact(4)
+        .any(|px| px[3] > 0 && px[3] < 255));
       for px in transparent.data().chunks_exact(4) {
         if px[3] == 0 {
           continue;
@@ -3637,12 +3690,23 @@ mod tests {
       let rect = tiny_skia::Rect::from_xywh(4.0, -10.0, 8.0, 24.0).unwrap();
       let path = tiny_skia::PathBuilder::from_rect(rect);
       rasterizer
-        .fill_path_subpixel_aa(&mut pixmap, &path, Transform::identity(), 1.0, Rgba::WHITE, None)
+        .fill_path_subpixel_aa(
+          &mut pixmap,
+          &path,
+          Transform::identity(),
+          1.0,
+          Rgba::WHITE,
+          None,
+        )
         .unwrap();
 
       let sample = |x: usize, y: usize| -> (u8, u8, u8) {
         let idx = (y * pixmap.width() as usize + x) * 4;
-        (pixmap.data()[idx], pixmap.data()[idx + 1], pixmap.data()[idx + 2])
+        (
+          pixmap.data()[idx],
+          pixmap.data()[idx + 1],
+          pixmap.data()[idx + 2],
+        )
       };
 
       // Sanity: interior pixel should be fully covered.

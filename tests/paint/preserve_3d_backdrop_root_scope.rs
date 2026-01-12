@@ -1,7 +1,7 @@
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::paint::display_list::{
-  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter, StackingContextItem,
-  Transform3D,
+  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter,
+  StackingContextItem, Transform3D,
 };
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::style::color::Rgba;
@@ -94,7 +94,12 @@ fn preserve_3d_backdrop_filter_respects_backdrop_root_scope() {
 
   let left_px = pixmap.pixel(2, 5).expect("pixel in-bounds");
   assert_eq!(
-    (left_px.red(), left_px.green(), left_px.blue(), left_px.alpha()),
+    (
+      left_px.red(),
+      left_px.green(),
+      left_px.blue(),
+      left_px.alpha()
+    ),
     (255, 0, 255, 255),
     "expected inverted green (magenta) inside the preserve-3d backdrop-filter"
   );
@@ -121,7 +126,10 @@ fn preserve_3d_backdrop_filter_respects_intermediate_backdrop_root_scope() {
 
   // Outer preserve-3d root that does *not* establish a backdrop root; pixels outside the nested
   // backdrop root should remain visible through transparent sampling regions.
-  list.push(DisplayItem::PushStackingContext(context(bounds, TransformStyle::Preserve3d)));
+  list.push(DisplayItem::PushStackingContext(context(
+    bounds,
+    TransformStyle::Preserve3d,
+  )));
 
   // Intermediate preserve-3d stacking context that establishes a Backdrop Root boundary (e.g. via
   // `will-change`). This boundary must scope descendant backdrop-filter sampling without forcing
@@ -163,7 +171,12 @@ fn preserve_3d_backdrop_filter_respects_intermediate_backdrop_root_scope() {
 
   let left_px = pixmap.pixel(2, 5).expect("pixel in-bounds");
   assert_eq!(
-    (left_px.red(), left_px.green(), left_px.blue(), left_px.alpha()),
+    (
+      left_px.red(),
+      left_px.green(),
+      left_px.blue(),
+      left_px.alpha()
+    ),
     (255, 0, 255, 255),
     "expected inverted green (magenta) inside the nested preserve-3d backdrop-filter"
   );
@@ -191,7 +204,10 @@ fn preserve_3d_mix_blend_mode_respects_intermediate_backdrop_root_scope() {
   // Outer preserve-3d root that does *not* establish a backdrop root. The descendant blend-mode
   // operation must not see this red background once we cross the intermediate backdrop root
   // boundary below.
-  list.push(DisplayItem::PushStackingContext(context(bounds, TransformStyle::Preserve3d)));
+  list.push(DisplayItem::PushStackingContext(context(
+    bounds,
+    TransformStyle::Preserve3d,
+  )));
 
   // Intermediate preserve-3d stacking context that establishes a Backdrop Root boundary (e.g. via
   // `will-change`). Only paint green on the left half so the right half of the Backdrop Root Image
@@ -234,7 +250,12 @@ fn preserve_3d_mix_blend_mode_respects_intermediate_backdrop_root_scope() {
 
   let left_px = pixmap.pixel(2, 5).expect("pixel in-bounds");
   assert_eq!(
-    (left_px.red(), left_px.green(), left_px.blue(), left_px.alpha()),
+    (
+      left_px.red(),
+      left_px.green(),
+      left_px.blue(),
+      left_px.alpha()
+    ),
     (0, 255, 255, 255),
     "expected difference blend of blue over green to produce cyan"
   );

@@ -101,7 +101,12 @@ const TABLE_FIXUP_DEADLINE_STRIDE: usize = 256;
 
 impl TableStructureFixer {
   fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+    value.trim_matches(|c: char| {
+      matches!(
+        c,
+        '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+      )
+    })
   }
 
   fn is_passthrough_child(box_node: &BoxNode) -> bool {
@@ -1917,8 +1922,12 @@ mod tests {
     assert!(!TableStructureFixer::is_table_box(&fixed.children[1]));
     assert!(TableStructureFixer::is_table_box(&fixed.children[2]));
 
-    assert!(TableStructureFixer::validate_table_structure(&fixed.children[0]));
-    assert!(TableStructureFixer::validate_table_structure(&fixed.children[2]));
+    assert!(TableStructureFixer::validate_table_structure(
+      &fixed.children[0]
+    ));
+    assert!(TableStructureFixer::validate_table_structure(
+      &fixed.children[2]
+    ));
   }
 
   #[test]
@@ -1940,8 +1949,10 @@ mod tests {
     assert_eq!(fixed.children.len(), 3);
     assert!(TableStructureFixer::is_table_box(&fixed.children[0]));
     assert!(
-      matches!(fixed.children[1].style.position, Position::Absolute | Position::Fixed)
-        || fixed.children[1].style.running_position.is_some(),
+      matches!(
+        fixed.children[1].style.position,
+        Position::Absolute | Position::Fixed
+      ) || fixed.children[1].style.running_position.is_some(),
       "expected passthrough child to remain a direct sibling"
     );
     assert!(TableStructureFixer::is_table_box(&fixed.children[2]));
@@ -2026,7 +2037,10 @@ mod tests {
     call.footnote_body = Some(Box::new(body));
 
     let fixed = TableStructureFixer::fixup_tree_internals(call).unwrap();
-    let body = fixed.footnote_body.as_deref().expect("footnote body preserved");
+    let body = fixed
+      .footnote_body
+      .as_deref()
+      .expect("footnote body preserved");
     assert_eq!(body.children.len(), 1);
     let table = &body.children[0];
     assert!(TableStructureFixer::is_table_box(table));

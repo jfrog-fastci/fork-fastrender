@@ -65,10 +65,14 @@ fn navigation_cancellation_drops_stale_frame_and_is_silent() {
     match worker.rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::NavigationStarted { tab_id: got, url } if *got == tab_id && url == &first_url => {
+          WorkerToUi::NavigationStarted { tab_id: got, url }
+            if *got == tab_id && url == &first_url =>
+          {
             started_first = true;
           }
-          WorkerToUi::Stage { tab_id: got, .. } if *got == tab_id && started_first && !sent_second => {
+          WorkerToUi::Stage { tab_id: got, .. }
+            if *got == tab_id && started_first && !sent_second =>
+          {
             // Simulate UI-driven cancellation while the worker is blocked in the first navigation.
             cancel.bump_nav();
             worker
@@ -81,13 +85,17 @@ fn navigation_cancellation_drops_stale_frame_and_is_silent() {
               .expect("navigate second");
             sent_second = true;
           }
-          WorkerToUi::NavigationCommitted { tab_id: got, url, .. } if *got == tab_id => {
+          WorkerToUi::NavigationCommitted {
+            tab_id: got, url, ..
+          } if *got == tab_id => {
             last_committed = Some(url.clone());
             if url == &first_url {
               committed_first = true;
             }
           }
-          WorkerToUi::NavigationFailed { tab_id: got, url, .. } if *got == tab_id => {
+          WorkerToUi::NavigationFailed {
+            tab_id: got, url, ..
+          } if *got == tab_id => {
             if url == &first_url {
               saw_failed_first = true;
             }
@@ -216,7 +224,10 @@ fn rapid_scroll_cancels_stale_paint() {
   let mut saw_initial_frame = false;
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    match worker.rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+    match worker
+      .rx
+      .recv_timeout(remaining.min(Duration::from_millis(200)))
+    {
       Ok(msg) => {
         if matches!(msg, WorkerToUi::FrameReady { tab_id: got, .. } if got == tab_id) {
           saw_initial_frame = true;
@@ -245,7 +256,10 @@ fn rapid_scroll_cancels_stale_paint() {
   // the first scroll paint enters the paint pipeline.
   let (paint_stage_tx, paint_stage_rx) = std::sync::mpsc::channel::<StageHeartbeat>();
   let _global_stage_guard = GlobalStageListenerGuard::new(std::sync::Arc::new(move |stage| {
-    if matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize) {
+    if matches!(
+      stage,
+      StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+    ) {
       let _ = paint_stage_tx.send(stage);
     }
   }));
@@ -338,7 +352,10 @@ fn rapid_scroll_cancels_stale_paint() {
     .iter()
     .rev()
     .find_map(|msg| match msg {
-      WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => Some(scroll.clone()),
+      WorkerToUi::ScrollStateUpdated {
+        tab_id: got,
+        scroll,
+      } if *got == tab_id => Some(scroll.clone()),
       _ => None,
     })
     .unwrap_or_else(|| {
@@ -348,7 +365,8 @@ fn rapid_scroll_cancels_stale_paint() {
       )
     });
   assert_eq!(
-    latest.viewport, frame_scroll.viewport,
+    latest.viewport,
+    frame_scroll.viewport,
     "expected FrameReady scroll_state to match ScrollStateUpdated; messages:\n{}",
     support::format_messages(&captured)
   );
@@ -438,14 +456,20 @@ fn bump_paint_during_navigation_does_not_emit_navigation_failed() {
     match worker.rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::NavigationStarted { tab_id: got, url: started_url } if *got == tab_id && started_url == &url => {
+          WorkerToUi::NavigationStarted {
+            tab_id: got,
+            url: started_url,
+          } if *got == tab_id && started_url == &url => {
             started = true;
           }
           WorkerToUi::Stage { tab_id: got, stage }
             if *got == tab_id
               && started
               && !bumped
-              && !matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize) =>
+              && !matches!(
+                stage,
+                StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+              ) =>
           {
             bumped = true;
             cancel.bump_paint();
@@ -485,14 +509,18 @@ fn bump_paint_during_navigation_does_not_emit_navigation_failed() {
     match worker.rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::NavigationCommitted { tab_id: got, url: got_url, .. }
-            if *got == tab_id && got_url == &url =>
-          {
+          WorkerToUi::NavigationCommitted {
+            tab_id: got,
+            url: got_url,
+            ..
+          } if *got == tab_id && got_url == &url => {
             saw_committed = true;
           }
-          WorkerToUi::NavigationFailed { tab_id: got, url: got_url, .. }
-            if *got == tab_id && got_url == &url =>
-          {
+          WorkerToUi::NavigationFailed {
+            tab_id: got,
+            url: got_url,
+            ..
+          } if *got == tab_id && got_url == &url => {
             saw_failed = true;
           }
           WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
@@ -680,12 +708,17 @@ fn canceled_navigation_does_not_mutate_committed_base_url_hints() {
     .expect("Navigate to slow page B");
 
   // Wait until rendering work for B has actually started (Stage heartbeat), then cancel it.
-  let _started = support::recv_for_tab(&worker.rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &slow_b_url)
-  })
+  let _started = support::recv_for_tab(
+    &worker.rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &slow_b_url),
+  )
   .expect("expected NavigationStarted for B");
-  let _stage = support::recv_for_tab(&worker.rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::Stage { .. }))
-    .expect("expected Stage heartbeat for B");
+  let _stage = support::recv_for_tab(&worker.rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::Stage { .. })
+  })
+  .expect("expected Stage heartbeat for B");
   cancel.bump_nav();
 
   // Click the link in Page A. If the cancelled navigation mutated the committed document's base URL

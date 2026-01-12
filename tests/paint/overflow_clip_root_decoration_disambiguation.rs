@@ -86,9 +86,7 @@ fn overflow_clip_only_treats_root_background_as_unclipped_decoration() {
 
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
-  let fragment_tree = renderer
-    .layout_document(&dom, 100, 100)
-    .expect("laid out");
+  let fragment_tree = renderer.layout_document(&dom, 100, 100).expect("laid out");
 
   let display = render_with_backend(
     &fragment_tree,
@@ -124,4 +122,3 @@ fn overflow_clip_only_treats_root_background_as_unclipped_decoration() {
     "legacy and display-list backends should agree on overflow-clip root decoration classification"
   );
 }
-

@@ -14,7 +14,10 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 /// When `base` is `None` (e.g. the document URL is unknown and no `<base href>` has been parsed
 /// yet), relative URLs are preserved (after ASCII whitespace trimming + scheme filtering) so the
 /// caller can defer resolution until a document URL becomes available.
-pub(crate) fn resolve_script_src_at_parse_time(base: Option<&str>, raw_src: &str) -> Option<String> {
+pub(crate) fn resolve_script_src_at_parse_time(
+  base: Option<&str>,
+  raw_src: &str,
+) -> Option<String> {
   let trimmed = trim_ascii_whitespace(raw_src);
   if trimmed.is_empty() {
     return None;
@@ -27,7 +30,9 @@ pub(crate) fn resolve_script_src_at_parse_time(base: Option<&str>, raw_src: &str
     return match base {
       Some(base) => {
         let base_url = Url::parse(base)
-          .or_else(|_| Url::from_file_path(base).map_err(|()| url::ParseError::RelativeUrlWithoutBase))
+          .or_else(|_| {
+            Url::from_file_path(base).map_err(|()| url::ParseError::RelativeUrlWithoutBase)
+          })
           .ok()?;
         let mut url = base_url;
         url.set_fragment(Some(&trimmed[1..]));

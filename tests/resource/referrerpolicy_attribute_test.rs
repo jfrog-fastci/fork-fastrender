@@ -51,7 +51,11 @@ fn parse_path_and_referer(request: &str) -> CapturedRequest {
   // assertions can stay stable across HTTP backends.
   let path = match url::Url::parse(raw_target).ok() {
     Some(url) => url.path().to_string(),
-    None => raw_target.split_once('?').map(|(before, _)| before).unwrap_or(raw_target).to_string(),
+    None => raw_target
+      .split_once('?')
+      .map(|(before, _)| before)
+      .unwrap_or(raw_target)
+      .to_string(),
   };
 
   let mut referer = None;
@@ -96,7 +100,9 @@ impl TestServer {
 
     let handle = thread::spawn(move || {
       let start = Instant::now();
-      while !shutdown_for_thread.load(Ordering::SeqCst) && start.elapsed() < Self::MAX_SERVER_LIFETIME {
+      while !shutdown_for_thread.load(Ordering::SeqCst)
+        && start.elapsed() < Self::MAX_SERVER_LIFETIME
+      {
         match listener.accept() {
           Ok((mut stream, _)) => {
             let request = read_http_request(&mut stream).unwrap_or_default();
@@ -169,7 +175,11 @@ impl TestServer {
       .lock()
       .map(|guard| guard.iter().filter(|req| predicate(req)).count())
       .unwrap_or(0);
-    assert!(matches > 0, "{context}\n\nCaptured requests:\n{:#?}", self.captured());
+    assert!(
+      matches > 0,
+      "{context}\n\nCaptured requests:\n{:#?}",
+      self.captured()
+    );
   }
 
   fn shutdown_and_join(mut self) -> Vec<CapturedRequest> {
@@ -184,11 +194,11 @@ impl TestServer {
 fn tiny_png() -> Vec<u8> {
   // 1x1 RGB PNG.
   vec![
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
-    0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
-    0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08,
-    0xd7, 0x63, 0xf8, 0xff, 0xff, 0x3f, 0x00, 0x05, 0xfe, 0x02, 0xfe, 0xdc, 0xcc, 0x59,
-    0xe7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xff, 0xff, 0x3f,
+    0x00, 0x05, 0xfe, 0x02, 0xfe, 0xdc, 0xcc, 0x59, 0xe7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
   ]
 }
 
@@ -215,7 +225,11 @@ fn img_referrerpolicy_no_referrer_omits_referer_header() {
   let mut renderer =
     FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher)).unwrap();
   renderer
-    .render_html_with_stylesheets(html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .unwrap();
 
   server.wait_for_request(
@@ -258,7 +272,11 @@ fn img_referrerpolicy_overrides_document_referrer_policy() {
   let mut renderer =
     FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher)).unwrap();
   renderer
-    .render_html_with_stylesheets(html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .unwrap();
 
   server.wait_for_request(
@@ -282,7 +300,10 @@ fn iframe_referrerpolicy_overrides_document_referrer_policy() {
   let Some(server) = TestServer::start(
     "iframe_referrerpolicy_overrides_document_referrer_policy",
     |path| match path {
-      "/frame.html" => Some((b"<!doctype html><html><body>frame</body></html>".to_vec(), "text/html")),
+      "/frame.html" => Some((
+        b"<!doctype html><html><body>frame</body></html>".to_vec(),
+        "text/html",
+      )),
       _ => None,
     },
   ) else {
@@ -302,7 +323,11 @@ fn iframe_referrerpolicy_overrides_document_referrer_policy() {
   let mut renderer =
     FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher)).unwrap();
   renderer
-    .render_html_with_stylesheets(html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .unwrap();
 
   server.wait_for_request(
@@ -311,7 +336,10 @@ fn iframe_referrerpolicy_overrides_document_referrer_policy() {
   );
   let expected_origin = server.origin();
   let captured = server.shutdown_and_join();
-  let frame_requests: Vec<_> = captured.iter().filter(|r| r.path == "/frame.html").collect();
+  let frame_requests: Vec<_> = captured
+    .iter()
+    .filter(|r| r.path == "/frame.html")
+    .collect();
   assert!(
     !frame_requests.is_empty(),
     "expected iframe navigation request, got: {captured:?}"
@@ -325,7 +353,8 @@ fn iframe_referrerpolicy_overrides_document_referrer_policy() {
 fn iframe_src_referrerpolicy_applies_to_iframe_subresource_requests() {
   let Some(server) = TestServer::start(
     "iframe_src_referrerpolicy_applies_to_iframe_subresource_requests",
-    |path| match path {
+    |path| {
+      match path {
       "/frame.html" => Some((
         b"<!doctype html><html><head><style>html, body { margin: 0; padding: 0; }</style></head><body><img src='/img.png' style='width: 10px; height: 10px'></body></html>"
           .to_vec(),
@@ -333,6 +362,7 @@ fn iframe_src_referrerpolicy_applies_to_iframe_subresource_requests() {
       )),
       "/img.png" => Some((tiny_png(), "image/png")),
       _ => None,
+    }
     },
   ) else {
     return;
@@ -351,7 +381,11 @@ fn iframe_src_referrerpolicy_applies_to_iframe_subresource_requests() {
   let mut renderer =
     FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher)).unwrap();
   renderer
-    .render_html_with_stylesheets(html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .unwrap();
 
   server.wait_for_request(
@@ -398,7 +432,11 @@ fn link_stylesheet_referrerpolicy_overrides_document_policy_and_applies_to_impor
   let mut renderer =
     FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher)).unwrap();
   renderer
-    .render_html_with_stylesheets(html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .unwrap();
 
   server.wait_for_request(
@@ -452,7 +490,11 @@ fn iframe_srcdoc_referrerpolicy_applies_to_srcdoc_subresource_requests() {
   let mut renderer =
     FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher)).unwrap();
   renderer
-    .render_html_with_stylesheets(html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .unwrap();
 
   server.wait_for_request(

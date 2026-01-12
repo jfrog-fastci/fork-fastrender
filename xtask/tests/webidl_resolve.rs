@@ -246,7 +246,10 @@ fn smoke_resolve_dom_url_fetch() {
   let loaded = load_combined_webidl(repo_root, &sources).unwrap();
   if !loaded.missing_sources.is_empty() {
     for (label, path) in &loaded.missing_sources {
-      eprintln!("skipping WebIDL smoke test: missing {label} submodule at {}", path.display());
+      eprintln!(
+        "skipping WebIDL smoke test: missing {label} submodule at {}",
+        path.display()
+      );
     }
     return;
   }
@@ -291,7 +294,10 @@ fn smoke_resolve_whatwg_html() {
   let loaded = load_combined_webidl(repo_root, &sources).unwrap();
   if !loaded.missing_sources.is_empty() {
     for (label, path) in &loaded.missing_sources {
-      eprintln!("skipping WebIDL smoke test: missing {label} source at {}", path.display());
+      eprintln!(
+        "skipping WebIDL smoke test: missing {label} source at {}",
+        path.display()
+      );
     }
     return;
   }
@@ -341,7 +347,9 @@ fn smoke_resolve_whatwg_html() {
   // Regression coverage: ensure later-file globals are present. These used to be missing when the
   // HTML extractor stopped scanning early (e.g. due to malformed tags / nested `<code>` handling).
   assert!(
-    resolved.interface_mixins.contains_key("WindowOrWorkerGlobalScope"),
+    resolved
+      .interface_mixins
+      .contains_key("WindowOrWorkerGlobalScope"),
     "expected WindowOrWorkerGlobalScope interface mixin to be extracted+parsed"
   );
   assert!(
@@ -357,8 +365,11 @@ fn smoke_resolve_whatwg_html() {
     Some("EventTarget"),
     "expected Window to inherit EventTarget"
   );
-  let window_member_names: std::collections::BTreeSet<&str> =
-    window.members.iter().filter_map(|m| m.name.as_deref()).collect();
+  let window_member_names: std::collections::BTreeSet<&str> = window
+    .members
+    .iter()
+    .filter_map(|m| m.name.as_deref())
+    .collect();
   for required in [
     "setTimeout",
     "clearTimeout",
@@ -403,7 +414,9 @@ fn whatwg_html_global_mixin_windoworworkerglobalscope_is_present() {
   let parsed = parse_webidl(&loaded.combined_idl).unwrap();
   let resolved = resolve_webidl_world(&parsed);
   assert!(
-    resolved.interface_mixins.contains_key("WindowOrWorkerGlobalScope"),
+    resolved
+      .interface_mixins
+      .contains_key("WindowOrWorkerGlobalScope"),
     "expected WindowOrWorkerGlobalScope interface mixin to be present in resolved world"
   );
 }
@@ -436,7 +449,10 @@ fn smoke_resolve_dom_html_url_fetch() {
   let loaded = load_combined_webidl(repo_root, &sources).unwrap();
   if !loaded.missing_sources.is_empty() {
     for (label, path) in &loaded.missing_sources {
-      eprintln!("skipping WebIDL smoke test: missing {label} source at {}", path.display());
+      eprintln!(
+        "skipping WebIDL smoke test: missing {label} source at {}",
+        path.display()
+      );
     }
     return;
   }
@@ -538,8 +554,14 @@ fn typedef_resolution_expands_chains_and_detects_cycles() {
   let parsed = parse_webidl(idl).unwrap();
   let resolved = resolve_webidl_world(&parsed);
 
-  assert_eq!(resolved.resolve_typedef("A").unwrap(), IdlType::Builtin(BuiltinType::Long));
-  assert_eq!(resolved.resolve_typedef("B").unwrap(), IdlType::Builtin(BuiltinType::Long));
+  assert_eq!(
+    resolved.resolve_typedef("A").unwrap(),
+    IdlType::Builtin(BuiltinType::Long)
+  );
+  assert_eq!(
+    resolved.resolve_typedef("B").unwrap(),
+    IdlType::Builtin(BuiltinType::Long)
+  );
 
   assert_eq!(
     resolved.resolve_typedef("SeqB").unwrap(),
@@ -573,7 +595,11 @@ fn preserves_callback_interface_flag() {
     "expected callback interface flag to be preserved"
   );
   assert!(
-    !resolved.interfaces.get("Foo").expect("Foo resolved").callback,
+    !resolved
+      .interfaces
+      .get("Foo")
+      .expect("Foo resolved")
+      .callback,
     "expected non-callback interface to default to false"
   );
 }

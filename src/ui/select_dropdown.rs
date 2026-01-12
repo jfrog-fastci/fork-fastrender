@@ -41,7 +41,11 @@ pub fn next_enabled_option_item_index(control: &SelectControl, key: KeyAction) -
     .selected
     .last()
     .copied()
-    .and_then(|selected_item_idx| options.iter().position(|(idx, _)| *idx == selected_item_idx));
+    .and_then(|selected_item_idx| {
+      options
+        .iter()
+        .position(|(idx, _)| *idx == selected_item_idx)
+    });
 
   let mut first_enabled: Option<usize> = None;
   let mut last_enabled: Option<usize> = None;
@@ -99,7 +103,10 @@ pub fn next_enabled_option_item_index(control: &SelectControl, key: KeyAction) -
 ///
 /// If the selected item refers to a disabled option, this returns `None` (a disabled option is not
 /// user-selectable).
-pub fn selected_choice(select_node_id: usize, control: &SelectControl) -> Option<SelectDropdownChoice> {
+pub fn selected_choice(
+  select_node_id: usize,
+  control: &SelectControl,
+) -> Option<SelectDropdownChoice> {
   for &item_index in control.selected.iter().rev() {
     let Some(item) = control.items.get(item_index) else {
       continue;
@@ -107,9 +114,7 @@ pub fn selected_choice(select_node_id: usize, control: &SelectControl) -> Option
     match item {
       SelectItem::OptGroupLabel { .. } => {}
       SelectItem::Option {
-        disabled,
-        node_id,
-        ..
+        disabled, node_id, ..
       } => {
         if !*disabled {
           return Some(SelectDropdownChoice::new(select_node_id, *node_id));
@@ -166,9 +171,7 @@ impl SelectDropdown {
     match item {
       SelectItem::OptGroupLabel { .. } => None,
       SelectItem::Option {
-        disabled,
-        node_id,
-        ..
+        disabled, node_id, ..
       } => {
         if *disabled {
           return None;
@@ -219,42 +222,49 @@ impl SelectDropdown {
           }
         }
 
-        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-          for (idx, item) in open.control.items.iter().enumerate() {
-            match item {
-              SelectItem::OptGroupLabel { label, disabled } => {
-                ui.add_space(4.0);
-                let text = egui::RichText::new(label).strong();
-                if *disabled {
-                  ui.add_enabled(false, egui::Label::new(text));
-                } else {
-                  ui.label(text);
+        egui::ScrollArea::vertical()
+          .max_height(240.0)
+          .show(ui, |ui| {
+            for (idx, item) in open.control.items.iter().enumerate() {
+              match item {
+                SelectItem::OptGroupLabel { label, disabled } => {
+                  ui.add_space(4.0);
+                  let text = egui::RichText::new(label).strong();
+                  if *disabled {
+                    ui.add_enabled(false, egui::Label::new(text));
+                  } else {
+                    ui.label(text);
+                  }
+                  ui.add_space(2.0);
                 }
-                ui.add_space(2.0);
-              }
-              SelectItem::Option {
-                label,
-                value,
-                selected,
-                disabled,
-                in_optgroup,
-                ..
-              } => {
-                let base = if label.trim().is_empty() { value } else { label };
-                let text = if *in_optgroup {
-                  format!("  {base}")
-                } else {
-                  base.to_string()
-                };
+                SelectItem::Option {
+                  label,
+                  value,
+                  selected,
+                  disabled,
+                  in_optgroup,
+                  ..
+                } => {
+                  let base = if label.trim().is_empty() {
+                    value
+                  } else {
+                    label
+                  };
+                  let text = if *in_optgroup {
+                    format!("  {base}")
+                  } else {
+                    base.to_string()
+                  };
 
-                let response = ui.add_enabled(!*disabled, egui::SelectableLabel::new(*selected, text));
-                if response.clicked() {
-                  choice = self.choose_item(idx);
+                  let response =
+                    ui.add_enabled(!*disabled, egui::SelectableLabel::new(*selected, text));
+                  if response.clicked() {
+                    choice = self.choose_item(idx);
+                  }
                 }
               }
             }
-          }
-        });
+          });
       });
     });
 

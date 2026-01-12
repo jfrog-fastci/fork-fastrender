@@ -3,21 +3,30 @@ use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::float::Float;
 use fastrender::style::values::Length;
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
 use fastrender::FormattingContext;
 use fastrender::FormattingContextType;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let mut stack = vec![fragment];
   while let Some(node) = stack.pop() {
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -51,7 +60,8 @@ fn collapsible_whitespace_only_buffer_does_not_push_floats_down() {
   float_style.height = Some(Length::px(10.0));
   let float_style = Arc::new(float_style);
 
-  let mut float_a = BoxNode::new_inline_block(float_style.clone(), FormattingContextType::Block, vec![]);
+  let mut float_a =
+    BoxNode::new_inline_block(float_style.clone(), FormattingContextType::Block, vec![]);
   float_a.id = 1;
   let mut float_b = BoxNode::new_inline_block(float_style, FormattingContextType::Block, vec![]);
   float_b.id = 2;
@@ -59,12 +69,20 @@ fn collapsible_whitespace_only_buffer_does_not_push_floats_down() {
   let root = BoxNode::new_block(
     Arc::new(root_style),
     FormattingContextType::Block,
-    vec![whitespace.clone(), float_a, whitespace.clone(), float_b, whitespace],
+    vec![
+      whitespace.clone(),
+      float_a,
+      whitespace.clone(),
+      float_b,
+      whitespace,
+    ],
   );
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let float_a_frag = find_fragment_by_box_id(&fragment, 1).expect("float A fragment should exist");
   let float_b_frag = find_fragment_by_box_id(&fragment, 2).expect("float B fragment should exist");

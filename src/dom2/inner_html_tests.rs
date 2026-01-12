@@ -26,7 +26,9 @@ fn find_first_element_by_tag(doc: &Document, tag_name: &str) -> NodeId {
     .iter()
     .enumerate()
     .find_map(|(idx, node)| match &node.kind {
-      NodeKind::Element { tag_name: t, .. } if t.eq_ignore_ascii_case(tag_name) => Some(NodeId(idx)),
+      NodeKind::Element { tag_name: t, .. } if t.eq_ignore_ascii_case(tag_name) => {
+        Some(NodeId(idx))
+      }
       _ => None,
     })
     .unwrap_or_else(|| panic!("missing <{tag_name}> element"))
@@ -78,7 +80,10 @@ fn outer_html_getter_serializes_element() {
   let doc = Document::from_renderer_dom(&root);
   let div = find_first_element_by_tag(&doc, "div");
 
-  assert_eq!(doc.get_outer_html(div).unwrap(), "<div><span>hi</span></div>");
+  assert_eq!(
+    doc.get_outer_html(div).unwrap(),
+    "<div><span>hi</span></div>"
+  );
 }
 
 #[test]
@@ -193,12 +198,14 @@ fn outer_html_setter_replaces_node_in_parent_children() {
   let div = find_element_by_id(&doc, "root");
   let span = find_element_by_id(&doc, "child");
 
-  doc
-    .set_outer_html(span, "<p>one</p><p>two</p>")
-    .unwrap();
+  doc.set_outer_html(span, "<p>one</p><p>two</p>").unwrap();
 
   assert_eq!(doc.get_inner_html(div).unwrap(), "<p>one</p><p>two</p>");
-  assert_eq!(doc.node(span).parent, None, "replaced node must be detached");
+  assert_eq!(
+    doc.node(span).parent,
+    None,
+    "replaced node must be detached"
+  );
 }
 
 #[test]
@@ -262,9 +269,7 @@ fn outer_html_setter_parent_document_fragment_parses_with_body_context() {
   //
   // (In contrast, parsing the same string in a `<table>` context would yield a `<tbody>`/`<tr>`
   // structure.)
-  doc
-    .set_outer_html(table, "<tr><td>x</td></tr>")
-    .unwrap();
+  doc.set_outer_html(table, "<tr><td>x</td></tr>").unwrap();
 
   let children = doc.node(frag).children.clone();
   assert_eq!(children.len(), 1);
@@ -290,7 +295,11 @@ fn inner_html_setter_on_template_replaces_template_contents() {
     .set_inner_html(template, "<span>new</span>")
     .expect("set_inner_html");
 
-  assert_eq!(doc.node(old_child).parent, None, "old contents should detach");
+  assert_eq!(
+    doc.node(old_child).parent,
+    None,
+    "old contents should detach"
+  );
   let children = doc.children(template).unwrap();
   assert_eq!(children.len(), 1, "template contents should be replaced");
   assert!(
@@ -688,8 +697,14 @@ fn insert_adjacent_element_inserts_afterbegin_and_beforeend() {
   let i_text = doc.create_text("last");
   doc.append_child(i, i_text).unwrap();
 
-  assert_eq!(doc.insert_adjacent_element(div, "afterbegin", b), Ok(Some(b)));
-  assert_eq!(doc.insert_adjacent_element(div, "beforeend", i), Ok(Some(i)));
+  assert_eq!(
+    doc.insert_adjacent_element(div, "afterbegin", b),
+    Ok(Some(b))
+  );
+  assert_eq!(
+    doc.insert_adjacent_element(div, "beforeend", i),
+    Ok(Some(i))
+  );
 
   assert_eq!(doc.inner_html(div).unwrap(), "<b>first</b><i>last</i>");
 }
@@ -711,7 +726,10 @@ fn insert_adjacent_element_returns_none_when_element_has_no_parent_for_beforebeg
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let div = doc.create_element("div", HTML_NAMESPACE);
   let span = doc.create_element("span", HTML_NAMESPACE);
-  assert_eq!(doc.insert_adjacent_element(div, "beforebegin", span), Ok(None));
+  assert_eq!(
+    doc.insert_adjacent_element(div, "beforebegin", span),
+    Ok(None)
+  );
 }
 
 #[test]
@@ -770,13 +788,19 @@ fn insert_adjacent_element_keeps_shadow_root_first_child_for_afterbegin() {
   let b_text = doc.create_text("new");
   doc.append_child(b, b_text).unwrap();
 
-  assert_eq!(doc.insert_adjacent_element(host, "afterbegin", b), Ok(Some(b)));
+  assert_eq!(
+    doc.insert_adjacent_element(host, "afterbegin", b),
+    Ok(Some(b))
+  );
   assert_eq!(
     doc.node(host).children.first().copied(),
     Some(shadow_root),
     "shadow root should remain first in host.children"
   );
-  assert_eq!(doc.inner_html(host).unwrap(), r#"<b>new</b><p id="light">light</p>"#);
+  assert_eq!(
+    doc.inner_html(host).unwrap(),
+    r#"<b>new</b><p id="light">light</p>"#
+  );
 }
 
 #[test]
@@ -818,13 +842,18 @@ fn insert_adjacent_html_keeps_shadow_root_first_child_for_afterbegin() {
     .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
     .expect("expected a ShadowRoot child under the host element");
 
-  doc.insert_adjacent_html(host, "afterbegin", "<b>new</b>").unwrap();
+  doc
+    .insert_adjacent_html(host, "afterbegin", "<b>new</b>")
+    .unwrap();
   assert_eq!(
     doc.node(host).children.first().copied(),
     Some(shadow_root),
     "shadow root should remain first in host.children"
   );
-  assert_eq!(doc.inner_html(host).unwrap(), r#"<b>new</b><p id="light">light</p>"#);
+  assert_eq!(
+    doc.inner_html(host).unwrap(),
+    r#"<b>new</b><p id="light">light</p>"#
+  );
 }
 
 #[test]
@@ -851,11 +880,14 @@ fn set_inner_html_preserves_shadow_root() {
     .copied()
     .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
     .expect("expected a ShadowRoot child under the host element");
-  let shadow_span =
-    find_descendant_by_id(&doc, shadow_root, "shadow").expect("expected <span id=shadow> inside the shadow root");
+  let shadow_span = find_descendant_by_id(&doc, shadow_root, "shadow")
+    .expect("expected <span id=shadow> inside the shadow root");
 
   // ShadowRoot has no outerHTML in the web platform.
-  assert_eq!(doc.outer_html(shadow_root), Err(super::DomError::InvalidNodeType));
+  assert_eq!(
+    doc.outer_html(shadow_root),
+    Err(super::DomError::InvalidNodeType)
+  );
 
   doc.set_inner_html(host, "<b>new</b>").unwrap();
 
@@ -899,14 +931,17 @@ fn inner_html_mathml_annotation_xml_context_uses_encoding_attribute() {
 
   for id in [noenc, enc] {
     match &doc.node(id).kind {
-      NodeKind::Element { tag_name, namespace, .. } => {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
         assert!(
           tag_name.eq_ignore_ascii_case("annotation-xml"),
           "expected annotation-xml element, got <{tag_name}>"
         );
         assert_eq!(
-          namespace,
-          MATHML_NAMESPACE,
+          namespace, MATHML_NAMESPACE,
           "annotation-xml should be in the MathML namespace"
         );
       }
@@ -918,17 +953,17 @@ fn inner_html_mathml_annotation_xml_context_uses_encoding_attribute() {
   doc.set_inner_html(noenc, fragment).unwrap();
   doc.set_inner_html(enc, fragment).unwrap();
 
-  fn assert_single_child_namespace(
-    doc: &Document,
-    parent: NodeId,
-    expected_namespace: &str,
-  ) {
+  fn assert_single_child_namespace(doc: &Document, parent: NodeId, expected_namespace: &str) {
     let children = doc.node(parent).children.clone();
     assert_eq!(children.len(), 1, "expected a single child node");
 
     let child = children[0];
     match &doc.node(child).kind {
-      NodeKind::Element { tag_name, namespace, .. } => {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
         assert!(
           tag_name.eq_ignore_ascii_case("malignmark"),
           "expected <malignmark> element, got <{tag_name}>"

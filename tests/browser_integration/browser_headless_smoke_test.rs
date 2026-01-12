@@ -5,8 +5,7 @@ use std::process::Command;
 #[test]
 fn browser_headless_smoke_mode_runs_and_reports_success() {
   let _lock = super::stage_listener_test_lock();
-  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("scripts/run_limited.sh");
+  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
   let output = Command::new("bash")
     .arg(run_limited)
     .args(["--as", "64G", "--"])

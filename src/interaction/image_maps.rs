@@ -3,7 +3,12 @@ use crate::geometry::{Point, Rect};
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 
 fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+  value.trim_matches(|c: char| {
+    matches!(
+      c,
+      '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+    )
+  })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,8 +154,8 @@ fn point_in_polygon_even_odd(p: Point, points: &[Point]) -> bool {
       return true;
     }
 
-    let intersects = (a.y > p.y) != (b.y > p.y)
-      && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x;
+    let intersects =
+      (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x;
     if intersects {
       inside = !inside;
     }
@@ -162,7 +167,9 @@ fn area_contains_point(shape: &AreaShape, point: Point) -> bool {
   match shape {
     AreaShape::Empty => false,
     AreaShape::Default => true,
-    AreaShape::Rect { x1, y1, x2, y2 } => point.x >= *x1 && point.x <= *x2 && point.y >= *y1 && point.y <= *y2,
+    AreaShape::Rect { x1, y1, x2, y2 } => {
+      point.x >= *x1 && point.x <= *x2 && point.y >= *y1 && point.y <= *y2
+    }
     AreaShape::Circle { x, y, r } => {
       let dx = point.x - *x;
       let dy = point.y - *y;
@@ -262,10 +269,16 @@ pub fn local_point_in_fragment(
   page_point: Point,
 ) -> Option<Point> {
   let bounds = absolute_bounds_for_fragment(fragment_tree, fragment)?;
-  Some(Point::new(page_point.x - bounds.x(), page_point.y - bounds.y()))
+  Some(Point::new(
+    page_point.x - bounds.x(),
+    page_point.y - bounds.y(),
+  ))
 }
 
-pub fn first_img_referencing_map<'a>(dom_root: &'a DomNode, map_ptr: *const DomNode) -> Option<&'a DomNode> {
+pub fn first_img_referencing_map<'a>(
+  dom_root: &'a DomNode,
+  map_ptr: *const DomNode,
+) -> Option<&'a DomNode> {
   let mut stack: Vec<&DomNode> = vec![dom_root];
   while let Some(node) = stack.pop() {
     if node

@@ -73,4 +73,3 @@ fn text_emphasis_position_ignores_left_right_in_sideways_writing_mode() {
     "expected left/right to be ignored in sideways writing modes, got left={left} right={right}"
   );
 }
-

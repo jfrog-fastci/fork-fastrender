@@ -4,7 +4,9 @@ use crate::js::dom_host::DomHost;
 use crate::js::orchestrator::{CurrentScriptHost, CurrentScriptStateHandle};
 use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::js::script_scheduler::ScriptId;
-use crate::js::streaming_pipeline::{ClassicScriptPipeline, ClassicScriptPipelineHost, ParseBudget};
+use crate::js::streaming_pipeline::{
+  ClassicScriptPipeline, ClassicScriptPipelineHost, ParseBudget,
+};
 use crate::js::{EventLoop, ScriptType};
 use crate::resource::{
   ensure_script_mime_sane, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,

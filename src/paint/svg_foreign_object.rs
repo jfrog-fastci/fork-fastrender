@@ -7,17 +7,19 @@
 
 use crate::api::layout_html_with_shared_resources;
 use crate::fallible_vec_writer::FallibleVecWriter;
-use crate::image_output::{encode_image, OutputFormat};
 use crate::image_loader::ImageCache;
+use crate::image_output::{encode_image, OutputFormat};
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::paint::painter::{
   paint_backend_from_env, paint_tree_with_resources_scaled_offset_backend_with_iframe_depth,
 };
 use crate::resource::data_url;
 use crate::scroll::ScrollState;
-use crate::svg::{parse_svg_view_box, svg_markup_for_roxmltree, SvgMeetOrSlice, SvgPreserveAspectRatio};
 use crate::style::color::Rgba;
 use crate::style::types::{Direction, FontStyle as CssFontStyle, Overflow, WritingMode};
+use crate::svg::{
+  parse_svg_view_box, svg_markup_for_roxmltree, SvgMeetOrSlice, SvgPreserveAspectRatio,
+};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::fragment_tree::FragmentTree;
@@ -210,7 +212,9 @@ fn parse_foreign_object_opacity(attrs: &[(String, String)]) -> f32 {
           continue;
         };
         if trim_ascii_whitespace_html_css(prop).eq_ignore_ascii_case("opacity") {
-          opacity = trim_ascii_whitespace_html_css(prop_value).parse::<f32>().ok();
+          opacity = trim_ascii_whitespace_html_css(prop_value)
+            .parse::<f32>()
+            .ok();
         }
       }
     }
@@ -260,8 +264,8 @@ pub(crate) fn extract_foreign_objects_from_svg_markup(
   let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     roxmltree::Document::parse(svg_for_parse.as_ref())
   }))
-    .ok()
-    .and_then(|doc| doc.ok())?;
+  .ok()
+  .and_then(|doc| doc.ok())?;
   let mut nodes: Vec<roxmltree::Node<'_, '_>> = doc
     .descendants()
     .filter(|node| {
@@ -379,10 +383,11 @@ pub(crate) fn inline_svg_foreign_objects_from_markup(
     return Some(placeholder_svg);
   }
 
-  let svg_doc =
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(&placeholder_svg)))
-    .ok()
-    .and_then(|doc| doc.ok());
+  let svg_doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(&placeholder_svg)
+  }))
+  .ok()
+  .and_then(|doc| doc.ok());
 
   let default_style = Arc::new(crate::style::ComputedStyle::default());
 
@@ -425,7 +430,8 @@ pub(crate) fn inline_svg_foreign_objects_from_markup(
       overflow_y,
     };
 
-    let transform_scale = foreign_object_transform_scale(svg_doc.as_ref(), &info.placeholder, &info.attributes);
+    let transform_scale =
+      foreign_object_transform_scale(svg_doc.as_ref(), &info.placeholder, &info.attributes);
     let replacement = (|| {
       let (data_url, image_bounds) = render_foreign_object_data_url(
         &info,
@@ -458,11 +464,12 @@ pub(crate) fn foreign_object_html_device_pixel_ratio(
   intrinsic_width_css: f32,
   intrinsic_height_css: f32,
 ) -> f32 {
-  let outer_device_pixel_ratio = if outer_device_pixel_ratio.is_finite() && outer_device_pixel_ratio > 0.0 {
-    outer_device_pixel_ratio
-  } else {
-    1.0
-  };
+  let outer_device_pixel_ratio =
+    if outer_device_pixel_ratio.is_finite() && outer_device_pixel_ratio > 0.0 {
+      outer_device_pixel_ratio
+    } else {
+      1.0
+    };
   if !(rendered_width_css.is_finite()
     && rendered_height_css.is_finite()
     && rendered_width_css > 0.0
@@ -547,9 +554,7 @@ fn parse_svg_transform_attribute(value: &str) -> Option<Transform> {
       svgtypes::TransformListToken::Translate { tx, ty } => {
         Transform::from_translate(tx as f32, ty as f32)
       }
-      svgtypes::TransformListToken::Scale { sx, sy } => {
-        Transform::from_scale(sx as f32, sy as f32)
-      }
+      svgtypes::TransformListToken::Scale { sx, sy } => Transform::from_scale(sx as f32, sy as f32),
       svgtypes::TransformListToken::Rotate { angle } => Transform::from_rotate(angle as f32),
       svgtypes::TransformListToken::SkewX { angle } => {
         let tan = (angle as f32).to_radians().tan();
@@ -614,9 +619,12 @@ fn foreign_object_transform_scale(
     let needle = trim_xml_whitespace(needle);
 
     if !needle.is_empty() {
-      let comment = doc
-        .descendants()
-        .find(|node| node.is_comment() && node.text().is_some_and(|t| trim_xml_whitespace(t) == needle));
+      let comment = doc.descendants().find(|node| {
+        node.is_comment()
+          && node
+            .text()
+            .is_some_and(|t| trim_xml_whitespace(t) == needle)
+      });
       if let Some(comment) = comment {
         let mut current = comment.parent();
         while let Some(node) = current {
@@ -631,7 +639,9 @@ fn foreign_object_transform_scale(
                 let viewport_height = node
                   .attribute("height")
                   .and_then(parse_svg_px_or_unitless_number);
-                if let (Some(viewport_width), Some(viewport_height)) = (viewport_width, viewport_height) {
+                if let (Some(viewport_width), Some(viewport_height)) =
+                  (viewport_width, viewport_height)
+                {
                   let sx = viewport_width / view_box.width;
                   let sy = viewport_height / view_box.height;
                   if sx.is_finite() && sy.is_finite() && sx > 0.0 && sy > 0.0 {
@@ -686,7 +696,11 @@ fn foreign_object_transform_scale(
   (transform_scale_factor(combined) * view_box_scale).max(1.0)
 }
 
-fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacement: &str) -> Option<()> {
+fn replace_placeholder_or_insert(
+  svg: &mut String,
+  placeholder: &str,
+  replacement: &str,
+) -> Option<()> {
   if let Some(pos) = svg.find(placeholder) {
     let end = pos + placeholder.len();
     if replacement.len() > placeholder.len() {
@@ -761,8 +775,8 @@ pub(crate) fn inline_svg_with_foreign_objects(
   let svg_doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     roxmltree::Document::parse(svg_for_parse.as_ref())
   }))
-    .ok()
-    .and_then(|doc| doc.ok());
+  .ok()
+  .and_then(|doc| doc.ok());
   let mut out_svg = String::new();
   out_svg.try_reserve_exact(svg.len()).ok()?;
   out_svg.push_str(svg);
@@ -772,7 +786,8 @@ pub(crate) fn inline_svg_with_foreign_objects(
     } else {
       foreign.placeholder.clone()
     };
-    let transform_scale = foreign_object_transform_scale(svg_doc.as_ref(), &placeholder, &foreign.attributes);
+    let transform_scale =
+      foreign_object_transform_scale(svg_doc.as_ref(), &placeholder, &foreign.attributes);
     let (data_url, image_bounds) = render_foreign_object_data_url(
       foreign,
       shared_css,
@@ -834,7 +849,11 @@ pub(crate) fn foreign_object_image_tag(
     Ok(())
   }
 
-  fn write_attr_value<W: std::io::Write>(out: &mut W, name: &str, value: &str) -> std::io::Result<()> {
+  fn write_attr_value<W: std::io::Write>(
+    out: &mut W,
+    name: &str,
+    value: &str,
+  ) -> std::io::Result<()> {
     out.write_all(b" ")?;
     out.write_all(name.as_bytes())?;
     out.write_all(b"=\"")?;
@@ -866,8 +885,8 @@ pub(crate) fn foreign_object_image_tag(
   if let Some(value) = clip_path {
     max_bytes = max_bytes.saturating_add(escape_upper_bound(value));
   }
-  let clip_path_id =
-    (info.overflow_x != Overflow::Visible || info.overflow_y != Overflow::Visible).then(|| foreign_object_clip_path_id(info, idx));
+  let clip_path_id = (info.overflow_x != Overflow::Visible || info.overflow_y != Overflow::Visible)
+    .then(|| foreign_object_clip_path_id(info, idx));
   if let Some(id) = clip_path_id.as_ref() {
     max_bytes = max_bytes.saturating_add(id.len().saturating_mul(2));
   }
@@ -901,9 +920,7 @@ pub(crate) fn foreign_object_image_tag(
       write_attr_value(&mut out, name, value).ok()?;
     }
 
-    out
-      .write_all(b" preserveAspectRatio=\"none\"")
-      .ok()?;
+    out.write_all(b" preserveAspectRatio=\"none\"").ok()?;
     write_attr_value(&mut out, "href", data_url).ok()?;
     out.write_all(b"/>").ok()?;
     return String::from_utf8(out.into_inner()).ok();
@@ -978,9 +995,7 @@ pub(crate) fn foreign_object_image_tag(
     write_attr_value(&mut out, name, value).ok()?;
   }
 
-  out
-    .write_all(b" preserveAspectRatio=\"none\"")
-    .ok()?;
+  out.write_all(b" preserveAspectRatio=\"none\"").ok()?;
   write_attr_value(&mut out, "href", data_url).ok()?;
   out.write_all(b"/>").ok()?;
   out.write_all(b"</g>").ok()?;
@@ -1013,14 +1028,12 @@ fn render_foreign_object_data_url(
   // - document-level shared CSS (e.g. `body { background: white }`) cannot override it
   // - semi-transparent colors are only composited once
   let background = Rgba::TRANSPARENT;
-  let context = image_cache
-    .resource_context()
-    .map(|mut ctx| {
-      if ctx.iframe_depth_remaining.is_none() {
-        ctx.iframe_depth_remaining = Some(max_iframe_depth);
-      }
-      ctx
-    });
+  let context = image_cache.resource_context().map(|mut ctx| {
+    if ctx.iframe_depth_remaining.is_none() {
+      ctx.iframe_depth_remaining = Some(max_iframe_depth);
+    }
+    ctx
+  });
   let policy = context
     .as_ref()
     .map(|c| c.policy.clone())
@@ -1293,7 +1306,8 @@ fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {
 #[cfg(test)]
 mod tests {
   use super::{
-    foreign_object_html_device_pixel_ratio, foreign_object_image_tag, pixmap_to_data_url, replace_placeholder_or_insert,
+    foreign_object_html_device_pixel_ratio, foreign_object_image_tag, pixmap_to_data_url,
+    replace_placeholder_or_insert,
   };
   use base64::Engine;
 
@@ -1380,8 +1394,7 @@ mod tests {
       overflow_y: Overflow::Visible,
     };
 
-    let shared_css =
-      "body{color:red;}/*</STYLE><img src=\"https://example.com/evil.png\">*/";
+    let shared_css = "body{color:red;}/*</STYLE><img src=\"https://example.com/evil.png\">*/";
     let doc = super::build_foreign_object_document(&foreign, shared_css, 1, 1).expect("doc");
 
     assert_eq!(
@@ -1456,16 +1469,9 @@ mod tests {
     let font_ctx = FontContext::new();
     let image_cache = ImageCache::new();
     let svg = "<svg><!--FASTRENDER_FOREIGN_OBJECT_0--></svg>";
-    let resolved = super::inline_svg_with_foreign_objects(
-      svg,
-      &[foreign],
-      "",
-      &font_ctx,
-      &image_cache,
-      2.0,
-      0,
-    )
-    .expect("resolved svg");
+    let resolved =
+      super::inline_svg_with_foreign_objects(svg, &[foreign], "", &font_ctx, &image_cache, 2.0, 0)
+        .expect("resolved svg");
 
     let href_prefix = "href=\"data:image/png;base64,";
     let href_start = resolved.find(href_prefix).expect("href attribute") + href_prefix.len();
@@ -1474,8 +1480,8 @@ mod tests {
     let png = base64::engine::general_purpose::STANDARD
       .decode(encoded)
       .expect("decode base64");
-    let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
-      .expect("decode png");
+    let decoded =
+      image::load_from_memory_with_format(&png, image::ImageFormat::Png).expect("decode png");
     assert_eq!(decoded.width(), 2);
     assert_eq!(decoded.height(), 2);
   }
@@ -1493,8 +1499,9 @@ mod tests {
     let font_ctx = FontContext::new();
     let image_cache = ImageCache::new();
 
-    let resolved = super::inline_svg_foreign_objects_from_markup(svg, "", &font_ctx, &image_cache, 1.0, 0)
-      .expect("resolved svg");
+    let resolved =
+      super::inline_svg_foreign_objects_from_markup(svg, "", &font_ctx, &image_cache, 1.0, 0)
+        .expect("resolved svg");
 
     assert!(
       resolved.contains("data:image/png;base64,"),
@@ -1515,13 +1522,17 @@ mod tests {
     let font_ctx = FontContext::new();
     let image_cache = ImageCache::new();
 
-    let resolved = super::inline_svg_foreign_objects_from_markup(svg, "", &font_ctx, &image_cache, 1.0, 0)
-      .expect("resolved svg");
+    let resolved =
+      super::inline_svg_foreign_objects_from_markup(svg, "", &font_ctx, &image_cache, 1.0, 0)
+        .expect("resolved svg");
     let pixmap = image_cache
       .render_svg_pixmap_at_size(&resolved, 20, 20, "inline-svg", 1.0)
       .expect("render pixmap");
     let px = pixmap.pixel(10, 10).expect("center px");
-    assert_eq!((px.red(), px.green(), px.blue(), px.alpha()), (255, 0, 0, 255));
+    assert_eq!(
+      (px.red(), px.green(), px.blue(), px.alpha()),
+      (255, 0, 0, 255)
+    );
   }
 
   #[test]
@@ -1533,15 +1544,17 @@ mod tests {
 
   #[test]
   fn foreign_object_transform_scale_accounts_for_ancestor_and_element_transforms() {
-    let svg =
-      r#"<svg xmlns="http://www.w3.org/2000/svg"><g transform="scale(2)"><!--FASTRENDER_FOREIGN_OBJECT_0--></g></svg>"#;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><g transform="scale(2)"><!--FASTRENDER_FOREIGN_OBJECT_0--></g></svg>"#;
     let doc = roxmltree::Document::parse(svg).expect("parse svg");
     let attrs = vec![(
       "transform".to_string(),
       "translate(0 0) scale(3)".to_string(),
     )];
-    let scale =
-      super::foreign_object_transform_scale(Some(&doc), "<!--FASTRENDER_FOREIGN_OBJECT_0-->", &attrs);
+    let scale = super::foreign_object_transform_scale(
+      Some(&doc),
+      "<!--FASTRENDER_FOREIGN_OBJECT_0-->",
+      &attrs,
+    );
     assert!((scale - 6.0).abs() < 0.01, "expected scale ~6, got {scale}");
   }
 
@@ -1551,7 +1564,10 @@ mod tests {
     let doc = roxmltree::Document::parse(svg).expect("parse svg");
     let scale =
       super::foreign_object_transform_scale(Some(&doc), "<!--FASTRENDER_FOREIGN_OBJECT_0-->", &[]);
-    assert!((scale - 10.0).abs() < 0.01, "expected scale ~10, got {scale}");
+    assert!(
+      (scale - 10.0).abs() < 0.01,
+      "expected scale ~10, got {scale}"
+    );
   }
 
   fn clip_path_id_from_image_tag(tag: &str) -> &str {
@@ -1588,8 +1604,11 @@ mod tests {
     let first = default_foreign_object("<!--P1-->");
     let second = default_foreign_object("<!--P2-->");
 
-    let first_tag = foreign_object_image_tag(&first, "data:image/png;base64,AAAA", 0, image_bounds).expect("tag");
-    let second_tag = foreign_object_image_tag(&second, "data:image/png;base64,AAAA", 0, image_bounds).expect("tag");
+    let first_tag =
+      foreign_object_image_tag(&first, "data:image/png;base64,AAAA", 0, image_bounds).expect("tag");
+    let second_tag =
+      foreign_object_image_tag(&second, "data:image/png;base64,AAAA", 0, image_bounds)
+        .expect("tag");
 
     let first_id = clip_path_id_from_image_tag(&first_tag);
     let second_id = clip_path_id_from_image_tag(&second_tag);
@@ -1601,15 +1620,27 @@ mod tests {
     let image_bounds = crate::Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
     let foreign = default_foreign_object("<!--P1-->");
 
-    let tag = foreign_object_image_tag(&foreign, "data:image/png;base64,AAAA", 0, image_bounds).expect("tag");
+    let tag = foreign_object_image_tag(&foreign, "data:image/png;base64,AAAA", 0, image_bounds)
+      .expect("tag");
     let id = clip_path_id_from_image_tag(&tag);
 
     assert!(
-      id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+      id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
       "expected svg-safe id, got {id:?}"
     );
 
-    assert_eq!(tag.match_indices(&format!("<clipPath id=\"{id}\">")).count(), 1);
-    assert_eq!(tag.match_indices(&format!("clip-path=\"url(#{id})\"")).count(), 1);
+    assert_eq!(
+      tag
+        .match_indices(&format!("<clipPath id=\"{id}\">"))
+        .count(),
+      1
+    );
+    assert_eq!(
+      tag
+        .match_indices(&format!("clip-path=\"url(#{id})\""))
+        .count(),
+      1
+    );
   }
 }

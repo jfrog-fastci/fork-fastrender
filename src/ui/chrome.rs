@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
-use crate::ui::browser_app::BrowserAppState;
 use crate::render_control::StageHeartbeat;
+use crate::ui::browser_app::BrowserAppState;
 use crate::ui::messages::TabId;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::zoom;
@@ -209,7 +209,10 @@ pub fn chrome_ui(
   // delta zooms out, and a frame may apply multiple steps if multiple wheel events are queued.
   ctx.input(|i| {
     for event in &i.events {
-      let egui::Event::MouseWheel { delta, modifiers, .. } = event else {
+      let egui::Event::MouseWheel {
+        delta, modifiers, ..
+      } = event
+      else {
         continue;
       };
       if !modifiers.command {
@@ -455,7 +458,9 @@ pub fn chrome_ui(
 
       if has_focus && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
         app.chrome.address_bar_editing = false;
-        actions.push(ChromeAction::NavigateTo(app.chrome.address_bar_text.clone()));
+        actions.push(ChromeAction::NavigateTo(
+          app.chrome.address_bar_text.clone(),
+        ));
         response.surrender_focus();
       }
 
@@ -463,7 +468,9 @@ pub fn chrome_ui(
         ui.add(egui::Spinner::new());
         let stage = stage.filter(|s| *s != StageHeartbeat::Done);
         match stage {
-          Some(stage) => ui.label(egui::RichText::new(format!("Loading… {}", stage.as_str())).small()),
+          Some(stage) => {
+            ui.label(egui::RichText::new(format!("Loading… {}", stage.as_str())).small())
+          }
           None => ui.label(egui::RichText::new("Loading…").small()),
         };
       }
@@ -701,7 +708,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      actions.iter().any(|action| matches!(action, ChromeAction::Reload)),
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::Reload)),
       "expected ChromeAction::Reload, got {actions:?}"
     );
   }
@@ -723,7 +732,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::NewTab)),
       "expected ChromeAction::NewTab, got {actions:?}"
     );
   }
@@ -752,7 +763,9 @@ mod tests {
       "expected ChromeAction::ReopenClosedTab, got {actions:?}"
     );
     assert!(
-      !actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
+      !actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::NewTab)),
       "expected Ctrl/Cmd+Shift+T not to emit NewTab, got {actions:?}"
     );
   }
@@ -762,8 +775,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
     app.chrome.address_bar_has_focus = true;
     app.chrome.address_bar_editing = true;
 
@@ -790,8 +809,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
     app.chrome.address_bar_has_focus = true;
     app.chrome.address_bar_editing = true;
 
@@ -817,7 +842,10 @@ mod tests {
   fn ctrl_w_is_noop_when_only_one_tab_exists() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
 
     let ctx = new_context_with_key(
       egui::Key::W,
@@ -830,7 +858,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      !actions.iter().any(|action| matches!(action, ChromeAction::CloseTab(_))),
+      !actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::CloseTab(_))),
       "expected no CloseTab action when only one tab exists, got {actions:?}"
     );
   }
@@ -839,7 +869,10 @@ mod tests {
   fn ctrl_plus_zooms_in_active_tab() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
 
     let ctx = new_context_with_key(
       egui::Key::PlusEquals,
@@ -859,7 +892,10 @@ mod tests {
   fn ctrl_minus_zooms_out_active_tab() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
 
     let ctx = new_context_with_key(
       egui::Key::Minus,
@@ -879,7 +915,10 @@ mod tests {
   fn ctrl_0_resets_zoom() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
 
     // First zoom in.
     let ctx = new_context_with_key(
@@ -903,9 +942,7 @@ mod tests {
     );
     let _actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
-    assert!(
-      (app.active_tab().unwrap().zoom - crate::ui::zoom::DEFAULT_ZOOM).abs() < f32::EPSILON
-    );
+    assert!((app.active_tab().unwrap().zoom - crate::ui::zoom::DEFAULT_ZOOM).abs() < f32::EPSILON);
   }
 
   #[test]
@@ -913,8 +950,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
     app.chrome.address_bar_has_focus = true;
     app.chrome.address_bar_editing = true;
 
@@ -941,8 +984,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
     app.chrome.address_bar_has_focus = true;
     app.chrome.address_bar_editing = true;
 
@@ -969,8 +1018,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), false);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      true,
+    );
     app.chrome.address_bar_has_focus = true;
     app.chrome.address_bar_editing = true;
 
@@ -997,8 +1052,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), false);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      true,
+    );
     app.chrome.address_bar_has_focus = true;
     app.chrome.address_bar_editing = true;
 
@@ -1026,8 +1087,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      true,
+    );
     app.chrome.address_bar_has_focus = true;
     app.chrome.address_bar_editing = true;
 
@@ -1054,8 +1121,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
 
     let ctx = new_context_with_key(
       egui::Key::Num9,
@@ -1091,7 +1164,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      !actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
+      !actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::NewTab)),
       "expected Ctrl+Alt+T to be ignored (AltGr guard), got {actions:?}"
     );
   }
@@ -1110,7 +1185,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      actions.iter().any(|action| matches!(action, ChromeAction::Back)),
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::Back)),
       "expected ChromeAction::Back, got {actions:?}"
     );
   }
@@ -1129,7 +1206,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      actions.iter().any(|action| matches!(action, ChromeAction::Forward)),
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::Forward)),
       "expected ChromeAction::Forward, got {actions:?}"
     );
   }
@@ -1150,7 +1229,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      !actions.iter().any(|action| matches!(action, ChromeAction::Back)),
+      !actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::Back)),
       "expected ChromeAction::Back to be suppressed, got {actions:?}"
     );
   }
@@ -1160,8 +1241,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
 
     let ctx = egui::Context::default();
 
@@ -1177,7 +1264,10 @@ mod tests {
     let _ = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
-    assert!(app.chrome.address_bar_has_focus, "expected address bar to be focused");
+    assert!(
+      app.chrome.address_bar_has_focus,
+      "expected address bar to be focused"
+    );
 
     // Switching tabs cancels editing but (in a real UI) focus may remain in the address bar.
     assert!(app.set_active_tab(tab_b));
@@ -1189,10 +1279,7 @@ mod tests {
 
     // Now type a character while focus stays in the address bar. This should re-enable the
     // `address_bar_editing` flag so worker updates don't clobber the typed text.
-    begin_frame(
-      &ctx,
-      vec![egui::Event::Text("x".to_string())],
-    );
+    begin_frame(&ctx, vec![egui::Event::Text("x".to_string())]);
     let _ = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
@@ -1204,8 +1291,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
 
     // The first tab label should appear near the top-left of the chrome panel.
     let ctx = egui::Context::default();
@@ -1231,7 +1324,10 @@ mod tests {
   fn middle_click_tab_label_is_noop_when_only_one_tab_exists() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, middle_click_at(egui::pos2(10.0, 10.0)));
@@ -1239,7 +1335,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      !actions.iter().any(|action| matches!(action, ChromeAction::CloseTab(_))),
+      !actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::CloseTab(_))),
       "expected middle-click not to close the last remaining tab, got {actions:?}"
     );
   }
@@ -1248,7 +1346,10 @@ mod tests {
   fn ctrl_wheel_zooms_active_tab() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
 
     let ctx = egui::Context::default();
 

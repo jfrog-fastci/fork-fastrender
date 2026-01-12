@@ -47,15 +47,27 @@ fn flex_column_grid_fr_row_percent_height_does_not_collapse() {
   item_style.display = Display::Block;
   item_style.overflow_x = Overflow::Hidden;
   item_style.overflow_y = Overflow::Hidden;
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![inner]);
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
-  let grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
 
   let mut sibling_style = ComputedStyle::default();
   sibling_style.display = Display::Block;
   sibling_style.height = Some(Length::px(10.0));
   sibling_style.width = Some(Length::px(100.0));
-  let sibling = BoxNode::new_block(Arc::new(sibling_style), FormattingContextType::Block, vec![]);
+  let sibling = BoxNode::new_block(
+    Arc::new(sibling_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let outer = BoxNode::new_block(
     Arc::new(outer_style),
@@ -67,8 +79,11 @@ fn flex_column_grid_fr_row_percent_height_does_not_collapse() {
   let fragment = fc
     .layout(
       &outer,
-      &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Definite(500.0))
-        .with_used_border_box_size(Some(200.0), None),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(200.0),
+        AvailableSpace::Definite(500.0),
+      )
+      .with_used_border_box_size(Some(200.0), None),
     )
     .expect("layout succeeds");
 

@@ -20,7 +20,8 @@ fn percent_insets_resolve_against_zero_sized_containing_block() {
   let layout = PositionedLayout::new();
   let viewport = Size::new(100.0, 100.0);
   let positioned_rect = Rect::from_xywh(0.0, 0.0, 100.0, 0.0);
-  let cb = layout.determine_containing_block(Position::Absolute, viewport, Some(positioned_rect), None);
+  let cb =
+    layout.determine_containing_block(Position::Absolute, viewport, Some(positioned_rect), None);
 
   let abs = AbsoluteLayout::new();
   let mut style = default_style();

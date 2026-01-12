@@ -82,11 +82,17 @@ fn inline_float_only_anonymous_block_does_not_advance_in_flow_height() {
 
   let bfc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
-  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+  let fragment = bfc
+    .layout(&root, &constraints)
+    .expect("layout should succeed");
 
   let mut float_right_frags = Vec::new();
   collect_by_size(&fragment, 33.0, 11.0, &mut float_right_frags);
-  assert_eq!(float_right_frags.len(), 1, "expected one right float fragment");
+  assert_eq!(
+    float_right_frags.len(),
+    1,
+    "expected one right float fragment"
+  );
 
   let frag = float_right_frags[0];
   assert!(
@@ -100,4 +106,3 @@ fn inline_float_only_anonymous_block_does_not_advance_in_flow_height() {
     frag.bounds.x()
   );
 }
-

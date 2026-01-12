@@ -2,8 +2,8 @@ use fastrender::js::{
   install_url_bindings, install_url_bindings_with_limits, webidl::legacy::VmJsRuntime, UrlLimits,
 };
 use vm_js::{HeapLimits, PropertyKey, Value, VmError};
-use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use webidl_js_runtime::runtime::JsPropertyKind;
+use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 
 fn key(rt: &mut VmJsRuntime, name: &str) -> PropertyKey {
   let v = rt.alloc_string_value(name).unwrap();
@@ -185,7 +185,10 @@ fn url_setters_update_href() {
   set_accessor(&mut rt, url, "protocol", protocol);
 
   let href = get(&mut rt, url, "href");
-  assert_eq!(as_rust_string(&rt, href), "http://user:pass@example.org:8080/a/b");
+  assert_eq!(
+    as_rust_string(&rt, href),
+    "http://user:pass@example.org:8080/a/b"
+  );
 }
 
 #[test]
@@ -435,13 +438,7 @@ fn urlsearchparams_iterator_rejects_fractional_internal_state() {
 
   let params = new_url_search_params(&mut rt, global, Some("a=1&b=2"));
 
-  fn check_throw(
-    rt: &mut VmJsRuntime,
-    iter: Value,
-    prop: &str,
-    value: f64,
-    expected_substr: &str,
-  ) {
+  fn check_throw(rt: &mut VmJsRuntime, iter: Value, prop: &str, value: f64, expected_substr: &str) {
     let iter_root = rt.heap_mut().add_root(iter).unwrap();
 
     // Mutate the internal iterator state stored on plain properties. This iterator implementation
@@ -540,7 +537,10 @@ fn url_instance_initialization_survives_gc_pressure() {
   rt.heap_mut().remove_root(b_root);
   rt.heap_mut().remove_root(a_root);
   let href = get(&mut rt, url, "href");
-  assert_eq!(as_rust_string(&rt, href), "https://example.com/?x=1&a=b#hash");
+  assert_eq!(
+    as_rust_string(&rt, href),
+    "https://example.com/?x=1&a=b#hash"
+  );
 
   rt.heap_mut().remove_root(url_root);
   rt.heap_mut().remove_root(global_root);

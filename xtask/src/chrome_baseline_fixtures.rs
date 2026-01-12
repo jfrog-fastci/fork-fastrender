@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, ValueEnum};
+use fastrender::cli_utils::fixture_html_patch;
 use image::{GenericImage, ImageBuffer, Rgba};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -12,7 +13,6 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use url::Url;
 use walkdir::WalkDir;
-use fastrender::cli_utils::fixture_html_patch;
 
 /// Minimum `RLIMIT_AS` (virtual address space) required for Chrome to start reliably in our CI-like
 /// environments.
@@ -51,9 +51,12 @@ impl ChromeRlimitAsGuard {
       return Ok(None);
     }
 
-    let min_rlim: libc::rlim_t = min_bytes
-      .try_into()
-      .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "min_bytes too large for rlim_t"))?;
+    let min_rlim: libc::rlim_t = min_bytes.try_into().map_err(|_| {
+      io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "min_bytes too large for rlim_t",
+      )
+    })?;
 
     let needs_cur = current.rlim_cur != libc::RLIM_INFINITY && current.rlim_cur < min_rlim;
     let needs_max = current.rlim_max != libc::RLIM_INFINITY && current.rlim_max < min_rlim;
@@ -153,8 +156,12 @@ fn write_js_disabled_chrome_preferences(profile_dir: &Path) -> Result<()> {
   // This makes fixtures like pinterest.com (which gate their UI behind `<noscript>`) render
   // meaningful content in the baseline instead of a blank page.
   let default_dir = profile_dir.join("Default");
-  fs::create_dir_all(&default_dir)
-    .with_context(|| format!("create chrome profile Default dir {}", default_dir.display()))?;
+  fs::create_dir_all(&default_dir).with_context(|| {
+    format!(
+      "create chrome profile Default dir {}",
+      default_dir.display()
+    )
+  })?;
   let preferences_path = default_dir.join("Preferences");
   let prefs = serde_json::json!({
     "profile": {
@@ -163,8 +170,11 @@ fn write_js_disabled_chrome_preferences(profile_dir: &Path) -> Result<()> {
       "default_content_setting_values": { "javascript": 2 },
     }
   });
-  fs::write(&preferences_path, serde_json::to_vec(&prefs).expect("serialize chrome prefs"))
-    .with_context(|| format!("write chrome preferences {}", preferences_path.display()))?;
+  fs::write(
+    &preferences_path,
+    serde_json::to_vec(&prefs).expect("serialize chrome prefs"),
+  )
+  .with_context(|| format!("write chrome preferences {}", preferences_path.display()))?;
   Ok(())
 }
 
@@ -933,7 +943,11 @@ fn run_chrome_print_to_pdf(
   }
 
   if !last_status.success() {
-    bail!("chrome exited with {}; see {}", last_status, log_path.display());
+    bail!(
+      "chrome exited with {}; see {}",
+      last_status,
+      log_path.display()
+    );
   }
 
   bail!("chrome did not produce a PDF; see {}", log_path.display());
@@ -1300,15 +1314,14 @@ fn run_chrome_screenshot(
     .ok();
   }
 
-  let args_legacy =
-    build_chrome_args(
-      HeadlessMode::Legacy,
-      profile_dir,
-      window_size,
-      dpr,
-      screenshot_path,
-      virtual_time_budget_ms,
-    )?;
+  let args_legacy = build_chrome_args(
+    HeadlessMode::Legacy,
+    profile_dir,
+    window_size,
+    dpr,
+    screenshot_path,
+    virtual_time_budget_ms,
+  )?;
   if screenshot_path.exists() {
     let _ = fs::remove_file(screenshot_path);
   }
@@ -1325,10 +1338,17 @@ fn run_chrome_screenshot(
   }
 
   if !last_status.success() {
-    bail!("chrome exited with {}; see {}", last_status, log_path.display());
+    bail!(
+      "chrome exited with {}; see {}",
+      last_status,
+      log_path.display()
+    );
   }
 
-  bail!("chrome did not produce a screenshot; see {}", log_path.display());
+  bail!(
+    "chrome did not produce a screenshot; see {}",
+    log_path.display()
+  );
 }
 
 fn chrome_log_indicates_transient_gpu_failure(log_path: &Path) -> bool {
@@ -1383,22 +1403,24 @@ fn build_chrome_common_args(
   if matches!(headless, HeadlessMode::Legacy) {
     args.push("--disable-gpu".to_string());
   }
-  args.extend([
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--hide-scrollbars",
-    // Reduce nondeterminism + Chrome-vs-FastRender diffs caused by LCD subpixel text.
-    //
-    // Chrome's default text output often uses per-channel subpixel antialiasing (RGB fringes),
-    // which FastRender does not currently emulate. Disabling LCD text keeps baseline renders
-    // grayscale, improving diff signal for layout/paint primitives.
-    "--disable-lcd-text",
-    // When LCD text is disabled, subpixel positioning can still introduce 1px jitter across
-    // platforms/builds. Disable it so text pixel placement is more stable.
-    "--disable-font-subpixel-positioning",
-  ]
-  .iter()
-  .map(|v| v.to_string()));
+  args.extend(
+    [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--hide-scrollbars",
+      // Reduce nondeterminism + Chrome-vs-FastRender diffs caused by LCD subpixel text.
+      //
+      // Chrome's default text output often uses per-channel subpixel antialiasing (RGB fringes),
+      // which FastRender does not currently emulate. Disabling LCD text keeps baseline renders
+      // grayscale, improving diff signal for layout/paint primitives.
+      "--disable-lcd-text",
+      // When LCD text is disabled, subpixel positioning can still introduce 1px jitter across
+      // platforms/builds. Disable it so text pixel placement is more stable.
+      "--disable-font-subpixel-positioning",
+    ]
+    .iter()
+    .map(|v| v.to_string()),
+  );
   args.push(viewport_arg);
   args.push(dpr_arg);
   args.extend(
@@ -1605,7 +1627,10 @@ mod tests {
       json["profile"]["managed_default_content_settings"]["javascript"],
       2
     );
-    assert_eq!(json["profile"]["default_content_setting_values"]["javascript"], 2);
+    assert_eq!(
+      json["profile"]["default_content_setting_values"]["javascript"],
+      2
+    );
   }
 
   #[test]
@@ -1693,9 +1718,7 @@ mod tests {
     )
     .expect("build chrome args");
     assert!(
-      args
-        .iter()
-        .any(|arg| arg == "--virtual-time-budget=5000"),
+      args.iter().any(|arg| arg == "--virtual-time-budget=5000"),
       "expected --virtual-time-budget=5000 in args: {args:?}"
     );
   }
@@ -1703,13 +1726,9 @@ mod tests {
   #[test]
   fn chrome_args_disable_lcd_text() {
     let temp = tempdir().expect("tempdir");
-    let args = super::build_chrome_common_args(
-      super::HeadlessMode::New,
-      temp.path(),
-      (1040, 1240),
-      1.0,
-    )
-    .expect("build chrome args");
+    let args =
+      super::build_chrome_common_args(super::HeadlessMode::New, temp.path(), (1040, 1240), 1.0)
+        .expect("build chrome args");
     assert!(
       args.iter().any(|arg| arg == "--disable-lcd-text"),
       "expected --disable-lcd-text in args: {args:?}"

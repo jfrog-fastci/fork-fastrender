@@ -87,7 +87,9 @@ fn wait_for_navigation_complete(
     msgs.push(msg);
     let last = msgs.len() - 1;
     match &msgs[last] {
-      WorkerToUi::NavigationCommitted { tab_id: got, url, .. } if *got == tab_id => {
+      WorkerToUi::NavigationCommitted {
+        tab_id: got, url, ..
+      } if *got == tab_id => {
         return url.clone();
       }
       WorkerToUi::NavigationFailed {
@@ -108,9 +110,15 @@ fn wait_for_navigation_complete(
   );
 }
 
-fn wait_for_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> fastrender::ui::messages::RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, timeout, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+fn wait_for_frame(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+) -> fastrender::ui::messages::RenderedFrame {
+  let msg = support::recv_for_tab(rx, tab_id, timeout, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
     other => panic!("unexpected WorkerToUi message: {other:?}"),
@@ -199,7 +207,10 @@ fn create_tab_triggers_initial_navigation_and_frame() {
 
   while Instant::now() < deadline && !(saw_committed && saw_frame && saw_loading_false) {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    match worker.rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+    match worker
+      .rx
+      .recv_timeout(remaining.min(Duration::from_millis(200)))
+    {
       Ok(msg) => {
         match &msg {
           WorkerToUi::NavigationStarted { tab_id: got, url } if *got == tab_id => {
@@ -216,7 +227,9 @@ fn create_tab_triggers_initial_navigation_and_frame() {
               saw_loading_false = true;
             }
           }
-          WorkerToUi::NavigationCommitted { tab_id: got, url, .. } if *got == tab_id => {
+          WorkerToUi::NavigationCommitted {
+            tab_id: got, url, ..
+          } if *got == tab_id => {
             committed_url = Some(url.clone());
             saw_committed = true;
           }
@@ -310,7 +323,10 @@ fn scroll_produces_scroll_update_and_frame() {
       Err(_) => break,
     };
     match msg {
-      WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if got == tab_id => {
+      WorkerToUi::ScrollStateUpdated {
+        tab_id: got,
+        scroll,
+      } if got == tab_id => {
         scroll_state = Some(scroll);
       }
       WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
@@ -323,7 +339,8 @@ fn scroll_produces_scroll_update_and_frame() {
     }
   }
 
-  let scroll_state = scroll_state.unwrap_or_else(|| panic!("expected ScrollStateUpdated after scroll"));
+  let scroll_state =
+    scroll_state.unwrap_or_else(|| panic!("expected ScrollStateUpdated after scroll"));
   let frame_scroll_state =
     frame_scroll_state.unwrap_or_else(|| panic!("expected FrameReady after scroll"));
 
@@ -399,8 +416,10 @@ fn cancellation_drops_stale_output() {
     .expect("Navigate heavy");
 
   // Wait for evidence that the heavy navigation is in-flight.
-  support::recv_for_tab(&worker.rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::Stage { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for Stage heartbeat during heavy navigation"));
+  support::recv_for_tab(&worker.rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::Stage { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for Stage heartbeat during heavy navigation"));
 
   // Cancel the in-flight job from the UI side while the worker is blocked in `prepare_url`.
   cancel.bump_nav();
@@ -420,7 +439,9 @@ fn cancellation_drops_stale_output() {
   let mut saw_cheap_loading_false = false;
   let mut msgs: Vec<WorkerToUi> = Vec::new();
 
-  while Instant::now() < deadline && !(saw_cheap_commit && saw_cheap_frame && saw_cheap_loading_false) {
+  while Instant::now() < deadline
+    && !(saw_cheap_commit && saw_cheap_frame && saw_cheap_loading_false)
+  {
     let remaining = deadline.saturating_duration_since(Instant::now());
     let msg = match worker.rx.recv_timeout(remaining) {
       Ok(msg) => msg,
@@ -496,7 +517,9 @@ fn cancellation_drops_stale_output() {
   // Ensure the cancelled heavy navigation doesn't publish output after the cheap commit.
   let tail = support::drain_for(&worker.rx, Duration::from_millis(250));
   let saw_heavy_output = tail.iter().any(|msg| match msg {
-    WorkerToUi::NavigationCommitted { url, .. } | WorkerToUi::NavigationFailed { url, .. } => url == &heavy_url,
+    WorkerToUi::NavigationCommitted { url, .. } | WorkerToUi::NavigationFailed { url, .. } => {
+      url == &heavy_url
+    }
     _ => false,
   });
   if saw_heavy_output {

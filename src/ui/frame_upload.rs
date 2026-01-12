@@ -60,7 +60,12 @@ impl FrameUploadCoalescer {
 mod tests {
   use super::*;
 
-  fn make_frame(tab_id: TabId, pixmap_px: (u32, u32), viewport_css: (u32, u32), dpr: f32) -> FrameReadyUpdate {
+  fn make_frame(
+    tab_id: TabId,
+    pixmap_px: (u32, u32),
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) -> FrameReadyUpdate {
     FrameReadyUpdate {
       tab_id,
       pixmap: tiny_skia::Pixmap::new(pixmap_px.0, pixmap_px.1).unwrap(),

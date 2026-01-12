@@ -49,4 +49,3 @@ fn font_shorthand_rejects_stray_angle_tokens() {
   assert_eq!(node.styles.font_style, FontStyle::Italic);
   assert!((node.styles.font_size - 16.0).abs() < 1e-6);
 }
-

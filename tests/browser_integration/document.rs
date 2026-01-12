@@ -198,7 +198,8 @@ fn browser_document_render_frame_with_scroll_state_syncs_scroll_state() -> Resul
 }
 
 #[test]
-fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_resolution() -> Result<()> {
+fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_resolution(
+) -> Result<()> {
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html><html><head>
@@ -243,7 +244,8 @@ fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_r
 }
 
 #[test]
-fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_overrides_base_url() -> Result<()> {
+fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_overrides_base_url(
+) -> Result<()> {
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html><html><head>
@@ -468,9 +470,10 @@ fn browser_document2_retry_after_paint_cancellation_reuses_cached_layout() -> Re
     "expected retry to paint from cache without layout stages; got {stages_retry:?}"
   );
   assert!(
-    stages_retry
-      .iter()
-      .any(|s| matches!(s, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)),
+    stages_retry.iter().any(|s| matches!(
+      s,
+      StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+    )),
     "expected paint stage on retry; got {stages_retry:?}"
   );
 
@@ -569,9 +572,10 @@ fn browser_document2_cancel_callback_can_target_paint_stage_via_active_stage() -
     "expected retry to paint from cache without layout stages; got {stages_retry:?}"
   );
   assert!(
-    stages_retry
-      .iter()
-      .any(|s| matches!(s, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)),
+    stages_retry.iter().any(|s| matches!(
+      s,
+      StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+    )),
     "expected paint stage on retry; got {stages_retry:?}"
   );
 

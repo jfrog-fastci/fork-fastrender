@@ -25,8 +25,12 @@ fn fragment_contains_text(node: &FragmentNode, needle: &str) -> bool {
     .any(|child| fragment_contains_text(child, needle))
 }
 
-fn find_first_inline_with_text<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
-  if matches!(node.content, FragmentContent::Inline { .. }) && fragment_contains_text(node, needle) {
+fn find_first_inline_with_text<'a>(
+  node: &'a FragmentNode,
+  needle: &str,
+) -> Option<&'a FragmentNode> {
+  if matches!(node.content, FragmentContent::Inline { .. }) && fragment_contains_text(node, needle)
+  {
     return Some(node);
   }
   for child in node.children.iter() {
@@ -75,7 +79,8 @@ fn inline_padding_border_box_uses_content_area_not_line_height() {
   // slightly inflate the line box beyond the authored `line-height`, so don't assert exactness.
   assert!(line_height > 90.0, "unexpected line height: {line_height}");
 
-  let code_inline = find_first_inline_with_text(line, "code").expect("expected <code> inline fragment");
+  let code_inline =
+    find_first_inline_with_text(line, "code").expect("expected <code> inline fragment");
 
   // Child fragment coordinates are relative to the line fragment. The inline <code> border box
   // should not start above the line box when line-height is much larger than the font's content box.

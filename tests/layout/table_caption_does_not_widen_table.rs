@@ -56,7 +56,12 @@ fn table_caption_does_not_widen_table() {
   let caption = wrapper
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.display), Some(Display::TableCaption)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.display),
+        Some(Display::TableCaption)
+      )
+    })
     .expect("caption fragment");
   let grid = wrapper
     .children

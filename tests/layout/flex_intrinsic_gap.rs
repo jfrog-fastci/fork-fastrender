@@ -39,7 +39,10 @@ fn flex_intrinsic_inline_size_includes_column_gap_between_items() {
 
   // Flexbox intrinsic sizing considers the sum of item contributions plus the column gaps between
   // them (2 gaps at 8px each).
-  assert!((width - 76.0).abs() < 0.01, "expected width≈76, got {width}");
+  assert!(
+    (width - 76.0).abs() < 0.01,
+    "expected width≈76, got {width}"
+  );
 }
 
 fn assert_approx(actual: f32, expected: f32, epsilon: f32, msg: &str) {
@@ -148,4 +151,3 @@ fn flex_intrinsic_inline_size_accounts_for_gap_between_items() {
   assert_approx(second_icon.bounds.y(), 8.0, 0.5, "second icon y");
   assert_approx(second_icon.bounds.x(), 54.0, 0.5, "second icon x");
 }
-

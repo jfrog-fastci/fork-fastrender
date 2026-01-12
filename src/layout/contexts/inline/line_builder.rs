@@ -37,8 +37,8 @@ use super::baseline::VerticalAlign;
 use crate::debug::runtime;
 use crate::error::{RenderError, RenderStage};
 use crate::geometry::Size;
-use crate::layout::formatting_context::LayoutError;
 use crate::layout::float_context::ClearSide;
+use crate::layout::formatting_context::LayoutError;
 use crate::layout::inline::float_integration::InlineFloatIntegration;
 use crate::layout::inline::float_integration::LineSpaceOptions;
 use crate::render_control::check_active_periodic;
@@ -580,7 +580,10 @@ fn last_text_char_for_soft_wrap(item: &InlineItem) -> Option<char> {
 fn first_text_char_for_soft_wrap(item: &InlineItem) -> Option<char> {
   match item {
     InlineItem::Text(text) => text.text.chars().next(),
-    InlineItem::InlineBox(inline_box) => inline_box.children.iter().find_map(first_text_char_for_soft_wrap),
+    InlineItem::InlineBox(inline_box) => inline_box
+      .children
+      .iter()
+      .find_map(first_text_char_for_soft_wrap),
     InlineItem::Ruby(ruby) => ruby.segments.iter().find_map(|seg| {
       seg
         .base_items
@@ -1105,7 +1108,12 @@ impl TextItem {
     fallback_font_size: f32,
   ) -> BaselineMetrics {
     let (ascent, descent, line_gap, x_height) = if let Some(primary) = primary_metrics {
-      (primary.ascent, primary.descent, primary.line_gap, primary.x_height)
+      (
+        primary.ascent,
+        primary.descent,
+        primary.line_gap,
+        primary.x_height,
+      )
     } else {
       (
         fallback_font_size * 0.8,
@@ -3350,10 +3358,7 @@ impl<'a> LineBuilder<'a> {
     base_direction: Direction,
     explicit_bidi: Option<ExplicitBidiContext>,
   ) -> f32 {
-    let inserted = style
-      .hyphenate_character
-      .as_deref()
-      .unwrap_or("\u{2010}");
+    let inserted = style.hyphenate_character.as_deref().unwrap_or("\u{2010}");
     if inserted.is_empty() {
       return 0.0;
     }
@@ -3791,9 +3796,9 @@ impl<'a> LineBuilder<'a> {
         .iter()
         .rev()
         .find_map(|pos| match &pos.item {
-          InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) | InlineItem::HardBreak(_) => {
-            None
-          }
+          InlineItem::StaticPositionAnchor(_)
+          | InlineItem::Floating(_)
+          | InlineItem::HardBreak(_) => None,
           other => Some(other),
         })
       {
@@ -4214,15 +4219,19 @@ impl<'a> LineBuilder<'a> {
           let (next, next_width) = next.resolve_width_at(start_x);
 
           let fit_epsilon = if next.is_breakable()
-            || matches!(&next, InlineItem::InlineBlock(_) | InlineItem::Replaced(_) | InlineItem::Ruby(_))
-          {
+            || matches!(
+              &next,
+              InlineItem::InlineBlock(_) | InlineItem::Replaced(_) | InlineItem::Ruby(_)
+            ) {
             LINE_PIXEL_FIT_EPSILON
           } else {
             LINE_FIT_EPSILON
           };
           if used_width + next_width <= available_children_width + fit_epsilon {
-            fragment_has_in_flow_children |=
-              !matches!(&next, InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_));
+            fragment_has_in_flow_children |= !matches!(
+              &next,
+              InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_)
+            );
             fragment_children.push(next);
             used_width += next_width;
             continue;
@@ -4241,8 +4250,10 @@ impl<'a> LineBuilder<'a> {
               )
             }) {
               if last_text_char_for_soft_wrap(prev).is_some_and(is_no_break_after_character) {
-                fragment_has_in_flow_children |=
-                  !matches!(&next, InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_));
+                fragment_has_in_flow_children |= !matches!(
+                  &next,
+                  InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_)
+                );
                 fragment_children.push(next);
                 used_width += next_width;
                 continue;
@@ -4622,7 +4633,9 @@ impl<'a> LineBuilder<'a> {
                   }
                   break;
                 }
-                SplitInlineBoxForLineResult::BreakBefore { inline_box: child_box } => {
+                SplitInlineBoxForLineResult::BreakBefore {
+                  inline_box: child_box,
+                } => {
                   // If we've already produced in-flow content for this line, keep it and push the
                   // child box to the next line.
                   if fragment_has_in_flow_children {
@@ -4945,9 +4958,7 @@ impl<'a> LineBuilder<'a> {
       let has_in_flow_before = before_children.iter().any(|child| {
         !matches!(
           child,
-          InlineItem::StaticPositionAnchor(_)
-            | InlineItem::Floating(_)
-            | InlineItem::HardBreak(_)
+          InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) | InlineItem::HardBreak(_)
         )
       });
       if !has_in_flow_before {
@@ -5282,9 +5293,11 @@ impl<'a> LineBuilder<'a> {
             .add_line_relative(&metrics, vertical_align);
           0.0
         } else {
-          self
-            .baseline_acc
-            .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))
+          self.baseline_acc.add_baseline_relative(
+            &metrics,
+            vertical_align,
+            Some(&self.strut_metrics),
+          )
         };
       }
 
@@ -5367,9 +5380,11 @@ impl<'a> LineBuilder<'a> {
           // compute x-height/ascent-based offsets correctly.
           // `LineBaselineAccumulator` returns a baseline shift in the same coordinate system used
           // for fragment placement (positive y = down), so store it directly.
-          self
-            .baseline_acc
-            .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))
+          self.baseline_acc.add_baseline_relative(
+            &metrics,
+            vertical_align,
+            Some(&self.strut_metrics),
+          )
         }
       }
     };
@@ -5491,9 +5506,11 @@ impl<'a> LineBuilder<'a> {
             self.baseline_acc.max_descent = self.baseline_acc.max_descent.max(item_descent);
             shift
           }
-          _ => self
-            .baseline_acc
-            .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics)),
+          _ => self.baseline_acc.add_baseline_relative(
+            &metrics,
+            vertical_align,
+            Some(&self.strut_metrics),
+          ),
         }
       };
     }
@@ -5565,8 +5582,7 @@ impl<'a> LineBuilder<'a> {
           let query_y = self.float_base_y + self.current_y;
           let cleared_y = integration.compute_clearance(query_y, clear);
           if cleared_y.is_finite() && query_y.is_finite() {
-            self.current_y =
-              self.current_y.max((cleared_y - self.float_base_y).max(0.0));
+            self.current_y = self.current_y.max((cleared_y - self.float_base_y).max(0.0));
           }
           // Record the cleared offset only when clearance actually moved the cursor; callers use
           // this to advance the containing block even if no line box is emitted at the cleared
@@ -6286,8 +6302,16 @@ fn reorder_paragraph(
         } else {
           0.0
         };
-        let margin_left = if vis_pos == first { ctx.margin_left } else { 0.0 };
-        let margin_right = if vis_pos == last { ctx.margin_right } else { 0.0 };
+        let margin_left = if vis_pos == first {
+          ctx.margin_left
+        } else {
+          0.0
+        };
+        let margin_right = if vis_pos == last {
+          ctx.margin_right
+        } else {
+          0.0
+        };
 
         let mut inline_box = InlineBoxItem::new(
           start_edge,
@@ -6476,9 +6500,16 @@ fn slice_text_item(
     item.style.word_spacing,
   );
 
-  let metrics = if matches!(item.style.line_height, crate::style::types::LineHeight::Normal) {
-    let mut metrics =
-      TextItem::metrics_from_runs(font_context, &runs, item.metrics.line_height, item.font_size);
+  let metrics = if matches!(
+    item.style.line_height,
+    crate::style::types::LineHeight::Normal
+  ) {
+    let mut metrics = TextItem::metrics_from_runs(
+      font_context,
+      &runs,
+      item.metrics.line_height,
+      item.font_size,
+    );
     TextItem::apply_text_emphasis_metrics(&mut metrics, &item.style);
     metrics
   } else {
@@ -6679,15 +6710,14 @@ mod tests {
   #[test]
   fn inline_block_baseline_ignores_nested_line_fragments() {
     let nested_line = FragmentNode::new_line(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), 5.0, vec![]);
-    let nested_inline_block = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 2.0, 0.0, 0.0),
-      1,
-      vec![nested_line],
+    let nested_inline_block =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 2.0, 0.0, 0.0), 1, vec![nested_line]);
+    let outer_line = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      10.0,
+      vec![nested_inline_block],
     );
-    let outer_line =
-      FragmentNode::new_line(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), 10.0, vec![nested_inline_block]);
-    let root =
-      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![outer_line]);
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![outer_line]);
 
     let mut first = None;
     let mut last = None;
@@ -6861,7 +6891,10 @@ mod tests {
           )
         });
       if bookkeeping_only {
-        assert_eq!(line.height, 0.0, "unexpected bookkeeping-only line: {line:#?}");
+        assert_eq!(
+          line.height, 0.0,
+          "unexpected bookkeeping-only line: {line:#?}"
+        );
       }
     }
     assert_eq!(
@@ -7053,7 +7086,9 @@ mod tests {
     let normal_breaks: Vec<usize> = item
       .break_opportunities
       .iter()
-      .filter(|b| matches!(b.break_type, BreakType::Allowed) && b.kind == BreakOpportunityKind::Normal)
+      .filter(|b| {
+        matches!(b.break_type, BreakType::Allowed) && b.kind == BreakOpportunityKind::Normal
+      })
       .map(|b| b.byte_offset)
       .collect();
     assert!(
@@ -7315,7 +7350,10 @@ mod tests {
     builder.add_item(InlineItem::InlineBox(outer)).unwrap();
 
     let lines = builder.finish().unwrap().lines;
-    assert!(lines.len() >= 2, "expected content to wrap to multiple lines");
+    assert!(
+      lines.len() >= 2,
+      "expected content to wrap to multiple lines"
+    );
 
     let line0_text: String = lines[0]
       .items
@@ -8259,8 +8297,16 @@ mod tests {
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 2);
 
-    let line0_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
-    let line1_text: String = lines[1].items.iter().map(|p| flatten_text(&p.item)).collect();
+    let line0_text: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    let line1_text: String = lines[1]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
     assert_eq!(line0_text, "Hello World");
     assert_eq!(line1_text, "Wide");
   }
@@ -8301,8 +8347,16 @@ mod tests {
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 2);
-    let line0_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
-    let line1_text: String = lines[1].items.iter().map(|p| flatten_text(&p.item)).collect();
+    let line0_text: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    let line1_text: String = lines[1]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
     assert_eq!(line0_text, "Hello World");
     assert_eq!(line1_text, "Wide");
   }
@@ -8351,7 +8405,9 @@ mod tests {
     builder
       .add_item(InlineItem::Text(make_text_item("Hello", 50.0)))
       .unwrap();
-    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
+    builder
+      .add_item(InlineItem::HardBreak(ClearSide::None))
+      .unwrap();
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 1);
@@ -8362,7 +8418,9 @@ mod tests {
   #[test]
   fn hard_break_only_produces_single_empty_line() {
     let mut builder = make_builder(200.0);
-    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
+    builder
+      .add_item(InlineItem::HardBreak(ClearSide::None))
+      .unwrap();
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 1);
@@ -8373,7 +8431,9 @@ mod tests {
   #[test]
   fn hard_break_followed_by_collapsible_whitespace_does_not_create_trailing_empty_line() {
     let mut builder = make_builder(200.0);
-    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
+    builder
+      .add_item(InlineItem::HardBreak(ClearSide::None))
+      .unwrap();
     // This whitespace becomes the leading content of the next line and is therefore suppressed by
     // whitespace collapsing. The trailing line box must not be materialized.
     builder
@@ -8389,8 +8449,12 @@ mod tests {
   #[test]
   fn consecutive_hard_breaks_produce_multiple_empty_lines() {
     let mut builder = make_builder(200.0);
-    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
-    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
+    builder
+      .add_item(InlineItem::HardBreak(ClearSide::None))
+      .unwrap();
+    builder
+      .add_item(InlineItem::HardBreak(ClearSide::None))
+      .unwrap();
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 2);
@@ -8476,7 +8540,11 @@ mod tests {
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 1);
-    assert!((lines[0].height - 10.0).abs() < 1e-3, "line height was {}", lines[0].height);
+    assert!(
+      (lines[0].height - 10.0).abs() < 1e-3,
+      "line height was {}",
+      lines[0].height
+    );
   }
 
   #[test]

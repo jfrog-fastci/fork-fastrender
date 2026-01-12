@@ -53,8 +53,8 @@ fn invalid_border_width_shorthand_does_not_override_prior_valid_value() {
 
 #[test]
 fn border_spacing_rejects_extra_tokens() {
-  let node = styled_div(r#"<div style="border-spacing: 1px 2px; border-spacing: 3px 4px 5px;"></div>"#);
+  let node =
+    styled_div(r#"<div style="border-spacing: 1px 2px; border-spacing: 3px 4px 5px;"></div>"#);
   assert_eq!(node.styles.border_spacing_horizontal, Length::px(1.0));
   assert_eq!(node.styles.border_spacing_vertical, Length::px(2.0));
 }
-

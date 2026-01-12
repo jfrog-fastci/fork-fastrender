@@ -70,7 +70,11 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
     )
   }
 
-  fn add_reaction(&self, event_loop: &mut EventLoop<Host>, reaction: Reaction<Host, T>) -> Result<()> {
+  fn add_reaction(
+    &self,
+    event_loop: &mut EventLoop<Host>,
+    reaction: Reaction<Host, T>,
+  ) -> Result<()> {
     let maybe_result = { self.state.borrow().result.clone() };
     if let Some(result) = maybe_result {
       // Promise reactions run as microtasks, even when the promise is already settled.
@@ -88,7 +92,8 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
   pub fn then<U: Clone + 'static>(
     &self,
     event_loop: &mut EventLoop<Host>,
-    on_fulfilled: impl FnOnce(&mut Host, &mut EventLoop<Host>, T) -> Result<JsPromiseValue<Host, U>> + 'static,
+    on_fulfilled: impl FnOnce(&mut Host, &mut EventLoop<Host>, T) -> Result<JsPromiseValue<Host, U>>
+      + 'static,
   ) -> Result<JsPromise<Host, U>> {
     let (next, next_resolver) = JsPromise::<Host, U>::new();
 

@@ -43,4 +43,3 @@ fn legacy_source_track_are_hidden_by_default() {
   let pixmap = render_with_backend("legacy");
   assert_hidden(&pixmap);
 }
-

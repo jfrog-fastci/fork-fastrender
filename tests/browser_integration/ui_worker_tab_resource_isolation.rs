@@ -22,10 +22,7 @@ fn wait_for_frame(
   loop {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match rx.recv_timeout(remaining) {
-      Ok(WorkerToUi::FrameReady {
-        tab_id: got,
-        frame,
-      }) if got == tab_id => return frame,
+      Ok(WorkerToUi::FrameReady { tab_id: got, frame }) if got == tab_id => return frame,
       Ok(_) => continue,
       Err(RecvTimeoutError::Timeout) => panic!("timed out waiting for FrameReady for {tab_id:?}"),
       Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected while waiting for frame"),
@@ -79,9 +76,7 @@ fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab1 = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab1, None))
-    .expect("create tab1");
+  ui_tx.send(create_tab_msg(tab1, None)).expect("create tab1");
   ui_tx
     .send(viewport_changed_msg(tab1, (64, 64), 1.0))
     .expect("set viewport tab1");
@@ -92,9 +87,7 @@ fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
   assert_eq!(pixel(&frame1.pixmap, 1, 1), (255, 0, 0, 255));
 
   let tab2 = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab2, None))
-    .expect("create tab2");
+  ui_tx.send(create_tab_msg(tab2, None)).expect("create tab2");
   ui_tx
     .send(viewport_changed_msg(tab2, (64, 64), 1.0))
     .expect("set viewport tab2");

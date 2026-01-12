@@ -121,7 +121,10 @@ fn query_selector_scope_limits_to_subtree_and_detached_scope_returns_none() {
     /* inert_subtree */ false,
   );
   assert_eq!(doc.query_selector(".x", Some(detached)).unwrap(), None);
-  assert!(doc.query_selector_all(".x", Some(detached)).unwrap().is_empty());
+  assert!(doc
+    .query_selector_all(".x", Some(detached))
+    .unwrap()
+    .is_empty());
 
   // Detached subtrees should still be queryable.
   let detached_child = doc.push_node(
@@ -133,7 +136,10 @@ fn query_selector_scope_limits_to_subtree_and_detached_scope_returns_none() {
     Some(detached),
     /* inert_subtree */ false,
   );
-  assert_eq!(doc.query_selector(".x", Some(detached)).unwrap(), Some(detached_child));
+  assert_eq!(
+    doc.query_selector(".x", Some(detached)).unwrap(),
+    Some(detached_child)
+  );
 }
 
 #[test]
@@ -209,7 +215,10 @@ fn query_selector_handles_wbr_synthetic_zwsp_nodes_and_scope() {
   // Verify that `:scope` anchors to the provided scoping root and that the root itself participates
   // in matching.
   assert_eq!(doc.query_selector(":scope", Some(wbr)).unwrap(), Some(wbr));
-  assert_eq!(doc.query_selector_all(":scope", Some(wbr)).unwrap(), vec![wbr]);
+  assert_eq!(
+    doc.query_selector_all(":scope", Some(wbr)).unwrap(),
+    vec![wbr]
+  );
 }
 
 #[test]
@@ -228,7 +237,10 @@ fn query_selector_supports_virtual_scoping_roots_for_document_fragments() {
     Some(span)
   );
   assert_eq!(doc.query_selector(":scope", Some(frag)).unwrap(), None);
-  assert!(doc.query_selector_all(":scope", Some(frag)).unwrap().is_empty());
+  assert!(doc
+    .query_selector_all(":scope", Some(frag))
+    .unwrap()
+    .is_empty());
   assert_eq!(doc.query_selector("* > span", Some(frag)).unwrap(), None);
 }
 
@@ -252,17 +264,28 @@ fn query_selector_supports_virtual_scoping_roots_for_shadow_roots() {
   let span = doc.create_element("span", "");
   doc.append_child(shadow_root, span).unwrap();
 
-  assert_eq!(doc.query_selector("span", Some(shadow_root)).unwrap(), Some(span));
   assert_eq!(
-    doc.query_selector(":scope > span", Some(shadow_root)).unwrap(),
+    doc.query_selector("span", Some(shadow_root)).unwrap(),
     Some(span)
   );
-  assert_eq!(doc.query_selector(":scope", Some(shadow_root)).unwrap(), None);
+  assert_eq!(
+    doc
+      .query_selector(":scope > span", Some(shadow_root))
+      .unwrap(),
+    Some(span)
+  );
+  assert_eq!(
+    doc.query_selector(":scope", Some(shadow_root)).unwrap(),
+    None
+  );
   assert!(doc
     .query_selector_all(":scope", Some(shadow_root))
     .unwrap()
     .is_empty());
-  assert_eq!(doc.query_selector("* > span", Some(shadow_root)).unwrap(), None);
+  assert_eq!(
+    doc.query_selector("* > span", Some(shadow_root)).unwrap(),
+    None
+  );
 }
 
 #[test]

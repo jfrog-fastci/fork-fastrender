@@ -49,7 +49,11 @@ fn flex_intrinsic_width_probe_preserves_nested_flex_item_block_size() {
   sibling_style.display = Display::Block;
   sibling_style.width = Some(Length::px(100.0));
   sibling_style.height = Some(Length::px(10.0));
-  let sibling = BoxNode::new_block(Arc::new(sibling_style), FormattingContextType::Block, vec![]);
+  let sibling = BoxNode::new_block(
+    Arc::new(sibling_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let outer = BoxNode::new_block(
     Arc::new(outer_style),
@@ -80,4 +84,3 @@ fn flex_intrinsic_width_probe_preserves_nested_flex_item_block_size() {
     sibling_fragment.bounds.y()
   );
 }
-

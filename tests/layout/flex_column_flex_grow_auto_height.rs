@@ -41,11 +41,7 @@ fn flex_column_percent_width_auto_min_height_uses_definite_container_width() {
   item_style.display = Display::Block;
   item_style.width = Some(Length::percent(100.0));
   item_style.width_keyword = None;
-  let mut item = BoxNode::new_block(
-    Arc::new(item_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let mut item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
   item.id = 2;
 
   // An empty block box whose height is established by percentage padding (relative to its width).
@@ -54,11 +50,7 @@ fn flex_column_percent_width_auto_min_height_uses_definite_container_width() {
   square_style.width = Some(Length::percent(100.0));
   square_style.width_keyword = None;
   square_style.padding_top = Length::percent(100.0);
-  let mut square = BoxNode::new_block(
-    Arc::new(square_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let mut square = BoxNode::new_block(Arc::new(square_style), FormattingContextType::Block, vec![]);
   square.id = 3;
 
   item.children.push(square);
@@ -70,7 +62,9 @@ fn flex_column_percent_width_auto_min_height_uses_definite_container_width() {
     AvailableSpace::Indefinite,
   );
 
-  let fragment = fc.layout(&container, &constraints).expect("layout succeeds");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout succeeds");
   let item_fragment = fragment.children.first().expect("item fragment");
   let height = item_fragment.bounds.height();
 

@@ -228,11 +228,7 @@ fn anchor_scroll_supports_area_name_targets_by_scrolling_to_img() {
 
   let mut img_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
   img_box.styled_node_id = Some(img_id);
-  let root_box = BoxNode::new_block(
-    default_style(),
-    FormattingContextType::Block,
-    vec![img_box],
-  );
+  let root_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![img_box]);
   let box_tree = BoxTree::new(root_box);
   let img_box_id = box_tree.root.children[0].id;
 

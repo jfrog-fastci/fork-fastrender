@@ -42,4 +42,3 @@ fn hr_default_border_has_no_inner_gap() {
     "expected the pixel below the rule to be background, confirming hr is 2px tall"
   );
 }
-

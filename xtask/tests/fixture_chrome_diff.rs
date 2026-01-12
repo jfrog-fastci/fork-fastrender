@@ -1530,8 +1530,14 @@ fn dry_run_with_overlay_prints_deterministic_overlay_paths() {
     "plan should mention overlay dir; got:\n{stdout}"
   );
 
-  let a_overlay = format!("--render-overlay {}", out_dir.join("overlay").join("a.png").display());
-  let b_overlay = format!("--render-overlay {}", out_dir.join("overlay").join("b.png").display());
+  let a_overlay = format!(
+    "--render-overlay {}",
+    out_dir.join("overlay").join("a.png").display()
+  );
+  let b_overlay = format!(
+    "--render-overlay {}",
+    out_dir.join("overlay").join("b.png").display()
+  );
   let a_pos = stdout
     .find(&a_overlay)
     .unwrap_or_else(|| panic!("missing a overlay path in plan; stdout:\n{stdout}"));

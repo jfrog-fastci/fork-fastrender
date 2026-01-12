@@ -43,7 +43,8 @@ fn fixed_cb_propagation_regression() {
   compare_config.max_different_percent = compare_config.max_different_percent.max(0.05);
 
   let html_path = fixtures_dir().join("fixed_cb_propagation/index.html");
-  let html = fs::read_to_string(&html_path).unwrap_or_else(|e| panic!("Failed to read fixture: {e}"));
+  let html =
+    fs::read_to_string(&html_path).unwrap_or_else(|e| panic!("Failed to read fixture: {e}"));
   let base_url = base_url_for(&html_path).expect("failed to build base url");
 
   let mut renderer = FastRender::builder()
@@ -83,4 +84,3 @@ fn fixed_cb_propagation_regression() {
   )
   .unwrap_or_else(|e| panic!("Comparison failed: {e}"));
 }
-

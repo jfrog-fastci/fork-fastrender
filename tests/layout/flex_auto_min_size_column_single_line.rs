@@ -37,7 +37,11 @@ fn flex_auto_min_size_column_does_not_inflate_single_line_items() {
   // At the min-content inline size (longest word), this string wraps to two lines. At the
   // max-content inline size, it fits on one line.
   let text = BoxNode::new_text(Arc::new(text_style), "Hello World".to_string());
-  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![text]);
+  let child = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -47,7 +51,9 @@ fn flex_auto_min_size_column_does_not_inflate_single_line_items() {
 
   let constraints =
     LayoutConstraints::new(AvailableSpace::Definite(400.0), AvailableSpace::Indefinite);
-  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  let fragment = fc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
 
   assert_eq!(fragment.children.len(), 1);
   let child_fragment = &fragment.children[0];
@@ -58,4 +64,3 @@ fn flex_auto_min_size_column_does_not_inflate_single_line_items() {
     child_fragment.bounds.height()
   );
 }
-

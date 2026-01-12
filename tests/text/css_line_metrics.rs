@@ -33,7 +33,12 @@ fn dejavu_sans_use_typo_metrics_enabled() -> LoadedFont {
     u16::from_be_bytes([data[offset], data[offset + 1]])
   }
   fn read_be_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+    u32::from_be_bytes([
+      data[offset],
+      data[offset + 1],
+      data[offset + 2],
+      data[offset + 3],
+    ])
   }
   fn write_be_u16(data: &mut [u8], offset: usize, value: u16) {
     let bytes = value.to_be_bytes();
@@ -60,7 +65,11 @@ fn dejavu_sans_use_typo_metrics_enabled() -> LoadedFont {
   );
   let fs_selection = read_be_u16(&data, fs_selection_offset);
   const USE_TYPO_METRICS: u16 = 1 << 7;
-  write_be_u16(&mut data, fs_selection_offset, fs_selection | USE_TYPO_METRICS);
+  write_be_u16(
+    &mut data,
+    fs_selection_offset,
+    fs_selection | USE_TYPO_METRICS,
+  );
 
   LoadedFont {
     data: Arc::new(data),
@@ -78,7 +87,10 @@ fn line_height_prefers_hhea_metrics_when_use_typo_metrics_bit_is_unset() {
   assert_eq!(metrics.ascent, 1901, "unexpected ascent: {metrics:?}");
   assert_eq!(metrics.descent, -483, "unexpected descent: {metrics:?}");
   assert_eq!(metrics.line_gap, 0, "unexpected line_gap: {metrics:?}");
-  assert_eq!(metrics.line_height, 2384, "unexpected line_height: {metrics:?}");
+  assert_eq!(
+    metrics.line_height, 2384,
+    "unexpected line_height: {metrics:?}"
+  );
 }
 
 #[test]
@@ -92,5 +104,8 @@ fn line_height_prefers_os2_metrics_when_use_typo_metrics_bit_is_set() {
   assert_eq!(metrics.ascent, 1556, "unexpected ascent: {metrics:?}");
   assert_eq!(metrics.descent, -492, "unexpected descent: {metrics:?}");
   assert_eq!(metrics.line_gap, 410, "unexpected line_gap: {metrics:?}");
-  assert_eq!(metrics.line_height, 2458, "unexpected line_height: {metrics:?}");
+  assert_eq!(
+    metrics.line_height, 2458,
+    "unexpected line_height: {metrics:?}"
+  );
 }

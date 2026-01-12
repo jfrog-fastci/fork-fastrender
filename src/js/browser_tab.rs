@@ -103,15 +103,12 @@ impl BrowserTab {
   pub fn run_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     let _stage_guard = StageGuard::install(Some(RenderStage::Script));
     let diagnostics = self.host.diagnostics.clone();
-    self.event_loop.run_until_idle_handling_errors(
-      &mut self.host,
-      limits,
-      move |err| {
+    self
+      .event_loop
+      .run_until_idle_handling_errors(&mut self.host, limits, move |err| {
         if let Some(diag) = &diagnostics {
           diag.record_js_exception(err.to_string(), None);
         }
-      },
-    )
+      })
   }
 }
-

@@ -3710,31 +3710,49 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
   let styled = styled_tree_for(html);
 
   let invalid_style = find_by_id(&styled, "invalid-style").expect("invalid-style element");
-  assert_eq!(invalid_style.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    invalid_style.styles.container_type,
+    ContainerType::InlineSize
+  );
 
   let invalid_none = find_by_id(&styled, "invalid-none").expect("invalid-none element");
-  assert_eq!(invalid_none.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    invalid_none.styles.container_type,
+    ContainerType::InlineSize
+  );
 
   let invalid_dup_size = find_by_id(&styled, "invalid-dup-size").expect("invalid-dup-size element");
-  assert_eq!(invalid_dup_size.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    invalid_dup_size.styles.container_type,
+    ContainerType::InlineSize
+  );
 
   let invalid_mixed_size =
     find_by_id(&styled, "invalid-mixed-size").expect("invalid-mixed-size element");
-  assert_eq!(invalid_mixed_size.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    invalid_mixed_size.styles.container_type,
+    ContainerType::InlineSize
+  );
 
   let invalid_mixed_normal =
     find_by_id(&styled, "invalid-mixed-normal").expect("invalid-mixed-normal element");
-  assert_eq!(invalid_mixed_normal.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    invalid_mixed_normal.styles.container_type,
+    ContainerType::InlineSize
+  );
 
-  let invalid_dup_scroll_state = find_by_id(&styled, "invalid-dup-scroll-state")
-    .expect("invalid-dup-scroll-state element");
+  let invalid_dup_scroll_state =
+    find_by_id(&styled, "invalid-dup-scroll-state").expect("invalid-dup-scroll-state element");
   assert_eq!(
     invalid_dup_scroll_state.styles.container_type,
     ContainerType::InlineSize
   );
 
   let scroll_state = find_by_id(&styled, "scroll-state").expect("scroll-state element");
-  assert_eq!(scroll_state.styles.container_type, ContainerType::ScrollState);
+  assert_eq!(
+    scroll_state.styles.container_type,
+    ContainerType::ScrollState
+  );
 
   let scroll_state_and_size =
     find_by_id(&styled, "scroll-state-and-size").expect("scroll-state-and-size element");
@@ -3822,7 +3840,10 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
 
   let commented_name_only =
     find_by_id(&styled, "commented-name-only").expect("commented-name-only element");
-  assert_eq!(commented_name_only.styles.container_type, ContainerType::Normal);
+  assert_eq!(
+    commented_name_only.styles.container_type,
+    ContainerType::Normal
+  );
   assert_eq!(
     commented_name_only.styles.container_name,
     vec!["demo".to_string()]
@@ -3830,7 +3851,10 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
 
   let commented_name_and_type =
     find_by_id(&styled, "commented-name-and-type").expect("commented-name-and-type element");
-  assert_eq!(commented_name_and_type.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    commented_name_and_type.styles.container_type,
+    ContainerType::InlineSize
+  );
   assert_eq!(
     commented_name_and_type.styles.container_name,
     vec!["demo".to_string()]
@@ -3858,7 +3882,10 @@ fn container_global_keywords_apply_to_container_type_and_shorthand() {
   let styled = styled_tree_for(html);
 
   let type_inherit = find_by_id(&styled, "type-inherit").expect("type-inherit element");
-  assert_eq!(type_inherit.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    type_inherit.styles.container_type,
+    ContainerType::InlineSize
+  );
   assert!(type_inherit.styles.container_name.is_empty());
 
   let type_initial = find_by_id(&styled, "type-initial").expect("type-initial element");
@@ -3866,7 +3893,10 @@ fn container_global_keywords_apply_to_container_type_and_shorthand() {
 
   let shorthand_inherit =
     find_by_id(&styled, "shorthand-inherit").expect("shorthand-inherit element");
-  assert_eq!(shorthand_inherit.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    shorthand_inherit.styles.container_type,
+    ContainerType::InlineSize
+  );
   assert_eq!(
     shorthand_inherit.styles.container_name,
     vec!["demo".to_string()]
@@ -3874,6 +3904,9 @@ fn container_global_keywords_apply_to_container_type_and_shorthand() {
 
   let shorthand_initial =
     find_by_id(&styled, "shorthand-initial").expect("shorthand-initial element");
-  assert_eq!(shorthand_initial.styles.container_type, ContainerType::Normal);
+  assert_eq!(
+    shorthand_initial.styles.container_type,
+    ContainerType::Normal
+  );
   assert!(shorthand_initial.styles.container_name.is_empty());
 }

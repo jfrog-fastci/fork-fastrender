@@ -28,4 +28,3 @@ pub(crate) fn with_bypass<R>(node: &BoxNode, f: impl FnOnce() -> R) -> R {
   });
   result
 }
-

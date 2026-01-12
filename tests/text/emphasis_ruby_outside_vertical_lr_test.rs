@@ -81,8 +81,14 @@ fn text_emphasis_marks_render_outside_ruby_annotations_in_vertical_lr_writing() 
     .render_html_with_options_and_artifacts(html, options, &mut artifacts)
     .expect("render");
 
-  let tree = artifacts.fragment_tree.take().expect("fragment tree captured");
-  let list = artifacts.display_list.take().expect("display list captured");
+  let tree = artifacts
+    .fragment_tree
+    .take()
+    .expect("fragment tree captured");
+  let list = artifacts
+    .display_list
+    .take()
+    .expect("display list captured");
 
   let (anno_min_x, anno_max_x) = text_x_span(&tree.root, "B").expect("ruby annotation fragment");
   let (base_min_x, base_max_x) = text_x_span(&tree.root, "A").expect("base text fragment span");
@@ -172,4 +178,3 @@ fn text_emphasis_marks_render_outside_ruby_annotations_in_vertical_lr_writing() 
     );
   }
 }
-

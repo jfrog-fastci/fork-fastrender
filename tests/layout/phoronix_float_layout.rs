@@ -138,4 +138,3 @@ fn phoronix_like_two_column_floats_with_negative_margin() {
     sidebar.bounds.max_x()
   );
 }
-

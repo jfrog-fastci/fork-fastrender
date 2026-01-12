@@ -1,11 +1,13 @@
 use fastrender::css::types::{FontDisplay, FontFaceRule, FontFaceSource};
 use fastrender::debug::runtime::{self, RuntimeToggles};
-use fastrender::text::font_db::{FontDatabase, FontStyle};
-use fastrender::text::font_loader::FontContext;
 use fastrender::dom::DomNodeType;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaType;
-use fastrender::{BoxNode, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode};
+use fastrender::text::font_db::{FontDatabase, FontStyle};
+use fastrender::text::font_loader::FontContext;
+use fastrender::{
+  BoxNode, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,9 +52,15 @@ fn find_box_id_for_styled_node_id(node: &BoxNode, styled_node_id: usize) -> Opti
 fn find_fragment_height_for_box_id(node: &FragmentNode, box_id: usize) -> Option<f32> {
   let matches_box = match &node.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_box {
@@ -124,8 +132,8 @@ fn font_display_swap_web_font_participates_in_layout() {
 
   let styled_node_id =
     find_styled_node_id_for_dom_id(&intermediates.styled_tree, "box").expect("box styled id");
-  let box_id = find_box_id_for_styled_node_id(&intermediates.box_tree.root, styled_node_id)
-    .expect("box id");
+  let box_id =
+    find_box_id_for_styled_node_id(&intermediates.box_tree.root, styled_node_id).expect("box id");
   let height = find_fragment_height_for_box_id(&intermediates.fragment_tree.root, box_id)
     .expect("box fragment height");
 

@@ -51,10 +51,10 @@ use super::contexts::positioned::ContainingBlock;
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
+use crate::layout::anchor_positioning::{AnchorIndex, AnchorQueryContext};
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
-use crate::layout::anchor_positioning::{AnchorIndex, AnchorQueryContext};
 use crate::layout::utils::content_size_from_box_sizing;
 use crate::layout::utils::resolve_offset_for_positioned;
 use crate::style::computed::PositionedStyle;
@@ -101,7 +101,13 @@ fn resolve_length_for_positioned_size(
   style: &PositionedStyle,
   font_context: &FontContext,
 ) -> Option<f32> {
-  crate::layout::utils::resolve_length_for_positioned_style(*len, percentage_base, viewport, style, font_context)
+  crate::layout::utils::resolve_length_for_positioned_style(
+    *len,
+    percentage_base,
+    viewport,
+    style,
+    font_context,
+  )
 }
 
 /// Resolved margin values after auto-margin calculation
@@ -281,17 +287,18 @@ impl AbsoluteLayout {
       .or_else(|| cb_height.is_finite().then_some(cb_height));
 
     // Resolve horizontal position and width
-    let (mut x, mut width, mut margin_left, mut margin_right, min_width, max_width) = self.compute_horizontal(
-      style,
-      cb_width,
-      inline_base,
-      viewport,
-      input.is_replaced,
-      input.preferred_min_inline_size,
-      input.preferred_inline_size,
-      input.intrinsic_size.width,
-      input.static_position.x,
-    )?;
+    let (mut x, mut width, mut margin_left, mut margin_right, min_width, max_width) = self
+      .compute_horizontal(
+        style,
+        cb_width,
+        inline_base,
+        viewport,
+        input.is_replaced,
+        input.preferred_min_inline_size,
+        input.preferred_inline_size,
+        input.intrinsic_size.width,
+        input.static_position.x,
+      )?;
 
     // Resolve vertical position and height
     let (mut y, mut height, mut margin_top, mut margin_bottom, min_height, max_height) = self
@@ -331,13 +338,8 @@ impl AbsoluteLayout {
       style,
       &self.font_context,
     );
-    let top = resolve_offset_for_positioned(
-      &style.top,
-      block_base,
-      viewport,
-      style,
-      &self.font_context,
-    );
+    let top =
+      resolve_offset_for_positioned(&style.top, block_base, viewport, style, &self.font_context);
     let bottom = resolve_offset_for_positioned(
       &style.bottom,
       block_base,
@@ -357,8 +359,10 @@ impl AbsoluteLayout {
     // their used `width/height` are resolved like inline replaced elements (intrinsic sizes /
     // ratios) even when both insets are specified. Allow ratio-derived sizing for replaced elements
     // so `top:0; bottom:0; height:auto` does not stretch images.
-    let width_auto_for_ratio = width_auto && (input.is_replaced || !(left.is_some() && right.is_some()));
-    let height_auto_for_ratio = height_auto && (input.is_replaced || !(top.is_some() && bottom.is_some()));
+    let width_auto_for_ratio =
+      width_auto && (input.is_replaced || !(left.is_some() && right.is_some()));
+    let height_auto_for_ratio =
+      height_auto && (input.is_replaced || !(top.is_some() && bottom.is_some()));
 
     let natural_ratio = if input.is_replaced
       && input.intrinsic_size.width.is_finite()
@@ -641,7 +645,9 @@ impl AbsoluteLayout {
                 style,
                 &self.font_context,
               )
-              .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
+              .map(|px| {
+                content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing)
+              })
               .map(shrink),
             },
             CalcSizeBasis::Length(len) => resolve_length_for_positioned_size(
@@ -669,7 +675,9 @@ impl AbsoluteLayout {
                 &self.font_context,
               )
             })
-            .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing).max(0.0))
+            .map(|px| {
+              content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing).max(0.0)
+            })
             .or(Some(basis_content))
         }
       }
@@ -703,14 +711,10 @@ impl AbsoluteLayout {
 
     let specified_width_for_overconstraint = match width_value {
       WidthValue::Auto => None,
-      WidthValue::Length(len) => resolve_length_for_positioned_size(
-        &len,
-        inline_base,
-        viewport,
-        style,
-        &self.font_context,
-      )
-      .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing)),
+      WidthValue::Length(len) => {
+        resolve_length_for_positioned_size(&len, inline_base, viewport, style, &self.font_context)
+          .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
+      }
       WidthValue::Keyword(keyword) => {
         resolve_keyword(keyword, available_for_shrink(probe_left, probe_right))
       }
@@ -759,14 +763,10 @@ impl AbsoluteLayout {
 
     let specified_width = match width_value {
       WidthValue::Auto => None,
-      WidthValue::Length(len) => resolve_length_for_positioned_size(
-        &len,
-        inline_base,
-        viewport,
-        style,
-        &self.font_context,
-      )
-      .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing)),
+      WidthValue::Length(len) => {
+        resolve_length_for_positioned_size(&len, inline_base, viewport, style, &self.font_context)
+          .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
+      }
       WidthValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink),
     };
 
@@ -1040,7 +1040,9 @@ impl AbsoluteLayout {
                 &self.font_context,
               )
             })
-            .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing).max(0.0))
+            .map(|px| {
+              content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing).max(0.0)
+            })
             .or(Some(basis_content))
         }
       }
@@ -1064,21 +1066,18 @@ impl AbsoluteLayout {
     // Only treat `top + height + bottom` as overconstrained when the computed values do not
     // satisfy the constraint equation (CSS 2.1 §10.6.4).
     let has_all_edges = top.is_some() && bottom.is_some() && specified_height_full.is_some();
-    let insets_overconstrained = has_all_edges
-      && !margin_top_auto
-      && !margin_bottom_auto
-      && {
-        let total = top.unwrap_or(0.0)
-          + margin_top
-          + border_top
-          + padding_top
-          + specified_height_full.unwrap_or(0.0)
-          + padding_bottom
-          + border_bottom
-          + margin_bottom
-          + bottom.unwrap_or(0.0);
-        (total - cb_height).abs() > 0.5
-      };
+    let insets_overconstrained = has_all_edges && !margin_top_auto && !margin_bottom_auto && {
+      let total = top.unwrap_or(0.0)
+        + margin_top
+        + border_top
+        + padding_top
+        + specified_height_full.unwrap_or(0.0)
+        + padding_bottom
+        + border_bottom
+        + margin_bottom
+        + bottom.unwrap_or(0.0);
+      (total - cb_height).abs() > 0.5
+    };
     let bottom_for_sizing = if insets_overconstrained { None } else { bottom };
 
     let available_for_shrink = cb_height
@@ -1158,7 +1157,11 @@ impl AbsoluteLayout {
       //   distributed via auto margins.
       (Some(t), None, Some(b)) => {
         let available = cb_height - t - b - margin_top - margin_bottom - total_vertical_spacing;
-        let height = if is_replaced { intrinsic_height } else { available.max(0.0) };
+        let height = if is_replaced {
+          intrinsic_height
+        } else {
+          available.max(0.0)
+        };
         let y = t + margin_top + border_top + padding_top;
         (y, height, false)
       }
@@ -1381,17 +1384,17 @@ impl AbsoluteLayout {
 }
 
 #[cfg(test)]
-  mod tests {
-    use super::*;
-    use crate::geometry::EdgeOffsets;
-    use crate::layout::utils::resolve_offset;
-    use crate::style::types::FontSizeAdjust;
-    use crate::style::types::FontSizeAdjustMetric;
-    use crate::style::values::Length;
-    use crate::style::values::LengthOrAuto;
-    use crate::style::values::LengthUnit;
-    use crate::style::ComputedStyle;
-    use crate::text::font_loader::FontContext;
+mod tests {
+  use super::*;
+  use crate::geometry::EdgeOffsets;
+  use crate::layout::utils::resolve_offset;
+  use crate::style::types::FontSizeAdjust;
+  use crate::style::types::FontSizeAdjustMetric;
+  use crate::style::values::Length;
+  use crate::style::values::LengthOrAuto;
+  use crate::style::values::LengthUnit;
+  use crate::style::ComputedStyle;
+  use crate::text::font_loader::FontContext;
 
   fn default_style() -> PositionedStyle {
     let mut style = PositionedStyle::default();
@@ -2853,8 +2856,9 @@ pub(crate) fn resolve_positioned_style_with_anchors(
       .map_or(LengthOrAuto::Auto, LengthOrAuto::Length)
   };
 
-  let resolve_anchor_inset =
-    |func: &crate::style::types::AnchorFunction, edge: InsetEdge| -> Option<f32> {
+  let resolve_anchor_inset = |func: &crate::style::types::AnchorFunction,
+                              edge: InsetEdge|
+   -> Option<f32> {
     let anchors = anchors?;
     let anchor = if let Some(anchor_name) = func.name.as_deref() {
       anchors.get_anchor_for_query(anchor_name, anchor_query.query_parent_box_id)?
@@ -2888,7 +2892,12 @@ pub(crate) fn resolve_positioned_style_with_anchors(
       other => other,
     };
 
-    let axis_sides = |horizontal: bool, positive: bool| -> (crate::style::types::AnchorSide, crate::style::types::AnchorSide) {
+    let axis_sides = |horizontal: bool,
+                      positive: bool|
+     -> (
+      crate::style::types::AnchorSide,
+      crate::style::types::AnchorSide,
+    ) {
       match (horizontal, positive) {
         (true, true) => (
           crate::style::types::AnchorSide::Left,
@@ -2939,7 +2948,10 @@ pub(crate) fn resolve_positioned_style_with_anchors(
       }
       crate::style::types::AnchorSide::InlineStart | crate::style::types::AnchorSide::InlineEnd => {
         let horizontal = crate::style::inline_axis_is_horizontal(containing_block.writing_mode);
-        let positive = crate::style::inline_axis_positive(containing_block.writing_mode, containing_block.direction);
+        let positive = crate::style::inline_axis_positive(
+          containing_block.writing_mode,
+          containing_block.direction,
+        );
         let (start, end) = axis_sides(horizontal, positive);
         if matches!(side, crate::style::types::AnchorSide::InlineStart) {
           start
@@ -2979,14 +2991,12 @@ pub(crate) fn resolve_positioned_style_with_anchors(
       (InsetEdge::Left | InsetEdge::Right, crate::style::types::AnchorSide::Center) => {
         Some(anchor_rect.x() + anchor_rect.width() / 2.0)
       }
-      (
-        InsetEdge::Top | InsetEdge::Bottom,
-        crate::style::types::AnchorSide::Percent(pct),
-      ) => Some(anchor_rect.y() + anchor_rect.height() * (pct / 100.0)),
-      (
-        InsetEdge::Left | InsetEdge::Right,
-        crate::style::types::AnchorSide::Percent(pct),
-      ) => Some(anchor_rect.x() + anchor_rect.width() * (pct / 100.0)),
+      (InsetEdge::Top | InsetEdge::Bottom, crate::style::types::AnchorSide::Percent(pct)) => {
+        Some(anchor_rect.y() + anchor_rect.height() * (pct / 100.0))
+      }
+      (InsetEdge::Left | InsetEdge::Right, crate::style::types::AnchorSide::Percent(pct)) => {
+        Some(anchor_rect.x() + anchor_rect.width() * (pct / 100.0))
+      }
       _ => None,
     }?;
 
@@ -3000,53 +3010,85 @@ pub(crate) fn resolve_positioned_style_with_anchors(
     inset.is_finite().then_some(inset)
   };
 
-  let inset_to_offset = |value: &crate::style::types::InsetValue, edge: InsetEdge| -> LengthOrAuto {
-    match value {
-      crate::style::types::InsetValue::Auto => LengthOrAuto::Auto,
-      crate::style::types::InsetValue::Length(len) => LengthOrAuto::Length(*len),
-      crate::style::types::InsetValue::Anchor(func) => resolve_anchor_inset(func, edge)
-        .map(|px| LengthOrAuto::Length(Length::px(px)))
-        .unwrap_or_else(|| fallback_or_auto(func)),
-    }
-  };
+  let inset_to_offset =
+    |value: &crate::style::types::InsetValue, edge: InsetEdge| -> LengthOrAuto {
+      match value {
+        crate::style::types::InsetValue::Auto => LengthOrAuto::Auto,
+        crate::style::types::InsetValue::Length(len) => LengthOrAuto::Length(*len),
+        crate::style::types::InsetValue::Anchor(func) => resolve_anchor_inset(func, edge)
+          .map(|px| LengthOrAuto::Length(Length::px(px)))
+          .unwrap_or_else(|| fallback_or_auto(func)),
+      }
+    };
   resolved.left = inset_to_offset(&style.left, InsetEdge::Left);
   resolved.right = inset_to_offset(&style.right, InsetEdge::Right);
   resolved.top = inset_to_offset(&style.top, InsetEdge::Top);
   resolved.bottom = inset_to_offset(&style.bottom, InsetEdge::Bottom);
 
-  let fallback_or_auto_size =
-    |func: &crate::style::types::AnchorSizeFunction| -> LengthOrAuto {
-      func
-        .fallback
-        .as_ref()
-        .copied()
-        .map_or(LengthOrAuto::Auto, LengthOrAuto::Length)
-    };
+  let fallback_or_auto_size = |func: &crate::style::types::AnchorSizeFunction| -> LengthOrAuto {
+    func
+      .fallback
+      .as_ref()
+      .copied()
+      .map_or(LengthOrAuto::Auto, LengthOrAuto::Length)
+  };
 
-  let resolve_anchor_size =
-    |func: &crate::style::types::AnchorSizeFunction,
-     default_axis: crate::style::types::AnchorSizeAxis|
-     -> Option<f32> {
-      let anchors = anchors?;
-      let anchor = if let Some(anchor_name) = func.name.as_deref() {
-        anchors.get_anchor_for_query(anchor_name, anchor_query.query_parent_box_id)?
-      } else {
-        match &style.position_anchor {
-          crate::style::types::PositionAnchor::Name(name) => {
-            anchors.get_anchor_for_query(name, anchor_query.query_parent_box_id)?
-          }
-          crate::style::types::PositionAnchor::Auto => {
-            anchors.get_anchor_by_box_id(anchor_query.implicit_anchor_box_id?)?
-          }
-          _ => return None,
+  let resolve_anchor_size = |func: &crate::style::types::AnchorSizeFunction,
+                             default_axis: crate::style::types::AnchorSizeAxis|
+   -> Option<f32> {
+    let anchors = anchors?;
+    let anchor = if let Some(anchor_name) = func.name.as_deref() {
+      anchors.get_anchor_for_query(anchor_name, anchor_query.query_parent_box_id)?
+    } else {
+      match &style.position_anchor {
+        crate::style::types::PositionAnchor::Name(name) => {
+          anchors.get_anchor_for_query(name, anchor_query.query_parent_box_id)?
         }
-      };
-      let rect = anchor.rect;
-      let axis = match func.axis {
-        crate::style::types::AnchorSizeAxis::Omitted => default_axis,
-        other => other,
-      };
-      let value = match axis {
+        crate::style::types::PositionAnchor::Auto => {
+          anchors.get_anchor_by_box_id(anchor_query.implicit_anchor_box_id?)?
+        }
+        _ => return None,
+      }
+    };
+    let rect = anchor.rect;
+    let axis = match func.axis {
+      crate::style::types::AnchorSizeAxis::Omitted => default_axis,
+      other => other,
+    };
+    let value = match axis {
+      crate::style::types::AnchorSizeAxis::Width => rect.width(),
+      crate::style::types::AnchorSizeAxis::Height => rect.height(),
+      crate::style::types::AnchorSizeAxis::Inline => {
+        if crate::style::inline_axis_is_horizontal(containing_block.writing_mode) {
+          rect.width()
+        } else {
+          rect.height()
+        }
+      }
+      crate::style::types::AnchorSizeAxis::Block => {
+        if crate::style::block_axis_is_horizontal(containing_block.writing_mode) {
+          rect.width()
+        } else {
+          rect.height()
+        }
+      }
+      crate::style::types::AnchorSizeAxis::SelfInline => {
+        if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+          rect.width()
+        } else {
+          rect.height()
+        }
+      }
+      crate::style::types::AnchorSizeAxis::SelfBlock => {
+        if crate::style::block_axis_is_horizontal(style.writing_mode) {
+          rect.width()
+        } else {
+          rect.height()
+        }
+      }
+      // `Omitted` should have been normalized to the provided default axis above, but handle it
+      // defensively in case a caller ever passes `default_axis = Omitted`.
+      crate::style::types::AnchorSizeAxis::Omitted => match default_axis {
         crate::style::types::AnchorSizeAxis::Width => rect.width(),
         crate::style::types::AnchorSizeAxis::Height => rect.height(),
         crate::style::types::AnchorSizeAxis::Inline => {
@@ -3077,44 +3119,11 @@ pub(crate) fn resolve_positioned_style_with_anchors(
             rect.height()
           }
         }
-        // `Omitted` should have been normalized to the provided default axis above, but handle it
-        // defensively in case a caller ever passes `default_axis = Omitted`.
-        crate::style::types::AnchorSizeAxis::Omitted => match default_axis {
-          crate::style::types::AnchorSizeAxis::Width => rect.width(),
-          crate::style::types::AnchorSizeAxis::Height => rect.height(),
-          crate::style::types::AnchorSizeAxis::Inline => {
-            if crate::style::inline_axis_is_horizontal(containing_block.writing_mode) {
-              rect.width()
-            } else {
-              rect.height()
-            }
-          }
-          crate::style::types::AnchorSizeAxis::Block => {
-            if crate::style::block_axis_is_horizontal(containing_block.writing_mode) {
-              rect.width()
-            } else {
-              rect.height()
-            }
-          }
-          crate::style::types::AnchorSizeAxis::SelfInline => {
-            if crate::style::inline_axis_is_horizontal(style.writing_mode) {
-              rect.width()
-            } else {
-              rect.height()
-            }
-          }
-          crate::style::types::AnchorSizeAxis::SelfBlock => {
-            if crate::style::block_axis_is_horizontal(style.writing_mode) {
-              rect.width()
-            } else {
-              rect.height()
-            }
-          }
-          crate::style::types::AnchorSizeAxis::Omitted => rect.width(),
-        },
-      };
-      value.is_finite().then_some(value)
+        crate::style::types::AnchorSizeAxis::Omitted => rect.width(),
+      },
     };
+    value.is_finite().then_some(value)
+  };
 
   if let Some(func) = style.width_anchor_size.as_ref() {
     resolved.width = resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Width)
@@ -3174,7 +3183,11 @@ pub(crate) fn resolve_positioned_style_with_anchors(
     } else if len.unit.is_absolute() {
       Some(len.to_px())
     } else if len.unit.is_viewport_relative() {
-      len.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
+      len.resolve_with_viewport_for_writing_mode(
+        viewport.width,
+        viewport.height,
+        style.writing_mode,
+      )
     } else {
       Some(crate::layout::utils::resolve_font_relative_length(
         *len,
@@ -3200,7 +3213,12 @@ pub(crate) fn resolve_positioned_style_with_anchors(
 
   let min_width_px = if let Some(func) = style.min_width_anchor_size.as_ref() {
     resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Width)
-      .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, inline_base)))
+      .or_else(|| {
+        func
+          .fallback
+          .as_ref()
+          .and_then(|l| resolve_len(l, inline_base))
+      })
       .unwrap_or(0.0)
   } else {
     style
@@ -3218,7 +3236,12 @@ pub(crate) fn resolve_positioned_style_with_anchors(
 
   let max_width_px = if let Some(func) = style.max_width_anchor_size.as_ref() {
     resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Width)
-      .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, inline_base)))
+      .or_else(|| {
+        func
+          .fallback
+          .as_ref()
+          .and_then(|l| resolve_len(l, inline_base))
+      })
       .unwrap_or(f32::INFINITY)
   } else {
     style
@@ -3236,7 +3259,12 @@ pub(crate) fn resolve_positioned_style_with_anchors(
 
   let min_height_px = if let Some(func) = style.min_height_anchor_size.as_ref() {
     resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Height)
-      .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, block_base)))
+      .or_else(|| {
+        func
+          .fallback
+          .as_ref()
+          .and_then(|l| resolve_len(l, block_base))
+      })
       .unwrap_or(0.0)
   } else {
     style
@@ -3254,7 +3282,12 @@ pub(crate) fn resolve_positioned_style_with_anchors(
 
   let max_height_px = if let Some(func) = style.max_height_anchor_size.as_ref() {
     resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Height)
-      .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, block_base)))
+      .or_else(|| {
+        func
+          .fallback
+          .as_ref()
+          .and_then(|l| resolve_len(l, block_base))
+      })
       .unwrap_or(f32::INFINITY)
   } else {
     style
@@ -3366,21 +3399,23 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
   }
 
   fn border_box_rect(result: &AbsoluteLayoutResult, style: &PositionedStyle) -> Rect {
-    let horizontal = style.padding.left
-      + style.padding.right
-      + style.border_width.left
-      + style.border_width.right;
-    let vertical = style.padding.top
-      + style.padding.bottom
-      + style.border_width.top
-      + style.border_width.bottom;
-    let border_size = Size::new(result.size.width + horizontal, result.size.height + vertical);
+    let horizontal =
+      style.padding.left + style.padding.right + style.border_width.left + style.border_width.right;
+    let vertical =
+      style.padding.top + style.padding.bottom + style.border_width.top + style.border_width.bottom;
+    let border_size = Size::new(
+      result.size.width + horizontal,
+      result.size.height + vertical,
+    );
     let content_offset = Point::new(
       style.border_width.left + style.padding.left,
       style.border_width.top + style.padding.top,
     );
     Rect::new(
-      Point::new(result.position.x - content_offset.x, result.position.y - content_offset.y),
+      Point::new(
+        result.position.x - content_offset.x,
+        result.position.y - content_offset.y,
+      ),
       border_size,
     )
   }
@@ -3413,15 +3448,28 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     style: &ComputedStyle,
     axis: crate::style::LogicalAxis,
   ) -> (crate::style::PhysicalSide, crate::style::PhysicalSide) {
-    let axis_sides =
-      |horizontal: bool, positive: bool| -> (crate::style::PhysicalSide, crate::style::PhysicalSide) {
-        match (horizontal, positive) {
-          (true, true) => (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right),
-          (true, false) => (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left),
-          (false, true) => (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom),
-          (false, false) => (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top),
-        }
-      };
+    let axis_sides = |horizontal: bool,
+                      positive: bool|
+     -> (crate::style::PhysicalSide, crate::style::PhysicalSide) {
+      match (horizontal, positive) {
+        (true, true) => (
+          crate::style::PhysicalSide::Left,
+          crate::style::PhysicalSide::Right,
+        ),
+        (true, false) => (
+          crate::style::PhysicalSide::Right,
+          crate::style::PhysicalSide::Left,
+        ),
+        (false, true) => (
+          crate::style::PhysicalSide::Top,
+          crate::style::PhysicalSide::Bottom,
+        ),
+        (false, false) => (
+          crate::style::PhysicalSide::Bottom,
+          crate::style::PhysicalSide::Top,
+        ),
+      }
+    };
 
     match axis {
       crate::style::LogicalAxis::Inline => {
@@ -3442,8 +3490,8 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     axis: crate::style::LogicalAxis,
     physical_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
   ) -> crate::style::types::AnchorSide {
-    use crate::style::PhysicalSide;
     use crate::style::types::AnchorSide;
+    use crate::style::PhysicalSide;
 
     let side = match axis {
       crate::style::LogicalAxis::Inline => match side {
@@ -3532,9 +3580,11 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     }
   }
 
-  fn anchor_side_from_physical_side(side: crate::style::PhysicalSide) -> crate::style::types::AnchorSide {
-    use crate::style::PhysicalSide;
+  fn anchor_side_from_physical_side(
+    side: crate::style::PhysicalSide,
+  ) -> crate::style::types::AnchorSide {
     use crate::style::types::AnchorSide;
+    use crate::style::PhysicalSide;
     match side {
       PhysicalSide::Left => AnchorSide::Left,
       PhysicalSide::Right => AnchorSide::Right,
@@ -3546,8 +3596,8 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
   fn physical_side_from_anchor_side(
     side: crate::style::types::AnchorSide,
   ) -> Option<crate::style::PhysicalSide> {
-    use crate::style::PhysicalSide;
     use crate::style::types::AnchorSide;
+    use crate::style::PhysicalSide;
     match side {
       AnchorSide::Left => Some(PhysicalSide::Left),
       AnchorSide::Right => Some(PhysicalSide::Right),
@@ -3597,7 +3647,11 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     }
   }
 
-  fn swap_insets(style: &mut ComputedStyle, a: crate::style::PhysicalSide, b: crate::style::PhysicalSide) {
+  fn swap_insets(
+    style: &mut ComputedStyle,
+    a: crate::style::PhysicalSide,
+    b: crate::style::PhysicalSide,
+  ) {
     use crate::style::PhysicalSide::*;
     match (a, b) {
       (Top, Right) | (Right, Top) => std::mem::swap(&mut style.top, &mut style.right),
@@ -3618,12 +3672,16 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     use crate::style::PhysicalSide::*;
     match (a, b) {
       (Top, Right) | (Right, Top) => std::mem::swap(&mut style.margin_top, &mut style.margin_right),
-      (Top, Bottom) | (Bottom, Top) => std::mem::swap(&mut style.margin_top, &mut style.margin_bottom),
+      (Top, Bottom) | (Bottom, Top) => {
+        std::mem::swap(&mut style.margin_top, &mut style.margin_bottom)
+      }
       (Top, Left) | (Left, Top) => std::mem::swap(&mut style.margin_top, &mut style.margin_left),
       (Right, Bottom) | (Bottom, Right) => {
         std::mem::swap(&mut style.margin_right, &mut style.margin_bottom)
       }
-      (Right, Left) | (Left, Right) => std::mem::swap(&mut style.margin_right, &mut style.margin_left),
+      (Right, Left) | (Left, Right) => {
+        std::mem::swap(&mut style.margin_right, &mut style.margin_left)
+      }
       (Bottom, Left) | (Left, Bottom) => {
         std::mem::swap(&mut style.margin_bottom, &mut style.margin_left)
       }
@@ -3635,16 +3693,20 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     let axis = match keyword {
       BuiltinTryKeyword::FlipInline => Some(crate::style::LogicalAxis::Inline),
       BuiltinTryKeyword::FlipBlock => Some(crate::style::LogicalAxis::Block),
-      BuiltinTryKeyword::FlipX => Some(if crate::style::inline_axis_is_horizontal(style.writing_mode) {
-        crate::style::LogicalAxis::Inline
-      } else {
-        crate::style::LogicalAxis::Block
-      }),
-      BuiltinTryKeyword::FlipY => Some(if crate::style::inline_axis_is_horizontal(style.writing_mode) {
-        crate::style::LogicalAxis::Block
-      } else {
-        crate::style::LogicalAxis::Inline
-      }),
+      BuiltinTryKeyword::FlipX => Some(
+        if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+          crate::style::LogicalAxis::Inline
+        } else {
+          crate::style::LogicalAxis::Block
+        },
+      ),
+      BuiltinTryKeyword::FlipY => Some(
+        if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+          crate::style::LogicalAxis::Block
+        } else {
+          crate::style::LogicalAxis::Inline
+        },
+      ),
       BuiltinTryKeyword::FlipStart => None,
     };
 
@@ -3681,7 +3743,9 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       return;
     }
 
-    fn flip_anchor_size_axis(axis: crate::style::types::AnchorSizeAxis) -> crate::style::types::AnchorSizeAxis {
+    fn flip_anchor_size_axis(
+      axis: crate::style::types::AnchorSizeAxis,
+    ) -> crate::style::types::AnchorSizeAxis {
       use crate::style::types::AnchorSizeAxis::*;
       match axis {
         Omitted => Omitted,
@@ -3703,10 +3767,16 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       std::mem::swap(&mut style.width_anchor_size, &mut style.height_anchor_size);
       std::mem::swap(&mut style.min_width, &mut style.min_height);
       std::mem::swap(&mut style.min_width_keyword, &mut style.min_height_keyword);
-      std::mem::swap(&mut style.min_width_anchor_size, &mut style.min_height_anchor_size);
+      std::mem::swap(
+        &mut style.min_width_anchor_size,
+        &mut style.min_height_anchor_size,
+      );
       std::mem::swap(&mut style.max_width, &mut style.max_height);
       std::mem::swap(&mut style.max_width_keyword, &mut style.max_height_keyword);
-      std::mem::swap(&mut style.max_width_anchor_size, &mut style.max_height_anchor_size);
+      std::mem::swap(
+        &mut style.max_width_anchor_size,
+        &mut style.max_height_anchor_size,
+      );
 
       if let Some(func) = style.width_anchor_size.as_mut() {
         func.axis = flip_anchor_size_axis(func.axis);
@@ -3764,7 +3834,10 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     block_anchor_center: bool,
   }
 
-  fn positioned_inset<'a>(style: &'a PositionedStyle, side: crate::style::PhysicalSide) -> &'a LengthOrAuto {
+  fn positioned_inset<'a>(
+    style: &'a PositionedStyle,
+    side: crate::style::PhysicalSide,
+  ) -> &'a LengthOrAuto {
     match side {
       crate::style::PhysicalSide::Top => &style.top,
       crate::style::PhysicalSide::Right => &style.right,
@@ -3773,7 +3846,10 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     }
   }
 
-  fn axis_insets_auto(style: &PositionedStyle, sides: (crate::style::PhysicalSide, crate::style::PhysicalSide)) -> bool {
+  fn axis_insets_auto(
+    style: &PositionedStyle,
+    sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+  ) -> bool {
     positioned_inset(style, sides.0).is_auto() && positioned_inset(style, sides.1).is_auto()
   }
 
@@ -3844,7 +3920,10 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       let cb_end = rect_side(cb_rect, end_side);
       let anchor_start = rect_side(anchor_rect, start_side);
       let anchor_end = rect_side(anchor_rect, end_side);
-      let positive = matches!(start_side, crate::style::PhysicalSide::Left | crate::style::PhysicalSide::Top);
+      let positive = matches!(
+        start_side,
+        crate::style::PhysicalSide::Left | crate::style::PhysicalSide::Top
+      );
       let outer_start = if positive {
         cb_start.min(anchor_start)
       } else {
@@ -3875,10 +3954,7 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     let mut top = cb_rect.y();
     let mut bottom = cb_rect.max_y();
 
-    for (sides, track) in [
-      (inline_sides, tracks.inline),
-      (block_sides, tracks.block),
-    ] {
+    for (sides, track) in [(inline_sides, tracks.inline), (block_sides, tracks.block)] {
       let lines = grid_lines(cb_rect, anchor_rect, sides);
       let (a, b) = line_indices(track);
       let v0 = lines[a];
@@ -3905,8 +3981,12 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     let derived = ContainingBlock::with_viewport_and_bases(
       area_rect,
       containing_block.viewport_size(),
-      containing_block.inline_percentage_base().map(|_| area_rect.size.width),
-      containing_block.block_percentage_base().map(|_| area_rect.size.height),
+      containing_block
+        .inline_percentage_base()
+        .map(|_| area_rect.size.width),
+      containing_block
+        .block_percentage_base()
+        .map(|_| area_rect.size.height),
     )
     .with_writing_mode_and_direction(containing_block.writing_mode, containing_block.direction);
 
@@ -3969,7 +4049,10 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     ) {
       let start_side = sides.0;
       let end_side = sides.1;
-      let horizontal = matches!(start_side, crate::style::PhysicalSide::Left | crate::style::PhysicalSide::Right);
+      let horizontal = matches!(
+        start_side,
+        crate::style::PhysicalSide::Left | crate::style::PhysicalSide::Right
+      );
 
       let set_side = |desired: f32, side: crate::style::PhysicalSide| -> f32 {
         match side {
@@ -4049,7 +4132,10 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       );
     }
 
-    result.position = Point::new(border_origin.x + content_offset.x, border_origin.y + content_offset.y);
+    result.position = Point::new(
+      border_origin.x + content_offset.x,
+      border_origin.y + content_offset.y,
+    );
   }
 
   let base_position_area =
@@ -4250,8 +4336,10 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
         &mut trial_result,
       );
     }
-    let trial_overflow =
-      overflow_area(border_box_rect(&trial_result, &trial_input.style), containing_block.rect);
+    let trial_overflow = overflow_area(
+      border_box_rect(&trial_result, &trial_input.style),
+      containing_block.rect,
+    );
 
     if trial_overflow <= OVERFLOW_EPSILON {
       return Ok((positioned_used, trial_result));

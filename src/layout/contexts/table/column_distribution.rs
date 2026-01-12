@@ -1914,7 +1914,10 @@ mod tests {
   fn fixed_layout_distributes_slack_when_all_columns_are_fixed() {
     // CSS 2.1 §17.5.2.1: in fixed table layout, any extra space from a larger table width
     // should be distributed across the columns even when every column has an explicit width.
-    let columns = vec![ColumnConstraints::fixed(50.0), ColumnConstraints::fixed(50.0)];
+    let columns = vec![
+      ColumnConstraints::fixed(50.0),
+      ColumnConstraints::fixed(50.0),
+    ];
     let distributor = ColumnDistributor::new(DistributionMode::Fixed);
 
     let result = distributor.distribute(&columns, 300.0);

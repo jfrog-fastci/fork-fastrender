@@ -57,7 +57,8 @@ use crate::paint::display_list::GlyphInstance;
 use crate::paint::display_list::TextItem;
 use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context};
 use crate::paint::text_rasterize::{
-  concat_transforms, rotation_transform, GlyphCacheStats, TextRasterizer, TextRenderState, TextStroke,
+  concat_transforms, rotation_transform, GlyphCacheStats, TextRasterizer, TextRenderState,
+  TextStroke,
 };
 use crate::paint::text_shadow::PathBounds;
 use crate::render_control::{check_active, check_active_periodic};
@@ -918,17 +919,17 @@ impl Canvas {
       if inherit_clip {
         if let Some(clip_rect) = self.current_state.clip_rect.take() {
           let intersected = clip_rect.intersection(layer_rect).unwrap_or(Rect::ZERO);
-          self.current_state.clip_rect = if intersected.width() <= 0.0 || intersected.height() <= 0.0
-          {
-            Some(Rect::ZERO)
-          } else {
-            Some(Rect::from_xywh(
-              intersected.x() - origin_x as f32,
-              intersected.y() - origin_y as f32,
-              intersected.width(),
-              intersected.height(),
-            ))
-          };
+          self.current_state.clip_rect =
+            if intersected.width() <= 0.0 || intersected.height() <= 0.0 {
+              Some(Rect::ZERO)
+            } else {
+              Some(Rect::from_xywh(
+                intersected.x() - origin_x as f32,
+                intersected.y() - origin_y as f32,
+                intersected.width(),
+                intersected.height(),
+              ))
+            };
         }
         if let Some(mask) = self.current_state.clip_mask.take() {
           self.current_state.clip_mask =
@@ -1531,7 +1532,12 @@ impl Canvas {
     self.set_clip_with_radii_impl(rect, radii.unwrap_or(BorderRadii::ZERO), true)
   }
 
-  fn set_clip_with_radii_impl(&mut self, rect: Rect, radii: BorderRadii, force_mask: bool) -> Result<()> {
+  fn set_clip_with_radii_impl(
+    &mut self,
+    rect: Rect,
+    radii: BorderRadii,
+    force_mask: bool,
+  ) -> Result<()> {
     let transform = self.current_state.transform;
     let clip_bounds = if transform == Transform::identity() {
       rect
@@ -1554,7 +1560,11 @@ impl Canvas {
     // paint code scissor work to those bounds.
     //
     // Callers that require a true per-pixel mask can use `*_force_mask`.
-    if !force_mask && radii.is_zero() && transform == Transform::identity() && prev_clip_mask.is_none() {
+    if !force_mask
+      && radii.is_zero()
+      && transform == Transform::identity()
+      && prev_clip_mask.is_none()
+    {
       return Ok(());
     }
 
@@ -1664,7 +1674,12 @@ impl Canvas {
   /// The provided `image` is mapped to `rect` in the canvas coordinate space before applying the
   /// current transform (matching how images are positioned in the display list). The resulting
   /// alpha coverage is intersected with any existing clip mask.
-  pub fn set_clip_image_mask(&mut self, image: &Pixmap, rect: Rect, quality: FilterQuality) -> Result<()> {
+  pub fn set_clip_image_mask(
+    &mut self,
+    image: &Pixmap,
+    rect: Rect,
+    quality: FilterQuality,
+  ) -> Result<()> {
     let pixmap_w = self.pixmap.width();
     let pixmap_h = self.pixmap.height();
     if pixmap_w == 0 || pixmap_h == 0 {
@@ -2126,7 +2141,12 @@ impl Canvas {
     let start_y = (min_y + 0.5).floor();
     let end_y = max_y.ceil();
 
-    Some(Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y))
+    Some(Rect::from_xywh(
+      start_x,
+      start_y,
+      end_x - start_x,
+      end_y - start_y,
+    ))
   }
 
   /// Fast path for axis-aligned `source-over` rectangle fills.
@@ -2148,7 +2168,10 @@ impl Canvas {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
       return true;
     }
-    if !rect.x().is_finite() || !rect.y().is_finite() || !rect.width().is_finite() || !rect.height().is_finite()
+    if !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
     {
       return false;
     }
@@ -2357,7 +2380,12 @@ impl Canvas {
         }
         Some((cx0i as i64, cy0i as i64, cx1i as i64, cy1i as i64))
       } else {
-        Some((cx0.floor() as i64, cy0.floor() as i64, cx1.ceil() as i64, cy1.ceil() as i64))
+        Some((
+          cx0.floor() as i64,
+          cy0.floor() as i64,
+          cx1.ceil() as i64,
+          cy1.ceil() as i64,
+        ))
       }
     } else {
       None
@@ -2575,7 +2603,8 @@ impl Canvas {
         let ty_round = transform.ty.round();
         if (transform.tx - tx_round).abs() <= 1e-3 && (transform.ty - ty_round).abs() <= 1e-3 {
           // First try the seam-avoidance snap that rounds near-integer rect edges in device space.
-          if let Some(snapped) = self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
+          if let Some(snapped) =
+            self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
           {
             if let Some(skia_rect) = self.to_skia_rect(snapped) {
               let path = PathBuilder::from_rect(skia_rect);
@@ -2881,7 +2910,9 @@ impl Canvas {
     width: f32,
     blend_mode: BlendMode,
   ) {
-    self.mirror_to_source_alpha(|canvas| canvas.stroke_rect_with_blend_impl(rect, color, width, blend_mode));
+    self.mirror_to_source_alpha(|canvas| {
+      canvas.stroke_rect_with_blend_impl(rect, color, width, blend_mode)
+    });
   }
 
   fn stroke_rect_with_blend_impl(
@@ -3253,7 +3284,8 @@ impl Canvas {
 
   /// Draws a stroked rounded rectangle outline
   pub fn stroke_rounded_rect(&mut self, rect: Rect, radii: BorderRadii, color: Rgba, width: f32) {
-    self.mirror_to_source_alpha(|canvas| canvas.stroke_rounded_rect_impl(rect, radii, color, width));
+    self
+      .mirror_to_source_alpha(|canvas| canvas.stroke_rounded_rect_impl(rect, radii, color, width));
   }
 
   fn stroke_rounded_rect_impl(&mut self, rect: Rect, radii: BorderRadii, color: Rgba, width: f32) {
@@ -3362,12 +3394,7 @@ impl Canvas {
     self.mirror_to_source_alpha_result(|canvas| canvas.draw_shaped_run_impl(run, position, color))
   }
 
-  fn draw_shaped_run_impl(
-    &mut self,
-    run: &ShapedRun,
-    position: Point,
-    color: Rgba,
-  ) -> Result<()> {
+  fn draw_shaped_run_impl(&mut self, run: &ShapedRun, position: Point, color: Rgba) -> Result<()> {
     if run.glyphs.is_empty() || color.a == 0.0 || self.current_state.opacity == 0.0 {
       return Ok(());
     }
@@ -4415,7 +4442,11 @@ pub(crate) fn composite_layer_into_pixmap(
         let out_b = sb + mul_div_256_round_u16(db, inv_sa_256);
 
         // Map 0..=256 alpha back to 0..=255.
-        let out_a_u8 = if out_a_256 >= 256 { 255 } else { out_a_256 as u8 };
+        let out_a_u8 = if out_a_256 >= 256 {
+          255
+        } else {
+          out_a_256 as u8
+        };
         let clamp = out_a_u8 as u16;
         let out_r_u8 = out_r.min(clamp).min(255) as u8;
         let out_g_u8 = out_g.min(clamp).min(255) as u8;
@@ -5501,7 +5532,11 @@ mod tests {
     }
 
     canvas
-      .set_clip_image_mask(&mask, Rect::from_xywh(2.0, 0.0, 4.0, 4.0), FilterQuality::Nearest)
+      .set_clip_image_mask(
+        &mask,
+        Rect::from_xywh(2.0, 0.0, 4.0, 4.0),
+        FilterQuality::Nearest,
+      )
       .unwrap();
     canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 8.0, 4.0), Rgba::RED);
     let pixmap = canvas.into_pixmap();
@@ -6048,7 +6083,14 @@ mod tests {
     let src_px = PremultipliedColorU8::from_rgba(0, 0, 0, 255).expect("premultiplied src");
     layer.pixels_mut().fill(src_px);
 
-    composite_layer_into_pixmap(&mut dst, &layer, 0.3, SkiaBlendMode::SourceOver, (0, 0), None);
+    composite_layer_into_pixmap(
+      &mut dst,
+      &layer,
+      0.3,
+      SkiaBlendMode::SourceOver,
+      (0, 0),
+      None,
+    );
 
     for y in 0..4 {
       for x in 0..4 {

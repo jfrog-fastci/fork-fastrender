@@ -815,12 +815,7 @@ fn describe_dom_node(node: &DomNodeSnapshot) -> String {
         if attr.name.eq_ignore_ascii_case("id") {
           id = Some(attr.value.clone());
         } else if attr.name.eq_ignore_ascii_case("class") {
-          classes.extend(
-            attr
-              .value
-              .split_ascii_whitespace()
-              .map(ToString::to_string),
-          );
+          classes.extend(attr.value.split_ascii_whitespace().map(ToString::to_string));
         }
       }
       if let Some(id) = id {
@@ -881,7 +876,8 @@ fn diff_box_structure(
   let shared = before.children.len().min(after.children.len());
   for idx in 0..shared {
     path.push(idx);
-    let (Some(child_before), Some(child_after)) = (before.children.get(idx), after.children.get(idx))
+    let (Some(child_before), Some(child_after)) =
+      (before.children.get(idx), after.children.get(idx))
     else {
       break;
     };

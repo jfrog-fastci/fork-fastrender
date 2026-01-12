@@ -636,7 +636,9 @@ fn select_pages(
 ) -> Vec<ProgressEntry> {
   match strategy {
     PagesetGuardrailsSelectionStrategy::Slowest => select_pages_slowest(entries, count),
-    PagesetGuardrailsSelectionStrategy::WorstAccuracy => select_pages_worst_accuracy(entries, count),
+    PagesetGuardrailsSelectionStrategy::WorstAccuracy => {
+      select_pages_worst_accuracy(entries, count)
+    }
     PagesetGuardrailsSelectionStrategy::Coverage => select_pages_coverage(entries, count),
   }
 }
@@ -1219,7 +1221,11 @@ mod tests {
       },
     ];
 
-    let selected = select_pages(&entries, 6, PagesetGuardrailsSelectionStrategy::WorstAccuracy);
+    let selected = select_pages(
+      &entries,
+      6,
+      PagesetGuardrailsSelectionStrategy::WorstAccuracy,
+    );
     let names: Vec<&str> = selected.iter().map(|e| e.name.as_str()).collect();
     // Always include failures first.
     assert_eq!(

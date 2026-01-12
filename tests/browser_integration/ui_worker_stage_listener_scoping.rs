@@ -1,6 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
+};
 use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
@@ -70,13 +72,10 @@ fn stage_heartbeats_forwarded_for_scroll_repaint_after_navigation() {
     .unwrap()
     .to_string();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-stage-listener-scope").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-stage-listener-scope").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");

@@ -44,9 +44,7 @@ fn parse_proc_status_kb(contents: &[u8], key: &[u8]) -> Option<u64> {
       if !byte.is_ascii_digit() {
         break;
       }
-      value = value
-        .checked_mul(10)?
-        .checked_add(u64::from(byte - b'0'))?;
+      value = value.checked_mul(10)?.checked_add(u64::from(byte - b'0'))?;
       idx += 1;
     }
     return Some(value);
@@ -86,4 +84,3 @@ mod tests {
     assert_eq!(parse_proc_status_kb(huge, b"VmRSS:"), None);
   }
 }
-

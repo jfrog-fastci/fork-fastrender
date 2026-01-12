@@ -42,14 +42,11 @@ fn wait_for_navigation_committed(
 #[test]
 fn about_newtab_navigation_committed_includes_title() {
   let _lock = super::stage_listener_test_lock();
-  let handle =
-    spawn_ui_worker("ui_worker_title_about_newtab").expect("spawn ui worker");
+  let handle = spawn_ui_worker("ui_worker_title_about_newtab").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab, None))
-    .expect("create tab");
+  ui_tx.send(create_tab_msg(tab, None)).expect("create tab");
   ui_tx
     .send(navigate_msg(
       tab,
@@ -75,18 +72,13 @@ fn file_page_navigation_committed_includes_title_and_trims_ascii_whitespace() {
     "<!doctype html><html><head><title>  Hello \n</title></head><body></body></html>",
   )
   .expect("write html");
-  let url = Url::from_file_path(&path)
-    .expect("file url")
-    .to_string();
+  let url = Url::from_file_path(&path).expect("file url").to_string();
 
-  let handle =
-    spawn_ui_worker("ui_worker_title_file").expect("spawn ui worker");
+  let handle = spawn_ui_worker("ui_worker_title_file").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab, None))
-    .expect("create tab");
+  ui_tx.send(create_tab_msg(tab, None)).expect("create tab");
   ui_tx
     .send(navigate_msg(tab, url.clone(), NavigationReason::TypedUrl))
     .expect("navigate");
@@ -107,20 +99,18 @@ fn missing_title_results_in_none() {
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("page.html");
-  std::fs::write(&path, "<!doctype html><html><head></head><body></body></html>")
-    .expect("write html");
-  let url = Url::from_file_path(&path)
-    .expect("file url")
-    .to_string();
+  std::fs::write(
+    &path,
+    "<!doctype html><html><head></head><body></body></html>",
+  )
+  .expect("write html");
+  let url = Url::from_file_path(&path).expect("file url").to_string();
 
-  let handle =
-    spawn_ui_worker("ui_worker_title_missing_title").expect("spawn ui worker");
+  let handle = spawn_ui_worker("ui_worker_title_missing_title").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab, None))
-    .expect("create tab");
+  ui_tx.send(create_tab_msg(tab, None)).expect("create tab");
   ui_tx
     .send(navigate_msg(tab, url, NavigationReason::TypedUrl))
     .expect("navigate");

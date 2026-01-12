@@ -6,17 +6,19 @@
 //! large-stack thread.
 
 use crate::api::{
-  BrowserDocument, BrowserTab, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig, RenderOptions,
-  VmJsBrowserTabExecutor,
+  BrowserDocument, BrowserTab, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig,
+  RenderOptions, VmJsBrowserTabExecutor,
 };
 use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{
-  fragment_tree_with_scroll, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind, InteractionAction,
-  InteractionEngine,
+  fragment_tree_with_scroll, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind,
+  InteractionAction, InteractionEngine,
 };
-use crate::render_control::{push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard};
+use crate::render_control::{
+  push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard,
+};
 use crate::scroll::ScrollState;
 use crate::style::types::OrientationTransform;
 use crate::text::font_db::FontConfig;
@@ -119,7 +121,8 @@ const TICK_ANIMATION_STEP_MS: f32 = 16.0;
 const FAVICON_MAX_EDGE_PX: u32 = 32;
 
 /// Maximum bytes allowed in a `WorkerToUi::Favicon` payload.
-const MAX_FAVICON_BYTES: usize = (FAVICON_MAX_EDGE_PX as usize) * (FAVICON_MAX_EDGE_PX as usize) * 4;
+const MAX_FAVICON_BYTES: usize =
+  (FAVICON_MAX_EDGE_PX as usize) * (FAVICON_MAX_EDGE_PX as usize) * 4;
 
 struct TabState {
   history: TabHistory,
@@ -251,7 +254,12 @@ fn js_dom_node_for_preorder_id(
 ) -> Option<crate::dom2::NodeId> {
   element_id
     .and_then(|id| js_tab.dom().get_element_by_id(id))
-    .or_else(|| js_tab.dom().node_id_from_index(preorder_id.saturating_sub(1)).ok())
+    .or_else(|| {
+      js_tab
+        .dom()
+        .node_id_from_index(preorder_id.saturating_sub(1))
+        .ok()
+    })
 }
 
 fn js_find_form_owner_for_submitter(
@@ -264,9 +272,13 @@ fn js_find_form_owner_for_submitter(
     let node = dom.node(node_id);
     match &node.kind {
       NodeKind::Element {
-        tag_name, namespace, ..
-      } => tag_name.eq_ignore_ascii_case("form")
-        && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE),
+        tag_name,
+        namespace,
+        ..
+      } => {
+        tag_name.eq_ignore_ascii_case("form")
+          && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
+      }
       _ => false,
     }
   };
@@ -275,7 +287,10 @@ fn js_find_form_owner_for_submitter(
   if let Ok(Some(form_attr)) = dom.get_attribute(submitter, "form") {
     let form_attr = trim_ascii_whitespace(&form_attr);
     if !form_attr.is_empty() {
-      if let Some(form_id) = dom.get_element_by_id(form_attr).filter(|id| is_form_element(*id)) {
+      if let Some(form_id) = dom
+        .get_element_by_id(form_attr)
+        .filter(|id| is_form_element(*id))
+      {
         return Some(form_id);
       }
     }
@@ -408,13 +423,14 @@ fn favicon_fallback_url_for_origin(committed_url: &str) -> Option<String> {
     "http" | "https" => {}
     _ => return None,
   }
-  parsed
-    .join("/favicon.ico")
-    .ok()
-    .map(|url| url.to_string())
+  parsed.join("/favicon.ico").ok().map(|url| url.to_string())
 }
 
-fn discover_favicon_url(doc: &BrowserDocument, committed_url: &str, base_url: Option<&str>) -> Option<String> {
+fn discover_favicon_url(
+  doc: &BrowserDocument,
+  committed_url: &str,
+  base_url: Option<&str>,
+) -> Option<String> {
   // Don't attempt favicon discovery for internal `about:` pages.
   if about_pages::is_about_url(committed_url) {
     return None;
@@ -827,8 +843,10 @@ impl BrowserRuntime {
     // Pointer-move can arrive at a very high frequency (especially with high polling-rate mice).
     // The renderer only needs the *latest* pointer position before repainting, so collapsing
     // back-to-back moves avoids redundant DOM hit-testing work.
-    let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton, crate::ui::PointerModifiers)> =
-      HashMap::new();
+    let mut pending_pointer_moves: HashMap<
+      TabId,
+      ((f32, f32), PointerButton, crate::ui::PointerModifiers),
+    > = HashMap::new();
 
     while let Some(msg) = self.try_recv_message() {
       match msg {
@@ -875,8 +893,10 @@ impl BrowserRuntime {
 
     // Reuse the existing pointer-move coalescing logic during scroll bursts so we don't do
     // redundant hit-testing work while the user is scrolling.
-    let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton, crate::ui::PointerModifiers)> =
-      HashMap::new();
+    let mut pending_pointer_moves: HashMap<
+      TabId,
+      ((f32, f32), PointerButton, crate::ui::PointerModifiers),
+    > = HashMap::new();
 
     loop {
       let msg = match self.try_recv_message() {
@@ -1116,9 +1136,7 @@ impl BrowserRuntime {
         tab.viewport_css = clamp.viewport_css;
         tab.dpr = clamp.dpr;
         if let Some(text) = clamp.warning_text(&self.limits) {
-          let _ = self
-            .ui_tx
-            .send(WorkerToUi::Warning { tab_id, text });
+          let _ = self.ui_tx.send(WorkerToUi::Warning { tab_id, text });
         }
         // Viewport changes should cancel any in-flight paints, but do not attempt to paint before
         // the first navigation completes (no document/layout cache yet).
@@ -1290,9 +1308,7 @@ impl BrowserRuntime {
         }
       }
       UiToWorker::PointerMove {
-        tab_id,
-        pos_css,
-        ..
+        tab_id, pos_css, ..
       } => {
         self.handle_pointer_move(tab_id, pos_css);
       }
@@ -1338,7 +1354,11 @@ impl BrowserRuntime {
       UiToWorker::TextInput { tab_id, text } => {
         self.handle_text_input(tab_id, &text);
       }
-      UiToWorker::ImePreedit { tab_id, text, cursor } => {
+      UiToWorker::ImePreedit {
+        tab_id,
+        text,
+        cursor,
+      } => {
         self.handle_ime_preedit(tab_id, &text, cursor);
       }
       UiToWorker::ImeCommit { tab_id, text } => {
@@ -1848,85 +1868,84 @@ impl BrowserRuntime {
         click_target_element_id,
         form_submitter,
         form_submitter_element_id,
-      ) =
-        match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          let scrolled = (!scroll_snapshot.elements.is_empty())
-            .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
-          let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-          let (dom_changed, action) = engine.pointer_up_with_scroll(
-            dom,
-            box_tree,
-            hit_tree,
-            &scroll_snapshot,
-            viewport_point,
-            button,
-            modifiers,
-            &document_url,
-            &base_url,
-          );
+      ) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let scrolled = (!scroll_snapshot.elements.is_empty())
+          .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
+        let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let (dom_changed, action) = engine.pointer_up_with_scroll(
+          dom,
+          box_tree,
+          hit_tree,
+          &scroll_snapshot,
+          viewport_point,
+          button,
+          modifiers,
+          &document_url,
+          &base_url,
+        );
 
-          let click_target = engine.take_last_click_target();
-          let click_target_element_id = click_target.and_then(|target_id| {
-            crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-              .and_then(|node| node.get_attribute_ref("id"))
-              .map(|id| id.to_string())
-          });
+        let click_target = engine.take_last_click_target();
+        let click_target_element_id = click_target.and_then(|target_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
 
-          let form_submitter = engine.take_last_form_submitter();
-          let form_submitter_element_id = form_submitter.and_then(|submitter_id| {
-            crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
-              .and_then(|node| node.get_attribute_ref("id"))
-              .map(|id| id.to_string())
-          });
+        let form_submitter = engine.take_last_form_submitter();
+        let form_submitter_element_id = form_submitter.and_then(|submitter_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
 
-          let anchor_css = match &action {
-            InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
-              // `select_anchor_css` expects an unscrolled fragment tree and applies element scroll
-              // offsets internally.
-              select_anchor_css(box_tree, fragment_tree, &scroll_snapshot, *select_node_id)
-            }
-            _ => None,
-          };
-
-          let focus_scroll = match &action {
-            InteractionAction::FocusChanged {
-              node_id: Some(node_id),
-            } => crate::interaction::focus_scroll::scroll_state_for_focus(
-              box_tree,
-              fragment_tree,
-              &scroll_snapshot,
-              *node_id,
-            )
-            .filter(|_| {
-              // Pointer-driven focus changes (e.g. clicking a `<label>` that focuses a visually-hidden
-              // checkbox) should not unexpectedly scroll the page away from the clicked content.
-              //
-              // Only apply focus scrolling when the focused element is the actual hit-test target at
-              // the pointer location.
-              let page_point = viewport_point.translate(scroll_snapshot.viewport);
-              crate::interaction::hit_test::hit_test_dom(dom, box_tree, hit_tree, page_point)
-                .is_some_and(|hit| hit.styled_node_id == *node_id || hit.dom_node_id == *node_id)
-            }),
-            _ => None,
-          };
-
-            (
-              dom_changed,
-              (
-                dom_changed,
-                action,
-                anchor_css,
-                focus_scroll,
-                click_target,
-                click_target_element_id,
-                form_submitter,
-                form_submitter_element_id,
-              ),
-            )
-          }) {
-          Ok(result) => result,
-          Err(_) => return,
+        let anchor_css = match &action {
+          InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
+            // `select_anchor_css` expects an unscrolled fragment tree and applies element scroll
+            // offsets internally.
+            select_anchor_css(box_tree, fragment_tree, &scroll_snapshot, *select_node_id)
+          }
+          _ => None,
         };
+
+        let focus_scroll = match &action {
+          InteractionAction::FocusChanged {
+            node_id: Some(node_id),
+          } => crate::interaction::focus_scroll::scroll_state_for_focus(
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+            *node_id,
+          )
+          .filter(|_| {
+            // Pointer-driven focus changes (e.g. clicking a `<label>` that focuses a visually-hidden
+            // checkbox) should not unexpectedly scroll the page away from the clicked content.
+            //
+            // Only apply focus scrolling when the focused element is the actual hit-test target at
+            // the pointer location.
+            let page_point = viewport_point.translate(scroll_snapshot.viewport);
+            crate::interaction::hit_test::hit_test_dom(dom, box_tree, hit_tree, page_point)
+              .is_some_and(|hit| hit.styled_node_id == *node_id || hit.dom_node_id == *node_id)
+          }),
+          _ => None,
+        };
+
+        (
+          dom_changed,
+          (
+            dom_changed,
+            action,
+            anchor_css,
+            focus_scroll,
+            click_target,
+            click_target_element_id,
+            form_submitter,
+            form_submitter_element_id,
+          ),
+        )
+      }) {
+        Ok(result) => result,
+        Err(_) => return,
+      };
 
       let mut scroll_changed = false;
       if let Some(next_scroll) = focus_scroll {
@@ -1954,11 +1973,8 @@ impl BrowserRuntime {
     let mut default_allowed = true;
     if let Some(target_id) = click_target {
       if let Some(js_tab) = tab.js_tab.as_mut() {
-        let target = js_dom_node_for_preorder_id(
-          js_tab,
-          target_id,
-          click_target_element_id.as_deref(),
-        );
+        let target =
+          js_dom_node_for_preorder_id(js_tab, target_id, click_target_element_id.as_deref());
 
         if let Some(node_id) = target {
           match js_tab.dispatch_click_event(node_id) {
@@ -1982,7 +1998,8 @@ impl BrowserRuntime {
           let submitter_node =
             js_dom_node_for_preorder_id(js_tab, submitter_id, form_submitter_element_id.as_deref());
           if let Some(submitter_node) = submitter_node {
-            if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node) {
+            if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
+            {
               match js_tab.dispatch_submit_event(form_node) {
                 Ok(allowed) => default_allowed = allowed,
                 Err(err) => {
@@ -2008,7 +2025,9 @@ impl BrowserRuntime {
       }
       InteractionAction::OpenInNewTab { href } => {
         if default_allowed {
-          let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
         }
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
@@ -2124,9 +2143,8 @@ impl BrowserRuntime {
     };
 
     let engine = &mut tab.interaction;
-    let dom_changed = doc.mutate_dom(|dom| {
-      engine.activate_select_option(dom, select_node_id, option_node_id, false)
-    });
+    let dom_changed = doc
+      .mutate_dom(|dom| engine.activate_select_option(dom, select_node_id, option_node_id, false));
     if dom_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -2263,7 +2281,9 @@ impl BrowserRuntime {
     });
 
     if let Some(text) = copied {
-      let _ = self.ui_tx.send(WorkerToUi::SetClipboardText { tab_id, text });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUi::SetClipboardText { tab_id, text });
     }
   }
 
@@ -2283,7 +2303,9 @@ impl BrowserRuntime {
     });
 
     if let Some(text) = cut_text {
-      let _ = self.ui_tx.send(WorkerToUi::SetClipboardText { tab_id, text });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUi::SetClipboardText { tab_id, text });
     }
 
     if changed {
@@ -2515,7 +2537,8 @@ impl BrowserRuntime {
       if default_allowed {
         if let Some(source_id) = submit_source_id {
           if let Some(js_tab) = tab.js_tab.as_mut() {
-            let source_node = js_dom_node_for_preorder_id(js_tab, source_id, submit_source_element_id);
+            let source_node =
+              js_dom_node_for_preorder_id(js_tab, source_id, submit_source_element_id);
             if let Some(source_node) = source_node {
               if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), source_node) {
                 match js_tab.dispatch_submit_event(form_node) {
@@ -2545,7 +2568,9 @@ impl BrowserRuntime {
         }
         InteractionAction::OpenInNewTab { href } => {
           if default_allowed {
-            let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+            let _ = self
+              .ui_tx
+              .send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
@@ -2693,7 +2718,10 @@ impl BrowserRuntime {
       .iter_mut()
       .find_map(|(id, tab)| tab.pending_navigation.take().map(|req| (*id, req)))
     {
-      return Some(Job::Navigate { tab_id, request: req });
+      return Some(Job::Navigate {
+        tab_id,
+        request: req,
+      });
     }
 
     // Paint any tab.
@@ -2884,28 +2912,28 @@ impl BrowserRuntime {
         )
       };
 
-        match result {
-          Ok((committed_url, base_url)) => (Some(committed_url), Some(base_url)),
-          Err(err) => {
-            let _ = self.reinsert_document(tab_id, doc);
-            // Treat cancelled/preempted prepares as silent drops.
-            if prepare_cancel_callback() {
-              // New navigation superseded this attempt.
-              if !snapshot.is_still_current_for_prepare(&cancel) {
-                return None;
-              }
-              // Preempted by active-tab work: re-queue the navigation so it can resume later.
-              if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                tab.pending_navigation = Some(request_for_retry);
-              }
-              return None;
-            }
+      match result {
+        Ok((committed_url, base_url)) => (Some(committed_url), Some(base_url)),
+        Err(err) => {
+          let _ = self.reinsert_document(tab_id, doc);
+          // Treat cancelled/preempted prepares as silent drops.
+          if prepare_cancel_callback() {
+            // New navigation superseded this attempt.
             if !snapshot.is_still_current_for_prepare(&cancel) {
               return None;
             }
-            return self.run_navigation_error(
-              tab_id,
-              &original_url,
+            // Preempted by active-tab work: re-queue the navigation so it can resume later.
+            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+              tab.pending_navigation = Some(request_for_retry);
+            }
+            return None;
+          }
+          if !snapshot.is_still_current_for_prepare(&cancel) {
+            return None;
+          }
+          return self.run_navigation_error(
+            tab_id,
+            &original_url,
             &format!("about page prepare failed: {err}"),
             snapshot,
           );
@@ -2916,7 +2944,10 @@ impl BrowserRuntime {
         Ok(()) => {
           let report = {
             let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-            if request.method == FormSubmissionMethod::Get && request.headers.is_empty() && request.body.is_none() {
+            if request.method == FormSubmissionMethod::Get
+              && request.headers.is_empty()
+              && request.body.is_none()
+            {
               doc
                 .navigate_url(&original_url, options.clone())
                 .map(|report| (report.final_url, report.base_url))
@@ -3161,7 +3192,9 @@ impl BrowserRuntime {
       .flatten();
       loaded.and_then(|(rgba, width, height)| {
         // Defensive: ensure the payload remains bounded.
-        let expected_len = (width as usize).saturating_mul(height as usize).saturating_mul(4);
+        let expected_len = (width as usize)
+          .saturating_mul(height as usize)
+          .saturating_mul(4);
         if width == 0
           || height == 0
           || width > FAVICON_MAX_EDGE_PX

@@ -13,7 +13,6 @@ use fastrender::style::types::FontFeatureSetting;
 use fastrender::style::types::TextOrientation;
 use fastrender::style::types::UnicodeBidi;
 use fastrender::style::types::WritingMode;
-use fastrender::text::segment_grapheme_clusters;
 use fastrender::text::pipeline::atomic_shaping_clusters;
 use fastrender::text::pipeline::itemize_text;
 use fastrender::text::pipeline::BidiAnalysis;
@@ -23,6 +22,7 @@ use fastrender::text::pipeline::ItemizedRun;
 use fastrender::text::pipeline::RunRotation;
 use fastrender::text::pipeline::Script;
 use fastrender::text::pipeline::ShapingPipeline;
+use fastrender::text::segment_grapheme_clusters;
 use fastrender::ComputedStyle;
 use fastrender::FontConfig;
 use fastrender::FontContext;
@@ -161,7 +161,8 @@ fn vertical_shaping_uses_vertical_advances() {
   vertical_style.text_orientation = TextOrientation::Upright;
 
   let vertical_runs = require_fonts!(pipeline.shape("日本語", &vertical_style, &font_ctx));
-  let horizontal_runs = require_fonts!(pipeline.shape("日本語", &ComputedStyle::default(), &font_ctx));
+  let horizontal_runs =
+    require_fonts!(pipeline.shape("日本語", &ComputedStyle::default(), &font_ctx));
 
   let vertical_y_advance: f32 = vertical_runs
     .iter()
@@ -204,8 +205,14 @@ fn vertical_shaping_injects_vert_vrt2_by_default() {
     }
   }
 
-  assert!(saw_vert, "expected vertical shaping to enable `vert=1` by default");
-  assert!(saw_vrt2, "expected vertical shaping to enable `vrt2=1` by default");
+  assert!(
+    saw_vert,
+    "expected vertical shaping to enable `vert=1` by default"
+  );
+  assert!(
+    saw_vrt2,
+    "expected vertical shaping to enable `vrt2=1` by default"
+  );
 }
 
 #[test]
@@ -288,7 +295,10 @@ fn vertical_shaping_does_not_duplicate_explicit_vert_vrt2_enable() {
       .filter(|f| f.tag.to_bytes() == *b"vert")
       .collect();
     assert_eq!(vert.len(), 1, "expected `vert` feature to appear only once");
-    assert_eq!(vert[0].value, 1, "expected explicit `vert=1` to be preserved");
+    assert_eq!(
+      vert[0].value, 1,
+      "expected explicit `vert=1` to be preserved"
+    );
 
     let vrt2: Vec<_> = run
       .features
@@ -296,7 +306,10 @@ fn vertical_shaping_does_not_duplicate_explicit_vert_vrt2_enable() {
       .filter(|f| f.tag.to_bytes() == *b"vrt2")
       .collect();
     assert_eq!(vrt2.len(), 1, "expected `vrt2` feature to appear only once");
-    assert_eq!(vrt2[0].value, 1, "expected explicit `vrt2=1` to be preserved");
+    assert_eq!(
+      vrt2[0].value, 1,
+      "expected explicit `vrt2=1` to be preserved"
+    );
   }
 }
 
@@ -520,7 +533,9 @@ fn bundled_only_sans_serif_shapes_keycap_sequences_with_bundled_emoji_font() {
 
   // U+0031 U+FE0F U+20E3 => 1️⃣
   let text = "1\u{fe0f}\u{20e3}";
-  let runs = pipeline.shape(text, &style, &font_ctx).expect("shape keycap");
+  let runs = pipeline
+    .shape(text, &style, &font_ctx)
+    .expect("shape keycap");
   let run = runs
     .iter()
     .find(|run| run.font.family == "FastRender Emoji")

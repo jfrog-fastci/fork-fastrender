@@ -1,10 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
-};
-use fastrender::ui::spawn_ui_worker;
 use fastrender::tree::box_tree::SelectItem;
+use fastrender::ui::messages::{NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
+use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -142,8 +140,7 @@ fn label_click_toggles_checkbox_and_repaints() {
   std::fs::write(&html_path, html).expect("write html");
   let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-interaction-a").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-interaction-a").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
   ui_tx.send(create_tab_msg(tab_id, None)).unwrap();
@@ -151,7 +148,11 @@ fn label_click_toggles_checkbox_and_repaints() {
     .send(viewport_changed_msg(tab_id, (128, 128), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, file_url.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      file_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -166,13 +167,7 @@ fn label_click_toggles_checkbox_and_repaints() {
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
-  let frame = recv_until_pixel(
-    &ui_rx,
-    tab_id,
-    (10, 10),
-    (0, 255, 0, 255),
-    deadline,
-  );
+  let frame = recv_until_pixel(&ui_rx, tab_id, (10, 10), (0, 255, 0, 255), deadline);
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (0, 255, 0, 255));
 
   drop(ui_tx);
@@ -203,8 +198,7 @@ fn text_input_updates_focused_input_value_and_repaints() {
   std::fs::write(&html_path, html).expect("write html");
   let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-interaction-b").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-interaction-b").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
   ui_tx.send(create_tab_msg(tab_id, None)).unwrap();
@@ -212,7 +206,11 @@ fn text_input_updates_focused_input_value_and_repaints() {
     .send(viewport_changed_msg(tab_id, (160, 160), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, file_url.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      file_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -226,18 +224,10 @@ fn text_input_updates_focused_input_value_and_repaints() {
   ui_tx
     .send(pointer_up(tab_id, (10.0, 90.0), PointerButton::Primary))
     .unwrap();
-  ui_tx
-    .send(text_input(tab_id, "abc"))
-    .unwrap();
+  ui_tx.send(text_input(tab_id, "abc")).unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
-  let frame = recv_until_pixel(
-    &ui_rx,
-    tab_id,
-    (10, 10),
-    (0, 0, 255, 255),
-    deadline,
-  );
+  let frame = recv_until_pixel(&ui_rx, tab_id, (10, 10), (0, 0, 255, 255), deadline);
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (0, 0, 255, 255));
 
   drop(ui_tx);
@@ -281,8 +271,7 @@ fn link_click_triggers_navigation_to_resolved_url() {
   let page1_url = url::Url::from_file_path(&page1_path).unwrap().to_string();
   let page2_url = url::Url::from_file_path(&page2_path).unwrap().to_string();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-interaction-c").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-interaction-c").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
   ui_tx.send(create_tab_msg(tab_id, None)).unwrap();
@@ -290,7 +279,11 @@ fn link_click_triggers_navigation_to_resolved_url() {
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, page1_url.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      page1_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -404,7 +397,11 @@ fn element_scroll_then_click_link_uses_scrolled_hit_testing() {
     .send(viewport_changed_msg(tab_id, (240, 160), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, page1_url.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      page1_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -448,17 +445,26 @@ fn element_scroll_then_click_link_uses_scrolled_hit_testing() {
   while Instant::now() < deadline {
     match ui_rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => match msg {
-        WorkerToUi::NavigationStarted { tab_id: msg_tab, url } if msg_tab == tab_id => {
+        WorkerToUi::NavigationStarted {
+          tab_id: msg_tab,
+          url,
+        } if msg_tab == tab_id => {
           if url == page2_url {
             saw_started = true;
           }
         }
-        WorkerToUi::NavigationCommitted { tab_id: msg_tab, url, .. } if msg_tab == tab_id => {
+        WorkerToUi::NavigationCommitted {
+          tab_id: msg_tab,
+          url,
+          ..
+        } if msg_tab == tab_id => {
           if url == page2_url {
             saw_committed = true;
           }
         }
-        WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+        WorkerToUi::FrameReady {
+          tab_id: msg_tab, ..
+        } if msg_tab == tab_id => {
           if saw_committed {
             saw_frame = true;
             break;
@@ -471,8 +477,14 @@ fn element_scroll_then_click_link_uses_scrolled_hit_testing() {
     }
   }
 
-  assert!(saw_started, "expected NavigationStarted for page2 after scrolled click");
-  assert!(saw_committed, "expected NavigationCommitted for page2 after scrolled click");
+  assert!(
+    saw_started,
+    "expected NavigationStarted for page2 after scrolled click"
+  );
+  assert!(
+    saw_committed,
+    "expected NavigationCommitted for page2 after scrolled click"
+  );
   assert!(saw_frame, "expected FrameReady after navigation committed");
 
   drop(ui_tx);
@@ -504,18 +516,19 @@ fn select_dropdown_click_emits_select_dropdown_opened_message() {
   std::fs::write(&html_path, html).expect("write html");
   let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
 
-  let handle = spawn_ui_worker("fastr-ui-worker-interaction-select")
-    .expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-interaction-select").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .unwrap();
+  ui_tx.send(create_tab_msg(tab_id, None)).unwrap();
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 80), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, file_url.clone(), NavigationReason::TypedUrl))
+    .send(navigate_msg(
+      tab_id,
+      file_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let deadline = Instant::now() + SELECT_DROPDOWN_TIMEOUT;
@@ -552,7 +565,10 @@ fn select_dropdown_click_emits_select_dropdown_opened_message() {
 
   let (select_node_id, control) = received.expect("expected SelectDropdownOpened message");
   assert!(select_node_id > 0, "expected non-zero select_node_id");
-  assert!(!control.multiple, "expected dropdown select to be single-select");
+  assert!(
+    !control.multiple,
+    "expected dropdown select to be single-select"
+  );
   assert_eq!(control.size, 1);
   assert_eq!(control.items.len(), 3);
   assert_eq!(control.selected, vec![1]);

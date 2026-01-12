@@ -8,16 +8,24 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 use super::support::{
-  create_tab_msg, key_action, navigate_msg, pointer_down, pointer_up, viewport_changed_msg, DEFAULT_TIMEOUT,
+  create_tab_msg, key_action, navigate_msg, pointer_down, pointer_up, viewport_changed_msg,
+  DEFAULT_TIMEOUT,
 };
 
-fn wait_for_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> fastrender::ui::messages::RenderedFrame {
+fn wait_for_frame(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+) -> fastrender::ui::messages::RenderedFrame {
   let deadline = Instant::now() + timeout;
   loop {
     let remaining = deadline
       .checked_duration_since(Instant::now())
       .unwrap_or(Duration::from_secs(0));
-    assert!(remaining > Duration::ZERO, "timed out waiting for FrameReady");
+    assert!(
+      remaining > Duration::ZERO,
+      "timed out waiting for FrameReady"
+    );
     let msg = rx.recv_timeout(remaining).expect("worker msg");
     if let WorkerToUi::FrameReady { tab_id: got, frame } = msg {
       if got == tab_id {
@@ -65,9 +73,7 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 200), 1.0))
     .expect("ViewportChanged");
@@ -91,7 +97,10 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
       let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or(Duration::from_secs(0));
-      assert!(remaining > Duration::ZERO, "timed out waiting for focused scroll frame");
+      assert!(
+        remaining > Duration::ZERO,
+        "timed out waiting for focused scroll frame"
+      );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       match msg {
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
@@ -105,7 +114,10 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
   };
 
   let scroll_y = frame.scroll_state.viewport.y;
-  assert!(scroll_y.is_finite() && scroll_y > 0.0, "expected scroll y > 0, got {scroll_y}");
+  assert!(
+    scroll_y.is_finite() && scroll_y > 0.0,
+    "expected scroll y > 0, got {scroll_y}"
+  );
 
   let viewport_top = scroll_y;
   let viewport_bottom = scroll_y + 200.0;
@@ -172,9 +184,7 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (220, 220), 1.0))
     .expect("ViewportChanged");
@@ -202,11 +212,19 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
       let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or(Duration::from_secs(0));
-      assert!(remaining > Duration::ZERO, "timed out waiting for focused scroll frame");
+      assert!(
+        remaining > Duration::ZERO,
+        "timed out waiting for focused scroll frame"
+      );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       match msg {
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
-          if frame.scroll_state.elements.values().any(|offset| offset.y > 0.0) {
+          if frame
+            .scroll_state
+            .elements
+            .values()
+            .any(|offset| offset.y > 0.0)
+          {
             break frame;
           }
         }
@@ -233,7 +251,10 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
     .copied()
     .expect("element scroll offset")
     .y;
-  assert!(scroll_y.is_finite() && scroll_y > 0.0, "expected element scroll y > 0, got {scroll_y}");
+  assert!(
+    scroll_y.is_finite() && scroll_y > 0.0,
+    "expected element scroll y > 0, got {scroll_y}"
+  );
 
   let viewport_top = scroll_y;
   let viewport_bottom = scroll_y + 100.0;
@@ -302,9 +323,7 @@ fn tab_focus_scrolls_horizontal_scroller_to_reveal_focused_element() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (220, 220), 1.0))
     .expect("ViewportChanged");
@@ -328,7 +347,10 @@ fn tab_focus_scrolls_horizontal_scroller_to_reveal_focused_element() {
       let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or(Duration::from_secs(0));
-      assert!(remaining > Duration::ZERO, "timed out waiting for focused scroll frame");
+      assert!(
+        remaining > Duration::ZERO,
+        "timed out waiting for focused scroll frame"
+      );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       match msg {
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
@@ -368,7 +390,10 @@ fn tab_focus_scrolls_horizontal_scroller_to_reveal_focused_element() {
     .copied()
     .expect("element scroll offset")
     .x;
-  assert!(scroll_x.is_finite() && scroll_x > 0.0, "expected element scroll x > 0, got {scroll_x}");
+  assert!(
+    scroll_x.is_finite() && scroll_x > 0.0,
+    "expected element scroll x > 0, got {scroll_x}"
+  );
 
   let viewport_left = scroll_x;
   let viewport_right = scroll_x + 200.0;
@@ -429,13 +454,12 @@ fn click_focus_scrolls_nested_scroller_to_reveal_focused_element() {
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
   let url = format!("file://{}/index.html", dir.path().display());
 
-  let handle = spawn_ui_worker("fastr-ui-worker-focus-scroll-click-nested").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-focus-scroll-click-nested").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (220, 220), 1.0))
     .expect("ViewportChanged");
@@ -453,18 +477,10 @@ fn click_focus_scrolls_nested_scroller_to_reveal_focused_element() {
   // visible portion should focus it and scroll the nested scroller just enough so it becomes fully
   // visible.
   ui_tx
-    .send(pointer_down(
-      tab_id,
-      (20.0, 95.0),
-      PointerButton::Primary,
-    ))
+    .send(pointer_down(tab_id, (20.0, 95.0), PointerButton::Primary))
     .expect("PointerDown");
   ui_tx
-    .send(pointer_up(
-      tab_id,
-      (20.0, 95.0),
-      PointerButton::Primary,
-    ))
+    .send(pointer_up(tab_id, (20.0, 95.0), PointerButton::Primary))
     .expect("PointerUp");
 
   let frame = {
@@ -473,11 +489,19 @@ fn click_focus_scrolls_nested_scroller_to_reveal_focused_element() {
       let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or(Duration::from_secs(0));
-      assert!(remaining > Duration::ZERO, "timed out waiting for focused scroll frame");
+      assert!(
+        remaining > Duration::ZERO,
+        "timed out waiting for focused scroll frame"
+      );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       match msg {
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
-          if frame.scroll_state.elements.values().any(|offset| offset.y > 0.0) {
+          if frame
+            .scroll_state
+            .elements
+            .values()
+            .any(|offset| offset.y > 0.0)
+          {
             break frame;
           }
         }
@@ -495,7 +519,10 @@ fn click_focus_scrolls_nested_scroller_to_reveal_focused_element() {
     .copied()
     .expect("element scroll offset")
     .y;
-  assert!(scroll_y.is_finite() && scroll_y > 0.0, "expected element scroll y > 0, got {scroll_y}");
+  assert!(
+    scroll_y.is_finite() && scroll_y > 0.0,
+    "expected element scroll y > 0, got {scroll_y}"
+  );
 
   let viewport_top = scroll_y;
   let viewport_bottom = scroll_y + 100.0;
@@ -563,9 +590,7 @@ fn tab_focus_scrolls_viewport_and_nested_scroller_when_scroller_is_below_fold() 
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (220, 220), 1.0))
     .expect("ViewportChanged");
@@ -595,12 +620,19 @@ fn tab_focus_scrolls_viewport_and_nested_scroller_when_scroller_is_below_fold() 
       let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or(Duration::from_secs(0));
-      assert!(remaining > Duration::ZERO, "timed out waiting for focused scroll frame");
+      assert!(
+        remaining > Duration::ZERO,
+        "timed out waiting for focused scroll frame"
+      );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       match msg {
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
           if frame.scroll_state.viewport.y > 0.0
-            && frame.scroll_state.elements.values().any(|offset| offset.y > 0.0)
+            && frame
+              .scroll_state
+              .elements
+              .values()
+              .any(|offset| offset.y > 0.0)
           {
             break frame;
           }
@@ -692,14 +724,11 @@ fn shift_tab_scrolls_viewport_back_up_to_reveal_previous_focus_target() {
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
   let url = format!("file://{}/index.html", dir.path().display());
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-focus-scroll-shift-tab").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-focus-scroll-shift-tab").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 200), 1.0))
     .expect("ViewportChanged");
@@ -711,7 +740,9 @@ fn shift_tab_scrolls_viewport_back_up_to_reveal_previous_focus_target() {
   assert_eq!(frame.scroll_state.viewport.y, 0.0);
 
   // Tab from no focus should focus the first input without needing to scroll.
-  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab to top");
+  ui_tx
+    .send(key_action(tab_id, KeyAction::Tab))
+    .expect("Tab to top");
   let frame = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT);
   assert_eq!(
     frame.scroll_state.viewport.y, 0.0,
@@ -719,14 +750,19 @@ fn shift_tab_scrolls_viewport_back_up_to_reveal_previous_focus_target() {
   );
 
   // Tab to the second input should scroll down.
-  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab to bottom");
+  ui_tx
+    .send(key_action(tab_id, KeyAction::Tab))
+    .expect("Tab to bottom");
   let frame = {
     let deadline = Instant::now() + DEFAULT_TIMEOUT;
     loop {
       let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or(Duration::from_secs(0));
-      assert!(remaining > Duration::ZERO, "timed out waiting for bottom focus scroll");
+      assert!(
+        remaining > Duration::ZERO,
+        "timed out waiting for bottom focus scroll"
+      );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       if let WorkerToUi::FrameReady { tab_id: got, frame } = msg {
         if got == tab_id && frame.scroll_state.viewport.y > 0.0 {
@@ -748,7 +784,10 @@ fn shift_tab_scrolls_viewport_back_up_to_reveal_previous_focus_target() {
       let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or(Duration::from_secs(0));
-      assert!(remaining > Duration::ZERO, "timed out waiting for top focus scroll");
+      assert!(
+        remaining > Duration::ZERO,
+        "timed out waiting for top focus scroll"
+      );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       if let WorkerToUi::FrameReady { tab_id: got, frame } = msg {
         if got == tab_id && frame.scroll_state.viewport.y < bottom_scroll_y {

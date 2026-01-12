@@ -1,7 +1,7 @@
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::paint::display_list::{
-  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter, StackingContextItem,
-  Transform3D,
+  BlendMode, BorderRadii, DisplayItem, DisplayList, FillRectItem, ResolvedFilter,
+  StackingContextItem, Transform3D,
 };
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::style::color::Rgba;
@@ -118,7 +118,9 @@ fn find_inside_sample(
       if !dist.is_finite() {
         continue;
       }
-      let replace = best.as_ref().map_or(true, |(_, _, best_dist)| dist > *best_dist);
+      let replace = best
+        .as_ref()
+        .map_or(true, |(_, _, best_dist)| dist > *best_dist);
       if replace {
         best = Some((x as u32, y as u32, dist));
       }
@@ -228,10 +230,7 @@ fn preserve_3d_projective_plane_backdrop_filter_is_clipped_to_projected_quad() {
       "FASTR_PRESERVE3D_DISABLE_SCENE".to_string(),
       "0".to_string(),
     ),
-    (
-      "FASTR_PRESERVE3D_DISABLE_WARP".to_string(),
-      "0".to_string(),
-    ),
+    ("FASTR_PRESERVE3D_DISABLE_WARP".to_string(), "0".to_string()),
   ])));
 
   let pixmap = with_thread_runtime_toggles(toggles, || {
@@ -291,7 +290,12 @@ fn preserve_3d_projective_plane_backdrop_filter_is_clipped_to_projected_quad() {
   let inside = find_inside_sample(&quad, aabb, w, h);
   let inside_px = pixmap.pixel(inside.0, inside.1).expect("pixel in-bounds");
   assert_eq!(
-    (inside_px.red(), inside_px.green(), inside_px.blue(), inside_px.alpha()),
+    (
+      inside_px.red(),
+      inside_px.green(),
+      inside_px.blue(),
+      inside_px.alpha()
+    ),
     (255, 0, 255, 255),
     "expected inverted green (magenta) inside the projected quad"
   );

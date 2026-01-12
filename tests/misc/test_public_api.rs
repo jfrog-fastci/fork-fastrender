@@ -12,13 +12,13 @@ mod test_public_api {
   use fastrender::compat::CompatProfile;
   use fastrender::debug::runtime::RuntimeToggles;
   use fastrender::dom::DomCompatibilityMode;
+  use fastrender::render_control::{push_stage_listener, StageHeartbeat};
   use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy};
   use fastrender::style::media::MediaType;
   use fastrender::{
     FontConfig, LayoutParallelism, PaintParallelism, RenderOptions, ResourceFetcher, ResourceKind,
     ResourcePolicy, Rgba,
   };
-  use fastrender::render_control::{push_stage_listener, StageHeartbeat};
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::Arc;
@@ -621,7 +621,11 @@ mod test_public_api {
     let config = deterministic_config()
       .with_runtime_toggles(RuntimeToggles::from_map(toggles))
       .with_base_url("https://origin.test/page.html")
-      .with_resource_policy(ResourcePolicy::default().allow_http(false).allow_https(true));
+      .with_resource_policy(
+        ResourcePolicy::default()
+          .allow_http(false)
+          .allow_https(true),
+      );
     let mut renderer =
       FastRender::with_config_and_fetcher(config, Some(fetcher)).expect("renderer");
 
@@ -780,7 +784,10 @@ mod test_public_api {
     }) as Arc<dyn ResourceFetcher>;
     let mut toggles = HashMap::new();
     toggles.insert("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string());
-    toggles.insert("FASTR_FETCH_PRELOAD_STYLESHEETS".to_string(), "0".to_string());
+    toggles.insert(
+      "FASTR_FETCH_PRELOAD_STYLESHEETS".to_string(),
+      "0".to_string(),
+    );
     let config = deterministic_config()
       .with_base_url(base_url)
       .with_runtime_toggles(RuntimeToggles::from_map(toggles));

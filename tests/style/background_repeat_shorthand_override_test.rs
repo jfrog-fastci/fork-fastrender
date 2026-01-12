@@ -1,10 +1,10 @@
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom;
-use fastrender::Size;
 use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::BackgroundRepeatKeyword;
+use fastrender::Size;
 
 fn find_first_div<'a>(node: &'a StyledNode) -> Option<&'a StyledNode> {
   if node

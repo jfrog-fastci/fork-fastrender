@@ -61,7 +61,10 @@ fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
   {
     return Some(node);
   }
-  node.children.iter().find_map(|child| find_dom_by_id(child, id))
+  node
+    .children
+    .iter()
+    .find_map(|child| find_dom_by_id(child, id))
 }
 
 fn render_accessibility_json(html: &str) -> Value {

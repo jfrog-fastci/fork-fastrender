@@ -4,8 +4,8 @@ use fastrender::api::{
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
 use fastrender::js::{
-  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, ScriptElementSpec, TaskSource, WindowRealm, WindowRealmConfig,
-  WindowRealmHost, RunLimits,
+  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, RunLimits, ScriptElementSpec,
+  TaskSource, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use std::collections::HashSet;
 
@@ -17,8 +17,8 @@ struct ExecutorWithWindow<E> {
 
 impl<E> ExecutorWithWindow<E> {
   fn new(inner: E) -> Self {
-    let window =
-      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create WindowRealm");
     Self {
       inner,
       host_ctx: (),
@@ -93,7 +93,9 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
 impl<E> WindowRealmHost for ExecutorWithWindow<E> {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    let ExecutorWithWindow {
+      host_ctx, window, ..
+    } = self;
     (host_ctx, window)
   }
 }
@@ -206,9 +208,18 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
           continue;
         };
         let summary = ScriptFetchSummary {
-          script_type: args.get("script_type").and_then(|v| v.as_str()).map(|v| v.to_string()),
-          destination: args.get("destination").and_then(|v| v.as_str()).map(|v| v.to_string()),
-          cors_mode: args.get("cors_mode").and_then(|v| v.as_str()).map(|v| v.to_string()),
+          script_type: args
+            .get("script_type")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string()),
+          destination: args
+            .get("destination")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string()),
+          cors_mode: args
+            .get("cors_mode")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string()),
           credentials_mode: args
             .get("credentials_mode")
             .and_then(|v| v.as_str())

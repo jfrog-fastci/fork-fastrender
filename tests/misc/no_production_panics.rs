@@ -26,9 +26,7 @@ fn no_production_panics_in_core_modules() {
       continue;
     }
 
-    let rel = path
-      .strip_prefix(&src_dir)
-      .expect("walkdir root mismatch");
+    let rel = path.strip_prefix(&src_dir).expect("walkdir root mismatch");
 
     // Exclude delegated modules owned by other workers.
     if rel == Path::new("resource.rs") {
@@ -37,7 +35,15 @@ fn no_production_panics_in_core_modules() {
     if let Some(first) = rel.components().next().and_then(|c| c.as_os_str().to_str()) {
       if matches!(
         first,
-        "api" | "bin" | "css" | "js" | "layout" | "paint" | "resource" | "style" | "text"
+        "api"
+          | "bin"
+          | "css"
+          | "js"
+          | "layout"
+          | "paint"
+          | "resource"
+          | "style"
+          | "text"
           | "webidl"
       ) {
         continue;
@@ -68,10 +74,7 @@ fn no_production_panics_in_core_modules() {
 
   let mut formatted = String::new();
   for (path, spans) in offenders {
-    let mut lines: Vec<_> = spans
-      .into_iter()
-      .map(|span| span.start().line)
-      .collect();
+    let mut lines: Vec<_> = spans.into_iter().map(|span| span.start().line).collect();
     lines.sort_unstable();
     lines.dedup();
     formatted.push_str(&format!("- {}:{}\n", path.display(), join_lines(&lines)));

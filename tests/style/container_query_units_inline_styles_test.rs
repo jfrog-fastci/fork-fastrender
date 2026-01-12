@@ -60,12 +60,21 @@ fn box_id_for_styled_node_id(node: &BoxNode, styled_node_id: usize) -> Option<us
     .find_map(|child| box_id_for_styled_node_id(child, styled_node_id))
 }
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   fragment.iter_fragments().find(|node| match &node.content {
     FragmentContent::Block { box_id: Some(id) } => *id == box_id,
-    FragmentContent::Inline { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Text { box_id: Some(id), .. } => *id == box_id,
-    FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    FragmentContent::Inline {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Text {
+      box_id: Some(id), ..
+    } => *id == box_id,
+    FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   })
 }
@@ -108,8 +117,8 @@ fn container_query_units_update_flex_layout_when_cache_enabled() {
     let styled_node_id = target.node_id;
     let target_box_id =
       box_id_for_styled_node_id(&intermediates.box_tree.root, styled_node_id).expect("target box");
-    let target_fragment =
-      find_fragment_by_box_id(&intermediates.fragment_tree.root, target_box_id).expect("target fragment");
+    let target_fragment = find_fragment_by_box_id(&intermediates.fragment_tree.root, target_box_id)
+      .expect("target fragment");
     target_fragment.bounds.width()
   };
 

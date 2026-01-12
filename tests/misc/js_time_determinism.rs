@@ -44,8 +44,7 @@ fn get_object_property(heap: &mut Heap, obj: vm_js::GcObject, name: &str) -> Val
 fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
   let mut scope = heap.scope();
   let mut host_hooks = NoopHostHooks::default();
-  vm
-    .call_with_host(&mut scope, &mut host_hooks, callee, this, &[])
+  vm.call_with_host(&mut scope, &mut host_hooks, callee, this, &[])
     .expect("call should succeed")
 }
 

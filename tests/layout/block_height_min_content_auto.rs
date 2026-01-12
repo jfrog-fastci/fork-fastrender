@@ -51,8 +51,11 @@ fn height_min_content_on_block_container_behaves_like_auto() {
   min_style.display = Display::Block;
   min_style.height = None;
   min_style.height_keyword = Some(IntrinsicSizeKeyword::MinContent);
-  let min_container =
-    BoxNode::new_block(Arc::new(min_style), FormattingContextType::Block, vec![replaced_min]);
+  let min_container = BoxNode::new_block(
+    Arc::new(min_style),
+    FormattingContextType::Block,
+    vec![replaced_min],
+  );
 
   let mut root_style = fastrender::ComputedStyle::default();
   root_style.display = Display::Block;
@@ -76,4 +79,3 @@ fn height_min_content_on_block_container_behaves_like_auto() {
     min_fragment.bounds.height()
   );
 }
-

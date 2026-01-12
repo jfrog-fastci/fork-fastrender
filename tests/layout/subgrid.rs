@@ -466,10 +466,8 @@ fn subgrid_column_gap_can_differ_from_parent_gap() {
   fn run(column_gap: Option<(Length, bool)>) -> (f32, f32, f32, f32) {
     let mut parent_style = ComputedStyle::default();
     parent_style.display = Display::Grid;
-    parent_style.grid_template_columns = vec![
-      GridTrack::Length(Length::px(100.0)),
-      GridTrack::Fr(1.0),
-    ];
+    parent_style.grid_template_columns =
+      vec![GridTrack::Length(Length::px(100.0)), GridTrack::Fr(1.0)];
     parent_style.grid_template_rows = vec![GridTrack::Auto];
     parent_style.grid_column_gap = Length::px(50.0);
     parent_style.width = Some(Length::px(300.0));
@@ -555,7 +553,8 @@ fn subgrid_row_gap_can_differ_from_parent_gap() {
   fn run(row_gap: Option<(Length, bool)>) -> (f32, f32, f32, f32) {
     let mut parent_style = ComputedStyle::default();
     parent_style.display = Display::Grid;
-    parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(100.0)), GridTrack::Fr(1.0)];
+    parent_style.grid_template_rows =
+      vec![GridTrack::Length(Length::px(100.0)), GridTrack::Fr(1.0)];
     parent_style.grid_template_columns = vec![GridTrack::Auto];
     parent_style.grid_row_gap = Length::px(50.0);
     parent_style.width = Some(Length::px(100.0));
@@ -1825,8 +1824,10 @@ fn assert_vertical_writing_mode_direction_rtl_mirrors_inline_axis(writing_mode: 
   grid_style.display = Display::Grid;
   grid_style.writing_mode = writing_mode;
   grid_style.direction = Direction::Rtl;
-  grid_style.grid_template_columns =
-    vec![GridTrack::Length(Length::px(col1)), GridTrack::Length(Length::px(col2))];
+  grid_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(col1)),
+    GridTrack::Length(Length::px(col2)),
+  ];
   grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(row))];
   grid_style.width = Some(Length::px(row));
   grid_style.height = Some(Length::px(col1 + col2));
@@ -1886,8 +1887,10 @@ fn assert_vertical_writing_mode_direction_rtl_mirrors_inline_axis(writing_mode: 
   parent_style.display = Display::Grid;
   parent_style.writing_mode = writing_mode;
   parent_style.direction = Direction::Rtl;
-  parent_style.grid_template_columns =
-    vec![GridTrack::Length(Length::px(col1)), GridTrack::Length(Length::px(col2))];
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(col1)),
+    GridTrack::Length(Length::px(col2)),
+  ];
   parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(row))];
   parent_style.width = Some(Length::px(row));
   parent_style.height = Some(Length::px(col1 + col2));

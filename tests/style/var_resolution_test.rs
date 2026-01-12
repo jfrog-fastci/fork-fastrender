@@ -8,8 +8,8 @@
 //! - Embedded var() in other CSS functions
 //! - Edge cases and error handling
 
-use fastrender::css::types::Declaration;
 use fastrender::css::parser::parse_declarations;
+use fastrender::css::types::Declaration;
 use fastrender::style::custom_property_store::CustomPropertyStore;
 use fastrender::style::properties::apply_declaration;
 use fastrender::style::values::CustomPropertyValue;

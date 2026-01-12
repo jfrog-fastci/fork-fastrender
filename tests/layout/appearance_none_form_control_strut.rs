@@ -2,7 +2,10 @@ use fastrender::api::FastRender;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::Rgba;
 
-fn find_fragment_by_background<'a>(node: &'a FragmentNode, color: Rgba) -> Option<&'a FragmentNode> {
+fn find_fragment_by_background<'a>(
+  node: &'a FragmentNode,
+  color: Rgba,
+) -> Option<&'a FragmentNode> {
   if node
     .style
     .as_ref()

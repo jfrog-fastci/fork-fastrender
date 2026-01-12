@@ -2,7 +2,9 @@
 
 use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::tree::box_tree::SelectItem;
-use fastrender::ui::messages::{PointerButton, PointerModifiers, RepaintReason, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  PointerButton, PointerModifiers, RepaintReason, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::{BrowserTabController, TabId};
 
 fn node_id_by_id_attr(root: &DomNode, id_attr: &str) -> usize {
@@ -50,14 +52,9 @@ fn select_dropdown_open_and_choose_roundtrip() {
     </html>
   "#;
 
-  let mut controller = BrowserTabController::from_html(
-    tab_id,
-    html,
-    "https://example.com/",
-    viewport_css,
-    dpr,
-  )
-  .expect("controller from_html");
+  let mut controller =
+    BrowserTabController::from_html(tab_id, html, "https://example.com/", viewport_css, dpr)
+      .expect("controller from_html");
 
   // Ensure a prepared tree exists for hit-testing and geometry queries.
   let _ = controller
@@ -99,8 +96,7 @@ fn select_dropdown_open_and_choose_roundtrip() {
     _ => None,
   });
 
-  let (got_select_id, control, anchor_css) =
-    opened.expect("expected SelectDropdownOpened message");
+  let (got_select_id, control, anchor_css) = opened.expect("expected SelectDropdownOpened message");
   assert_eq!(got_select_id, select_node_id);
 
   let labels: Vec<(String, bool)> = control
@@ -108,7 +104,9 @@ fn select_dropdown_open_and_choose_roundtrip() {
     .iter()
     .map(|item| match item {
       SelectItem::OptGroupLabel { label, disabled } => (format!("optgroup:{label}"), *disabled),
-      SelectItem::Option { label, disabled, .. } => (format!("option:{label}"), *disabled),
+      SelectItem::Option {
+        label, disabled, ..
+      } => (format!("option:{label}"), *disabled),
     })
     .collect();
 
@@ -174,7 +172,9 @@ fn select_dropdown_open_and_choose_roundtrip() {
     "renderer must not inject data-fastr-user-validity onto the DOM"
   );
   assert!(
-    controller.interaction_state().has_user_validity(select_node_id),
+    controller
+      .interaction_state()
+      .has_user_validity(select_node_id),
     "expected select to flip internal user validity state after choosing an option"
   );
 

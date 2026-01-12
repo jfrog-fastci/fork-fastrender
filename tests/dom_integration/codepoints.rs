@@ -31,7 +31,11 @@ fn collect_text_codepoints_skips_hidden_but_includes_inert() {
   let visible = element("div", vec![], vec![text_node("A")]);
   let hidden = element("div", vec![("hidden", "")], vec![text_node("B")]);
   let inert = element("div", vec![("inert", "")], vec![text_node("C")]);
-  let fastr_inert = element("div", vec![("data-fastr-inert", "true")], vec![text_node("D")]);
+  let fastr_inert = element(
+    "div",
+    vec![("data-fastr-inert", "true")],
+    vec![text_node("D")],
+  );
   let root = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,

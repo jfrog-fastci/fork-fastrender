@@ -12,7 +12,9 @@ fn tool_available(tool: &str) -> bool {
 
 fn run_success(mut cmd: Command) -> String {
   let cmd_str = format!("{cmd:?}");
-  let out = cmd.output().unwrap_or_else(|e| panic!("failed to run {cmd_str}: {e}"));
+  let out = cmd
+    .output()
+    .unwrap_or_else(|e| panic!("failed to run {cmd_str}: {e}"));
   if !out.status.success() {
     panic!(
       "command failed: {cmd_str}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",

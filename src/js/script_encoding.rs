@@ -43,7 +43,8 @@ mod tests {
   #[test]
   fn content_type_charset_is_used() {
     let encoded = SHIFT_JIS.encode("console.log('デ')").0;
-    let decoded = decode_classic_script_bytes(&encoded, Some("text/javascript; charset=shift_jis"), UTF_8);
+    let decoded =
+      decode_classic_script_bytes(&encoded, Some("text/javascript; charset=shift_jis"), UTF_8);
     assert!(
       decoded.contains('デ'),
       "decoded script should contain kana when Content-Type declares shift_jis: {decoded:?}"
@@ -53,8 +54,11 @@ mod tests {
   #[test]
   fn content_type_charset_overrides_fallback() {
     let encoded = WINDOWS_1252.encode("£").0;
-    let decoded =
-      decode_classic_script_bytes(&encoded, Some("text/javascript; charset=windows-1252"), SHIFT_JIS);
+    let decoded = decode_classic_script_bytes(
+      &encoded,
+      Some("text/javascript; charset=windows-1252"),
+      SHIFT_JIS,
+    );
     assert_eq!(decoded, "£");
   }
 
@@ -62,9 +66,11 @@ mod tests {
   fn bom_overrides_content_type_charset() {
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(UTF_8.encode("£").0.as_ref());
-    let decoded =
-      decode_classic_script_bytes(&bytes, Some("text/javascript; charset=windows-1252"), WINDOWS_1252);
+    let decoded = decode_classic_script_bytes(
+      &bytes,
+      Some("text/javascript; charset=windows-1252"),
+      WINDOWS_1252,
+    );
     assert_eq!(decoded, "£");
   }
 }
-

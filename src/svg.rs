@@ -185,25 +185,24 @@ pub(crate) fn parse_svg_length(value: &str) -> Option<SvgLength> {
     return Some(SvgLength::Percentage(number));
   }
 
-  let px =
-    if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
-      number
-    } else if unit.eq_ignore_ascii_case("in") {
-      number * 96.0
-    } else if unit.eq_ignore_ascii_case("cm") {
-      number * (96.0 / 2.54)
-    } else if unit.eq_ignore_ascii_case("mm") {
-      number * (96.0 / 25.4)
-    } else if unit.eq_ignore_ascii_case("q") {
-      // CSS Values & Units: 1Q = 1/4mm.
-      number * (96.0 / 25.4) * 0.25
-    } else if unit.eq_ignore_ascii_case("pt") {
-      number * (96.0 / 72.0)
-    } else if unit.eq_ignore_ascii_case("pc") {
-      number * (96.0 / 6.0)
-    } else {
-      return None;
-    };
+  let px = if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
+    number
+  } else if unit.eq_ignore_ascii_case("in") {
+    number * 96.0
+  } else if unit.eq_ignore_ascii_case("cm") {
+    number * (96.0 / 2.54)
+  } else if unit.eq_ignore_ascii_case("mm") {
+    number * (96.0 / 25.4)
+  } else if unit.eq_ignore_ascii_case("q") {
+    // CSS Values & Units: 1Q = 1/4mm.
+    number * (96.0 / 25.4) * 0.25
+  } else if unit.eq_ignore_ascii_case("pt") {
+    number * (96.0 / 72.0)
+  } else if unit.eq_ignore_ascii_case("pc") {
+    number * (96.0 / 6.0)
+  } else {
+    return None;
+  };
 
   px.is_finite().then_some(SvgLength::Px(px))
 }
@@ -222,30 +221,29 @@ pub(crate) fn parse_svg_length_px_with_font(
     return None;
   }
 
-  let px =
-    if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
-      number
-    } else if unit.eq_ignore_ascii_case("in") {
-      number * 96.0
-    } else if unit.eq_ignore_ascii_case("cm") {
-      number * (96.0 / 2.54)
-    } else if unit.eq_ignore_ascii_case("mm") {
-      number * (96.0 / 25.4)
-    } else if unit.eq_ignore_ascii_case("q") {
-      number * (96.0 / 25.4) * 0.25
-    } else if unit.eq_ignore_ascii_case("pt") {
-      number * (96.0 / 72.0)
-    } else if unit.eq_ignore_ascii_case("pc") {
-      number * (96.0 / 6.0)
-    } else if unit.eq_ignore_ascii_case("em") {
-      number * font_size
-    } else if unit.eq_ignore_ascii_case("rem") {
-      number * root_font_size
-    } else if unit.eq_ignore_ascii_case("ex") || unit.eq_ignore_ascii_case("ch") {
-      number * font_size * 0.5
-    } else {
-      return None;
-    };
+  let px = if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
+    number
+  } else if unit.eq_ignore_ascii_case("in") {
+    number * 96.0
+  } else if unit.eq_ignore_ascii_case("cm") {
+    number * (96.0 / 2.54)
+  } else if unit.eq_ignore_ascii_case("mm") {
+    number * (96.0 / 25.4)
+  } else if unit.eq_ignore_ascii_case("q") {
+    number * (96.0 / 25.4) * 0.25
+  } else if unit.eq_ignore_ascii_case("pt") {
+    number * (96.0 / 72.0)
+  } else if unit.eq_ignore_ascii_case("pc") {
+    number * (96.0 / 6.0)
+  } else if unit.eq_ignore_ascii_case("em") {
+    number * font_size
+  } else if unit.eq_ignore_ascii_case("rem") {
+    number * root_font_size
+  } else if unit.eq_ignore_ascii_case("ex") || unit.eq_ignore_ascii_case("ch") {
+    number * font_size * 0.5
+  } else {
+    return None;
+  };
 
   px.is_finite().then_some(px)
 }
@@ -556,15 +554,17 @@ pub(crate) fn svg_view_box_root_transform(
 #[cfg(test)]
 mod tests {
   use super::{
-    parse_svg_length, parse_svg_view_box, svg_intrinsic_dimensions_from_attributes, svg_root_view_box,
-    svg_view_box_root_transform, SvgAlign, SvgMeetOrSlice, SvgPreserveAspectRatio,
+    parse_svg_length, parse_svg_view_box, svg_intrinsic_dimensions_from_attributes,
+    svg_root_view_box, svg_view_box_root_transform, SvgAlign, SvgMeetOrSlice,
+    SvgPreserveAspectRatio,
   };
 
   #[test]
   fn svg_helpers_do_not_panic_on_invalid_markup() {
     let invalid = "<svg><";
 
-    let view_box = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| svg_root_view_box(invalid)));
+    let view_box =
+      std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| svg_root_view_box(invalid)));
     assert!(view_box.is_ok());
 
     let transform = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

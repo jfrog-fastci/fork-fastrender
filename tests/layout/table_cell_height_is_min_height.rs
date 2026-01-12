@@ -3,7 +3,10 @@ use fastrender::style::display::Display;
 use fastrender::tree::fragment_tree::FragmentNode;
 
 fn collect_table_cells<'a>(node: &'a FragmentNode, out: &mut Vec<&'a FragmentNode>) {
-  if matches!(node.style.as_ref().map(|s| s.display), Some(Display::TableCell)) {
+  if matches!(
+    node.style.as_ref().map(|s| s.display),
+    Some(Display::TableCell)
+  ) {
     out.push(node);
   }
   for child in node.children.iter() {

@@ -139,10 +139,7 @@ fn mask_shorthand_resets_mask_size_when_omitted() {
   let layer = &find_first(&styled, "div").expect("div").styles.mask_layers[0];
   assert_eq!(
     layer.size,
-    BackgroundSize::Explicit(
-      BackgroundSizeComponent::Auto,
-      BackgroundSizeComponent::Auto
-    ),
+    BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto),
     "mask shorthand without an explicit size should reset mask-size to its initial value"
   );
 }

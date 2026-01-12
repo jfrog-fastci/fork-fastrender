@@ -3,7 +3,10 @@ use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::{FastRender, FragmentNode};
 
 fn find_text_bounds(fragment: &FragmentNode, origin: Point, needle: &str) -> Option<Rect> {
-  let absolute_origin = Point::new(origin.x + fragment.bounds.x(), origin.y + fragment.bounds.y());
+  let absolute_origin = Point::new(
+    origin.x + fragment.bounds.x(),
+    origin.y + fragment.bounds.y(),
+  );
 
   if let FragmentContent::Text { text, .. } = &fragment.content {
     if text.contains(needle) {

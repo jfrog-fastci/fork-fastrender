@@ -49,7 +49,9 @@ pub(crate) fn ensure_global_pool() -> Result<(), String> {
           if already_initialized {
             Ok(())
           } else {
-            Err(format!("failed to initialize Rayon global thread pool: {err}"))
+            Err(format!(
+              "failed to initialize Rayon global thread pool: {err}"
+            ))
           }
         }
       }

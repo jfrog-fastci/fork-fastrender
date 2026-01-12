@@ -56,4 +56,3 @@ fn opacity_percentage_is_clamped() {
     target.styles.opacity
   );
 }
-

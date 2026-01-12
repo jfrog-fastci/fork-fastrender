@@ -16,7 +16,11 @@ fn find_block_child<'a>(fragment: &'a FragmentNode, box_id: usize) -> &'a Fragme
     .unwrap_or_else(|| {
       panic!(
         "missing fragment for box_id={box_id}; got children ids={:?}",
-        fragment.children.iter().map(|c| c.box_id()).collect::<Vec<_>>()
+        fragment
+          .children
+          .iter()
+          .map(|c| c.box_id())
+          .collect::<Vec<_>>()
       )
     })
 }
@@ -55,20 +59,15 @@ fn flex_multiline_auto_height_nested_container_size() {
   }
 
   // 5 items -> 3 lines (2 + 2 + 1) at 100px width with a 10px column gap.
-  let mut item1 =
-    BoxNode::new_block(item_style(40.0, 50.0), FormattingContextType::Block, vec![]);
+  let mut item1 = BoxNode::new_block(item_style(40.0, 50.0), FormattingContextType::Block, vec![]);
   item1.id = 11;
-  let mut item2 =
-    BoxNode::new_block(item_style(40.0, 10.0), FormattingContextType::Block, vec![]);
+  let mut item2 = BoxNode::new_block(item_style(40.0, 10.0), FormattingContextType::Block, vec![]);
   item2.id = 12;
-  let mut item3 =
-    BoxNode::new_block(item_style(40.0, 40.0), FormattingContextType::Block, vec![]);
+  let mut item3 = BoxNode::new_block(item_style(40.0, 40.0), FormattingContextType::Block, vec![]);
   item3.id = 13;
-  let mut item4 =
-    BoxNode::new_block(item_style(40.0, 5.0), FormattingContextType::Block, vec![]);
+  let mut item4 = BoxNode::new_block(item_style(40.0, 5.0), FormattingContextType::Block, vec![]);
   item4.id = 14;
-  let mut item5 =
-    BoxNode::new_block(item_style(40.0, 30.0), FormattingContextType::Block, vec![]);
+  let mut item5 = BoxNode::new_block(item_style(40.0, 30.0), FormattingContextType::Block, vec![]);
   item5.id = 15;
 
   let mut nested = BoxNode::new_block(
@@ -85,8 +84,11 @@ fn flex_multiline_auto_height_nested_container_size() {
   sibling_style.height = Some(Length::px(10.0));
   sibling_style.width_keyword = None;
   sibling_style.height_keyword = None;
-  let mut sibling =
-    BoxNode::new_block(Arc::new(sibling_style), FormattingContextType::Block, vec![]);
+  let mut sibling = BoxNode::new_block(
+    Arc::new(sibling_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   sibling.id = 3;
 
   let outer = BoxNode::new_block(

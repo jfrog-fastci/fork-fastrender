@@ -60,7 +60,11 @@ fn context_menu_request_resolves_link_url() {
     .unwrap();
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, index_url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      index_url,
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   // Wait for the first paint so the worker has layout artifacts for hit-testing.
@@ -98,4 +102,3 @@ fn context_menu_request_resolves_link_url() {
 
   worker.join().unwrap();
 }
-

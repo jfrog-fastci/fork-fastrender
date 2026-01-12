@@ -20,7 +20,10 @@ fn find_table_wrapper_with_caption<'a>(node: &'a FragmentNode) -> Option<&'a Fra
   {
     return Some(node);
   }
-  node.children.iter().find_map(find_table_wrapper_with_caption)
+  node
+    .children
+    .iter()
+    .find_map(find_table_wrapper_with_caption)
 }
 
 #[test]
@@ -53,7 +56,12 @@ fn table_caption_percentage_width_resolves_against_wrapper() {
   let caption = wrapper
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.display), Some(Display::TableCaption)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.display),
+        Some(Display::TableCaption)
+      )
+    })
     .expect("caption fragment");
 
   assert!(
@@ -72,4 +80,3 @@ fn table_caption_percentage_width_resolves_against_wrapper() {
     caption.bounds.x()
   );
 }
-

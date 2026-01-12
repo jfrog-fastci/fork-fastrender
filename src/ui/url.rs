@@ -173,7 +173,8 @@ fn windows_drive_path_to_file_url(input: &str) -> Option<String> {
   if bytes.len() < 3 {
     return None;
   }
-  if !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || (bytes[2] != b'\\' && bytes[2] != b'/') {
+  if !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || (bytes[2] != b'\\' && bytes[2] != b'/')
+  {
     return None;
   }
 

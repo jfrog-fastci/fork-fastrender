@@ -157,7 +157,11 @@ fn flex_positioned_inset_stretch_child_relayout_applies_justify_content_end() {
   let mut inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
   inner.id = 3;
 
-  let mut abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Flex, vec![inner]);
+  let mut abs_child = BoxNode::new_block(
+    Arc::new(abs_style),
+    FormattingContextType::Flex,
+    vec![inner],
+  );
   abs_child.id = 2;
   let abs_child_direct = abs_child.clone();
 
@@ -175,7 +179,8 @@ fn flex_positioned_inset_stretch_child_relayout_applies_justify_content_end() {
   let direct_fragment = fc
     .layout(
       &abs_child_direct,
-      &LayoutConstraints::definite(100.0, 100.0).with_used_border_box_size(Some(100.0), Some(100.0)),
+      &LayoutConstraints::definite(100.0, 100.0)
+        .with_used_border_box_size(Some(100.0), Some(100.0)),
     )
     .expect("direct layout succeeds");
   let direct_inner = direct_fragment

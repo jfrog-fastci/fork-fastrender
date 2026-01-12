@@ -228,8 +228,8 @@ fn selector_candidates_benchmark(c: &mut Criterion) {
   let mixed_dom = parse_html(&mixed_html).expect("parse html");
   let mixed_css = generate_css_with_mandatory_anchor_is_selectors(mixed_variants, class_len);
   let mixed_stylesheet = parse_stylesheet(&mixed_css).expect("parse stylesheet");
-  let mut bench =
-    SelectorCandidateBench::new(&mixed_dom, &mixed_stylesheet, &media).expect("build candidate bench");
+  let mut bench = SelectorCandidateBench::new(&mixed_dom, &mixed_stylesheet, &media)
+    .expect("build candidate bench");
   let mut group = c.benchmark_group("selector_candidates/mandatory_anchor_is_selectors");
   let mixed_reps = 100usize;
   group.bench_function("cached", |b| {

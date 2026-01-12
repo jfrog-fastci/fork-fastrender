@@ -141,7 +141,8 @@ fn font_variant_alternates_named_values_resolve_via_font_feature_values() {
     Some([2u32].as_slice())
   );
   assert_eq!(
-    node.styles
+    node
+      .styles
       .font_feature_values
       .lookup(&family, FontFeatureValueType::Ornaments, "Flourish"),
     Some([2u32].as_slice())

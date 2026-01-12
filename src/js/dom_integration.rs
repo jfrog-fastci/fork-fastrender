@@ -7,9 +7,9 @@ use super::html_script_pipeline::{HtmlScriptPipelineHost, ModuleGraphFetchOption
 use super::html_script_scheduler::ScriptEventKind;
 
 use super::{
-  determine_script_type_dom2, ClassicScriptScheduler, DomHost, EventLoop, ScriptElementEvent,
-  ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
-  HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork,
+  determine_script_type_dom2, ClassicScriptScheduler, DomHost, EventLoop, HtmlScriptScheduler,
+  HtmlScriptSchedulerAction, HtmlScriptWork, ScriptElementEvent, ScriptElementSpec,
+  ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
 };
 
 /// Helpers that bridge DOM mutation ("insertion steps") to the HTML `<script>` processing model.
@@ -104,7 +104,7 @@ pub fn build_dynamic_script_element_spec(
 }
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
 /// `<script>` elements.
-/// 
+///
 /// This is intended to be called by DOM mutation bindings after a `<script>` element becomes
 /// connected to the document (e.g. after `Node.appendChild`).
 ///
@@ -128,7 +128,13 @@ pub fn prepare_dynamic_script_on_insertion<Host>(
 where
   Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
-  prepare_dynamic_script(host, scheduler, event_loop, inserted_node, document_base_url)
+  prepare_dynamic_script(
+    host,
+    scheduler,
+    event_loop,
+    inserted_node,
+    document_base_url,
+  )
 }
 
 /// Prepare a dynamically-connected `<script>` element after its `src` attribute changes.
@@ -361,14 +367,10 @@ where
 {
   for action in actions {
     match action {
-      HtmlScriptSchedulerAction::StartClassicFetch {
-        script_id, url, ..
-      } => {
+      HtmlScriptSchedulerAction::StartClassicFetch { script_id, url, .. } => {
         host.start_classic_fetch(script_id, &url)?;
       }
-      HtmlScriptSchedulerAction::StartModuleGraphFetch {
-        script_id, url, ..
-      } => {
+      HtmlScriptSchedulerAction::StartModuleGraphFetch { script_id, url, .. } => {
         host.start_module_graph_fetch(script_id, &url, ModuleGraphFetchOptions::default())?;
       }
       HtmlScriptSchedulerAction::StartInlineModuleGraphFetch {
@@ -562,13 +564,7 @@ where
   let script_nodes = host.with_dom(|dom| collect_inserted_script_elements(dom, &[inserted_root]));
 
   for node in script_nodes {
-    prepare_dynamic_script_on_insertion_html(
-      host,
-      scheduler,
-      event_loop,
-      node,
-      document_base_url,
-    )?;
+    prepare_dynamic_script_on_insertion_html(host, scheduler, event_loop, node, document_base_url)?;
   }
   Ok(())
 }
@@ -844,7 +840,10 @@ mod tests {
 
     prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
 
-    assert_eq!(host.started_loads, vec!["https://example.com/a.js".to_string()]);
+    assert_eq!(
+      host.started_loads,
+      vec!["https://example.com/a.js".to_string()]
+    );
     Ok(())
   }
 
@@ -908,7 +907,8 @@ mod tests {
   }
 
   #[test]
-  fn dynamic_script_oversized_integrity_attribute_does_not_execute_and_is_not_started() -> Result<()> {
+  fn dynamic_script_oversized_integrity_attribute_does_not_execute_and_is_not_started() -> Result<()>
+  {
     let mut dom = Document::new(QuirksMode::NoQuirks);
     let script = dom.create_element("script", "");
     let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
@@ -938,7 +938,8 @@ mod tests {
   }
 
   #[test]
-  fn dynamic_external_script_oversized_integrity_attribute_queues_error_event_and_does_not_start_fetch() -> Result<()> {
+  fn dynamic_external_script_oversized_integrity_attribute_queues_error_event_and_does_not_start_fetch(
+  ) -> Result<()> {
     let mut dom = Document::new(QuirksMode::NoQuirks);
     let script = dom.create_element("script", "");
     let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
@@ -1191,7 +1192,8 @@ mod tests {
   }
 
   #[test]
-  fn dynamic_external_nomodule_script_starts_fetch_when_module_scripts_not_supported() -> Result<()> {
+  fn dynamic_external_nomodule_script_starts_fetch_when_module_scripts_not_supported() -> Result<()>
+  {
     // This test exercises dynamic insertion behavior, so construct the element via DOM APIs rather
     // than HTML parsing (which marks scripts as parser-inserted and prepares them elsewhere).
     let mut dom = Document::new(QuirksMode::NoQuirks);
@@ -1199,7 +1201,9 @@ mod tests {
     dom
       .set_bool_attribute(script, "nomodule", true)
       .expect("set_bool_attribute");
-    dom.set_attribute(script, "src", "a.js").expect("set_attribute");
+    dom
+      .set_attribute(script, "src", "a.js")
+      .expect("set_attribute");
     dom.append_child(dom.root(), script).expect("append_child");
 
     let mut host = TestHost::new(dom);
@@ -1339,7 +1343,8 @@ mod tests {
   }
 
   #[test]
-  fn dynamic_external_script_oversized_integrity_attribute_queues_error_event_in_html_scheduler_path() -> Result<()> {
+  fn dynamic_external_script_oversized_integrity_attribute_queues_error_event_in_html_scheduler_path(
+  ) -> Result<()> {
     let mut dom = Document::new(QuirksMode::NoQuirks);
     let script = dom.create_element("script", "");
     let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
@@ -1391,7 +1396,8 @@ mod tests {
   }
 
   #[test]
-  fn dynamic_module_script_is_not_started_when_modules_unsupported_in_html_scheduler_path() -> Result<()> {
+  fn dynamic_module_script_is_not_started_when_modules_unsupported_in_html_scheduler_path(
+  ) -> Result<()> {
     let mut dom = Document::new(QuirksMode::NoQuirks);
     let script = dom.create_element("script", "");
     dom.append_child(dom.root(), script).expect("append_child");
@@ -1575,7 +1581,10 @@ mod nomodule_tests {
     prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
-    assert!(host.executed.is_empty(), "expected nomodule script not to execute");
+    assert!(
+      host.executed.is_empty(),
+      "expected nomodule script not to execute"
+    );
     Ok(())
   }
 
@@ -1599,7 +1608,8 @@ mod nomodule_tests {
   }
 
   #[test]
-  fn dynamic_external_nomodule_script_does_not_start_fetch_when_module_scripts_supported() -> Result<()> {
+  fn dynamic_external_nomodule_script_does_not_start_fetch_when_module_scripts_supported(
+  ) -> Result<()> {
     let (dom, script) = build_doc_with_script(&[("src", "a.js")], &["nomodule"], None);
     let mut host = Host {
       dom,
@@ -1719,7 +1729,9 @@ mod dynamic_mutation_tests {
       spec: &ScriptElementSpec,
       _event_loop: &mut EventLoop<Self>,
     ) -> Result<()> {
-      self.executed.push((script_text.to_string(), spec.force_async));
+      self
+        .executed
+        .push((script_text.to_string(), spec.force_async));
       Ok(())
     }
 
@@ -1729,7 +1741,9 @@ mod dynamic_mutation_tests {
       spec: &ScriptElementSpec,
       _event_loop: &mut EventLoop<Self>,
     ) -> Result<()> {
-      self.executed.push((script_text.to_string(), spec.force_async));
+      self
+        .executed
+        .push((script_text.to_string(), spec.force_async));
       Ok(())
     }
   }
@@ -1915,8 +1929,8 @@ mod dynamic_mutation_tests {
 #[cfg(test)]
 mod dynamic_insertion_html_scheduler_tests {
   use super::{
-    apply_html_script_scheduler_actions_dynamic_insertion, prepare_dynamic_script_on_insertion_html,
-    DomHost, EventLoop, HtmlScriptScheduler,
+    apply_html_script_scheduler_actions_dynamic_insertion,
+    prepare_dynamic_script_on_insertion_html, DomHost, EventLoop, HtmlScriptScheduler,
   };
   use crate::dom2::{Document, NodeId};
   use crate::error::Result;
@@ -1927,7 +1941,7 @@ mod dynamic_insertion_html_scheduler_tests {
   use crate::js::{CurrentScriptHost, CurrentScriptStateHandle, HtmlScriptId};
   use selectors::context::QuirksMode;
   use std::collections::HashMap;
-  
+
   struct Host {
     dom: Document,
     html: NodeId,
@@ -1938,7 +1952,7 @@ mod dynamic_insertion_html_scheduler_tests {
     ids_by_url: HashMap<String, HtmlScriptId>,
     log: Vec<String>,
   }
- 
+
   impl Host {
     fn new() -> Self {
       let mut dom = Document::new(QuirksMode::NoQuirks);
@@ -1955,8 +1969,13 @@ mod dynamic_insertion_html_scheduler_tests {
         log: Vec::new(),
       }
     }
- 
-    fn append_script(&mut self, attrs: &[(&str, &str)], text: Option<&str>, force_async: bool) -> NodeId {
+
+    fn append_script(
+      &mut self,
+      attrs: &[(&str, &str)],
+      text: Option<&str>,
+      force_async: bool,
+    ) -> NodeId {
       let html = self.html;
       self.mutate_dom(|dom| {
         let script = dom.create_element("script", "");
@@ -1973,7 +1992,7 @@ mod dynamic_insertion_html_scheduler_tests {
       })
     }
   }
- 
+
   impl DomHost for Host {
     fn with_dom<R, F>(&self, f: F) -> R
     where
@@ -1981,7 +2000,7 @@ mod dynamic_insertion_html_scheduler_tests {
     {
       f(&self.dom)
     }
- 
+
     fn mutate_dom<R, F>(&mut self, f: F) -> R
     where
       F: FnOnce(&mut Document) -> (R, bool),
@@ -1990,7 +2009,7 @@ mod dynamic_insertion_html_scheduler_tests {
       result
     }
   }
-  
+
   impl ScriptElementEventHost for Host {
     fn dispatch_script_element_event(
       &mut self,
@@ -2001,13 +2020,13 @@ mod dynamic_insertion_html_scheduler_tests {
       Ok(())
     }
   }
-  
+
   impl CurrentScriptHost for Host {
     fn current_script_state(&self) -> &CurrentScriptStateHandle {
       &self.current_script_state
     }
   }
-  
+
   impl HtmlScriptPipelineHost for Host {
     fn start_classic_fetch(&mut self, script_id: HtmlScriptId, url: &str) -> Result<()> {
       self
@@ -2016,7 +2035,7 @@ mod dynamic_insertion_html_scheduler_tests {
       self.ids_by_url.insert(url.to_string(), script_id);
       Ok(())
     }
-  
+
     fn start_module_graph_fetch(
       &mut self,
       script_id: HtmlScriptId,
@@ -2029,7 +2048,7 @@ mod dynamic_insertion_html_scheduler_tests {
       self.ids_by_url.insert(url.to_string(), script_id);
       Ok(())
     }
-  
+
     fn start_inline_module_graph_fetch(
       &mut self,
       script_id: HtmlScriptId,
@@ -2042,7 +2061,7 @@ mod dynamic_insertion_html_scheduler_tests {
         .push((script_id, source_text.to_string()));
       Ok(())
     }
-  
+
     fn execute_classic_script(
       &mut self,
       source_text: Option<&str>,
@@ -2054,7 +2073,7 @@ mod dynamic_insertion_html_scheduler_tests {
         .push(format!("exec:classic:{}", source_text.unwrap_or("<null>")));
       Ok(())
     }
-  
+
     fn execute_module_script(
       &mut self,
       module_handle: Option<&str>,
@@ -2066,7 +2085,7 @@ mod dynamic_insertion_html_scheduler_tests {
         .push(format!("exec:module:{}", module_handle.unwrap_or("<null>")));
       Ok(())
     }
-  
+
     fn register_import_map(
       &mut self,
       source_text: &str,
@@ -2078,28 +2097,46 @@ mod dynamic_insertion_html_scheduler_tests {
       Ok(())
     }
   }
- 
+
   #[test]
   fn dynamic_external_classic_scripts_execute_in_insertion_order_even_if_fetch_completes_out_of_order(
   ) -> Result<()> {
     let mut host = Host::new();
     let mut scheduler = HtmlScriptScheduler::<NodeId>::new();
     let mut event_loop = EventLoop::<Host>::new();
-  
+
     let script_a = host.append_script(&[("src", "https://example.com/a.js")], None, false);
-    prepare_dynamic_script_on_insertion_html(&mut host, &mut scheduler, &mut event_loop, script_a, None)?;
+    prepare_dynamic_script_on_insertion_html(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script_a,
+      None,
+    )?;
     let script_b = host.append_script(&[("src", "https://example.com/b.js")], None, false);
-    prepare_dynamic_script_on_insertion_html(&mut host, &mut scheduler, &mut event_loop, script_b, None)?;
- 
-    let id_a = *host.ids_by_url.get("https://example.com/a.js").expect("id_a");
-    let id_b = *host.ids_by_url.get("https://example.com/b.js").expect("id_b");
- 
+    prepare_dynamic_script_on_insertion_html(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script_b,
+      None,
+    )?;
+
+    let id_a = *host
+      .ids_by_url
+      .get("https://example.com/a.js")
+      .expect("id_a");
+    let id_b = *host
+      .ids_by_url
+      .get("https://example.com/b.js")
+      .expect("id_b");
+
     // Complete the second fetch first; the scheduler must not execute it until the first is ready.
     let actions = scheduler.classic_fetch_completed(id_b, "B".to_string())?;
     apply_html_script_scheduler_actions_dynamic_insertion(&mut host, &mut event_loop, actions)?;
     let actions = scheduler.classic_fetch_completed(id_a, "A".to_string())?;
     apply_html_script_scheduler_actions_dynamic_insertion(&mut host, &mut event_loop, actions)?;
- 
+
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(
       host.log,
@@ -2107,27 +2144,39 @@ mod dynamic_insertion_html_scheduler_tests {
     );
     Ok(())
   }
- 
+
   #[test]
   fn dynamic_external_module_scripts_execute_in_insertion_order_even_if_graph_completes_out_of_order(
   ) -> Result<()> {
     let mut host = Host::new();
     let mut scheduler = HtmlScriptScheduler::<NodeId>::new();
     let mut event_loop = EventLoop::<Host>::new();
- 
+
     let script_a = host.append_script(
       &[("type", "module"), ("src", "https://example.com/a.mjs")],
       None,
       false,
     );
-    prepare_dynamic_script_on_insertion_html(&mut host, &mut scheduler, &mut event_loop, script_a, None)?;
+    prepare_dynamic_script_on_insertion_html(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script_a,
+      None,
+    )?;
     let script_b = host.append_script(
       &[("type", "module"), ("src", "https://example.com/b.mjs")],
       None,
       false,
     );
-    prepare_dynamic_script_on_insertion_html(&mut host, &mut scheduler, &mut event_loop, script_b, None)?;
- 
+    prepare_dynamic_script_on_insertion_html(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script_b,
+      None,
+    )?;
+
     let id_a = *host
       .ids_by_url
       .get("https://example.com/a.mjs")
@@ -2136,12 +2185,12 @@ mod dynamic_insertion_html_scheduler_tests {
       .ids_by_url
       .get("https://example.com/b.mjs")
       .expect("id_b");
- 
+
     let actions = scheduler.module_graph_completed(id_b, "MB".to_string())?;
     apply_html_script_scheduler_actions_dynamic_insertion(&mut host, &mut event_loop, actions)?;
     let actions = scheduler.module_graph_completed(id_a, "MA".to_string())?;
     apply_html_script_scheduler_actions_dynamic_insertion(&mut host, &mut event_loop, actions)?;
- 
+
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(
       host.log,
@@ -2149,32 +2198,38 @@ mod dynamic_insertion_html_scheduler_tests {
     );
     Ok(())
   }
- 
+
   #[test]
   fn dynamic_inline_module_script_is_queued_and_does_not_execute_synchronously() -> Result<()> {
     let mut host = Host::new();
     let mut scheduler = HtmlScriptScheduler::<NodeId>::new();
     let mut event_loop = EventLoop::<Host>::new();
- 
+
     // `force_async=true` is the default for DOM-created scripts; keep it to ensure the inline module
     // is treated as async-like by the scheduler.
     let script = host.append_script(&[("type", "module")], Some("INLINE"), true);
-    prepare_dynamic_script_on_insertion_html(&mut host, &mut scheduler, &mut event_loop, script, None)?;
- 
+    prepare_dynamic_script_on_insertion_html(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+      None,
+    )?;
+
     assert!(
       host.log.is_empty(),
       "expected no synchronous script execution during DOM insertion"
     );
     assert_eq!(host.started_inline_module_fetches.len(), 1);
     let script_id = host.started_inline_module_fetches[0].0;
- 
+
     let actions = scheduler.module_graph_completed(script_id, "INLINE-MOD".to_string())?;
     apply_html_script_scheduler_actions_dynamic_insertion(&mut host, &mut event_loop, actions)?;
     assert!(
       host.log.is_empty(),
       "expected inline module execution to be queued as a task"
     );
- 
+
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.log, vec!["exec:module:INLINE-MOD".to_string()]);
     Ok(())

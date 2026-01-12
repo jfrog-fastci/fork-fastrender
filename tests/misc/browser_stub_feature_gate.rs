@@ -27,4 +27,3 @@ fn browser_binary_without_browser_ui_feature_is_stub() {
     "expected stub to print the wrapper-script run command, got:\n{stderr}"
   );
 }
-

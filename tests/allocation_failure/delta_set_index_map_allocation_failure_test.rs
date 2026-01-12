@@ -1,8 +1,8 @@
+use super::{fail_next_allocation, failed_allocs, lock_allocator};
 use fastrender::text::otvar::item_variation_store::{
   parse_delta_set_index_map, DeltaSetIndex, ParseError,
 };
 use std::mem;
-use super::{fail_next_allocation, failed_allocs, lock_allocator};
 
 #[test]
 fn delta_set_index_map_allocation_failure_is_reported_instead_of_aborting() {

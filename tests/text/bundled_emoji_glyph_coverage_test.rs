@@ -34,4 +34,3 @@ fn bundled_emoji_fixture_covers_pageset_observed_codepoints() {
     );
   }
 }
-

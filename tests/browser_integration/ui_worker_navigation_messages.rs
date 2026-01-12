@@ -77,7 +77,10 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
 
   handle
     .ui_tx
-    .send(support::create_tab_msg(tab_id, Some("about:newtab".to_string())))
+    .send(support::create_tab_msg(
+      tab_id,
+      Some("about:newtab".to_string()),
+    ))
     .expect("create tab");
   handle
     .ui_tx

@@ -87,7 +87,9 @@ fn running_headers_follow_page_start() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -131,7 +133,9 @@ fn first_start_last_selection_differs() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   assert!(page_roots.len() >= 2);
   let second_page = page_roots[1];
@@ -175,7 +179,9 @@ fn running_elements_and_strings_coexist() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   assert!(page_roots.len() >= 2);
 

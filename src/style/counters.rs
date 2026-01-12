@@ -452,7 +452,10 @@ impl CounterManager {
   /// Leaves a style containment boundary entered by `enter_style_containment`.
   pub fn leave_style_containment(&mut self) {
     let Some(idx) = self.style_containment_roots.pop() else {
-      debug_assert!(false, "leave_style_containment called with no active boundary");
+      debug_assert!(
+        false,
+        "leave_style_containment called with no active boundary"
+      );
       return;
     };
     debug_assert_eq!(

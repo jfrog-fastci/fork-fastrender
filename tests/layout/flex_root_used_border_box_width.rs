@@ -42,8 +42,16 @@ fn flex_root_uses_definite_used_border_box_width_over_available_width() {
   right_style.width = Some(Length::percent(29.0));
   right_style.min_width = Some(Length::px(290.0));
 
-  let left = BoxNode::new_block(Arc::new(left_style), FormattingContextType::Block, Vec::new());
-  let right = BoxNode::new_block(Arc::new(right_style), FormattingContextType::Block, Vec::new());
+  let left = BoxNode::new_block(
+    Arc::new(left_style),
+    FormattingContextType::Block,
+    Vec::new(),
+  );
+  let right = BoxNode::new_block(
+    Arc::new(right_style),
+    FormattingContextType::Block,
+    Vec::new(),
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -53,12 +61,10 @@ fn flex_root_uses_definite_used_border_box_width_over_available_width() {
 
   // The containing block is 840px wide, but the block width:auto resolution (taking negative
   // margins into account) yields a 880px used border-box size.
-  let constraints = LayoutConstraints::new(
-    AvailableSpace::Definite(840.0),
-    AvailableSpace::Indefinite,
-  )
-  .with_inline_percentage_base(Some(840.0))
-  .with_used_border_box_size(Some(880.0), None);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(840.0), AvailableSpace::Indefinite)
+      .with_inline_percentage_base(Some(840.0))
+      .with_used_border_box_size(Some(880.0), None);
 
   let fragment = fc
     .layout(&container, &constraints)
@@ -78,4 +84,3 @@ fn flex_root_uses_definite_used_border_box_width_over_available_width() {
     fragment.bounds.width()
   );
 }
-

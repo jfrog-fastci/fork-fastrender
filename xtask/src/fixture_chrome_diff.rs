@@ -1657,10 +1657,9 @@ fn build_render_fixtures_command(
 
 fn cargo_bin_executable(repo_root: &Path, bin: &str, debug: bool) -> PathBuf {
   let profile_dir = if debug { "debug" } else { "release" };
-  crate::cargo_target_dir(repo_root).join(profile_dir).join(format!(
-    "{bin}{}",
-    std::env::consts::EXE_SUFFIX
-  ))
+  crate::cargo_target_dir(repo_root)
+    .join(profile_dir)
+    .join(format!("{bin}{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn render_fixtures_executable(repo_root: &Path, debug: bool) -> PathBuf {
@@ -1917,15 +1916,21 @@ mod tests {
       .collect();
     assert_eq!(argv.first().map(String::as_str), Some("bash"));
     assert!(
-      argv.iter().any(|arg| arg.ends_with("scripts/run_limited.sh")),
+      argv
+        .iter()
+        .any(|arg| arg.ends_with("scripts/run_limited.sh")),
       "expected command to use scripts/run_limited.sh; argv={argv:?}"
     );
     assert!(
-      !argv.iter().any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
+      !argv
+        .iter()
+        .any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
       "render_fixtures command must not go through cargo_agent.sh; argv={argv:?}"
     );
     assert!(
-      argv.iter().any(|arg| arg.ends_with("render_fixtures") || arg.ends_with("render_fixtures.exe")),
+      argv
+        .iter()
+        .any(|arg| arg.ends_with("render_fixtures") || arg.ends_with("render_fixtures.exe")),
       "expected command to execute render_fixtures binary; argv={argv:?}"
     );
   }

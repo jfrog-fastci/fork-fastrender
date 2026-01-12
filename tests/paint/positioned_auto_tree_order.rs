@@ -80,4 +80,3 @@ fn positioned_auto_paints_in_dom_tree_order() {
   // Background.
   assert_close(pixel(&pixmap, 55, 55), (255, 255, 255, 255), 2);
 }
-

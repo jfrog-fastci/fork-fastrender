@@ -7,8 +7,8 @@ use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::GridTrack;
 use fastrender::style::types::Overflow;
 use fastrender::style::values::Length;
-use fastrender::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::ComputedStyle;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -47,9 +47,17 @@ fn grid_fr_row_sizes_to_content_when_container_height_is_indefinite_even_if_item
   item_style.display = Display::Block;
   item_style.overflow_x = Overflow::Hidden;
   item_style.overflow_y = Overflow::Hidden;
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![inner]);
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
-  let mut grid = BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![item]);
+  let mut grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
   grid.id = 1;
 
   let fc = GridFormattingContext::new();
@@ -66,4 +74,3 @@ fn grid_fr_row_sizes_to_content_when_container_height_is_indefinite_even_if_item
   assert_approx(fragment.bounds.height(), 80.0, "grid height");
   assert_approx(item_fragment.bounds.height(), 80.0, "grid item height");
 }
-

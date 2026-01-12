@@ -140,4 +140,3 @@ fn nested_subgrid_contributions_respect_inherited_track_offsets() {
     "nested subgrid contribution maps into ancestor grid with offset",
   );
 }
-

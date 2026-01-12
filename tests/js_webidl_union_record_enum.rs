@@ -1,8 +1,8 @@
 use fastrender::js::bindings::{install_window_bindings, BindingValue, WebHostBindings};
+use fastrender::js::webidl::WebIdlBindingsRuntime;
 use fastrender::js::webidl::{
   InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlHooks, WebIdlLimits,
 };
-use fastrender::js::webidl::WebIdlBindingsRuntime;
 use vm_js::{Heap, HeapLimits, JsRuntime as VmJsScriptRuntime, Value, Vm, VmError, VmOptions};
 
 #[derive(Default)]
@@ -212,4 +212,3 @@ fn vm_js_enum_conversion_throws_type_error_on_invalid_value() -> Result<(), VmEr
   assert_eq!(ok, Value::Bool(true));
   Ok(())
 }
-

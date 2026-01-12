@@ -40,8 +40,7 @@ fn flex_row_reverse_percent_sized_item_keeps_flex_grow_sibling_in_flow() {
   fixed_style.width = Some(Length::percent(60.0));
   fixed_style.height = Some(Length::px(100.0));
   fixed_style.flex_shrink = 0.0;
-  let mut fixed =
-    BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
+  let mut fixed = BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
   fixed.id = 1;
 
   let mut flex_style = ComputedStyle::default();
@@ -86,4 +85,3 @@ fn flex_row_reverse_percent_sized_item_keeps_flex_grow_sibling_in_flow() {
     flex_frag.bounds.width()
   );
 }
-

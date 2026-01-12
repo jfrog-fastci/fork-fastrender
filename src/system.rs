@@ -218,7 +218,10 @@ mod tests {
   #[test]
   fn non_ascii_whitespace_parse_cgroup_v2_cpu_max_does_not_split_nbsp() {
     let nbsp = "\u{00A0}";
-    assert_eq!(parse_cgroup_v2_cpu_max(&format!("100000{nbsp}100000")), None);
+    assert_eq!(
+      parse_cgroup_v2_cpu_max(&format!("100000{nbsp}100000")),
+      None
+    );
   }
 
   #[cfg(target_os = "linux")]
@@ -237,7 +240,10 @@ mod tests {
   #[test]
   fn non_ascii_whitespace_parse_cgroup_v1_cpu_quota_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
-    assert_eq!(parse_cgroup_v1_cpu_quota(&format!("{nbsp}100000"), "100000"), None);
+    assert_eq!(
+      parse_cgroup_v1_cpu_quota(&format!("{nbsp}100000"), "100000"),
+      None
+    );
   }
 
   #[cfg(target_os = "linux")]

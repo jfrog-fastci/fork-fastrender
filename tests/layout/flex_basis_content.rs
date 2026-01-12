@@ -13,8 +13,14 @@ use fastrender::FormattingContextType;
 use fastrender::FragmentNode;
 use std::sync::Arc;
 
-fn find_first_fragment_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {
-  if fragment.box_id().is_some_and(|fragment_id| fragment_id == id) {
+fn find_first_fragment_with_id<'a>(
+  fragment: &'a FragmentNode,
+  id: usize,
+) -> Option<&'a FragmentNode> {
+  if fragment
+    .box_id()
+    .is_some_and(|fragment_id| fragment_id == id)
+  {
     return Some(fragment);
   }
   for child in fragment.children.iter() {
@@ -78,7 +84,11 @@ fn flex_basis_content_ignores_preferred_main_size() {
   let child_a_fragment = find_first_fragment_with_id(&fragment, 1).expect("child A fragment");
   let child_b_fragment = find_first_fragment_with_id(&fragment, 2).expect("child B fragment");
 
-  assert_approx(child_a_fragment.bounds.width(), 0.0, "child A should size to its content");
+  assert_approx(
+    child_a_fragment.bounds.width(),
+    0.0,
+    "child A should size to its content",
+  );
   assert_approx(
     child_b_fragment.bounds.width(),
     50.0,

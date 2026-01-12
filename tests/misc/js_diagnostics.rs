@@ -55,4 +55,3 @@ fn js_exceptions_are_captured_and_do_not_abort_subsequent_execution() -> Result<
 
   Ok(())
 }
-

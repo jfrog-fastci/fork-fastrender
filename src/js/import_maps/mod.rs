@@ -24,29 +24,32 @@
 //!
 //! See `docs/import_maps.md` for a spec-mapped developer guide and integration notes.
 
-mod merge;
 mod integrity;
 mod limits;
+mod merge;
 mod parse;
 mod resolve;
 mod strings;
 mod types;
 
-pub use merge::{
-  merge_existing_and_new_import_maps, merge_existing_and_new_import_maps_with_limits, merge_module_specifier_maps,
-  register_import_map, register_import_map_with_limits,
-};
 pub use integrity::resolve_module_integrity_metadata;
-pub use parse::{
-  create_import_map_parse_result, create_import_map_parse_result_with_limits, parse_import_map_string,
-  parse_import_map_string_with_limits,
-};
-pub use resolve::{add_module_to_resolved_module_set, resolve_imports_match, resolve_module_specifier};
 pub use limits::ImportMapLimits;
+pub use merge::{
+  merge_existing_and_new_import_maps, merge_existing_and_new_import_maps_with_limits,
+  merge_module_specifier_maps, register_import_map, register_import_map_with_limits,
+};
+pub use parse::{
+  create_import_map_parse_result, create_import_map_parse_result_with_limits,
+  parse_import_map_string, parse_import_map_string_with_limits,
+};
+pub use resolve::{
+  add_module_to_resolved_module_set, resolve_imports_match, resolve_module_specifier,
+};
 pub use types::{
-  ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ImportMapWarning, ImportMapWarningKind,
-  ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet, ResolvedModuleSetIndex,
-  ScopeMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
+  ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ImportMapWarning,
+  ImportMapWarningKind, ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap,
+  ResolvedModuleSet, ResolvedModuleSetIndex, ScopeMap, ScopesMap, SpecifierAsUrlKind,
+  SpecifierResolutionRecord,
 };
 
 #[cfg(test)]
@@ -54,13 +57,12 @@ mod merge_tests;
 #[cfg(test)]
 mod parse_tests;
 #[cfg(test)]
-mod strings_tests;
-#[cfg(test)]
 mod resolve_tests;
+#[cfg(test)]
+mod strings_tests;
 
 #[cfg(test)]
 mod fixture_tests;
 
 #[cfg(test)]
 mod tests;
-

@@ -49,4 +49,3 @@ impl Clone for Response {
     }
   }
 }
-

@@ -382,12 +382,7 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
   //
   // Recompute `crosses_intrinsic_*` for this sizing pass so percentage tracks behave as intrinsic
   // in the first pass and as fixed tracks once the container size becomes definite (reruns).
-  update_item_crosses_intrinsic_tracks_for_axis(
-    axis,
-    items,
-    axis_tracks,
-    axis_inner_node_size,
-  );
+  update_item_crosses_intrinsic_tracks_for_axis(axis, items, axis_tracks, axis_inner_node_size);
 
   // 11.5.1 Shim item baselines
   if has_baseline_aligned_item {
@@ -677,7 +672,11 @@ pub(super) fn resolve_item_baselines(
       } else {
         0.0
       };
-      let margin_start = if margin_start.is_finite() { margin_start } else { 0.0 };
+      let margin_start = if margin_start.is_finite() {
+        margin_start
+      } else {
+        0.0
+      };
       let extra_margin_start = if extra_margin_start.is_finite() {
         extra_margin_start
       } else {
@@ -1159,16 +1158,16 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
       }
     }
 
-      // If a track is a flexible track, then it has flexible max track sizing function
-      // It cannot also have an intrinsic max track sizing function, so these steps do not apply.
-      if !is_flex {
-        // 5. For intrinsic maximums: Next increase the growth limit of tracks with an intrinsic max track sizing function by
-        // distributing extra space as needed to account for these items' min-content contributions.
-        let has_intrinsic_max_track_sizing_function = |track: &GridTrack| {
-          !track
-            .max_track_sizing_function
-            .has_definite_value(percentage_basis(track))
-        };
+    // If a track is a flexible track, then it has flexible max track sizing function
+    // It cannot also have an intrinsic max track sizing function, so these steps do not apply.
+    if !is_flex {
+      // 5. For intrinsic maximums: Next increase the growth limit of tracks with an intrinsic max track sizing function by
+      // distributing extra space as needed to account for these items' min-content contributions.
+      let has_intrinsic_max_track_sizing_function = |track: &GridTrack| {
+        !track
+          .max_track_sizing_function
+          .has_definite_value(percentage_basis(track))
+      };
       for item in batch.iter_mut() {
         let axis_min_content_size = item_sizer.min_content_contribution(item);
         let space = axis_min_content_size;
@@ -1185,15 +1184,15 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
       // Mark any tracks whose growth limit changed from infinite to finite in this step as infinitely growable for the next step.
       flush_planned_growth_limit_increases(axis_tracks, true);
 
-        // 6. For max-content maximums: Lastly continue to increase the growth limit of tracks with a max track sizing function of max-content
-        // by distributing extra space as needed to account for these items' max-content contributions. However, limit the growth of any
-        // fit-content() tracks by their fit-content() argument.
-        let has_max_content_max_track_sizing_function = |track: &GridTrack| {
-          track.max_track_sizing_function.is_max_content_alike()
-            || (track.kind == GridTrackKind::Track
-              && track.max_track_sizing_function.uses_percentage()
-              && axis_inner_node_size.is_none())
-        };
+      // 6. For max-content maximums: Lastly continue to increase the growth limit of tracks with a max track sizing function of max-content
+      // by distributing extra space as needed to account for these items' max-content contributions. However, limit the growth of any
+      // fit-content() tracks by their fit-content() argument.
+      let has_max_content_max_track_sizing_function = |track: &GridTrack| {
+        track.max_track_sizing_function.is_max_content_alike()
+          || (track.kind == GridTrackKind::Track
+            && track.max_track_sizing_function.uses_percentage()
+            && axis_inner_node_size.is_none())
+      };
       for item in batch.iter_mut() {
         let axis_max_content_size = item_sizer.max_content_contribution(item);
         let space = axis_max_content_size;
@@ -1803,10 +1802,8 @@ mod tests {
     let (mut taffy_expected, root_expected, [child1_expected, child2_expected]) =
       build_grid_baseline_tree();
     taffy_expected
-      .compute_layout_with_measure(
-        root_expected,
-        Size::MAX_CONTENT,
-        |_, _, node_id, _, _| MeasureOutput {
+      .compute_layout_with_measure(root_expected, Size::MAX_CONTENT, |_, _, node_id, _, _| {
+        MeasureOutput {
           size: Size {
             width: 10.0,
             height: 10.0,
@@ -1819,8 +1816,8 @@ mod tests {
               Some(0.0)
             },
           },
-        },
-      )
+        }
+      })
       .unwrap();
 
     let expected_child1 = taffy_expected.layout(child1_expected).unwrap();
@@ -1829,20 +1826,22 @@ mod tests {
     for baseline in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
       let (mut taffy, root, [child1, child2]) = build_grid_baseline_tree();
       taffy
-        .compute_layout_with_measure(
-          root,
-          Size::MAX_CONTENT,
-          |_, _, node_id, _, _| MeasureOutput {
+        .compute_layout_with_measure(root, Size::MAX_CONTENT, |_, _, node_id, _, _| {
+          MeasureOutput {
             size: Size {
               width: 10.0,
               height: 10.0,
             },
             first_baselines: Point {
               x: None,
-              y: if node_id == child1 { Some(baseline) } else { Some(0.0) },
+              y: if node_id == child1 {
+                Some(baseline)
+              } else {
+                Some(0.0)
+              },
             },
-          },
-        )
+          }
+        })
         .unwrap();
 
       let child1_layout = taffy.layout(child1).unwrap();
@@ -1893,7 +1892,10 @@ mod tests {
       |track| track.growth_limit,
     );
 
-    assert!(remaining.abs() < 0.01, "expected all space to be distributed");
+    assert!(
+      remaining.abs() < 0.01,
+      "expected all space to be distributed"
+    );
 
     let final_sizes: Vec<f32> = tracks
       .iter()

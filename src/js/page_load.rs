@@ -1,12 +1,12 @@
 use crate::dom2::{Document, Dom2TreeSink, NodeId};
 use crate::error::{Error, Result};
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
+use crate::js::html_script_scheduler::ScriptEventKind;
 use crate::js::{
   DocumentLifecycle, DocumentLifecycleHost, EventLoop, HtmlScriptId, HtmlScriptScheduler,
   HtmlScriptSchedulerAction, HtmlScriptWork, LoadBlockerKind, ScriptElementSpec, ScriptType,
   TaskSource,
 };
-use crate::js::html_script_scheduler::ScriptEventKind;
 use crate::resource::{FetchCredentialsMode, FetchDestination};
 
 use html5ever::tree_builder::TreeBuilderOpts;
@@ -282,7 +282,9 @@ where
     let spec = self.build_script_spec(script_node)?;
     let should_run = {
       let Some(sink) = self.parser.sink() else {
-        return Err(Error::Other("page_load: parser sink unavailable".to_string()));
+        return Err(Error::Other(
+          "page_load: parser sink unavailable".to_string(),
+        ));
       };
       let mut doc = sink.document_mut();
       crate::js::prepare_script_element_dom2(&mut doc, script_node, &spec)
@@ -310,9 +312,10 @@ where
       }
       _ => false,
     };
-    let discovered = self
-      .scheduler
-      .discovered_parser_script(spec, script_node, base_url_at_discovery)?;
+    let discovered =
+      self
+        .scheduler
+        .discovered_parser_script(spec, script_node, base_url_at_discovery)?;
     if discovered.actions.is_empty() {
       return Ok(());
     }
@@ -327,13 +330,19 @@ where
 
   fn build_script_spec(&self, script_node: NodeId) -> Result<ScriptElementSpec> {
     let Some(sink) = self.parser.sink() else {
-      return Err(Error::Other("page_load: parser sink unavailable".to_string()));
+      return Err(Error::Other(
+        "page_load: parser sink unavailable".to_string(),
+      ));
     };
     let doc = sink.document();
     let base = sink.base_url_tracker();
-    Ok(crate::js::streaming::build_parser_inserted_script_element_spec_dom2(
-      &doc, script_node, &base,
-    ))
+    Ok(
+      crate::js::streaming::build_parser_inserted_script_element_spec_dom2(
+        &doc,
+        script_node,
+        &base,
+      ),
+    )
   }
   fn apply_actions(
     &mut self,
@@ -438,7 +447,10 @@ where
                 Ok(())
               }
             }
-            HtmlScriptWork::ImportMap { source_text, base_url } => {
+            HtmlScriptWork::ImportMap {
+              source_text,
+              base_url,
+            } => {
               let _guard = self.enter_js_execution();
               let executor = &mut self.executor;
               executor.register_import_map(&source_text, base_url.as_deref(), event_loop)
@@ -483,7 +495,10 @@ where
                   Ok(())
                 }
               }
-              HtmlScriptWork::ImportMap { source_text, base_url } => {
+              HtmlScriptWork::ImportMap {
+                source_text,
+                base_url,
+              } => {
                 let _guard = host.enter_js_execution();
                 host
                   .executor
@@ -528,7 +543,9 @@ where
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      let actions = host.scheduler.classic_fetch_completed(script_id, source_text)?;
+      let actions = host
+        .scheduler
+        .classic_fetch_completed(script_id, source_text)?;
       host.apply_actions(actions, event_loop)?;
       Ok(())
     })?;
@@ -611,15 +628,18 @@ where
     struct NoopInvoker;
 
     impl EventListenerInvoker for NoopInvoker {
-      fn invoke(&mut self, _listener_id: ListenerId, _event: &mut crate::web::events::Event) -> std::result::Result<(), DomError> {
+      fn invoke(
+        &mut self,
+        _listener_id: ListenerId,
+        _event: &mut crate::web::events::Event,
+      ) -> std::result::Result<(), DomError> {
         Ok(())
       }
     }
 
-    let dom = self
-      .finished_document
-      .as_ref()
-      .ok_or_else(|| Error::Other("cannot dispatch lifecycle event before parsing completes".to_string()))?;
+    let dom = self.finished_document.as_ref().ok_or_else(|| {
+      Error::Other("cannot dispatch lifecycle event before parsing completes".to_string())
+    })?;
     self.lifecycle_events.push(event.type_.clone());
     let mut invoker = NoopInvoker;
     dispatch_event(target, &mut event, dom, dom.events(), &mut invoker)
@@ -764,10 +784,7 @@ mod tests {
       self.log.push(format!("module:{source_text}"));
       let name = source_text.to_string();
       event_loop.queue_microtask(move |host, _event_loop| {
-        host
-          .executor
-          .log
-          .push(format!("microtask:module:{name}"));
+        host.executor.log.push(format!("microtask:module:{name}"));
         Ok(())
       })?;
       Ok(())
@@ -822,7 +839,8 @@ mod tests {
   #[test]
   fn inline_importmap_executes_synchronously_and_does_not_use_classic_executor() -> Result<()> {
     let html =
-      "<!doctype html><script type=\"importmap\">{\"imports\":{}}</script><script>a</script>".to_string();
+      "<!doctype html><script type=\"importmap\">{\"imports\":{}}</script><script>a</script>"
+        .to_string();
     let mut host = TestHost::new(
       html,
       None,
@@ -831,10 +849,10 @@ mod tests {
       LoggingExecutor::default(),
     );
     let mut event_loop = EventLoop::<TestHost>::new();
- 
+
     host.start(&mut event_loop)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
-  
+
     assert_eq!(
       host.executor.log,
       vec![
@@ -1008,7 +1026,10 @@ mod tests {
     );
     assert_eq!(
       host.lifecycle_events,
-      vec!["readystatechange".to_string(), "DOMContentLoaded".to_string()],
+      vec![
+        "readystatechange".to_string(),
+        "DOMContentLoaded".to_string()
+      ],
       "expected DOMContentLoaded but not load before async script execution"
     );
 
@@ -1073,7 +1094,10 @@ mod tests {
     assert!(host.script_events.is_empty());
     assert_eq!(
       host.lifecycle_events,
-      vec!["readystatechange".to_string(), "DOMContentLoaded".to_string()],
+      vec![
+        "readystatechange".to_string(),
+        "DOMContentLoaded".to_string()
+      ],
       "expected DOMContentLoaded but not load before async script completion"
     );
 
@@ -1222,7 +1246,8 @@ mod tests {
   }
 
   #[test]
-  fn parser_inserted_module_scripts_execute_after_parsing_completed_in_document_order() -> Result<()> {
+  fn parser_inserted_module_scripts_execute_after_parsing_completed_in_document_order() -> Result<()>
+  {
     let filler = "x".repeat(4096);
     let html = format!(
       "<!doctype html><script type=\"module\" src=m1.js></script><script type=\"module\" src=m2.js></script><p>{filler}</p>"
@@ -1279,8 +1304,8 @@ mod tests {
 
   #[test]
   fn import_map_executes_synchronously_at_script_boundary() -> Result<()> {
-    let html = "<!doctype html><script type=\"importmap\">MAP</script><script>after</script>"
-      .to_string();
+    let html =
+      "<!doctype html><script type=\"importmap\">MAP</script><script>after</script>".to_string();
     let mut host = TestHost::new(
       html,
       Some("https://example.com/dir/page.html"),
@@ -1366,7 +1391,8 @@ mod tests {
   }
 
   #[test]
-  fn microtasks_run_before_parser_inserted_inline_script_boundary_even_inside_parse_task() -> Result<()> {
+  fn microtasks_run_before_parser_inserted_inline_script_boundary_even_inside_parse_task(
+  ) -> Result<()> {
     let html = "<!doctype html><script>RUN</script>".to_string();
     // Use a large chunk size so the parser hits the </script> boundary within the first parsing
     // task. This reproduces the HTML requirement to perform a microtask checkpoint *mid-task*
@@ -1405,7 +1431,8 @@ mod tests {
   }
 
   #[test]
-  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty() -> Result<()> {
+  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty(
+  ) -> Result<()> {
     // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
     // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
     // when the JS execution context stack is not empty.
@@ -1496,7 +1523,10 @@ mod tests {
     host.start(&mut event_loop)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
-    assert!(host.fetcher.started.is_empty(), "invalid src must not start a fetch");
+    assert!(
+      host.fetcher.started.is_empty(),
+      "invalid src must not start a fetch"
+    );
     assert_eq!(
       host.executor.log,
       Vec::<String>::new(),
@@ -1511,7 +1541,8 @@ mod tests {
   }
 
   #[test]
-  fn classic_script_src_rejected_scheme_queues_error_event_and_does_not_execute_inline() -> Result<()> {
+  fn classic_script_src_rejected_scheme_queues_error_event_and_does_not_execute_inline(
+  ) -> Result<()> {
     let html = "<!doctype html><script src=\"javascript:alert(1)\">INLINE</script>".to_string();
     let mut host = TestHost::new(
       html,
@@ -1525,7 +1556,10 @@ mod tests {
     host.start(&mut event_loop)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
-    assert!(host.fetcher.started.is_empty(), "invalid src must not start a fetch");
+    assert!(
+      host.fetcher.started.is_empty(),
+      "invalid src must not start a fetch"
+    );
     assert!(
       host.executor.log.is_empty(),
       "presence of src must suppress inline execution even when src is rejected"
@@ -1550,8 +1584,14 @@ mod tests {
     host.start(&mut event_loop)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
-    assert!(host.fetcher.started.is_empty(), "invalid module src must not start a classic fetch");
-    assert!(host.fetcher.started_module.is_empty(), "invalid module src must not start a fetch");
+    assert!(
+      host.fetcher.started.is_empty(),
+      "invalid module src must not start a classic fetch"
+    );
+    assert!(
+      host.fetcher.started_module.is_empty(),
+      "invalid module src must not start a fetch"
+    );
     assert!(
       host.fetcher.started_inline_module.is_empty(),
       "invalid module src must not start an inline module graph fetch"
@@ -1567,8 +1607,8 @@ mod tests {
 
   #[test]
   fn module_script_src_rejected_scheme_queues_error_event_and_does_not_start_fetch() -> Result<()> {
-    let html =
-      "<!doctype html><script type=\"module\" src=\"javascript:alert(1)\">INLINE</script>".to_string();
+    let html = "<!doctype html><script type=\"module\" src=\"javascript:alert(1)\">INLINE</script>"
+      .to_string();
     let mut host = TestHost::new(
       html,
       Some("https://example.com/dir/page.html"),
@@ -1585,7 +1625,10 @@ mod tests {
       host.fetcher.started.is_empty(),
       "invalid module src must not start a classic fetch"
     );
-    assert!(host.fetcher.started_module.is_empty(), "invalid module src must not start a fetch");
+    assert!(
+      host.fetcher.started_module.is_empty(),
+      "invalid module src must not start a fetch"
+    );
     assert!(
       host.fetcher.started_inline_module.is_empty(),
       "invalid module src must not start an inline module graph fetch"

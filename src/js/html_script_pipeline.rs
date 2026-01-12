@@ -71,7 +71,9 @@ pub trait ScriptElementEventHost {
 pub struct ModuleGraphFetchOptions {}
 
 /// Host interface used by [`HtmlScriptPipeline`].
-pub trait HtmlScriptPipelineHost: CurrentScriptHost + DomHost + ScriptElementEventHost + Sized + 'static {
+pub trait HtmlScriptPipelineHost:
+  CurrentScriptHost + DomHost + ScriptElementEventHost + Sized + 'static
+{
   fn start_classic_fetch(&mut self, script_id: HtmlScriptId, url: &str) -> Result<()>;
 
   fn start_module_graph_fetch(
@@ -183,7 +185,9 @@ impl HtmlScriptPipelineState {
     script_id: HtmlScriptId,
     module_handle: String,
   ) -> Result<()> {
-    let actions = self.scheduler.module_graph_completed(script_id, module_handle)?;
+    let actions = self
+      .scheduler
+      .module_graph_completed(script_id, module_handle)?;
     self.apply_actions(host, event_loop, actions)?;
     Ok(())
   }
@@ -253,18 +257,21 @@ impl HtmlScriptPipelineState {
         Error::Other("internal error: parser document unavailable at script boundary".to_string())
       })?;
       let base_tracker = BaseUrlTracker::new(base_url_at_discovery.as_deref());
-      let spec = build_parser_inserted_script_element_spec_dom2(&dom, script_node_id, &base_tracker);
+      let spec =
+        build_parser_inserted_script_element_spec_dom2(&dom, script_node_id, &base_tracker);
       let script_type = spec.script_type;
       let external_file = spec.src_attr_present;
       let base_url_at_discovery = spec.base_url.clone();
-      let discovered = self
-        .scheduler
-        .discovered_parser_script(spec, script_node_id, base_url_at_discovery)?;
+      let discovered =
+        self
+          .scheduler
+          .discovered_parser_script(spec, script_node_id, base_url_at_discovery)?;
       (script_type, external_file, discovered)
     };
 
     self.script_type_by_id.insert(discovered.id, script_type);
-    self.external_file_by_id
+    self
+      .external_file_by_id
       .insert(discovered.id, external_file);
 
     self.apply_actions(host, event_loop, discovered.actions)?;
@@ -418,7 +425,9 @@ impl HtmlScriptPipelineState {
       doc.clone()
     } else {
       let dom = self.parser.document().ok_or_else(|| {
-        Error::Other("internal error: parser document unavailable when executing script".to_string())
+        Error::Other(
+          "internal error: parser document unavailable when executing script".to_string(),
+        )
       })?;
       Document::clone(&dom)
     };
@@ -456,7 +465,9 @@ impl HtmlScriptPipelineState {
       doc.clone()
     } else {
       let dom = self.parser.document().ok_or_else(|| {
-        Error::Other("internal error: parser document unavailable when queuing script task".to_string())
+        Error::Other(
+          "internal error: parser document unavailable when queuing script task".to_string(),
+        )
       })?;
       Document::clone(&dom)
     };
@@ -604,19 +615,25 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
     source_text: String,
   ) -> Result<()> {
     let state = Rc::clone(&self.state);
-    self.event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      let should_resume = {
-        let mut s = state.borrow_mut();
-        s.on_classic_fetch_completed(host, event_loop, script_id, &source_text)?
-      };
-      if should_resume {
-        HtmlScriptPipeline::<Host>::queue_parse_task_rc(&state, event_loop)?;
-      }
-      Ok(())
-    })
+    self
+      .event_loop
+      .queue_task(TaskSource::Networking, move |host, event_loop| {
+        let should_resume = {
+          let mut s = state.borrow_mut();
+          s.on_classic_fetch_completed(host, event_loop, script_id, &source_text)?
+        };
+        if should_resume {
+          HtmlScriptPipeline::<Host>::queue_parse_task_rc(&state, event_loop)?;
+        }
+        Ok(())
+      })
   }
 
-  pub fn on_classic_fetch_failed(&mut self, host: &mut Host, script_id: HtmlScriptId) -> Result<()> {
+  pub fn on_classic_fetch_failed(
+    &mut self,
+    host: &mut Host,
+    script_id: HtmlScriptId,
+  ) -> Result<()> {
     let should_resume = {
       let mut s = self.state.borrow_mut();
       s.on_classic_fetch_failed(host, &mut self.event_loop, script_id)?
@@ -659,10 +676,12 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
     module_handle: String,
   ) -> Result<()> {
     let state = Rc::clone(&self.state);
-    self.event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      let mut s = state.borrow_mut();
-      s.on_module_graph_completed(host, event_loop, script_id, module_handle)
-    })
+    self
+      .event_loop
+      .queue_task(TaskSource::Networking, move |host, event_loop| {
+        let mut s = state.borrow_mut();
+        s.on_module_graph_completed(host, event_loop, script_id, module_handle)
+      })
   }
 
   pub fn on_module_graph_failed(&mut self, host: &mut Host, script_id: HtmlScriptId) -> Result<()> {
@@ -672,10 +691,12 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
 
   pub fn queue_module_graph_failure(&mut self, script_id: HtmlScriptId) -> Result<()> {
     let state = Rc::clone(&self.state);
-    self.event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      let mut s = state.borrow_mut();
-      s.on_module_graph_failed(host, event_loop, script_id)
-    })
+    self
+      .event_loop
+      .queue_task(TaskSource::Networking, move |host, event_loop| {
+        let mut s = state.borrow_mut();
+        s.on_module_graph_failed(host, event_loop, script_id)
+      })
   }
 }
 
@@ -701,7 +722,10 @@ impl<Host: HtmlScriptPipelineHost> ScriptBlockExecutor<Host> for HostExecutor<'_
         debug_assert_eq!(script_type, ScriptType::Module);
         host.execute_module_script(source_text.as_deref(), script, self.event_loop)
       }
-      HtmlScriptWork::ImportMap { source_text, base_url } => {
+      HtmlScriptWork::ImportMap {
+        source_text,
+        base_url,
+      } => {
         debug_assert_eq!(script_type, ScriptType::ImportMap);
         host.register_import_map(source_text, base_url.as_deref(), script, self.event_loop)
       }
@@ -778,7 +802,9 @@ mod tests {
 
   impl HtmlScriptPipelineHost for Host {
     fn start_classic_fetch(&mut self, script_id: HtmlScriptId, url: &str) -> Result<()> {
-      self.started_classic_fetches.push((script_id, url.to_string()));
+      self
+        .started_classic_fetches
+        .push((script_id, url.to_string()));
       Ok(())
     }
 
@@ -788,7 +814,9 @@ mod tests {
       url: &str,
       _options: ModuleGraphFetchOptions,
     ) -> Result<()> {
-      self.started_module_fetches.push((script_id, url.to_string()));
+      self
+        .started_module_fetches
+        .push((script_id, url.to_string()));
       Ok(())
     }
 
@@ -862,9 +890,12 @@ mod tests {
   fn importmap_executes_synchronously_at_boundary_and_does_not_block_parsing() -> Result<()> {
     let mut host = Host::default();
     let mut p = HtmlScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
-    p.feed_str(r#"<!doctype html><script type=importmap>{"imports":{}}</script><script>RUN</script>"#)?;
+    p.feed_str(
+      r#"<!doctype html><script type=importmap>{"imports":{}}</script><script>RUN</script>"#,
+    )?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(
       host.log,
       vec![
@@ -889,7 +920,8 @@ mod tests {
       r#"<script type=module src="/m1.js"></script><script type=module src="/m2.js"></script>"#,
     )?;
     // No EOF yet, so parsing cannot finish. Discover scripts and start module fetches.
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(!p.parsing_finished());
     assert_eq!(host.started_module_fetches.len(), 2);
 
@@ -899,14 +931,16 @@ mod tests {
     // Complete out-of-order before parsing completes.
     p.on_module_graph_completed(&mut host, m2, "m2".to_string())?;
     p.on_module_graph_completed(&mut host, m1, "m1".to_string())?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(
       host.log.is_empty(),
       "deferred module scripts must not execute before parsing completes"
     );
 
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(
       host.log,
@@ -916,16 +950,16 @@ mod tests {
   }
 
   #[test]
-  fn deferred_inline_module_scripts_execute_after_parsing_complete_in_document_order() -> Result<()> {
+  fn deferred_inline_module_scripts_execute_after_parsing_complete_in_document_order() -> Result<()>
+  {
     let mut host = Host::default();
     let mut p = HtmlScriptPipeline::<Host>::new_with_parse_budget(
       Some("https://ex/doc.html"),
       ParseBudget::new(1),
     );
-    p.feed_str(
-      r#"<script type=module>/*m1*/</script><script type=module>/*m2*/</script>"#,
-    )?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.feed_str(r#"<script type=module>/*m1*/</script><script type=module>/*m2*/</script>"#)?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(!p.parsing_finished());
     assert_eq!(host.started_inline_module_fetches.len(), 2);
 
@@ -935,14 +969,16 @@ mod tests {
     // Complete out-of-order before parsing completes.
     p.on_module_graph_completed(&mut host, m2, "m2".to_string())?;
     p.on_module_graph_completed(&mut host, m1, "m1".to_string())?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(
       host.log.is_empty(),
       "deferred module scripts must not execute before parsing completes"
     );
 
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(
       host.log,
       vec!["module:m1".to_string(), "module:m2".to_string()]
@@ -964,7 +1000,10 @@ mod tests {
 
     // 1st DOMManipulation parse task: should hit the import map boundary and register it.
     assert!(p.event_loop().run_next_task(&mut host)?);
-    assert_eq!(host.log, vec![r#"importmap:{"imports":{"x":"/x.js"}}"#.to_string()]);
+    assert_eq!(
+      host.log,
+      vec![r#"importmap:{"imports":{"x":"/x.js"}}"#.to_string()]
+    );
     assert!(
       host.started_module_fetches.is_empty(),
       "module fetch must not start until after import map is processed"
@@ -974,7 +1013,8 @@ mod tests {
     assert!(p.event_loop().run_next_task(&mut host)?);
     assert_eq!(host.started_module_fetches.len(), 1);
 
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(p.parsing_finished());
     Ok(())
   }
@@ -988,13 +1028,15 @@ mod tests {
     );
     p.feed_str(r#"<script src="/a.js"></script><script>RUN</script>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_classic_fetches.len(), 1);
     let script_id = host.started_classic_fetches[0].0;
     assert_eq!(p.blocked_on_script(), Some(script_id));
 
     p.on_classic_fetch_failed(&mut host, script_id)?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(p.parsing_finished());
     assert_eq!(host.log, vec!["classic:RUN".to_string()]);
     assert!(
@@ -1016,13 +1058,15 @@ mod tests {
     );
     p.feed_str(r#"<script type=module src="/m.js"></script>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(p.parsing_finished());
     assert_eq!(host.started_module_fetches.len(), 1);
     let script_id = host.started_module_fetches[0].0;
 
     p.on_module_graph_failed(&mut host, script_id)?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(host.log.is_empty(), "failed module script must not execute");
     assert!(
       host
@@ -1043,13 +1087,15 @@ mod tests {
     );
 
     p.feed_str(r#"<script type=module async src="/a.js"></script>"#)?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(!p.parsing_finished());
     assert_eq!(host.started_module_fetches.len(), 1);
     let async_id = host.started_module_fetches[0].0;
 
     p.queue_module_graph_completion(async_id, "A".to_string())?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(host.log, vec!["module:A".to_string()]);
     assert!(
@@ -1065,7 +1111,8 @@ mod tests {
     let mut p = HtmlScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str(r#"<script></script><script>RUN</script>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.log, vec!["classic:RUN".to_string()]);
     Ok(())
   }
@@ -1076,7 +1123,8 @@ mod tests {
     let mut p = HtmlScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str(r#"<script type=module></script>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(host.started_module_fetches.is_empty());
     assert!(host.started_inline_module_fetches.is_empty());
     assert!(host.log.is_empty());

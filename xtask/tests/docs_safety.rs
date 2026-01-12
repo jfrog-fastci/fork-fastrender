@@ -39,7 +39,11 @@ fn fence_delimiter(line: &str) -> Option<(char, usize)> {
       break;
     }
   }
-  if len >= 3 { Some((ch, len)) } else { None }
+  if len >= 3 {
+    Some((ch, len))
+  } else {
+    None
+  }
 }
 
 fn is_fence_end(line: &str, ch: char, len: usize) -> bool {

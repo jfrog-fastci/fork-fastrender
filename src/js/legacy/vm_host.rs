@@ -5,10 +5,12 @@ use crate::js::event_loop::{EventLoop, TimerId};
 use crate::js::time::WebTime;
 use crate::js::window_timers::{
   QUEUE_MICROTASK_NOT_CALLABLE_ERROR, QUEUE_MICROTASK_STRING_HANDLER_ERROR,
-  SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR, SET_TIMEOUT_NOT_CALLABLE_ERROR,
-  SET_TIMEOUT_STRING_HANDLER_ERROR,
+  SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR,
+  SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
-use rquickjs::{CatchResultExt, Coerced, Context, Ctx, CaughtError, Exception, Function, Runtime, Value};
+use rquickjs::{
+  CatchResultExt, CaughtError, Coerced, Context, Ctx, Exception, Function, Runtime, Value,
+};
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -119,111 +121,109 @@ impl JsVmHost {
 
   fn install_bindings(&self) -> Result<()> {
     let state = Rc::clone(&self.state);
-    self
-      .ctx
-      .with(|ctx| {
-        let result: rquickjs::Result<()> = (|| {
-          let globals = ctx.globals();
+    self.ctx.with(|ctx| {
+      let result: rquickjs::Result<()> = (|| {
+        let globals = ctx.globals();
 
-          // Host hooks used by the JS timer wrappers.
-          globals.set(
-            "__fr_schedule_timeout",
-            Function::new(ctx.clone(), {
-              let state = Rc::clone(&state);
-              move |delay_ms: f64| -> rquickjs::Result<TimerId> {
-                let event_loop = current_event_loop(&state)?;
-                let delay = normalize_ms(delay_ms);
-                let id_cell: Rc<Cell<TimerId>> = Rc::new(Cell::new(0));
-                let id_cell_for_cb = Rc::clone(&id_cell);
-                let id = event_loop
-                  .set_timeout(delay, move |host, event_loop| {
-                    host.fire_timer(event_loop, id_cell_for_cb.get())
-                  })
-                  .map_err(|e| {
-                    rquickjs::Error::new_from_js_message("EventLoop", "timer", e.to_string())
-                  })?;
-                id_cell.set(id);
-                Ok(id)
-              }
-            })?,
-          )?;
+        // Host hooks used by the JS timer wrappers.
+        globals.set(
+          "__fr_schedule_timeout",
+          Function::new(ctx.clone(), {
+            let state = Rc::clone(&state);
+            move |delay_ms: f64| -> rquickjs::Result<TimerId> {
+              let event_loop = current_event_loop(&state)?;
+              let delay = normalize_ms(delay_ms);
+              let id_cell: Rc<Cell<TimerId>> = Rc::new(Cell::new(0));
+              let id_cell_for_cb = Rc::clone(&id_cell);
+              let id = event_loop
+                .set_timeout(delay, move |host, event_loop| {
+                  host.fire_timer(event_loop, id_cell_for_cb.get())
+                })
+                .map_err(|e| {
+                  rquickjs::Error::new_from_js_message("EventLoop", "timer", e.to_string())
+                })?;
+              id_cell.set(id);
+              Ok(id)
+            }
+          })?,
+        )?;
 
-          globals.set(
-            "__fr_schedule_interval",
-            Function::new(ctx.clone(), {
-              let state = Rc::clone(&state);
-              move |interval_ms: f64| -> rquickjs::Result<TimerId> {
-                let event_loop = current_event_loop(&state)?;
-                let interval = normalize_ms(interval_ms);
-                let id_cell: Rc<Cell<TimerId>> = Rc::new(Cell::new(0));
-                let id_cell_for_cb = Rc::clone(&id_cell);
-                let id = event_loop
-                  .set_interval(interval, move |host, event_loop| {
-                    host.fire_timer(event_loop, id_cell_for_cb.get())
-                  })
-                  .map_err(|e| {
-                    rquickjs::Error::new_from_js_message("EventLoop", "timer", e.to_string())
-                  })?;
-                id_cell.set(id);
-                Ok(id)
-              }
-            })?,
-          )?;
+        globals.set(
+          "__fr_schedule_interval",
+          Function::new(ctx.clone(), {
+            let state = Rc::clone(&state);
+            move |interval_ms: f64| -> rquickjs::Result<TimerId> {
+              let event_loop = current_event_loop(&state)?;
+              let interval = normalize_ms(interval_ms);
+              let id_cell: Rc<Cell<TimerId>> = Rc::new(Cell::new(0));
+              let id_cell_for_cb = Rc::clone(&id_cell);
+              let id = event_loop
+                .set_interval(interval, move |host, event_loop| {
+                  host.fire_timer(event_loop, id_cell_for_cb.get())
+                })
+                .map_err(|e| {
+                  rquickjs::Error::new_from_js_message("EventLoop", "timer", e.to_string())
+                })?;
+              id_cell.set(id);
+              Ok(id)
+            }
+          })?,
+        )?;
 
-          globals.set(
-            "__fr_clear_timer",
-            Function::new(ctx.clone(), {
-              let state = Rc::clone(&state);
-              move |id: TimerId| -> rquickjs::Result<()> {
-                let event_loop = current_event_loop(&state)?;
-                event_loop.clear_timeout(id);
-                Ok(())
-              }
-            })?,
-          )?;
+        globals.set(
+          "__fr_clear_timer",
+          Function::new(ctx.clone(), {
+            let state = Rc::clone(&state);
+            move |id: TimerId| -> rquickjs::Result<()> {
+              let event_loop = current_event_loop(&state)?;
+              event_loop.clear_timeout(id);
+              Ok(())
+            }
+          })?,
+        )?;
 
-          globals.set(
-            "__fr_queue_microtask",
-            Function::new(ctx.clone(), {
-              let state = Rc::clone(&state);
-              move |id: i32| -> rquickjs::Result<()> {
-                let event_loop = current_event_loop(&state)?;
-                event_loop
-                  .queue_microtask(move |host, event_loop| host.fire_microtask(event_loop, id))
-                  .map_err(|e| {
-                    rquickjs::Error::new_from_js_message("EventLoop", "microtask", e.to_string())
-                  })?;
-                Ok(())
-              }
-            })?,
-          )?;
+        globals.set(
+          "__fr_queue_microtask",
+          Function::new(ctx.clone(), {
+            let state = Rc::clone(&state);
+            move |id: i32| -> rquickjs::Result<()> {
+              let event_loop = current_event_loop(&state)?;
+              event_loop
+                .queue_microtask(move |host, event_loop| host.fire_microtask(event_loop, id))
+                .map_err(|e| {
+                  rquickjs::Error::new_from_js_message("EventLoop", "microtask", e.to_string())
+                })?;
+              Ok(())
+            }
+          })?,
+        )?;
 
-          // Deterministic time bindings backed by the event loop clock.
-          globals.set(
-            "__fr_date_now",
-            Function::new(ctx.clone(), {
-              let state = Rc::clone(&state);
-              move || -> rquickjs::Result<f64> {
-                let now = state.now.get();
-                Ok(state.web_time.date_now_from_duration(now) as f64)
-              }
-            })?,
-          )?;
+        // Deterministic time bindings backed by the event loop clock.
+        globals.set(
+          "__fr_date_now",
+          Function::new(ctx.clone(), {
+            let state = Rc::clone(&state);
+            move || -> rquickjs::Result<f64> {
+              let now = state.now.get();
+              Ok(state.web_time.date_now_from_duration(now) as f64)
+            }
+          })?,
+        )?;
 
-          globals.set(
-            "__fr_performance_now",
-            Function::new(ctx.clone(), {
-              let state = Rc::clone(&state);
-              move || -> rquickjs::Result<f64> {
-                let now = state.now.get();
-                Ok(state.web_time.performance_now_from_duration(now))
-              }
-            })?,
-          )?;
+        globals.set(
+          "__fr_performance_now",
+          Function::new(ctx.clone(), {
+            let state = Rc::clone(&state);
+            move || -> rquickjs::Result<f64> {
+              let now = state.now.get();
+              Ok(state.web_time.performance_now_from_duration(now))
+            }
+          })?,
+        )?;
 
-          // JS-visible wrappers + callback storage.
-          let wrapper = format!(
-            r#"(function () {{
+        // JS-visible wrappers + callback storage.
+        let wrapper = format!(
+          r#"(function () {{
   var g = typeof globalThis !== "undefined" ? globalThis : this;
   if (typeof g.__fr_fire_timer === "function") return;
 
@@ -360,21 +360,21 @@ impl JsVmHost {
     }}
   }})();
  }})();"#,
-            set_timeout_string = SET_TIMEOUT_STRING_HANDLER_ERROR,
-             set_timeout_not_callable = SET_TIMEOUT_NOT_CALLABLE_ERROR,
-             set_interval_string = SET_INTERVAL_STRING_HANDLER_ERROR,
-             set_interval_not_callable = SET_INTERVAL_NOT_CALLABLE_ERROR,
-             queue_microtask_string = QUEUE_MICROTASK_STRING_HANDLER_ERROR,
-             queue_microtask_not_callable = QUEUE_MICROTASK_NOT_CALLABLE_ERROR,
-             time_origin = state.web_time.time_origin_unix_ms
-           );
+          set_timeout_string = SET_TIMEOUT_STRING_HANDLER_ERROR,
+          set_timeout_not_callable = SET_TIMEOUT_NOT_CALLABLE_ERROR,
+          set_interval_string = SET_INTERVAL_STRING_HANDLER_ERROR,
+          set_interval_not_callable = SET_INTERVAL_NOT_CALLABLE_ERROR,
+          queue_microtask_string = QUEUE_MICROTASK_STRING_HANDLER_ERROR,
+          queue_microtask_not_callable = QUEUE_MICROTASK_NOT_CALLABLE_ERROR,
+          time_origin = state.web_time.time_origin_unix_ms
+        );
 
-          ctx.eval::<(), _>(wrapper)?;
-          Ok(())
-        })();
+        ctx.eval::<(), _>(wrapper)?;
+        Ok(())
+      })();
 
-        result.catch(&ctx).map_err(map_caught_err)
-      })?;
+      result.catch(&ctx).map_err(map_caught_err)
+    })?;
     Ok(())
   }
 }
@@ -416,7 +416,9 @@ fn map_caught_err(err: CaughtError<'_>) -> Error {
   match err {
     CaughtError::Error(err) => map_js_err(err),
     CaughtError::Exception(exception) => Error::Other(format_exception(&exception)),
-    CaughtError::Value(value) => Error::Other(format!("Uncaught exception: {}", format_value(&value))),
+    CaughtError::Value(value) => {
+      Error::Other(format!("Uncaught exception: {}", format_value(&value)))
+    }
   }
 }
 

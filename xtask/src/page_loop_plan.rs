@@ -207,7 +207,11 @@ pub fn build_inspect_frag_command(
     // Match `render_fixtures` defaults: wait briefly for `font-display: swap` web fonts so
     // `inspect_frag` overlays/JSON dumps are aligned with both FastRender fixture renders and the
     // Chrome baseline harness (which uses a `--virtual-time-budget`).
-    let default_wait_ms = if args.patch_html_for_chrome_baseline { "1000" } else { "500" };
+    let default_wait_ms = if args.patch_html_for_chrome_baseline {
+      "1000"
+    } else {
+      "500"
+    };
     cmd.env("FASTR_WEB_FONT_WAIT_MS", default_wait_ms);
   }
   if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_TEXT_HINTING").is_none() {
@@ -371,7 +375,9 @@ mod tests {
     let cmd = build_inspect_frag_command(&repo_root(), true, &default_args(true));
     let envs = env_map(&cmd);
     assert_eq!(
-      envs.get("FASTR_WEB_FONT_WAIT_MS").and_then(|v| v.as_deref()),
+      envs
+        .get("FASTR_WEB_FONT_WAIT_MS")
+        .and_then(|v| v.as_deref()),
       Some("1000")
     );
   }

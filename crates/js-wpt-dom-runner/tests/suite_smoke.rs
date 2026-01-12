@@ -81,7 +81,7 @@ fn suite_smoke_report_classifies_expected_failures() {
   assert_eq!(
     dom_shims.outcome,
     TestOutcome::Passed,
-     "dom_shims.window.js should pass: {dom_shims:#?}"
+    "dom_shims.window.js should pass: {dom_shims:#?}"
   );
 
   let infinite_loop = report
@@ -119,8 +119,7 @@ fn suite_smoke_report_classifies_expected_failures() {
     .map(|r| format!("{} -> {:?} {:?}", r.id, r.outcome, r.error))
     .collect();
   assert_eq!(
-    mismatches.unexpected,
-    0,
+    mismatches.unexpected, 0,
     "unexpected mismatches: {unexpected:#?}"
   );
   assert_eq!(mismatches.flaky, 0, "flaky mismatches");
@@ -174,7 +173,10 @@ fn suite_url_tests_pass() {
   })
   .expect("run suite");
 
-  assert!(report.summary.total > 0, "expected at least one URL test result");
+  assert!(
+    report.summary.total > 0,
+    "expected at least one URL test result"
+  );
   assert_eq!(report.summary.failed, 0);
   assert_eq!(report.summary.timed_out, 0);
   assert_eq!(report.summary.errored, 0);
@@ -210,7 +212,10 @@ fn suite_events_tests_pass() {
   .expect("run suite");
 
   assert_eq!(report.summary.failed, 0, "events suite should not fail");
-  assert_eq!(report.summary.timed_out, 0, "events suite should not time out");
+  assert_eq!(
+    report.summary.timed_out, 0,
+    "events suite should not time out"
+  );
   assert_eq!(report.summary.errored, 0, "events suite should not error");
   assert_eq!(
     report.summary.total,
@@ -256,10 +261,22 @@ fn suite_dom_tests_pass() {
   })
   .expect("run suite");
 
-  assert_eq!(report.summary.failed, 0, "dom/domparsing suite should not fail");
-  assert_eq!(report.summary.timed_out, 0, "dom/domparsing suite should not time out");
-  assert_eq!(report.summary.errored, 0, "dom/domparsing suite should not error");
-  assert_eq!(report.summary.skipped, 0, "dom/domparsing suite should not skip");
+  assert_eq!(
+    report.summary.failed, 0,
+    "dom/domparsing suite should not fail"
+  );
+  assert_eq!(
+    report.summary.timed_out, 0,
+    "dom/domparsing suite should not time out"
+  );
+  assert_eq!(
+    report.summary.errored, 0,
+    "dom/domparsing suite should not error"
+  );
+  assert_eq!(
+    report.summary.skipped, 0,
+    "dom/domparsing suite should not skip"
+  );
   assert_eq!(
     report.summary.total, report.summary.passed,
     "all dom/domparsing tests should pass: {report:#?}"
@@ -279,9 +296,7 @@ fn suite_filter_supports_comma_separated_globs() {
     wpt_root: corpus_root.clone(),
     manifest_path: corpus_root.join("expectations.toml"),
     shard: None,
-    filter: Some(
-      "dom/element_matches_closest.window.js,events/eventtarget.window.js".to_string(),
-    ),
+    filter: Some("dom/element_matches_closest.window.js,events/eventtarget.window.js".to_string()),
     timeout: Duration::from_millis(500),
     long_timeout: Duration::from_secs(2),
     fail_on: FailOn::New,

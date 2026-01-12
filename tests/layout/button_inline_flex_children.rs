@@ -12,7 +12,10 @@ fn find_svg_replaced_fragment<'a>(node: &'a FragmentNode) -> Option<&'a Fragment
   }
 }
 
-fn find_text_fragment_containing<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
+fn find_text_fragment_containing<'a>(
+  node: &'a FragmentNode,
+  needle: &str,
+) -> Option<&'a FragmentNode> {
   match &node.content {
     FragmentContent::Text { text, .. } if text.contains(needle) => Some(node),
     _ => node
@@ -58,4 +61,3 @@ fn button_inline_flex_lays_out_svg_and_text_children() {
     text.bounds
   );
 }
-

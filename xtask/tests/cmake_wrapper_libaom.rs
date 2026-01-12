@@ -39,7 +39,11 @@ fn run_wrapper(args: &[&Path], env: &[(&str, &str)], remove_env: &[&str]) -> Vec
   let fake_cmake = write_fake_cmake(temp.path());
 
   let wrapper = repo_root().join("tools/cmake_wrapper.sh");
-  assert!(wrapper.is_file(), "missing wrapper at {}", wrapper.display());
+  assert!(
+    wrapper.is_file(),
+    "missing wrapper at {}",
+    wrapper.display()
+  );
 
   let mut cmd = Command::new("bash");
   cmd.current_dir(temp.path());
@@ -91,7 +95,9 @@ fn libaom_configure_injects_generic_and_disables_asm() {
   );
 
   assert!(
-    cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
+    cmake_args
+      .iter()
+      .any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
     "expected wrapper to inject -DAOM_TARGET_CPU=generic, got:\n{cmake_args:?}"
   );
   for flag in ["-DENABLE_ASM=0", "-DENABLE_NASM=0", "-DENABLE_YASM=0"] {
@@ -113,7 +119,9 @@ fn libaom_configure_injects_generic_and_disables_asm() {
 
   let expected_toolchain = repo_root().join("tools/cmake/aom_target_cpu_generic.cmake");
   assert_eq!(
-    toolchain_path.canonicalize().expect("canonicalize toolchain"),
+    toolchain_path
+      .canonicalize()
+      .expect("canonicalize toolchain"),
     expected_toolchain
       .canonicalize()
       .expect("canonicalize expected toolchain"),
@@ -138,16 +146,23 @@ fn libaom_configure_respects_env_opt_out() {
 
   let cmake_args = run_wrapper(
     &args,
-    &[("CARGO_PKG_NAME", "libaom-sys"), ("AOM_TARGET_CPU", "x86_64")],
+    &[
+      ("CARGO_PKG_NAME", "libaom-sys"),
+      ("AOM_TARGET_CPU", "x86_64"),
+    ],
     &["CMAKE_TOOLCHAIN_FILE"],
   );
 
   assert!(
-    cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=x86_64"),
+    cmake_args
+      .iter()
+      .any(|arg| arg == "-DAOM_TARGET_CPU=x86_64"),
     "expected wrapper to forward AOM_TARGET_CPU from env, got:\n{cmake_args:?}"
   );
   assert!(
-    !cmake_args.iter().any(|arg| arg.starts_with("-DENABLE_ASM=")),
+    !cmake_args
+      .iter()
+      .any(|arg| arg.starts_with("-DENABLE_ASM=")),
     "wrapper should not force-disable asm when opting out via env, got:\n{cmake_args:?}"
   );
   assert!(
@@ -181,11 +196,15 @@ fn libaom_configure_respects_explicit_target_cpu_arg() {
   );
 
   assert!(
-    cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=x86_64"),
+    cmake_args
+      .iter()
+      .any(|arg| arg == "-DAOM_TARGET_CPU=x86_64"),
     "expected wrapper to forward explicit -DAOM_TARGET_CPU arg, got:\n{cmake_args:?}"
   );
   assert!(
-    !cmake_args.iter().any(|arg| arg.starts_with("-DENABLE_ASM=")),
+    !cmake_args
+      .iter()
+      .any(|arg| arg.starts_with("-DENABLE_ASM=")),
     "wrapper should not force-disable asm when target cpu is explicitly set, got:\n{cmake_args:?}"
   );
   assert!(
@@ -223,7 +242,9 @@ fn libaom_configure_detects_by_argv_when_cargo_metadata_is_missing() {
   );
 
   assert!(
-    cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
+    cmake_args
+      .iter()
+      .any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
     "expected wrapper to inject -DAOM_TARGET_CPU=generic, got:\n{cmake_args:?}"
   );
   for flag in ["-DENABLE_ASM=0", "-DENABLE_NASM=0", "-DENABLE_YASM=0"] {
@@ -246,7 +267,11 @@ fn libaom_configure_preserves_existing_toolchain_file() {
   // environment variable, so ensure the wrapper still injects the portable/no-asm flags without
   // overriding the caller's toolchain selection.
   let toolchain = repo_root().join(".cargo/aom_generic_toolchain.cmake");
-  assert!(toolchain.is_file(), "missing toolchain file at {}", toolchain.display());
+  assert!(
+    toolchain.is_file(),
+    "missing toolchain file at {}",
+    toolchain.display()
+  );
   let toolchain_arg = format!("-DCMAKE_TOOLCHAIN_FILE={}", toolchain.display());
 
   let args = [
@@ -264,7 +289,9 @@ fn libaom_configure_preserves_existing_toolchain_file() {
   );
 
   assert!(
-    cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
+    cmake_args
+      .iter()
+      .any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
     "expected wrapper to inject -DAOM_TARGET_CPU=generic, got:\n{cmake_args:?}"
   );
   for flag in ["-DENABLE_ASM=0", "-DENABLE_NASM=0", "-DENABLE_YASM=0"] {

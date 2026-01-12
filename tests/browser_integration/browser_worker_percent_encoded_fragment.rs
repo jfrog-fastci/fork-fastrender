@@ -107,4 +107,3 @@ fn navigation_with_percent_encoded_fragment_scrolls_and_updates_target_pseudocla
   drop(worker.tx);
   worker.join.join().expect("worker join");
 }
-

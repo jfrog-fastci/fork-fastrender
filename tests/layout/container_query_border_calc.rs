@@ -95,4 +95,3 @@ fn container_query_resolves_calc_border_widths_in_content_box_size() {
     bbb
   );
 }
-

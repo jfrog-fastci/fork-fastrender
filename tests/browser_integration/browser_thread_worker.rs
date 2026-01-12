@@ -1,8 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
-use super::worker_harness::{assert_event_subsequence, WorkerEventKind, WorkerHarness, WorkerToUiEvent};
 use super::support::{
   self, create_tab_msg, navigate_msg, scroll_at_pointer, scroll_viewport, viewport_changed_msg,
+};
+use super::worker_harness::{
+  assert_event_subsequence, WorkerEventKind, WorkerHarness, WorkerToUiEvent,
 };
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker};
 use std::path::Path;
@@ -147,10 +149,8 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
   );
 
   // Scroll the listbox down by ~2 rows.
-  let (frame, events) = h.send_and_wait_for_frame(
-    tab_id,
-    scroll_at_pointer(tab_id, (0.0, 40.0), (10.0, 10.0)),
-  );
+  let (frame, events) =
+    h.send_and_wait_for_frame(tab_id, scroll_at_pointer(tab_id, (0.0, 40.0), (10.0, 10.0)));
   let _ = drain_after_frame(&h, events);
   assert!(
     frame
@@ -241,7 +241,11 @@ fn navigation_about_newtab_renders_frame() {
 fn navigation_file_url_emits_committed_and_frame() {
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("index.html");
-  std::fs::write(&path, "<!doctype html><title>file</title><body>hello</body>").unwrap();
+  std::fs::write(
+    &path,
+    "<!doctype html><title>file</title><body>hello</body>",
+  )
+  .unwrap();
   let url = file_url(&path);
 
   let h = WorkerHarness::spawn();
@@ -298,7 +302,9 @@ fn navigation_unsupported_scheme_rejects_with_failed() {
   // should keep showing the previous page.
   let drained = h.drain_events(std::time::Duration::from_millis(200));
   assert!(
-    !drained.iter().any(|ev| matches!(ev, WorkerToUiEvent::FrameReady { .. })),
+    !drained
+      .iter()
+      .any(|ev| matches!(ev, WorkerToUiEvent::FrameReady { .. })),
     "expected no FrameReady after unsupported-scheme navigation; got {drained:?}"
   );
 }
@@ -381,10 +387,8 @@ fn reload_preserves_scroll_offset() {
   );
   let _ = drain_after_frame(&h, events);
 
-  let (_frame, scroll_events) = h.send_and_wait_for_frame(
-    tab_id,
-    scroll_viewport(tab_id, (0.0, 120.0)),
-  );
+  let (_frame, scroll_events) =
+    h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 120.0)));
   let scroll_events = drain_after_frame(&h, scroll_events);
   let scrolled_y = scroll_events.iter().find_map(|ev| match ev {
     WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
@@ -444,10 +448,8 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   let _ = drain_after_frame(&h, events);
 
   // Scroll down; mandatory scroll snap should snap to the second section.
-  let (_frame, scroll_events) = h.send_and_wait_for_frame(
-    tab_id,
-    scroll_viewport(tab_id, (0.0, 60.0)),
-  );
+  let (_frame, scroll_events) =
+    h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 60.0)));
   let scroll_events = drain_after_frame(&h, scroll_events);
   let scroll_y = scroll_events.iter().find_map(|ev| match ev {
     WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
@@ -460,10 +462,8 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   );
 
   // Scroll beyond the end; should clamp to max scroll (200px for 3x100px content in 100px viewport).
-  let (_frame, clamp_events) = h.send_and_wait_for_frame(
-    tab_id,
-    scroll_viewport(tab_id, (0.0, 10_000.0)),
-  );
+  let (_frame, clamp_events) =
+    h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 10_000.0)));
   let clamp_events = drain_after_frame(&h, clamp_events);
   let clamp_y = clamp_events.iter().find_map(|ev| match ev {
     WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
@@ -563,10 +563,7 @@ fn interaction_text_input_triggers_repaint_and_frame_changes() {
   let (focused_frame, _events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(10));
 
   // Typing should mutate the DOM (value attribute) and trigger another repaint.
-  let (typed_frame, _events) = h.send_and_wait_for_frame(
-    tab_id,
-    support::text_input(tab_id, "x"),
-  );
+  let (typed_frame, _events) = h.send_and_wait_for_frame(tab_id, support::text_input(tab_id, "x"));
 
   assert_ne!(
     focused_frame.pixmap.data(),
@@ -628,8 +625,7 @@ fn cancellation_rapid_scroll_coalesces_to_last_frame() {
     .filter(|ev| matches!(ev, WorkerToUiEvent::FrameReady { .. }))
     .count();
   assert_eq!(
-    extra_frames,
-    1,
+    extra_frames, 1,
     "expected only one FrameReady for coalesced scroll, got {extra_frames} ({drained:?})"
   );
 }

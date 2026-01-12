@@ -2,7 +2,9 @@
 
 use super::support;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
-use fastrender::ui::render_worker::{renderer_build_count_for_test, reset_renderer_build_count_for_test};
+use fastrender::ui::render_worker::{
+  renderer_build_count_for_test, reset_renderer_build_count_for_test,
+};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -21,14 +23,23 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String
 
   match msg {
     WorkerToUi::NavigationCommitted { url, .. } => url,
-    WorkerToUi::NavigationFailed { url, error, .. } => panic!("navigation failed for {url}: {error}"),
-    other => panic!("unexpected WorkerToUi message while waiting for NavigationCommitted: {other:?}"),
+    WorkerToUi::NavigationFailed { url, error, .. } => {
+      panic!("navigation failed for {url}: {error}")
+    }
+    other => {
+      panic!("unexpected WorkerToUi message while waiting for NavigationCommitted: {other:?}")
+    }
   }
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messages::RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+fn next_frame_ready(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> fastrender::ui::messages::RenderedFrame {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
 
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
@@ -113,4 +124,3 @@ fn ui_worker_reuses_single_renderer_per_tab_across_navigations() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

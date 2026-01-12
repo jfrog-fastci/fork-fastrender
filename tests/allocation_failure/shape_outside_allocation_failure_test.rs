@@ -45,5 +45,8 @@ fn shape_outside_span_buffers_survive_allocation_failure() {
     start_failures + 1,
     "expected to trigger span buffer allocation failure"
   );
-  assert_eq!(shape, None, "expected shape-outside to fall back on allocation failure");
+  assert_eq!(
+    shape, None,
+    "expected shape-outside to fall back on allocation failure"
+  );
 }

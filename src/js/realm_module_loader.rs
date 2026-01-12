@@ -1,8 +1,11 @@
-use crate::js::import_maps::{resolve_module_specifier as resolve_import_map_specifier, ImportMapState};
+use crate::js::import_maps::{
+  resolve_module_specifier as resolve_import_map_specifier, ImportMapState,
+};
 use crate::js::options::JsExecutionOptions;
 use crate::resource::{
-  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
-  origin_from_url, CorsMode, DocumentOrigin, FetchDestination, FetchRequest, ResourceFetcher,
+  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success,
+  ensure_script_mime_sane, origin_from_url, CorsMode, DocumentOrigin, FetchDestination,
+  FetchRequest, ResourceFetcher,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -10,14 +13,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 use url::Url;
 use vm_js::{
-  ImportAttribute, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, ScriptId,
-  SourceText, SourceTextModuleRecord, VmError,
+  ImportAttribute, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest,
+  ScriptId, SourceText, SourceTextModuleRecord, VmError,
 };
 
 const BARE_SPECIFIER_TYPE_ERROR: &str =
   "Module specifier must be a URL-like string (bare specifiers are not supported)";
 const RELATIVE_WITHOUT_BASE_TYPE_ERROR: &str = "Cannot resolve module specifier without a base URL";
-const UNKNOWN_REFERRER_TYPE_ERROR: &str = "Cannot resolve module specifier: unknown referrer module";
+const UNKNOWN_REFERRER_TYPE_ERROR: &str =
+  "Cannot resolve module specifier: unknown referrer module";
 const MODULE_FETCH_FAILED_TYPE_ERROR: &str = "Failed to fetch module";
 const MODULE_FETCH_INVALID_UTF8_TYPE_ERROR: &str = "Module response was not valid UTF-8";
 const MODULE_FETCHER_MISSING_ERROR: &str = "Module loader missing ResourceFetcher";
@@ -27,8 +31,10 @@ const MODULE_GRAPH_MODULE_COUNT_LIMIT_EXCEEDED_TYPE_ERROR: &str =
   "Module graph exceeded max_module_graph_modules";
 const MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR: &str =
   "Module graph exceeded max_module_graph_total_bytes";
-const MODULE_GRAPH_DEPTH_LIMIT_EXCEEDED_TYPE_ERROR: &str = "Module graph exceeded max_module_graph_depth";
-const MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR: &str = "Module specifier exceeded max_module_specifier_length";
+const MODULE_GRAPH_DEPTH_LIMIT_EXCEEDED_TYPE_ERROR: &str =
+  "Module graph exceeded max_module_graph_depth";
+const MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR: &str =
+  "Module specifier exceeded max_module_specifier_length";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModuleKey {
@@ -250,7 +256,9 @@ impl ModuleLoader {
       return Ok(existing);
     }
 
-    if self.max_module_specifier_length != usize::MAX && key.url.len() > self.max_module_specifier_length {
+    if self.max_module_specifier_length != usize::MAX
+      && key.url.len() > self.max_module_specifier_length
+    {
       return Err(VmError::TypeError(MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR));
     }
 
@@ -266,16 +274,21 @@ impl ModuleLoader {
       ));
     }
 
-    if self.max_module_graph_total_bytes != usize::MAX && self.loaded_bytes_total >= self.max_module_graph_total_bytes
+    if self.max_module_graph_total_bytes != usize::MAX
+      && self.loaded_bytes_total >= self.max_module_graph_total_bytes
     {
-      return Err(VmError::TypeError(MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR));
+      return Err(VmError::TypeError(
+        MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR,
+      ));
     }
 
     let Some(fetcher) = &self.fetcher else {
       return Err(VmError::Unimplemented(MODULE_FETCHER_MISSING_ERROR));
     };
 
-    let remaining_total = self.max_module_graph_total_bytes.saturating_sub(self.loaded_bytes_total);
+    let remaining_total = self
+      .max_module_graph_total_bytes
+      .saturating_sub(self.loaded_bytes_total);
     let max_fetch = self.max_script_bytes.min(remaining_total);
     let max_fetch = max_fetch.saturating_add(1);
     let mut req = FetchRequest::new(&key.url, FetchDestination::ScriptCors);
@@ -299,8 +312,13 @@ impl ModuleLoader {
       .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?;
 
     if cors_enforcement_enabled() {
-      ensure_cors_allows_origin(self.document_origin.as_ref(), &fetched, &key.url, self.cors_mode)
-        .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?;
+      ensure_cors_allows_origin(
+        self.document_origin.as_ref(),
+        &fetched,
+        &key.url,
+        self.cors_mode,
+      )
+      .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?;
     }
 
     if self.max_script_bytes != usize::MAX && fetched.bytes.len() > self.max_script_bytes {
@@ -312,7 +330,9 @@ impl ModuleLoader {
       .loaded_bytes_total
       .checked_add(module_bytes)
       .ok_or(VmError::OutOfMemory)?;
-    if self.max_module_graph_total_bytes != usize::MAX && next_total > self.max_module_graph_total_bytes {
+    if self.max_module_graph_total_bytes != usize::MAX
+      && next_total > self.max_module_graph_total_bytes
+    {
       return Err(VmError::TypeError(
         MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR,
       ));
@@ -320,7 +340,11 @@ impl ModuleLoader {
 
     let integrity = Url::parse(&key.url)
       .ok()
-      .map(|url| self.import_map_state.resolve_module_integrity_metadata(&url))
+      .map(|url| {
+        self
+          .import_map_state
+          .resolve_module_integrity_metadata(&url)
+      })
       .unwrap_or("");
     if !integrity.is_empty() {
       if crate::js::sri::verify_integrity(&fetched.bytes, integrity).is_err() {
@@ -351,7 +375,9 @@ impl ModuleLoader {
       return Ok(existing);
     }
 
-    if self.max_module_specifier_length != usize::MAX && key.url.len() > self.max_module_specifier_length {
+    if self.max_module_specifier_length != usize::MAX
+      && key.url.len() > self.max_module_specifier_length
+    {
       return Err(VmError::TypeError(MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR));
     }
 
@@ -371,22 +397,30 @@ impl ModuleLoader {
       return Err(VmError::TypeError(MODULE_TOO_LARGE_TYPE_ERROR));
     }
 
-    if self.max_module_graph_total_bytes != usize::MAX && self.loaded_bytes_total >= self.max_module_graph_total_bytes
+    if self.max_module_graph_total_bytes != usize::MAX
+      && self.loaded_bytes_total >= self.max_module_graph_total_bytes
     {
-      return Err(VmError::TypeError(MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR));
+      return Err(VmError::TypeError(
+        MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR,
+      ));
     }
     let module_bytes = source_text.len();
     let next_total = self
       .loaded_bytes_total
       .checked_add(module_bytes)
       .ok_or(VmError::OutOfMemory)?;
-    if self.max_module_graph_total_bytes != usize::MAX && next_total > self.max_module_graph_total_bytes {
+    if self.max_module_graph_total_bytes != usize::MAX
+      && next_total > self.max_module_graph_total_bytes
+    {
       return Err(VmError::TypeError(
         MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR,
       ));
     }
 
-    let source = Arc::new(SourceText::new(key.url.clone(), Arc::<str>::from(source_text)));
+    let source = Arc::new(SourceText::new(
+      key.url.clone(),
+      Arc::<str>::from(source_text),
+    ));
     let record = SourceTextModuleRecord::parse_source(source)?;
     let module_id = modules.add_module(record);
     self.register_module(key, module_id, 0, next_total)
@@ -417,9 +451,13 @@ impl ModuleLoader {
         .map_err(|_| ModuleResolveError::RelativeWithoutBase);
     };
     let base_url = Url::parse(base_url).map_err(|_| ModuleResolveError::Url)?;
-    resolve_import_map_specifier(&mut self.import_map_state, request.specifier.as_str(), &base_url)
-      .map(|url| url.to_string())
-      .map_err(|_| ModuleResolveError::BareSpecifier)
+    resolve_import_map_specifier(
+      &mut self.import_map_state,
+      request.specifier.as_str(),
+      &base_url,
+    )
+    .map(|url| url.to_string())
+    .map_err(|_| ModuleResolveError::BareSpecifier)
   }
 
   /// Handle `HostLoadImportedModule` for a single requested module.
@@ -469,10 +507,16 @@ impl ModuleLoader {
     }
 
     let depth = match referrer {
-      ModuleReferrer::Module(m) => match self.module_depths.get(&m).copied().and_then(|d| d.checked_add(1))
+      ModuleReferrer::Module(m) => match self
+        .module_depths
+        .get(&m)
+        .copied()
+        .and_then(|d| d.checked_add(1))
       {
         Some(depth) => depth,
-        None => return ModuleLoadOutcome::FinishNow(Err(VmError::TypeError(UNKNOWN_REFERRER_TYPE_ERROR))),
+        None => {
+          return ModuleLoadOutcome::FinishNow(Err(VmError::TypeError(UNKNOWN_REFERRER_TYPE_ERROR)))
+        }
       },
       ModuleReferrer::Realm(_) | ModuleReferrer::Script(_) => 0,
     };
@@ -565,7 +609,8 @@ impl ModuleLoader {
         ));
       }
 
-      if self.max_module_graph_total_bytes != usize::MAX && self.loaded_bytes_total >= self.max_module_graph_total_bytes
+      if self.max_module_graph_total_bytes != usize::MAX
+        && self.loaded_bytes_total >= self.max_module_graph_total_bytes
       {
         return Err(VmError::TypeError(
           MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR,
@@ -586,7 +631,9 @@ impl ModuleLoader {
           .or_else(|| self.document_url.clone()),
       });
 
-      let remaining_total = self.max_module_graph_total_bytes.saturating_sub(self.loaded_bytes_total);
+      let remaining_total = self
+        .max_module_graph_total_bytes
+        .saturating_sub(self.loaded_bytes_total);
       let max_fetch = self.max_script_bytes.min(remaining_total);
       let max_fetch = max_fetch.saturating_add(1);
       let mut req = FetchRequest::new(&key.url, FetchDestination::ScriptCors);
@@ -611,8 +658,13 @@ impl ModuleLoader {
         .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?;
 
       if cors_enforcement_enabled() {
-        ensure_cors_allows_origin(self.document_origin.as_ref(), &fetched, &key.url, self.cors_mode)
-          .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?;
+        ensure_cors_allows_origin(
+          self.document_origin.as_ref(),
+          &fetched,
+          &key.url,
+          self.cors_mode,
+        )
+        .map_err(|_| VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR))?;
       }
 
       if self.max_script_bytes != usize::MAX && fetched.bytes.len() > self.max_script_bytes {
@@ -624,7 +676,9 @@ impl ModuleLoader {
         .loaded_bytes_total
         .checked_add(module_bytes)
         .ok_or(VmError::OutOfMemory)?;
-      if self.max_module_graph_total_bytes != usize::MAX && next_total > self.max_module_graph_total_bytes {
+      if self.max_module_graph_total_bytes != usize::MAX
+        && next_total > self.max_module_graph_total_bytes
+      {
         return Err(VmError::TypeError(
           MODULE_GRAPH_TOTAL_BYTES_LIMIT_EXCEEDED_TYPE_ERROR,
         ));
@@ -634,7 +688,11 @@ impl ModuleLoader {
       // module's serialized URL.
       let integrity = Url::parse(&key.url)
         .ok()
-        .map(|url| self.import_map_state.resolve_module_integrity_metadata(&url))
+        .map(|url| {
+          self
+            .import_map_state
+            .resolve_module_integrity_metadata(&url)
+        })
         .unwrap_or("");
       if !integrity.is_empty() {
         if crate::js::sri::verify_integrity(&fetched.bytes, integrity).is_err() {
@@ -795,8 +853,10 @@ mod tests {
       .module_id_to_url
       .insert(module_id, "https://example.com/dir/a.js".to_string());
 
-    let resolved =
-      loader.resolve_request_url(ModuleReferrer::Module(module_id), &ModuleRequest::new("./b.js", Vec::new()));
+    let resolved = loader.resolve_request_url(
+      ModuleReferrer::Module(module_id),
+      &ModuleRequest::new("./b.js", Vec::new()),
+    );
     assert_eq!(
       resolved.unwrap(),
       "https://example.com/dir/b.js",
@@ -807,8 +867,10 @@ mod tests {
   #[test]
   fn resolves_relative_specifiers_against_document_url_for_realm_referrer() {
     let mut loader = ModuleLoader::new(Some("https://example.com/doc/page.html".to_string()));
-    let resolved =
-      loader.resolve_request_url(ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)), &ModuleRequest::new("./b.js", Vec::new()));
+    let resolved = loader.resolve_request_url(
+      ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)),
+      &ModuleRequest::new("./b.js", Vec::new()),
+    );
     assert_eq!(resolved.unwrap(), "https://example.com/doc/b.js");
   }
 
@@ -830,7 +892,10 @@ mod tests {
   fn bare_specifiers_fail_deterministically() {
     let mut loader = ModuleLoader::new(Some("https://example.com/doc/page.html".to_string()));
     let err = loader
-      .resolve_request_url(ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)), &ModuleRequest::new("foo", Vec::new()))
+      .resolve_request_url(
+        ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)),
+        &ModuleRequest::new("foo", Vec::new()),
+      )
       .unwrap_err();
     assert_eq!(err, ModuleResolveError::BareSpecifier);
   }
@@ -857,7 +922,9 @@ mod tests {
       panic!("expected StartFetch for first request, got {outcome:?}");
     };
     assert_eq!(
-      fetcher.fetch_count.load(std::sync::atomic::Ordering::Relaxed),
+      fetcher
+        .fetch_count
+        .load(std::sync::atomic::Ordering::Relaxed),
       0,
       "fetcher should not be called until the host starts fetching"
     );
@@ -869,7 +936,9 @@ mod tests {
     assert_eq!(waiters.len(), 1);
     let module_id = result.expect("expected module load to succeed");
     assert_eq!(
-      fetcher.fetch_count.load(std::sync::atomic::Ordering::Relaxed),
+      fetcher
+        .fetch_count
+        .load(std::sync::atomic::Ordering::Relaxed),
       1,
       "expected exactly one fetch for the first load"
     );
@@ -885,7 +954,9 @@ mod tests {
       other => panic!("expected FinishNow(Ok(..)) for cached request, got {other:?}"),
     };
     assert_eq!(
-      fetcher.fetch_count.load(std::sync::atomic::Ordering::Relaxed),
+      fetcher
+        .fetch_count
+        .load(std::sync::atomic::Ordering::Relaxed),
       1,
       "expected cached load to not re-fetch"
     );
@@ -929,12 +1000,17 @@ mod tests {
       .fetch_and_register(&mut modules, key1)
       .expect("expected inflight entry");
     assert_eq!(
-      fetcher.fetch_count.load(std::sync::atomic::Ordering::Relaxed),
+      fetcher
+        .fetch_count
+        .load(std::sync::atomic::Ordering::Relaxed),
       1,
       "expected exactly one fetch for deduped in-flight requests"
     );
     assert_eq!(waiters.len(), 2, "expected two inflight waiters");
     let module_id = result.expect("expected module load to succeed");
-    assert_eq!(loader.module_url(module_id), Some("https://example.com/a.js"));
+    assert_eq!(
+      loader.module_url(module_id),
+      Some("https://example.com/a.js")
+    );
   }
 }

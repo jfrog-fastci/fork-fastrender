@@ -47,4 +47,3 @@ fn template_contents_do_not_render_even_when_template_display_is_overridden() {
     "<template> contents are inert and must never render"
   );
 }
-

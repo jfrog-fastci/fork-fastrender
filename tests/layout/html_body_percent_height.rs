@@ -48,4 +48,3 @@ fn html_body_height_100_percent_enables_percent_height_children() {
     .join()
     .unwrap();
 }
-

@@ -37,4 +37,3 @@ fn linear_gradient_dither_phase_is_anchored_to_device_pixels() {
   assert_eq!(rgba_at(&pixmap, 0, 70), (82, 70, 119, 255));
   assert_eq!(rgba_at(&pixmap, 1, 70), (83, 71, 120, 255));
 }
-

@@ -160,8 +160,10 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
   assert!(scroll_y > 0.0, "expected listbox select to scroll");
 
   let page_point = Point::new(content_rect.x() + 1.0, content_rect.y() + row_height / 2.0);
-  let click_viewport_point =
-    Point::new(page_point.x - scroll_state.viewport.x, page_point.y - scroll_state.viewport.y);
+  let click_viewport_point = Point::new(
+    page_point.x - scroll_state.viewport.x,
+    page_point.y - scroll_state.viewport.y,
+  );
 
   // Expected row index based on the same math as the select listbox painter.
   let local_y = page_point.y - content_rect.y();
@@ -169,19 +171,24 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
 
   let mut engine = InteractionEngine::new();
   doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-    let _ = engine.pointer_down(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point);
-    let (changed, _action) =
-      engine.pointer_up_with_scroll(
-        dom,
-        box_tree,
-        fragment_tree,
-        &scroll_state,
-        click_viewport_point,
-        PointerButton::Primary,
-        PointerModifiers::NONE,
-        "",
-        "",
-      );
+    let _ = engine.pointer_down(
+      dom,
+      box_tree,
+      fragment_tree,
+      &scroll_state,
+      click_viewport_point,
+    );
+    let (changed, _action) = engine.pointer_up_with_scroll(
+      dom,
+      box_tree,
+      fragment_tree,
+      &scroll_state,
+      click_viewport_point,
+      PointerButton::Primary,
+      PointerModifiers::NONE,
+      "",
+      "",
+    );
     (changed, ())
   })?;
 

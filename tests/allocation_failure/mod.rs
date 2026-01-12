@@ -132,13 +132,17 @@ unsafe impl GlobalAlloc for FailingAllocator {
     }
 
     let count_size = COUNT_SIZE.load(Ordering::Relaxed);
-    if count_size != 0 && new_size == count_size && layout.align() == COUNT_ALIGN.load(Ordering::Relaxed)
+    if count_size != 0
+      && new_size == count_size
+      && layout.align() == COUNT_ALIGN.load(Ordering::Relaxed)
     {
       COUNT_MATCHES.fetch_add(1, Ordering::Relaxed);
     }
 
     let fail_size = FAIL_SIZE.load(Ordering::Relaxed);
-    if fail_size != 0 && new_size == fail_size && layout.align() == FAIL_ALIGN.load(Ordering::Relaxed)
+    if fail_size != 0
+      && new_size == fail_size
+      && layout.align() == FAIL_ALIGN.load(Ordering::Relaxed)
     {
       let skip = FAIL_SKIP_MATCHES.load(Ordering::Relaxed);
       if skip > 0 {

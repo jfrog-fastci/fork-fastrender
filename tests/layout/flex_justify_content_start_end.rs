@@ -695,10 +695,14 @@ fn justify_content_start_end_vertical_rl_column_reverse_are_distinct_from_flex_s
 
 #[test]
 fn justify_content_start_end_vertical_rl_row_reverse_direction_rtl_flip_inline_axis() {
-  let flex_start_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::VerticalRl, JustifyContent::FlexStart);
-  let start_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::VerticalRl, JustifyContent::Start);
+  let flex_start_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::VerticalRl,
+    JustifyContent::FlexStart,
+  );
+  let start_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::VerticalRl,
+    JustifyContent::Start,
+  );
   assert!(
     (flex_start_y - 0.0).abs() < 1e-3,
     "justify-content:flex-start in vertical-rl + rtl row-reverse should align to inline-end (top), got {flex_start_y}"
@@ -708,10 +712,14 @@ fn justify_content_start_end_vertical_rl_row_reverse_direction_rtl_flip_inline_a
     "justify-content:start in vertical-rl + rtl row-reverse should align to inline-start (bottom), got {start_y}"
   );
 
-  let flex_end_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::VerticalRl, JustifyContent::FlexEnd);
-  let end_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::VerticalRl, JustifyContent::End);
+  let flex_end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::VerticalRl,
+    JustifyContent::FlexEnd,
+  );
+  let end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::VerticalRl,
+    JustifyContent::End,
+  );
   assert!(
     (flex_end_y - 90.0).abs() < 1e-3,
     "justify-content:flex-end in vertical-rl + rtl row-reverse should align to inline-start (bottom), got {flex_end_y}"
@@ -724,10 +732,14 @@ fn justify_content_start_end_vertical_rl_row_reverse_direction_rtl_flip_inline_a
 
 #[test]
 fn justify_content_start_end_vertical_lr_row_reverse_direction_rtl_flip_inline_axis() {
-  let flex_start_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::VerticalLr, JustifyContent::FlexStart);
-  let start_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::VerticalLr, JustifyContent::Start);
+  let flex_start_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::VerticalLr,
+    JustifyContent::FlexStart,
+  );
+  let start_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::VerticalLr,
+    JustifyContent::Start,
+  );
   assert!(
     (flex_start_y - 0.0).abs() < 1e-3,
     "justify-content:flex-start in vertical-lr + rtl row-reverse should align to inline-end (top), got {flex_start_y}"
@@ -737,10 +749,14 @@ fn justify_content_start_end_vertical_lr_row_reverse_direction_rtl_flip_inline_a
     "justify-content:start in vertical-lr + rtl row-reverse should align to inline-start (bottom), got {start_y}"
   );
 
-  let flex_end_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::VerticalLr, JustifyContent::FlexEnd);
-  let end_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::VerticalLr, JustifyContent::End);
+  let flex_end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::VerticalLr,
+    JustifyContent::FlexEnd,
+  );
+  let end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::VerticalLr,
+    JustifyContent::End,
+  );
   assert!(
     (flex_end_y - 90.0).abs() < 1e-3,
     "justify-content:flex-end in vertical-lr + rtl row-reverse should align to inline-start (bottom), got {flex_end_y}"
@@ -753,10 +769,14 @@ fn justify_content_start_end_vertical_lr_row_reverse_direction_rtl_flip_inline_a
 
 #[test]
 fn justify_content_start_end_sideways_rl_row_reverse_direction_rtl_flip_inline_axis() {
-  let flex_start_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::SidewaysRl, JustifyContent::FlexStart);
-  let start_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::SidewaysRl, JustifyContent::Start);
+  let flex_start_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::SidewaysRl,
+    JustifyContent::FlexStart,
+  );
+  let start_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::SidewaysRl,
+    JustifyContent::Start,
+  );
   assert!(
     (flex_start_y - 0.0).abs() < 1e-3,
     "justify-content:flex-start in sideways-rl + rtl row-reverse should align to inline-end (top), got {flex_start_y}"
@@ -766,9 +786,14 @@ fn justify_content_start_end_sideways_rl_row_reverse_direction_rtl_flip_inline_a
     "justify-content:start in sideways-rl + rtl row-reverse should align to inline-start (bottom), got {start_y}"
   );
 
-  let flex_end_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::SidewaysRl, JustifyContent::FlexEnd);
-  let end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::SidewaysRl, JustifyContent::End);
+  let flex_end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::SidewaysRl,
+    JustifyContent::FlexEnd,
+  );
+  let end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::SidewaysRl,
+    JustifyContent::End,
+  );
   assert!(
     (flex_end_y - 90.0).abs() < 1e-3,
     "justify-content:flex-end in sideways-rl + rtl row-reverse should align to inline-start (bottom), got {flex_end_y}"
@@ -781,10 +806,14 @@ fn justify_content_start_end_sideways_rl_row_reverse_direction_rtl_flip_inline_a
 
 #[test]
 fn justify_content_start_end_sideways_lr_row_reverse_direction_rtl_flip_inline_axis() {
-  let flex_start_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::SidewaysLr, JustifyContent::FlexStart);
-  let start_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::SidewaysLr, JustifyContent::Start);
+  let flex_start_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::SidewaysLr,
+    JustifyContent::FlexStart,
+  );
+  let start_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::SidewaysLr,
+    JustifyContent::Start,
+  );
   assert!(
     (flex_start_y - 90.0).abs() < 1e-3,
     "justify-content:flex-start in sideways-lr + rtl row-reverse should align to inline-end (bottom), got {flex_start_y}"
@@ -794,9 +823,14 @@ fn justify_content_start_end_sideways_lr_row_reverse_direction_rtl_flip_inline_a
     "justify-content:start in sideways-lr + rtl row-reverse should align to inline-start (top), got {start_y}"
   );
 
-  let flex_end_y =
-    layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::SidewaysLr, JustifyContent::FlexEnd);
-  let end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(WritingMode::SidewaysLr, JustifyContent::End);
+  let flex_end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::SidewaysLr,
+    JustifyContent::FlexEnd,
+  );
+  let end_y = layout_child_y_vertical_writing_mode_rtl_row_reverse(
+    WritingMode::SidewaysLr,
+    JustifyContent::End,
+  );
   assert!(
     (flex_end_y - 0.0).abs() < 1e-3,
     "justify-content:flex-end in sideways-lr + rtl row-reverse should align to inline-start (top), got {flex_end_y}"

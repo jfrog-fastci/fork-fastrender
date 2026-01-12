@@ -30,7 +30,11 @@ fn grid_item_percent_width_does_not_force_fr_tracks_to_overflow() {
   grid_style.display = Display::Grid;
   grid_style.width = Some(Length::px(101.0));
   grid_style.height = Some(Length::px(20.0));
-  grid_style.grid_template_columns = vec![GridTrack::Fr(1.0), GridTrack::MaxContent, GridTrack::Fr(1.0)];
+  grid_style.grid_template_columns = vec![
+    GridTrack::Fr(1.0),
+    GridTrack::MaxContent,
+    GridTrack::Fr(1.0),
+  ];
   grid_style.grid_template_rows = vec![GridTrack::Auto];
   let grid_style = Arc::new(grid_style);
 
@@ -89,4 +93,3 @@ fn grid_item_percent_width_does_not_force_fr_tracks_to_overflow() {
   assert_approx(right.bounds.x(), 51.0, "right start");
   assert_approx(right.bounds.width(), 50.0, "right width");
 }
-

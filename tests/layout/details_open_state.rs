@@ -83,4 +83,3 @@ fn open_details_renders_details_contents_including_text_and_extra_summaries() {
   assert!(joined.contains("Extra"));
   assert!(joined.contains("More"));
 }
-

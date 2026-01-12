@@ -249,7 +249,10 @@ mod tests {
       .expect("template element not found");
 
     let template_node = doc.node(template_id);
-    assert!(template_node.inert_subtree, "template should mark inert_subtree");
+    assert!(
+      template_node.inert_subtree,
+      "template should mark inert_subtree"
+    );
     assert!(
       !template_node.children.is_empty(),
       "template contents must still be present in the tree"
@@ -294,7 +297,9 @@ mod tests {
     let html = "<!doctype html><html><body><script id=s></script></body></html>";
     let root = crate::dom::parse_html(html).unwrap();
     let doc = Document::from_renderer_dom(&root);
-    let script = doc.get_element_by_id("s").expect("script element not found");
+    let script = doc
+      .get_element_by_id("s")
+      .expect("script element not found");
     assert!(
       !doc.node(script).script_force_async,
       "scripts parsed from HTML should have force_async=false when imported into dom2"

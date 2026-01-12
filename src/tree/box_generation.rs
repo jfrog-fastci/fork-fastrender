@@ -7837,8 +7837,8 @@ mod tests {
 
   #[test]
   fn svg_serialization_clears_invalid_var_in_style_attribute() {
-    use crate::style::types::{ColorOrNone, FillRule};
     use crate::style::color::Rgba;
+    use crate::style::types::{ColorOrNone, FillRule};
 
     fn styled_svg_element(tag: &str) -> StyledNode {
       let mut node = styled_element(tag);
@@ -7869,7 +7869,10 @@ mod tests {
         attributes.push(("stroke".to_string(), "none".to_string()));
         attributes.push(("fill-rule".to_string(), "evenodd".to_string()));
         // Intentionally malformed var() call (unterminated) as seen in real-world fixtures.
-        attributes.push(("style".to_string(), "fill: var(--q-colors-text-red;".to_string()));
+        attributes.push((
+          "style".to_string(),
+          "fill: var(--q-colors-text-red;".to_string(),
+        ));
       }
       _ => unreachable!(),
     }

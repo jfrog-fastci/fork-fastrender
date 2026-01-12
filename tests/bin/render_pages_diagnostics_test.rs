@@ -48,12 +48,18 @@ fn render_pages_writes_diagnostics_json() {
   {
     let dom_parse = &memory["dom_parse"];
     assert!(
-      dom_parse.get("rss_start_bytes").and_then(Value::as_u64).is_some(),
+      dom_parse
+        .get("rss_start_bytes")
+        .and_then(Value::as_u64)
+        .is_some(),
       "expected dom_parse.rss_start_bytes to be present on Linux; got:\n{}",
       dom_parse
     );
     assert!(
-      dom_parse.get("rss_end_bytes").and_then(Value::as_u64).is_some(),
+      dom_parse
+        .get("rss_end_bytes")
+        .and_then(Value::as_u64)
+        .is_some(),
       "expected dom_parse.rss_end_bytes to be present on Linux; got:\n{}",
       dom_parse
     );

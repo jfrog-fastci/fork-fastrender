@@ -309,8 +309,8 @@ fn compatibility_mode_lifts_data_orig_file_images() {
 
 #[test]
 fn compatibility_mode_lifts_svg_placeholder_img_src_from_data_src() {
-  let fixture_dir =
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/dom_compat_svg_placeholder");
+  let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("tests/pages/fixtures/dom_compat_svg_placeholder");
   let html_path = fixture_dir.join("index.html");
   let html = fs::read_to_string(&html_path).expect("read fixture HTML");
 
@@ -323,9 +323,7 @@ fn compatibility_mode_lifts_svg_placeholder_img_src_from_data_src() {
 #[test]
 fn compatibility_mode_overwrites_1x1_png_placeholder_img_src_from_data_src() {
   let placeholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
-  let html = format!(
-    r#"<html><body><img src="{placeholder}" data-src="real.jpg"></body></html>"#
-  );
+  let html = format!(r#"<html><body><img src="{placeholder}" data-src="real.jpg"></body></html>"#);
 
   let standard_dom = parse_html(&html).expect("parse standard DOM");
   let standard_img = find_element(&standard_dom, "img").expect("standard img element");
@@ -347,8 +345,7 @@ fn compatibility_mode_overwrites_1x1_png_placeholder_img_src_from_data_src() {
 
 #[test]
 fn compatibility_mode_overwrites_base64_image_header_without_payload_img_src_from_data_src() {
-  let html =
-    r#"<html><body><img src="data:image/png;base64" data-src="real.jpg"></body></html>"#;
+  let html = r#"<html><body><img src="data:image/png;base64" data-src="real.jpg"></body></html>"#;
 
   let standard_dom = parse_html(html).expect("parse standard DOM");
   let standard_img = find_element(&standard_dom, "img").expect("standard img element");
@@ -464,8 +461,7 @@ fn compatibility_mode_lifts_img_src_from_data_delayed_url() {
 
 #[test]
 fn compatibility_mode_ignores_placeholder_data_delayed_url() {
-  let html =
-    r##"<html><body><img data-delayed-url="#" data-actualsrc="real.jpg"></body></html>"##;
+  let html = r##"<html><body><img data-delayed-url="#" data-actualsrc="real.jpg"></body></html>"##;
   let compat_dom =
     parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
   let compat_img = find_element(&compat_dom, "img").expect("compat img element");
@@ -648,8 +644,7 @@ fn compatibility_mode_lifts_iframe_src_from_data_src() {
     "compat mode should lift iframe data-src into src"
   );
 
-  let json_html =
-    r#"<html><body><iframe data-src='{"url":"real.html"}'></iframe></body></html>"#;
+  let json_html = r#"<html><body><iframe data-src='{"url":"real.html"}'></iframe></body></html>"#;
   let compat_dom =
     parse_html_with_options(json_html, DomParseOptions::compatibility()).expect("parse compat DOM");
   let compat_iframe = find_element(&compat_dom, "iframe").expect("compat iframe element");

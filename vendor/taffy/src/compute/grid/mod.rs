@@ -29,9 +29,8 @@ use placement::place_grid_items;
 #[cfg(feature = "std")]
 use rustc_hash::FxHashMap;
 use track_sizing::{
-  determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_item_track_indexes,
-  resolve_item_baselines,
-  track_sizing_algorithm,
+  determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_item_baselines,
+  resolve_item_track_indexes, track_sizing_algorithm,
 };
 use types::{
   CellOccupancyMatrix, GridItem, GridTrack, GridTrackKind, NamedLineResolver, TrackCounts,
@@ -268,14 +267,23 @@ fn child_subgrid_auto_span<
 ) -> InBothAbsAxis<Option<u16>> {
   let style = tree.get_grid_container_style(node);
   let horizontal = style.is_column_subgrid().then(|| {
-    let len = style.subgrid_column_names().map(|names| names.len()).unwrap_or(0);
+    let len = style
+      .subgrid_column_names()
+      .map(|names| names.len())
+      .unwrap_or(0);
     subgrid_auto_span_from_line_name_list_len(len)
   });
   let vertical = style.is_row_subgrid().then(|| {
-    let len = style.subgrid_row_names().map(|names| names.len()).unwrap_or(0);
+    let len = style
+      .subgrid_row_names()
+      .map(|names| names.len())
+      .unwrap_or(0);
     subgrid_auto_span_from_line_name_list_len(len)
   });
-  InBothAbsAxis { horizontal, vertical }
+  InBothAbsAxis {
+    horizontal,
+    vertical,
+  }
 }
 
 /// Maximum recursion depth when collecting virtual grid items for nested subgrids.
@@ -372,9 +380,12 @@ fn collect_subgrid_virtual_items_recursive<
   let container_row_in_parent_space = container_item.row;
   let container_col_in_parent_space = container_item.column;
 
-  let container_row_in_root_space = parent_mapping.vertical.map_span(container_row_in_parent_space);
-  let container_col_in_root_space =
-    parent_mapping.horizontal.map_span(container_col_in_parent_space);
+  let container_row_in_root_space = parent_mapping
+    .vertical
+    .map_span(container_row_in_parent_space);
+  let container_col_in_root_space = parent_mapping
+    .horizontal
+    .map_span(container_col_in_parent_space);
 
   let container_mapping = InBothAbsAxis {
     horizontal: if inherits_columns {
@@ -534,10 +545,17 @@ fn collect_subgrid_virtual_items_recursive<
       container_style_ref
         .subgrid_gap
         .width
-        .resolve_or_zero(gap_percentage_basis.width, |val, basis| tree.calc(val, basis))
+        .resolve_or_zero(gap_percentage_basis.width, |val, basis| {
+          tree.calc(val, basis)
+        })
     };
     let half_diff = (desired_gap - parent_gap.width) / 2.0;
-    apply_subgrid_gap_difference_margin(&mut subgrid_items, AbstractAxis::Inline, half_diff, col_span);
+    apply_subgrid_gap_difference_margin(
+      &mut subgrid_items,
+      AbstractAxis::Inline,
+      half_diff,
+      col_span,
+    );
   }
   if subgrid_rows {
     let desired_gap = if container_style_ref.subgrid_gap_is_normal.height {
@@ -546,10 +564,17 @@ fn collect_subgrid_virtual_items_recursive<
       container_style_ref
         .subgrid_gap
         .height
-        .resolve_or_zero(gap_percentage_basis.height, |val, basis| tree.calc(val, basis))
+        .resolve_or_zero(gap_percentage_basis.height, |val, basis| {
+          tree.calc(val, basis)
+        })
     };
     let half_diff = (desired_gap - parent_gap.height) / 2.0;
-    apply_subgrid_gap_difference_margin(&mut subgrid_items, AbstractAxis::Block, half_diff, row_span);
+    apply_subgrid_gap_difference_margin(
+      &mut subgrid_items,
+      AbstractAxis::Block,
+      half_diff,
+      row_span,
+    );
   }
 
   #[cfg(all(feature = "std", debug_assertions))]
@@ -567,10 +592,7 @@ fn collect_subgrid_virtual_items_recursive<
       for (idx, sub_item) in subgrid_items.iter().enumerate() {
         eprintln!(
           "  item {idx}: row=({},{}) col=({},{})",
-          sub_item.row.start.0,
-          sub_item.row.end.0,
-          sub_item.column.start.0,
-          sub_item.column.end.0
+          sub_item.row.start.0, sub_item.row.end.0, sub_item.column.start.0, sub_item.column.end.0
         );
       }
     }
@@ -1038,13 +1060,12 @@ where
   let disallow_implicit_columns = style.is_column_subgrid() && grid_template_col_count > 0;
   let disallow_implicit_rows = style.is_row_subgrid() && grid_template_row_count > 0;
 
-  let (mut est_col_counts, mut est_row_counts) =
-    compute_grid_size_estimate(
-      explicit_col_count,
-      explicit_row_count,
-      child_styles_iter,
-      |node| child_subgrid_auto_span(tree, node),
-    );
+  let (mut est_col_counts, mut est_row_counts) = compute_grid_size_estimate(
+    explicit_col_count,
+    explicit_row_count,
+    child_styles_iter,
+    |node| child_subgrid_auto_span(tree, node),
+  );
   // Subgrids do not create implicit tracks in the subgridded axis. Clamp the initial estimates so
   // auto-placement cannot preallocate (or later rely on) implicit tracks for those axes.
   //
@@ -1131,7 +1152,7 @@ where
         cols.track_sizes.len().min(u16::MAX as usize) as u16,
       );
     }
- 
+
     if let Some(rows) = &override_data.rows {
       let desired_gap = if style.subgrid_gap_is_normal.height {
         rows.gap
@@ -1211,11 +1232,11 @@ where
   }
 
   // Run track sizing algorithm for Inline axis
-      track_sizing_algorithm(
-        tree,
-        AbstractAxis::Inline,
-        min_size.get(AbstractAxis::Inline),
-        max_size.get(AbstractAxis::Inline),
+  track_sizing_algorithm(
+    tree,
+    AbstractAxis::Inline,
+    min_size.get(AbstractAxis::Inline),
+    max_size.get(AbstractAxis::Inline),
     justify_content,
     align_content,
     available_grid_space,
@@ -1384,11 +1405,11 @@ where
       available_grid_space_for_rerun,
       inner_node_size,
       &mut columns,
-        &mut rows,
-        &mut items,
-        |track: &GridTrack, _, _| Some(track.base_size),
-        has_align_self_baseline_item,
-      );
+      &mut rows,
+      &mut items,
+      |track: &GridTrack, _, _| Some(track.base_size),
+      has_align_self_baseline_item,
+    );
 
     // The first row sizing pass may have already consumed the overrides recorded earlier. Refresh
     // them now that column sizes have been rerun so subsequent block-axis measurements inherit the
@@ -1681,7 +1702,8 @@ where
         padded.append(&mut names);
         names = padded;
       }
-      let total_tracks = (track_counts.negative_implicit
+      let total_tracks = (track_counts
+        .negative_implicit
         .saturating_add(track_counts.explicit)
         .saturating_add(track_counts.positive_implicit)) as usize;
       let total_lines = total_tracks.saturating_add(1);
@@ -1700,7 +1722,10 @@ where
       node,
       DetailedGridInfo {
         rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_row_counts, rows),
-        columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_col_counts, columns),
+        columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(
+          final_col_counts,
+          columns,
+        ),
         items: items
           .iter()
           .map(DetailedGridItemsInfo::from_grid_item)

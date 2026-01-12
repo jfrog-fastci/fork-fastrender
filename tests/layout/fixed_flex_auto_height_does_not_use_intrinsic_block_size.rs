@@ -57,4 +57,3 @@ fn fixed_flex_auto_height_does_not_use_intrinsic_block_size() {
     .join()
     .unwrap();
 }
-

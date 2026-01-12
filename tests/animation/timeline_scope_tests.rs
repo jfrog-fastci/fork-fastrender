@@ -175,7 +175,8 @@ fn timeline_scope_deduplicates_duplicate_names_in_value_list() {
   let scroller_id = find_box_id_by_dom_id(&prepared.box_tree().root, "scroller").expect("box_id");
   let scroller_frag =
     find_fragment_by_box_id(prepared.fragment_tree(), scroller_id).expect("fragment");
-  let max_scroll = (scroller_frag.scroll_overflow.height() - scroller_frag.bounds.height()).max(0.0);
+  let max_scroll =
+    (scroller_frag.scroll_overflow.height() - scroller_frag.bounds.height()).max(0.0);
   assert!(max_scroll > 0.0, "expected scroll range for scroller");
 
   let scroll_state = ScrollState::from_parts(
@@ -441,7 +442,8 @@ fn timeline_scope_all_does_not_block_export_of_own_timeline() {
   let scroller_style = scroller_frag.style.as_deref().expect("style");
   assert_eq!(scroller_style.timeline_scope, TimelineScopeProperty::All);
 
-  let max_scroll = (scroller_frag.scroll_overflow.height() - scroller_frag.bounds.height()).max(0.0);
+  let max_scroll =
+    (scroller_frag.scroll_overflow.height() - scroller_frag.bounds.height()).max(0.0);
   assert!(max_scroll > 0.0, "expected scroll range for scroller");
 
   let scroll_state = ScrollState::from_parts(
@@ -505,7 +507,8 @@ fn timeline_scope_supports_var_resolution() {
   let scroller_id = find_box_id_by_dom_id(&prepared.box_tree().root, "scroller").expect("box_id");
   let scroller_frag =
     find_fragment_by_box_id(prepared.fragment_tree(), scroller_id).expect("fragment");
-  let max_scroll = (scroller_frag.scroll_overflow.height() - scroller_frag.bounds.height()).max(0.0);
+  let max_scroll =
+    (scroller_frag.scroll_overflow.height() - scroller_frag.bounds.height()).max(0.0);
   assert!(max_scroll > 0.0, "expected scroll range for scroller");
 
   let scroll_state = ScrollState::from_parts(
@@ -567,7 +570,8 @@ fn view_timeline_inset_auto_uses_scroll_padding() {
 
   let prepared = renderer.prepare_html(html, options).expect("prepare");
   let scroller_id = find_box_id_by_dom_id(&prepared.box_tree().root, "scroller").expect("box_id");
-  let scroll_state = ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, Point::ZERO)]));
+  let scroll_state =
+    ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, Point::ZERO)]));
   let pixmap = prepared
     .paint_with_options(
       PreparedPaintOptions::new()

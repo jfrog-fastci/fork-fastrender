@@ -1,5 +1,7 @@
 use crate::error::{RenderStage, Result};
-use crate::js::{trim_ascii_whitespace, EventLoop, RunLimits, ScriptBlockingStyleSheetSet, TaskSource};
+use crate::js::{
+  trim_ascii_whitespace, EventLoop, RunLimits, ScriptBlockingStyleSheetSet, TaskSource,
+};
 use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
 use memchr::memchr;
 use std::cell::Cell;
@@ -165,7 +167,10 @@ where
 
         let is_stylesheet = rel_value.is_some_and(link_rel_is_stylesheet);
         if is_stylesheet {
-          if let Some(href) = href_value.map(trim_ascii_whitespace).filter(|v| !v.is_empty()) {
+          if let Some(href) = href_value
+            .map(trim_ascii_whitespace)
+            .filter(|v| !v.is_empty())
+          {
             let key = self.next_stylesheet_key;
             self.next_stylesheet_key += 1;
             self
@@ -253,11 +258,9 @@ where
     event_loop: &mut EventLoop<Self>,
   ) -> Result<bool> {
     if self.script_blocking_stylesheets.has_blocking_stylesheet() {
-      let _ = event_loop.spin_until(
-        self,
-        SCRIPT_BLOCKING_STYLESHEET_SPIN_LIMITS,
-        |host| host.script_blocking_stylesheets.has_blocking_stylesheet(),
-      )?;
+      let _ = event_loop.spin_until(self, SCRIPT_BLOCKING_STYLESHEET_SPIN_LIMITS, |host| {
+        host.script_blocking_stylesheets.has_blocking_stylesheet()
+      })?;
     }
 
     if self.script_blocking_stylesheets.has_blocking_stylesheet() {
@@ -368,7 +371,11 @@ fn parse_tag_name_range(bytes: &[u8], start: usize, end: usize) -> Option<(bool,
   Some((is_end, name_start, i))
 }
 
-fn find_raw_text_element_end_range(bytes: &[u8], start: usize, tag: &'static [u8]) -> (usize, usize) {
+fn find_raw_text_element_end_range(
+  bytes: &[u8],
+  start: usize,
+  tag: &'static [u8],
+) -> (usize, usize) {
   let mut idx = start;
   while let Some(rel) = memchr(b'<', &bytes[idx..]) {
     let pos = idx + rel;
@@ -424,10 +431,7 @@ fn for_each_attribute<'a>(
     }
 
     let name_start = i;
-    while i < bytes.len()
-      && !bytes[i].is_ascii_whitespace()
-      && bytes[i] != b'='
-      && bytes[i] != b'>'
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>'
     {
       i += 1;
     }
@@ -521,15 +525,13 @@ mod tests {
       ManualStylesheetLoader::default(),
       LogExecutor::default(),
     );
-    let mut event_loop = EventLoop::<HtmlScriptingDriver<ManualStylesheetLoader, LogExecutor>>::new();
+    let mut event_loop =
+      EventLoop::<HtmlScriptingDriver<ManualStylesheetLoader, LogExecutor>>::new();
 
     // Queue a microtask *before* parsing begins. This must run before the parser-inserted script
     // executes, even though parsing runs inside a DOMManipulation task.
     event_loop.queue_microtask(|host, _| {
-      host
-        .script_executor
-        .executed
-        .push("microtask".to_string());
+      host.script_executor.executed.push("microtask".to_string());
       Ok(())
     })?;
 
@@ -547,7 +549,8 @@ mod tests {
   }
 
   #[test]
-  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty() -> Result<()> {
+  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty(
+  ) -> Result<()> {
     // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
     // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
     // when the JS execution context stack is not empty.
@@ -557,13 +560,11 @@ mod tests {
       ManualStylesheetLoader::default(),
       LogExecutor::default(),
     );
-    let mut event_loop = EventLoop::<HtmlScriptingDriver<ManualStylesheetLoader, LogExecutor>>::new();
+    let mut event_loop =
+      EventLoop::<HtmlScriptingDriver<ManualStylesheetLoader, LogExecutor>>::new();
 
     event_loop.queue_microtask(|host, _| {
-      host
-        .script_executor
-        .executed
-        .push("microtask".to_string());
+      host.script_executor.executed.push("microtask".to_string());
       Ok(())
     })?;
 
@@ -592,7 +593,8 @@ mod tests {
       ManualStylesheetLoader::default(),
       LogExecutor::default(),
     );
-    let mut event_loop = EventLoop::<HtmlScriptingDriver<ManualStylesheetLoader, LogExecutor>>::new();
+    let mut event_loop =
+      EventLoop::<HtmlScriptingDriver<ManualStylesheetLoader, LogExecutor>>::new();
 
     host.start(&mut event_loop)?;
     let _ = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;

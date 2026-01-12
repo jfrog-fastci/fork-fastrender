@@ -99,8 +99,8 @@ fn pageset_progress_entries_include_accuracy() {
   let mut missing = Vec::new();
   for stem in expected {
     let path = progress_dir.join(format!("{stem}.json"));
-    let raw = fs::read_to_string(&path)
-      .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let raw =
+      fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     let value: serde_json::Value =
       serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
     if value.get("accuracy").is_none() {

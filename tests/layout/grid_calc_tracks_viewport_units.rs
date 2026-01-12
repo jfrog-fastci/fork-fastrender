@@ -66,4 +66,3 @@ fn grid_track_fixed_size_resolves_calc_with_viewport_units() {
   let cell = &fragment.children[0];
   assert_approx(cell.bounds.width(), 630.0, "grid column width");
 }
-

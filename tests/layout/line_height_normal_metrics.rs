@@ -1,5 +1,5 @@
-use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::text::font_db::FontMetrics;
+use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::{FastRender, FastRenderConfig, FontConfig, FontContext};
 
 const ROBOTO_FLEX: &[u8] = include_bytes!("../fonts/RobotoFlex-VF.ttf");

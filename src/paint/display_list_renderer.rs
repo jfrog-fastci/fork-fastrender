@@ -69,14 +69,15 @@ use crate::paint::display_list::TextItem;
 use crate::paint::display_list::TextShadowItem;
 use crate::paint::display_list::Transform3D;
 use crate::paint::display_list::TransformItem;
+use crate::paint::filter_outset::filter_halo_outset_with_bounds;
 #[cfg(test)]
 use crate::paint::filter_outset::filter_outset;
-use crate::paint::filter_outset::filter_halo_outset_with_bounds;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::gradient::{
-  get_gradient_lut, gradient_bucket, paint_linear_gradient_src_over, rasterize_conic_gradient_cached,
-  rasterize_conic_gradient_scaled_cached, rasterize_linear_gradient_cached, rasterize_radial_gradient,
-  GradientLutCache, GradientPixmapCache, GradientPixmapCacheKey, GradientStats,
+  get_gradient_lut, gradient_bucket, paint_linear_gradient_src_over,
+  rasterize_conic_gradient_cached, rasterize_conic_gradient_scaled_cached,
+  rasterize_linear_gradient_cached, rasterize_radial_gradient, GradientLutCache,
+  GradientPixmapCache, GradientPixmapCacheKey, GradientStats,
 };
 use crate::paint::homography::Homography;
 use crate::paint::optimize::DisplayListOptimizer;
@@ -86,8 +87,8 @@ use crate::paint::painter::{
 use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context, reserve_buffer};
 use crate::paint::projective_warp::{warp_pixmap_cached, WarpCache, WarpedPixmap};
 use crate::paint::rasterize::{
-  box_shadow_blur_radius_to_sigma, estimate_box_shadow_work_pixels, render_box_shadow_cached_with_clamp,
-  BoxShadow, BoxShadowSurfaceClamp,
+  box_shadow_blur_radius_to_sigma, estimate_box_shadow_work_pixels,
+  render_box_shadow_cached_with_clamp, BoxShadow, BoxShadowSurfaceClamp,
 };
 use crate::paint::text_decoration::{dash_offset_for_segment, wavy_phase_for_segment};
 use crate::paint::text_rasterize::{
@@ -101,7 +102,6 @@ use crate::render_control::{
   check_active_periodic, with_allocation_budget, with_deadline, StageGuard, StageHeartbeatGuard,
 };
 use crate::style::color::Rgba;
-use crate::style::PhysicalSide;
 use crate::style::types::BackfaceVisibility;
 use crate::style::types::BackgroundImage;
 use crate::style::types::BackgroundPosition;
@@ -115,9 +115,9 @@ use crate::style::types::BorderImageSliceValue;
 use crate::style::types::BorderImageWidth;
 use crate::style::types::BorderImageWidthValue;
 use crate::style::types::BorderStyle as CssBorderStyle;
+use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskClip;
 use crate::style::types::MaskComposite;
-use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MaskOrigin;
 use crate::style::types::TextDecorationStyle;
@@ -126,10 +126,13 @@ use crate::style::types::TextEmphasisShape;
 use crate::style::types::TextEmphasisStyle;
 use crate::style::types::TransformStyle;
 use crate::style::values::Length;
+use crate::style::PhysicalSide;
 use crate::text::color_fonts::ColorFontRenderer;
 use crate::text::font_db::LoadedFont;
 use crate::text::font_loader::FontContext;
-use crate::text::pipeline::{text_diagnostics_session_id, GlyphPosition, TextDiagnosticsThreadGuard};
+use crate::text::pipeline::{
+  text_diagnostics_session_id, GlyphPosition, TextDiagnosticsThreadGuard,
+};
 use lru::LruCache;
 use rayon::prelude::*;
 use rustybuzz::Variation;
@@ -1527,11 +1530,20 @@ where
     }
   }
 
-  let (filtered_data, filtered_width, filtered_height) = if let Some(cached) = cached_filtered.as_ref() {
-    (cached.data(), cached.width() as usize, cached.height() as usize)
-  } else {
-    (region.data(), region.width() as usize, region.height() as usize)
-  };
+  let (filtered_data, filtered_width, filtered_height) =
+    if let Some(cached) = cached_filtered.as_ref() {
+      (
+        cached.data(),
+        cached.width() as usize,
+        cached.height() as usize,
+      )
+    } else {
+      (
+        region.data(),
+        region.width() as usize,
+        region.height() as usize,
+      )
+    };
 
   // For projective stacking contexts we render the subtree into an untransformed layer and warp it
   // at PopStackingContext time. In that mode we must apply the Filter Effects Level 2 step that
@@ -4871,12 +4883,22 @@ impl DisplayListRenderer {
 
   #[inline]
   fn snap_rect_origin_to_device_pixels(rect: Rect) -> Rect {
-    Rect::from_xywh(rect.x().floor(), rect.y().floor(), rect.width(), rect.height())
+    Rect::from_xywh(
+      rect.x().floor(),
+      rect.y().floor(),
+      rect.width(),
+      rect.height(),
+    )
   }
 
   #[inline]
   fn round_rect_origin_to_device_pixels(rect: Rect) -> Rect {
-    Rect::from_xywh(rect.x().round(), rect.y().round(), rect.width(), rect.height())
+    Rect::from_xywh(
+      rect.x().round(),
+      rect.y().round(),
+      rect.width(),
+      rect.height(),
+    )
   }
 
   #[inline]
@@ -4973,11 +4995,7 @@ impl DisplayListRenderer {
   }
 
   #[inline]
-  fn maybe_snap_unscaled_image_dest_rect(
-    &self,
-    dest_rect: Rect,
-    pixmap: &Pixmap,
-  ) -> Rect {
+  fn maybe_snap_unscaled_image_dest_rect(&self, dest_rect: Rect, pixmap: &Pixmap) -> Rect {
     let transform = self.canvas.transform();
     if transform != Transform::identity()
       && (!Self::is_translation_only_transform(transform)
@@ -5081,7 +5099,7 @@ impl DisplayListRenderer {
       layer_bounds.y() - expand_top,
       layer_bounds.width() + expand_left + expand_right,
       layer_bounds.height() + expand_top + expand_bottom,
-      );
+    );
 
     if has_filters {
       // For filter effects, the input to the filter must not be clipped to the current clip/canvas
@@ -5471,10 +5489,14 @@ impl DisplayListRenderer {
       1.0
     };
     let toggles = crate::debug::runtime::runtime_toggles();
-    let image_cache_items =
-      toggles.usize_with_default(ENV_IMAGE_PIXMAP_CACHE_ITEMS, DEFAULT_IMAGE_PIXMAP_CACHE_ITEMS);
-    let image_cache_bytes =
-      toggles.usize_with_default(ENV_IMAGE_PIXMAP_CACHE_BYTES, DEFAULT_IMAGE_PIXMAP_CACHE_BYTES);
+    let image_cache_items = toggles.usize_with_default(
+      ENV_IMAGE_PIXMAP_CACHE_ITEMS,
+      DEFAULT_IMAGE_PIXMAP_CACHE_ITEMS,
+    );
+    let image_cache_bytes = toggles.usize_with_default(
+      ENV_IMAGE_PIXMAP_CACHE_BYTES,
+      DEFAULT_IMAGE_PIXMAP_CACHE_BYTES,
+    );
     let text_rasterizer = TextRasterizer::with_caches(
       glyph_cache.clone(),
       color_renderer.clone(),
@@ -5822,7 +5844,10 @@ impl DisplayListRenderer {
     // border). For source-over gradients under a translation-only integer transform, we can paint
     // directly into the destination surface using the same pixel-center inclusion rule as
     // axis-aligned opaque rect fills.
-    if translation_only && translation_integral && self.canvas.blend_mode() == SkiaBlendMode::SourceOver {
+    if translation_only
+      && translation_integral
+      && self.canvas.blend_mode() == SkiaBlendMode::SourceOver
+    {
       let clip_mask = self.canvas.clip_mask_rc();
 
       // Pixel-center bounds in *device* space: a device pixel at coordinate `i` is covered if its
@@ -6360,11 +6385,11 @@ impl DisplayListRenderer {
       let scratch_h_i64 = y1 - y0;
       let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-        pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_deref());
-      });
-      self.record_background_paint(background_timer);
-      return Ok(());
-    };
+          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_deref());
+        });
+        self.record_background_paint(background_timer);
+        return Ok(());
+      };
       let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
           pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_deref());
@@ -7360,11 +7385,12 @@ impl DisplayListRenderer {
         // Nudge the inner contour outward (toward the outer edge) by a tiny epsilon (by shrinking
         // the inset) so those
         // boundary samples land definitively inside the hole rather than on the edge.
-        let ring_inset = if snapped_ring_rect && Self::is_near_integer(border_width) && border_width >= 1.0 {
-          (border_width - 1e-3).max(0.0)
-        } else {
-          border_width
-        };
+        let ring_inset =
+          if snapped_ring_rect && Self::is_near_integer(border_width) && border_width >= 1.0 {
+            (border_width - 1e-3).max(0.0)
+          } else {
+            border_width
+          };
 
         if let Some(path) = crate::paint::rasterize::build_rounded_rect_ring_path(
           ring_rect.x(),
@@ -7465,10 +7491,9 @@ impl DisplayListRenderer {
           if single_edge_bottom && Self::is_near_integer(bottom.width) {
             bottom_y += 0.5;
           }
-          self.canvas.draw_rect(
-            Rect::from_xywh(x, bottom_y, w, bottom.width),
-            bottom.color,
-          );
+          self
+            .canvas
+            .draw_rect(Rect::from_xywh(x, bottom_y, w, bottom.width), bottom.color);
         }
 
         let mid_y = y + top.width;
@@ -7497,7 +7522,10 @@ impl DisplayListRenderer {
     if !radii.has_radius()
       && item.image.is_none()
       && gap.is_none()
-      && matches!(top.style, CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden)
+      && matches!(
+        top.style,
+        CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
+      )
       && matches!(
         right.style,
         CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
@@ -9225,7 +9253,7 @@ impl DisplayListRenderer {
                 self.scale,
                 dest_origin_device,
               );
-          }
+            }
           }
         }
 
@@ -9417,12 +9445,7 @@ impl DisplayListRenderer {
           });
           return Ok(None);
         }
-        (
-          pixmap,
-          w,
-          h,
-          Some((image.css_width, image.css_height)),
-        )
+        (pixmap, w, h, Some((image.css_width, image.css_height)))
       }
       BorderImageSourceItem::Generated(bg) => {
         // Generated images have no intrinsic size; render at the mask border's outer rect size
@@ -9493,25 +9516,22 @@ impl DisplayListRenderer {
       left: mask_border.border_widths.left,
     };
 
-    let resolve_width = |value: BorderImageWidthValue,
-                         border: f32,
-                         axis: f32,
-                         auto: Option<f32>|
-     -> f32 {
-      match value {
-        BorderImageWidthValue::Auto => auto.unwrap_or(border).max(0.0),
-        BorderImageWidthValue::Number(n) => (n * border).max(0.0),
-        BorderImageWidthValue::Length(len) => resolve_length_for_border_image(
-          &len,
-          axis,
-          mask_border.font_size,
-          mask_border.root_font_size,
-          mask_border.viewport,
-        )
-        .max(0.0),
-        BorderImageWidthValue::Percentage(p) => ((p / 100.0) * axis).max(0.0),
-      }
-    };
+    let resolve_width =
+      |value: BorderImageWidthValue, border: f32, axis: f32, auto: Option<f32>| -> f32 {
+        match value {
+          BorderImageWidthValue::Auto => auto.unwrap_or(border).max(0.0),
+          BorderImageWidthValue::Number(n) => (n * border).max(0.0),
+          BorderImageWidthValue::Length(len) => resolve_length_for_border_image(
+            &len,
+            axis,
+            mask_border.font_size,
+            mask_border.root_font_size,
+            mask_border.viewport,
+          )
+          .max(0.0),
+          BorderImageWidthValue::Percentage(p) => ((p / 100.0) * axis).max(0.0),
+        }
+      };
 
     let target_widths = BorderImageWidths {
       top: resolve_width(
@@ -9579,7 +9599,10 @@ impl DisplayListRenderer {
         return Ok(None);
       };
       mask.data_mut()[0] = 0;
-      return Ok(Some(OffsetMask { mask, origin: (0, 0) }));
+      return Ok(Some(OffsetMask {
+        mask,
+        origin: (0, 0),
+      }));
     };
     if clip_rect_css.width() <= 0.0 || clip_rect_css.height() <= 0.0 {
       MASK_RENDER_SCRATCH.with(|cell| {
@@ -9589,7 +9612,10 @@ impl DisplayListRenderer {
         return Ok(None);
       };
       mask.data_mut()[0] = 0;
-      return Ok(Some(OffsetMask { mask, origin: (0, 0) }));
+      return Ok(Some(OffsetMask {
+        mask,
+        origin: (0, 0),
+      }));
     }
 
     // Convert the clip rect into device space and through the current canvas transform so the
@@ -9633,7 +9659,10 @@ impl DisplayListRenderer {
         return Ok(None);
       };
       mask.data_mut()[0] = 0;
-      return Ok(Some(OffsetMask { mask, origin: (0, 0) }));
+      return Ok(Some(OffsetMask {
+        mask,
+        origin: (0, 0),
+      }));
     }
 
     // `paint_mask_border_patch` operates in untransformed device coordinates (CSS * scale) and
@@ -9715,10 +9744,7 @@ impl DisplayListRenderer {
 
       // `mask-border-slice` default behavior: when `fill` is not set, the center is treated as
       // fully opaque.
-      if !mask_border.slice.fill
-        && inner_rect_css.width() > 0.0
-        && inner_rect_css.height() > 0.0
-      {
+      if !mask_border.slice.fill && inner_rect_css.width() > 0.0 && inner_rect_css.height() > 0.0 {
         if let Some(inner_clip) = inner_rect_css.intersection(clip_rect_css) {
           let device_rect = Rect::from_xywh(
             inner_clip.x() * self.scale - dest_origin_device.0 as f32,
@@ -10186,14 +10212,7 @@ impl DisplayListRenderer {
           let dest_y = origin_y.round() as i32 + ty;
           let clip_ref = clip.as_deref();
           self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-            composite_layer_into_pixmap(
-              pixmap,
-              &tile,
-              1.0,
-              blend_mode,
-              (dest_x, dest_y),
-              clip_ref,
-            );
+            composite_layer_into_pixmap(pixmap, &tile, 1.0, blend_mode, (dest_x, dest_y), clip_ref);
           });
         }
       }
@@ -10247,7 +10266,14 @@ impl DisplayListRenderer {
         return;
       }
 
-      pixmap.draw_pixmap(dest_x, dest_y, temp.as_ref(), &paint, transform, clip.as_deref());
+      pixmap.draw_pixmap(
+        dest_x,
+        dest_y,
+        temp.as_ref(),
+        &paint,
+        transform,
+        clip.as_deref(),
+      );
     });
     Ok(())
   }
@@ -11726,11 +11752,7 @@ impl DisplayListRenderer {
                 }
                 renderer.render_slice(&work.list)?;
                 let stats = renderer.gradient_stats;
-                out.push((
-                  work,
-                  renderer.canvas.into_pixmap(),
-                  stats,
-                ));
+                out.push((work, renderer.canvas.into_pixmap(), stats));
               }
               Ok(out)
             })
@@ -12047,9 +12069,9 @@ impl DisplayListRenderer {
       && !root_isolated
       && node.context.has_backdrop_sensitive_descendants
       && !(root_is_backdrop_root && matches!(root_mix_blend_mode, BlendMode::Normal));
-    let root_composite_blend =
-      (!matches!(root_mix_blend_mode, BlendMode::Normal) && root_manual_blend.is_none())
-        .then(|| map_blend_mode(root_mix_blend_mode));
+    let root_composite_blend = (!matches!(root_mix_blend_mode, BlendMode::Normal)
+      && root_manual_blend.is_none())
+    .then(|| map_blend_mode(root_mix_blend_mode));
 
     let mut order = 0;
     let mut backdrop_root_chain: Vec<usize> = Vec::new();
@@ -12144,9 +12166,11 @@ impl DisplayListRenderer {
         // `mix-blend-mode` is also backdrop-sensitive: inside a preserve-3d scene compositor we
         // need a scratch buffer for the nearest intermediate Backdrop Root so blending does not
         // sample/composite against content above that boundary.
-        if item.compositing.as_ref().is_some_and(|compositing| {
-          !matches!(compositing.mix_blend_mode, BlendMode::Normal)
-        }) {
+        if item
+          .compositing
+          .as_ref()
+          .is_some_and(|compositing| !matches!(compositing.mix_blend_mode, BlendMode::Normal))
+        {
           if let Some(&id) = item.backdrop_root_chain.last() {
             if id < needs_buffer.len() {
               needs_buffer[id] = true;
@@ -13135,7 +13159,13 @@ impl DisplayListRenderer {
         };
         temp.data_mut().fill(0);
         let filled = self
-          .fill_projected_preserve_3d_clip_mask(temp, clip, transform, parent_transform, warp_enabled)
+          .fill_projected_preserve_3d_clip_mask(
+            temp,
+            clip,
+            transform,
+            parent_transform,
+            warp_enabled,
+          )
           .map_err(Error::Render)?;
         if !filled {
           if self.preserve_3d_debug {
@@ -13832,8 +13862,7 @@ impl DisplayListRenderer {
     }
 
     let projected_bounds = crate::paint::homography::quad_bounds(&dst_quad_points);
-    let dest_bounds =
-      Rect::from_xywh(0.0, 0.0, dest.width() as f32, dest.height() as f32);
+    let dest_bounds = Rect::from_xywh(0.0, 0.0, dest.width() as f32, dest.height() as f32);
     if projected_bounds.intersection(dest_bounds).is_none() {
       return Ok(true);
     }
@@ -14857,7 +14886,9 @@ impl DisplayListRenderer {
               } else {
                 None
               };
-              if let Some(extra) = extra_bounds.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0) {
+              if let Some(extra) =
+                extra_bounds.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+              {
                 merged = merged.union(extra);
               }
 
@@ -14913,7 +14944,12 @@ impl DisplayListRenderer {
                 }
                 self.push_layer_mutation_state();
               } else if needs_unclipped_layer {
-                self.push_layer_bounded_unclipped_tracked(opacity, None, layer_rect, is_backdrop_root)?;
+                self.push_layer_bounded_unclipped_tracked(
+                  opacity,
+                  None,
+                  layer_rect,
+                  is_backdrop_root,
+                )?;
               } else {
                 self.push_layer_bounded_tracked(opacity, None, layer_rect, is_backdrop_root)?;
               }
@@ -15191,7 +15227,9 @@ impl DisplayListRenderer {
           }
 
           if let Some(mask_border) = record.mask_border.as_ref() {
-            if let Some(mask) = self.render_mask_border(mask_border, record.warp_source_transform)? {
+            if let Some(mask) =
+              self.render_mask_border(mask_border, record.warp_source_transform)?
+            {
               let OffsetMask {
                 mask,
                 origin: mask_origin,
@@ -15393,8 +15431,8 @@ impl DisplayListRenderer {
                     None,
                   );
                 });
-            }
-          } else if let Some(mode) = record.manual_blend {
+              }
+            } else if let Some(mode) = record.manual_blend {
               if let Some(mask) = self.canvas.clip_mask_rc() {
                 let applied = apply_mask_with_offset(&mut layer, origin, mask.as_ref(), (0, 0))?;
                 if !applied {
@@ -15703,9 +15741,9 @@ impl DisplayListRenderer {
     let draw_solid_line = |pixmap: &mut Pixmap,
                            paint: &tiny_skia::Paint,
                            start: f32,
-                            len: f32,
-                            center: f32,
-                            thickness: f32| {
+                           len: f32,
+                           center: f32,
+                           thickness: f32| {
       if thickness <= 0.0 || len <= 0.0 {
         return;
       }
@@ -16368,23 +16406,23 @@ impl DisplayListRenderer {
         continue;
       }
 
-      let mut shadow_pixmap = match new_pixmap_with_context(shadow_width, shadow_height, "text shadow")
-      {
-        Ok(pixmap) => pixmap,
-        Err(err) => {
-          // Render-control failures (deadline/budget) must bubble up; a cancelled render must not
-          // silently continue just because text shadows are best-effort.
-          if matches!(
-            &err,
-            RenderError::Timeout { .. }
-              | RenderError::StageMemoryBudgetExceeded { .. }
-              | RenderError::StageAllocationBudgetExceeded { .. }
-          ) {
-            return Err(Error::Render(err));
+      let mut shadow_pixmap =
+        match new_pixmap_with_context(shadow_width, shadow_height, "text shadow") {
+          Ok(pixmap) => pixmap,
+          Err(err) => {
+            // Render-control failures (deadline/budget) must bubble up; a cancelled render must not
+            // silently continue just because text shadows are best-effort.
+            if matches!(
+              &err,
+              RenderError::Timeout { .. }
+                | RenderError::StageMemoryBudgetExceeded { .. }
+                | RenderError::StageAllocationBudgetExceeded { .. }
+            ) {
+              return Err(Error::Render(err));
+            }
+            continue;
           }
-          continue;
-        }
-      };
+        };
       self.record_layer_allocation(shadow_width, shadow_height);
 
       let translate_x = -bounds.min_x + blur_margin;
@@ -16426,11 +16464,13 @@ impl DisplayListRenderer {
         &mut shadow_pixmap,
       ) {
         Ok(_) => {}
-        Err(err @ Error::Render(
-          RenderError::Timeout { .. }
-          | RenderError::StageMemoryBudgetExceeded { .. }
-          | RenderError::StageAllocationBudgetExceeded { .. },
-        )) => return Err(err),
+        Err(
+          err @ Error::Render(
+            RenderError::Timeout { .. }
+            | RenderError::StageMemoryBudgetExceeded { .. }
+            | RenderError::StageAllocationBudgetExceeded { .. },
+          ),
+        ) => return Err(err),
         Err(_) => continue,
       }
 
@@ -16949,7 +16989,13 @@ impl DisplayListRenderer {
               } else {
                 (item.image.width, item.image.height)
               };
-              if Self::should_use_scaled_image_pixmap(item.filter_quality, src_w, src_h, out_w, out_h) {
+              if Self::should_use_scaled_image_pixmap(
+                item.filter_quality,
+                src_w,
+                src_h,
+                out_w,
+                out_h,
+              ) {
                 let diag = self.image_pixmap_diagnostics.as_ref();
                 if let Some(diag) = diag {
                   diag.record_miss();
@@ -16992,7 +17038,8 @@ impl DisplayListRenderer {
                 let clip_mask = self.canvas.clip_mask().cloned();
                 let local_x = origin_x - canvas_transform.tx;
                 let local_y = origin_y - canvas_transform.ty;
-                let transform = Transform::from_translate(local_x, local_y).post_concat(canvas_transform);
+                let transform =
+                  Transform::from_translate(local_x, local_y).post_concat(canvas_transform);
                 self.canvas.with_mirrored_pixmap_mut(|dest| {
                   dest.draw_pixmap(0, 0, pixmap.as_ref(), &paint, transform, clip_mask.as_ref());
                 });
@@ -17005,7 +17052,8 @@ impl DisplayListRenderer {
       }
     }
 
-    if let Some((pixmap, x, y)) = self.maybe_rasterize_linear_image_to_device_pixels(item, dest_rect)?
+    if let Some((pixmap, x, y)) =
+      self.maybe_rasterize_linear_image_to_device_pixels(item, dest_rect)?
     {
       // The pixmap has already been sampled onto the final device-pixel grid, so we only need a
       // 1:1 nearest-neighbour blit here.
@@ -17014,7 +17062,14 @@ impl DisplayListRenderer {
       let clip_mask = self.canvas.clip_mask_rc();
       let pixmap_ref = pixmap.as_ref();
       self.canvas.with_mirrored_pixmap_mut(|dest| {
-        composite_layer_into_pixmap(dest, pixmap_ref, opacity, blend_mode, (x, y), clip_mask.as_deref());
+        composite_layer_into_pixmap(
+          dest,
+          pixmap_ref,
+          opacity,
+          blend_mode,
+          (x, y),
+          clip_mask.as_deref(),
+        );
       });
       self.record_background_paint(background_timer);
       return Ok(());
@@ -17052,12 +17107,15 @@ impl DisplayListRenderer {
       quality: item.filter_quality.into(),
     };
 
-    let full_src_rect =
-      Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
+    let full_src_rect = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
     let src_rect = match item.src_rect {
       // When we return a full-size pixmap (same dimensions as the decoded image), `src_rect` is in
       // that same pixel coordinate space and can be applied directly.
-      Some(src_rect) if pixmap.width() == item.image.width && pixmap.height() == item.image.height => src_rect,
+      Some(src_rect)
+        if pixmap.width() == item.image.width && pixmap.height() == item.image.height =>
+      {
+        src_rect
+      }
       // When `image_to_pixmap` already baked the crop/scale (e.g. clipped downscales), treat the
       // pixmap itself as the source coordinate space.
       Some(_) => full_src_rect,
@@ -17140,7 +17198,14 @@ impl DisplayListRenderer {
           let x = tx.round() as i32;
           let y = ty.round() as i32;
           self.canvas.with_mirrored_pixmap_mut(|dest| {
-            dest.draw_pixmap(x, y, pixmap_ref.as_ref(), &paint, Transform::identity(), clip);
+            dest.draw_pixmap(
+              x,
+              y,
+              pixmap_ref.as_ref(),
+              &paint,
+              Transform::identity(),
+              clip,
+            );
           });
           self.record_background_paint(background_timer);
           return Ok(());
@@ -17242,9 +17307,10 @@ impl DisplayListRenderer {
 
     let phase_x = x0 as f32 - min_x;
     let phase_y = y0 as f32 - min_y;
-    let needs_bake =
-      !Self::is_near_integer(phase_x) || !Self::is_near_integer(phase_y) || !Self::is_near_integer(dest_w)
-        || !Self::is_near_integer(dest_h);
+    let needs_bake = !Self::is_near_integer(phase_x)
+      || !Self::is_near_integer(phase_y)
+      || !Self::is_near_integer(dest_w)
+      || !Self::is_near_integer(dest_h);
 
     // If we're drawing a sub-rect of the image (e.g. `background-size: cover`) and it includes
     // fractional coordinates, we can't safely bake/crop to integer pixel bounds up-front without
@@ -17267,7 +17333,10 @@ impl DisplayListRenderer {
       {
         return Ok(None);
       }
-      (src.width().ceil().max(0.0) as u32, src.height().ceil().max(0.0) as u32)
+      (
+        src.width().ceil().max(0.0) as u32,
+        src.height().ceil().max(0.0) as u32,
+      )
     } else {
       (full_src_w, full_src_h)
     };
@@ -17283,7 +17352,8 @@ impl DisplayListRenderer {
     );
     // Existing fast path for very small images (icons), where baking is cheap and avoids tiny-skia
     // rounding drift.
-    let should_bake_upscale = target_pixels > src_pixels && src_pixels <= 64 && target_pixels <= 4096;
+    let should_bake_upscale =
+      target_pixels > src_pixels && src_pixels <= 64 && target_pixels <= 4096;
     if should_bake_downscale {
       // Keep integer-aligned downscales on the existing cached pixmap path; only bake when subpixel
       // translation/size would diverge.
@@ -17781,7 +17851,12 @@ impl DisplayListRenderer {
       // caching (and avoid baking a no-op crop).
       if src_x == 0 && src_y == 0 && crop_w == item.image.width && crop_h == item.image.height {
         if can_use_scaled_pixmap {
-          return self.image_data_to_pixmap_at_size(&item.image, target_w, target_h, item.filter_quality);
+          return self.image_data_to_pixmap_at_size(
+            &item.image,
+            target_w,
+            target_h,
+            item.filter_quality,
+          );
         }
         return self.image_data_to_pixmap(&item.image);
       }
@@ -17790,7 +17865,13 @@ impl DisplayListRenderer {
       // into a scaled pixmap. This avoids building an intermediate cropped pixmap and ensures we
       // still use the Skia-aligned mipmapped linear sampler for clipped draws.
       if can_use_scaled_pixmap
-        && Self::should_use_scaled_image_pixmap(item.filter_quality, crop_w, crop_h, target_w, target_h)
+        && Self::should_use_scaled_image_pixmap(
+          item.filter_quality,
+          crop_w,
+          crop_h,
+          target_w,
+          target_h,
+        )
       {
         if let Some(pixmap) = image_data_to_scaled_pixmap_from_rect_inner(
           &item.image,
@@ -17949,15 +18030,12 @@ impl DisplayListRenderer {
               diag.record_miss();
             }
             let timer = diag.as_ref().map(|_| Instant::now());
-            let pixmap = match image_data_to_scaled_pixmap_inner(
-              image,
-              target_width,
-              target_height,
-              quality,
-            )? {
-              Some(pixmap) => Some(pixmap),
-              None => image_data_to_pixmap_inner(image)?,
-            };
+            let pixmap =
+              match image_data_to_scaled_pixmap_inner(image, target_width, target_height, quality)?
+              {
+                Some(pixmap) => Some(pixmap),
+                None => image_data_to_pixmap_inner(image)?,
+              };
             let Some(pixmap) = pixmap else {
               return Ok(None);
             };
@@ -18148,12 +18226,7 @@ fn read_image_pixel_premul_u16(
   if premultiplied {
     (r, g, b, a)
   } else {
-    (
-      div_255(r * a),
-      div_255(g * a),
-      div_255(b * a),
-      a,
-    )
+    (div_255(r * a), div_255(g * a), div_255(b * a), a)
   }
 }
 
@@ -18476,10 +18549,10 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
   };
 
   let build_axis = |out_len: u32,
-                     out_origin: f32,
-                     dest_origin: f32,
-                     dest_size: f32,
-                     src_len: u32|
+                    out_origin: f32,
+                    dest_origin: f32,
+                    dest_size: f32,
+                    src_len: u32|
    -> Option<Vec<AxisSample>> {
     if out_len == 0 || src_len == 0 || dest_size <= 0.0 || !dest_size.is_finite() {
       return None;
@@ -18510,37 +18583,49 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
       let i0 = (s_fixed >> 16) as u32;
       let i1 = (i0 + 1).min(src_len - 1);
       let w = ((s_fixed >> 8) & 0xFF) as u16;
-      samples.push(AxisSample {
-        i0,
-        i1,
-        w,
-      });
+      samples.push(AxisSample { i0, i1, w });
     }
     Some(samples)
   };
 
   let (w_a, h_a, pixels_a, premul_a) = level_info(level_a);
-  let Some(xs_a) =
-    build_axis(out_width, out_origin_x_device, dest_device.x(), dest_device.width(), w_a)
-  else {
+  let Some(xs_a) = build_axis(
+    out_width,
+    out_origin_x_device,
+    dest_device.x(),
+    dest_device.width(),
+    w_a,
+  ) else {
     return Ok(None);
   };
-  let Some(ys_a) =
-    build_axis(out_height, out_origin_y_device, dest_device.y(), dest_device.height(), h_a)
-  else {
+  let Some(ys_a) = build_axis(
+    out_height,
+    out_origin_y_device,
+    dest_device.y(),
+    dest_device.height(),
+    h_a,
+  ) else {
     return Ok(None);
   };
 
   let (w_b, _h_b, pixels_b, premul_b, xs_b, ys_b) = if let Some(level_b) = level_b {
     let (w_b, _h_b, pixels_b, premul_b) = level_info(level_b);
-    let Some(xs_b) =
-      build_axis(out_width, out_origin_x_device, dest_device.x(), dest_device.width(), w_b)
-    else {
+    let Some(xs_b) = build_axis(
+      out_width,
+      out_origin_x_device,
+      dest_device.x(),
+      dest_device.width(),
+      w_b,
+    ) else {
       return Ok(None);
     };
-    let Some(ys_b) =
-      build_axis(out_height, out_origin_y_device, dest_device.y(), dest_device.height(), _h_b)
-    else {
+    let Some(ys_b) = build_axis(
+      out_height,
+      out_origin_y_device,
+      dest_device.y(),
+      dest_device.height(),
+      _h_b,
+    ) else {
       return Ok(None);
     };
     (w_b, _h_b, pixels_b, premul_b, Some(xs_b), Some(ys_b))
@@ -18565,8 +18650,7 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
     let row0_a = sy0_a as usize * w_a as usize;
     let row1_a = sy1_a as usize * w_a as usize;
 
-    let (row0_b, row1_b, wy_b) = if let (Some(_), Some(ys_b)) = (xs_b.as_ref(), ys_b.as_ref())
-    {
+    let (row0_b, row1_b, wy_b) = if let (Some(_), Some(ys_b)) = (xs_b.as_ref(), ys_b.as_ref()) {
       let ysamp_b = &ys_b[y];
       let row0_b = ysamp_b.i0 as usize * w_b as usize;
       let row1_b = ysamp_b.i1 as usize * w_b as usize;
@@ -18855,8 +18939,7 @@ fn image_data_to_scaled_pixmap_from_rect_inner(
     return Ok(None);
   }
 
-  let (mut base_level, mut blend_t) =
-    mipmap_lod_for_scale(scale_x0, scale_y0).unwrap_or((0, 0.0));
+  let (mut base_level, mut blend_t) = mipmap_lod_for_scale(scale_x0, scale_y0).unwrap_or((0, 0.0));
   let mut needs_second_level = blend_t > 0.0;
   let max_level = base_level + if needs_second_level { 1 } else { 0 };
 
@@ -19022,7 +19105,15 @@ fn image_data_to_scaled_pixmap_from_rect_inner(
     let Some(ys_b) = build_axis(target_height, h_b) else {
       return Ok(None);
     };
-    (w_b, pixels_b, premul_b, off_x_b, off_y_b, Some(xs_b), Some(ys_b))
+    (
+      w_b,
+      pixels_b,
+      premul_b,
+      off_x_b,
+      off_y_b,
+      Some(xs_b),
+      Some(ys_b),
+    )
   } else {
     (0, &[][..], true, 0, 0, None, None)
   };
@@ -19035,26 +19126,29 @@ fn image_data_to_scaled_pixmap_from_rect_inner(
   for (y, ysamp_a) in ys_a.iter().enumerate() {
     let y_u = y as u32;
     let (sy0_a, sy1_a, fy_a) = (ysamp_a.i0 + off_y_a, ysamp_a.i1 + off_y_a, ysamp_a.t);
-    let stride_a = if level_a == 0 { full_w as usize } else { w_a as usize };
+    let stride_a = if level_a == 0 {
+      full_w as usize
+    } else {
+      w_a as usize
+    };
     let row0_a = sy0_a as usize * stride_a;
     let row1_a = sy1_a as usize * stride_a;
 
-    let (row0_b, row1_b, fy_b) =
-      if let (Some(_), Some(ys_b)) = (xs_b.as_ref(), ys_b.as_ref()) {
-        let ysamp_b = &ys_b[y];
-        let sy0_b = ysamp_b.i0 + off_y_b;
-        let sy1_b = ysamp_b.i1 + off_y_b;
-        let stride_b = if level_b.is_some_and(|lvl| lvl == 0) {
-          full_w as usize
-        } else {
-          w_b as usize
-        };
-        let row0_b = sy0_b as usize * stride_b;
-        let row1_b = sy1_b as usize * stride_b;
-        (Some(row0_b), Some(row1_b), Some(ysamp_b.t))
+    let (row0_b, row1_b, fy_b) = if let (Some(_), Some(ys_b)) = (xs_b.as_ref(), ys_b.as_ref()) {
+      let ysamp_b = &ys_b[y];
+      let sy0_b = ysamp_b.i0 + off_y_b;
+      let sy1_b = ysamp_b.i1 + off_y_b;
+      let stride_b = if level_b.is_some_and(|lvl| lvl == 0) {
+        full_w as usize
       } else {
-        (None, None, None)
+        w_b as usize
       };
+      let row0_b = sy0_b as usize * stride_b;
+      let row1_b = sy1_b as usize * stride_b;
+      (Some(row0_b), Some(row1_b), Some(ysamp_b.t))
+    } else {
+      (None, None, None)
+    };
 
     for (x, xsamp_a) in xs_a.iter().enumerate() {
       if (pixel_counter & 4095) == 0 {
@@ -19952,7 +20046,11 @@ fn compute_background_size_from_value(
         if area_w <= 0.0 || area_h <= 0.0 {
           return (area_w, area_h);
         }
-        let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+        let area_ratio = if area_h != 0.0 {
+          area_w / area_h
+        } else {
+          f32::INFINITY
+        };
         if area_ratio > ratio {
           (area_w, area_w / ratio)
         } else {
@@ -19969,7 +20067,11 @@ fn compute_background_size_from_value(
         if area_w <= 0.0 || area_h <= 0.0 {
           return (area_w, area_h);
         }
-        let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+        let area_ratio = if area_h != 0.0 {
+          area_w / area_h
+        } else {
+          f32::INFINITY
+        };
         if area_ratio > ratio {
           (area_h * ratio, area_h)
         } else {
@@ -20023,7 +20125,11 @@ fn compute_background_size_from_value(
             if area_w <= 0.0 || area_h <= 0.0 {
               (area_w, area_h)
             } else {
-              let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+              let area_ratio = if area_h != 0.0 {
+                area_w / area_h
+              } else {
+                f32::INFINITY
+              };
               if area_ratio > ratio {
                 (area_h * ratio, area_h)
               } else {
@@ -20460,10 +20566,10 @@ fn paint_mask_border_patch(
 
   let tiles_x = dest_rect.width() / tile_w;
   let tiles_y = dest_rect.height() / tile_h;
-  let too_many_x =
-    repeat_x != BorderImageRepeat::Stretch && (!tiles_x.is_finite() || tiles_x > MAX_BORDER_IMAGE_TILES_PER_AXIS);
-  let too_many_y =
-    repeat_y != BorderImageRepeat::Stretch && (!tiles_y.is_finite() || tiles_y > MAX_BORDER_IMAGE_TILES_PER_AXIS);
+  let too_many_x = repeat_x != BorderImageRepeat::Stretch
+    && (!tiles_x.is_finite() || tiles_x > MAX_BORDER_IMAGE_TILES_PER_AXIS);
+  let too_many_y = repeat_y != BorderImageRepeat::Stretch
+    && (!tiles_y.is_finite() || tiles_y > MAX_BORDER_IMAGE_TILES_PER_AXIS);
   if too_many_x || too_many_y {
     paint_repeated_patch(dest);
     return;
@@ -24327,9 +24433,9 @@ mod tests {
     let report = one_thread.install(|| {
       crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&toggles), || {
         let _stage_guard = StageGuard::install(Some(RenderStage::Paint));
-        let _heartbeat_guard = crate::render_control::StageHeartbeatGuard::install(
-          Some(crate::render_control::StageHeartbeat::PaintRasterize),
-        );
+        let _heartbeat_guard = crate::render_control::StageHeartbeatGuard::install(Some(
+          crate::render_control::StageHeartbeat::PaintRasterize,
+        ));
         with_deadline(Some(&deadline), || {
           let mut parallelism = PaintParallelism::adaptive();
           parallelism.tile_size = 128;
@@ -24908,27 +25014,17 @@ mod tests {
     };
 
     let scale = 2.0;
-    let mut new_renderer = DisplayListRenderer::new_scaled(
-      64,
-      64,
-      Rgba::WHITE,
-      FontContext::new(),
-      scale,
-    )
-    .expect("renderer");
+    let mut new_renderer =
+      DisplayListRenderer::new_scaled(64, 64, Rgba::WHITE, FontContext::new(), scale)
+        .expect("renderer");
     new_renderer
       .render_box_shadow(&item)
       .expect("render_box_shadow");
     let new_pixmap = new_renderer.canvas.into_pixmap();
 
-    let mut reference_renderer = DisplayListRenderer::new_scaled(
-      64,
-      64,
-      Rgba::WHITE,
-      FontContext::new(),
-      scale,
-    )
-    .expect("renderer");
+    let mut reference_renderer =
+      DisplayListRenderer::new_scaled(64, 64, Rgba::WHITE, FontContext::new(), scale)
+        .expect("renderer");
     render_box_shadow_reference(&mut reference_renderer, &item).expect("reference");
     let reference_pixmap = reference_renderer.canvas.into_pixmap();
 
@@ -25430,7 +25526,7 @@ mod tests {
     // pixels with neighbors and darken icons (e.g. the twitter.com fixture).
     let pixels = vec![
       255, 0, 0, 255, // opaque red
-      0, 0, 0, 0,     // transparent
+      0, 0, 0, 0, // transparent
     ];
     let image = Arc::new(ImageData::new_premultiplied(2, 1, 2.0, 1.0, pixels));
     let mut list = DisplayList::new();
@@ -25454,7 +25550,7 @@ mod tests {
   fn image_linear_filter_does_not_blur_unscaled_integer_canvas_translation() {
     let pixels = vec![
       0, 255, 0, 255, // opaque green
-      0, 0, 0, 0,     // transparent
+      0, 0, 0, 0, // transparent
     ];
     let image = Arc::new(ImageData::new_premultiplied(2, 1, 2.0, 1.0, pixels));
 
@@ -25522,10 +25618,10 @@ mod tests {
     // the bilinear sample coordinates. This regression ensures fractional `src_rect` offsets are
     // incorporated into the sampling phase (common with `background-size: cover/contain`).
     let pixels = vec![
-      0, 0, 0, 255,   // black
+      0, 0, 0, 255, // black
       255, 0, 0, 255, // red
-      0, 0, 0, 255,   // black
-      0, 0, 0, 255,   // black
+      0, 0, 0, 255, // black
+      0, 0, 0, 255, // black
     ];
     let image = Arc::new(ImageData::new_pixels(4, 1, pixels));
 
@@ -25583,9 +25679,9 @@ mod tests {
     // 3x1 image (black/red/black). Use a fractional src_rect so the renderer can't crop to integer
     // pixel bounds without losing sampling phase (e.g. background-size: cover).
     let pixels = vec![
-      0, 0, 0, 255,   // black
+      0, 0, 0, 255, // black
       255, 0, 0, 255, // red
-      0, 0, 0, 255,   // black
+      0, 0, 0, 255, // black
     ];
     let image = Arc::new(ImageData::new_pixels(3, 1, pixels));
     let mut list = DisplayList::new();
@@ -25611,7 +25707,7 @@ mod tests {
     // pixels so sampling must account for the fractional destination height.
     let pixels = vec![
       255, 0, 0, 255, // red
-      0, 0, 0, 255,   // black
+      0, 0, 0, 255, // black
     ];
     let image = Arc::new(ImageData::new_pixels(1, 2, pixels));
     let mut list = DisplayList::new();
@@ -26330,9 +26426,7 @@ mod tests {
       },
     ];
 
-    let converted = renderer
-      .convert_stops_rgba(&stops)
-      .expect("expected stops");
+    let converted = renderer.convert_stops_rgba(&stops).expect("expected stops");
     let positions: Vec<f32> = converted.iter().map(|(p, _)| *p).collect();
     assert_f32_positions_close(&positions, &[-0.5, 1.5]);
   }
@@ -26614,25 +26708,27 @@ mod tests {
     let background = Rgba::rgb(101, 102, 103);
     let renderer = DisplayListRenderer::new(4, 2, background, FontContext::new()).unwrap();
     let mut list = DisplayList::new();
-    list.push(DisplayItem::LinearGradientPattern(LinearGradientPatternItem {
-      dest_rect: Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
-      tile_size: Size::new(2.0, 2.0),
-      origin: Point::new(0.0, 0.0),
-      // Degenerate gradient (start == end) produces a solid tile without ordered dithering.
-      start: Point::new(0.0, 0.0),
-      end: Point::new(0.0, 0.0),
-      stops: vec![
-        GradientStop {
-          position: 0.0,
-          color: Rgba::new(0, 0, 0, 0.4),
-        },
-        GradientStop {
-          position: 1.0,
-          color: Rgba::new(0, 0, 0, 0.4),
-        },
-      ],
-      spread: GradientSpread::Pad,
-    }));
+    list.push(DisplayItem::LinearGradientPattern(
+      LinearGradientPatternItem {
+        dest_rect: Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
+        tile_size: Size::new(2.0, 2.0),
+        origin: Point::new(0.0, 0.0),
+        // Degenerate gradient (start == end) produces a solid tile without ordered dithering.
+        start: Point::new(0.0, 0.0),
+        end: Point::new(0.0, 0.0),
+        stops: vec![
+          GradientStop {
+            position: 0.0,
+            color: Rgba::new(0, 0, 0, 0.4),
+          },
+          GradientStop {
+            position: 1.0,
+            color: Rgba::new(0, 0, 0, 0.4),
+          },
+        ],
+        spread: GradientSpread::Pad,
+      },
+    ));
 
     let pixmap = renderer.render(&list).unwrap();
     for y in 0..2 {
@@ -26675,15 +26771,17 @@ mod tests {
     let direct_end = Point::new(tile_end.x - phase_x, tile_end.y - phase_y);
 
     let mut patterned = DisplayList::new();
-    patterned.push(DisplayItem::LinearGradientPattern(LinearGradientPatternItem {
-      dest_rect,
-      tile_size,
-      origin,
-      start: tile_start,
-      end: tile_end,
-      stops: stops.clone(),
-      spread: GradientSpread::Pad,
-    }));
+    patterned.push(DisplayItem::LinearGradientPattern(
+      LinearGradientPatternItem {
+        dest_rect,
+        tile_size,
+        origin,
+        start: tile_start,
+        end: tile_end,
+        stops: stops.clone(),
+        spread: GradientSpread::Pad,
+      },
+    ));
 
     let mut direct = DisplayList::new();
     direct.push(DisplayItem::LinearGradient(LinearGradientItem {
@@ -29134,7 +29232,8 @@ mod tests {
 
   #[test]
   fn mask_size_auto_without_intrinsic_dimensions_uses_contain_when_ratio_present() {
-    let size = BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto);
+    let size =
+      BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto);
     let (w, h) = compute_background_size_from_value(
       &size,
       16.0,

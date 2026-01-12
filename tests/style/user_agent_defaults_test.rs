@@ -63,14 +63,22 @@ fn user_agent_body_margin_and_heading_defaults() {
   let h1 = find_styled_by_id(&styled, "h1").expect("h1 styled");
   assert_eq!(h1.styles.display, Display::Block);
   assert!((h1.styles.font_size - 32.0).abs() < 1e-6, "h1 font-size");
-  assert_eq!(h1.styles.font_weight.to_u16(), 700, "h1 is bold (not bolder)");
+  assert_eq!(
+    h1.styles.font_weight.to_u16(),
+    700,
+    "h1 is bold (not bolder)"
+  );
 
   let h2 = find_styled_by_id(&styled, "h2").expect("h2 styled");
   assert_eq!(h2.styles.display, Display::Block);
   assert!((h2.styles.font_size - 24.0).abs() < 1e-6, "h2 font-size");
 
   let strong_outer = find_styled_by_id(&styled, "strong_outer").expect("strong_outer styled");
-  assert_eq!(strong_outer.styles.font_weight.to_u16(), 700, "strong is bolder");
+  assert_eq!(
+    strong_outer.styles.font_weight.to_u16(),
+    700,
+    "strong is bolder"
+  );
   let strong_inner = find_styled_by_id(&styled, "strong_inner").expect("strong_inner styled");
   assert_eq!(
     strong_inner.styles.font_weight.to_u16(),
@@ -106,7 +114,10 @@ fn user_agent_lists_tables_and_pre_defaults() {
   let pre = find_styled_by_id(&styled, "pre").expect("pre styled");
   assert_eq!(pre.styles.display, Display::Block);
   assert_eq!(pre.styles.white_space, WhiteSpace::Pre);
-  assert_eq!(pre.styles.font_family.first().map(|s| s.as_str()), Some("monospace"));
+  assert_eq!(
+    pre.styles.font_family.first().map(|s| s.as_str()),
+    Some("monospace")
+  );
 
   let ul = find_styled_by_id(&styled, "ul").expect("ul styled");
   assert_eq!(ul.styles.display, Display::Block);
@@ -197,7 +208,8 @@ fn user_agent_details_dialog_popover_and_slot_defaults() {
   let summary = find_styled_by_id(&styled, "summary").expect("summary styled");
   assert_eq!(summary.styles.display, Display::ListItem);
 
-  let details_content = find_styled_by_id(&styled, "details_content").expect("details content styled");
+  let details_content =
+    find_styled_by_id(&styled, "details_content").expect("details content styled");
   assert_eq!(details_content.styles.display, Display::None);
 
   let details_content_open =

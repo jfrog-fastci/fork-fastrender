@@ -1,7 +1,7 @@
+use crate::test_support;
 use fastrender::render_control::{with_deadline, RenderDeadline};
 use fastrender::resource::HttpFetcher;
 use fastrender::ResourceFetcher;
-use crate::test_support;
 use std::io::{Read, Write};
 use std::thread;
 use std::time::Duration;

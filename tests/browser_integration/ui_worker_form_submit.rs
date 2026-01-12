@@ -67,8 +67,10 @@ fn click_submit_navigates_to_get_form_submission_url() {
     .expect("navigate");
 
   // Wait for the initial frame so hit testing works.
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
 
   // Drain any queued messages (navigation committed, loading state, etc) so assertions are scoped
   // to the submit click.
@@ -98,9 +100,12 @@ fn click_submit_navigates_to_get_form_submission_url() {
   expected.set_query(Some("q=a+b"));
   let expected_url = expected.to_string();
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -109,9 +114,12 @@ fn click_submit_navigates_to_get_form_submission_url() {
     );
   });
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -175,8 +183,10 @@ fn enter_in_text_input_navigates_to_get_form_submission_url() {
     .expect("navigate");
 
   // Wait for the initial frame so hit testing works.
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
 
   // Drain any queued messages (navigation committed, loading state, etc) so assertions are scoped
   // to the submit triggered by Enter.
@@ -213,9 +223,12 @@ fn enter_in_text_input_navigates_to_get_form_submission_url() {
   expected.set_query(Some("q=a+b"));
   let expected_url = expected.to_string();
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -224,9 +237,12 @@ fn enter_in_text_input_navigates_to_get_form_submission_url() {
     );
   });
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -293,8 +309,10 @@ fn enter_in_text_input_without_submitter_navigates_even_if_input_click_prevent_d
     ))
     .expect("navigate");
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
 
   let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
 
@@ -328,9 +346,12 @@ fn enter_in_text_input_without_submitter_navigates_even_if_input_click_prevent_d
   expected.set_query(Some("q=a+b"));
   let expected_url = expected.to_string();
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -339,9 +360,12 @@ fn enter_in_text_input_without_submitter_navigates_even_if_input_click_prevent_d
     );
   });
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -387,8 +411,8 @@ fn submit_prevent_default_blocks_enter_form_submission_navigation_without_submit
 "#,
   );
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-form-submit-prevent-default-no-submitter").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-form-submit-prevent-default-no-submitter")
+    .expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
 
@@ -406,8 +430,10 @@ fn submit_prevent_default_blocks_enter_form_submission_navigation_without_submit
     ))
     .expect("navigate");
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
 
   let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
 
@@ -488,7 +514,8 @@ fn submit_prevent_default_blocks_click_submit_navigation() {
 "#,
   );
 
-  let handle = spawn_ui_worker("fastr-ui-worker-form-submit-prevent-default").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-form-submit-prevent-default").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
 
@@ -506,8 +533,10 @@ fn submit_prevent_default_blocks_click_submit_navigation() {
     ))
     .expect("navigate");
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
   // Click submit. The JS `submit` listener prevents default, so no navigation should occur.
@@ -601,8 +630,10 @@ fn submit_prevent_default_blocks_enter_form_submission_navigation() {
     ))
     .expect("navigate");
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
   // Focus the input then press Enter to submit.
@@ -656,7 +687,11 @@ struct CapturedHttpRequest {
   body: Vec<u8>,
 }
 
-fn spawn_form_post_server() -> (String, mpsc::Receiver<CapturedHttpRequest>, thread::JoinHandle<()>) {
+fn spawn_form_post_server() -> (
+  String,
+  mpsc::Receiver<CapturedHttpRequest>,
+  thread::JoinHandle<()>,
+) {
   let listener = TcpListener::bind("127.0.0.1:0").expect("bind localhost");
   let addr = listener.local_addr().expect("local addr");
   let base = format!("http://{addr}");
@@ -709,10 +744,11 @@ fn spawn_form_post_server() -> (String, mpsc::Receiver<CapturedHttpRequest>, thr
         (method, path, headers, body)
       };
 
-      let (status_line, response_body) = if method.eq_ignore_ascii_case("GET") && path == "/page.html" {
-        (
-          "HTTP/1.1 200 OK",
-          r#"<!doctype html>
+      let (status_line, response_body) =
+        if method.eq_ignore_ascii_case("GET") && path == "/page.html" {
+          (
+            "HTTP/1.1 200 OK",
+            r#"<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -730,18 +766,24 @@ fn spawn_form_post_server() -> (String, mpsc::Receiver<CapturedHttpRequest>, thr
   </body>
 </html>
 "#,
-        )
-      } else if method.eq_ignore_ascii_case("POST") && path == "/result" {
-        let _ = tx.send(CapturedHttpRequest {
-          method: method.clone(),
-          path: path.clone(),
-          headers: headers.clone(),
-          body: body.clone(),
-        });
-        ("HTTP/1.1 200 OK", "<!doctype html><html><body>ok</body></html>")
-      } else {
-        ("HTTP/1.1 404 Not Found", "<!doctype html><html><body>not found</body></html>")
-      };
+          )
+        } else if method.eq_ignore_ascii_case("POST") && path == "/result" {
+          let _ = tx.send(CapturedHttpRequest {
+            method: method.clone(),
+            path: path.clone(),
+            headers: headers.clone(),
+            body: body.clone(),
+          });
+          (
+            "HTTP/1.1 200 OK",
+            "<!doctype html><html><body>ok</body></html>",
+          )
+        } else {
+          (
+            "HTTP/1.1 404 Not Found",
+            "<!doctype html><html><body>not found</body></html>",
+          )
+        };
 
       let response_body_bytes = response_body.as_bytes();
       let response = format!(
@@ -786,8 +828,10 @@ fn click_submit_navigates_with_post_urlencoded_form_submission() {
     .expect("navigate");
 
   // Wait for the initial frame so hit testing works.
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
 
   // Drain any queued messages (navigation committed, loading state, etc) so assertions are scoped
   // to the submit click.
@@ -816,9 +860,12 @@ fn click_submit_navigates_with_post_urlencoded_form_submission() {
     .expect("resolve /result")
     .to_string();
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -827,9 +874,12 @@ fn click_submit_navigates_with_post_urlencoded_form_submission() {
     );
   });
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -848,7 +898,8 @@ fn click_submit_navigates_with_post_urlencoded_form_submission() {
     captured
       .headers
       .iter()
-      .any(|(name, value)| name.eq_ignore_ascii_case("content-type") && value.starts_with("application/x-www-form-urlencoded")),
+      .any(|(name, value)| name.eq_ignore_ascii_case("content-type")
+        && value.starts_with("application/x-www-form-urlencoded")),
     "expected Content-Type header; got: {:?}",
     captured.headers
   );

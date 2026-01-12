@@ -57,4 +57,3 @@ fn overflow_hidden_border_radius_clips_stacking_context_children() {
   assert_ne!(pixel(&pixmap, 1, 1), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));
 }
-

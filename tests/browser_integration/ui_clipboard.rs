@@ -13,8 +13,10 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
     other => panic!("unexpected message while waiting for FrameReady: {other:?}"),
@@ -22,8 +24,10 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
 }
 
 fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::SetClipboardText { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for SetClipboardText for tab {tab_id:?}"));
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::SetClipboardText { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for SetClipboardText for tab {tab_id:?}"));
   match msg {
     WorkerToUi::SetClipboardText { text, .. } => text,
     other => panic!("unexpected message while waiting for SetClipboardText: {other:?}"),
@@ -60,8 +64,10 @@ where
         probe
       );
     }
-    let msg = support::recv_for_tab(rx, tab_id, remaining, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-      .unwrap_or_else(|| panic!("timed out waiting for FrameReady ({context}) for tab {tab_id:?}"));
+    let msg = support::recv_for_tab(rx, tab_id, remaining, |msg| {
+      matches!(msg, WorkerToUi::FrameReady { .. })
+    })
+    .unwrap_or_else(|| panic!("timed out waiting for FrameReady ({context}) for tab {tab_id:?}"));
     let frame = match msg {
       WorkerToUi::FrameReady { frame, .. } => frame,
       other => panic!("unexpected message while waiting for FrameReady ({context}): {other:?}"),
@@ -141,13 +147,8 @@ fn ui_clipboard_copy_cut_paste_for_focused_input() {
     .expect("active tab");
 
   // Wait for the initial paint and assert the probe is green (value="hello").
-  let _frame0 = next_frame_ready_with_probe_color(
-    &ui_rx,
-    tab_id,
-    (20, 60),
-    [0, 255, 0, 255],
-    "initial paint",
-  );
+  let _frame0 =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 60), [0, 255, 0, 255], "initial paint");
 
   // Click the input to focus it.
   ui_tx
@@ -261,13 +262,8 @@ fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
     .expect("active tab");
 
   // Initial value is non-empty, so the probe should be green.
-  let _frame0 = next_frame_ready_with_probe_color(
-    &ui_rx,
-    tab_id,
-    (20, 80),
-    [0, 255, 0, 255],
-    "initial paint",
-  );
+  let _frame0 =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 80), [0, 255, 0, 255], "initial paint");
 
   // Click the textarea to focus it.
   ui_tx
@@ -368,7 +364,8 @@ fn ui_clipboard_respects_readonly_input() {
 "#,
   );
 
-  let handle = spawn_ui_worker("fastr-ui-worker-clipboard-readonly-input").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-clipboard-readonly-input").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
@@ -539,13 +536,8 @@ fn ui_clipboard_copy_cut_respects_selection() {
     .expect("active tab");
 
   // Wait for the initial paint and assert the probe is green (value="hello").
-  let _frame0 = next_frame_ready_with_probe_color(
-    &ui_rx,
-    tab_id,
-    (20, 60),
-    [0, 255, 0, 255],
-    "initial paint",
-  );
+  let _frame0 =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 60), [0, 255, 0, 255], "initial paint");
 
   // Click the input to focus it.
   ui_tx
@@ -641,7 +633,8 @@ fn ui_clipboard_paste_replaces_selection() {
 "#,
   );
 
-  let handle = spawn_ui_worker("fastr-ui-worker-clipboard-paste-replace-selection").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-clipboard-paste-replace-selection").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
@@ -664,13 +657,8 @@ fn ui_clipboard_paste_replaces_selection() {
     .expect("active tab");
 
   // Wait for the initial paint and assert the probe is green (value="hello").
-  let _frame0 = next_frame_ready_with_probe_color(
-    &ui_rx,
-    tab_id,
-    (20, 60),
-    [0, 255, 0, 255],
-    "initial paint",
-  );
+  let _frame0 =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 60), [0, 255, 0, 255], "initial paint");
 
   // Click the input to focus it.
   ui_tx
@@ -765,7 +753,8 @@ fn ui_select_all_renders_selection_highlight() {
 "#,
   );
 
-  let handle = spawn_ui_worker("fastr-ui-worker-select-all-selection-highlight").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-select-all-selection-highlight").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
@@ -813,7 +802,9 @@ fn ui_select_all_renders_selection_highlight() {
     tab_id,
     (20, 30),
     "after select all highlight",
-    |rgba| rgba[3] == 255 && rgba[0] <= 2 && (40..=45).contains(&rgba[1]) && (73..=78).contains(&rgba[2]),
+    |rgba| {
+      rgba[3] == 255 && rgba[0] <= 2 && (40..=45).contains(&rgba[1]) && (73..=78).contains(&rgba[2])
+    },
   );
 
   // Clearing the selection should remove the highlight.

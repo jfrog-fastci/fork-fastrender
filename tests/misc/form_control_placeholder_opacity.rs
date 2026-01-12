@@ -86,4 +86,3 @@ fn legacy_placeholder_pseudo_opacity_is_applied() {
   let pixmap = render_placeholder_with_backend("legacy");
   assert_placeholder_opacity_applied(&pixmap, "legacy");
 }
-

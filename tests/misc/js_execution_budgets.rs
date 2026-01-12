@@ -55,7 +55,9 @@ fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
     .push_root(Value::Object(global))
     .expect("push root global");
   let key_s = scope.alloc_string(name).expect("alloc string");
-  scope.push_root(Value::String(key_s)).expect("push root key");
+  scope
+    .push_root(Value::String(key_s))
+    .expect("push root key");
   let key = PropertyKey::from_string(key_s);
   vm.get(&mut scope, global, key).expect("get global prop")
 }
@@ -130,8 +132,8 @@ fn vm_js_infinite_loop_in_promise_job_is_bounded() {
   js_opts.max_instruction_count = Some(5_000);
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts)
-    .expect("create WindowHost");
+  let mut host =
+    WindowHost::new_with_options(dom, "https://example.com/", js_opts).expect("create WindowHost");
 
   host
     .exec_script("Promise.resolve().then(function () { while (true) {} });")
@@ -167,8 +169,8 @@ fn vm_js_infinite_loop_in_unhandledrejection_listener_is_bounded() {
   js_opts.max_instruction_count = Some(5_000);
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts)
-    .expect("create WindowHost");
+  let mut host =
+    WindowHost::new_with_options(dom, "https://example.com/", js_opts).expect("create WindowHost");
 
   host
     .exec_script(
@@ -221,8 +223,8 @@ fn vm_js_infinite_loop_in_set_timeout_callback_is_bounded() {
   js_opts.max_instruction_count = Some(5_000);
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts)
-    .expect("create WindowHost");
+  let mut host =
+    WindowHost::new_with_options(dom, "https://example.com/", js_opts).expect("create WindowHost");
 
   host
     .exec_script(
@@ -272,8 +274,8 @@ fn vm_js_infinite_loop_in_request_animation_frame_callback_is_bounded() {
   js_opts.max_instruction_count = Some(5_000);
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts)
-    .expect("create WindowHost");
+  let mut host =
+    WindowHost::new_with_options(dom, "https://example.com/", js_opts).expect("create WindowHost");
 
   host
     .exec_script(

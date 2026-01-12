@@ -408,7 +408,9 @@ impl<S: CheapCloneStr> GenericGridPlacementWithNamedSpan<GridLine, S> {
       // See: https://developer.mozilla.org/en-US/docs/Web/CSS/grid-row-start#values
       Self::Line(line) => match line.as_i16() {
         0 => GenericGridPlacementWithNamedSpan::Auto,
-        _ => GenericGridPlacementWithNamedSpan::Line(line.into_origin_zero_line(explicit_track_count)),
+        _ => {
+          GenericGridPlacementWithNamedSpan::Line(line.into_origin_zero_line(explicit_track_count))
+        }
       },
     }
   }

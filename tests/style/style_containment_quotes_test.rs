@@ -9,7 +9,11 @@ use fastrender::tree::box_tree::BoxType;
 use fastrender::tree::box_tree::GeneratedPseudoElement;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
-  if node.node.get_attribute_ref("id").is_some_and(|value| value == id) {
+  if node
+    .node
+    .get_attribute_ref("id")
+    .is_some_and(|value| value == id)
+  {
     return Some(node);
   }
   for child in node.children.iter() {
@@ -36,7 +40,10 @@ fn collect_pseudo_text(
   }
 }
 
-fn generated_before_text(tree: &fastrender::tree::box_tree::BoxTree, styled_node_id: usize) -> String {
+fn generated_before_text(
+  tree: &fastrender::tree::box_tree::BoxTree,
+  styled_node_id: usize,
+) -> String {
   let mut out = String::new();
   collect_pseudo_text(
     &tree.root,
@@ -103,4 +110,3 @@ fn style_containment_scopes_quote_depth_at_boundary() {
   // ...but changes inside the subtree do not affect the quote depth outside.
   assert_eq!(c, ">");
 }
-

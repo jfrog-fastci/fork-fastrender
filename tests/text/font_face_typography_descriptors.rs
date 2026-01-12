@@ -364,7 +364,8 @@ fn font_feature_settings_style_overrides_descriptor() {
     "@font-face {{ font-family: EmojiDefault; src: url(\"{url}\"); }}\n@font-face {{ font-family: EmojiNoCcmp; src: url(\"{url}\"); font-feature-settings: \"ccmp\" 0; }}"
   ));
   assert_eq!(faces.len(), 2);
-  ctx.load_web_fonts(&faces, None, None)
+  ctx
+    .load_web_fonts(&faces, None, None)
     .expect("load emoji faces");
 
   let mut style = ComputedStyle::default();
@@ -459,7 +460,8 @@ fn font_variation_settings_descriptor_overrides_named_instance_axes() {
 #[test]
 fn font_optical_sizing_auto_overrides_font_face_opsz_descriptor() {
   let url = "https://example.test/opsz.ttf";
-  let fetcher: Arc<dyn FontFetcher> = Arc::new(FixtureFetcher::new(vec![(url, AMSTELVAR_ALPHA_FONT)]));
+  let fetcher: Arc<dyn FontFetcher> =
+    Arc::new(FixtureFetcher::new(vec![(url, AMSTELVAR_ALPHA_FONT)]));
   let ctx = context_with_fetcher(fetcher);
 
   let (min_opsz, def_opsz, max_opsz) =
@@ -482,7 +484,8 @@ fn font_optical_sizing_auto_overrides_font_face_opsz_descriptor() {
     "@font-face {{ font-family: OpszFace; src: url(\"{url}\"); font-variation-settings: \"opsz\" {descriptor_opsz}; }}"
   ));
   assert_eq!(faces.len(), 1);
-  ctx.load_web_fonts(&faces, None, None)
+  ctx
+    .load_web_fonts(&faces, None, None)
     .expect("load opsz face");
 
   let mut style = ComputedStyle::default();
@@ -566,7 +569,8 @@ fn font_optical_sizing_auto_uses_size_adjust_scaled_font_size() {
     "@font-face {{ font-family: OpszAdjusted; src: url(\"{url}\"); size-adjust: {size_adjust_percent}%; }}"
   ));
   assert_eq!(faces.len(), 1);
-  ctx.load_web_fonts(&faces, None, None)
+  ctx
+    .load_web_fonts(&faces, None, None)
     .expect("load opsz adjusted face");
 
   let mut style = ComputedStyle::default();
@@ -643,7 +647,8 @@ fn font_language_override_descriptor_trims_and_ignores_invalid_values() {
     "expected invalid font-language-override descriptor to be ignored"
   );
 
-  ctx.load_web_fonts(&faces, None, None)
+  ctx
+    .load_web_fonts(&faces, None, None)
     .expect("load language faces");
 
   let expected_srb = HbLanguage::from_str("SRB").expect("valid hb language");

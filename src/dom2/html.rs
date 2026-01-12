@@ -38,9 +38,10 @@ fn parse_adjacent_position(position: &str) -> Result<AdjacentPosition, DomError>
 fn first_light_child(doc: &Document, parent: NodeId) -> Option<NodeId> {
   let node = doc.nodes.get(parent.index())?;
   node.children.iter().copied().find(|&child| {
-    doc.nodes.get(child.index()).is_some_and(|n| {
-      n.parent == Some(parent) && !matches!(n.kind, NodeKind::ShadowRoot { .. })
-    })
+    doc
+      .nodes
+      .get(child.index())
+      .is_some_and(|n| n.parent == Some(parent) && !matches!(n.kind, NodeKind::ShadowRoot { .. }))
   })
 }
 
@@ -48,11 +49,17 @@ fn next_light_sibling(doc: &Document, node: NodeId) -> Option<NodeId> {
   let parent = doc.nodes.get(node.index())?.parent?;
   let parent_node = doc.nodes.get(parent.index())?;
   let pos = parent_node.children.iter().position(|&c| c == node)?;
-  parent_node.children.iter().skip(pos + 1).copied().find(|&sib| {
-    doc.nodes.get(sib.index()).is_some_and(|n| {
-      n.parent == Some(parent) && !matches!(n.kind, NodeKind::ShadowRoot { .. })
+  parent_node
+    .children
+    .iter()
+    .skip(pos + 1)
+    .copied()
+    .find(|&sib| {
+      doc
+        .nodes
+        .get(sib.index())
+        .is_some_and(|n| n.parent == Some(parent) && !matches!(n.kind, NodeKind::ShadowRoot { .. }))
     })
-  })
 }
 
 fn insert_adjacent_node(
@@ -179,7 +186,12 @@ impl Document {
   /// DOM `Element.insertAdjacentHTML(position, string)` for a `dom2` element.
   ///
   /// Spec: <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-insertadjacenthtml>
-  pub fn insert_adjacent_html(&mut self, element: NodeId, position: &str, html: &str) -> DomResult<()> {
+  pub fn insert_adjacent_html(
+    &mut self,
+    element: NodeId,
+    position: &str,
+    html: &str,
+  ) -> DomResult<()> {
     validate_element_like(self, element)?;
 
     let pos = parse_adjacent_position(position)?;
@@ -198,8 +210,12 @@ impl Document {
 
         // Step 4: if context is not an Element, parse in a synthetic <body> element.
         let parse_context = match self.nodes.get(parent.index()).map(|n| &n.kind) {
-          Some(NodeKind::Element { tag_name, namespace, .. })
-            if tag_name.eq_ignore_ascii_case("html") && (namespace.is_empty() || namespace == HTML_NAMESPACE) =>
+          Some(NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          }) if tag_name.eq_ignore_ascii_case("html")
+            && (namespace.is_empty() || namespace == HTML_NAMESPACE) =>
           {
             self.create_element("body", HTML_NAMESPACE)
           }
@@ -213,8 +229,12 @@ impl Document {
       AdjacentPosition::AfterBegin | AdjacentPosition::BeforeEnd => {
         // Step 4: if context is the HTML <html> element, parse in a synthetic <body> element.
         let parse_context = match self.nodes.get(element.index()).map(|n| &n.kind) {
-          Some(NodeKind::Element { tag_name, namespace, .. })
-            if tag_name.eq_ignore_ascii_case("html") && (namespace.is_empty() || namespace == HTML_NAMESPACE) =>
+          Some(NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          }) if tag_name.eq_ignore_ascii_case("html")
+            && (namespace.is_empty() || namespace == HTML_NAMESPACE) =>
           {
             self.create_element("body", HTML_NAMESPACE)
           }
@@ -265,15 +285,26 @@ impl Document {
   /// DOM `Element.insertAdjacentText(where, data)` for a `dom2` element.
   ///
   /// Spec: <https://dom.spec.whatwg.org/#dom-element-insertadjacenttext>
-  pub fn insert_adjacent_text(&mut self, element: NodeId, where_: &str, data: &str) -> DomResult<()> {
+  pub fn insert_adjacent_text(
+    &mut self,
+    element: NodeId,
+    where_: &str,
+    data: &str,
+  ) -> DomResult<()> {
     validate_element_like(self, element)?;
     let pos = parse_adjacent_position(where_)?;
 
     // The DOM spec creates the Text node before attempting insertion. Since dom2 nodes are stored
     // in a grow-only arena (no GC), avoid allocating an unreachable Text node when insertion is
     // guaranteed to do nothing.
-    if matches!(pos, AdjacentPosition::BeforeBegin | AdjacentPosition::AfterEnd)
-      && self.nodes.get(element.index()).and_then(|n| n.parent).is_none()
+    if matches!(
+      pos,
+      AdjacentPosition::BeforeBegin | AdjacentPosition::AfterEnd
+    ) && self
+      .nodes
+      .get(element.index())
+      .and_then(|n| n.parent)
+      .is_none()
     {
       return Ok(());
     }
@@ -300,9 +331,14 @@ impl Document {
     };
 
     let (element, element_is_html) = match &node.kind {
-      NodeKind::Element { tag_name, namespace, .. } => (
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => (
         Some(context_node),
-        tag_name.eq_ignore_ascii_case("html") && (namespace.is_empty() || namespace == HTML_NAMESPACE),
+        tag_name.eq_ignore_ascii_case("html")
+          && (namespace.is_empty() || namespace == HTML_NAMESPACE),
       ),
       NodeKind::Slot { .. } => (Some(context_node), false),
       NodeKind::Text { .. } | NodeKind::Comment { .. } => {
@@ -310,7 +346,9 @@ impl Document {
           if let Some(parent_node) = self.nodes.get(parent.index()) {
             match &parent_node.kind {
               NodeKind::Element {
-                tag_name, namespace, ..
+                tag_name,
+                namespace,
+                ..
               } => (
                 Some(parent),
                 tag_name.eq_ignore_ascii_case("html")
@@ -343,9 +381,12 @@ impl Document {
     for node_id in to_check {
       let is_html_script = match &self.nodes[node_id.index()].kind {
         NodeKind::Element {
-          tag_name, namespace, ..
+          tag_name,
+          namespace,
+          ..
         } => {
-          tag_name.eq_ignore_ascii_case("script") && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+          tag_name.eq_ignore_ascii_case("script")
+            && (namespace.is_empty() || namespace == HTML_NAMESPACE)
         }
         _ => false,
       };

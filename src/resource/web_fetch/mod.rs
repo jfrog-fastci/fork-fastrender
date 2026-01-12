@@ -3,8 +3,8 @@
 //! This module is intentionally independent from any JavaScript engine. JS bindings should be thin
 //! wrappers that hold/own these Rust types and expose WebIDL behavior.
 
-mod body;
 mod adapter;
+mod body;
 mod headers;
 mod limits;
 mod request;
@@ -116,14 +116,18 @@ mod tests {
     let mut headers = Headers::new_with_guard(HeadersGuard::Request);
     headers.set("cookie", "a=b").unwrap();
     headers.set("Access-Control-Request-Method", "PUT").unwrap();
-    headers.set("Access-Control-Request-Headers", "x-test").unwrap();
+    headers
+      .set("Access-Control-Request-Headers", "x-test")
+      .unwrap();
     headers
       .set("Access-Control-Request-Private-Network", "true")
       .unwrap();
     assert!(!headers.has("cookie").unwrap());
     assert!(!headers.has("access-control-request-method").unwrap());
     assert!(!headers.has("access-control-request-headers").unwrap());
-    assert!(!headers.has("access-control-request-private-network").unwrap());
+    assert!(!headers
+      .has("access-control-request-private-network")
+      .unwrap());
   }
 
   #[test]
@@ -178,7 +182,10 @@ mod tests {
   fn headers_fill_from_sequence_rejects_non_pairs() {
     let mut headers = Headers::new();
     let err = headers
-      .fill_from_sequence(vec![vec!["x-test".to_string()], vec!["a".to_string(), "b".to_string()]])
+      .fill_from_sequence(vec![
+        vec!["x-test".to_string()],
+        vec!["a".to_string(), "b".to_string()],
+      ])
       .unwrap_err();
     assert!(matches!(
       err,

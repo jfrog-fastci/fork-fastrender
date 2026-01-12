@@ -90,9 +90,10 @@ fn svg_mask_image_reference_resolves_use_dependencies() {
     .expect("layout document");
 
   assert!(
-    fragments.svg_id_defs.as_ref().is_some_and(|defs| {
-      defs.contains_key("m") && defs.contains_key("shape")
-    }),
+    fragments
+      .svg_id_defs
+      .as_ref()
+      .is_some_and(|defs| { defs.contains_key("m") && defs.contains_key("shape") }),
     "layout should retain defs required by url(#m) mask-image"
   );
 

@@ -11,28 +11,28 @@
 //! The intent is to grow this runner alongside the JS + DOM implementation without pulling in a
 //! heavyweight external harness.
 
-mod discover;
 mod backend;
-mod cookie_jar;
-mod engine;
 #[cfg(feature = "vmjs")]
 mod backend_vmjs;
+mod cookie_jar;
+mod discover;
 #[cfg(feature = "quickjs")]
 mod dom_shims;
+mod engine;
 #[cfg(feature = "quickjs")]
 mod fetch;
-#[cfg(feature = "quickjs")]
-mod url_shims;
-mod window_or_worker_global_scope;
 mod meta;
 mod runner;
 mod suite;
+#[cfg(feature = "quickjs")]
+mod url_shims;
+mod window_or_worker_global_scope;
 pub mod wpt_fs;
-mod wpt_resource_fetcher;
 mod wpt_report;
+mod wpt_resource_fetcher;
 
-pub use conformance_harness::{FailOn, Shard};
 pub use backend::{BackendKind, BackendSelection};
+pub use conformance_harness::{FailOn, Shard};
 pub use discover::{discover_tests, TestCase, TestKind};
 pub use meta::{MetaDirective, MetaParseResult};
 pub use runner::{RunError, RunOutcome, RunResult, Runner, RunnerConfig};
@@ -41,5 +41,5 @@ pub use suite::{
   TestOutcome, TestResult, REPORT_SCHEMA_VERSION,
 };
 pub use wpt_fs::WptFs;
-pub use wpt_resource_fetcher::WptResourceFetcher;
 pub use wpt_report::{WptReport, WptSubtest};
+pub use wpt_resource_fetcher::WptResourceFetcher;

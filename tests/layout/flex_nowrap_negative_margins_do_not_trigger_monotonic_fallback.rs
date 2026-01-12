@@ -90,4 +90,3 @@ fn flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback() {
     second_frag.bounds.x(),
   );
 }
-

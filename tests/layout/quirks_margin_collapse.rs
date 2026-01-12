@@ -2,7 +2,9 @@ use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::layout::engine::LayoutParallelism;
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
-use fastrender::{FastRender, FastRenderConfig, RenderArtifactRequest, RenderArtifacts, RenderOptions};
+use fastrender::{
+  FastRender, FastRenderConfig, RenderArtifactRequest, RenderArtifacts, RenderOptions,
+};
 use std::collections::HashMap;
 
 const EPS: f32 = 0.1;
@@ -113,4 +115,3 @@ fn quirks_mode_ignores_user_agent_margins_recursively_when_collapsing() {
     "expected UA margins inside the collapsing chain to be ignored (got y={y})"
   );
 }
-

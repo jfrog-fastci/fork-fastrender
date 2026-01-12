@@ -110,4 +110,3 @@ fn table_footer_group_before_body_does_not_shift_body_cells() {
     c.rect.x()
   );
 }
-

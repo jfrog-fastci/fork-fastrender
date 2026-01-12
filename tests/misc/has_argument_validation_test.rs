@@ -1,8 +1,13 @@
 use cssparser::{Parser, ParserInput};
 use fastrender::css::selectors::{FastRenderSelectorImpl, PseudoClassParser, ShadowMatchData};
-use fastrender::dom::{next_selector_cache_epoch, DomNode, DomNodeType, ElementRef, SiblingListCache, HTML_NAMESPACE};
+use fastrender::dom::{
+  next_selector_cache_epoch, DomNode, DomNodeType, ElementRef, SiblingListCache, HTML_NAMESPACE,
+};
 use selectors::context::QuirksMode;
-use selectors::matching::{matches_selector, MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags, SelectorCaches};
+use selectors::matching::{
+  matches_selector, MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags,
+  SelectorCaches,
+};
 use selectors::parser::{ParseRelative, Selector, SelectorList};
 
 fn parse_selector(selector: &str) -> Selector<FastRenderSelectorImpl> {

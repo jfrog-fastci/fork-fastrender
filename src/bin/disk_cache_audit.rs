@@ -8,7 +8,9 @@
 
 use clap::Parser;
 use fastrender::cli_utils::args::DEFAULT_DISK_CACHE_LOCK_STALE_SECS;
-use fastrender::cli_utils::disk_cache_audit::{audit_disk_cache_dir, DiskCacheAuditOptions, UrlCount};
+use fastrender::cli_utils::disk_cache_audit::{
+  audit_disk_cache_dir, DiskCacheAuditOptions, UrlCount,
+};
 use std::path::PathBuf;
 use std::time::Duration;
 

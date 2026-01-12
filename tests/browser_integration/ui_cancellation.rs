@@ -27,7 +27,11 @@ fn cancellation_on_new_navigation() {
   let fastrender::ui::UiThreadWorkerHandle { ui_tx, ui_rx, join } = worker;
 
   ui_tx
-    .send(support::create_tab_msg_with_cancel(tab_id, None, cancel.clone()))
+    .send(support::create_tab_msg_with_cancel(
+      tab_id,
+      None,
+      cancel.clone(),
+    ))
     .unwrap();
 
   cancel.bump_paint();
@@ -50,7 +54,10 @@ fn cancellation_on_new_navigation() {
   // Ensure the worker picked up the first navigation before we bump cancellation.
   loop {
     match ui_rx.recv_timeout(Duration::from_secs(10)) {
-      Ok(WorkerToUi::NavigationStarted { tab_id: msg_id, url }) if msg_id == tab_id => {
+      Ok(WorkerToUi::NavigationStarted {
+        tab_id: msg_id,
+        url,
+      }) if msg_id == tab_id => {
         if url == url1 {
           break;
         }
@@ -79,8 +86,15 @@ fn cancellation_on_new_navigation() {
   while std::time::Instant::now() < deadline {
     match ui_rx.recv_timeout(WAIT_SLICE) {
       Ok(msg) => match msg {
-        WorkerToUi::NavigationCommitted { tab_id: msg_id, url, .. } if msg_id == tab_id => {
-          assert_ne!(url, url1, "first navigation should not commit after cancellation");
+        WorkerToUi::NavigationCommitted {
+          tab_id: msg_id,
+          url,
+          ..
+        } if msg_id == tab_id => {
+          assert_ne!(
+            url, url1,
+            "first navigation should not commit after cancellation"
+          );
           if url == url2 {
             saw_commit_url2 = true;
           }
@@ -91,7 +105,11 @@ fn cancellation_on_new_navigation() {
             break;
           }
         }
-        WorkerToUi::NavigationFailed { tab_id: msg_id, url, .. } if msg_id == tab_id => {
+        WorkerToUi::NavigationFailed {
+          tab_id: msg_id,
+          url,
+          ..
+        } if msg_id == tab_id => {
           // Cancellation may surface as a timeout/cancel failure; just ensure it doesn't commit.
           assert_ne!(url, url2, "second navigation should not fail");
         }
@@ -122,7 +140,11 @@ fn cancellation_on_scroll_drops_stale_frames() {
   let fastrender::ui::UiThreadWorkerHandle { ui_tx, ui_rx, join } = worker;
 
   ui_tx
-    .send(support::create_tab_msg_with_cancel(tab_id, None, cancel.clone()))
+    .send(support::create_tab_msg_with_cancel(
+      tab_id,
+      None,
+      cancel.clone(),
+    ))
     .unwrap();
 
   cancel.bump_paint();
@@ -148,9 +170,11 @@ fn cancellation_on_scroll_drops_stale_frames() {
   while std::time::Instant::now() < deadline {
     match ui_rx.recv_timeout(WAIT_SLICE) {
       Ok(msg) => match msg {
-        WorkerToUi::NavigationCommitted { tab_id: msg_id, url: committed_url, .. }
-          if msg_id == tab_id =>
-        {
+        WorkerToUi::NavigationCommitted {
+          tab_id: msg_id,
+          url: committed_url,
+          ..
+        } if msg_id == tab_id => {
           assert_eq!(committed_url, url);
           committed = true;
           if saw_initial_frame {
@@ -223,7 +247,11 @@ fn cancellation_on_scroll_drops_stale_frames() {
 
   let mut messages = pre_cancel;
   for msg in messages.iter() {
-    if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = msg {
+    if let WorkerToUi::FrameReady {
+      tab_id: msg_id,
+      frame,
+    } = msg
+    {
       if *msg_id != tab_id {
         continue;
       }
@@ -242,7 +270,11 @@ fn cancellation_on_scroll_drops_stale_frames() {
     match ui_rx.recv_timeout(WAIT_SLICE) {
       Ok(msg) => {
         let mut done = false;
-        if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = &msg {
+        if let WorkerToUi::FrameReady {
+          tab_id: msg_id,
+          frame,
+        } = &msg
+        {
           if *msg_id == tab_id {
             let y = frame.scroll_state.viewport.y;
             if (y - 200.0).abs() < 5.0 {

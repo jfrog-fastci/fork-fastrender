@@ -49,7 +49,11 @@ fn flex_item_size_ignores_fixed_out_of_flow_descendants() {
   let mut content_style = ComputedStyle::default();
   content_style.display = Display::Block;
   content_style.height = Some(Length::px(10.0));
-  let content = BoxNode::new_block(Arc::new(content_style), FormattingContextType::Block, vec![]);
+  let content = BoxNode::new_block(
+    Arc::new(content_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -102,11 +106,8 @@ fn flex_item_size_ignores_out_of_flow_descendants_nested_in_empty_in_flow_wrappe
   abspos_style.position = Position::Absolute;
   abspos_style.width = Some(Length::px(100.0));
   abspos_style.height = Some(Length::px(10.0));
-  let abspos_child = BoxNode::new_block(
-    Arc::new(abspos_style),
-    FormattingContextType::Block,
-    vec![],
-  );
+  let abspos_child =
+    BoxNode::new_block(Arc::new(abspos_style), FormattingContextType::Block, vec![]);
 
   let mut li_style = ComputedStyle::default();
   li_style.display = Display::Block;
@@ -128,7 +129,11 @@ fn flex_item_size_ignores_out_of_flow_descendants_nested_in_empty_in_flow_wrappe
   content_style.display = Display::Block;
   content_style.width = Some(Length::px(50.0));
   content_style.height = Some(Length::px(20.0));
-  let content = BoxNode::new_block(Arc::new(content_style), FormattingContextType::Block, vec![]);
+  let content = BoxNode::new_block(
+    Arc::new(content_style),
+    FormattingContextType::Block,
+    vec![],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),

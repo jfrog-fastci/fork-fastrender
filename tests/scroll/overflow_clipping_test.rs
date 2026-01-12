@@ -172,7 +172,8 @@ fn scroll_overflow_clips_to_padding_box_not_border_box() {
     child_style,
   );
 
-  let root = FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![child], root_style);
+  let root =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![child], root_style);
   let mut tree = FragmentTree::with_viewport(root, Size::new(80.0, 80.0));
   tree.ensure_scroll_metadata();
 
@@ -211,16 +212,14 @@ fn scroll_overflow_accounts_for_child_transforms() {
   let mut child_style = ComputedStyle::default();
   // Place the child partially outside the scrollport, then translate it left by 50% of its own
   // size. The transformed box should not inflate the parent's scrollable overflow.
-  child_style
-    .transform
-    .push(Transform::Translate(Length::percent(-50.0), Length::percent(0.0)));
+  child_style.transform.push(Transform::Translate(
+    Length::percent(-50.0),
+    Length::percent(0.0),
+  ));
   let child_style = Arc::new(child_style);
 
-  let child = FragmentNode::new_block_styled(
-    Rect::from_xywh(80.0, 0.0, 40.0, 20.0),
-    vec![],
-    child_style,
-  );
+  let child =
+    FragmentNode::new_block_styled(Rect::from_xywh(80.0, 0.0, 40.0, 20.0), vec![], child_style);
   let root = FragmentNode::new_block_styled(
     Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
     vec![child],
@@ -266,7 +265,8 @@ fn scroll_overflow_respects_scrollbar_reservation_when_clipping() {
   );
   child.scrollbar_reservation.right = 10.0;
 
-  let root = FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![child], root_style);
+  let root =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![child], root_style);
   let mut tree = FragmentTree::with_viewport(root, Size::new(80.0, 80.0));
   tree.ensure_scroll_metadata();
 

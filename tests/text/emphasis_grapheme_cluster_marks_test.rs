@@ -4,7 +4,8 @@ use fastrender::style::color::Rgba;
 use fastrender::style::types::{TextEmphasisFill, TextEmphasisShape, TextEmphasisStyle};
 use fastrender::style::ComputedStyle;
 use fastrender::text::font_db::{
-  FontFaceMetricsOverrides, FontFaceShapingDescriptors, FontStretch, FontStyle, FontWeight, LoadedFont,
+  FontFaceMetricsOverrides, FontFaceShapingDescriptors, FontStretch, FontStyle, FontWeight,
+  LoadedFont,
 };
 use fastrender::text::pipeline::{Direction, GlyphPosition, RunRotation, ShapedRun};
 use fastrender::tree::fragment_tree::FragmentNode;
@@ -88,8 +89,7 @@ fn text_emphasis_marks_follow_grapheme_clusters_even_when_harfbuzz_clusters_span
     runs,
     Arc::new(style),
   );
-  let root =
-    FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 80.0, 40.0), vec![text_fragment]);
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 80.0, 40.0), vec![text_fragment]);
   let tree = FragmentTree::new(root);
 
   let list = DisplayListBuilder::new().build_tree(&tree);

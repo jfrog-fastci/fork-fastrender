@@ -290,7 +290,12 @@ pub fn compare_images(
         first_mismatch = Some((x, y));
         first_mismatch_rgba = Some((
           [actual_px[0], actual_px[1], actual_px[2], actual_px[3]],
-          [expected_px[0], expected_px[1], expected_px[2], expected_px[3]],
+          [
+            expected_px[0],
+            expected_px[1],
+            expected_px[2],
+            expected_px[3],
+          ],
         ));
       }
     }
@@ -520,7 +525,9 @@ pub fn decode_png(data: &[u8]) -> Result<RgbaImage, Error> {
 
   let rgba_len = usize::try_from(rgba_bytes).map_err(|_| {
     Error::Render(RenderError::InvalidParameters {
-      message: format!("Failed to decode PNG: decoded byte size does not fit in usize ({width}x{height})"),
+      message: format!(
+        "Failed to decode PNG: decoded byte size does not fit in usize ({width}x{height})"
+      ),
     })
   })?;
 
@@ -624,7 +631,8 @@ pub fn decode_png(data: &[u8]) -> Result<RgbaImage, Error> {
         })?;
       let ga_len = usize::try_from(ga_len).map_err(|_| {
         Error::Render(RenderError::InvalidParameters {
-          message: "Failed to decode PNG: grayscale-alpha byte size does not fit in usize".to_string(),
+          message: "Failed to decode PNG: grayscale-alpha byte size does not fit in usize"
+            .to_string(),
         })
       })?;
       if buf.len() != ga_len {
@@ -652,7 +660,9 @@ pub fn decode_png(data: &[u8]) -> Result<RgbaImage, Error> {
       })
     }
     (color_type, bit_depth) => Err(Error::Render(RenderError::InvalidParameters {
-      message: format!("Failed to decode PNG: unsupported PNG format ({color_type:?} {bit_depth:?})"),
+      message: format!(
+        "Failed to decode PNG: unsupported PNG format ({color_type:?} {bit_depth:?})"
+      ),
     })),
   }
 }

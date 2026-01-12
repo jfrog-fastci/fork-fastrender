@@ -377,7 +377,8 @@ fn inline_svg_nested_color_affects_unstyled_shapes_via_root_fill_current_color_i
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
       assert_eq!(
         pixel(&pixmap, 10, 10),
         [0, 128, 0, 255],
@@ -395,7 +396,8 @@ fn inline_svg_nested_color_affects_unstyled_shapes_via_root_fill_current_color_i
 }
 
 #[test]
-fn inline_svg_css_color_overrides_color_presentation_attribute_when_document_css_injection_disabled() {
+fn inline_svg_css_color_overrides_color_presentation_attribute_when_document_css_injection_disabled(
+) {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -414,7 +416,8 @@ fn inline_svg_css_color_overrides_color_presentation_attribute_when_document_css
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
       assert_eq!(pixel(&pixmap, 10, 10), [0, 128, 0, 255]);
       assert_eq!(
         pixel(&pixmap, 30, 10),
@@ -507,7 +510,8 @@ fn inline_svg_respects_opacity_when_document_css_injection_disabled_display_list
 }
 
 #[test]
-fn inline_svg_visibility_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled() {
+fn inline_svg_visibility_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled(
+) {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -522,7 +526,8 @@ fn inline_svg_visibility_attribute_overridden_by_css_is_serialized_when_document
         <rect width="20" height="20" visibility="hidden" fill="rgb(255, 0, 0)" />
       </svg>
       "#;
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(
         pixel(&pixmap, 10, 10),
         [255, 0, 0, 255],
@@ -535,7 +540,8 @@ fn inline_svg_visibility_attribute_overridden_by_css_is_serialized_when_document
 }
 
 #[test]
-fn inline_svg_display_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled() {
+fn inline_svg_display_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled(
+) {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -550,7 +556,8 @@ fn inline_svg_display_attribute_overridden_by_css_is_serialized_when_document_cs
         <rect width="20" height="20" display="none" fill="rgb(255, 0, 0)" />
       </svg>
       "#;
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(
         pixel(&pixmap, 10, 10),
         [255, 0, 0, 255],
@@ -563,7 +570,8 @@ fn inline_svg_display_attribute_overridden_by_css_is_serialized_when_document_cs
 }
 
 #[test]
-fn inline_svg_fill_attribute_overridden_by_css_inherit_is_serialized_when_document_css_injection_disabled() {
+fn inline_svg_fill_attribute_overridden_by_css_inherit_is_serialized_when_document_css_injection_disabled(
+) {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -580,7 +588,8 @@ fn inline_svg_fill_attribute_overridden_by_css_inherit_is_serialized_when_docume
         </g>
       </svg>
       "#;
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(
         pixel(&pixmap, 10, 10),
         [255, 0, 0, 255],
@@ -593,7 +602,8 @@ fn inline_svg_fill_attribute_overridden_by_css_inherit_is_serialized_when_docume
 }
 
 #[test]
-fn inline_svg_opacity_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled() {
+fn inline_svg_opacity_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled(
+) {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -608,7 +618,8 @@ fn inline_svg_opacity_attribute_overridden_by_css_is_serialized_when_document_cs
         <rect width="20" height="20" opacity="0" fill="rgb(255, 0, 0)" />
       </svg>
       "#;
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(
         pixel(&pixmap, 10, 10),
         [255, 0, 0, 255],
@@ -674,7 +685,8 @@ fn inline_svg_inlines_overflow_visible_for_nested_svg_when_document_css_injectio
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
       assert_eq!(pixel(&pixmap, 5, 5), [255, 0, 0, 255]);
       assert_eq!(
         pixel(&pixmap, 15, 5),
@@ -688,7 +700,8 @@ fn inline_svg_inlines_overflow_visible_for_nested_svg_when_document_css_injectio
 }
 
 #[test]
-fn inline_svg_serializes_css_transform_overriding_authored_transform_attribute_when_document_css_injection_disabled() {
+fn inline_svg_serializes_css_transform_overriding_authored_transform_attribute_when_document_css_injection_disabled(
+) {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -704,7 +717,8 @@ fn inline_svg_serializes_css_transform_overriding_authored_transform_attribute_w
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(
         pixel(&pixmap, 5, 5),
         [255, 255, 255, 255],
@@ -818,7 +832,8 @@ fn inline_svg_serializes_clip_path_url_from_document_css_when_injection_disabled
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(pixel(&pixmap, 5, 10), [255, 0, 0, 255]);
       assert_eq!(pixel(&pixmap, 15, 10), [255, 255, 255, 255]);
     })
@@ -912,7 +927,8 @@ fn inline_svg_serializes_filter_url_from_document_css_when_injection_disabled() 
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(pixel(&pixmap, 10, 10), [0, 0, 255, 255]);
     })
     .unwrap()

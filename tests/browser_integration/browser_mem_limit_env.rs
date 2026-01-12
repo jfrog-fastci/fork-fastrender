@@ -6,8 +6,7 @@ fn run_browser_with_mem_env(
   value: Option<&str>,
   mem_limit_flag: Option<&str>,
 ) -> (ExitStatus, String, String) {
-  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("scripts/run_limited.sh");
+  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
   let mut cmd = Command::new("bash");
   cmd
     .arg(run_limited)

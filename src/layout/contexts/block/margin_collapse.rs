@@ -26,10 +26,10 @@
 //!
 //! Reference: <https://www.w3.org/TR/CSS21/box.html#collapsing-margins>
 
-use crate::style::position::Position;
-use crate::style::{block_axis_is_horizontal, block_axis_positive, PhysicalSide};
 use crate::style::display::Display;
+use crate::style::position::Position;
 use crate::style::ComputedStyle;
+use crate::style::{block_axis_is_horizontal, block_axis_positive, PhysicalSide};
 
 fn block_axis_sides(style: &ComputedStyle) -> (PhysicalSide, PhysicalSide) {
   // Match `BlockFormattingContext::block_axis_sides` without depending on the block module.
@@ -289,7 +289,10 @@ impl MarginCollapseContext {
     } else {
       self.pending_margin = margin_bottom;
       self.at_start = false;
-      (pending_offset + clearance + margin_top.resolve(), self.pending_margin)
+      (
+        pending_offset + clearance + margin_top.resolve(),
+        self.pending_margin,
+      )
     }
   }
 
@@ -436,7 +439,10 @@ pub fn establishes_bfc(style: &ComputedStyle) -> bool {
   fn overflow_establishes_bfc(overflow: Overflow) -> bool {
     // CSS Overflow defines `overflow: clip` to *not* establish a new block formatting context
     // (unlike `hidden/scroll/auto`), even though it still clips paint.
-    matches!(overflow, Overflow::Hidden | Overflow::Scroll | Overflow::Auto)
+    matches!(
+      overflow,
+      Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+    )
   }
 
   if style.containment.size || style.containment.inline_size || style.containment.layout {

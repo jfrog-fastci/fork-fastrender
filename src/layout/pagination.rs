@@ -21,7 +21,9 @@ use crate::layout::fragmentation::{
   parallel_flow_content_extent, propagate_fragment_metadata, ForcedBoundary, FragmentAxis,
   FragmentationAnalyzer, FragmentationContext,
 };
-use crate::layout::running_elements::{running_elements_for_page, running_elements_for_page_fragment};
+use crate::layout::running_elements::{
+  running_elements_for_page, running_elements_for_page_fragment,
+};
 use crate::layout::running_strings::{StringSetEvent, StringSetEventCollector};
 use crate::layout::utils::{border_size_from_box_sizing, resolve_length_with_percentage_metrics};
 use crate::style::content::{
@@ -122,7 +124,10 @@ fn subtree_has_in_flow_content(
     return false;
   }
 
-  if matches!(node.content, FragmentContent::Text { .. } | FragmentContent::Replaced { .. }) {
+  if matches!(
+    node.content,
+    FragmentContent::Text { .. } | FragmentContent::Replaced { .. }
+  ) {
     return true;
   }
 
@@ -176,11 +181,20 @@ enum BreakToken {
   ///
   /// `offset_bits` stores a canonicalized `f32` offset in fragmentation-axis coordinates relative
   /// to the block's own start edge.
-  Block { box_id: usize, offset_bits: u32 },
+  Block {
+    box_id: usize,
+    offset_bits: u32,
+  },
   /// Byte offset into the source text node identified by `box_id`.
-  Text { box_id: usize, offset: usize },
+  Text {
+    box_id: usize,
+    offset: usize,
+  },
   /// Replaced-element continuation within the box identified by `box_id`.
-  Replaced { box_id: usize, offset_bits: u32 },
+  Replaced {
+    box_id: usize,
+    offset_bits: u32,
+  },
 }
 
 fn inline_start_for_axis(axis: &FragmentAxis, rect: &Rect) -> f32 {
@@ -247,7 +261,10 @@ fn line_contains_text_offset(line: &FragmentNode, box_id: usize, offset: usize) 
         source_range: Some(range),
         ..
       } if *id == box_id => offset >= range.start() && offset < range.end(),
-      _ => node.children.iter().any(|child| walk(child, box_id, offset)),
+      _ => node
+        .children
+        .iter()
+        .any(|child| walk(child, box_id, offset)),
     }
   }
 
@@ -257,7 +274,9 @@ fn line_contains_text_offset(line: &FragmentNode, box_id: usize, offset: usize) 
 fn line_contains_replaced(line: &FragmentNode, box_id: usize) -> bool {
   fn walk(node: &FragmentNode, box_id: usize) -> bool {
     match &node.content {
-      FragmentContent::Replaced { box_id: Some(id), .. } if *id == box_id => true,
+      FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } if *id == box_id => true,
       _ => node.children.iter().any(|child| walk(child, box_id)),
     }
   }
@@ -278,7 +297,10 @@ fn flow_start_for_token_in_layout(
   match token {
     BreakToken::Start => return Some(0.0),
     BreakToken::End => return None,
-    BreakToken::Block { box_id, offset_bits } => {
+    BreakToken::Block {
+      box_id,
+      offset_bits,
+    } => {
       if matches!(node.content, FragmentContent::Block { box_id: Some(id) } if id == *box_id) {
         let mut offset = f32::from_bits(*offset_bits);
         if !offset.is_finite() {
@@ -296,7 +318,10 @@ fn flow_start_for_token_in_layout(
         return Some(node_abs_start);
       }
     }
-    BreakToken::Replaced { box_id, offset_bits } => {
+    BreakToken::Replaced {
+      box_id,
+      offset_bits,
+    } => {
       let zero_bits = 0.0f32.to_bits();
       if *offset_bits == zero_bits
         && matches!(node.content, FragmentContent::Line { .. })
@@ -318,13 +343,9 @@ fn flow_start_for_token_in_layout(
   }
 
   for child in node.children.iter() {
-    if let Some(found) = flow_start_for_token_in_layout(
-      child,
-      token,
-      node_abs_start,
-      node_block_size,
-      axis,
-    ) {
+    if let Some(found) =
+      flow_start_for_token_in_layout(child, token, node_abs_start, node_block_size, axis)
+    {
       return Some(found);
     }
   }
@@ -368,7 +389,9 @@ fn next_break_token_after_pos(
         },
       );
     }
-    FragmentContent::Replaced { box_id: Some(id), .. } => {
+    FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => {
       consider(
         best,
         node_abs_start,
@@ -430,22 +453,22 @@ fn continuation_token_for_pos(
     best: &mut Option<(usize, f32, bool, BreakToken)>,
   ) {
     let node_block_size = axis.block_size(&node.bounds);
-    let (node_abs_start, node_abs_end) = axis.flow_range(abs_start, parent_block_size, &node.bounds);
+    let (node_abs_start, node_abs_end) =
+      axis.flow_range(abs_start, parent_block_size, &node.bounds);
 
     if pos > node_abs_start + EPSILON
       && pos < node_abs_end - EPSILON
       && node_abs_end > node_abs_start + EPSILON
     {
       let span = node_abs_end - node_abs_start;
-      let mut consider = |is_replaced: bool, token: BreakToken| {
-        match best {
-          Some((best_depth, best_span, best_is_replaced, _))
-            if *best_depth > depth
-              || (*best_depth == depth
-                && (*best_span < span - EPSILON
-                  || ((*best_span - span).abs() <= EPSILON && *best_is_replaced >= is_replaced))) => {}
-          _ => *best = Some((depth, span, is_replaced, token)),
+      let mut consider = |is_replaced: bool, token: BreakToken| match best {
+        Some((best_depth, best_span, best_is_replaced, _))
+          if *best_depth > depth
+            || (*best_depth == depth
+              && (*best_span < span - EPSILON
+                || ((*best_span - span).abs() <= EPSILON && *best_is_replaced >= is_replaced))) => {
         }
+        _ => *best = Some((depth, span, is_replaced, token)),
       };
 
       match &node.content {
@@ -459,7 +482,9 @@ fn continuation_token_for_pos(
             },
           );
         }
-        FragmentContent::Replaced { box_id: Some(id), .. } => {
+        FragmentContent::Replaced {
+          box_id: Some(id), ..
+        } => {
           let offset = (pos - node_abs_start).max(0.0);
           consider(
             true,
@@ -474,7 +499,15 @@ fn continuation_token_for_pos(
     }
 
     for child in node.children.iter() {
-      walk(child, pos, node_abs_start, node_block_size, axis, depth + 1, best);
+      walk(
+        child,
+        pos,
+        node_abs_start,
+        node_block_size,
+        axis,
+        depth + 1,
+        best,
+      );
     }
   }
 
@@ -483,7 +516,11 @@ fn continuation_token_for_pos(
   best.map(|(_, _, _, token)| token)
 }
 
-fn trim_line_children_to_text_offset(node: &mut FragmentNode, box_id: usize, offset: usize) -> bool {
+fn trim_line_children_to_text_offset(
+  node: &mut FragmentNode,
+  box_id: usize,
+  offset: usize,
+) -> bool {
   if let FragmentContent::Text {
     box_id: Some(id),
     source_range,
@@ -539,7 +576,9 @@ fn trim_line_children_to_text_offset(node: &mut FragmentNode, box_id: usize, off
 
 fn trim_line_children_to_replaced(node: &mut FragmentNode, box_id: usize) -> bool {
   match &node.content {
-    FragmentContent::Replaced { box_id: Some(id), .. } if *id == box_id => return true,
+    FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } if *id == box_id => return true,
     _ => {}
   }
 
@@ -952,12 +991,14 @@ pub fn paginate_fragment_tree(
     let start_in_base = match &token {
       BreakToken::Start => 0.0,
       BreakToken::End => base_total_height,
-      _ => flow_start_for_token_in_layout(&base_root, &token, 0.0, base_root_block_size, &root_axis)
-        .ok_or_else(|| {
-          LayoutError::MissingContext(
-            "pagination break token could not be resolved in base layout".into(),
-          )
-        })?,
+      _ => {
+        flow_start_for_token_in_layout(&base_root, &token, 0.0, base_root_block_size, &root_axis)
+          .ok_or_else(|| {
+            LayoutError::MissingContext(
+              "pagination break token could not be resolved in base layout".into(),
+            )
+          })?
+      }
     };
     let mut page_name = page_name_for_position(&base_page_names, start_in_base, fallback_page_name);
     let side = page_side_for_index(page_index, first_page_side);
@@ -1105,11 +1146,8 @@ pub fn paginate_fragment_tree(
       page_style.content_origin.x - page_box_origin.x,
       page_style.content_origin.y - page_box_origin.y,
     );
-    let mut page_root = FragmentNode::new_block_styled(
-      page_bounds,
-      Vec::new(),
-      Arc::new(page_background_style),
-    );
+    let mut page_root =
+      FragmentNode::new_block_styled(page_bounds, Vec::new(), Arc::new(page_background_style));
     let mut document_wrapper = FragmentNode::new_block_styled(
       page_box_bounds,
       Vec::new(),
@@ -1189,8 +1227,7 @@ pub fn paginate_fragment_tree(
             let is_last_fragment = next >= pending.total_extent - EPSILON;
             let break_before_forced =
               !is_first_fragment && pending.analyzer.is_forced_break_at(pending.offset);
-            let break_after_forced =
-              !is_last_fragment && pending.analyzer.is_forced_break_at(next);
+            let break_after_forced = !is_last_fragment && pending.analyzer.is_forced_break_at(next);
             normalize_fragment_margins(
               &mut slice,
               is_first_fragment,
@@ -1218,102 +1255,36 @@ pub fn paginate_fragment_tree(
           document_wrapper.children_mut().push(footnote_area);
         }
       } else {
-      let page_block = if axis.block_is_horizontal {
-        page_style.content_size.width
-      } else {
-        page_style.content_size.height
-      }
-      .max(1.0);
-      let planner = break_planners
-        .entry(key)
-        .or_insert_with(|| PageBreakPlanner::new(layout, root_axes, page_block));
-      let mut end_candidate = planner
-        .next_boundary(start, page_block, total_height)?
-        .min(total_height);
-      if end_candidate <= start + EPSILON {
-        // Guard against degenerate boundary selection. Pagination must always make progress; fall
-        // back to the fragmentainer limit if the analyzer returns a non-advancing boundary.
-        end_candidate = (start + page_block).min(total_height);
-        if end_candidate <= start + EPSILON {
-          break;
+        let page_block = if axis.block_is_horizontal {
+          page_style.content_size.width
+        } else {
+          page_style.content_size.height
         }
-      }
-
-      let mut end = end_candidate;
-      let mut clipped = clip_node(
-        &layout.root,
-        &axis,
-        start,
-        end_candidate,
-        0.0,
-        start,
-        end_candidate,
-        root_block_size,
-        page_index,
-        0,
-        FragmentationContext::Page,
-        page_block,
-        root_axes,
-      )?;
-      let mut page_footnotes: Vec<FootnoteOccurrence> = Vec::new();
-
-      // If the page contains `float: footnote` calls, the footnote area at the bottom of the page
-      // reduces the block-size available for main flow content. Use a provisional clip to
-      // determine which footnotes are eligible for this page and adjust the end accordingly.
-      if let Some(mut provisional) = clipped.take() {
-        strip_fixed_fragments(&mut provisional);
-        let is_first_fragment = page_index == 0;
-        let is_last_fragment = end_candidate >= total_height - 0.01;
-        let break_before_forced = start > EPSILON && planner.analyzer.is_forced_break_at(start);
-        let break_after_forced =
-          !is_last_fragment && planner.analyzer.is_forced_break_at(end_candidate);
-        normalize_fragment_margins(
-          &mut provisional,
-          is_first_fragment,
-          is_last_fragment,
-          break_before_forced,
-          break_after_forced,
-          &axis,
-        );
-        let provisional_footnotes = collect_footnotes_for_page(&provisional, &axis);
-        let adjusted_end =
-          adjust_end_for_footnotes(start, end_candidate, page_block, &provisional_footnotes, &axis);
-        // Re-run boundary selection against the reduced main-flow block-size so widows/orphans and
-        // avoid/forced break hints are evaluated against the *effective* fragmentainer size (page
-        // content box minus reserved footnote area).
-        if adjusted_end > start + EPSILON && adjusted_end + EPSILON < end_candidate {
-          let effective_block = (adjusted_end - start).max(0.0);
-          if effective_block > EPSILON {
-            let selected = planner
-              .next_boundary(start, effective_block, total_height)?
-              .min(adjusted_end);
-            if selected > start + EPSILON {
-              end = selected;
-            } else {
-              end = adjusted_end;
-            }
-          } else {
-            end = adjusted_end;
+        .max(1.0);
+        let planner = break_planners
+          .entry(key)
+          .or_insert_with(|| PageBreakPlanner::new(layout, root_axes, page_block));
+        let mut end_candidate = planner
+          .next_boundary(start, page_block, total_height)?
+          .min(total_height);
+        if end_candidate <= start + EPSILON {
+          // Guard against degenerate boundary selection. Pagination must always make progress; fall
+          // back to the fragmentainer limit if the analyzer returns a non-advancing boundary.
+          end_candidate = (start + page_block).min(total_height);
+          if end_candidate <= start + EPSILON {
+            break;
           }
         }
 
-        // If the footnote adjustment did not change the break position, we can reuse the clipped
-        // subtree and avoid re-clipping.
-        if (end - end_candidate).abs() < EPSILON {
-          page_footnotes = provisional_footnotes;
-          clipped = Some(provisional);
-        }
-      }
-
-      if clipped.is_none() {
-        clipped = clip_node(
+        let mut end = end_candidate;
+        let mut clipped = clip_node(
           &layout.root,
           &axis,
           start,
-          end,
+          end_candidate,
           0.0,
           start,
-          end,
+          end_candidate,
           root_block_size,
           page_index,
           0,
@@ -1321,277 +1292,335 @@ pub fn paginate_fragment_tree(
           page_block,
           root_axes,
         )?;
-      }
+        let mut page_footnotes: Vec<FootnoteOccurrence> = Vec::new();
 
-      if let Some(mut content) = clipped {
-        strip_fixed_fragments(&mut content);
-        let break_before_forced = start > EPSILON && planner.analyzer.is_forced_break_at(start);
-        let is_last_fragment = end >= total_height - 0.01;
-        let break_after_forced = !is_last_fragment && planner.analyzer.is_forced_break_at(end);
-        normalize_fragment_margins(
-          &mut content,
-          page_index == 0,
-          is_last_fragment,
-          break_before_forced,
-          break_after_forced,
-          &axis,
-        );
-        trim_clipped_content_start(&mut content, &axis, &token);
-        if page_footnotes.is_empty() {
-          page_footnotes = collect_footnotes_for_page(&content, &axis);
-        }
-        // Generate footnote body slices. Oversized footnotes are fragmented and continued on
-        // subsequent pages.
-        let separator_block = 1.0;
-        let main_block = (end - start).max(0.0);
-        let mut available_for_oversize = (page_block - main_block - separator_block).max(0.0);
-        let mut footnote_slices: Vec<FragmentNode> = Vec::new();
-        for occ in page_footnotes.iter() {
-          let mut snapshot = occ.snapshot.clone();
-          let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
-          snapshot.translate_root_in_place(offset);
-
-          let body_block = axis.block_size(&snapshot.bounds).max(0.0);
-          let is_oversize = body_block + separator_block > page_block + EPSILON;
-          if !is_oversize {
-            footnote_slices.push(snapshot);
-            continue;
-          }
-
-          if available_for_oversize <= EPSILON {
-            available_for_oversize = (page_block - separator_block).max(0.0);
-          }
-
-          let analyzer = FragmentationAnalyzer::new(
-            &snapshot,
-            FragmentationContext::Page,
-            root_axes,
-            true,
-            Some(page_block),
-          );
-          let total_extent = analyzer.content_extent().max(EPSILON);
-          let mut pending = PendingFootnote {
-            root: snapshot,
-            analyzer,
-            opportunity_cursor: 0,
-            offset: 0.0,
-            total_extent,
-          };
-
-          let next = pending.analyzer.next_boundary_with_cursor(
-            pending.offset,
-            available_for_oversize,
-            pending.total_extent,
-            &mut pending.opportunity_cursor,
-          )?;
-
-          let root_block_size = axis.block_size(&pending.root.bounds);
-          if let Some(mut slice) = clip_node(
-            &pending.root,
+        // If the page contains `float: footnote` calls, the footnote area at the bottom of the page
+        // reduces the block-size available for main flow content. Use a provisional clip to
+        // determine which footnotes are eligible for this page and adjust the end accordingly.
+        if let Some(mut provisional) = clipped.take() {
+          strip_fixed_fragments(&mut provisional);
+          let is_first_fragment = page_index == 0;
+          let is_last_fragment = end_candidate >= total_height - 0.01;
+          let break_before_forced = start > EPSILON && planner.analyzer.is_forced_break_at(start);
+          let break_after_forced =
+            !is_last_fragment && planner.analyzer.is_forced_break_at(end_candidate);
+          normalize_fragment_margins(
+            &mut provisional,
+            is_first_fragment,
+            is_last_fragment,
+            break_before_forced,
+            break_after_forced,
             &axis,
-            pending.offset,
-            next,
+          );
+          let provisional_footnotes = collect_footnotes_for_page(&provisional, &axis);
+          let adjusted_end = adjust_end_for_footnotes(
+            start,
+            end_candidate,
+            page_block,
+            &provisional_footnotes,
+            &axis,
+          );
+          // Re-run boundary selection against the reduced main-flow block-size so widows/orphans and
+          // avoid/forced break hints are evaluated against the *effective* fragmentainer size (page
+          // content box minus reserved footnote area).
+          if adjusted_end > start + EPSILON && adjusted_end + EPSILON < end_candidate {
+            let effective_block = (adjusted_end - start).max(0.0);
+            if effective_block > EPSILON {
+              let selected = planner
+                .next_boundary(start, effective_block, total_height)?
+                .min(adjusted_end);
+              if selected > start + EPSILON {
+                end = selected;
+              } else {
+                end = adjusted_end;
+              }
+            } else {
+              end = adjusted_end;
+            }
+          }
+
+          // If the footnote adjustment did not change the break position, we can reuse the clipped
+          // subtree and avoid re-clipping.
+          if (end - end_candidate).abs() < EPSILON {
+            page_footnotes = provisional_footnotes;
+            clipped = Some(provisional);
+          }
+        }
+
+        if clipped.is_none() {
+          clipped = clip_node(
+            &layout.root,
+            &axis,
+            start,
+            end,
             0.0,
-            pending.offset,
-            next,
+            start,
+            end,
             root_block_size,
             page_index,
             0,
             FragmentationContext::Page,
-            available_for_oversize,
+            page_block,
             root_axes,
-          )? {
-            let is_first_fragment = pending.offset <= EPSILON;
-            let is_last_fragment = next >= pending.total_extent - EPSILON;
-            let break_before_forced =
-              !is_first_fragment && pending.analyzer.is_forced_break_at(pending.offset);
-            let break_after_forced =
-              !is_last_fragment && pending.analyzer.is_forced_break_at(next);
-            normalize_fragment_margins(
-              &mut slice,
-              is_first_fragment,
-              is_last_fragment,
-              break_before_forced,
-              break_after_forced,
-              &axis,
-            );
-            footnote_slices.push(slice);
-          }
-
-          pending.offset = next;
-          if pending.offset < pending.total_extent - EPSILON {
-            pending_footnotes.push_back(pending);
-          }
+          )?;
         }
 
-        let footnote_area =
-          build_footnote_area_fragment(&page_style, &axis, content_offset, &footnote_slices);
-
-        let clipped_block_size = axis.block_size(&content.bounds);
-        let page_block_size = if axis.block_is_horizontal {
-          page_style.content_size.width
-        } else {
-          page_style.content_size.height
-        };
-        content.bounds = if axis.block_is_horizontal {
-          Rect::from_xywh(
-            content.bounds.x(),
-            content.bounds.y(),
-            page_style.content_size.width,
-            content.bounds.height(),
-          )
-        } else {
-          Rect::from_xywh(
-            content.bounds.x(),
-            content.bounds.y(),
-            content.bounds.width(),
-            page_style.content_size.height,
-          )
-        };
-        if !axis.block_positive {
-          // `clip_node` rebases fragments to the minimum physical coordinate of the clipped slice.
-          // When the block axis runs in the negative direction (e.g. `writing-mode: vertical-rl`),
-          // paginated slices should instead align their block-start edge to the page's block-start
-          // edge (right/bottom) after the page content box is expanded to its full size.
-          let delta = (page_block_size - clipped_block_size).max(0.0);
-          if delta > EPSILON {
-            for child in content.children_mut().iter_mut() {
-              if axis.block_is_horizontal {
-                translate_fragment(child, delta, 0.0);
-              } else {
-                translate_fragment(child, 0.0, delta);
-              }
-            }
-          }
-        }
-        translate_fragment(
-          &mut content,
-          content_offset.x,
-          content_offset.y,
-        );
-        page_running_elements = running_elements_for_page_fragment(&content, root_axes, &mut running_element_state);
-        if log_running_elements {
-          let mut counts: HashMap<String, usize> = HashMap::new();
-          fn collect(node: &FragmentNode, out: &mut HashMap<String, usize>) {
-            if let FragmentContent::RunningAnchor { name, .. } = &node.content {
-              *out.entry(name.to_string()).or_insert(0) += 1;
-            }
-            for child in node.children.iter() {
-              collect(child, out);
-            }
-          }
-          fn first_text(node: &FragmentNode) -> Option<String> {
-            match &node.content {
-              FragmentContent::Text { text, .. } => Some(text.to_string()),
-              _ => {
-                for child in node.children.iter() {
-                  if let Some(found) = first_text(child) {
-                    return Some(found);
-                  }
-                }
-                None
-              }
-            }
-          }
-          collect(&content, &mut counts);
-          let mut previews: HashMap<String, Vec<String>> = HashMap::new();
-          for (name, values) in &page_running_elements {
-            let mut texts = Vec::new();
-            for snap in values.first.iter().chain(values.last.iter()) {
-              if let Some(text) = first_text(snap) {
-                let preview: String = text.chars().take(80).collect();
-                texts.push(preview);
-              }
-            }
-            previews.insert(name.clone(), texts);
-          }
-          eprintln!(
-            "[paginate-running] page={} anchors={:?} selected={:?}",
-            page_index, counts, previews
+        if let Some(mut content) = clipped {
+          strip_fixed_fragments(&mut content);
+          let break_before_forced = start > EPSILON && planner.analyzer.is_forced_break_at(start);
+          let is_last_fragment = end >= total_height - 0.01;
+          let break_after_forced = !is_last_fragment && planner.analyzer.is_forced_break_at(end);
+          normalize_fragment_margins(
+            &mut content,
+            page_index == 0,
+            is_last_fragment,
+            break_before_forced,
+            break_after_forced,
+            &axis,
           );
+          trim_clipped_content_start(&mut content, &axis, &token);
+          if page_footnotes.is_empty() {
+            page_footnotes = collect_footnotes_for_page(&content, &axis);
+          }
+          // Generate footnote body slices. Oversized footnotes are fragmented and continued on
+          // subsequent pages.
+          let separator_block = 1.0;
+          let main_block = (end - start).max(0.0);
+          let mut available_for_oversize = (page_block - main_block - separator_block).max(0.0);
+          let mut footnote_slices: Vec<FragmentNode> = Vec::new();
+          for occ in page_footnotes.iter() {
+            let mut snapshot = occ.snapshot.clone();
+            let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
+            snapshot.translate_root_in_place(offset);
+
+            let body_block = axis.block_size(&snapshot.bounds).max(0.0);
+            let is_oversize = body_block + separator_block > page_block + EPSILON;
+            if !is_oversize {
+              footnote_slices.push(snapshot);
+              continue;
+            }
+
+            if available_for_oversize <= EPSILON {
+              available_for_oversize = (page_block - separator_block).max(0.0);
+            }
+
+            let analyzer = FragmentationAnalyzer::new(
+              &snapshot,
+              FragmentationContext::Page,
+              root_axes,
+              true,
+              Some(page_block),
+            );
+            let total_extent = analyzer.content_extent().max(EPSILON);
+            let mut pending = PendingFootnote {
+              root: snapshot,
+              analyzer,
+              opportunity_cursor: 0,
+              offset: 0.0,
+              total_extent,
+            };
+
+            let next = pending.analyzer.next_boundary_with_cursor(
+              pending.offset,
+              available_for_oversize,
+              pending.total_extent,
+              &mut pending.opportunity_cursor,
+            )?;
+
+            let root_block_size = axis.block_size(&pending.root.bounds);
+            if let Some(mut slice) = clip_node(
+              &pending.root,
+              &axis,
+              pending.offset,
+              next,
+              0.0,
+              pending.offset,
+              next,
+              root_block_size,
+              page_index,
+              0,
+              FragmentationContext::Page,
+              available_for_oversize,
+              root_axes,
+            )? {
+              let is_first_fragment = pending.offset <= EPSILON;
+              let is_last_fragment = next >= pending.total_extent - EPSILON;
+              let break_before_forced =
+                !is_first_fragment && pending.analyzer.is_forced_break_at(pending.offset);
+              let break_after_forced =
+                !is_last_fragment && pending.analyzer.is_forced_break_at(next);
+              normalize_fragment_margins(
+                &mut slice,
+                is_first_fragment,
+                is_last_fragment,
+                break_before_forced,
+                break_after_forced,
+                &axis,
+              );
+              footnote_slices.push(slice);
+            }
+
+            pending.offset = next;
+            if pending.offset < pending.total_extent - EPSILON {
+              pending_footnotes.push_back(pending);
+            }
+          }
+
+          let footnote_area =
+            build_footnote_area_fragment(&page_style, &axis, content_offset, &footnote_slices);
+
+          let clipped_block_size = axis.block_size(&content.bounds);
+          let page_block_size = if axis.block_is_horizontal {
+            page_style.content_size.width
+          } else {
+            page_style.content_size.height
+          };
+          content.bounds = if axis.block_is_horizontal {
+            Rect::from_xywh(
+              content.bounds.x(),
+              content.bounds.y(),
+              page_style.content_size.width,
+              content.bounds.height(),
+            )
+          } else {
+            Rect::from_xywh(
+              content.bounds.x(),
+              content.bounds.y(),
+              content.bounds.width(),
+              page_style.content_size.height,
+            )
+          };
+          if !axis.block_positive {
+            // `clip_node` rebases fragments to the minimum physical coordinate of the clipped slice.
+            // When the block axis runs in the negative direction (e.g. `writing-mode: vertical-rl`),
+            // paginated slices should instead align their block-start edge to the page's block-start
+            // edge (right/bottom) after the page content box is expanded to its full size.
+            let delta = (page_block_size - clipped_block_size).max(0.0);
+            if delta > EPSILON {
+              for child in content.children_mut().iter_mut() {
+                if axis.block_is_horizontal {
+                  translate_fragment(child, delta, 0.0);
+                } else {
+                  translate_fragment(child, 0.0, delta);
+                }
+              }
+            }
+          }
+          translate_fragment(&mut content, content_offset.x, content_offset.y);
+          page_running_elements =
+            running_elements_for_page_fragment(&content, root_axes, &mut running_element_state);
+          if log_running_elements {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            fn collect(node: &FragmentNode, out: &mut HashMap<String, usize>) {
+              if let FragmentContent::RunningAnchor { name, .. } = &node.content {
+                *out.entry(name.to_string()).or_insert(0) += 1;
+              }
+              for child in node.children.iter() {
+                collect(child, out);
+              }
+            }
+            fn first_text(node: &FragmentNode) -> Option<String> {
+              match &node.content {
+                FragmentContent::Text { text, .. } => Some(text.to_string()),
+                _ => {
+                  for child in node.children.iter() {
+                    if let Some(found) = first_text(child) {
+                      return Some(found);
+                    }
+                  }
+                  None
+                }
+              }
+            }
+            collect(&content, &mut counts);
+            let mut previews: HashMap<String, Vec<String>> = HashMap::new();
+            for (name, values) in &page_running_elements {
+              let mut texts = Vec::new();
+              for snap in values.first.iter().chain(values.last.iter()) {
+                if let Some(text) = first_text(snap) {
+                  let preview: String = text.chars().take(80).collect();
+                  texts.push(preview);
+                }
+              }
+              previews.insert(name.clone(), texts);
+            }
+            eprintln!(
+              "[paginate-running] page={} anchors={:?} selected={:?}",
+              page_index, counts, previews
+            );
+          }
+          document_wrapper.children_mut().push(content);
+          if let Some(footnote_area) = footnote_area {
+            document_wrapper.children_mut().push(footnote_area);
+          }
         }
-        document_wrapper.children_mut().push(content);
-        if let Some(footnote_area) = footnote_area {
-          document_wrapper.children_mut().push(footnote_area);
-        }
-      }
 
-      string_slice_start = start;
-      string_slice_end = end;
+        string_slice_start = start;
+        string_slice_end = end;
 
-      let mut token_pos = end;
-      let mut containing_line = None;
-      line_start_containing_pos(
-        &layout.root,
-        end,
-        0.0,
-        root_block_size,
-        &axis,
-        &mut containing_line,
-      );
-      if let Some(line_start) = containing_line {
-        // If the page boundary falls inside a line box, prefer moving the entire line to the next
-        // page rather than splitting it.
-        //
-        // However, when the line itself starts at (or before) the current page start (e.g. an
-        // oversized line that overflows the fragmentainer), snapping back to the line start would
-        // produce an empty page and stall pagination. Only snap when it advances beyond the
-        // current page start.
-        if line_start > start + EPSILON {
-          token_pos = line_start;
-        }
-      }
-
-      let mut best_next: Option<(f32, BreakToken)> = None;
-      next_break_token_after_pos(
-        &layout.root,
-        token_pos,
-        0.0,
-        root_block_size,
-        &axis,
-        &mut best_next,
-      );
-      let continuation = if token_pos >= total_height - EPSILON {
-        None
-      } else {
-        continuation_token_for_pos(&layout.root, token_pos, 0.0, root_block_size, &axis)
-      };
-      next_token = match best_next {
-        // If the next break token begins at the current boundary, prefer it over continuation
-        // offsets. (This is especially important for line/text tokens, which enable stable trimming
-        // when rewrapping causes the token offset to land mid-line.)
-        Some((next_start, tok)) if (next_start - token_pos).abs() < EPSILON => tok,
-        Some((_next_start, tok)) => continuation.unwrap_or(tok),
-        None => continuation.unwrap_or(BreakToken::End),
-      };
-
-      // Ensure the continuation token actually advances pagination. If it doesn't, fall back to a
-      // geometry-based continuation at the page boundary so we never enter an infinite pagination
-      // loop (which would otherwise eventually OOM).
-      if !matches!(next_token, BreakToken::End) {
-        let next_start = flow_start_for_token_in_layout(
+        let mut token_pos = end;
+        let mut containing_line = None;
+        line_start_containing_pos(
           &layout.root,
-          &next_token,
+          end,
           0.0,
           root_block_size,
           &axis,
-        )
-        .unwrap_or(total_height);
-        if next_start <= start + EPSILON {
-          next_token =
-            continuation_token_for_pos(&layout.root, end, 0.0, root_block_size, &axis)
-              .unwrap_or(BreakToken::End);
+          &mut containing_line,
+        );
+        if let Some(line_start) = containing_line {
+          // If the page boundary falls inside a line box, prefer moving the entire line to the next
+          // page rather than splitting it.
+          //
+          // However, when the line itself starts at (or before) the current page start (e.g. an
+          // oversized line that overflows the fragmentainer), snapping back to the line start would
+          // produce an empty page and stall pagination. Only snap when it advances beyond the
+          // current page start.
+          if line_start > start + EPSILON {
+            token_pos = line_start;
+          }
         }
-      }
+
+        let mut best_next: Option<(f32, BreakToken)> = None;
+        next_break_token_after_pos(
+          &layout.root,
+          token_pos,
+          0.0,
+          root_block_size,
+          &axis,
+          &mut best_next,
+        );
+        let continuation = if token_pos >= total_height - EPSILON {
+          None
+        } else {
+          continuation_token_for_pos(&layout.root, token_pos, 0.0, root_block_size, &axis)
+        };
+        next_token = match best_next {
+          // If the next break token begins at the current boundary, prefer it over continuation
+          // offsets. (This is especially important for line/text tokens, which enable stable trimming
+          // when rewrapping causes the token offset to land mid-line.)
+          Some((next_start, tok)) if (next_start - token_pos).abs() < EPSILON => tok,
+          Some((_next_start, tok)) => continuation.unwrap_or(tok),
+          None => continuation.unwrap_or(BreakToken::End),
+        };
+
+        // Ensure the continuation token actually advances pagination. If it doesn't, fall back to a
+        // geometry-based continuation at the page boundary so we never enter an infinite pagination
+        // loop (which would otherwise eventually OOM).
+        if !matches!(next_token, BreakToken::End) {
+          let next_start =
+            flow_start_for_token_in_layout(&layout.root, &next_token, 0.0, root_block_size, &axis)
+              .unwrap_or(total_height);
+          if next_start <= start + EPSILON {
+            next_token = continuation_token_for_pos(&layout.root, end, 0.0, root_block_size, &axis)
+              .unwrap_or(BreakToken::End);
+          }
+        }
       }
     }
 
     for mut fixed in fixed_fragments {
-      translate_fragment(
-        &mut fixed,
-        content_offset.x,
-        content_offset.y,
-      );
+      translate_fragment(&mut fixed, content_offset.x, content_offset.y);
       document_wrapper.children_mut().push(fixed);
     }
 
@@ -1615,13 +1644,8 @@ pub fn paginate_fragment_tree(
       // Blank pages still participate in margin box running element resolution by carrying the last
       // running element seen so far.
       let mut idx = 0usize;
-      page_running_elements = running_elements_for_page(
-        &[],
-        &mut idx,
-        &mut running_element_state,
-        0.0,
-        0.0,
-      );
+      page_running_elements =
+        running_elements_for_page(&[], &mut idx, &mut running_element_state, 0.0, 0.0);
     }
 
     pages.push((
@@ -2081,7 +2105,9 @@ fn collect_footnote_occurrences(
   out: &mut Vec<FootnoteOccurrence>,
 ) {
   let node_block_size = axis.block_size(&node.bounds);
-  let abs_block = axis.flow_range(abs_flow_start, parent_block_size, &node.bounds).0;
+  let abs_block = axis
+    .flow_range(abs_flow_start, parent_block_size, &node.bounds)
+    .0;
   let current_line_start = if matches!(node.content, FragmentContent::Line { .. }) {
     Some(abs_block)
   } else {
@@ -2099,7 +2125,14 @@ fn collect_footnote_occurrences(
   }
 
   for child in node.children.iter() {
-    collect_footnote_occurrences(child, abs_block, node_block_size, axis, current_line_start, out);
+    collect_footnote_occurrences(
+      child,
+      abs_block,
+      node_block_size,
+      axis,
+      current_line_start,
+      out,
+    );
   }
 }
 
@@ -2356,7 +2389,10 @@ fn substitute_running_element_placeholders(
   while let Some(node_ptr) = stack.pop() {
     unsafe {
       let node = &mut *node_ptr;
-      if let FragmentContent::Replaced { box_id: Some(id), .. } = &node.content {
+      if let FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } = &node.content
+      {
         // Box IDs are only unique within a single box tree. Running element snapshots originate from
         // the *document* box tree, while margin box content is laid out from a separate synthetic
         // box tree whose IDs start at 1. Guard the substitution by ensuring we only match the
@@ -2368,12 +2404,12 @@ fn substitute_running_element_placeholders(
           .is_some_and(|style| Arc::ptr_eq(style, placeholder_style))
         {
           if let Some(snapshot) = element_placeholders.get(id) {
-          let mut inserted = snapshot.clone();
-          inserted.translate_root_in_place(Point::new(node.bounds.x(), node.bounds.y()));
-          inserted.fragmentainer_index = node.fragmentainer_index;
-          inserted.fragmentainer = node.fragmentainer;
-          inserted.slice_info = node.slice_info;
-          *node = inserted;
+            let mut inserted = snapshot.clone();
+            inserted.translate_root_in_place(Point::new(node.bounds.x(), node.bounds.y()));
+            inserted.fragmentainer_index = node.fragmentainer_index;
+            inserted.fragmentainer = node.fragmentainer;
+            inserted.slice_info = node.slice_info;
+            *node = inserted;
           }
         }
       }
@@ -3563,8 +3599,14 @@ mod tests {
     let running_strings: HashMap<String, RunningStringValues> = HashMap::new();
     let running_elements: HashMap<String, RunningElementValues> = HashMap::new();
 
-    let (children, element_snapshots) =
-      build_margin_box_children(&box_style, 0, 1, &running_strings, &running_elements, &style);
+    let (children, element_snapshots) = build_margin_box_children(
+      &box_style,
+      0,
+      1,
+      &running_strings,
+      &running_elements,
+      &style,
+    );
     assert!(element_snapshots.is_empty());
     assert_eq!(children.len(), 1);
     let crate::tree::box_tree::BoxType::Replaced(replaced) = &children[0].box_type else {

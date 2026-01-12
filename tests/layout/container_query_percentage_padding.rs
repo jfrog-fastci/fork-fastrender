@@ -95,4 +95,3 @@ fn container_query_percent_padding_uses_resolved_content_box_size() {
     bbb
   );
 }
-

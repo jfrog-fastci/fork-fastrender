@@ -20,7 +20,8 @@ pub mod vmjs_host_dispatch;
 
 /// Canonical bindings runtime for installing WebIDL-generated APIs onto a real `vm-js` realm.
 pub use crate::js::webidl_runtime_vmjs::{
-  IteratorRecord, NativeHostFunction, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime,
+  IteratorRecord, NativeHostFunction, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState,
+  WebIdlBindingsRuntime,
 };
 
 pub use vmjs_host_dispatch::VmJsWebIdlBindingsHostDispatch;

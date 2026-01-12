@@ -4,5 +4,5 @@
 //! reference-image comparison utilities (`tests/ref/`) without spawning additional standalone
 //! integration-test binaries.
 
-mod r#ref;
 mod determinism;
+mod r#ref;

@@ -58,9 +58,13 @@ fn unscaled_image_snapping_does_not_overpaint_border() {
 
   let image_px = pixmap.pixel(2, 10).expect("image pixel");
   assert_eq!(
-    (image_px.red(), image_px.green(), image_px.blue(), image_px.alpha()),
+    (
+      image_px.red(),
+      image_px.green(),
+      image_px.blue(),
+      image_px.alpha()
+    ),
     (255, 0, 0, 255),
     "expected the image content to begin just to the right of the border"
   );
 }
-

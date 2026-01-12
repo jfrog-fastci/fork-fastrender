@@ -42,4 +42,3 @@ fn container_query_prepass_avoids_extra_fixpoint_iteration() {
     "expected pre-layout container query pass to avoid extra iterations: {diagnostics:?}"
   );
 }
-

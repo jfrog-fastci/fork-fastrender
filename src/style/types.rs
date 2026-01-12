@@ -8,8 +8,8 @@ use crate::css::types::RadialGradientShape;
 use crate::css::types::RadialGradientSize;
 use crate::style::color::Rgba;
 use crate::style::values::{CalcSizeExprId, Length};
-use cssparser::{Parser, ParserInput, Token};
 pub use crate::text::hyphenation::HyphensMode;
+use cssparser::{Parser, ParserInput, Token};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -4071,21 +4071,20 @@ impl TextWrap {
             continue;
           }
 
-          let parsed_style = if ident.eq_ignore_ascii_case("auto")
-            || ident.eq_ignore_ascii_case("normal")
-          {
-            Some(WrapStyle::Auto)
-          } else if ident.eq_ignore_ascii_case("balance") {
-            Some(WrapStyle::Balance)
-          } else if ident.eq_ignore_ascii_case("pretty") {
-            Some(WrapStyle::Pretty)
-          } else if ident.eq_ignore_ascii_case("stable") {
-            Some(WrapStyle::Stable)
-          } else if ident.eq_ignore_ascii_case("avoid-orphans") {
-            Some(WrapStyle::AvoidOrphans)
-          } else {
-            None
-          };
+          let parsed_style =
+            if ident.eq_ignore_ascii_case("auto") || ident.eq_ignore_ascii_case("normal") {
+              Some(WrapStyle::Auto)
+            } else if ident.eq_ignore_ascii_case("balance") {
+              Some(WrapStyle::Balance)
+            } else if ident.eq_ignore_ascii_case("pretty") {
+              Some(WrapStyle::Pretty)
+            } else if ident.eq_ignore_ascii_case("stable") {
+              Some(WrapStyle::Stable)
+            } else if ident.eq_ignore_ascii_case("avoid-orphans") {
+              Some(WrapStyle::AvoidOrphans)
+            } else {
+              None
+            };
 
           if let Some(parsed_style) = parsed_style {
             if style.replace(parsed_style).is_some() {
@@ -4572,7 +4571,11 @@ impl PositionArea {
     Self::Keywords(block_kw(tracks.block), inline_kw(tracks.inline))
   }
 
-  pub fn resolve_tracks(&self, writing_mode: WritingMode, direction: Direction) -> Option<PositionAreaTracks> {
+  pub fn resolve_tracks(
+    &self,
+    writing_mode: WritingMode,
+    direction: Direction,
+  ) -> Option<PositionAreaTracks> {
     let (a, b) = match self {
       PositionArea::None => return None,
       PositionArea::Keywords(a, b) => (*a, *b),
@@ -4604,7 +4607,9 @@ impl PositionArea {
         PositionAreaKeyword::Start | PositionAreaKeyword::SelfStart => {
           TokenKind::Ambiguous(PositionAreaTrack::Start)
         }
-        PositionAreaKeyword::End | PositionAreaKeyword::SelfEnd => TokenKind::Ambiguous(PositionAreaTrack::End),
+        PositionAreaKeyword::End | PositionAreaKeyword::SelfEnd => {
+          TokenKind::Ambiguous(PositionAreaTrack::End)
+        }
         PositionAreaKeyword::SpanStart | PositionAreaKeyword::SpanSelfStart => {
           TokenKind::Ambiguous(PositionAreaTrack::SpanStart)
         }
@@ -4615,7 +4620,9 @@ impl PositionArea {
         PositionAreaKeyword::BlockStart | PositionAreaKeyword::SelfBlockStart => {
           TokenKind::Block(PositionAreaTrack::Start)
         }
-        PositionAreaKeyword::BlockEnd | PositionAreaKeyword::SelfBlockEnd => TokenKind::Block(PositionAreaTrack::End),
+        PositionAreaKeyword::BlockEnd | PositionAreaKeyword::SelfBlockEnd => {
+          TokenKind::Block(PositionAreaTrack::End)
+        }
         PositionAreaKeyword::SpanBlockStart | PositionAreaKeyword::SpanSelfBlockStart => {
           TokenKind::Block(PositionAreaTrack::SpanStart)
         }
@@ -4640,8 +4647,12 @@ impl PositionArea {
         PositionAreaKeyword::Right => TokenKind::X(AxisValue::PhysicalEnd),
         PositionAreaKeyword::SpanLeft => TokenKind::X(AxisValue::SpanPhysicalStart),
         PositionAreaKeyword::SpanRight => TokenKind::X(AxisValue::SpanPhysicalEnd),
-        PositionAreaKeyword::XStart | PositionAreaKeyword::SelfXStart => TokenKind::X(AxisValue::Track(PositionAreaTrack::Start)),
-        PositionAreaKeyword::XEnd | PositionAreaKeyword::SelfXEnd => TokenKind::X(AxisValue::Track(PositionAreaTrack::End)),
+        PositionAreaKeyword::XStart | PositionAreaKeyword::SelfXStart => {
+          TokenKind::X(AxisValue::Track(PositionAreaTrack::Start))
+        }
+        PositionAreaKeyword::XEnd | PositionAreaKeyword::SelfXEnd => {
+          TokenKind::X(AxisValue::Track(PositionAreaTrack::End))
+        }
         PositionAreaKeyword::SpanXStart | PositionAreaKeyword::SpanSelfXStart => {
           TokenKind::X(AxisValue::Track(PositionAreaTrack::SpanStart))
         }
@@ -4653,8 +4664,12 @@ impl PositionArea {
         PositionAreaKeyword::Bottom => TokenKind::Y(AxisValue::PhysicalEnd),
         PositionAreaKeyword::SpanTop => TokenKind::Y(AxisValue::SpanPhysicalStart),
         PositionAreaKeyword::SpanBottom => TokenKind::Y(AxisValue::SpanPhysicalEnd),
-        PositionAreaKeyword::YStart | PositionAreaKeyword::SelfYStart => TokenKind::Y(AxisValue::Track(PositionAreaTrack::Start)),
-        PositionAreaKeyword::YEnd | PositionAreaKeyword::SelfYEnd => TokenKind::Y(AxisValue::Track(PositionAreaTrack::End)),
+        PositionAreaKeyword::YStart | PositionAreaKeyword::SelfYStart => {
+          TokenKind::Y(AxisValue::Track(PositionAreaTrack::Start))
+        }
+        PositionAreaKeyword::YEnd | PositionAreaKeyword::SelfYEnd => {
+          TokenKind::Y(AxisValue::Track(PositionAreaTrack::End))
+        }
         PositionAreaKeyword::SpanYStart | PositionAreaKeyword::SpanSelfYStart => {
           TokenKind::Y(AxisValue::Track(PositionAreaTrack::SpanStart))
         }
@@ -4734,14 +4749,8 @@ impl PositionArea {
 
       match (block, inline, ambiguous) {
         (Some(block), Some(inline), None) => Some(PositionAreaTracks { block, inline }),
-        (Some(block), None, Some(amb)) => Some(PositionAreaTracks {
-          block,
-          inline: amb,
-        }),
-        (None, Some(inline), Some(amb)) => Some(PositionAreaTracks {
-          block: amb,
-          inline,
-        }),
+        (Some(block), None, Some(amb)) => Some(PositionAreaTracks { block, inline: amb }),
+        (None, Some(inline), Some(amb)) => Some(PositionAreaTracks { block: amb, inline }),
         // Disallow `block-start block-end` etc (missing inline axis).
         _ => None,
       }
@@ -4785,10 +4794,22 @@ impl PositionArea {
         positive: bool,
       ) -> (crate::style::PhysicalSide, crate::style::PhysicalSide) {
         match (horizontal, positive) {
-          (true, true) => (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right),
-          (true, false) => (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left),
-          (false, true) => (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom),
-          (false, false) => (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top),
+          (true, true) => (
+            crate::style::PhysicalSide::Left,
+            crate::style::PhysicalSide::Right,
+          ),
+          (true, false) => (
+            crate::style::PhysicalSide::Right,
+            crate::style::PhysicalSide::Left,
+          ),
+          (false, true) => (
+            crate::style::PhysicalSide::Top,
+            crate::style::PhysicalSide::Bottom,
+          ),
+          (false, false) => (
+            crate::style::PhysicalSide::Bottom,
+            crate::style::PhysicalSide::Top,
+          ),
         }
       }
 
@@ -4804,69 +4825,77 @@ impl PositionArea {
       let x_is_inline = crate::style::inline_axis_is_horizontal(writing_mode);
 
       let (logical_for_x, logical_for_y) = if x_is_inline {
-        (crate::style::LogicalAxis::Inline, crate::style::LogicalAxis::Block)
+        (
+          crate::style::LogicalAxis::Inline,
+          crate::style::LogicalAxis::Block,
+        )
       } else {
-        (crate::style::LogicalAxis::Block, crate::style::LogicalAxis::Inline)
+        (
+          crate::style::LogicalAxis::Block,
+          crate::style::LogicalAxis::Inline,
+        )
       };
 
-      let physical_start_for_axis = |axis: crate::style::LogicalAxis| -> crate::style::PhysicalSide {
-        match axis {
-          crate::style::LogicalAxis::Inline => inline_sides.0,
-          crate::style::LogicalAxis::Block => block_sides.0,
-        }
-      };
-
-      let map_physical_value = |value: AxisValue, axis: crate::style::LogicalAxis| -> Option<PositionAreaTrack> {
-        let start_side = physical_start_for_axis(axis);
-        let physical_start_side = match axis {
-          crate::style::LogicalAxis::Inline => {
-            if x_is_inline {
-              crate::style::PhysicalSide::Left
-            } else {
-              crate::style::PhysicalSide::Top
-            }
-          }
-          crate::style::LogicalAxis::Block => {
-            if x_is_inline {
-              crate::style::PhysicalSide::Top
-            } else {
-              crate::style::PhysicalSide::Left
-            }
+      let physical_start_for_axis =
+        |axis: crate::style::LogicalAxis| -> crate::style::PhysicalSide {
+          match axis {
+            crate::style::LogicalAxis::Inline => inline_sides.0,
+            crate::style::LogicalAxis::Block => block_sides.0,
           }
         };
 
-        Some(match value {
-          AxisValue::Track(track) => track,
-          AxisValue::PhysicalStart => {
-            if start_side == physical_start_side {
-              PositionAreaTrack::Start
-            } else {
-              PositionAreaTrack::End
+      let map_physical_value =
+        |value: AxisValue, axis: crate::style::LogicalAxis| -> Option<PositionAreaTrack> {
+          let start_side = physical_start_for_axis(axis);
+          let physical_start_side = match axis {
+            crate::style::LogicalAxis::Inline => {
+              if x_is_inline {
+                crate::style::PhysicalSide::Left
+              } else {
+                crate::style::PhysicalSide::Top
+              }
             }
-          }
-          AxisValue::PhysicalEnd => {
-            if start_side == physical_start_side {
-              PositionAreaTrack::End
-            } else {
-              PositionAreaTrack::Start
+            crate::style::LogicalAxis::Block => {
+              if x_is_inline {
+                crate::style::PhysicalSide::Top
+              } else {
+                crate::style::PhysicalSide::Left
+              }
             }
-          }
-          AxisValue::SpanPhysicalStart => {
-            if start_side == physical_start_side {
-              PositionAreaTrack::SpanStart
-            } else {
-              PositionAreaTrack::SpanEnd
+          };
+
+          Some(match value {
+            AxisValue::Track(track) => track,
+            AxisValue::PhysicalStart => {
+              if start_side == physical_start_side {
+                PositionAreaTrack::Start
+              } else {
+                PositionAreaTrack::End
+              }
             }
-          }
-          AxisValue::SpanPhysicalEnd => {
-            if start_side == physical_start_side {
-              PositionAreaTrack::SpanEnd
-            } else {
-              PositionAreaTrack::SpanStart
+            AxisValue::PhysicalEnd => {
+              if start_side == physical_start_side {
+                PositionAreaTrack::End
+              } else {
+                PositionAreaTrack::Start
+              }
             }
-          }
-        })
-      };
+            AxisValue::SpanPhysicalStart => {
+              if start_side == physical_start_side {
+                PositionAreaTrack::SpanStart
+              } else {
+                PositionAreaTrack::SpanEnd
+              }
+            }
+            AxisValue::SpanPhysicalEnd => {
+              if start_side == physical_start_side {
+                PositionAreaTrack::SpanEnd
+              } else {
+                PositionAreaTrack::SpanStart
+              }
+            }
+          })
+        };
 
       let x_track = map_physical_value(x, logical_for_x)?;
       let y_track = map_physical_value(y, logical_for_y)?;

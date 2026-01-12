@@ -926,9 +926,8 @@ mod tests {
   #[test]
   fn arrow_down_clears_selection_at_textarea_end() {
     let value = "ab\ncdef";
-    let mut dom =
-      crate::dom::parse_html("<html><body><textarea>ab\ncdef</textarea></body></html>")
-        .expect("parse");
+    let mut dom = crate::dom::parse_html("<html><body><textarea>ab\ncdef</textarea></body></html>")
+      .expect("parse");
     let textarea_id = find_element_node_id(&mut dom, "textarea");
 
     let mut engine = InteractionEngine::new();
@@ -4045,8 +4044,11 @@ impl InteractionEngine {
                 // when the boundary is a split caret. This prevents collapsing a selection to the
                 // wrong visual edge at bidi boundaries (e.g. selecting an LTR run that ends where
                 // an RTL run begins).
-                let end_pos =
-                  crate::text::caret::caret_stop_index(&stops, end_in_line, CaretAffinity::Upstream);
+                let end_pos = crate::text::caret::caret_stop_index(
+                  &stops,
+                  end_in_line,
+                  CaretAffinity::Upstream,
+                );
 
                 if let (Some(start_pos), Some(end_pos)) = (start_pos, end_pos) {
                   let (left_edge, right_edge) = if start_pos <= end_pos {
@@ -4067,17 +4069,19 @@ impl InteractionEngine {
                     false,
                   );
                 } else {
-                  edit.set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
+                  edit.set_caret_and_maybe_extend_selection(
+                    if move_left { start } else { end },
+                    false,
+                  );
                 }
               } else {
                 // Selection spans multiple lines; fall back to logical collapse.
-                edit.set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
+                edit
+                  .set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
               }
-            } else if let Some(cur_idx) = crate::text::caret::caret_stop_index(
-              &stops,
-              caret_in_line,
-              edit.caret_affinity,
-            ) {
+            } else if let Some(cur_idx) =
+              crate::text::caret::caret_stop_index(&stops, caret_in_line, edit.caret_affinity)
+            {
               // Move caret within the current line, falling back to crossing a newline when there is
               // no further visual stop in the requested direction.
               let next_idx = if move_left {
@@ -4154,7 +4158,8 @@ impl InteractionEngine {
                   false,
                 );
               } else {
-                edit.set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
+                edit
+                  .set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
               }
             } else if let Some(cur_idx) = crate::text::caret::caret_stop_index(
               &stops,

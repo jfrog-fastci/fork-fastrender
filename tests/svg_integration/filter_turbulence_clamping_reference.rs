@@ -71,7 +71,11 @@ fn pixmaps_strict_eq(a: &Pixmap, b: &Pixmap) -> bool {
 }
 
 fn assert_pixmaps_match(context: &str, actual: &Pixmap, expected: &Pixmap) {
-  assert_eq!(actual.width(), expected.width(), "{context}: width mismatch");
+  assert_eq!(
+    actual.width(),
+    expected.width(),
+    "{context}: width mismatch"
+  );
   assert_eq!(
     actual.height(),
     expected.height(),
@@ -236,7 +240,11 @@ fn turbulence_nan_base_frequency_matches_resvg_and_falls_back_consistently() {
     NanBehavior::Zero => render_fastrender(&svg_zero),
   };
 
-  assert_pixmaps_match("baseFrequency=NaN FastRender vs resvg", &fast_nan, &resvg_nan);
+  assert_pixmaps_match(
+    "baseFrequency=NaN FastRender vs resvg",
+    &fast_nan,
+    &resvg_nan,
+  );
   assert_eq!(
     fast_nan.data(),
     fast_equivalent.data(),

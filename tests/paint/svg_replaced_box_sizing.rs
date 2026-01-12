@@ -65,10 +65,18 @@ fn inline_svg_viewport_uses_content_box_size_for_border_box() {
     // SVG should establish its viewport using the content box size (24x24); otherwise resvg scales
     // the 24x24 rect down and it no longer reaches the bottom/right edges.
     assert_eq!(pixel(pixmap, 30, 20), expected_black, "{label}: right edge");
-    assert_eq!(pixel(pixmap, 20, 30), expected_black, "{label}: bottom edge");
+    assert_eq!(
+      pixel(pixmap, 20, 30),
+      expected_black,
+      "{label}: bottom edge"
+    );
 
     // Ensure we still treat padding as outside the replaced SVG content.
-    assert_eq!(pixel(pixmap, 4, 20), expected_white, "{label}: left padding");
+    assert_eq!(
+      pixel(pixmap, 4, 20),
+      expected_white,
+      "{label}: left padding"
+    );
     assert_eq!(pixel(pixmap, 20, 4), expected_white, "{label}: top padding");
   }
 
@@ -78,4 +86,3 @@ fn inline_svg_viewport_uses_content_box_size_for_border_box() {
     "inline SVG output diverged between backends"
   );
 }
-

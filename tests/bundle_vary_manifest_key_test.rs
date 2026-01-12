@@ -18,8 +18,7 @@ fn create_minimal_bundle_with_vary_manifest_key() -> (TempDir, String, Vec<u8>) 
   let resource_bytes = vec![0x00, 0x01, 0x02, 0x03, 0x7f, 0xfe, 0xff];
   std::fs::write(root.join("res.bin"), &resource_bytes).expect("write bundled resource");
 
-  let synthetic_key =
-    "https://example.invalid/res.bin@@fastr:bundle:vary_v1@@test-key".to_string();
+  let synthetic_key = "https://example.invalid/res.bin@@fastr:bundle:vary_v1@@test-key".to_string();
 
   let mut resources = BTreeMap::new();
   resources.insert(
@@ -108,15 +107,26 @@ fn synthetic_vary_manifest_key_missing_variant_has_actionable_error() {
     .fetch_manifest_entry(&missing_key)
     .expect_err("missing Vary variant should error");
   let message = err.to_string();
-  assert!(message.contains("Vary variant"), "unexpected error: {message}");
-  assert!(message.contains(&missing_key), "unexpected error: {message}");
+  assert!(
+    message.contains("Vary variant"),
+    "unexpected error: {message}"
+  );
+  assert!(
+    message.contains(&missing_key),
+    "unexpected error: {message}"
+  );
 
   let fetcher = BundledFetcher::new(bundle);
   let err = fetcher
     .fetch(&missing_key)
     .expect_err("missing Vary variant should error");
   let message = err.to_string();
-  assert!(message.contains("Vary variant"), "unexpected error: {message}");
-  assert!(message.contains(&missing_key), "unexpected error: {message}");
+  assert!(
+    message.contains("Vary variant"),
+    "unexpected error: {message}"
+  );
+  assert!(
+    message.contains(&missing_key),
+    "unexpected error: {message}"
+  );
 }
-

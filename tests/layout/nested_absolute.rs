@@ -61,7 +61,11 @@ fn abspos_insets_fill_positioned_parent_padding_box_in_nested_block_layout() {
   let fc = BlockFormattingContext::new();
   let fragment = fc.layout(&root, &constraints).expect("block layout");
 
-  assert_eq!(fragment.children.len(), 1, "parent fragment should be present");
+  assert_eq!(
+    fragment.children.len(),
+    1,
+    "parent fragment should be present"
+  );
   let parent_fragment = &fragment.children[0];
   assert!(
     (parent_fragment.bounds.width() - 150.0).abs() < 0.1,

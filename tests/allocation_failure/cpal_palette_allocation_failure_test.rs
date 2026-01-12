@@ -1,7 +1,7 @@
+use super::{fail_next_allocation, failed_allocs, lock_allocator};
 use fastrender::style::color::Rgba;
 use fastrender::text::color_fonts::parse_cpal_palette;
 use std::mem;
-use super::{fail_next_allocation, failed_allocs, lock_allocator};
 
 #[test]
 fn cpal_palette_parse_survives_allocation_failure() {
@@ -24,10 +24,7 @@ fn cpal_palette_parse_survives_allocation_failure() {
 
   // Pad to color offset and append BGRA records.
   data.resize(color_offset as usize, 0);
-  data.resize(
-    color_offset as usize + num_color_records as usize * 4,
-    0xFF,
-  );
+  data.resize(color_offset as usize + num_color_records as usize * 4, 0xFF);
 
   let parsed = parse_cpal_palette(&data, 0).expect("expected palette parse to succeed");
   assert_eq!(parsed.colors.len(), num_entries as usize);

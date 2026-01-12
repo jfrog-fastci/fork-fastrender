@@ -124,9 +124,15 @@ fn table_fixed_layout_colspan_width_respects_existing_columns() {
   );
 
   let gap_ab = b.x() - (a.x() + a.width());
-  assert!(gap_ab.abs() < 0.1, "expected A/B to be adjacent (gap={gap_ab})");
+  assert!(
+    gap_ab.abs() < 0.1,
+    "expected A/B to be adjacent (gap={gap_ab})"
+  );
   let gap_bc = c.x() - (b.x() + b.width());
-  assert!(gap_bc.abs() < 0.1, "expected B/C to be adjacent (gap={gap_bc})");
+  assert!(
+    gap_bc.abs() < 0.1,
+    "expected B/C to be adjacent (gap={gap_bc})"
+  );
 }
 
 #[test]
@@ -213,9 +219,15 @@ fn table_fixed_layout_colspan_width_respects_existing_columns_rtl() {
   );
 
   let gap_ab = a.x() - (b.x() + b.width());
-  assert!(gap_ab.abs() < 0.1, "expected A/B to be adjacent in RTL (gap={gap_ab})");
+  assert!(
+    gap_ab.abs() < 0.1,
+    "expected A/B to be adjacent in RTL (gap={gap_ab})"
+  );
   let gap_bc = b.x() - (c.x() + c.width());
-  assert!(gap_bc.abs() < 0.1, "expected B/C to be adjacent in RTL (gap={gap_bc})");
+  assert!(
+    gap_bc.abs() < 0.1,
+    "expected B/C to be adjacent in RTL (gap={gap_bc})"
+  );
 }
 
 #[test]
@@ -285,9 +297,15 @@ fn table_fixed_layout_colspan_width_respects_existing_columns_collapsed_border_m
   );
 
   let gap_ab = b.x() - (a.x() + a.width());
-  assert!(gap_ab.abs() < 0.1, "expected A/B to be adjacent (gap={gap_ab})");
+  assert!(
+    gap_ab.abs() < 0.1,
+    "expected A/B to be adjacent (gap={gap_ab})"
+  );
   let gap_bc = c.x() - (b.x() + b.width());
-  assert!(gap_bc.abs() < 0.1, "expected B/C to be adjacent (gap={gap_bc})");
+  assert!(
+    gap_bc.abs() < 0.1,
+    "expected B/C to be adjacent (gap={gap_bc})"
+  );
 }
 
 #[test]
@@ -371,7 +389,13 @@ fn table_fixed_layout_colspan_width_respects_existing_columns_collapsed_border_m
   );
 
   let gap_ab = a.x() - (b.x() + b.width());
-  assert!(gap_ab.abs() < 0.1, "expected A/B to be adjacent in RTL (gap={gap_ab})");
+  assert!(
+    gap_ab.abs() < 0.1,
+    "expected A/B to be adjacent in RTL (gap={gap_ab})"
+  );
   let gap_bc = b.x() - (c.x() + c.width());
-  assert!(gap_bc.abs() < 0.1, "expected B/C to be adjacent in RTL (gap={gap_bc})");
+  assert!(
+    gap_bc.abs() < 0.1,
+    "expected B/C to be adjacent in RTL (gap={gap_bc})"
+  );
 }

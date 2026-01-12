@@ -14,7 +14,9 @@
 use crate::js::event_loop::TaskSource;
 use crate::js::url_resolve::resolve_url;
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
-use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
+use crate::js::window_timers::{
+  event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
+};
 use crate::resource::web_fetch::WebFetchLimits;
 use crate::resource::{
   origin_from_url, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
@@ -26,8 +28,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use vm_js::{
-  GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
-  Realm, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
+  PropertyKind, Realm, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
 const XHR_UNSENT: u8 = 0;
@@ -47,8 +49,10 @@ const XHR_STATUS_TEXT_MAX_BYTES: usize = 128;
 
 const XHR_URL_TOO_LONG_ERROR: &str = "XMLHttpRequest.open URL exceeds maximum length";
 const XHR_METHOD_TOO_LONG_ERROR: &str = "XMLHttpRequest.open method exceeds maximum length";
-const XHR_HEADER_NAME_TOO_LONG_ERROR: &str = "XMLHttpRequest.setRequestHeader name exceeds maximum length";
-const XHR_HEADER_VALUE_TOO_LONG_ERROR: &str = "XMLHttpRequest.setRequestHeader value exceeds maximum length";
+const XHR_HEADER_NAME_TOO_LONG_ERROR: &str =
+  "XMLHttpRequest.setRequestHeader name exceeds maximum length";
+const XHR_HEADER_VALUE_TOO_LONG_ERROR: &str =
+  "XMLHttpRequest.setRequestHeader value exceeds maximum length";
 const XHR_BODY_TOO_LONG_ERROR: &str = "XMLHttpRequest.send body exceeds maximum length";
 const XHR_RESPONSE_TYPE_TOO_LONG_ERROR: &str = "XMLHttpRequest.responseType exceeds maximum length";
 const XHR_EVENT_TYPE_TOO_LONG_ERROR: &str = "XMLHttpRequest event type exceeds maximum length";
@@ -159,7 +163,9 @@ fn envs() -> &'static Mutex<HashMap<u64, EnvState>> {
 }
 
 pub fn unregister_window_xhr_env(env_id: u64) {
-  let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+  let mut lock = envs()
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
   lock.remove(&env_id);
 }
 
@@ -173,7 +179,10 @@ pub struct WindowXhrBindings {
 
 impl WindowXhrBindings {
   fn new(env_id: u64) -> Self {
-    Self { env_id, active: true }
+    Self {
+      env_id,
+      active: true,
+    }
   }
 
   pub fn env_id(&self) -> u64 {
@@ -194,11 +203,16 @@ impl Drop for WindowXhrBindings {
   }
 }
 
-fn with_env_state<R>(env_id: u64, f: impl FnOnce(&EnvState) -> Result<R, VmError>) -> Result<R, VmError> {
-  let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-  let state = lock
-    .get(&env_id)
-    .ok_or(VmError::Unimplemented("XMLHttpRequest env id not registered"))?;
+fn with_env_state<R>(
+  env_id: u64,
+  f: impl FnOnce(&EnvState) -> Result<R, VmError>,
+) -> Result<R, VmError> {
+  let lock = envs()
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  let state = lock.get(&env_id).ok_or(VmError::Unimplemented(
+    "XMLHttpRequest env id not registered",
+  ))?;
   f(state)
 }
 
@@ -206,10 +220,12 @@ fn with_env_state_mut<R>(
   env_id: u64,
   f: impl FnOnce(&mut EnvState) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
-  let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-  let state = lock
-    .get_mut(&env_id)
-    .ok_or(VmError::Unimplemented("XMLHttpRequest env id not registered"))?;
+  let mut lock = envs()
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  let state = lock.get_mut(&env_id).ok_or(VmError::Unimplemented(
+    "XMLHttpRequest env id not registered",
+  ))?;
   f(state)
 }
 
@@ -353,7 +369,9 @@ fn xhr_constructor_call(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::TypeError("XMLHttpRequest constructor requires 'new'"))
+  Err(VmError::TypeError(
+    "XMLHttpRequest constructor requires 'new'",
+  ))
 }
 
 fn xhr_constructor_construct(
@@ -377,7 +395,11 @@ fn xhr_constructor_construct(
       .unwrap_or(Value::Undefined)
     {
       Value::Object(obj) => obj,
-      _ => return Err(VmError::InvariantViolation("XMLHttpRequest.prototype missing")),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "XMLHttpRequest.prototype missing",
+        ))
+      }
     }
   };
 
@@ -498,7 +520,12 @@ fn xhr_response_type_set(
   let raw = args.get(0).copied().unwrap_or(Value::Undefined);
   let raw = match raw {
     Value::Undefined | Value::Null => String::new(),
-    other => to_rust_string_limited(scope.heap_mut(), other, XHR_EVENT_TYPE_MAX_BYTES, XHR_RESPONSE_TYPE_TOO_LONG_ERROR)?,
+    other => to_rust_string_limited(
+      scope.heap_mut(),
+      other,
+      XHR_EVENT_TYPE_MAX_BYTES,
+      XHR_RESPONSE_TYPE_TOO_LONG_ERROR,
+    )?,
   };
 
   let normalized = match raw.as_str() {
@@ -651,9 +678,18 @@ fn xhr_open_native<Host: WindowRealmHost + 'static>(
     other => scope.heap().to_boolean(other)?,
   };
 
-  let method = to_rust_string_limited(scope.heap_mut(), method_val, XHR_METHOD_MAX_BYTES, XHR_METHOD_TOO_LONG_ERROR)?;
-  let url_input =
-    to_rust_string_limited(scope.heap_mut(), url_val, limits.max_url_bytes, XHR_URL_TOO_LONG_ERROR)?;
+  let method = to_rust_string_limited(
+    scope.heap_mut(),
+    method_val,
+    XHR_METHOD_MAX_BYTES,
+    XHR_METHOD_TOO_LONG_ERROR,
+  )?;
+  let url_input = to_rust_string_limited(
+    scope.heap_mut(),
+    url_val,
+    limits.max_url_bytes,
+    XHR_URL_TOO_LONG_ERROR,
+  )?;
   let base_url = current_document_base_url(vm, env_id)?;
   let url = resolve_url(&url_input, base_url.as_deref())
     .map_err(|_| VmError::TypeError("XMLHttpRequest.open failed to resolve URL"))?;
@@ -732,10 +768,9 @@ fn xhr_set_request_header_native(
         "XMLHttpRequest.setRequestHeader invalid state",
       ));
     }
-    let req = xhr
-      .request
-      .as_mut()
-      .ok_or(VmError::TypeError("XMLHttpRequest.open must be called first"))?;
+    let req = xhr.request.as_mut().ok_or(VmError::TypeError(
+      "XMLHttpRequest.open must be called first",
+    ))?;
     if req.headers.len() >= limits.max_header_count {
       return Err(VmError::TypeError(
         "XMLHttpRequest.setRequestHeader exceeded header count limit",
@@ -766,16 +801,17 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
 ) -> Result<Value, VmError> {
   let (env_id, xhr_id, xhr_obj) = xhr_info_from_this(scope, this)?;
 
-  let (fetcher, document_url, document_origin, referrer_policy, limits) = with_env_state(env_id, |state| {
-    let env = &state.env;
-    Ok((
-      Arc::clone(&env.fetcher),
-      env.document_url.clone(),
-      env.document_origin.clone(),
-      env.referrer_policy,
-      env.limits.clone(),
-    ))
-  })?;
+  let (fetcher, document_url, document_origin, referrer_policy, limits) =
+    with_env_state(env_id, |state| {
+      let env = &state.env;
+      Ok((
+        Arc::clone(&env.fetcher),
+        env.document_url.clone(),
+        env.document_origin.clone(),
+        env.referrer_policy,
+        env.limits.clone(),
+      ))
+    })?;
 
   // Parse body eagerly in the native call so we can enforce limits and fail fast.
   let body_val = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -800,7 +836,10 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     ),
   };
 
-  if body.as_ref().is_some_and(|b| b.len() > limits.max_request_body_bytes) {
+  if body
+    .as_ref()
+    .is_some_and(|b| b.len() > limits.max_request_body_bytes)
+  {
     return Err(VmError::TypeError(XHR_BODY_TOO_LONG_ERROR));
   }
   // Snapshot request data and transition to "in-flight" under the env lock.
@@ -818,10 +857,9 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       FetchCredentialsMode::SameOrigin
     };
     let async_flag = xhr.async_flag;
-    let mut req = xhr
-      .request
-      .clone()
-      .ok_or(VmError::TypeError("XMLHttpRequest.open must be called first"))?;
+    let mut req = xhr.request.clone().ok_or(VmError::TypeError(
+      "XMLHttpRequest.open must be called first",
+    ))?;
     req.body = body;
     xhr.request = Some(req.clone());
     xhr.send_in_progress = true;
@@ -948,8 +986,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     }
 
     let fetch_req = {
-      let mut fr =
-        FetchRequest::new(&request.url, FetchDestination::Fetch).with_credentials_mode(credentials_mode);
+      let mut fr = FetchRequest::new(&request.url, FetchDestination::Fetch)
+        .with_credentials_mode(credentials_mode);
       if let Some(referrer) = document_url.as_deref() {
         fr = fr.with_referrer_url(referrer);
       }
@@ -1184,15 +1222,21 @@ fn xhr_add_event_listener_native(
     return Ok(Value::Undefined);
   }
 
-  let event_type =
-    to_rust_string_limited(scope.heap_mut(), event_type_val, XHR_EVENT_TYPE_MAX_BYTES, XHR_EVENT_TYPE_TOO_LONG_ERROR)?;
+  let event_type = to_rust_string_limited(
+    scope.heap_mut(),
+    event_type_val,
+    XHR_EVENT_TYPE_MAX_BYTES,
+    XHR_EVENT_TYPE_TOO_LONG_ERROR,
+  )?;
   if event_type.len() > XHR_EVENT_TYPE_MAX_BYTES {
     return Err(VmError::TypeError(XHR_EVENT_TYPE_TOO_LONG_ERROR));
   }
 
   let listeners_val = get_data_prop(scope, xhr_obj, LISTENERS_KEY)?;
   let Value::Object(listeners_obj) = listeners_val else {
-    return Err(VmError::InvariantViolation("XMLHttpRequest listener registry missing"));
+    return Err(VmError::InvariantViolation(
+      "XMLHttpRequest listener registry missing",
+    ));
   };
   scope.push_root(Value::Object(listeners_obj))?;
 
@@ -1235,8 +1279,12 @@ fn xhr_remove_event_listener_native(
   let event_type_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let listener = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let event_type =
-    to_rust_string_limited(scope.heap_mut(), event_type_val, XHR_EVENT_TYPE_MAX_BYTES, XHR_EVENT_TYPE_TOO_LONG_ERROR)?;
+  let event_type = to_rust_string_limited(
+    scope.heap_mut(),
+    event_type_val,
+    XHR_EVENT_TYPE_MAX_BYTES,
+    XHR_EVENT_TYPE_TOO_LONG_ERROR,
+  )?;
 
   let listeners_val = get_data_prop(scope, xhr_obj, LISTENERS_KEY)?;
   let Value::Object(listeners_obj) = listeners_val else {
@@ -1245,7 +1293,10 @@ fn xhr_remove_event_listener_native(
   scope.push_root(Value::Object(listeners_obj))?;
 
   let key = alloc_key(scope, &event_type)?;
-  let Some(Value::Object(arr)) = scope.heap().object_get_own_data_property_value(listeners_obj, &key)? else {
+  let Some(Value::Object(arr)) = scope
+    .heap()
+    .object_get_own_data_property_value(listeners_obj, &key)?
+  else {
     return Ok(Value::Undefined);
   };
   scope.push_root(Value::Object(arr))?;
@@ -1311,9 +1362,19 @@ fn xhr_dispatch_event_native(
       scope.push_root(Value::Object(ev))?;
       let type_key = alloc_key(scope, "type")?;
       let t = vm.get_with_host_and_hooks(host, scope, hooks, ev, type_key)?;
-      to_rust_string_limited(scope.heap_mut(), t, XHR_EVENT_TYPE_MAX_BYTES, XHR_EVENT_TYPE_TOO_LONG_ERROR)?
+      to_rust_string_limited(
+        scope.heap_mut(),
+        t,
+        XHR_EVENT_TYPE_MAX_BYTES,
+        XHR_EVENT_TYPE_TOO_LONG_ERROR,
+      )?
     }
-    other => to_rust_string_limited(scope.heap_mut(), other, XHR_EVENT_TYPE_MAX_BYTES, XHR_EVENT_TYPE_TOO_LONG_ERROR)?,
+    other => to_rust_string_limited(
+      scope.heap_mut(),
+      other,
+      XHR_EVENT_TYPE_MAX_BYTES,
+      XHR_EVENT_TYPE_TOO_LONG_ERROR,
+    )?,
   };
 
   dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, &event_type)?;
@@ -1398,7 +1459,10 @@ fn dispatch_xhr_event(
   scope.push_root(Value::Object(listeners_obj))?;
 
   let key = alloc_key(scope, event_type)?;
-  let Some(Value::Object(arr)) = scope.heap().object_get_own_data_property_value(listeners_obj, &key)? else {
+  let Some(Value::Object(arr)) = scope
+    .heap()
+    .object_get_own_data_property_value(listeners_obj, &key)?
+  else {
     return Ok(());
   };
   scope.push_root(Value::Object(arr))?;
@@ -1471,7 +1535,9 @@ fn dispatch_xhr_events<Host: WindowRealmHost + 'static>(
       scope.push_root(Value::Object(xhr_obj))?;
 
       for &event_type in events {
-        dispatch_xhr_event(&mut vm, &mut scope, vm_host, &mut hooks, xhr_obj, event_type)?;
+        dispatch_xhr_event(
+          &mut vm, &mut scope, vm_host, &mut hooks, xhr_obj, event_type,
+        )?;
       }
 
       Ok(())
@@ -1518,7 +1584,9 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
 ) -> Result<WindowXhrBindings, VmError> {
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
   {
-    let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut lock = envs()
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.insert(env_id, EnvState::new(env));
   }
   let bindings = WindowXhrBindings::new(env_id);
@@ -1544,11 +1612,25 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
     &[Value::Number(env_id as f64)],
   )?;
   scope.push_root(Value::Object(ctor))?;
-  scope.heap_mut().object_set_prototype(ctor, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(ctor, Some(func_proto))?;
 
   // Static constants.
-  set_data_prop(&mut scope, ctor, "UNSENT", Value::Number(XHR_UNSENT as f64), false)?;
-  set_data_prop(&mut scope, ctor, "OPENED", Value::Number(XHR_OPENED as f64), false)?;
+  set_data_prop(
+    &mut scope,
+    ctor,
+    "UNSENT",
+    Value::Number(XHR_UNSENT as f64),
+    false,
+  )?;
+  set_data_prop(
+    &mut scope,
+    ctor,
+    "OPENED",
+    Value::Number(XHR_OPENED as f64),
+    false,
+  )?;
   set_data_prop(
     &mut scope,
     ctor,
@@ -1556,22 +1638,40 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
     Value::Number(XHR_HEADERS_RECEIVED as f64),
     false,
   )?;
-  set_data_prop(&mut scope, ctor, "LOADING", Value::Number(XHR_LOADING as f64), false)?;
-  set_data_prop(&mut scope, ctor, "DONE", Value::Number(XHR_DONE as f64), false)?;
+  set_data_prop(
+    &mut scope,
+    ctor,
+    "LOADING",
+    Value::Number(XHR_LOADING as f64),
+    false,
+  )?;
+  set_data_prop(
+    &mut scope,
+    ctor,
+    "DONE",
+    Value::Number(XHR_DONE as f64),
+    false,
+  )?;
 
   // Prototype object created by vm-js; install methods + accessors.
   let Value::Object(proto) = get_data_prop(&mut scope, ctor, "prototype")? else {
-    return Err(VmError::InvariantViolation("XMLHttpRequest.prototype missing"));
+    return Err(VmError::InvariantViolation(
+      "XMLHttpRequest.prototype missing",
+    ));
   };
   scope.push_root(Value::Object(proto))?;
-  scope.heap_mut().object_set_prototype(proto, Some(obj_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(proto, Some(obj_proto))?;
 
   // Methods.
   let open_id = vm.register_native_call(xhr_open_native::<Host>)?;
   let open_name = scope.alloc_string("open")?;
   scope.push_root(Value::String(open_name))?;
   let open_fn = scope.alloc_native_function(open_id, None, open_name, 2)?;
-  scope.heap_mut().object_set_prototype(open_fn, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(open_fn, Some(func_proto))?;
   set_data_prop(&mut scope, proto, "open", Value::Object(open_fn), true)?;
 
   let set_request_header_id = vm.register_native_call(xhr_set_request_header_native)?;
@@ -1594,21 +1694,24 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let send_name = scope.alloc_string("send")?;
   scope.push_root(Value::String(send_name))?;
   let send_fn = scope.alloc_native_function(send_id, None, send_name, 1)?;
-  scope.heap_mut().object_set_prototype(send_fn, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(send_fn, Some(func_proto))?;
   set_data_prop(&mut scope, proto, "send", Value::Object(send_fn), true)?;
 
   let abort_id = vm.register_native_call(xhr_abort_native::<Host>)?;
   let abort_name = scope.alloc_string("abort")?;
   scope.push_root(Value::String(abort_name))?;
   let abort_fn = scope.alloc_native_function(abort_id, None, abort_name, 0)?;
-  scope.heap_mut().object_set_prototype(abort_fn, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(abort_fn, Some(func_proto))?;
   set_data_prop(&mut scope, proto, "abort", Value::Object(abort_fn), true)?;
 
   let add_listener_id = vm.register_native_call(xhr_add_event_listener_native)?;
   let add_listener_name = scope.alloc_string("addEventListener")?;
   scope.push_root(Value::String(add_listener_name))?;
-  let add_listener_fn =
-    scope.alloc_native_function(add_listener_id, None, add_listener_name, 2)?;
+  let add_listener_fn = scope.alloc_native_function(add_listener_id, None, add_listener_name, 2)?;
   scope
     .heap_mut()
     .object_set_prototype(add_listener_fn, Some(func_proto))?;
@@ -1700,12 +1803,16 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let rt_get_name = scope.alloc_string("get responseType")?;
   scope.push_root(Value::String(rt_get_name))?;
   let rt_get_fn = scope.alloc_native_function(rt_get_id, None, rt_get_name, 0)?;
-  scope.heap_mut().object_set_prototype(rt_get_fn, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(rt_get_fn, Some(func_proto))?;
   let rt_set_id = vm.register_native_call(xhr_response_type_set)?;
   let rt_set_name = scope.alloc_string("set responseType")?;
   scope.push_root(Value::String(rt_set_name))?;
   let rt_set_fn = scope.alloc_native_function(rt_set_id, None, rt_set_name, 1)?;
-  scope.heap_mut().object_set_prototype(rt_set_fn, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(rt_set_fn, Some(func_proto))?;
   let rt_key = alloc_key(&mut scope, "responseType")?;
   scope.define_property(
     proto,
@@ -1717,12 +1824,16 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   let wc_get_name = scope.alloc_string("get withCredentials")?;
   scope.push_root(Value::String(wc_get_name))?;
   let wc_get_fn = scope.alloc_native_function(wc_get_id, None, wc_get_name, 0)?;
-  scope.heap_mut().object_set_prototype(wc_get_fn, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(wc_get_fn, Some(func_proto))?;
   let wc_set_id = vm.register_native_call(xhr_with_credentials_set)?;
   let wc_set_name = scope.alloc_string("set withCredentials")?;
   scope.push_root(Value::String(wc_set_name))?;
   let wc_set_fn = scope.alloc_native_function(wc_set_id, None, wc_set_name, 1)?;
-  scope.heap_mut().object_set_prototype(wc_set_fn, Some(func_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(wc_set_fn, Some(func_proto))?;
   let wc_key = alloc_key(&mut scope, "withCredentials")?;
   scope.define_property(
     proto,
@@ -1802,15 +1913,11 @@ mod tests {
     }
 
     fn fetch_http_request(&self, req: HttpRequest<'_>) -> crate::Result<FetchedResource> {
-      self
-        .requests
-        .lock()
-        .unwrap()
-        .push(RecordedRequest {
-          method: req.method.to_string(),
-          url: req.fetch.url.to_string(),
-          body: req.body.map(|b| b.to_vec()),
-        });
+      self.requests.lock().unwrap().push(RecordedRequest {
+        method: req.method.to_string(),
+        url: req.fetch.url.to_string(),
+        body: req.body.map(|b| b.to_vec()),
+      });
 
       if req.fetch.url.contains("err") {
         return Err(crate::error::Error::Other("network error".to_string()));
@@ -1830,7 +1937,8 @@ mod tests {
 
   impl Host {
     fn new(fetcher: Arc<dyn ResourceFetcher>) -> Self {
-      let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
+      let mut window =
+        WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
       // Install XHR.
       let xhr_bindings = {
         let (vm, realm, heap) = window.vm_realm_and_heap_mut();
@@ -1908,7 +2016,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -2005,10 +2115,7 @@ mod tests {
       panic!("expected array");
     };
     let log = read_log(vm, &mut scope, arr);
-    assert!(
-      log.iter().any(|s| s == "load:200:hello"),
-      "log={log:?}"
-    );
+    assert!(log.iter().any(|s| s == "load:200:hello"), "log={log:?}");
     assert!(log.iter().any(|s| s == "loadend"), "log={log:?}");
 
     // Assert fetcher was called.
@@ -2042,7 +2149,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -2085,7 +2194,9 @@ mod tests {
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
-      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;

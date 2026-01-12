@@ -100,4 +100,3 @@ fn image_set_filters_candidates_by_type() {
     "expected unsupported type() candidate to be ignored"
   );
 }
-

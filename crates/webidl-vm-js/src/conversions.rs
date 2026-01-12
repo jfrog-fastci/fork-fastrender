@@ -68,7 +68,12 @@ pub fn to_iterable_list<'a, F>(
   mut convert_elem: F,
 ) -> Result<Value, VmError>
 where
-  F: FnMut(&mut BindingsRuntime<'a>, &mut dyn VmHost, &mut dyn VmHostHooks, Value) -> Result<Value, VmError>,
+  F: FnMut(
+    &mut BindingsRuntime<'a>,
+    &mut dyn VmHost,
+    &mut dyn VmHostHooks,
+    Value,
+  ) -> Result<Value, VmError>,
 {
   let v = value;
   let Value::Object(_obj) = v else {
@@ -76,16 +81,21 @@ where
   };
   rt.scope.push_root(v)?;
 
-  let mut iterator_record = vm_js::iterator::get_iterator(&mut *rt.vm, host, hooks, &mut rt.scope, v)?;
+  let mut iterator_record =
+    vm_js::iterator::get_iterator(&mut *rt.vm, host, hooks, &mut rt.scope, v)?;
   rt.scope.push_root(iterator_record.iterator)?;
   rt.scope.push_root(iterator_record.next_method)?;
 
   let out = rt.alloc_array(0)?;
 
   let mut idx: usize = 0;
-  while let Some(next) =
-    vm_js::iterator::iterator_step_value(&mut *rt.vm, host, hooks, &mut rt.scope, &mut iterator_record)?
-  {
+  while let Some(next) = vm_js::iterator::iterator_step_value(
+    &mut *rt.vm,
+    host,
+    hooks,
+    &mut rt.scope,
+    &mut iterator_record,
+  )? {
     rt.scope.push_root(next)?;
 
     if idx >= rt.limits().max_sequence_length {
@@ -99,7 +109,8 @@ where
     let key_s = rt.scope.alloc_string(&idx.to_string())?;
     rt.scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    rt.scope.create_data_property_or_throw(out, key, converted)?;
+    rt.scope
+      .create_data_property_or_throw(out, key, converted)?;
     idx += 1;
   }
 
@@ -123,7 +134,12 @@ pub fn to_record<'a, F>(
   mut convert_value: F,
 ) -> Result<Value, VmError>
 where
-  F: FnMut(&mut BindingsRuntime<'a>, &mut dyn VmHost, &mut dyn VmHostHooks, Value) -> Result<Value, VmError>,
+  F: FnMut(
+    &mut BindingsRuntime<'a>,
+    &mut dyn VmHost,
+    &mut dyn VmHostHooks,
+    Value,
+  ) -> Result<Value, VmError>,
 {
   if matches!(value, Value::Undefined | Value::Null) {
     return Err(rt.throw_type_error(expected_object_message));
@@ -182,7 +198,12 @@ where
     rt.scope.push_root(prop_value)?;
 
     let converted = convert_value(rt, host, hooks, prop_value)?;
-    rt.define_data_property(out_obj, key, converted, DataPropertyAttributes::new(true, true, true))?;
+    rt.define_data_property(
+      out_obj,
+      key,
+      converted,
+      DataPropertyAttributes::new(true, true, true),
+    )?;
 
     entries += 1;
   }
@@ -256,18 +277,13 @@ pub fn to_callback_interface<'a>(
   // Root `v` across any allocations and user-code invoked by accessors.
   rt.scope.push_root(v)?;
   let key = rt.property_key("handleEvent")?;
-  let method = rt.scope.ordinary_get_with_host_and_hooks(
-    &mut *rt.vm,
-    host,
-    hooks,
-    obj,
-    key,
-    v,
-  )?;
+  let method = rt
+    .scope
+    .ordinary_get_with_host_and_hooks(&mut *rt.vm, host, hooks, obj, key, v)?;
   if matches!(method, Value::Undefined | Value::Null) {
-    return Err(rt.throw_type_error(
-      "Callback interface object is missing a callable handleEvent method",
-    ));
+    return Err(
+      rt.throw_type_error("Callback interface object is missing a callable handleEvent method"),
+    );
   }
   if !rt.scope.heap().is_callable(method)? {
     return Err(rt.throw_type_error("GetMethod: target is not callable"));

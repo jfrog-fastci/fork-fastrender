@@ -60,4 +60,3 @@ fn filter_blur_includes_offscreen_content_within_halo() {
     p.alpha()
   );
 }
-

@@ -12,15 +12,8 @@ fn approx_eq(actual: f32, expected: f32, epsilon: f32, msg: &str) {
   );
 }
 
-fn find_text_fragment_pos(
-  fragment: &fastrender::FragmentNode,
-  needle: &str,
-) -> Option<(f32, f32)> {
-  fn walk(
-    node: &fastrender::FragmentNode,
-    origin: (f32, f32),
-    needle: &str,
-  ) -> Option<(f32, f32)> {
+fn find_text_fragment_pos(fragment: &fastrender::FragmentNode, needle: &str) -> Option<(f32, f32)> {
+  fn walk(node: &fastrender::FragmentNode, origin: (f32, f32), needle: &str) -> Option<(f32, f32)> {
     let abs_x = origin.0 + node.bounds.x();
     let abs_y = origin.1 + node.bounds.y();
     if let FragmentContent::Text { text, .. } = &node.content {

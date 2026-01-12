@@ -11,7 +11,10 @@ fn find_fragment_with_id<'a>(
   fragment: &'a fastrender::FragmentNode,
   id: usize,
 ) -> Option<&'a fastrender::FragmentNode> {
-  if fragment.box_id().is_some_and(|fragment_id| fragment_id == id) {
+  if fragment
+    .box_id()
+    .is_some_and(|fragment_id| fragment_id == id)
+  {
     return Some(fragment);
   }
   for child in fragment.children.iter() {
@@ -60,6 +63,9 @@ fn grid_simple_grid_with_aspect_ratio_stretches_child_block_size() {
 
   assert_approx(fragment.bounds.height(), 200.0, "grid container height");
   let child_fragment = find_fragment_with_id(&fragment, 2).expect("child fragment");
-  assert_approx(child_fragment.bounds.height(), 200.0, "stretched child height");
+  assert_approx(
+    child_fragment.bounds.height(),
+    200.0,
+    "stretched child height",
+  );
 }
-

@@ -110,4 +110,3 @@ fn sideways_text_decoration_skip_ink_auto_carves_underline_segments() {
     deco_item.line_width
   );
 }
-

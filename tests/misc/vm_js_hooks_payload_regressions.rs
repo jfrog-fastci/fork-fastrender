@@ -9,7 +9,10 @@ use fastrender::Result as FrResult;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use vm_js::{GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use vm_js::{
+  GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
+  VmHost, VmHostHooks,
+};
 use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
 #[derive(Debug, Default)]
@@ -59,13 +62,16 @@ struct HooksRegressionHost {
 
 impl HooksRegressionHost {
   fn new(clock: Arc<VirtualClock>) -> FrResult<Self> {
-    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_clock(clock))
-      .map_err(|err| Error::Other(err.to_string()))?;
+    let mut window =
+      WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_clock(clock))
+        .map_err(|err| Error::Other(err.to_string()))?;
     {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      install_window_timers_bindings::<Self>(vm, realm, heap).map_err(|err| Error::Other(err.to_string()))?;
+      install_window_timers_bindings::<Self>(vm, realm, heap)
+        .map_err(|err| Error::Other(err.to_string()))?;
       install_dispatch_global(vm, realm, heap).map_err(|err| Error::Other(err.to_string()))?;
-      install_assert_host_ctx_global(vm, realm, heap).map_err(|err| Error::Other(err.to_string()))?;
+      install_assert_host_ctx_global(vm, realm, heap)
+        .map_err(|err| Error::Other(err.to_string()))?;
     }
     Ok(Self {
       vm_host: VmHostCtx,
@@ -102,7 +108,11 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
-fn install_dispatch_global(vm: &mut Vm, realm: &Realm, heap: &mut vm_js::Heap) -> Result<(), VmError> {
+fn install_dispatch_global(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut vm_js::Heap,
+) -> Result<(), VmError> {
   let call_id = vm.register_native_call(dispatch_via_webidl_host_from_hooks)?;
   let mut scope = heap.scope();
   let global = realm.global_object();
@@ -110,7 +120,9 @@ fn install_dispatch_global(vm: &mut Vm, realm: &Realm, heap: &mut vm_js::Heap) -
 
   let name_key = alloc_key(&mut scope, "__dispatch")?;
   let PropertyKey::String(name_str) = name_key else {
-    return Err(VmError::InvariantViolation("expected __dispatch key to be a string"));
+    return Err(VmError::InvariantViolation(
+      "expected __dispatch key to be a string",
+    ));
   };
   let func = scope.alloc_native_function(call_id, None, name_str, 0)?;
   scope
@@ -122,7 +134,11 @@ fn install_dispatch_global(vm: &mut Vm, realm: &Realm, heap: &mut vm_js::Heap) -
   Ok(())
 }
 
-fn install_assert_host_ctx_global(vm: &mut Vm, realm: &Realm, heap: &mut vm_js::Heap) -> Result<(), VmError> {
+fn install_assert_host_ctx_global(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut vm_js::Heap,
+) -> Result<(), VmError> {
   fn assert_host_ctx_native(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
@@ -289,7 +305,9 @@ fn webidl_dispatch_works_during_module_evaluation() -> FrResult<()> {
   fetcher.map.insert(
     dep_url.to_string(),
     FetchedResource::new(
-      "export const value = 1;\n__dispatch();\n".as_bytes().to_vec(),
+      "export const value = 1;\n__dispatch();\n"
+        .as_bytes()
+        .to_vec(),
       Some("application/javascript".to_string()),
     ),
   );
@@ -326,7 +344,9 @@ fn vm_host_is_available_during_module_evaluation() -> FrResult<()> {
   fetcher.map.insert(
     dep_url.to_string(),
     FetchedResource::new(
-      "__assert_host_ctx();\nexport const value = 1;\n".as_bytes().to_vec(),
+      "__assert_host_ctx();\nexport const value = 1;\n"
+        .as_bytes()
+        .to_vec(),
       Some("application/javascript".to_string()),
     ),
   );

@@ -23,7 +23,10 @@ fn external_svg_foreign_object_renders_html() {
   let mut renderer = FastRender::new().expect("renderer");
   let pixmap = renderer.render_html(&html, 20, 20).expect("render html");
   let px = pixmap.pixel(10, 10).expect("center pixel");
-  assert_eq!((px.red(), px.green(), px.blue(), px.alpha()), (255, 0, 0, 255));
+  assert_eq!(
+    (px.red(), px.green(), px.blue(), px.alpha()),
+    (255, 0, 0, 255)
+  );
 }
 
 #[test]
@@ -53,5 +56,8 @@ fn external_svg_foreign_object_background_image_renders_html() {
   let mut renderer = FastRender::new().expect("renderer");
   let pixmap = renderer.render_html(&html, 20, 20).expect("render html");
   let px = pixmap.pixel(10, 10).expect("center pixel");
-  assert_eq!((px.red(), px.green(), px.blue(), px.alpha()), (255, 0, 0, 255));
+  assert_eq!(
+    (px.red(), px.green(), px.blue(), px.alpha()),
+    (255, 0, 0, 255)
+  );
 }

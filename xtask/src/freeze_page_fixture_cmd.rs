@@ -172,7 +172,7 @@ pub fn run_freeze_page_fixture(mut args: FreezePageFixtureArgs) -> Result<()> {
     crate::import_page_fixture::run_import_page_fixture(build_import_page_fixture_args(
       &args, capture,
     ))
-      .with_context(|| format!("import-page-fixture {}", capture.fixture_name))?;
+    .with_context(|| format!("import-page-fixture {}", capture.fixture_name))?;
   }
 
   // Ensure the imported fixtures are fully offline unless the caller explicitly bypassed the

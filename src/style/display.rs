@@ -672,7 +672,10 @@ mod tests {
   #[test]
   fn test_parse_vendor_prefixed_grid_aliases() {
     assert_eq!(Display::parse("-ms-grid").unwrap(), Display::Grid);
-    assert_eq!(Display::parse("-ms-inline-grid").unwrap(), Display::InlineGrid);
+    assert_eq!(
+      Display::parse("-ms-inline-grid").unwrap(),
+      Display::InlineGrid
+    );
   }
 
   #[test]

@@ -102,4 +102,3 @@ fn inline_block_respects_writing_mode_axes() {
     img.bounds
   );
 }
-

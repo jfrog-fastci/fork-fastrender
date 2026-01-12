@@ -32,12 +32,12 @@ use crate::layout::engine::{LayoutParallelDebugCollector, LayoutParallelism};
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::table::TableFormattingContext;
-use crate::style::RootFontMetrics;
 use crate::layout::taffy_integration::{
   taffy_template_cache_limit, taffy_template_cache_limit_for_box_tree, TaffyAdapterKind,
   TaffyNodeCache,
 };
 use crate::style::display::FormattingContextType;
+use crate::style::RootFontMetrics;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::BoxNode;
@@ -730,7 +730,7 @@ impl FormattingContextFactory {
 }
 
 #[cfg(any(test, debug_assertions))]
-  impl FormattingContextFactory {
+impl FormattingContextFactory {
   #[doc(hidden)]
   pub fn debug_with_font_context_viewport_and_cb_call_count() -> usize {
     FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.with(|calls| calls.get())

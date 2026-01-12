@@ -6,7 +6,11 @@ use fastrender::tree::box_generation::generate_box_tree;
 use fastrender::tree::box_tree::{BoxNode, BoxType, GeneratedPseudoElement};
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
-  if node.node.get_attribute_ref("id").is_some_and(|value| value == id) {
+  if node
+    .node
+    .get_attribute_ref("id")
+    .is_some_and(|value| value == id)
+  {
     return Some(node);
   }
   for child in node.children.iter() {
@@ -36,7 +40,10 @@ fn collect_pseudo_text(
   }
 }
 
-fn generated_before_text(tree: &fastrender::tree::box_tree::BoxTree, styled_node_id: usize) -> String {
+fn generated_before_text(
+  tree: &fastrender::tree::box_tree::BoxTree,
+  styled_node_id: usize,
+) -> String {
   let mut out = String::new();
   collect_pseudo_text(
     &tree.root,
@@ -97,7 +104,10 @@ fn counter_leakage_is_blocked_by_content_visibility_implied_style_containment() 
 fn style_containment_is_ignored_when_element_has_no_principal_box() {
   // Per CSS Containment, style containment has no effect when the element does not generate a
   // principal box (e.g., `display: contents`).
-  assert_eq!(run_counter_leakage_case("contain: style; display: contents;"), "1");
+  assert_eq!(
+    run_counter_leakage_case("contain: style; display: contents;"),
+    "1"
+  );
 }
 
 #[test]

@@ -27,7 +27,10 @@ fn dynamic_external_script_executes_as_script_task() -> Result<()> {
 
   // Fetch completion should queue a task (still not execute synchronously).
   h.complete_external_script("https://example.com/a.js")?;
-  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+  assert!(
+    h.take_log().is_empty(),
+    "expected execution to be task-queued"
+  );
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -60,7 +63,10 @@ fn dynamic_external_script_via_insert_before_executes_as_script_task() -> Result
   assert_eq!(h.take_log(), vec!["after-insert".to_string()]);
 
   h.complete_external_script("https://example.com/a.js")?;
-  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+  assert!(
+    h.take_log().is_empty(),
+    "expected execution to be task-queued"
+  );
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -92,7 +98,10 @@ fn dynamic_external_script_via_replace_child_executes_as_script_task() -> Result
   assert_eq!(h.take_log(), vec!["after-replace".to_string()]);
 
   h.complete_external_script("https://example.com/a.js")?;
-  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+  assert!(
+    h.take_log().is_empty(),
+    "expected execution to be task-queued"
+  );
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -123,7 +132,8 @@ fn dynamic_external_script_nested_in_container_executes_as_script_task() -> Resu
   assert_eq!(h.take_log(), vec!["after-disconnected-append".to_string()]);
 
   assert!(
-    h.complete_external_script("https://example.com/a.js").is_err(),
+    h.complete_external_script("https://example.com/a.js")
+      .is_err(),
     "expected disconnected scripts to not start loading"
   );
 
@@ -137,7 +147,10 @@ fn dynamic_external_script_nested_in_container_executes_as_script_task() -> Resu
   assert_eq!(h.take_log(), vec!["after-append".to_string()]);
 
   h.complete_external_script("https://example.com/a.js")?;
-  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+  assert!(
+    h.take_log().is_empty(),
+    "expected execution to be task-queued"
+  );
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -168,7 +181,8 @@ fn dynamic_external_script_via_document_fragment_executes_as_script_task() -> Re
   assert_eq!(h.take_log(), vec!["after-fragment-append".to_string()]);
 
   assert!(
-    h.complete_external_script("https://example.com/a.js").is_err(),
+    h.complete_external_script("https://example.com/a.js")
+      .is_err(),
     "expected detached fragment scripts to not start loading"
   );
 
@@ -182,7 +196,10 @@ fn dynamic_external_script_via_document_fragment_executes_as_script_task() -> Re
   assert_eq!(h.take_log(), vec!["after-append".to_string()]);
 
   h.complete_external_script("https://example.com/a.js")?;
-  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+  assert!(
+    h.take_log().is_empty(),
+    "expected execution to be task-queued"
+  );
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -214,7 +231,8 @@ fn dynamic_external_script_in_inert_template_does_not_load_until_moved() -> Resu
   assert_eq!(h.take_log(), vec!["after-template-append".to_string()]);
 
   assert!(
-    h.complete_external_script("https://example.com/a.js").is_err(),
+    h.complete_external_script("https://example.com/a.js")
+      .is_err(),
     "expected scripts in inert <template> contents to not start loading"
   );
 
@@ -229,7 +247,10 @@ fn dynamic_external_script_in_inert_template_does_not_load_until_moved() -> Resu
   assert_eq!(h.take_log(), vec!["after-move".to_string()]);
 
   h.complete_external_script("https://example.com/a.js")?;
-  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+  assert!(
+    h.take_log().is_empty(),
+    "expected execution to be task-queued"
+  );
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -394,7 +415,8 @@ fn empty_dynamic_external_script_loads_when_src_set_after_insertion() -> Result<
 
   // No load should have started yet.
   assert!(
-    h.complete_external_script("https://example.com/a.js").is_err(),
+    h.complete_external_script("https://example.com/a.js")
+      .is_err(),
     "expected empty connected scripts to not start loading until src is set"
   );
 
@@ -407,7 +429,10 @@ fn empty_dynamic_external_script_loads_when_src_set_after_insertion() -> Result<
   assert_eq!(h.take_log(), vec!["after-src".to_string()]);
 
   h.complete_external_script("https://example.com/a.js")?;
-  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+  assert!(
+    h.take_log().is_empty(),
+    "expected execution to be task-queued"
+  );
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["A".to_string()]);
 
@@ -421,7 +446,8 @@ fn empty_dynamic_external_script_loads_when_src_set_after_insertion() -> Result<
   assert_eq!(h.take_log(), vec!["after-src2".to_string()]);
 
   assert!(
-    h.complete_external_script("https://example.com/b.js").is_err(),
+    h.complete_external_script("https://example.com/b.js")
+      .is_err(),
     "already-started scripts must not start a new load on src changes"
   );
   h.run_until_idle(RunLimits::unbounded())?;

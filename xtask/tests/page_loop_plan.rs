@@ -23,15 +23,15 @@ fn cmd_args(cmd: &std::process::Command) -> Vec<String> {
 fn cmd_env(cmd: &std::process::Command, key: &str) -> Option<String> {
   cmd
     .get_envs()
-    .find_map(|(k, v)| {
-      (k == OsStr::new(key)).then(|| v.map(|v| v.to_string_lossy().into_owned()))
-    })
+    .find_map(|(k, v)| (k == OsStr::new(key)).then(|| v.map(|v| v.to_string_lossy().into_owned())))
     .flatten()
 }
 
 fn assert_has_run_limited_wrapper(args: &[String]) {
   assert!(
-    args.iter().any(|arg| arg.ends_with("scripts/run_limited.sh")),
+    args
+      .iter()
+      .any(|arg| arg.ends_with("scripts/run_limited.sh")),
     "expected run_limited.sh in args, got {args:?}"
   );
   assert!(
@@ -57,7 +57,9 @@ fn page_loop_build_command_builds_required_bins_in_release() {
 
   let args = cmd_args(&cmd);
   assert!(
-    args.iter().any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
+    args
+      .iter()
+      .any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
     "expected cargo_agent.sh in args, got {args:?}"
   );
   assert!(
@@ -130,7 +132,9 @@ fn page_loop_render_fixtures_runs_prebuilt_binary_under_run_limited() {
     "expected render_fixtures executable suffix in args, got {args:?}"
   );
   assert!(
-    args.iter().any(|arg| arg == "--patch-html-for-chrome-baseline"),
+    args
+      .iter()
+      .any(|arg| arg == "--patch-html-for-chrome-baseline"),
     "expected page-loop Chrome diff mode to patch HTML for baseline parity, got {args:?}"
   );
   assert!(
@@ -196,7 +200,9 @@ fn page_loop_inspect_frag_runs_prebuilt_binary_under_run_limited() {
     "expected inspect_frag executable {expected_exe} in args, got {args:?}"
   );
   assert!(
-    args.iter().any(|arg| arg.ends_with(format!("inspect_frag{}", std::env::consts::EXE_SUFFIX).as_str())),
+    args
+      .iter()
+      .any(|arg| arg.ends_with(format!("inspect_frag{}", std::env::consts::EXE_SUFFIX).as_str())),
     "expected inspect_frag executable in args, got {args:?}"
   );
   assert!(
@@ -208,11 +214,12 @@ fn page_loop_inspect_frag_runs_prebuilt_binary_under_run_limited() {
     "expected --dump-json in args, got {args:?}"
   );
   assert!(
-    args.iter()
-      .any(|arg| arg == "--dump-custom-properties")
+    args.iter().any(|arg| arg == "--dump-custom-properties")
       && args.iter().any(|arg| arg == "--custom-properties-limit")
       && args.iter().any(|arg| arg == "10")
-      && args.iter().any(|arg| arg == "--custom-property-prefix=--color"),
+      && args
+        .iter()
+        .any(|arg| arg == "--custom-property-prefix=--color"),
     "expected custom property dump args, got {args:?}"
   );
 

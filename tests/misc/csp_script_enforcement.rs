@@ -1,9 +1,11 @@
-use fastrender::api::{BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions};
+use fastrender::api::{
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions,
+};
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
 use fastrender::js::{
-  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, RunLimits, ScriptElementSpec, WindowRealm,
-  WindowRealmConfig, WindowRealmHost,
+  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, RunLimits, ScriptElementSpec,
+  WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,8 +22,8 @@ struct ExecutorWithWindow<E> {
 
 impl<E> ExecutorWithWindow<E> {
   fn new(inner: E) -> Self {
-    let window =
-      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create WindowRealm");
     Self {
       inner,
       host_ctx: (),
@@ -96,7 +98,9 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
 
 impl<E> WindowRealmHost for ExecutorWithWindow<E> {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    let ExecutorWithWindow {
+      host_ctx, window, ..
+    } = self;
     (host_ctx, window)
   }
 }

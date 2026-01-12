@@ -1,7 +1,9 @@
 use fastrender::dom::DomNodeType;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaType;
-use fastrender::{BoxNode, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Rect};
+use fastrender::{
+  BoxNode, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Rect,
+};
 
 fn find_styled_node_id_for_dom_id(node: &StyledNode, id_value: &str) -> Option<usize> {
   if let DomNodeType::Element { attributes, .. } = &node.node.node_type {
@@ -59,9 +61,15 @@ fn find_box_node_for_box_id<'a>(node: &'a BoxNode, box_id: usize) -> Option<&'a 
 fn find_fragment_bounds_for_box_id(node: &FragmentNode, box_id: usize) -> Option<Rect> {
   let matches_box = match &node.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_box {
@@ -196,10 +204,10 @@ fn flex_auto_min_size_appearance_none_text_inputs_do_not_push_button_outside() {
 
   let form_box_id = find_box_id_for_styled_node_id(&intermediates.box_tree.root, form_styled_id)
     .expect("form box id");
-  let a_box_id = find_box_id_for_styled_node_id(&intermediates.box_tree.root, a_styled_id)
-    .expect("a box id");
-  let b_box_id = find_box_id_for_styled_node_id(&intermediates.box_tree.root, b_styled_id)
-    .expect("b box id");
+  let a_box_id =
+    find_box_id_for_styled_node_id(&intermediates.box_tree.root, a_styled_id).expect("a box id");
+  let b_box_id =
+    find_box_id_for_styled_node_id(&intermediates.box_tree.root, b_styled_id).expect("b box id");
   let btn_box_id = find_box_id_for_styled_node_id(&intermediates.box_tree.root, btn_styled_id)
     .expect("btn box id");
 

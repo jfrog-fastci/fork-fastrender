@@ -28,14 +28,17 @@ fn string_value_to_utf8_lossy(rt: &VmJsRuntime, v: Value) -> String {
 }
 
 #[test]
-fn webidl_generated_bindings_install_property_descriptors_and_function_metadata() -> Result<(), VmError> {
+fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
+) -> Result<(), VmError> {
   let mut rt = VmJsRuntime::new();
   let mut host = DummyHost::default();
 
   install_window_bindings(&mut rt, &mut host)?;
 
   let global =
-    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<DummyHost>>::global_object(&mut rt)?;
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<DummyHost>>::global_object(
+      &mut rt,
+    )?;
   let Value::Object(global_obj) = global else {
     return Err(rt.throw_type_error("expected global_object to be an object"));
   };
@@ -149,7 +152,10 @@ fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
     .heap()
     .object_get_own_property(append_func_obj, &name_key)?
     .expect("missing append.name");
-  assert!(!name_desc.enumerable, "expected append.name to be non-enumerable");
+  assert!(
+    !name_desc.enumerable,
+    "expected append.name to be non-enumerable"
+  );
   let name = rt.get(Value::Object(append_func_obj), name_key)?;
   assert_eq!(
     string_value_to_utf8_lossy(&rt, name),

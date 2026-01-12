@@ -73,4 +73,3 @@ fn flex_item_height_min_content_behaves_like_auto() {
     "expected `height:min-content` to behave like auto (clamped by min-height) with one line of text; got {height}"
   );
 }
-

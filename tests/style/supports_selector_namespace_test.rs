@@ -98,4 +98,3 @@ fn supports_selector_in_imported_stylesheets_remains_correct_after_import_inlini
   let rect = find_by_id(&styled, "r").expect("rect");
   assert_eq!(rect.styles.display, Display::None);
 }
-

@@ -93,4 +93,3 @@ fn table_direction_rtl_places_first_column_on_the_right() {
     b.width()
   );
 }
-

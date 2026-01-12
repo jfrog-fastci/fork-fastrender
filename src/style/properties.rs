@@ -22,6 +22,7 @@ use crate::style::custom_property_store::CustomPropertyStore;
 use crate::style::display::Display;
 use crate::style::float::Clear;
 use crate::style::float::Float;
+use crate::style::grid::normalize_ms_grid_track_list;
 use crate::style::grid::parse_grid_auto_flow_value;
 use crate::style::grid::parse_grid_shorthand;
 use crate::style::grid::parse_grid_template_areas;
@@ -29,7 +30,6 @@ use crate::style::grid::parse_grid_template_shorthand;
 use crate::style::grid::parse_grid_tracks_with_names;
 use crate::style::grid::parse_subgrid_line_names;
 use crate::style::grid::parse_track_list;
-use crate::style::grid::normalize_ms_grid_track_list;
 use crate::style::grid::ParsedGridTemplate;
 use crate::style::grid::ParsedTracks;
 use crate::style::inline_axis_is_horizontal;
@@ -37,8 +37,8 @@ use crate::style::inline_axis_positive;
 use crate::style::position::Position;
 use crate::style::string_set::parse_string_set_value;
 use crate::style::types::*;
-use crate::style::values::CustomPropertyValue;
 use crate::style::values::CustomPropertyComputeContext;
+use crate::style::values::CustomPropertyValue;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::var_resolution::resolve_var_for_property;
@@ -234,13 +234,21 @@ fn synthesize_area_line_names(styles: &mut ComputedStyle) {
     styles.grid_column_names.clear();
     for (idx, names) in styles.grid_column_line_names.iter().enumerate() {
       for name in names {
-        styles.grid_column_names.entry(name.clone()).or_default().push(idx);
+        styles
+          .grid_column_names
+          .entry(name.clone())
+          .or_default()
+          .push(idx);
       }
     }
     styles.grid_row_names.clear();
     for (idx, names) in styles.grid_row_line_names.iter().enumerate() {
       for name in names {
-        styles.grid_row_names.entry(name.clone()).or_default().push(idx);
+        styles
+          .grid_row_names
+          .entry(name.clone())
+          .or_default()
+          .push(idx);
       }
     }
 
@@ -367,12 +375,16 @@ fn remove_synthesized_area_line_names(styles: &mut ComputedStyle) {
   };
 
   fn remove_from_line_names(lines: &mut Vec<Vec<String>>, idx: usize, name: &str) {
-    let Some(line) = lines.get_mut(idx) else { return };
+    let Some(line) = lines.get_mut(idx) else {
+      return;
+    };
     line.retain(|existing| existing != name);
   }
 
   fn remove_from_named_line_map(map: &mut HashMap<String, Vec<usize>>, name: &str, idx: usize) {
-    let Some(indices) = map.get_mut(name) else { return };
+    let Some(indices) = map.get_mut(name) else {
+      return;
+    };
     indices.retain(|existing| *existing != idx);
     if indices.is_empty() {
       map.remove(name);
@@ -394,7 +406,11 @@ fn remove_synthesized_area_line_names(styles: &mut ComputedStyle) {
     remove_from_line_names(&mut styles.grid_row_line_names, row_end, &end_name);
 
     if styles.grid_column_subgrid {
-      remove_from_line_names(&mut styles.subgrid_column_line_names, col_start, &start_name);
+      remove_from_line_names(
+        &mut styles.subgrid_column_line_names,
+        col_start,
+        &start_name,
+      );
       remove_from_line_names(&mut styles.subgrid_column_line_names, col_end, &end_name);
     }
     if styles.grid_row_subgrid {
@@ -501,7 +517,11 @@ fn split_grid_axis_start_end(raw: Option<&str>, start: i32, end: i32) -> (String
   } else {
     start.to_string()
   };
-  let end = if end == 0 { "auto".to_string() } else { end.to_string() };
+  let end = if end == 0 {
+    "auto".to_string()
+  } else {
+    end.to_string()
+  };
   (start, end)
 }
 
@@ -4344,9 +4364,7 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
       _ => None,
     };
     let limit = sanitize_min_length(limit)?;
-    return Some(IntrinsicSizeKeyword::FitContent {
-      limit: Some(limit),
-    });
+    return Some(IntrinsicSizeKeyword::FitContent { limit: Some(limit) });
   }
 
   if head.eq_ignore_ascii_case("calc-size") {
@@ -4461,9 +4479,7 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
             _ => None,
           };
           let limit = sanitize_min_length(limit)?;
-          return Some(CalcSizeBasis::FitContent {
-            limit: Some(limit),
-          });
+          return Some(CalcSizeBasis::FitContent { limit: Some(limit) });
         }
       }
 
@@ -5142,7 +5158,10 @@ fn radius_for_corner(style: &ComputedStyle, corner: PhysicalCorner) -> BorderCor
   }
 }
 
-fn webkit_box_flex_direction(orient: WebkitBoxOrient, direction: WebkitBoxDirection) -> FlexDirection {
+fn webkit_box_flex_direction(
+  orient: WebkitBoxOrient,
+  direction: WebkitBoxDirection,
+) -> FlexDirection {
   match (orient, direction) {
     (WebkitBoxOrient::Horizontal, WebkitBoxDirection::Normal) => FlexDirection::Row,
     (WebkitBoxOrient::Horizontal, WebkitBoxDirection::Reverse) => FlexDirection::RowReverse,
@@ -5152,7 +5171,8 @@ fn webkit_box_flex_direction(orient: WebkitBoxOrient, direction: WebkitBoxDirect
 }
 
 fn update_flex_direction_from_webkit_box(styles: &mut ComputedStyle) {
-  styles.flex_direction = webkit_box_flex_direction(styles.webkit_box_orient, styles.webkit_box_direction);
+  styles.flex_direction =
+    webkit_box_flex_direction(styles.webkit_box_orient, styles.webkit_box_direction);
 }
 
 fn update_webkit_box_display_for_line_clamp(styles: &mut ComputedStyle) {
@@ -5173,8 +5193,8 @@ fn update_webkit_box_display_for_line_clamp(styles: &mut ComputedStyle) {
   // future-proof fallback (often *after* `-webkit-line-clamp`). We must keep the "force flow"
   // behavior enabled for both sources so the later `line-clamp` declaration doesn't revert the
   // element back to a flex container, which would disable our line clamping in inline layout.
-  let should_force_flow = styles.line_clamp.is_some()
-    && styles.webkit_box_orient == WebkitBoxOrient::Vertical;
+  let should_force_flow =
+    styles.line_clamp.is_some() && styles.webkit_box_orient == WebkitBoxOrient::Vertical;
 
   styles.display = if should_force_flow {
     if inline {
@@ -5390,7 +5410,9 @@ pub(crate) fn apply_property_from_source(
     "anchor-scope" => styles.anchor_scope = source.anchor_scope.clone(),
     "position-anchor" => styles.position_anchor = source.position_anchor.clone(),
     "position-area" => styles.position_area = source.position_area.clone(),
-    "position-try-fallbacks" => styles.position_try_fallbacks = source.position_try_fallbacks.clone(),
+    "position-try-fallbacks" => {
+      styles.position_try_fallbacks = source.position_try_fallbacks.clone()
+    }
     "position-try-order" => styles.position_try_order = source.position_try_order,
     "position-try" => {
       styles.position_try_fallbacks = source.position_try_fallbacks.clone();
@@ -7253,7 +7275,9 @@ pub(crate) fn apply_property_from_source(
     "-webkit-text-stroke-color" => {
       styles.webkit_text_stroke_color = source.webkit_text_stroke_color.clone()
     }
-    "-webkit-text-stroke-width" => styles.webkit_text_stroke_width = source.webkit_text_stroke_width,
+    "-webkit-text-stroke-width" => {
+      styles.webkit_text_stroke_width = source.webkit_text_stroke_width
+    }
     "-webkit-text-stroke" => {
       styles.webkit_text_stroke_color = source.webkit_text_stroke_color.clone();
       styles.webkit_text_stroke_width = source.webkit_text_stroke_width;
@@ -7365,7 +7389,13 @@ pub(crate) fn apply_property_from_source(
       let inline_values: Vec<_> = source
         .background_repeats
         .iter()
-        .map(|rep| if source_inline_horizontal { rep.x } else { rep.y })
+        .map(|rep| {
+          if source_inline_horizontal {
+            rep.x
+          } else {
+            rep.y
+          }
+        })
         .collect();
       let fallback_inline = inline_values
         .last()
@@ -7407,7 +7437,13 @@ pub(crate) fn apply_property_from_source(
       let block_values: Vec<_> = source
         .background_repeats
         .iter()
-        .map(|rep| if source_block_horizontal { rep.x } else { rep.y })
+        .map(|rep| {
+          if source_block_horizontal {
+            rep.x
+          } else {
+            rep.y
+          }
+        })
         .collect();
       let fallback_block = block_values
         .last()
@@ -7416,7 +7452,10 @@ pub(crate) fn apply_property_from_source(
 
       styles.ensure_background_lists();
       let block_horizontal = block_axis_is_horizontal(styles.writing_mode);
-      let layer_count = block_values.len().max(styles.background_repeats.len()).max(1);
+      let layer_count = block_values
+        .len()
+        .max(styles.background_repeats.len())
+        .max(1);
       let mut repeats = Vec::with_capacity(layer_count);
       for idx in 0..layer_count {
         let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
@@ -8176,9 +8215,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     let tok = parser.next_including_whitespace().ok()?;
     let value = match tok {
       Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
-      Token::Number { int_value: Some(n), .. } if (1..=u8::MAX as i32).contains(n) => {
-        FontVariantAlternateValue::Number(*n as u8)
-      }
+      Token::Number {
+        int_value: Some(n), ..
+      } if (1..=u8::MAX as i32).contains(n) => FontVariantAlternateValue::Number(*n as u8),
       _ => return None,
     };
     parser.skip_whitespace();
@@ -8196,9 +8235,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     let tok = parser.next_including_whitespace().ok()?;
     let first = match tok {
       Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
-      Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
-        FontVariantAlternateValue::Number(*n as u8)
-      }
+      Token::Number {
+        int_value: Some(n), ..
+      } if (1..=99).contains(n) => FontVariantAlternateValue::Number(*n as u8),
       _ => return None,
     };
 
@@ -8222,9 +8261,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       let tok = parser.next_including_whitespace().ok()?;
       let name = match tok {
         Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
-        Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
-          FontVariantAlternateValue::Number(*n as u8)
-        }
+        Token::Number {
+          int_value: Some(n), ..
+        } if (1..=99).contains(n) => FontVariantAlternateValue::Number(*n as u8),
         _ => return None,
       };
       names.push(name);
@@ -8299,8 +8338,8 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       continue;
     }
 
-    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "annotation(")
-      .and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) =
+      strip_prefix_ignore_ascii_case(token, "annotation(").and_then(|s| s.strip_suffix(')'))
     {
       if seen_annotation {
         return None;
@@ -8603,7 +8642,11 @@ impl ComputedStyle {
   /// - the *current* parent `custom_properties`,
   /// - registry inheritance semantics (registered `inherits: false`),
   /// - this element's stored winning custom-property declarations (in cascade order).
-  pub fn recompute_inherited_custom_properties(&mut self, parent_styles: &ComputedStyle, viewport: Size) {
+  pub fn recompute_inherited_custom_properties(
+    &mut self,
+    parent_styles: &ComputedStyle,
+    viewport: Size,
+  ) {
     // Start from the current parent store (animations may have mutated it).
     let mut store = parent_styles.custom_properties.clone();
     let registry_changed = !Arc::ptr_eq(
@@ -8901,11 +8944,12 @@ impl ComputedStyle {
       return;
     }
 
-    let mut declarations: Vec<(&'static str, crate::style::CurrentColorDependentDeclaration)> = self
-      .current_color_dependent_declarations
-      .iter()
-      .map(|(property, entry)| (*property, entry.clone()))
-      .collect();
+    let mut declarations: Vec<(&'static str, crate::style::CurrentColorDependentDeclaration)> =
+      self
+        .current_color_dependent_declarations
+        .iter()
+        .map(|(property, entry)| (*property, entry.clone()))
+        .collect();
 
     // Preserve cascade ordering so properties that are applied in a particular order continue to
     // see the same already-applied state when they resolve `currentColor`.
@@ -9086,9 +9130,8 @@ mod light_dark_resolution_tests {
     let parent = ComputedStyle::default();
     let mut styles = ComputedStyle::default();
 
-    let decls = parse_declarations(
-      "--c: rgb(0,0,255); color: var(--c); background-color: currentColor;",
-    );
+    let decls =
+      parse_declarations("--c: rgb(0,0,255); color: var(--c); background-color: currentColor;");
     for decl in &decls {
       apply_declaration_with_base(
         &mut styles,
@@ -9105,7 +9148,9 @@ mod light_dark_resolution_tests {
 
     assert_eq!(styles.color, Rgba::BLUE);
     assert_eq!(styles.background_color, Rgba::BLUE);
-    assert!(styles.var_dependent_declarations.contains_key("background-color"));
+    assert!(styles
+      .var_dependent_declarations
+      .contains_key("background-color"));
 
     let decls = parse_declarations("--c: rgb(255,0,0);");
     apply_declaration_with_base(
@@ -9197,8 +9242,7 @@ mod var_resolution_invalid_at_computed_value_time_tests {
 
     // The invalid var() declaration should compute to `unset` and therefore inherit from the
     // parent, overriding the earlier explicit blue color.
-    let decls =
-      parse_declarations("color: rgb(0, 0, 255); --c: notacolor; color: var(--c);");
+    let decls = parse_declarations("color: rgb(0, 0, 255); --c: notacolor; color: var(--c);");
     for decl in &decls {
       apply_declaration_with_base(
         &mut styles,
@@ -9286,7 +9330,11 @@ fn apply_custom_property_declaration(
   // do not interpret most CSS syntax at computed-value time. However, CSS-wide keywords still
   // apply at the cascade layer (matching browser behavior), so `--x: initial` clears an inherited
   // value instead of storing the literal identifier.
-  let rule = match styles.custom_property_registry.get(decl.property.as_str()).cloned() {
+  let rule = match styles
+    .custom_property_registry
+    .get(decl.property.as_str())
+    .cloned()
+  {
     Some(rule) => rule,
     None => {
       if let Some(global) = global_keyword_text(raw_trimmed) {
@@ -9605,7 +9653,10 @@ fn apply_declaration_with_base_internal_with_order(
       property_is_background_shorthand_subproperty(property)
         && styles.var_dependent_declarations.contains_key("background");
 
-    if decl.contains_var || depends_on_current_color || depends_on_var_dependent_background_shorthand {
+    if decl.contains_var
+      || depends_on_current_color
+      || depends_on_var_dependent_background_shorthand
+    {
       Arc::make_mut(&mut styles.var_dependent_declarations).insert(
         property,
         crate::style::VarDependentDeclaration {
@@ -10252,35 +10303,33 @@ fn apply_declaration_with_base_internal_with_order(
       let mut margin: Option<Length> = None;
       let mut invalid = false;
 
-      let mut parse_part = |part: &PropertyValue| {
-        match part {
-          PropertyValue::Keyword(kw) => {
-            if let Some(vb) = VisualBox::parse(kw) {
-              if visual_box.replace(vb).is_some() {
-                invalid = true;
-              }
-              return;
+      let mut parse_part = |part: &PropertyValue| match part {
+        PropertyValue::Keyword(kw) => {
+          if let Some(vb) = VisualBox::parse(kw) {
+            if visual_box.replace(vb).is_some() {
+              invalid = true;
             }
-            if let Some(len) = parse_length(kw) {
-              if margin.replace(len).is_some() {
-                invalid = true;
-              }
-              return;
+            return;
+          }
+          if let Some(len) = parse_length(kw) {
+            if margin.replace(len).is_some() {
+              invalid = true;
             }
+            return;
+          }
+          invalid = true;
+        }
+        PropertyValue::Length(len) => {
+          if margin.replace(*len).is_some() {
             invalid = true;
           }
-          PropertyValue::Length(len) => {
-            if margin.replace(*len).is_some() {
-              invalid = true;
-            }
-          }
-          PropertyValue::Number(n) if *n == 0.0 => {
-            if margin.replace(Length::px(0.0)).is_some() {
-              invalid = true;
-            }
-          }
-          _ => invalid = true,
         }
+        PropertyValue::Number(n) if *n == 0.0 => {
+          if margin.replace(Length::px(0.0)).is_some() {
+            invalid = true;
+          }
+        }
+        _ => invalid = true,
       };
 
       match resolved_value {
@@ -10296,54 +10345,53 @@ fn apply_declaration_with_base_internal_with_order(
         _ => parse_part(resolved_value),
       }
 
-        if invalid {
-          // Ignore invalid declarations.
+      if invalid {
+        // Ignore invalid declarations.
+      } else {
+        let margin = margin.unwrap_or_else(|| Length::px(0.0));
+        // CSS Overflow 3: `<length [0,∞]>` (negative values invalid).
+        if margin
+          .calc
+          .is_some_and(|calc| calc.absolute_sum().is_some_and(|v| v < 0.0))
+          || (margin.calc.is_none() && margin.value < 0.0)
+        {
+          // Ignore invalid negative length. For `calc()` we can only reject the cases that resolve
+          // to a negative absolute value without needing layout context.
+        } else if margin.has_percentage() {
+          // `overflow-clip-margin` uses `<length>` (not `<length-percentage>`), so reject
+          // percentages even when they appear inside a `calc()` expression.
         } else {
-          let margin = margin.unwrap_or_else(|| Length::px(0.0));
-          // CSS Overflow 3: `<length [0,∞]>` (negative values invalid).
-          if margin.calc.is_some_and(|calc| calc.absolute_sum().is_some_and(|v| v < 0.0))
-            || (margin.calc.is_none() && margin.value < 0.0)
-          {
-            // Ignore invalid negative length. For `calc()` we can only reject the cases that resolve
-            // to a negative absolute value without needing layout context.
-          } else if margin.has_percentage() {
-            // `overflow-clip-margin` uses `<length>` (not `<length-percentage>`), so reject
-            // percentages even when they appear inside a `calc()` expression.
-          } else {
-            styles.overflow_clip_margin = OverflowClipMargin {
-              visual_box: visual_box.unwrap_or(VisualBox::PaddingBox),
-              margin,
-            };
+          styles.overflow_clip_margin = OverflowClipMargin {
+            visual_box: visual_box.unwrap_or(VisualBox::PaddingBox),
+            margin,
+          };
         }
       }
     }
-    "overflow" => {
-      match resolved_value {
-        PropertyValue::Keyword(kw) => {
-          if let Some(overflow) = Overflow::parse(kw) {
+    "overflow" => match resolved_value {
+      PropertyValue::Keyword(kw) => {
+        if let Some(overflow) = Overflow::parse(kw) {
+          styles.overflow_x = overflow;
+          styles.overflow_y = overflow;
+        }
+      }
+      PropertyValue::Multiple(values) => match values.as_slice() {
+        [PropertyValue::Keyword(x)] => {
+          if let Some(overflow) = Overflow::parse(x) {
             styles.overflow_x = overflow;
             styles.overflow_y = overflow;
           }
         }
-        PropertyValue::Multiple(values) => match values.as_slice() {
-          [PropertyValue::Keyword(x)] => {
-            if let Some(overflow) = Overflow::parse(x) {
-              styles.overflow_x = overflow;
-              styles.overflow_y = overflow;
-            }
+        [PropertyValue::Keyword(x), PropertyValue::Keyword(y)] => {
+          if let (Some(overflow_x), Some(overflow_y)) = (Overflow::parse(x), Overflow::parse(y)) {
+            styles.overflow_x = overflow_x;
+            styles.overflow_y = overflow_y;
           }
-          [PropertyValue::Keyword(x), PropertyValue::Keyword(y)] => {
-            if let (Some(overflow_x), Some(overflow_y)) = (Overflow::parse(x), Overflow::parse(y))
-            {
-              styles.overflow_x = overflow_x;
-              styles.overflow_y = overflow_y;
-            }
-          }
-          _ => {}
-        },
+        }
         _ => {}
-      }
-    }
+      },
+      _ => {}
+    },
     "overflow-x" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Some(overflow) = Overflow::parse(kw) {
@@ -11650,8 +11698,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.color,
         is_dark_color_scheme,
         styles.forced_colors,
-      )
-      {
+      ) {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
             .then_some(Length::px(3.0))
@@ -11719,8 +11766,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.color,
         is_dark_color_scheme,
         styles.forced_colors,
-      )
-      {
+      ) {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
             .then_some(Length::px(3.0))
@@ -11749,8 +11795,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.color,
         is_dark_color_scheme,
         styles.forced_colors,
-      )
-      {
+      ) {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
             .then_some(Length::px(3.0))
@@ -11796,8 +11841,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.color,
         is_dark_color_scheme,
         styles.forced_colors,
-      )
-      {
+      ) {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
             .then_some(Length::px(3.0))
@@ -11843,8 +11887,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.color,
         is_dark_color_scheme,
         styles.forced_colors,
-      )
-      {
+      ) {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
             .then_some(Length::px(3.0))
@@ -12326,21 +12369,19 @@ fn apply_declaration_with_base_internal_with_order(
         styles.flex_basis = FlexBasis::Length(len);
       }
     }
-    "-ms-flex-preferred-size" => {
-      match resolved_value {
-        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => {
-          styles.flex_basis = FlexBasis::Auto
-        }
-        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("content") => {
-          styles.flex_basis = FlexBasis::Content
-        }
-        _ => {
-          if let Some(len) = extract_length(resolved_value) {
-            styles.flex_basis = FlexBasis::Length(len);
-          }
+    "-ms-flex-preferred-size" => match resolved_value {
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => {
+        styles.flex_basis = FlexBasis::Auto
+      }
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("content") => {
+        styles.flex_basis = FlexBasis::Content
+      }
+      _ => {
+        if let Some(len) = extract_length(resolved_value) {
+          styles.flex_basis = FlexBasis::Length(len);
         }
       }
-    }
+    },
 
     // Grid
     "-ms-grid-columns" => {
@@ -12587,7 +12628,6 @@ fn apply_declaration_with_base_internal_with_order(
           if let Some(flow) = parsed.auto_flow {
             styles.grid_auto_flow = flow;
           }
-
         }
       }
     }
@@ -13255,8 +13295,20 @@ fn apply_declaration_with_base_internal_with_order(
       }
 
       let col_start = col_start.unwrap_or("auto");
-      let row_end = row_end.unwrap_or_else(|| if is_custom_ident(row_start) { row_start } else { "auto" });
-      let col_end = col_end.unwrap_or_else(|| if is_custom_ident(col_start) { col_start } else { "auto" });
+      let row_end = row_end.unwrap_or_else(|| {
+        if is_custom_ident(row_start) {
+          row_start
+        } else {
+          "auto"
+        }
+      });
+      let col_end = col_end.unwrap_or_else(|| {
+        if is_custom_ident(col_start) {
+          col_start
+        } else {
+          "auto"
+        }
+      });
 
       styles.grid_row_raw = Some(format!("{row_start} / {row_end}"));
       styles.grid_column_raw = Some(format!("{col_start} / {col_end}"));
@@ -13989,35 +14041,33 @@ fn apply_declaration_with_base_internal_with_order(
         _ => styles.text_size_adjust,
       };
     }
-    "text-wrap" => {
-      match resolved_value {
-        PropertyValue::Keyword(kw) => {
-          if let Some(parsed) = TextWrap::parse(kw) {
+    "text-wrap" => match resolved_value {
+      PropertyValue::Keyword(kw) => {
+        if let Some(parsed) = TextWrap::parse(kw) {
+          styles.text_wrap = parsed;
+        }
+      }
+      PropertyValue::Multiple(values) => {
+        let mut raw = String::new();
+        let mut valid = true;
+        for (idx, value) in values.iter().enumerate() {
+          let PropertyValue::Keyword(part) = value else {
+            valid = false;
+            break;
+          };
+          if idx > 0 {
+            raw.push(' ');
+          }
+          raw.push_str(part);
+        }
+        if valid {
+          if let Some(parsed) = TextWrap::parse(&raw) {
             styles.text_wrap = parsed;
           }
         }
-        PropertyValue::Multiple(values) => {
-          let mut raw = String::new();
-          let mut valid = true;
-          for (idx, value) in values.iter().enumerate() {
-            let PropertyValue::Keyword(part) = value else {
-              valid = false;
-              break;
-            };
-            if idx > 0 {
-              raw.push(' ');
-            }
-            raw.push_str(part);
-          }
-          if valid {
-            if let Some(parsed) = TextWrap::parse(&raw) {
-              styles.text_wrap = parsed;
-            }
-          }
-        }
-        _ => {}
       }
-    }
+      _ => {}
+    },
     "text-orientation" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
@@ -14092,9 +14142,12 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "text-decoration-color" => {
-      if let Some(color) =
-        parse_text_decoration_color(resolved_value, styles.color, is_dark_color_scheme, styles.forced_colors)
-      {
+      if let Some(color) = parse_text_decoration_color(
+        resolved_value,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      ) {
         styles.text_decoration.color = color;
       }
     }
@@ -14149,9 +14202,12 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "text-emphasis-color" => {
-      if let Some(color) =
-        parse_text_emphasis_color(resolved_value, styles.color, is_dark_color_scheme, styles.forced_colors)
-      {
+      if let Some(color) = parse_text_emphasis_color(
+        resolved_value,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      ) {
         styles.text_emphasis_color = color;
       }
     }
@@ -14166,9 +14222,12 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "text-emphasis" => {
-      if let Some((style_val, color_val)) =
-        parse_text_emphasis_shorthand(resolved_value, styles.color, is_dark_color_scheme, styles.forced_colors)
-      {
+      if let Some((style_val, color_val)) = parse_text_emphasis_shorthand(
+        resolved_value,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      ) {
         if let Some(emph_style) = style_val {
           styles.text_emphasis_style = emph_style;
         } else {
@@ -14249,8 +14308,7 @@ fn apply_declaration_with_base_internal_with_order(
           styles.color,
           is_dark_color_scheme,
           styles.forced_colors,
-        )
-        {
+        ) {
           if saw_color {
             return;
           }
@@ -14473,8 +14531,10 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "break-inside" | "column-break-inside" => {
-      let from_page_break =
-        matches!(decl.property.as_str(), "page-break-inside" | "-webkit-page-break-inside");
+      let from_page_break = matches!(
+        decl.property.as_str(),
+        "page-break-inside" | "-webkit-page-break-inside"
+      );
       let from_column_break = matches!(
         decl.property.as_str(),
         "column-break-inside" | "-webkit-column-break-inside"
@@ -15595,7 +15655,7 @@ fn apply_declaration_with_base_internal_with_order(
           styles.webkit_text_stroke_width = len;
         }
       }
-    },
+    }
     "-webkit-text-stroke" => {
       let tokens: Vec<PropertyValue> = match resolved_value {
         PropertyValue::Multiple(values) => values.clone(),
@@ -15677,45 +15737,43 @@ fn apply_declaration_with_base_internal_with_order(
       // Shorthand resets omitted components to their initial values.
       styles.webkit_text_stroke_width = width.unwrap_or_else(|| Length::px(0.0));
       styles.webkit_text_stroke_color = color.unwrap_or(Color::CurrentColor);
-    },
-    "background-color" => {
-      match resolved_value {
-        PropertyValue::Color(c) => {
+    }
+    "background-color" => match resolved_value {
+      PropertyValue::Color(c) => {
+        set_background_color(
+          styles,
+          c.to_rgba_with_scheme_and_forced_colors(
+            styles.color,
+            is_dark_color_scheme,
+            styles.forced_colors,
+          ),
+          c.uses_system_color(),
+          order,
+        );
+      }
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
+        set_background_color(styles, styles.color, false, order);
+      }
+      PropertyValue::Keyword(kw) => {
+        if let Ok(color) = Color::parse(kw) {
           set_background_color(
             styles,
-            c.to_rgba_with_scheme_and_forced_colors(
+            color.to_rgba_with_scheme_and_forced_colors(
               styles.color,
               is_dark_color_scheme,
               styles.forced_colors,
             ),
-            c.uses_system_color(),
+            color.uses_system_color(),
             order,
           );
         }
-        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
-          set_background_color(styles, styles.color, false, order);
-        }
-        PropertyValue::Keyword(kw) => {
-          if let Ok(color) = Color::parse(kw) {
-            set_background_color(
-              styles,
-              color.to_rgba_with_scheme_and_forced_colors(
-                styles.color,
-                is_dark_color_scheme,
-                styles.forced_colors,
-              ),
-              color.uses_system_color(),
-              order,
-            );
-          }
-        }
-        _ => {
-          if let Some(c) = resolve_color_value(resolved_value) {
-            set_background_color(styles, c, false, order);
-          }
+      }
+      _ => {
+        if let Some(c) = resolve_color_value(resolved_value) {
+          set_background_color(styles, c, false, order);
         }
       }
-    }
+    },
 
     // SVG presentation properties
     "fill" => {
@@ -15989,7 +16047,10 @@ fn apply_declaration_with_base_internal_with_order(
             .get(idx)
             .copied()
             .unwrap_or_else(|| values.last().copied().unwrap());
-          repeats.push(BackgroundRepeat { x: x_kw, y: source.y });
+          repeats.push(BackgroundRepeat {
+            x: x_kw,
+            y: source.y,
+          });
         }
         styles.background_repeats = repeats.into();
         styles.logical.background_repeat_order = order;
@@ -16020,7 +16081,10 @@ fn apply_declaration_with_base_internal_with_order(
             .get(idx)
             .copied()
             .unwrap_or_else(|| values.last().copied().unwrap());
-          repeats.push(BackgroundRepeat { x: source.x, y: y_kw });
+          repeats.push(BackgroundRepeat {
+            x: source.x,
+            y: y_kw,
+          });
         }
         styles.background_repeats = repeats.into();
         styles.logical.background_repeat_order = order;
@@ -16039,7 +16103,11 @@ fn apply_declaration_with_base_internal_with_order(
         styles.ensure_background_lists();
         let inline_horizontal = inline_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().repeat;
-        let default_kw = if inline_horizontal { default.x } else { default.y };
+        let default_kw = if inline_horizontal {
+          default.x
+        } else {
+          default.y
+        };
         let fallback_kw = values.last().copied().unwrap_or(default_kw);
         let layer_count = values.len().max(styles.background_repeats.len()).max(1);
         let mut repeats = Vec::with_capacity(layer_count);
@@ -16076,7 +16144,11 @@ fn apply_declaration_with_base_internal_with_order(
         styles.ensure_background_lists();
         let block_horizontal = block_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().repeat;
-        let default_kw = if block_horizontal { default.x } else { default.y };
+        let default_kw = if block_horizontal {
+          default.x
+        } else {
+          default.y
+        };
         let fallback_kw = values.last().copied().unwrap_or(default_kw);
         let layer_count = values.len().max(styles.background_repeats.len()).max(1);
         let mut repeats = Vec::with_capacity(layer_count);
@@ -16157,9 +16229,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "background-position-inline" => {
       let positive = inline_axis_positive(styles.writing_mode, styles.direction);
-      if let Some(values) =
-        parse_layer_list(resolved_value, |v| parse_background_position_component_logical(v, positive))
-      {
+      if let Some(values) = parse_layer_list(resolved_value, |v| {
+        parse_background_position_component_logical(v, positive)
+      }) {
         styles.ensure_background_lists();
         let horizontal_inline = inline_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().position;
@@ -16167,7 +16239,11 @@ fn apply_declaration_with_base_internal_with_order(
           x: default_x,
           y: default_y,
         } = default;
-        let default_component = if horizontal_inline { default_x } else { default_y };
+        let default_component = if horizontal_inline {
+          default_x
+        } else {
+          default_y
+        };
         let fallback_value = values.last().copied().unwrap_or(default_component);
         let layer_count = values.len().max(styles.background_positions.len()).max(1);
         let mut positions = Vec::with_capacity(layer_count);
@@ -16193,9 +16269,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "background-position-block" => {
       let positive = block_axis_positive(styles.writing_mode);
-      if let Some(values) =
-        parse_layer_list(resolved_value, |v| parse_background_position_component_logical(v, positive))
-      {
+      if let Some(values) = parse_layer_list(resolved_value, |v| {
+        parse_background_position_component_logical(v, positive)
+      }) {
         styles.ensure_background_lists();
         let horizontal_block = block_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().position;
@@ -16203,7 +16279,11 @@ fn apply_declaration_with_base_internal_with_order(
           x: default_x,
           y: default_y,
         } = default;
-        let default_component = if horizontal_block { default_x } else { default_y };
+        let default_component = if horizontal_block {
+          default_x
+        } else {
+          default_y
+        };
         let fallback_value = values.last().copied().unwrap_or(default_component);
         let layer_count = values.len().max(styles.background_positions.len()).max(1);
         let mut positions = Vec::with_capacity(layer_count);
@@ -16331,9 +16411,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "mask-repeat" => {
       let writing_mode = styles.writing_mode;
-      if let Some(repeats) =
-        parse_layer_list(resolved_value, |value| parse_background_repeat(value, writing_mode))
-      {
+      if let Some(repeats) = parse_layer_list(resolved_value, |value| {
+        parse_background_repeat(value, writing_mode)
+      }) {
         styles.mask_repeats = repeats.into();
         styles.rebuild_mask_layers();
       }
@@ -16502,18 +16582,16 @@ fn apply_declaration_with_base_internal_with_order(
     }
 
     // Visual effects
-    "opacity" => {
-      match resolved_value {
-        PropertyValue::Number(n) => styles.opacity = n.clamp(0.0, 1.0),
-        PropertyValue::Percentage(p) => styles.opacity = (*p / 100.0).clamp(0.0, 1.0),
-        PropertyValue::Length(len)
-          if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent) =>
-        {
-          styles.opacity = (len.value / 100.0).clamp(0.0, 1.0)
-        }
-        _ => {}
+    "opacity" => match resolved_value {
+      PropertyValue::Number(n) => styles.opacity = n.clamp(0.0, 1.0),
+      PropertyValue::Percentage(p) => styles.opacity = (*p / 100.0).clamp(0.0, 1.0),
+      PropertyValue::Length(len)
+        if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent) =>
+      {
+        styles.opacity = (len.value / 100.0).clamp(0.0, 1.0)
       }
-    }
+      _ => {}
+    },
     "box-shadow" => match resolved_value {
       PropertyValue::BoxShadow(shadows) => {
         styles.box_shadow = shadows
@@ -17161,7 +17239,11 @@ fn parse_anchor_size_function_str(input: &str) -> Option<AnchorSizeFunction> {
   }
   let axis = axis.unwrap_or(AnchorSizeAxis::Omitted);
 
-  Some(AnchorSizeFunction { name, axis, fallback })
+  Some(AnchorSizeFunction {
+    name,
+    axis,
+    fallback,
+  })
 }
 
 pub fn extract_inset_value(value: &PropertyValue) -> Option<InsetValue> {
@@ -18858,9 +18940,9 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
         if len.unit == LengthUnit::Calc {
           None
         } else {
-          Some(crate::style::values::LengthCalc::Linear(CalcLength::single(
-            len.unit, len.value,
-          )))
+          Some(crate::style::values::LengthCalc::Linear(
+            CalcLength::single(len.unit, len.value),
+          ))
         }
       }
     }
@@ -18883,10 +18965,8 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
         PK::Start => Some(offset_to_component(offset)),
         PK::Center | PK::End => {
           let base = base_percent(pos.align);
-          let base_calc = crate::style::values::LengthCalc::Linear(CalcLength::single(
-            LengthUnit::Percent,
-            base,
-          ));
+          let base_calc =
+            crate::style::values::LengthCalc::Linear(CalcLength::single(LengthUnit::Percent, base));
           let offset_calc = length_as_calc(offset)?;
           let sign = if matches!(pos.align, PK::End) {
             -1.0
@@ -20455,7 +20535,13 @@ fn parse_filter_list(
 
     let parsed = parser
       .parse_nested_block(|block| {
-        parse_filter_function(&func_name, block, current_color, is_dark_color_scheme, forced_colors)
+        parse_filter_function(
+          &func_name,
+          block,
+          current_color,
+          is_dark_color_scheme,
+          forced_colors,
+        )
       })
       .ok()?;
     filters.push(parsed);
@@ -21038,7 +21124,9 @@ pub(crate) fn resolve_font_size_length(
     LengthUnit::Rlh => Some(len.value * root_font_size * 1.2),
 
     LengthUnit::Percent => Some((len.value / 100.0) * parent_font_size),
-    unit if unit.is_viewport_relative() => len.resolve_with_viewport(viewport.width, viewport.height),
+    unit if unit.is_viewport_relative() => {
+      len.resolve_with_viewport(viewport.width, viewport.height)
+    }
     _ => None,
   }
 }
@@ -21249,7 +21337,11 @@ fn parse_css_color_value<'i, 't>(
   }
 
   Ok(FilterColor::Color(
-    parsed.to_rgba_with_scheme_and_forced_colors(current_color, is_dark_color_scheme, forced_colors),
+    parsed.to_rgba_with_scheme_and_forced_colors(
+      current_color,
+      is_dark_color_scheme,
+      forced_colors,
+    ),
   ))
 }
 
@@ -21269,8 +21361,8 @@ fn parse_drop_shadow<'i, 't>(
     }
 
     if color.is_none() {
-      if let Ok(c) =
-        input.try_parse(|p| parse_css_color_value(p, current_color, is_dark_color_scheme, forced_colors))
+      if let Ok(c) = input
+        .try_parse(|p| parse_css_color_value(p, current_color, is_dark_color_scheme, forced_colors))
       {
         color = Some(c);
         continue;
@@ -21403,7 +21495,10 @@ fn parse_repeat_keyword(kw: &str) -> Option<BackgroundRepeatKeyword> {
   }
 }
 
-fn parse_background_repeat(value: &PropertyValue, writing_mode: WritingMode) -> Option<BackgroundRepeat> {
+fn parse_background_repeat(
+  value: &PropertyValue,
+  writing_mode: WritingMode,
+) -> Option<BackgroundRepeat> {
   match value {
     PropertyValue::Keyword(kw) => {
       if kw.eq_ignore_ascii_case("repeat-x") {
@@ -21827,18 +21922,17 @@ fn parse_background_position_component_logical(
   let start_align = if positive { 0.0 } else { 1.0 };
   let end_align = if positive { 1.0 } else { 0.0 };
 
-  let component_from_align =
-    |align: f32, offset: Option<Length>| -> BackgroundPositionComponent {
-      // Use percent-zero so the default offset participates in percentage resolution.
-      let mut off = offset.unwrap_or_else(|| Length::percent(0.0));
-      if (align - 1.0).abs() < 1e-6 {
-        off.value = -off.value;
-      }
-      BackgroundPositionComponent {
-        alignment: align,
-        offset: off,
-      }
-    };
+  let component_from_align = |align: f32, offset: Option<Length>| -> BackgroundPositionComponent {
+    // Use percent-zero so the default offset participates in percentage resolution.
+    let mut off = offset.unwrap_or_else(|| Length::percent(0.0));
+    if (align - 1.0).abs() < 1e-6 {
+      off.value = -off.value;
+    }
+    BackgroundPositionComponent {
+      alignment: align,
+      offset: off,
+    }
+  };
 
   let parse_offset = |value: &PropertyValue| -> Option<Length> {
     match value {
@@ -21880,8 +21974,12 @@ fn parse_background_position_component_logical(
       Some(component_from_align(align, None))
     }
     PropertyValue::Length(len) => Some(component_from_align(start_align, Some(*len))),
-    PropertyValue::Percentage(p) => Some(component_from_align(start_align, Some(Length::percent(*p)))),
-    PropertyValue::Number(n) if *n == 0.0 => Some(component_from_align(start_align, Some(Length::px(0.0)))),
+    PropertyValue::Percentage(p) => {
+      Some(component_from_align(start_align, Some(Length::percent(*p))))
+    }
+    PropertyValue::Number(n) if *n == 0.0 => {
+      Some(component_from_align(start_align, Some(Length::px(0.0))))
+    }
     _ => None,
   }
 }
@@ -21897,7 +21995,10 @@ fn parse_clip_path_value(value: &PropertyValue) -> Option<ClipPath> {
     }
     PropertyValue::Keyword(kw) => parse_clip_path_str(kw),
     PropertyValue::Multiple(parts) => {
-      if parts.iter().any(|part| matches!(part, PropertyValue::Url(_))) {
+      if parts
+        .iter()
+        .any(|part| matches!(part, PropertyValue::Url(_)))
+      {
         let mut url: Option<&str> = None;
         let mut reference: Option<ReferenceBox> = None;
         for part in parts {
@@ -23547,7 +23648,9 @@ fn parse_list_style_type(value: &PropertyValue) -> Option<ListStyleType> {
             if ident.is_some() || symbols.is_some() {
               return None;
             }
-            let parsed = parser.parse_nested_block(parse_symbols_counter_style).ok()?;
+            let parsed = parser
+              .parse_nested_block(parse_symbols_counter_style)
+              .ok()?;
             symbols = Some(parsed);
           }
           _ => return None,
@@ -24061,7 +24164,11 @@ fn apply_outline_shorthand(
     match token {
       PropertyValue::Color(c) => {
         color = Some(OutlineColor::Color(
-          c.to_rgba_with_scheme_and_forced_colors(styles.color, is_dark_color_scheme, forced_colors),
+          c.to_rgba_with_scheme_and_forced_colors(
+            styles.color,
+            is_dark_color_scheme,
+            forced_colors,
+          ),
         ));
       }
       PropertyValue::Keyword(ref kw) if kw.eq_ignore_ascii_case("currentcolor") => {
@@ -24155,6 +24262,7 @@ mod tests {
   use crate::style::types::StrokeDasharray;
   use crate::style::types::StrokeLinecap;
   use crate::style::types::StrokeLinejoin;
+  use crate::style::types::SymbolsType;
   use crate::style::types::TextCombineUpright;
   use crate::style::types::TextDecorationLine;
   use crate::style::types::TextDecorationStyle;
@@ -24172,7 +24280,6 @@ mod tests {
   use crate::style::types::TextWrap;
   use crate::style::types::TransformBox;
   use crate::style::types::WordBreak;
-  use crate::style::types::SymbolsType;
   use crate::style::types::WritingMode;
   use crate::style::values::CalcLength;
   use crate::style::values::CustomPropertySyntax;
@@ -28018,8 +28125,8 @@ mod tests {
       16.0,
     );
     assert!(matches!(
-        style.text_overflow.inline_start,
-        TextOverflowSide::Clip
+      style.text_overflow.inline_start,
+      TextOverflowSide::Clip
     ));
     assert!(matches!(
         style.text_overflow.inline_end,
@@ -30955,7 +31062,13 @@ mod tests {
 
     // Initial template where "b" spans every row (and is therefore implicitly anchored at the
     // first row line).
-    apply_declaration(&mut style, &decl("grid-template-areas", "\"a a b\" \"c c b\" \". . b\""), &parent, 16.0, 16.0);
+    apply_declaration(
+      &mut style,
+      &decl("grid-template-areas", "\"a a b\" \"c c b\" \". . b\""),
+      &parent,
+      16.0,
+      16.0,
+    );
     apply_declaration(
       &mut style,
       &decl("grid-template-columns", "repeat(3, 1fr)"),
@@ -30976,7 +31089,13 @@ mod tests {
     // Override template where "b" only appears on the last row. The implicit b-start/b-end line
     // names must not accumulate; stale indices would cause named-line placement to resolve to the
     // earlier (now invalid) occurrence.
-    apply_declaration(&mut style, &decl("grid-template-areas", "\"a a\" \"c c\" \"b b\""), &parent, 16.0, 16.0);
+    apply_declaration(
+      &mut style,
+      &decl("grid-template-areas", "\"a a\" \"c c\" \"b b\""),
+      &parent,
+      16.0,
+      16.0,
+    );
     apply_declaration(
       &mut style,
       &decl("grid-template-columns", "repeat(2, 1fr)"),
@@ -31286,13 +31405,19 @@ mod tests {
     }
 
     assert!(styles.var_dependent_declarations.contains_key("background"));
-    assert_eq!(styles.background_color, Rgba::from_rgba8(239, 203, 157, 255));
+    assert_eq!(
+      styles.background_color,
+      Rgba::from_rgba8(239, 203, 157, 255)
+    );
 
     // Background shorthands can also depend on `var()` and are cached for recomputation after
     // registered custom properties change. Ensure that recomputing a shorthand does not clobber a
     // later longhand override such as `background-color`.
     styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
-    assert_eq!(styles.background_color, Rgba::from_rgba8(239, 203, 157, 255));
+    assert_eq!(
+      styles.background_color,
+      Rgba::from_rgba8(239, 203, 157, 255)
+    );
   }
 
   #[test]
@@ -33311,7 +33436,9 @@ mod tests {
       16.0,
       16.0,
     );
-    assert!(matches!(&style.list_style_type, ListStyleType::Symbols(symbols) if symbols.system == SymbolsType::Cyclic));
+    assert!(
+      matches!(&style.list_style_type, ListStyleType::Symbols(symbols) if symbols.system == SymbolsType::Cyclic)
+    );
   }
 
   #[test]
@@ -34862,9 +34989,12 @@ mod tests {
 
   #[test]
   fn parses_filter_list_with_lengths_and_numbers() {
-    let filters = parse_filter_list(&PropertyValue::Keyword(
-      "blur(4px) brightness(50%)".to_string(),
-    ), Rgba::BLACK, false, false)
+    let filters = parse_filter_list(
+      &PropertyValue::Keyword("blur(4px) brightness(50%)".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
     .expect("filters");
     assert_eq!(filters.len(), 2);
     match &filters[0] {
@@ -34879,17 +35009,24 @@ mod tests {
 
   #[test]
   fn filter_none_returns_empty_list() {
-    let filters =
-      parse_filter_list(&PropertyValue::Keyword("none".to_string()), Rgba::BLACK, false, false)
-        .expect("filters");
+    let filters = parse_filter_list(
+      &PropertyValue::Keyword("none".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
+    .expect("filters");
     assert!(filters.is_empty());
   }
 
   #[test]
   fn parses_svg_url_filter() {
-    let filters = parse_filter_list(&PropertyValue::Keyword(
-      "url(\"filters.svg#blur\")".to_string(),
-    ), Rgba::BLACK, false, false)
+    let filters = parse_filter_list(
+      &PropertyValue::Keyword("url(\"filters.svg#blur\")".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
     .expect("filters");
     assert_eq!(filters.len(), 1);
     assert!(matches!(filters.first(), Some(FilterFunction::Url(url)) if url == "filters.svg#blur"));
@@ -34903,15 +35040,20 @@ mod tests {
       false,
       false,
     )
-      .expect("filters");
+    .expect("filters");
     assert_eq!(filters.len(), 1);
     assert!(matches!(filters.first(), Some(FilterFunction::Url(url)) if url == "#recolor"));
   }
 
   #[test]
   fn parses_filter_value_url_variant() {
-    let filters = parse_filter_list(&PropertyValue::Url("#recolor".to_string()), Rgba::BLACK, false, false)
-      .expect("filters parsed");
+    let filters = parse_filter_list(
+      &PropertyValue::Url("#recolor".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
+    .expect("filters parsed");
     assert_eq!(filters.len(), 1);
     assert!(matches!(filters.first(), Some(FilterFunction::Url(url)) if url == "#recolor"));
   }
@@ -34932,7 +35074,13 @@ mod tests {
 
   #[test]
   fn filter_url_empty_is_invalid() {
-    assert!(parse_filter_list(&PropertyValue::Url(String::new()), Rgba::BLACK, false, false).is_none());
+    assert!(parse_filter_list(
+      &PropertyValue::Url(String::new()),
+      Rgba::BLACK,
+      false,
+      false
+    )
+    .is_none());
   }
 
   #[test]
@@ -34982,9 +35130,12 @@ mod tests {
 
   #[test]
   fn hue_rotate_accepts_calc_angles() {
-    let filters = parse_filter_list(&PropertyValue::Keyword(
-      "hue-rotate(calc(1turn / 2))".to_string(),
-    ), Rgba::BLACK, false, false)
+    let filters = parse_filter_list(
+      &PropertyValue::Keyword("hue-rotate(calc(1turn / 2))".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
     .expect("filters");
     match &filters[0] {
       FilterFunction::HueRotate(v) => assert!((*v - 180.0).abs() < 0.01),
@@ -34994,9 +35145,12 @@ mod tests {
 
   #[test]
   fn parses_drop_shadow_defaulting_to_current_color() {
-    let filters = parse_filter_list(&PropertyValue::Keyword(
-      "drop-shadow(2px 3px 4px)".to_string(),
-    ), Rgba::BLACK, false, false)
+    let filters = parse_filter_list(
+      &PropertyValue::Keyword("drop-shadow(2px 3px 4px)".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
     .expect("filters");
     assert_eq!(filters.len(), 1);
     match &filters[0] {
@@ -35011,9 +35165,12 @@ mod tests {
 
   #[test]
   fn drop_shadow_accepts_spread_length() {
-    let filters = parse_filter_list(&PropertyValue::Keyword(
-      "drop-shadow(1px 2px 3px 4px)".to_string(),
-    ), Rgba::BLACK, false, false)
+    let filters = parse_filter_list(
+      &PropertyValue::Keyword("drop-shadow(1px 2px 3px 4px)".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
     .expect("filters");
     match &filters[0] {
       FilterFunction::DropShadow(shadow) => {
@@ -35026,9 +35183,12 @@ mod tests {
 
   #[test]
   fn parses_drop_shadow_with_rgba_color() {
-    let filters = parse_filter_list(&PropertyValue::Keyword(
-      "drop-shadow(0 0 0 2px rgba(20, 40, 80, 0.5))".to_string(),
-    ), Rgba::BLACK, false, false)
+    let filters = parse_filter_list(
+      &PropertyValue::Keyword("drop-shadow(0 0 0 2px rgba(20, 40, 80, 0.5))".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
     .expect("filters");
     assert_eq!(filters.len(), 1);
     match &filters[0] {
@@ -35132,14 +35292,22 @@ mod tests {
   #[test]
   fn filter_lengths_reject_percentages() {
     assert!(
-      parse_filter_list(&PropertyValue::Keyword("blur(10%)".to_string()), Rgba::BLACK, false, false)
-        .is_none(),
+      parse_filter_list(
+        &PropertyValue::Keyword("blur(10%)".to_string()),
+        Rgba::BLACK,
+        false,
+        false
+      )
+      .is_none(),
       "percentage blur should be invalid"
     );
     assert!(
-      parse_filter_list(&PropertyValue::Keyword(
-        "drop-shadow(1px 2px 10%)".to_string()
-      ), Rgba::BLACK, false, false)
+      parse_filter_list(
+        &PropertyValue::Keyword("drop-shadow(1px 2px 10%)".to_string()),
+        Rgba::BLACK,
+        false,
+        false
+      )
       .is_none(),
       "percentage drop-shadow blur should be invalid"
     );
@@ -35148,20 +35316,33 @@ mod tests {
   #[test]
   fn negative_blur_lengths_are_invalid() {
     assert!(
-      parse_filter_list(&PropertyValue::Keyword("blur(-1px)".to_string()), Rgba::BLACK, false, false)
-        .is_none(),
+      parse_filter_list(
+        &PropertyValue::Keyword("blur(-1px)".to_string()),
+        Rgba::BLACK,
+        false,
+        false
+      )
+      .is_none(),
       "negative blur should be invalid"
     );
     assert!(
-      parse_filter_list(&PropertyValue::Keyword(
-        "drop-shadow(1px 2px -5px)".to_string()
-      ), Rgba::BLACK, false, false)
+      parse_filter_list(
+        &PropertyValue::Keyword("drop-shadow(1px 2px -5px)".to_string()),
+        Rgba::BLACK,
+        false,
+        false
+      )
       .is_none(),
       "negative drop-shadow blur should be invalid"
     );
     assert!(
-      parse_filter_list(&PropertyValue::Keyword("blur(-0.5px)".to_string()), Rgba::BLACK, false, false)
-        .is_none(),
+      parse_filter_list(
+        &PropertyValue::Keyword("blur(-0.5px)".to_string()),
+        Rgba::BLACK,
+        false,
+        false
+      )
+      .is_none(),
       "sub-pixel negative blur should still be rejected"
     );
   }
@@ -36181,12 +36362,12 @@ mod tests {
     let mut style = ComputedStyle::default();
     let decl = Declaration {
       property: "font-variant".into(),
-       value: PropertyValue::Keyword(
-         "small-caps oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero \
+      value: PropertyValue::Keyword(
+        "small-caps oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero \
                  jis90 proportional-width ruby no-common-ligatures discretionary-ligatures \
                  historical-forms styleset(AltG,AltA) swash(Swishy) annotation(Note) sub"
-           .to_string(),
-       ),
+          .to_string(),
+      ),
       contains_var: false,
       raw_value: String::new(),
       important: false,
@@ -36892,9 +37073,7 @@ mod tests {
       vec![FontVariantAlternateValue::Name("Keep".to_string())];
     let decl = Declaration {
       property: "font-variant-alternates".into(),
-      value: PropertyValue::Keyword(
-        "character-variant(Var1) character-variant(Var2)".to_string(),
-      ),
+      value: PropertyValue::Keyword("character-variant(Var1) character-variant(Var2)".to_string()),
       contains_var: false,
       raw_value: String::new(),
       important: false,
@@ -36945,15 +37124,14 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.font_variant_alternates.stylesets =
       vec![FontVariantAlternateValue::Name("KeepStyleset".to_string())];
-    style.font_variant_alternates.character_variants =
-      vec![FontVariantAlternateValue::Name("KeepCharacterVariant".to_string())];
+    style.font_variant_alternates.character_variants = vec![FontVariantAlternateValue::Name(
+      "KeepCharacterVariant".to_string(),
+    )];
     let decl = Declaration {
       property: "font-variant-alternates".into(),
       // CSS Fonts 4 uses `<<feature-value-name>>#`, meaning comma-separated lists; whitespace-only
       // separation should invalidate the declaration.
-      value: PropertyValue::Keyword(
-        "styleset(AltG AltA) character-variant(Var1 Var2)".to_string(),
-      ),
+      value: PropertyValue::Keyword("styleset(AltG AltA) character-variant(Var1 Var2)".to_string()),
       contains_var: false,
       raw_value: String::new(),
       important: false,
@@ -36979,14 +37157,16 @@ mod tests {
       Some(FontVariantAlternateValue::Name("KeepStylistic".to_string()));
     style.font_variant_alternates.stylesets =
       vec![FontVariantAlternateValue::Name("KeepStyleset".to_string())];
-    style.font_variant_alternates.character_variants =
-      vec![FontVariantAlternateValue::Name("KeepCharacterVariant".to_string())];
+    style.font_variant_alternates.character_variants = vec![FontVariantAlternateValue::Name(
+      "KeepCharacterVariant".to_string(),
+    )];
     style.font_variant_alternates.swash =
       Some(FontVariantAlternateValue::Name("KeepSwash".to_string()));
     style.font_variant_alternates.ornaments =
       Some(FontVariantAlternateValue::Name("KeepOrnaments".to_string()));
-    style.font_variant_alternates.annotation =
-      Some(FontVariantAlternateValue::Name("KeepAnnotation".to_string()));
+    style.font_variant_alternates.annotation = Some(FontVariantAlternateValue::Name(
+      "KeepAnnotation".to_string(),
+    ));
     let decl = Declaration {
       property: "font-variant-alternates".into(),
       value: PropertyValue::Keyword(
@@ -37023,7 +37203,9 @@ mod tests {
     );
     assert_eq!(
       style.font_variant_alternates.annotation,
-      Some(FontVariantAlternateValue::Name("KeepAnnotation".to_string()))
+      Some(FontVariantAlternateValue::Name(
+        "KeepAnnotation".to_string()
+      ))
     );
   }
 
@@ -37598,7 +37780,10 @@ fn mask_clip_to_origin(clip: MaskClip) -> Option<MaskOrigin> {
   }
 }
 
-fn parse_mask_shorthand(tokens: &[PropertyValue], writing_mode: WritingMode) -> Option<MaskShorthand> {
+fn parse_mask_shorthand(
+  tokens: &[PropertyValue],
+  writing_mode: WritingMode,
+) -> Option<MaskShorthand> {
   if tokens.is_empty() {
     return None;
   }
@@ -37842,7 +38027,11 @@ fn parse_background_shorthand(
     if allow_color && shorthand.color.is_none() {
       let parsed_color = match token {
         PropertyValue::Color(c) => Some((
-          c.to_rgba_with_scheme_and_forced_colors(current_color, is_dark_color_scheme, forced_colors),
+          c.to_rgba_with_scheme_and_forced_colors(
+            current_color,
+            is_dark_color_scheme,
+            forced_colors,
+          ),
           c.uses_system_color(),
         )),
         PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
@@ -37850,7 +38039,11 @@ fn parse_background_shorthand(
         }
         PropertyValue::Keyword(kw) => crate::style::color::Color::parse(kw).ok().map(|c| {
           (
-            c.to_rgba_with_scheme_and_forced_colors(current_color, is_dark_color_scheme, forced_colors),
+            c.to_rgba_with_scheme_and_forced_colors(
+              current_color,
+              is_dark_color_scheme,
+              forced_colors,
+            ),
             c.uses_system_color(),
           )
         }),

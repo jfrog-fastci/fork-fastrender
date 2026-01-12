@@ -55,8 +55,11 @@ fn absolute_bounds_for_box_id_unions_multiple_fragments() {
 
   let fragment_a =
     FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), target_box_id, vec![]);
-  let fragment_b =
-    FragmentNode::new_block_with_id(Rect::from_xywh(20.0, 5.0, 10.0, 10.0), target_box_id, vec![]);
+  let fragment_b = FragmentNode::new_block_with_id(
+    Rect::from_xywh(20.0, 5.0, 10.0, 10.0),
+    target_box_id,
+    vec![],
+  );
 
   let root = FragmentNode::new_block(
     Rect::from_xywh(0.0, 0.0, 100.0, 100.0),

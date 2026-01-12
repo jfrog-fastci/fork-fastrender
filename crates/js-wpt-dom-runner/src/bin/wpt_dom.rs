@@ -132,7 +132,9 @@ fn main() -> Result<()> {
     std::env::set_var(BACKEND_ENV_VAR, cli.backend.as_env_value());
   }
 
-  let filter = cli.filter.or_else(|| cli.suite.default_filter().map(|raw| raw.to_string()));
+  let filter = cli
+    .filter
+    .or_else(|| cli.suite.default_filter().map(|raw| raw.to_string()));
 
   let report = run_suite(&SuiteConfig {
     wpt_root: cli.wpt_root.clone(),

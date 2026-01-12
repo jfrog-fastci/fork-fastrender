@@ -10,17 +10,26 @@ use fastrender::tree::anonymous::AnonymousBoxCreator;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use std::sync::Arc;
 use fastrender::Size;
+use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let mut stack = vec![fragment];
   while let Some(node) = stack.pop() {
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -94,7 +103,8 @@ fn block_level_float_can_share_line_with_previous_inline_content() {
     float_fragment.bounds
   );
 
-  let after_fragment = find_fragment_by_box_id(&fragment, 4).expect("after block fragment should exist");
+  let after_fragment =
+    find_fragment_by_box_id(&fragment, 4).expect("after block fragment should exist");
   assert!(
     (after_fragment.bounds.y() - 100.0).abs() < 0.5,
     "expected following block to start after the in-flow line boxes, not below the float: bounds={:?}",

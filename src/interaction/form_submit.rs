@@ -211,7 +211,10 @@ fn find_ancestor_form(index: &DomIndex<'_>, mut node_id: usize) -> Option<usize>
     }
     // Shadow roots are tree root boundaries for form owner resolution; do not walk out into the
     // shadow host tree.
-    if matches!(node.node_type, DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. }) {
+    if matches!(
+      node.node_type,
+      DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. }
+    ) {
       break;
     }
     node_id = *index.parent.get(node_id).unwrap_or(&0);
@@ -222,7 +225,10 @@ fn find_ancestor_form(index: &DomIndex<'_>, mut node_id: usize) -> Option<usize>
 fn tree_root_boundary_id(index: &DomIndex<'_>, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = index.node(node_id)?;
-    if matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }) {
+    if matches!(
+      node.node_type,
+      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }
+    ) {
       return Some(node_id);
     }
     node_id = *index.parent.get(node_id).unwrap_or(&0);
@@ -278,7 +284,10 @@ fn resolve_form_owner(index: &DomIndex<'_>, control_node_id: usize) -> Option<us
   {
     let tree_root = tree_root_boundary_id(index, control_node_id)?;
     let referenced = find_element_by_id_attr_in_tree(index, tree_root, form_attr)?;
-    return index.node(referenced).is_some_and(is_form).then_some(referenced);
+    return index
+      .node(referenced)
+      .is_some_and(is_form)
+      .then_some(referenced);
   }
 
   find_ancestor_form(index, control_node_id)
@@ -376,7 +385,10 @@ fn append_pair(params: &WebUrlSearchParams, name: &str, value: &str) -> Option<(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FormDataEntry {
-  Text { name: String, value: String },
+  Text {
+    name: String,
+    value: String,
+  },
   File {
     name: String,
     filename: String,
@@ -598,7 +610,11 @@ fn serialize_urlencoded(entries: &[FormDataEntry]) -> Option<String> {
   let limits = WebUrlLimits::default();
   let params = WebUrlSearchParams::new(&limits);
   for entry in entries {
-    append_pair(&params, entry_name(entry), entry_value_for_urlencoded(entry))?;
+    append_pair(
+      &params,
+      entry_name(entry),
+      entry_value_for_urlencoded(entry),
+    )?;
   }
   params.serialize().ok()
 }
@@ -627,7 +643,9 @@ fn serialize_multipart_form_data(entries: &[FormDataEntry]) -> (Vec<u8>, String)
     match entry {
       FormDataEntry::Text { name, value } => {
         let name = escape_multipart_value(name);
-        body.extend_from_slice(format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes());
+        body.extend_from_slice(
+          format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
         body.extend_from_slice(value.as_bytes());
         body.extend_from_slice(b"\r\n");
       }
@@ -640,10 +658,8 @@ fn serialize_multipart_form_data(entries: &[FormDataEntry]) -> (Vec<u8>, String)
         let name = escape_multipart_value(name);
         let filename = escape_multipart_value(filename);
         body.extend_from_slice(
-          format!(
-            "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
-          )
-          .as_bytes(),
+          format!("Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n")
+            .as_bytes(),
         );
         body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
         body.extend_from_slice(bytes);
@@ -711,18 +727,14 @@ fn method_for_submission(form: &DomNode, submitter: &DomNode) -> FormSubmissionM
   submitter
     .get_attribute_ref("formmethod")
     .map(FormSubmissionMethod::parse)
-    .unwrap_or_else(|| {
-      method_for_form(form)
-    })
+    .unwrap_or_else(|| method_for_form(form))
 }
 
 fn enctype_for_submission(form: &DomNode, submitter: &DomNode) -> FormSubmissionEnctype {
   submitter
     .get_attribute_ref("formenctype")
     .map(FormSubmissionEnctype::parse)
-    .unwrap_or_else(|| {
-      enctype_for_form(form)
-    })
+    .unwrap_or_else(|| enctype_for_form(form))
 }
 
 fn method_for_form(form: &DomNode) -> FormSubmissionMethod {
@@ -800,13 +812,18 @@ pub fn form_submission(
       let (body, content_type) = match enctype {
         FormSubmissionEnctype::UrlEncoded => {
           let encoded = serialize_urlencoded(&entries)?;
-          (encoded.into_bytes(), "application/x-www-form-urlencoded".to_string())
+          (
+            encoded.into_bytes(),
+            "application/x-www-form-urlencoded".to_string(),
+          )
         }
         FormSubmissionEnctype::MultipartFormData => {
           let (body, boundary) = serialize_multipart_form_data(&entries);
           (body, format!("multipart/form-data; boundary={boundary}"))
         }
-        FormSubmissionEnctype::TextPlain => (serialize_text_plain(&entries), "text/plain".to_string()),
+        FormSubmissionEnctype::TextPlain => {
+          (serialize_text_plain(&entries), "text/plain".to_string())
+        }
       };
 
       Some(FormSubmission {
@@ -869,13 +886,18 @@ pub fn form_submission_without_submitter(
       let (body, content_type) = match enctype {
         FormSubmissionEnctype::UrlEncoded => {
           let encoded = serialize_urlencoded(&entries)?;
-          (encoded.into_bytes(), "application/x-www-form-urlencoded".to_string())
+          (
+            encoded.into_bytes(),
+            "application/x-www-form-urlencoded".to_string(),
+          )
         }
         FormSubmissionEnctype::MultipartFormData => {
           let (body, boundary) = serialize_multipart_form_data(&entries);
           (body, format!("multipart/form-data; boundary={boundary}"))
         }
-        FormSubmissionEnctype::TextPlain => (serialize_text_plain(&entries), "text/plain".to_string()),
+        FormSubmissionEnctype::TextPlain => {
+          (serialize_text_plain(&entries), "text/plain".to_string())
+        }
       };
 
       Some(FormSubmission {

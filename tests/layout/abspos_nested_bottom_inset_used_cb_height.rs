@@ -1,3 +1,4 @@
+use fastrender::geometry::Size;
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::contexts::positioned::ContainingBlock;
@@ -7,7 +8,6 @@ use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::geometry::Size;
 use fastrender::{BoxNode, ComputedStyle, FormattingContext};
 use std::sync::Arc;
 
@@ -60,18 +60,10 @@ fn abspos_nested_bottom_inset_uses_containing_block_used_height() {
   );
   wrap.id = 3;
 
-  let mut cb = BoxNode::new_block(
-    Arc::new(cb_style),
-    FormattingContextType::Block,
-    vec![wrap],
-  );
+  let mut cb = BoxNode::new_block(Arc::new(cb_style), FormattingContextType::Block, vec![wrap]);
   cb.id = 2;
 
-  let mut root = BoxNode::new_block(
-    Arc::new(root_style),
-    FormattingContextType::Block,
-    vec![cb],
-  );
+  let mut root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![cb]);
   root.id = 1;
 
   let bfc = BlockFormattingContext::new();

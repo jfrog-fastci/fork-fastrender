@@ -123,30 +123,30 @@ pub fn parse_html_fragment_with_context_attrs(
     context_attrs,
     context_element_allows_scripting,
   )
-    .from_utf8()
-    .read_from(&mut reader)
-    .map_err(|e| {
-      if e.kind() == io::ErrorKind::TimedOut {
-        if let Some(timeout) = e
-          .get_ref()
-          .and_then(|inner| inner.downcast_ref::<crate::error::RenderError>())
-        {
-          return Error::Render(timeout.clone());
-        }
-        return Error::Render(crate::error::RenderError::Timeout {
-          stage: RenderStage::DomParse,
-          elapsed: crate::render_control::active_deadline()
-            .as_ref()
-            .map(|deadline| deadline.elapsed())
-            .unwrap_or_default(),
-        });
+  .from_utf8()
+  .read_from(&mut reader)
+  .map_err(|e| {
+    if e.kind() == io::ErrorKind::TimedOut {
+      if let Some(timeout) = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<crate::error::RenderError>())
+      {
+        return Error::Render(timeout.clone());
       }
+      return Error::Render(crate::error::RenderError::Timeout {
+        stage: RenderStage::DomParse,
+        elapsed: crate::render_control::active_deadline()
+          .as_ref()
+          .map(|deadline| deadline.elapsed())
+          .unwrap_or_default(),
+      });
+    }
 
-      Error::Parse(ParseError::InvalidHtml {
-        message: format!("Failed to parse HTML fragment: {}", e),
-        line: 0,
-      })
-    })?;
+    Error::Parse(ParseError::InvalidHtml {
+      message: format!("Failed to parse HTML fragment: {}", e),
+      line: 0,
+    })
+  })?;
   if let Some(start) = html5ever_timer {
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     super::with_dom_parse_diagnostics(|diag| {
@@ -230,7 +230,12 @@ fn fragment_children_from_rcdom(rcdom: &RcDom) -> Vec<Handle> {
   // wrapper so callers can insert the returned nodes directly (innerHTML/outerHTML semantics).
   let significant: Vec<Handle> = children
     .iter()
-    .filter(|handle| !matches!(handle.data, NodeData::Doctype { .. } | NodeData::Comment { .. }))
+    .filter(|handle| {
+      !matches!(
+        handle.data,
+        NodeData::Doctype { .. } | NodeData::Comment { .. }
+      )
+    })
     .cloned()
     .collect();
 

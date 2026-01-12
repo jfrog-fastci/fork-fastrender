@@ -55,8 +55,10 @@ fn calc_percent_height_is_not_collapsible_through() {
   );
   let tree = BoxTree::new(root);
 
-  let constraints =
-    LayoutConstraints::new(AvailableSpace::Definite(500.0), AvailableSpace::Definite(400.0));
+  let constraints = LayoutConstraints::new(
+    AvailableSpace::Definite(500.0),
+    AvailableSpace::Definite(400.0),
+  );
   let fragment = BlockFormattingContext::new()
     .layout(&tree.root, &constraints)
     .expect("layout");
@@ -75,4 +77,3 @@ fn calc_percent_height_is_not_collapsible_through() {
     "expected following block to be positioned after the spacer",
   );
 }
-

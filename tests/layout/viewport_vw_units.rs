@@ -45,9 +45,15 @@ fn find_box_id_for_styled_node_id(node: &BoxNode, styled_node_id: usize) -> Opti
 fn find_fragment_width_for_box_id(node: &FragmentNode, box_id: usize) -> Option<f32> {
   let matches_box = match &node.content {
     FragmentContent::Block { box_id: Some(id) }
-    | FragmentContent::Inline { box_id: Some(id), .. }
-    | FragmentContent::Text { box_id: Some(id), .. }
-    | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+    | FragmentContent::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Text {
+      box_id: Some(id), ..
+    }
+    | FragmentContent::Replaced {
+      box_id: Some(id), ..
+    } => *id == box_id,
     _ => false,
   };
   if matches_box {
@@ -74,10 +80,9 @@ fn element_width(html: &str, viewport: (u32, u32), element_id: &str) -> f32 {
 
   let styled_node_id =
     find_styled_node_id_for_dom_id(&intermediates.styled_tree, element_id).expect("styled id");
-  let box_id = find_box_id_for_styled_node_id(&intermediates.box_tree.root, styled_node_id)
-    .expect("box id");
-  find_fragment_width_for_box_id(&intermediates.fragment_tree.root, box_id)
-    .expect("fragment width")
+  let box_id =
+    find_box_id_for_styled_node_id(&intermediates.box_tree.root, styled_node_id).expect("box id");
+  find_fragment_width_for_box_id(&intermediates.fragment_tree.root, box_id).expect("fragment width")
 }
 
 fn assert_close(actual: f32, expected: f32, label: &str) {
@@ -126,5 +131,9 @@ fn viewport_units_use_outer_viewport_when_scrollbars_reserved() {
   );
 
   let vw_width = element_width(html, viewport, "vw");
-  assert_close(vw_width, viewport.0 as f32, "vw width should use outer viewport");
+  assert_close(
+    vw_width,
+    viewport.0 as f32,
+    "vw width should use outer viewport",
+  );
 }

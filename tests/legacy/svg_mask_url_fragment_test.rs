@@ -1,9 +1,9 @@
+use base64::Engine;
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
 use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
-use base64::Engine;
 use image::codecs::png::PngEncoder;
 use image::ColorType;
 use image::ImageEncoder;
@@ -89,7 +89,11 @@ fn legacy_raster_mask_url_matches_display_list() {
   for y in 0..20 {
     for x in 0..20 {
       let is_left = x < 10;
-      let (r, g, b) = if is_left { (255u8, 255u8, 255u8) } else { (0, 0, 0) };
+      let (r, g, b) = if is_left {
+        (255u8, 255u8, 255u8)
+      } else {
+        (0, 0, 0)
+      };
       pixels.extend_from_slice(&[r, g, b]);
     }
   }

@@ -68,7 +68,11 @@ impl TransitionRecord {
     now_ms - self.start_time_ms - self.delay_ms >= duration_ms
   }
 
-  fn extract_value(style: &ComputedStyle, name: &str, ctx: &AnimationResolveContext) -> Option<TransitionValue> {
+  fn extract_value(
+    style: &ComputedStyle,
+    name: &str,
+    ctx: &AnimationResolveContext,
+  ) -> Option<TransitionValue> {
     if name.starts_with("--") {
       return style
         .custom_properties
@@ -205,7 +209,11 @@ impl TransitionRecord {
     Some(sampled)
   }
 
-  pub(super) fn sample(&self, now_ms: f32, ctx: &AnimationResolveContext) -> Option<SampledTransition> {
+  pub(super) fn sample(
+    &self,
+    now_ms: f32,
+    ctx: &AnimationResolveContext,
+  ) -> Option<SampledTransition> {
     let duration_ms = self.duration_ms.max(0.0);
     let elapsed = now_ms - self.start_time_ms - self.delay_ms;
 
@@ -367,7 +375,8 @@ fn can_interpolate_custom_property(from: &ComputedStyle, to: &ComputedStyle, nam
     to.custom_property_registry.get(name),
   ) {
     (Some(from_rule), Some(to_rule))
-      if from_rule.syntax == to_rule.syntax && !matches!(from_rule.syntax, CustomPropertySyntax::Universal) =>
+      if from_rule.syntax == to_rule.syntax
+        && !matches!(from_rule.syntax, CustomPropertySyntax::Universal) =>
     {
       true
     }
@@ -484,9 +493,12 @@ impl TransitionState {
       let after_style = after_style_arc.as_ref();
       let before_style = before_style_arc.as_ref();
 
-      let eligible_pairs =
-        super::transition_pairs(&after_style.transition_properties, before_style, after_style)
-          .unwrap_or_default();
+      let eligible_pairs = super::transition_pairs(
+        &after_style.transition_properties,
+        before_style,
+        after_style,
+      )
+      .unwrap_or_default();
       let mut eligible: HashMap<Arc<str>, usize> = HashMap::new();
       for (name, idx) in eligible_pairs {
         eligible.insert(Arc::from(name), idx);
@@ -621,7 +633,11 @@ impl TransitionState {
             }
             let new_factor = new_factor.clamp(0.0, 1.0);
 
-            let scaled_delay = if delay >= 0.0 { delay } else { delay * new_factor };
+            let scaled_delay = if delay >= 0.0 {
+              delay
+            } else {
+              delay * new_factor
+            };
             let scaled_duration = duration_clamped * new_factor;
 
             let record = start_transition_record(
@@ -697,7 +713,8 @@ impl TransitionState {
           continue;
         }
 
-        let Some(before_value) = TransitionRecord::extract_value(before_style, name, &cmp_ctx) else {
+        let Some(before_value) = TransitionRecord::extract_value(before_style, name, &cmp_ctx)
+        else {
           // CSS Transitions 1 step 2: remove completed transitions if their end value no longer
           // matches the after-change style.
           element.completed.remove(&name_arc);
@@ -868,7 +885,9 @@ mod tests {
   use crate::geometry::Rect;
   use crate::style::computed::Visibility;
   use crate::style::display::FormattingContextType;
-  use crate::style::types::{LinearStop, TransitionBehavior, TransitionProperty, TransitionTimingFunction};
+  use crate::style::types::{
+    LinearStop, TransitionBehavior, TransitionProperty, TransitionTimingFunction,
+  };
   use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 
   fn make_opacity_style_with_transition(
@@ -898,7 +917,10 @@ mod tests {
     )
   }
 
-  fn make_visibility_style(visibility: Visibility, behavior: TransitionBehavior) -> Arc<ComputedStyle> {
+  fn make_visibility_style(
+    visibility: Visibility,
+    behavior: TransitionBehavior,
+  ) -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
     style.visibility = visibility;
     style.transition_properties = Arc::from([TransitionProperty::Name("visibility".to_string())]);
@@ -916,7 +938,8 @@ mod tests {
   }
 
   fn make_fragment_tree(style: Arc<ComputedStyle>, state: TransitionState) -> FragmentTree {
-    let mut root = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), 1, vec![]);
+    let mut root =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), 1, vec![]);
     root.style = Some(style);
     let mut tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
     tree.transition_state = Some(Arc::new(state));
@@ -927,7 +950,8 @@ mod tests {
   fn transition_state_samples_stably_across_frames() {
     let before_tree = make_box_tree(make_opacity_style(0.0));
     let after_tree = make_box_tree(make_opacity_style(1.0));
-    let state = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
     let base = make_fragment_tree(after_tree.root.style.clone(), state);
 
     let viewport = Size::new(100.0, 100.0);
@@ -935,12 +959,20 @@ mod tests {
     let mut t100 = base.clone();
     super::super::apply_transitions(&mut t100, 100.0, viewport);
     let style = t100.root.style.as_deref().expect("style");
-    assert!((style.opacity - 0.1).abs() < 1e-6, "opacity={}", style.opacity);
+    assert!(
+      (style.opacity - 0.1).abs() < 1e-6,
+      "opacity={}",
+      style.opacity
+    );
 
     let mut t200 = base.clone();
     super::super::apply_transitions(&mut t200, 200.0, viewport);
     let style = t200.root.style.as_deref().expect("style");
-    assert!((style.opacity - 0.2).abs() < 1e-6, "opacity={}", style.opacity);
+    assert!(
+      (style.opacity - 0.2).abs() < 1e-6,
+      "opacity={}",
+      style.opacity
+    );
   }
 
   #[test]
@@ -1000,7 +1032,8 @@ mod tests {
     let before_tree = make_box_tree(before_style);
     let after_tree = make_box_tree(after_style);
 
-    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state0 =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
     let key = ElementKey {
       styled_node_id: 1,
       pseudo: None,
@@ -1019,28 +1052,54 @@ mod tests {
     let mut t0 = base.clone();
     super::super::apply_transitions(&mut t0, 0.0, viewport);
     let style = t0.root.style.as_deref().expect("style");
-    assert!((style.opacity - 0.0).abs() < 1e-6, "t=0 opacity={}", style.opacity);
+    assert!(
+      (style.opacity - 0.0).abs() < 1e-6,
+      "t=0 opacity={}",
+      style.opacity
+    );
 
     let mut t500 = base.clone();
     super::super::apply_transitions(&mut t500, 500.0, viewport);
     let style = t500.root.style.as_deref().expect("style");
-    assert!((style.opacity - 0.0).abs() < 1e-6, "t=500 opacity={}", style.opacity);
+    assert!(
+      (style.opacity - 0.0).abs() < 1e-6,
+      "t=500 opacity={}",
+      style.opacity
+    );
 
     let mut t1000 = base.clone();
     super::super::apply_transitions(&mut t1000, 1000.0, viewport);
     let style = t1000.root.style.as_deref().expect("style");
-    assert!((style.opacity - 1.0).abs() < 1e-6, "t=1000 opacity={}", style.opacity);
+    assert!(
+      (style.opacity - 1.0).abs() < 1e-6,
+      "t=1000 opacity={}",
+      style.opacity
+    );
 
     // Ensure the record stays running during the delay and is moved to completed once the start
     // time is reached.
-    let state500 =
-      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 500.0);
+    let state500 = TransitionState::update_for_style_change(
+      Some(&state0),
+      Some(&after_tree),
+      &after_tree,
+      500.0,
+    );
     let el500 = state500.elements.get(&key).expect("element state at 500ms");
-    assert!(el500.running.contains_key("opacity"), "expected running transition during delay");
+    assert!(
+      el500.running.contains_key("opacity"),
+      "expected running transition during delay"
+    );
 
-    let state1000 =
-      TransitionState::update_for_style_change(Some(&state500), Some(&after_tree), &after_tree, 1000.0);
-    let el1000 = state1000.elements.get(&key).expect("element state at 1000ms");
+    let state1000 = TransitionState::update_for_style_change(
+      Some(&state500),
+      Some(&after_tree),
+      &after_tree,
+      1000.0,
+    );
+    let el1000 = state1000
+      .elements
+      .get(&key)
+      .expect("element state at 1000ms");
     assert!(
       !el1000.running.contains_key("opacity"),
       "expected delay-only transition to finish at its start time"
@@ -1092,12 +1151,20 @@ mod tests {
     let mut t300 = make_fragment_tree(tree_a.root.style.clone(), state_ba.clone());
     super::super::apply_transitions(&mut t300, 300.0, Size::new(100.0, 100.0));
     let style = t300.root.style.as_deref().expect("style");
-    assert!((style.opacity - 0.1).abs() < 1e-6, "opacity={}", style.opacity);
+    assert!(
+      (style.opacity - 0.1).abs() < 1e-6,
+      "opacity={}",
+      style.opacity
+    );
 
     let mut t450 = make_fragment_tree(tree_a.root.style.clone(), state_ba);
     super::super::apply_transitions(&mut t450, 450.0, Size::new(100.0, 100.0));
     let style = t450.root.style.as_deref().expect("style");
-    assert!((style.opacity - 0.0).abs() < 1e-6, "opacity={}", style.opacity);
+    assert!(
+      (style.opacity - 0.0).abs() < 1e-6,
+      "opacity={}",
+      style.opacity
+    );
   }
 
   #[test]
@@ -1385,15 +1452,33 @@ mod tests {
     // With delay=-500ms, at t=200ms the raw progress is (200 - (-500))/1000 = 0.7, so the
     // reversing shortening factor is 0.7. The negative delay is scaled by that factor.
     let eps = 1e-6;
-    assert!((record.reversing_shortening_factor - 0.7).abs() < eps, "factor={}", record.reversing_shortening_factor);
-    assert!((record.delay_ms - -350.0).abs() < eps, "delay={}", record.delay_ms);
-    assert!((record.duration_ms - 700.0).abs() < eps, "duration={}", record.duration_ms);
+    assert!(
+      (record.reversing_shortening_factor - 0.7).abs() < eps,
+      "factor={}",
+      record.reversing_shortening_factor
+    );
+    assert!(
+      (record.delay_ms - -350.0).abs() < eps,
+      "delay={}",
+      record.delay_ms
+    );
+    assert!(
+      (record.duration_ms - 700.0).abs() < eps,
+      "duration={}",
+      record.duration_ms
+    );
   }
 
   #[test]
   fn transition_state_discrete_gating_blocks_visibility_without_allow_discrete() {
-    let before_tree = make_box_tree(make_visibility_style(Visibility::Hidden, TransitionBehavior::Normal));
-    let after_tree = make_box_tree(make_visibility_style(Visibility::Visible, TransitionBehavior::Normal));
+    let before_tree = make_box_tree(make_visibility_style(
+      Visibility::Hidden,
+      TransitionBehavior::Normal,
+    ));
+    let after_tree = make_box_tree(make_visibility_style(
+      Visibility::Visible,
+      TransitionBehavior::Normal,
+    ));
     let state =
       TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
     assert!(
@@ -1401,10 +1486,14 @@ mod tests {
       "expected no running transitions for visibility without allow-discrete"
     );
 
-    let before_tree =
-      make_box_tree(make_visibility_style(Visibility::Hidden, TransitionBehavior::AllowDiscrete));
-    let after_tree =
-      make_box_tree(make_visibility_style(Visibility::Visible, TransitionBehavior::AllowDiscrete));
+    let before_tree = make_box_tree(make_visibility_style(
+      Visibility::Hidden,
+      TransitionBehavior::AllowDiscrete,
+    ));
+    let after_tree = make_box_tree(make_visibility_style(
+      Visibility::Visible,
+      TransitionBehavior::AllowDiscrete,
+    ));
     let state =
       TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
     let key = ElementKey {
@@ -1416,7 +1505,10 @@ mod tests {
       .get(&key)
       .map(|el| el.running.contains_key("visibility"))
       .unwrap_or(false);
-    assert!(has_visibility, "expected visibility transition when allow-discrete is enabled");
+    assert!(
+      has_visibility,
+      "expected visibility transition when allow-discrete is enabled"
+    );
   }
 
   #[test]
@@ -1429,7 +1521,8 @@ mod tests {
       -1500.0,
       TransitionTimingFunction::Linear,
     ));
-    let state = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
 
     let key = ElementKey {
       styled_node_id: 1,
@@ -1438,7 +1531,8 @@ mod tests {
     let element = state.elements.get(&key);
     assert!(
       element.is_none()
-        || (!element.unwrap().running.contains_key("opacity") && !element.unwrap().completed.contains_key("opacity")),
+        || (!element.unwrap().running.contains_key("opacity")
+          && !element.unwrap().completed.contains_key("opacity")),
       "expected no transition record when combined duration is non-positive"
     );
   }
@@ -1483,21 +1577,29 @@ mod tests {
   fn transition_state_moves_finished_transitions_to_completed() {
     let before_tree = make_box_tree(make_opacity_style(0.0));
     let after_tree = make_box_tree(make_opacity_style(1.0));
-    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state0 =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
 
     let key = ElementKey {
       styled_node_id: 1,
       pseudo: None,
     };
     let element0 = state0.elements.get(&key).expect("element state");
-    assert!(element0.running.contains_key("opacity"), "expected running transition");
+    assert!(
+      element0.running.contains_key("opacity"),
+      "expected running transition"
+    );
     assert!(
       !element0.completed.contains_key("opacity"),
       "expected no completed transition initially"
     );
 
-    let state1 =
-      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 1200.0);
+    let state1 = TransitionState::update_for_style_change(
+      Some(&state0),
+      Some(&after_tree),
+      &after_tree,
+      1200.0,
+    );
     let element1 = state1.elements.get(&key).expect("element state");
     assert!(
       !element1.running.contains_key("opacity"),
@@ -1513,9 +1615,14 @@ mod tests {
   fn transition_state_removes_completed_when_transition_property_no_longer_matches() {
     let before_tree = make_box_tree(make_opacity_style(0.0));
     let after_tree = make_box_tree(make_opacity_style(1.0));
-    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
-    let state1 =
-      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 1200.0);
+    let state0 =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state1 = TransitionState::update_for_style_change(
+      Some(&state0),
+      Some(&after_tree),
+      &after_tree,
+      1200.0,
+    );
 
     let none_style = make_opacity_style_with_transition(
       1.0,
@@ -1525,8 +1632,12 @@ mod tests {
       TransitionTimingFunction::Linear,
     );
     let none_tree = make_box_tree(none_style);
-    let state2 =
-      TransitionState::update_for_style_change(Some(&state1), Some(&after_tree), &none_tree, 1300.0);
+    let state2 = TransitionState::update_for_style_change(
+      Some(&state1),
+      Some(&after_tree),
+      &none_tree,
+      1300.0,
+    );
     assert!(
       state2.elements.is_empty(),
       "expected completed transition to be removed when transition-property is none"
@@ -1537,13 +1648,22 @@ mod tests {
   fn transition_state_starting_new_transition_clears_completed() {
     let before_tree = make_box_tree(make_opacity_style(0.0));
     let after_tree = make_box_tree(make_opacity_style(1.0));
-    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
-    let state1 =
-      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 1200.0);
+    let state0 =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state1 = TransitionState::update_for_style_change(
+      Some(&state0),
+      Some(&after_tree),
+      &after_tree,
+      1200.0,
+    );
 
     let next_tree = make_box_tree(make_opacity_style(0.0));
-    let state2 =
-      TransitionState::update_for_style_change(Some(&state1), Some(&after_tree), &next_tree, 2000.0);
+    let state2 = TransitionState::update_for_style_change(
+      Some(&state1),
+      Some(&after_tree),
+      &next_tree,
+      2000.0,
+    );
 
     let key = ElementKey {
       styled_node_id: 1,
@@ -1564,9 +1684,14 @@ mod tests {
   fn transition_state_removes_completed_when_value_changes_but_no_transition_starts() {
     let before_tree = make_box_tree(make_opacity_style(0.0));
     let after_tree = make_box_tree(make_opacity_style(1.0));
-    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
-    let state1 =
-      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 1200.0);
+    let state0 =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state1 = TransitionState::update_for_style_change(
+      Some(&state0),
+      Some(&after_tree),
+      &after_tree,
+      1200.0,
+    );
 
     let duration_zero_style = make_opacity_style_with_transition(
       0.0,
@@ -1619,8 +1744,12 @@ mod tests {
 
     let before_tree = make_box_tree(before_style);
     let after_tree = make_box_tree(after_style);
-    let next_state =
-      TransitionState::update_for_style_change(Some(&prev_state), Some(&before_tree), &after_tree, 0.0);
+    let next_state = TransitionState::update_for_style_change(
+      Some(&prev_state),
+      Some(&before_tree),
+      &after_tree,
+      0.0,
+    );
     let element = next_state.elements.get(&key).expect("element state");
     assert!(
       element.running.get("opacity").is_none(),
@@ -1645,8 +1774,12 @@ mod tests {
     style.transition_durations = Arc::from([0.0]);
     let tree_c = make_box_tree(Arc::new(style));
 
-    let next_state =
-      TransitionState::update_for_style_change(Some(&state_completed), Some(&tree_b), &tree_c, 2000.0);
+    let next_state = TransitionState::update_for_style_change(
+      Some(&state_completed),
+      Some(&tree_b),
+      &tree_c,
+      2000.0,
+    );
 
     let key = ElementKey {
       styled_node_id: 1,
@@ -1671,8 +1804,12 @@ mod tests {
     style.transition_properties = Arc::from([TransitionProperty::None]);
     let tree_none = make_box_tree(Arc::new(style));
 
-    let next_state =
-      TransitionState::update_for_style_change(Some(&state_completed), Some(&tree_b), &tree_none, 2000.0);
+    let next_state = TransitionState::update_for_style_change(
+      Some(&state_completed),
+      Some(&tree_b),
+      &tree_none,
+      2000.0,
+    );
 
     let key = ElementKey {
       styled_node_id: 1,
@@ -1707,7 +1844,10 @@ mod tests {
       styled_node_id: 1,
       pseudo: None,
     };
-    let element = next_state.elements.get(&key).expect("element transition state");
+    let element = next_state
+      .elements
+      .get(&key)
+      .expect("element transition state");
     assert!(
       !element.running.contains_key("opacity"),
       "expected no new running transition when completed end matches after-change style"

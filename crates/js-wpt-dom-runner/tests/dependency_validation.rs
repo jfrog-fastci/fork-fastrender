@@ -4,9 +4,11 @@ use std::path::PathBuf;
 fn cargo_toml_has_no_parse_js_dependency() {
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let path = manifest_dir.join("Cargo.toml");
-  let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-  let cargo: toml::Value =
-    source.parse().unwrap_or_else(|e| panic!("parse {} as toml: {e}", path.display()));
+  let source =
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+  let cargo: toml::Value = source
+    .parse()
+    .unwrap_or_else(|e| panic!("parse {} as toml: {e}", path.display()));
 
   let mut offenders = Vec::<String>::new();
 
@@ -45,4 +47,3 @@ path: {}",
     path.display()
   );
 }
-

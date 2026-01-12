@@ -604,9 +604,8 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       }
       super::merge_system_request_headers(&current, &mut headers, system_headers)?;
       if !redirect_suppressed_headers.is_empty() {
-        headers.retain(|(name, _)| {
-          !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
-        });
+        headers
+          .retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
       }
 
       let network_timer = super::start_network_fetch_diagnostics();
@@ -742,9 +741,10 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         {
           match redirect {
             super::web_fetch::RequestRedirect::Follow => {
-              if let Some(policy) = super::header_values_joined(&response.headers, "referrer-policy")
-                .as_deref()
-                .and_then(super::ReferrerPolicy::parse_value_list)
+              if let Some(policy) =
+                super::header_values_joined(&response.headers, "referrer-policy")
+                  .as_deref()
+                  .and_then(super::ReferrerPolicy::parse_value_list)
               {
                 effective_referrer_policy = policy;
                 redirect_referrer_policy = Some(policy);
@@ -791,9 +791,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
             super::web_fetch::RequestRedirect::Error => {
               let err = ResourceError::new(
                 current.clone(),
-                format!(
-                  "redirect encountered but redirect mode is error (status {status_code})"
-                ),
+                format!("redirect encountered but redirect mode is error (status {status_code})"),
               )
               .with_status(status_code)
               .with_final_url(current.clone());
@@ -830,8 +828,11 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
               let response_headers = super::collect_response_headers(&response.headers);
 
               fetcher.policy.reserve_budget(0)?;
-              let mut resource =
-                super::FetchedResource::with_final_url(Vec::new(), content_type, Some(current.clone()));
+              let mut resource = super::FetchedResource::with_final_url(
+                Vec::new(),
+                content_type,
+                Some(current.clone()),
+              );
               resource.response_headers = Some(response_headers);
               if !encodings.is_empty() {
                 resource.content_encoding = Some(encodings.join(", "));
@@ -904,13 +905,19 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       let mut bytes = if method_is_head {
         Vec::new()
       } else {
-        match super::decode_content_encodings(response.body, &encodings, allowed_limit, decode_stage)
-        {
+        match super::decode_content_encodings(
+          response.body,
+          &encodings,
+          allowed_limit,
+          decode_stage,
+        ) {
           Ok(decoded) => decoded,
           Err(super::ContentDecodeError::DeadlineExceeded { stage, elapsed, .. }) => {
             return Err(Error::Render(RenderError::Timeout { stage, elapsed }));
           }
-          Err(super::ContentDecodeError::DecompressionFailed { .. }) if accept_encoding.is_none() => {
+          Err(super::ContentDecodeError::DecompressionFailed { .. })
+            if accept_encoding.is_none() =>
+          {
             return fetch_http_with_accept_inner(
               fetcher,
               kind,
@@ -965,7 +972,9 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       let is_retryable_status = super::retryable_http_status(status_code);
       let mut allows_empty_body =
         super::http_response_allows_empty_body(kind, status_code, &response.headers);
-      if current_method.eq_ignore_ascii_case("HEAD") || current_method.eq_ignore_ascii_case("OPTIONS") {
+      if current_method.eq_ignore_ascii_case("HEAD")
+        || current_method.eq_ignore_ascii_case("OPTIONS")
+      {
         allows_empty_body = true;
       }
 
@@ -1349,10 +1358,7 @@ mod tests {
       false,
       false,
     );
-    let output = Command::new("curl")
-      .args(&args)
-      .output()
-      .expect("run curl");
+    let output = Command::new("curl").args(&args).output().expect("run curl");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

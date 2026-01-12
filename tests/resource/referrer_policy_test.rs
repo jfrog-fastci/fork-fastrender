@@ -606,13 +606,19 @@ body { font-family: "TestFont"; }"#
               extra_headers.push_str("Location: /doc_links_iframe_meta_origin.html\r\n");
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
-            if matches!(path.as_str(), "/style_redirect.css" | "/style_redirect_policy.css") {
+            if matches!(
+              path.as_str(),
+              "/style_redirect.css" | "/style_redirect_policy.css"
+            ) {
               extra_headers.push_str("Location: /style_import.css\r\n");
             }
             if path == "/style_redirect_policy.css" {
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
-            if matches!(path.as_str(), "/style_import_policy.css" | "/import_policy.css") {
+            if matches!(
+              path.as_str(),
+              "/style_import_policy.css" | "/import_policy.css"
+            ) {
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
 
@@ -692,11 +698,11 @@ fn minimal_png() -> &'static [u8] {
   // 1x1 transparent PNG.
   // Generated once to avoid needing a PNG encoder in tests.
   &[
-    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
-    0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
-    0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
-    0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-    0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
   ]
 }
 
@@ -706,8 +712,7 @@ fn build_renderer() -> FastRender {
   let toggles = Arc::new(RuntimeToggles::from_map(toggles));
   let mut config = FastRenderConfig::new();
   config.runtime_toggles = toggles;
-  FastRender::with_config_and_fetcher(config, Some(Arc::new(HttpFetcher::new())))
-    .expect("renderer")
+  FastRender::with_config_and_fetcher(config, Some(Arc::new(HttpFetcher::new()))).expect("renderer")
 }
 
 #[test]
@@ -725,7 +730,11 @@ fn img_referrerpolicy_no_referrer_suppresses_referer_header() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, "http://doc.test/page.html", RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -746,7 +755,9 @@ fn img_referrerpolicy_no_referrer_suppresses_referer_header() {
 
 #[test]
 fn img_crossorigin_no_referrer_still_sends_origin_header() {
-  let Some(server) = HeaderCaptureServer::start("img_crossorigin_no_referrer_still_sends_origin_header") else {
+  let Some(server) =
+    HeaderCaptureServer::start("img_crossorigin_no_referrer_still_sends_origin_header")
+  else {
     return;
   };
 
@@ -757,7 +768,11 @@ fn img_crossorigin_no_referrer_still_sends_origin_header() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, "http://doc.test/page.html", RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -783,9 +798,9 @@ fn img_crossorigin_no_referrer_still_sends_origin_header() {
 
 #[test]
 fn img_default_referrer_policy_sends_full_url_for_same_origin_requests() {
-  let Some(server) =
-    HeaderCaptureServer::start("img_default_referrer_policy_sends_full_url_for_same_origin_requests")
-  else {
+  let Some(server) = HeaderCaptureServer::start(
+    "img_default_referrer_policy_sends_full_url_for_same_origin_requests",
+  ) else {
     return;
   };
 
@@ -797,7 +812,11 @@ fn img_default_referrer_policy_sends_full_url_for_same_origin_requests() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -833,7 +852,11 @@ fn img_default_referrer_policy_uses_origin_for_cross_origin_requests() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, "http://doc.test/page.html", RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -906,7 +929,11 @@ fn iframe_referrerpolicy_no_referrer_suppresses_referer_header() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, "http://doc.test/page.html", RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -943,7 +970,11 @@ fn stylesheet_referrerpolicy_no_referrer_suppresses_referer_header() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, "http://doc.test/page.html", RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -1424,9 +1455,9 @@ fn imported_stylesheet_response_referrer_policy_no_referrer_suppresses_referer_f
 
 #[test]
 fn stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests() {
-  let Some(server) =
-    HeaderCaptureServer::start("stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests")
-  else {
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests",
+  ) else {
     return;
   };
 
@@ -1447,7 +1478,12 @@ fn stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests() {
     )
     .expect("render");
 
-  for path in ["/style_redirect.css", "/style_import.css", "/import.css", "/font.woff2"] {
+  for path in [
+    "/style_redirect.css",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
     server.wait_for_request(
       |req| req.path == path,
       &format!("expected {path} request to be issued for the test fixture"),
@@ -1496,7 +1532,12 @@ fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_f
     )
     .expect("render");
 
-  for path in ["/style_redirect_policy.css", "/style_import.css", "/import.css", "/font.woff2"] {
+  for path in [
+    "/style_redirect_policy.css",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
     server.wait_for_request(
       |req| req.path == path,
       &format!("expected {path} request to be issued for the test fixture"),
@@ -1541,7 +1582,12 @@ fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_f
     )
     .expect("render");
 
-  for path in ["/style_redirect_policy.css", "/style_import.css", "/import.css", "/font.woff2"] {
+  for path in [
+    "/style_redirect_policy.css",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
     server.wait_for_request(
       |req| req.path == path,
       &format!("expected {path} request to be issued for the test fixture"),
@@ -1615,9 +1661,9 @@ fn meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_neste
 
 #[test]
 fn meta_referrer_policy_no_referrer_suppresses_referer_for_images() {
-  let Some(server) = HeaderCaptureServer::start(
-    "meta_referrer_policy_no_referrer_suppresses_referer_for_images",
-  ) else {
+  let Some(server) =
+    HeaderCaptureServer::start("meta_referrer_policy_no_referrer_suppresses_referer_for_images")
+  else {
     return;
   };
 
@@ -1662,9 +1708,9 @@ fn meta_referrer_policy_no_referrer_suppresses_referer_for_images() {
 
 #[test]
 fn meta_referrer_policy_no_referrer_suppresses_referer_for_iframes() {
-  let Some(server) = HeaderCaptureServer::start(
-    "meta_referrer_policy_no_referrer_suppresses_referer_for_iframes",
-  ) else {
+  let Some(server) =
+    HeaderCaptureServer::start("meta_referrer_policy_no_referrer_suppresses_referer_for_iframes")
+  else {
     return;
   };
 
@@ -1728,7 +1774,11 @@ fn meta_referrer_policy_origin_is_overridden_by_img_referrerpolicy_no_referrer()
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -1770,7 +1820,11 @@ fn meta_referrer_policy_origin_is_overridden_by_iframe_referrerpolicy_no_referre
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   for path in [
@@ -1825,7 +1879,11 @@ fn img_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -1868,7 +1926,11 @@ fn iframe_invalid_referrerpolicy_attribute_uses_document_meta_policy_for_nested_
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   for path in [
@@ -1906,9 +1968,9 @@ fn iframe_invalid_referrerpolicy_attribute_uses_document_meta_policy_for_nested_
 
 #[test]
 fn stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
-  let Some(server) =
-    HeaderCaptureServer::start("stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy")
-  else {
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy",
+  ) else {
     return;
   };
 
@@ -1926,7 +1988,11 @@ fn stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   for path in ["/style_import.css", "/import.css", "/font.woff2"] {
@@ -1973,7 +2039,11 @@ fn meta_invalid_referrer_policy_is_ignored_and_default_policy_applies_for_images
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -1997,8 +2067,7 @@ fn meta_invalid_referrer_policy_is_ignored_and_default_policy_applies_for_images
 
 #[test]
 fn meta_referrer_policy_inside_template_is_ignored() {
-  let Some(server) =
-    HeaderCaptureServer::start("meta_referrer_policy_inside_template_is_ignored")
+  let Some(server) = HeaderCaptureServer::start("meta_referrer_policy_inside_template_is_ignored")
   else {
     return;
   };
@@ -2018,7 +2087,11 @@ fn meta_referrer_policy_inside_template_is_ignored() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -2042,7 +2115,8 @@ fn meta_referrer_policy_inside_template_is_ignored() {
 
 #[test]
 fn meta_referrer_policy_outside_head_is_ignored() {
-  let Some(server) = HeaderCaptureServer::start("meta_referrer_policy_outside_head_is_ignored") else {
+  let Some(server) = HeaderCaptureServer::start("meta_referrer_policy_outside_head_is_ignored")
+  else {
     return;
   };
 
@@ -2058,7 +2132,11 @@ fn meta_referrer_policy_outside_head_is_ignored() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -2101,7 +2179,11 @@ fn iframe_srcdoc_inherits_parent_meta_referrer_policy_no_referrer() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
   server.wait_for_request(
     |req| req.path == "/img.png",
@@ -2122,9 +2204,9 @@ fn iframe_srcdoc_inherits_parent_meta_referrer_policy_no_referrer() {
 
 #[test]
 fn iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin() {
-  let Some(server) =
-    HeaderCaptureServer::start("iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin")
-  else {
+  let Some(server) = HeaderCaptureServer::start(
+    "iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin",
+  ) else {
     return;
   };
 
@@ -2141,7 +2223,11 @@ fn iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin() {
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -2182,7 +2268,11 @@ fn iframe_srcdoc_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolic
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -2223,7 +2313,11 @@ fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() 
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -2266,7 +2360,11 @@ fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes()
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   server.wait_for_request(
@@ -2309,7 +2407,11 @@ fn meta_referrer_policy_no_referrer_allows_iframe_referrerpolicy_override_for_ne
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   for path in [
@@ -2366,7 +2468,11 @@ fn iframe_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy_for_n
 
   let mut renderer = build_renderer();
   let _ = renderer
-    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
     .expect("render");
 
   for path in [
@@ -2587,7 +2693,10 @@ fn document_response_referrer_policy_invalid_token_is_ignored_for_images() {
     return;
   };
 
-  let doc_url = format!("{}/doc_response_policy_invalid_header_img.html", server.base_url);
+  let doc_url = format!(
+    "{}/doc_response_policy_invalid_header_img.html",
+    server.base_url
+  );
 
   let mut renderer = build_renderer();
   let _ = renderer
@@ -2622,7 +2731,10 @@ fn document_response_referrer_policy_value_list_last_token_wins_for_images() {
     return;
   };
 
-  let doc_url = format!("{}/doc_response_policy_value_list_img.html", server.base_url);
+  let doc_url = format!(
+    "{}/doc_response_policy_value_list_img.html",
+    server.base_url
+  );
 
   let mut renderer = build_renderer();
   let _ = renderer
@@ -2735,7 +2847,10 @@ fn document_response_referrer_policy_no_referrer_allows_meta_override_for_images
     return;
   };
 
-  let doc_url = format!("{}/doc_response_policy_img_meta_override.html", server.base_url);
+  let doc_url = format!(
+    "{}/doc_response_policy_img_meta_override.html",
+    server.base_url
+  );
 
   let mut renderer = build_renderer();
   let _ = renderer
@@ -2771,7 +2886,10 @@ fn document_response_referrer_policy_no_referrer_ignores_invalid_meta_for_images
     return;
   };
 
-  let doc_url = format!("{}/doc_response_policy_img_meta_invalid.html", server.base_url);
+  let doc_url = format!(
+    "{}/doc_response_policy_img_meta_invalid.html",
+    server.base_url
+  );
 
   let mut renderer = build_renderer();
   let _ = renderer
@@ -2815,7 +2933,10 @@ fn document_response_referrer_policy_no_referrer_allows_meta_override_for_iframe
     .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
     .expect("render");
 
-  for path in ["/doc_response_policy_iframe_meta_override.html", "/frame.html"] {
+  for path in [
+    "/doc_response_policy_iframe_meta_override.html",
+    "/frame.html",
+  ] {
     server.wait_for_request(
       |req| req.path == path,
       &format!("expected {path} request to be issued for the test fixture"),
@@ -2844,7 +2965,10 @@ fn document_response_referrer_policy_no_referrer_allows_referrerpolicy_override_
     return;
   };
 
-  let doc_url = format!("{}/doc_response_policy_img_attr_override.html", server.base_url);
+  let doc_url = format!(
+    "{}/doc_response_policy_img_attr_override.html",
+    server.base_url
+  );
 
   let mut renderer = build_renderer();
   let _ = renderer
@@ -2890,7 +3014,10 @@ fn document_response_referrer_policy_no_referrer_allows_referrerpolicy_override_
     .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
     .expect("render");
 
-  for path in ["/doc_response_policy_iframe_attr_override.html", "/frame.html"] {
+  for path in [
+    "/doc_response_policy_iframe_attr_override.html",
+    "/frame.html",
+  ] {
     server.wait_for_request(
       |req| req.path == path,
       &format!("expected {path} request to be issued for the test fixture"),
@@ -3075,14 +3202,18 @@ fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for
 }
 
 #[test]
-fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() {
+fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images(
+) {
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",
   ) else {
     return;
   };
 
-  let doc_url = format!("{}/doc_redirect_policy_img_attr_override.html", server.base_url);
+  let doc_url = format!(
+    "{}/doc_redirect_policy_img_attr_override.html",
+    server.base_url
+  );
 
   let mut renderer = build_renderer();
   let _ = renderer
@@ -3115,7 +3246,8 @@ fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_
 }
 
 #[test]
-fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes() {
+fn document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes(
+) {
   let Some(server) = HeaderCaptureServer::start(
     "document_redirect_response_referrer_policy_no_referrer_allows_referrerpolicy_override_for_iframes",
   ) else {
@@ -3255,7 +3387,10 @@ fn document_redirect_response_referrer_policy_no_referrer_allows_meta_override_f
     return;
   };
 
-  let doc_url = format!("{}/doc_redirect_policy_img_meta_override.html", server.base_url);
+  let doc_url = format!(
+    "{}/doc_redirect_policy_img_meta_override.html",
+    server.base_url
+  );
 
   let mut renderer = build_renderer();
   let _ = renderer

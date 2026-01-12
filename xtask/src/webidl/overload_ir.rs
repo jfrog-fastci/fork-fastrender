@@ -11,7 +11,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use webidl_ir::{DefaultValue, DistinguishabilityCategory, IdlType, NamedType, NamedTypeKind, TypeAnnotation};
+use webidl_ir::{
+  DefaultValue, DistinguishabilityCategory, IdlType, NamedType, NamedTypeKind, TypeAnnotation,
+};
 
 use super::resolve::ResolvedWebIdlWorld;
 use super::semantic::SemanticWorld;
@@ -371,7 +373,10 @@ enum TableCell {
   ReqD,
 }
 
-fn distinguishability_table(a: DistinguishabilityCategory, b: DistinguishabilityCategory) -> TableCell {
+fn distinguishability_table(
+  a: DistinguishabilityCategory,
+  b: DistinguishabilityCategory,
+) -> TableCell {
   use DistinguishabilityCategory::*;
   if a == b {
     return match a {
@@ -384,7 +389,9 @@ fn distinguishability_table(a: DistinguishabilityCategory, b: Distinguishability
   if (a == Numeric && b == BigInt) || (a == BigInt && b == Numeric) {
     return TableCell::ReqB;
   }
-  if (a == CallbackFunction && b == DictionaryLike) || (a == DictionaryLike && b == CallbackFunction) {
+  if (a == CallbackFunction && b == DictionaryLike)
+    || (a == DictionaryLike && b == CallbackFunction)
+  {
     return TableCell::ReqC;
   }
   if (a == String && b == AsyncSequence) || (a == AsyncSequence && b == String) {
@@ -451,7 +458,11 @@ fn interface_chain_contains<C: WorldContext>(world_ctx: &C, start: &str, target:
   false
 }
 
-fn interface_like_distinguishable<C: WorldContext>(a: &IdlType, b: &IdlType, world_ctx: &C) -> bool {
+fn interface_like_distinguishable<C: WorldContext>(
+  a: &IdlType,
+  b: &IdlType,
+  world_ctx: &C,
+) -> bool {
   match (a, b) {
     (
       IdlType::Named(NamedType {
@@ -649,7 +660,10 @@ pub fn validate_overload_set<C: WorldContext>(
 
   let mut by_len: BTreeMap<usize, Vec<EffectiveOverloadEntry>> = BTreeMap::new();
   for entry in &effective.items {
-    by_len.entry(entry.type_list.len()).or_default().push(entry.clone());
+    by_len
+      .entry(entry.type_list.len())
+      .or_default()
+      .push(entry.clone());
   }
 
   for (len, entries) in by_len {
@@ -757,7 +771,10 @@ pub fn compute_dispatch_plan<C: WorldContext>(
 
   let mut by_len: BTreeMap<usize, Vec<EffectiveOverloadEntry>> = BTreeMap::new();
   for entry in &effective.items {
-    by_len.entry(entry.type_list.len()).or_default().push(entry.clone());
+    by_len
+      .entry(entry.type_list.len())
+      .or_default()
+      .push(entry.clone());
   }
 
   let mut groups = Vec::with_capacity(by_len.len());

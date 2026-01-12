@@ -4,7 +4,9 @@
 //! and developer tooling (e.g. asset prefetch) so both paths interpret author
 //! markup consistently.
 
-use crate::tree::box_tree::{SizesEntry, SizesLength, SizesList, SrcsetCandidate, SrcsetDescriptor};
+use crate::tree::box_tree::{
+  SizesEntry, SizesLength, SizesList, SrcsetCandidate, SrcsetDescriptor,
+};
 use cssparser::{Parser, ParserInput, Token};
 
 const MAX_SRCSET_COMMA_CONTEXT_BYTES: usize = 256;
@@ -425,9 +427,9 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
     let mut height: Option<u32> = None;
     let mut unknown = false;
     let mut valid = true;
-    for desc in desc_str.split(|c: char| {
-      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
-    }) {
+    for desc in
+      desc_str.split(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    {
       let d = trim_ascii_whitespace(desc);
       if d.is_empty() {
         continue;
@@ -999,22 +1001,20 @@ fn parse_sizes_length(value: &str) -> Option<SizesLength> {
       }
       .map(Into::into)
     }
-    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("calc") => {
-      parser
-        .parse_nested_block(|block| {
-          let start = block.position();
-          consume_nested_tokens_for_slice(block)?;
-          Ok(block.slice_from(start))
-        })
-        .ok()
-        .and_then(|inner| {
-          if contains_calc_math_functions(inner) {
-            parse_sizes_calc_sum(inner).or_else(|| parse_length(value).map(Into::into))
-          } else {
-            parse_length(value).map(Into::into)
-          }
-        })
-    }
+    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("calc") => parser
+      .parse_nested_block(|block| {
+        let start = block.position();
+        consume_nested_tokens_for_slice(block)?;
+        Ok(block.slice_from(start))
+      })
+      .ok()
+      .and_then(|inner| {
+        if contains_calc_math_functions(inner) {
+          parse_sizes_calc_sum(inner).or_else(|| parse_length(value).map(Into::into))
+        } else {
+          parse_length(value).map(Into::into)
+        }
+      }),
     Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("min") => parser
       .parse_nested_block(|block| {
         let start = block.position();
@@ -1358,7 +1358,10 @@ mod tests {
     let parsed = parse_sizes("(max-width: 600px) 50vw, 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_some());
-    assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw).into());
+    assert_eq!(
+      parsed.entries[0].length,
+      Length::new(50.0, LengthUnit::Vw).into()
+    );
     assert!(parsed.entries[1].media.is_none());
     assert_eq!(
       parsed.entries[1].length,
@@ -1392,7 +1395,10 @@ mod tests {
   fn parse_sizes_supports_modern_viewport_units() {
     let parsed = parse_sizes("50SVW, 100lvw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
-    assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw).into());
+    assert_eq!(
+      parsed.entries[0].length,
+      Length::new(50.0, LengthUnit::Vw).into()
+    );
     assert_eq!(
       parsed.entries[1].length,
       Length::new(100.0, LengthUnit::Vw).into()
@@ -1471,8 +1477,7 @@ mod tests {
 
   #[test]
   fn parse_sizes_parses_media_with_calc_length() {
-    let parsed =
-      parse_sizes("(max-width: 600px) calc(100vw - 20px), 100vw").expect("sizes parsed");
+    let parsed = parse_sizes("(max-width: 600px) calc(100vw - 20px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_some());
     let SizesLength::Length(len) = &parsed.entries[0].length else {
@@ -1489,8 +1494,7 @@ mod tests {
 
   #[test]
   fn parse_sizes_supports_calc_with_internal_whitespace() {
-    let parsed =
-      parse_sizes("(max-width: 600px) calc(50vw - 20px), 100vw").expect("sizes parsed");
+    let parsed = parse_sizes("(max-width: 600px) calc(50vw - 20px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_some());
     let SizesLength::Length(len) = &parsed.entries[0].length else {
@@ -1507,8 +1511,7 @@ mod tests {
 
   #[test]
   fn parse_sizes_supports_clamp_with_internal_commas() {
-    let parsed =
-      parse_sizes("clamp(10px, calc(50vw - 20px), 300px), 100vw").expect("sizes parsed");
+    let parsed = parse_sizes("clamp(10px, calc(50vw - 20px), 300px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_none());
     let SizesLength::Clamp {
@@ -1573,8 +1576,7 @@ mod tests {
 
   #[test]
   fn parse_sizes_splits_media_and_calc_length_like_browsers() {
-    let parsed =
-      parse_sizes("(max-width: 600px) calc(50vw - 10px), 100vw").expect("sizes parsed");
+    let parsed = parse_sizes("(max-width: 600px) calc(50vw - 10px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_some());
     let SizesLength::Length(len) = &parsed.entries[0].length else {

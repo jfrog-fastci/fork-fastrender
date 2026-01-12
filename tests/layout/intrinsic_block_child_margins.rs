@@ -39,4 +39,3 @@ fn intrinsic_sizes_include_block_child_margins() {
     "expected max-content intrinsic width to include the block child's margin; got {max}"
   );
 }
-

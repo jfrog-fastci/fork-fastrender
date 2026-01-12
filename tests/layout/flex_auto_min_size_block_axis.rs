@@ -29,8 +29,11 @@ fn flex_auto_min_height_does_not_use_wrapped_min_content_block_size() {
 
   let mut item_style = ComputedStyle::default();
   item_style.display = Display::Block;
-  let mut item =
-    BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![text_node]);
+  let mut item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![text_node],
+  );
   item.id = 2;
 
   let mut container_style = ComputedStyle::default();
@@ -38,8 +41,11 @@ fn flex_auto_min_height_does_not_use_wrapped_min_content_block_size() {
   container_style.flex_direction = FlexDirection::Column;
   container_style.width = Some(Length::px(300.0));
   container_style.width_keyword = None;
-  let mut container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![item]);
+  let mut container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![item],
+  );
   container.id = 1;
 
   let fc = FlexFormattingContext::new();
@@ -57,4 +63,3 @@ fn flex_auto_min_height_does_not_use_wrapped_min_content_block_size() {
     "expected flex item min-height:auto to avoid huge wrapped min-content block sizes (got {height})"
   );
 }
-

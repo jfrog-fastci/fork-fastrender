@@ -1,6 +1,6 @@
 use fastrender::js::{
-  Clock, EventLoop, MicrotaskCheckpointLimitedOutcome, RunLimits, RunNextTaskLimitedOutcome, RunState,
-  RunUntilIdleStopReason, TaskSource, VirtualClock,
+  Clock, EventLoop, MicrotaskCheckpointLimitedOutcome, RunLimits, RunNextTaskLimitedOutcome,
+  RunState, RunUntilIdleStopReason, TaskSource, VirtualClock,
 };
 use fastrender::Result;
 use std::sync::Arc;
@@ -32,8 +32,11 @@ fn limited_microtask_checkpoint_is_budgeted_and_stateful_across_calls() -> Resul
     max_microtasks: 5,
     max_wall_time: None,
   };
-  let mut run_state =
-    RunState::new(limits, clock_for_loop.clone(), event_loop.default_deadline_stage());
+  let mut run_state = RunState::new(
+    limits,
+    clock_for_loop.clone(),
+    event_loop.default_deadline_stage(),
+  );
 
   assert_eq!(
     event_loop.perform_microtask_checkpoint_limited(&mut host, &mut run_state)?,
@@ -127,4 +130,3 @@ fn run_next_task_limited_stops_before_popping_next_task_at_max_tasks() -> Result
   );
   Ok(())
 }
-

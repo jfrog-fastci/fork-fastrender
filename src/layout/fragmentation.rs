@@ -384,8 +384,7 @@ fn grid_item_parallel_flow_required_block_size(
       }
     };
 
-    positions
-      .retain(|p| *p > item_abs_start + BREAK_EPSILON && *p < item_abs_end - BREAK_EPSILON);
+    positions.retain(|p| *p > item_abs_start + BREAK_EPSILON && *p < item_abs_end - BREAK_EPSILON);
     if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
       let shift = shifts.shift_for(item_abs_end);
       required = required.max(item_block_size + shift);
@@ -843,8 +842,13 @@ fn grid_container_parallel_flow_required_block_size(
       node_block_size,
     );
     let child_abs_start = abs_start + child_start;
-    let child_required =
-      grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size, child_abs_start, context);
+    let child_required = grid_item_parallel_flow_required_block_size(
+      child,
+      axes,
+      fragmentainer_size,
+      child_abs_start,
+      context,
+    );
     required = required.max(child_start + child_required);
   }
 
@@ -1311,9 +1315,10 @@ impl FragmentationAnalyzer {
     if !pos.is_finite() {
       return false;
     }
-    self.opportunities.iter().any(|o| {
-      matches!(o.strength, BreakStrength::Forced) && (o.pos - pos).abs() < BREAK_EPSILON
-    })
+    self
+      .opportunities
+      .iter()
+      .any(|o| matches!(o.strength, BreakStrength::Forced) && (o.pos - pos).abs() < BREAK_EPSILON)
   }
 
   /// Adds additional forced break positions.
@@ -2258,7 +2263,8 @@ fn clip_grid_item_parallel_for_fragmentainer(
     (local_item, false)
   };
 
-  let mut analyzer = FragmentationAnalyzer::new(&flow_root, context, axes, true, Some(fragmentainer_size));
+  let mut analyzer =
+    FragmentationAnalyzer::new(&flow_root, context, axes, true, Some(fragmentainer_size));
   // Forced breaks inside parallel grid items are modelled as blank insertion via
   // `apply_grid_parallel_flow_forced_break_shifts`. When fragmenting the item subtree to obtain the
   // per-fragmentainer slice, suppress the original forced break opportunities so they do not
@@ -2560,8 +2566,13 @@ pub(crate) fn clip_node(
       let child_abs_start = axis
         .flow_range(node_flow_start, original_node_block_size, &child.bounds)
         .0;
-      let child_required =
-        grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size, child_abs_start, context);
+      let child_required = grid_item_parallel_flow_required_block_size(
+        child,
+        axes,
+        fragmentainer_size,
+        child_abs_start,
+        context,
+      );
       let child_abs_end = child_abs_start + child_required;
       if child_abs_end <= fragment_start + BREAK_EPSILON
         || child_abs_start >= fragment_end - BREAK_EPSILON
@@ -2862,25 +2873,11 @@ fn collect_table_repetition_info_with_axis(
 
     for child in node.children.iter() {
       let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
-      walk(
-        child,
-        child_abs_start,
-        axis,
-        _context,
-        default_style,
-        out,
-      );
+      walk(child, child_abs_start, axis, _context, default_style, out);
     }
   }
 
-  walk(
-    root,
-    abs_start,
-    axis,
-    context,
-    default_style,
-    &mut out,
-  );
+  walk(root, abs_start, axis, context, default_style, &mut out);
   out
 }
 
@@ -3044,9 +3041,7 @@ fn inject_table_headers_and_footers(
     let footer_start = clipped
       .children
       .iter()
-      .map(|c| {
-        axis.flow_range(0.0, clipped_block_size, &c.bounds).1
-      })
+      .map(|c| axis.flow_range(0.0, clipped_block_size, &c.bounds).1)
       .fold(0.0, f32::max);
     let mut footer_offset = footer_start;
     let mut clones = Vec::new();
@@ -3198,12 +3193,20 @@ fn inject_table_headers_and_footers(
           }
 
           let padding_start = if clipped.slice_info.is_first && !header_injected {
-            orig_borders.row_line_positions.first().copied().unwrap_or(0.0)
+            orig_borders
+              .row_line_positions
+              .first()
+              .copied()
+              .unwrap_or(0.0)
           } else {
             0.0
           };
           let padding_end = if clipped.slice_info.is_last && !footer_injected {
-            let last_line = orig_borders.row_line_positions.last().copied().unwrap_or(0.0);
+            let last_line = orig_borders
+              .row_line_positions
+              .last()
+              .copied()
+              .unwrap_or(0.0);
             (original_block_size - last_line).max(0.0)
           } else {
             0.0
@@ -3232,11 +3235,29 @@ fn inject_table_headers_and_footers(
             .iter()
             .map(|c| c.width * 0.5)
             .fold(0.0f32, f32::max);
-          let min_x = orig_borders.column_line_positions.first().copied().unwrap_or(0.0)
-            - (orig_borders.vertical_line_base.first().copied().unwrap_or(0.0) * 0.5)
+          let min_x = orig_borders
+            .column_line_positions
+            .first()
+            .copied()
+            .unwrap_or(0.0)
+            - (orig_borders
+              .vertical_line_base
+              .first()
+              .copied()
+              .unwrap_or(0.0)
+              * 0.5)
               .max(max_corner_half);
-          let max_x = orig_borders.column_line_positions.last().copied().unwrap_or(0.0)
-            + (orig_borders.vertical_line_base.last().copied().unwrap_or(0.0) * 0.5)
+          let max_x = orig_borders
+            .column_line_positions
+            .last()
+            .copied()
+            .unwrap_or(0.0)
+            + (orig_borders
+              .vertical_line_base
+              .last()
+              .copied()
+              .unwrap_or(0.0)
+              * 0.5)
               .max(max_corner_half);
           let min_y = row_line_positions.first().copied().unwrap_or(0.0)
             - (horizontal_line_base.first().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
@@ -3271,9 +3292,7 @@ fn inject_table_headers_and_footers(
   let children_block_end = clipped
     .children
     .iter()
-    .map(|c| {
-      axis.flow_range(0.0, clipped_block_size, &c.bounds).1
-    })
+    .map(|c| axis.flow_range(0.0, clipped_block_size, &c.bounds).1)
     .fold(0.0, f32::max);
   let new_block_size = clipped_block_size
     .max(max_block_extent)
@@ -3376,7 +3395,11 @@ pub(crate) fn normalize_fragment_margins(
         if meta.clipped_top {
           continue;
         }
-        let desired = if break_before_forced { meta.margin_top } else { 0.0 };
+        let desired = if break_before_forced {
+          meta.margin_top
+        } else {
+          0.0
+        };
         delta = Some(desired - start);
         break;
       }
@@ -3545,7 +3568,8 @@ fn collect_break_opportunities(
         let placement = &grid_items.items[idx];
         let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
-        let mut before_strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+        let mut before_strength =
+          combine_breaks(BreakBetween::Auto, child_style.break_before, context);
         if suppress_forced_breaks && matches!(before_strength, BreakStrength::Forced) {
           before_strength = BreakStrength::Auto;
         }
@@ -3556,7 +3580,8 @@ fn collect_break_opportunities(
           }
         }
 
-        let mut after_strength = combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+        let mut after_strength =
+          combine_breaks(child_style.break_after, BreakBetween::Auto, context);
         if suppress_forced_breaks && matches!(after_strength, BreakStrength::Forced) {
           after_strength = BreakStrength::Auto;
         }
@@ -3714,7 +3739,9 @@ fn collect_break_opportunities(
           .as_ref()
           .map(|s| s.as_ref())
           .unwrap_or(default_style);
-        let child_abs_start = axis.flow_range(node_flow_start, node_block_size, &child.bounds).0;
+        let child_abs_start = axis
+          .flow_range(node_flow_start, node_block_size, &child.bounds)
+          .0;
         collect_break_opportunities(
           child,
           child_abs_start,
@@ -3757,7 +3784,8 @@ fn collect_break_opportunities(
   };
 
   for (idx, child) in node.children.iter().enumerate() {
-    let (child_abs_start, child_abs_end) = axis.flow_range(node_flow_start, node_block_size, &child.bounds);
+    let (child_abs_start, child_abs_end) =
+      axis.flow_range(node_flow_start, node_block_size, &child.bounds);
     let child_style = child
       .style
       .as_ref()
@@ -3769,7 +3797,9 @@ fn collect_break_opportunities(
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
     let next_abs_start = next_child.map(|next| {
-      axis.flow_range(node_flow_start, node_block_size, &next.bounds).0
+      axis
+        .flow_range(node_flow_start, node_block_size, &next.bounds)
+        .0
     });
 
     if let (Some(container_id), Some((line_index_end, line_end))) =
@@ -4230,11 +4260,11 @@ fn collect_forced_boundaries_with_axes_internal(
             continue;
           };
           let child = &node.children[child_idx];
-           let child_style = child
-              .style
-              .as_ref()
-              .map(|s| s.as_ref())
-              .unwrap_or(default_style);
+          let child_style = child
+            .style
+            .as_ref()
+            .map(|s| s.as_ref())
+            .unwrap_or(default_style);
 
           if is_forced_page_break(child_style.break_before, include_always) {
             if let Some(req) = boundary_reqs.get_mut(line_idx) {
@@ -5234,10 +5264,8 @@ mod tests {
       FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.005), 1, vec![]);
     let second =
       FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 150.0, 100.0, 10.0), 2, vec![]);
-    let root = FragmentNode::new_block(
-      Rect::from_xywh(0.0, 0.0, 100.0, 160.0),
-      vec![first, second],
-    );
+    let root =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 160.0), vec![first, second]);
     let mut analyzer = FragmentationAnalyzer::new(
       &root,
       FragmentationContext::Page,
@@ -5305,7 +5333,8 @@ mod tests {
     let style = Arc::new(style);
 
     fn child(style: &Arc<ComputedStyle>, id: usize, y: f32) -> FragmentNode {
-      let mut node = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
+      let mut node =
+        FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
       node.style = Some(style.clone());
       node.block_metadata = Some(BlockFragmentMetadata {
         margin_top: 16.0,
@@ -5340,7 +5369,8 @@ mod tests {
     style.display = Display::Block;
     let style = Arc::new(style);
 
-    let mut child = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 84.0), 1, vec![]);
+    let mut child =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 84.0), 1, vec![]);
     child.style = Some(style.clone());
     child.block_metadata = Some(BlockFragmentMetadata {
       margin_top: 16.0,
@@ -5349,11 +5379,8 @@ mod tests {
       clipped_bottom: false,
     });
 
-    let mut fragment = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
-      vec![child],
-      style,
-    );
+    let mut fragment =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![child], style);
     normalize_fragment_margins(&mut fragment, true, false, false, false, &axis);
 
     assert!(
@@ -5380,11 +5407,8 @@ mod tests {
       clipped_bottom: false,
     });
 
-    let mut fragment = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
-      vec![child],
-      style,
-    );
+    let mut fragment =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![child], style);
     normalize_fragment_margins(&mut fragment, true, false, false, true, &axis);
 
     assert!(
@@ -5467,11 +5491,8 @@ mod tests {
     item_a.content = FragmentContent::Block { box_id: Some(1) };
 
     // Item B is a normal sibling in the first row track.
-    let mut item_b = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
-      vec![],
-      item_style,
-    );
+    let mut item_b =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 60.0), vec![], item_style);
     item_b.content = FragmentContent::Block { box_id: Some(2) };
 
     let mut grid = FragmentNode::new_block_styled(
@@ -5510,7 +5531,9 @@ mod tests {
       Some(fragmentainer_size),
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
     let forced = collect_forced_boundaries_for_pagination_with_axes(&grid, 0.0, default_axes());
 
     assert!(
@@ -5571,11 +5594,8 @@ mod tests {
     // The avoid-inside block crosses the row boundary at 60px (40→80). If we include it in the
     // grid container's atomic ranges it can merge the row band ranges and prevent breaking between
     // the two 60px tracks.
-    let mut avoid_block = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 40.0, 100.0, 40.0),
-      vec![],
-      avoid_style,
-    );
+    let mut avoid_block =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 40.0, 100.0, 40.0), vec![], avoid_style);
     avoid_block.content = FragmentContent::Block { box_id: Some(10) };
 
     let mut item = FragmentNode::new_block_styled(
@@ -5612,7 +5632,9 @@ mod tests {
       Some(fragmentainer_size),
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
     let first_break = boundaries
       .iter()
       .copied()
@@ -5657,11 +5679,8 @@ mod tests {
     item_a.content = FragmentContent::Block { box_id: Some(3) };
 
     // Item B is a normal sibling in the first row track.
-    let mut item_b = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
-      vec![],
-      item_style,
-    );
+    let mut item_b =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 60.0), vec![], item_style);
     item_b.content = FragmentContent::Block { box_id: Some(4) };
 
     let mut grid = FragmentNode::new_block_styled(
@@ -5700,7 +5719,9 @@ mod tests {
       None,
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
 
     assert!(
       boundaries
@@ -5751,11 +5772,8 @@ mod tests {
     avoid_style.break_inside = BreakInside::AvoidColumn;
     let avoid_style = Arc::new(avoid_style);
 
-    let mut avoid_block = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 40.0, 100.0, 40.0),
-      vec![],
-      avoid_style,
-    );
+    let mut avoid_block =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 40.0, 100.0, 40.0), vec![], avoid_style);
     avoid_block.content = FragmentContent::Block { box_id: Some(20) };
 
     let mut item = FragmentNode::new_block_styled(
@@ -5811,7 +5829,9 @@ mod tests {
       None,
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
     let first_break = boundaries
       .iter()
       .copied()
@@ -5827,7 +5847,8 @@ mod tests {
   #[test]
   fn forced_break_inside_spanning_grid_item_does_not_split_column_band_in_vertical_writing_mode() {
     let fragmentainer_size = 100.0;
-    let axes = FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalLr, Direction::Ltr);
+    let axes =
+      FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalLr, Direction::Ltr);
 
     let mut grid_style = ComputedStyle::default();
     grid_style.display = Display::Grid;
@@ -5860,11 +5881,8 @@ mod tests {
     item_a.content = FragmentContent::Block { box_id: Some(5) };
 
     // Item B is a normal sibling in the first column track.
-    let mut item_b = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 60.0, 100.0),
-      vec![],
-      item_style,
-    );
+    let mut item_b =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 60.0, 100.0), vec![], item_style);
     item_b.content = FragmentContent::Block { box_id: Some(6) };
 
     let mut grid = FragmentNode::new_block_styled(
@@ -5903,7 +5921,9 @@ mod tests {
       Some(fragmentainer_size),
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
     let forced = collect_forced_boundaries_for_pagination_with_axes(&grid, 0.0, axes);
 
     assert!(
@@ -5961,11 +5981,8 @@ mod tests {
     let break_style = Arc::new(break_style);
 
     let first = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 25.0), vec![]);
-    let second = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 25.0, 100.0, 5.0),
-      vec![],
-      break_style,
-    );
+    let second =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 25.0, 100.0, 5.0), vec![], break_style);
     let item = FragmentNode::new_block_with_id(
       Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
       1,
@@ -5995,7 +6012,9 @@ mod tests {
       Some(fragmentainer_size),
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
 
     assert!(
       boundaries
@@ -6017,7 +6036,8 @@ mod tests {
   fn forced_break_inside_spanning_grid_item_does_not_split_column_band_in_block_negative_writing_mode(
   ) {
     let fragmentainer_size = 100.0;
-    let axes = FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr);
+    let axes =
+      FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr);
     let axis = axis_from_fragment_axes(axes);
 
     let mut grid_style = ComputedStyle::default();
@@ -6053,11 +6073,8 @@ mod tests {
     item_a.content = FragmentContent::Block { box_id: Some(7) };
 
     // Item B is a normal sibling in the first column track.
-    let mut item_b = FragmentNode::new_block_styled(
-      Rect::from_xywh(60.0, 0.0, 60.0, 100.0),
-      vec![],
-      item_style,
-    );
+    let mut item_b =
+      FragmentNode::new_block_styled(Rect::from_xywh(60.0, 0.0, 60.0, 100.0), vec![], item_style);
     item_b.content = FragmentContent::Block { box_id: Some(8) };
 
     let mut grid = FragmentNode::new_block_styled(
@@ -6096,7 +6113,9 @@ mod tests {
       Some(fragmentainer_size),
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
     let forced = collect_forced_boundaries_for_pagination_with_axes(&grid, 0.0, axes);
 
     assert!(
@@ -6133,8 +6152,13 @@ mod tests {
     );
     let shifted_item_a = &shifted.children[0];
     let shifted_part2 = &shifted_item_a.children[1];
-    let part2_flow_start =
-      axis.flow_range(0.0, axis.block_size(&shifted_item_a.bounds), &shifted_part2.bounds).0;
+    let part2_flow_start = axis
+      .flow_range(
+        0.0,
+        axis.block_size(&shifted_item_a.bounds),
+        &shifted_part2.bounds,
+      )
+      .0;
     assert!(
       (part2_flow_start - 100.0).abs() < BREAK_EPSILON,
       "expected the continuation content to be shifted to the next fragmentainer boundary (flow≈100), got flow={part2_flow_start} (bounds={:?})",
@@ -6297,7 +6321,12 @@ mod tests {
     let grid_first = first
       .children
       .iter()
-      .find(|node| node.style.as_ref().is_some_and(|s| matches!(s.display, Display::Grid)))
+      .find(|node| {
+        node
+          .style
+          .as_ref()
+          .is_some_and(|s| matches!(s.display, Display::Grid))
+      })
       .expect("expected grid container to appear on the first page");
     let item_first = grid_first
       .children
@@ -6325,7 +6354,12 @@ mod tests {
     let grid_second = second
       .children
       .iter()
-      .find(|node| node.style.as_ref().is_some_and(|s| matches!(s.display, Display::Grid)))
+      .find(|node| {
+        node
+          .style
+          .as_ref()
+          .is_some_and(|s| matches!(s.display, Display::Grid))
+      })
       .expect("expected grid container to appear on the second page");
     let item_second = grid_second
       .children
@@ -6428,8 +6462,7 @@ mod tests {
     let mut first = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 10.0), vec![]);
     first.style = Some(break_style);
     let second = FragmentNode::new_block(Rect::from_xywh(0.0, 10.0, 100.0, 10.0), vec![]);
-    let item =
-      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 20.0), vec![first, second]);
+    let item = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 20.0), vec![first, second]);
 
     let mut grid_style = ComputedStyle::default();
     grid_style.display = Display::Grid;
@@ -6448,10 +6481,8 @@ mod tests {
       }],
     }));
 
-    let mut root = FragmentNode::new_block(
-      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
-      vec![leading, grid],
-    );
+    let mut root =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![leading, grid]);
 
     apply_grid_parallel_flow_forced_break_shifts(
       &mut root,
@@ -6472,17 +6503,28 @@ mod tests {
 
     let root_block_size = axis.block_size(&root.bounds);
     let grid_abs_start = axis.flow_range(0.0, root_block_size, &grid.bounds).0;
-    let item_abs_start =
-      axis.flow_range(grid_abs_start, axis.block_size(&grid.bounds), &item.bounds).0;
-    let second_abs_start =
-      axis.flow_range(item_abs_start, axis.block_size(&item.bounds), &shifted_second.bounds).0;
+    let item_abs_start = axis
+      .flow_range(grid_abs_start, axis.block_size(&grid.bounds), &item.bounds)
+      .0;
+    let second_abs_start = axis
+      .flow_range(
+        item_abs_start,
+        axis.block_size(&item.bounds),
+        &shifted_second.bounds,
+      )
+      .0;
     assert!(
       (second_abs_start - 100.0).abs() < BREAK_EPSILON,
       "expected second block to start at global flow pos 100, got {second_abs_start}"
     );
 
-    let required =
-      grid_item_parallel_flow_required_block_size(item, axes, fragmentainer_size, item_abs_start, FragmentationContext::Page);
+    let required = grid_item_parallel_flow_required_block_size(
+      item,
+      axes,
+      fragmentainer_size,
+      item_abs_start,
+      FragmentationContext::Page,
+    );
     assert!(
       (required - 30.0).abs() < BREAK_EPSILON,
       "expected required block size to be 30px (20 + 10 blank), got {required}"
@@ -6592,18 +6634,12 @@ mod tests {
     break_style.break_before = BreakBetween::Page;
     let break_style = Arc::new(break_style);
 
-    let mut first = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 0.0, 100.0, 90.0),
-      10,
-      vec![],
-    );
+    let mut first =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 90.0), 10, vec![]);
     first.style = Some(Arc::clone(&block_style));
 
-    let mut second = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 90.0, 100.0, 20.0),
-      11,
-      vec![],
-    );
+    let mut second =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 90.0, 100.0, 20.0), 11, vec![]);
     second.style = Some(break_style);
 
     let mut item = FragmentNode::new_block_with_id(
@@ -6628,7 +6664,8 @@ mod tests {
       }],
     }));
 
-    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 140.0), vec![leading, grid]);
+    let root =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 140.0), vec![leading, grid]);
 
     fn find_node<'a>(node: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {
       if node.box_id() == Some(id) {
@@ -6653,7 +6690,9 @@ mod tests {
         return Some(abs_start);
       }
       for child in node.children.iter() {
-        let child_abs_start = axis.flow_range(abs_start, parent_block_size, &child.bounds).0;
+        let child_abs_start = axis
+          .flow_range(abs_start, parent_block_size, &child.bounds)
+          .0;
         if let Some(found) = find_abs_start(
           child,
           id,
@@ -6679,14 +6718,9 @@ mod tests {
     // The forced break occurs at absolute flow position 120 (= 30 offset + 90 in-flow). With a 100px
     // fragmentainer size, the continuation must start at the next *global* boundary (200), not at
     // 30+100=130.
-    let second_abs_start = find_abs_start(
-      &shifted,
-      11,
-      0.0,
-      &axis,
-      axis.block_size(&shifted.bounds),
-    )
-    .expect("expected to find forced-break child in fragment tree");
+    let second_abs_start =
+      find_abs_start(&shifted, 11, 0.0, &axis, axis.block_size(&shifted.bounds))
+        .expect("expected to find forced-break child in fragment tree");
     assert!(
       (second_abs_start - 200.0).abs() < BREAK_EPSILON,
       "expected forced-break continuation to start at the next global page boundary (200), got {second_abs_start}"
@@ -6695,14 +6729,8 @@ mod tests {
     // The grid item must report its required block size using the same absolute-alignment logic so
     // descendants can be clipped onto subsequent fragmentainers.
     let item_node = find_node(&shifted, 20).expect("expected to find grid item");
-    let item_abs_start = find_abs_start(
-      &shifted,
-      20,
-      0.0,
-      &axis,
-      axis.block_size(&shifted.bounds),
-    )
-    .expect("expected to find grid item abs start");
+    let item_abs_start = find_abs_start(&shifted, 20, 0.0, &axis, axis.block_size(&shifted.bounds))
+      .expect("expected to find grid item abs start");
     let required = grid_item_parallel_flow_required_block_size(
       item_node,
       axes,
@@ -6728,7 +6756,11 @@ mod tests {
     let boundaries = analyzer
       .boundaries(fragmentainer_size, total_extent)
       .expect("expected boundaries");
-    assert_eq!(boundaries.len().saturating_sub(1), 3, "boundaries={boundaries:?}");
+    assert_eq!(
+      boundaries.len().saturating_sub(1),
+      3,
+      "boundaries={boundaries:?}"
+    );
     assert!(
       boundaries
         .iter()

@@ -80,4 +80,3 @@ fn font_and_table_keywords_are_ascii_case_insensitive() {
   let text = find_by_id(&styled, "text").expect("text element");
   assert_eq!(text.styles.text_wrap, TextWrap::Pretty);
 }
-

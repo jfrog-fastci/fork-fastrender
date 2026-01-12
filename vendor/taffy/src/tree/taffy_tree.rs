@@ -1353,7 +1353,9 @@ mod tests {
     node_context: Option<&mut Size<f32>>,
     _style: &Style,
   ) -> MeasureOutput {
-    MeasureOutput::from_size(known_dimensions.unwrap_or(node_context.cloned().unwrap_or(Size::ZERO)))
+    MeasureOutput::from_size(
+      known_dimensions.unwrap_or(node_context.cloned().unwrap_or(Size::ZERO)),
+    )
   }
 
   #[test]

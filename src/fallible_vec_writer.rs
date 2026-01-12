@@ -28,11 +28,12 @@ impl FallibleVecWriter {
 
 impl Write for FallibleVecWriter {
   fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-    let new_len = self
-      .buf
-      .len()
-      .checked_add(data.len())
-      .ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("{}: output length overflow", self.context)))?;
+    let new_len = self.buf.len().checked_add(data.len()).ok_or_else(|| {
+      io::Error::new(
+        io::ErrorKind::Other,
+        format!("{}: output length overflow", self.context),
+      )
+    })?;
 
     if new_len > self.max_bytes {
       return Err(io::Error::new(
@@ -81,4 +82,3 @@ impl Write for FallibleVecWriter {
     Ok(())
   }
 }
-

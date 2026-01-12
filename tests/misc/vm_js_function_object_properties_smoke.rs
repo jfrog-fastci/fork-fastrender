@@ -35,7 +35,9 @@ fn function_objects_support_properties_and_prototype_chain_smoke() -> Result<(),
     },
   )?;
   assert_eq!(
-    scope.heap().object_get_own_data_property_value(func, &x_key)?,
+    scope
+      .heap()
+      .object_get_own_data_property_value(func, &x_key)?,
     Some(Value::Number(1.0))
   );
 
@@ -44,7 +46,9 @@ fn function_objects_support_properties_and_prototype_chain_smoke() -> Result<(),
     .heap_mut()
     .object_set_existing_data_property_value(func, &x_key, Value::Number(2.0))?;
   assert_eq!(
-    scope.heap().object_get_own_data_property_value(func, &x_key)?,
+    scope
+      .heap()
+      .object_get_own_data_property_value(func, &x_key)?,
     Some(Value::Number(2.0))
   );
 
@@ -80,4 +84,3 @@ fn function_objects_support_properties_and_prototype_chain_smoke() -> Result<(),
 
   Ok(())
 }
-

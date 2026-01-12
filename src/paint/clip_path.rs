@@ -365,7 +365,8 @@ pub(crate) fn resolve_basic_shape(
       let Some(path) = path else {
         return Ok(None);
       };
-      let Some(translated) = path.transform(Transform::from_translate(reference.x(), reference.y()))
+      let Some(translated) =
+        path.transform(Transform::from_translate(reference.x(), reference.y()))
       else {
         return Ok(None);
       };

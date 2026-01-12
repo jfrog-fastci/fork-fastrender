@@ -48,7 +48,9 @@ unsafe impl GlobalAlloc for FailingAllocator {
 
   unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
     let fail_size = FAIL_SIZE.load(Ordering::Relaxed);
-    if fail_size != 0 && new_size == fail_size && layout.align() == FAIL_ALIGN.load(Ordering::Relaxed)
+    if fail_size != 0
+      && new_size == fail_size
+      && layout.align() == FAIL_ALIGN.load(Ordering::Relaxed)
     {
       FAIL_SIZE.store(0, Ordering::Relaxed);
       FAILED_ALLOCS.fetch_add(1, Ordering::Relaxed);
@@ -186,4 +188,3 @@ fn colr_v0_layer_records_parse_survives_allocation_failure() {
     "expected color glyph render to return None after allocation failure"
   );
 }
-

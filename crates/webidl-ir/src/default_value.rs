@@ -4,7 +4,9 @@ pub enum NumericLiteral {
   Integer(String),
   /// WebIDL `decimal` token (e.g. `3.14`, `6.022e23`).
   Decimal(String),
-  Infinity { negative: bool },
+  Infinity {
+    negative: bool,
+  },
   NaN,
 }
 
@@ -21,4 +23,3 @@ pub enum DefaultValue {
   /// The `{}` token.
   EmptyDictionary,
 }
-

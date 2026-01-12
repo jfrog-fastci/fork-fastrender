@@ -5,8 +5,8 @@ use fastrender::js::webidl::legacy::VmJsRuntime;
 use fastrender::web::dom::DomException;
 use std::cell::RefCell;
 use std::rc::Rc;
-use webidl_js_runtime::runtime::JsRuntime as _;
 use vm_js::{PropertyKey, Value, VmError};
+use webidl_js_runtime::runtime::JsRuntime as _;
 
 fn prop_key(rt: &mut VmJsRuntime, s: &str) -> PropertyKey {
   let v = rt.alloc_string_value(s).expect("alloc string");
@@ -50,11 +50,8 @@ fn query_selector_invalid_selector_throws_domexception_syntaxerror() {
     .expect("get querySelector");
 
   let selector_arg = rt.alloc_string_value("[").expect("selector string");
-  let result: std::result::Result<Value, VmError> = rt.call(
-    query_selector,
-    document,
-    &[selector_arg],
-  );
+  let result: std::result::Result<Value, VmError> =
+    rt.call(query_selector, document, &[selector_arg]);
 
   let thrown = match result {
     Ok(_) => panic!("expected querySelector to throw"),
@@ -90,11 +87,7 @@ fn domexception_constructor_defaults_name_to_error() {
 
   let message_arg = rt.alloc_string_value("boom").expect("message");
   let instance = rt
-    .call(
-      class.constructor,
-      Value::Undefined,
-      &[message_arg],
-    )
+    .call(class.constructor, Value::Undefined, &[message_arg])
     .expect("construct DOMException");
 
   let key_name = prop_key(&mut rt, "name");

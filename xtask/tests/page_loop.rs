@@ -49,7 +49,11 @@ fn dry_run_prints_expected_plan() {
   );
   let render_line = stdout
     .lines()
-    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("render_fixtures") && line.contains("--fixtures-dir"))
+    .find(|line| {
+      line.contains("scripts/run_limited.sh")
+        && line.contains("render_fixtures")
+        && line.contains("--fixtures-dir")
+    })
     .expect("render_fixtures command line should be printed");
   assert!(
     render_line.contains("target/release/render_fixtures"),
@@ -60,7 +64,9 @@ fn dry_run_prints_expected_plan() {
     "page-loop should not force bundled-only fonts for render_fixtures; got:\n{render_line}"
   );
   assert!(
-    stdout.contains("target/page_loop") && stdout.contains("example.com") && stdout.contains("fastrender"),
+    stdout.contains("target/page_loop")
+      && stdout.contains("example.com")
+      && stdout.contains("fastrender"),
     "expected output path to mention target/page_loop/<fixture>/fastrender; got:\n{stdout}"
   );
 }
@@ -118,7 +124,13 @@ fn dry_run_with_debug_omits_release_for_fastrender_commands() {
     // Ensure diff_renders paths resolve deterministically even if the outer environment sets
     // CARGO_TARGET_DIR.
     .env("CARGO_TARGET_DIR", "")
-    .args(["page-loop", "--fixture", "example.com", "--debug", "--dry-run"])
+    .args([
+      "page-loop",
+      "--fixture",
+      "example.com",
+      "--debug",
+      "--dry-run",
+    ])
     .output()
     .expect("run xtask page-loop --debug --dry-run");
 
@@ -132,7 +144,9 @@ fn dry_run_with_debug_omits_release_for_fastrender_commands() {
   let stdout = String::from_utf8_lossy(&output.stdout);
   let build_line = stdout
     .lines()
-    .find(|line| line.contains("scripts/cargo_agent.sh build") && line.contains("--bin render_fixtures"))
+    .find(|line| {
+      line.contains("scripts/cargo_agent.sh build") && line.contains("--bin render_fixtures")
+    })
     .expect("render_fixtures build command line should be printed");
   assert!(
     !build_line.contains("--release"),
@@ -145,7 +159,11 @@ fn dry_run_with_debug_omits_release_for_fastrender_commands() {
 
   let render_line = stdout
     .lines()
-    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("render_fixtures") && line.contains("--fixtures-dir"))
+    .find(|line| {
+      line.contains("scripts/run_limited.sh")
+        && line.contains("render_fixtures")
+        && line.contains("--fixtures-dir")
+    })
     .expect("render_fixtures execution command line should be printed");
   assert!(
     render_line.contains("target/debug/render_fixtures"),
@@ -179,7 +197,9 @@ fn dry_run_with_chrome_and_debug_uses_debug_diff_renders_binary() {
   let stdout = String::from_utf8_lossy(&output.stdout);
   let build_line = stdout
     .lines()
-    .find(|line| line.contains("scripts/cargo_agent.sh build") && line.contains("--bin diff_renders"))
+    .find(|line| {
+      line.contains("scripts/cargo_agent.sh build") && line.contains("--bin diff_renders")
+    })
     .expect("diff_renders build command line should be printed");
   assert!(
     !build_line.contains("--release"),
@@ -200,7 +220,13 @@ fn dry_run_with_chrome_and_debug_uses_debug_diff_renders_binary() {
 fn dry_run_with_chrome_enables_chrome_patching_and_diff_steps() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())
-    .args(["page-loop", "--fixture", "example.com", "--chrome", "--dry-run"])
+    .args([
+      "page-loop",
+      "--fixture",
+      "example.com",
+      "--chrome",
+      "--dry-run",
+    ])
     .output()
     .expect("run xtask page-loop --chrome --dry-run");
 
@@ -321,7 +347,11 @@ fn dry_run_with_inspect_dump_json_includes_inspect_frag_dump_json_command() {
   );
   let inspect_line = stdout
     .lines()
-    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("inspect_frag") && line.contains("--dump-json"))
+    .find(|line| {
+      line.contains("scripts/run_limited.sh")
+        && line.contains("inspect_frag")
+        && line.contains("--dump-json")
+    })
     .expect("inspect_frag execution command line should be printed");
   assert!(
     !inspect_line.contains("FASTR_USE_BUNDLED_FONTS=1"),
@@ -514,8 +544,16 @@ fn from_progress_top_slowest_selects_highest_total_ms() {
   let temp = tempdir().expect("tempdir");
   let progress_dir = temp.path().join("progress/pages");
 
-  write_progress_file(&progress_dir, "example.com", r#"{"status":"ok","total_ms":10.0}"#);
-  write_progress_file(&progress_dir, "amazon.com", r#"{"status":"ok","total_ms":50.0}"#);
+  write_progress_file(
+    &progress_dir,
+    "example.com",
+    r#"{"status":"ok","total_ms":10.0}"#,
+  );
+  write_progress_file(
+    &progress_dir,
+    "amazon.com",
+    r#"{"status":"ok","total_ms":50.0}"#,
+  );
 
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())
@@ -669,8 +707,16 @@ fn from_progress_errors_when_no_offline_fixture_exists() {
   let temp = tempdir().expect("tempdir");
   let progress_dir = temp.path().join("progress/pages");
 
-  write_progress_file(&progress_dir, "zzz_page_loop_missing_fixture_a", r#"{"status":"timeout"}"#);
-  write_progress_file(&progress_dir, "zzz_page_loop_missing_fixture_b", r#"{"status":"error"}"#);
+  write_progress_file(
+    &progress_dir,
+    "zzz_page_loop_missing_fixture_a",
+    r#"{"status":"timeout"}"#,
+  );
+  write_progress_file(
+    &progress_dir,
+    "zzz_page_loop_missing_fixture_b",
+    r#"{"status":"error"}"#,
+  );
 
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())
@@ -692,7 +738,8 @@ fn from_progress_errors_when_no_offline_fixture_exists() {
 
   let stderr = String::from_utf8_lossy(&output.stderr);
   assert!(
-    stderr.contains("zzz_page_loop_missing_fixture_a") && stderr.contains("does not have an offline fixture"),
+    stderr.contains("zzz_page_loop_missing_fixture_a")
+      && stderr.contains("does not have an offline fixture"),
     "expected missing-fixture error to mention the selected stem; got:\n{stderr}"
   );
   assert!(

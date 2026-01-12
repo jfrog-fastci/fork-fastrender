@@ -30,7 +30,10 @@ fn div_styles(html: &str, css: &str) -> Arc<ComputedStyle> {
 
 #[test]
 fn webkit_font_smoothing_antialiased_disables_subpixel_aa() {
-  let styles = div_styles("<div></div>", "div { -webkit-font-smoothing: antialiased; }");
+  let styles = div_styles(
+    "<div></div>",
+    "div { -webkit-font-smoothing: antialiased; }",
+  );
   assert!(
     !styles.allow_subpixel_aa,
     "expected -webkit-font-smoothing: antialiased to disable subpixel AA"
@@ -69,4 +72,3 @@ fn font_smoothing_unset_behaves_like_inherit() {
     "expected -webkit-font-smoothing: unset to behave like inherit for inherited property"
   );
 }
-

@@ -116,10 +116,9 @@ mod tests {
 
   #[test]
   fn finds_icon_link_in_head() {
-    let dom = parse_html(
-      r#"<html><head><link rel="icon" href="icon.png"></head><body></body></html>"#,
-    )
-    .unwrap();
+    let dom =
+      parse_html(r#"<html><head><link rel="icon" href="icon.png"></head><body></body></html>"#)
+        .unwrap();
     assert_eq!(
       find_document_favicon_url(&dom, "https://example.com/dir/page.html"),
       Some("https://example.com/dir/icon.png".to_string())
@@ -128,10 +127,9 @@ mod tests {
 
   #[test]
   fn finds_shortcut_icon() {
-    let dom = parse_html(
-      r#"<html><head><link rel="shortcut icon" href="/favicon.ico"></head></html>"#,
-    )
-    .unwrap();
+    let dom =
+      parse_html(r#"<html><head><link rel="shortcut icon" href="/favicon.ico"></head></html>"#)
+        .unwrap();
     assert_eq!(
       find_document_favicon_url(&dom, "https://example.com/dir/page.html"),
       Some("https://example.com/favicon.ico".to_string())
@@ -140,14 +138,11 @@ mod tests {
 
   #[test]
   fn finds_mask_icon_via_substring_match() {
-    let dom = parse_html(
-      r#"<html><head><link rel="mask-icon" href="mask.svg"></head></html>"#,
-    )
-    .unwrap();
+    let dom =
+      parse_html(r#"<html><head><link rel="mask-icon" href="mask.svg"></head></html>"#).unwrap();
     assert_eq!(
       find_document_favicon_url(&dom, "https://example.com/dir/page.html"),
       Some("https://example.com/dir/mask.svg".to_string())
     );
   }
 }
-

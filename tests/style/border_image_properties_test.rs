@@ -230,7 +230,13 @@ fn border_image_slice_rejects_duplicate_fill() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
 
-  apply_declaration(&mut styles, &decl("border-image-slice", "30 fill"), &parent, 16.0, 16.0);
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-slice", "30 fill"),
+    &parent,
+    16.0,
+    16.0,
+  );
   let expected = styles.border_image.slice.clone();
 
   apply_declaration(
@@ -248,7 +254,13 @@ fn border_image_slice_rejects_too_many_values() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
 
-  apply_declaration(&mut styles, &decl("border-image-slice", "30 fill"), &parent, 16.0, 16.0);
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-slice", "30 fill"),
+    &parent,
+    16.0,
+    16.0,
+  );
   let expected = styles.border_image.slice.clone();
 
   apply_declaration(
@@ -266,7 +278,13 @@ fn border_image_width_rejects_too_many_values() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
 
-  apply_declaration(&mut styles, &decl("border-image-width", "10px"), &parent, 16.0, 16.0);
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-width", "10px"),
+    &parent,
+    16.0,
+    16.0,
+  );
   let expected = styles.border_image.width.clone();
 
   apply_declaration(
@@ -284,7 +302,13 @@ fn border_image_outset_rejects_too_many_values() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
 
-  apply_declaration(&mut styles, &decl("border-image-outset", "1"), &parent, 16.0, 16.0);
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-outset", "1"),
+    &parent,
+    16.0,
+    16.0,
+  );
   let expected = styles.border_image.outset.clone();
 
   apply_declaration(
@@ -302,7 +326,13 @@ fn border_image_repeat_rejects_too_many_keywords() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
 
-  apply_declaration(&mut styles, &decl("border-image-repeat", "round"), &parent, 16.0, 16.0);
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-repeat", "round"),
+    &parent,
+    16.0,
+    16.0,
+  );
   let expected = styles.border_image.repeat;
 
   apply_declaration(
@@ -320,7 +350,13 @@ fn border_image_repeat_rejects_non_keywords() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
 
-  apply_declaration(&mut styles, &decl("border-image-repeat", "round"), &parent, 16.0, 16.0);
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-repeat", "round"),
+    &parent,
+    16.0,
+    16.0,
+  );
   let expected = styles.border_image.repeat;
 
   apply_declaration(

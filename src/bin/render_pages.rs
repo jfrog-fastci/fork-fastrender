@@ -485,7 +485,10 @@ fn run(args: Args) -> io::Result<()> {
     if has_page_filter && any_cached_pages {
       eprintln!("No cached pages matched the provided filter.");
     } else {
-      eprintln!("No cached pages in {}. Run fetch_pages first.", CACHE_HTML_DIR);
+      eprintln!(
+        "No cached pages in {}. Run fetch_pages first.",
+        CACHE_HTML_DIR
+      );
     }
     std::process::exit(1);
   }
@@ -1125,7 +1128,7 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
         .map_err(|err| Status::Crash(format!("spawn render worker: {err}")))?;
 
       if let Some(secs) = timeout_secs {
-          match rx.recv_timeout(Duration::from_secs(secs)) {
+        match rx.recv_timeout(Duration::from_secs(secs)) {
           Ok(Ok(outcome)) => outcome.map_err(|e| {
             let msg = format_error_with_chain(&e, verbose);
             if e.is_timeout() {
@@ -2325,10 +2328,16 @@ mod tests {
     let dir = tempfile::tempdir().expect("temp dir");
     let cache_dir = dir.path().join("fetches/html");
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(cache_dir.join("example.com--deadbeef.html"), "<!doctype html>")
-      .expect("write html");
-    std::fs::write(cache_dir.join("example.com--beefcafe.html"), "<!doctype html>")
-      .expect("write html");
+    std::fs::write(
+      cache_dir.join("example.com--deadbeef.html"),
+      "<!doctype html>",
+    )
+    .expect("write html");
+    std::fs::write(
+      cache_dir.join("example.com--beefcafe.html"),
+      "<!doctype html>",
+    )
+    .expect("write html");
 
     struct CwdGuard(std::path::PathBuf);
 

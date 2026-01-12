@@ -1,7 +1,8 @@
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
-  QUEUE_MICROTASK_NOT_CALLABLE_ERROR, QUEUE_MICROTASK_STRING_HANDLER_ERROR, SET_INTERVAL_NOT_CALLABLE_ERROR,
-  SET_INTERVAL_STRING_HANDLER_ERROR, SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
+  QUEUE_MICROTASK_NOT_CALLABLE_ERROR, QUEUE_MICROTASK_STRING_HANDLER_ERROR,
+  SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR,
+  SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
 use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
 use std::cell::{Cell, RefCell};
@@ -506,7 +507,9 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       .active_host_hooks_mut()
       .and_then(|hooks| event_loop_mut_from_hooks::<Host>(hooks))
     else {
-      return Err(VmError::TypeError("setTimeout called without an active EventLoop"));
+      return Err(VmError::TypeError(
+        "setTimeout called without an active EventLoop",
+      ));
     };
 
     // Keep the callback + extra args alive until the timer fires (or is cleared). Ensure roots are
@@ -638,7 +641,9 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       .active_host_hooks_mut()
       .and_then(|hooks| event_loop_mut_from_hooks::<Host>(hooks))
     else {
-      return Err(VmError::TypeError("setInterval called without an active EventLoop"));
+      return Err(VmError::TypeError(
+        "setInterval called without an active EventLoop",
+      ));
     };
 
     let callback_root = scope.heap_mut().add_root(handler)?;
@@ -1003,7 +1008,10 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         let (event_type, type_is_own_data_property) = match event_val {
           Value::Object(ev_obj) => {
             let key = key_from_str(scope, "type")?;
-            let own_type = match scope.heap().object_get_own_data_property_value(ev_obj, &key) {
+            let own_type = match scope
+              .heap()
+              .object_get_own_data_property_value(ev_obj, &key)
+            {
               Ok(value) => value,
               // Accessor `type` (or non-data) is not safe to read without invoking user code; fall
               // back to `Get` below.

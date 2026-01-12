@@ -1,5 +1,7 @@
 use super::{Harness, HostState};
-use fastrender::js::{ClassicScriptScheduler, RunLimits, RunUntilIdleOutcome, ScriptElementSpec, ScriptType};
+use fastrender::js::{
+  ClassicScriptScheduler, RunLimits, RunUntilIdleOutcome, ScriptElementSpec, ScriptType,
+};
 use fastrender::Result;
 use std::collections::HashMap;
 
@@ -28,18 +30,32 @@ fn external_spec(url: &str, async_attr: bool, defer_attr: bool) -> ScriptElement
 fn async_external_scripts_execute_in_completion_order() -> Result<()> {
   let mut harness = Harness::new("https://example.com/", "<!doctype html><html></html>")?;
   harness.set_external_script_sources(HashMap::from([
-    ("https://example.com/a.js".to_string(), "console.log('a');".to_string()),
-    ("https://example.com/b.js".to_string(), "console.log('b');".to_string()),
+    (
+      "https://example.com/a.js".to_string(),
+      "console.log('a');".to_string(),
+    ),
+    (
+      "https://example.com/b.js".to_string(),
+      "console.log('b');".to_string(),
+    ),
   ]));
 
   let mut scheduler = ClassicScriptScheduler::<HostState>::new();
   {
     let (host, event_loop) = harness.host_and_event_loop_mut();
-    scheduler.handle_script(host, event_loop, external_spec("https://example.com/a.js", true, false))?;
+    scheduler.handle_script(
+      host,
+      event_loop,
+      external_spec("https://example.com/a.js", true, false),
+    )?;
   }
   {
     let (host, event_loop) = harness.host_and_event_loop_mut();
-    scheduler.handle_script(host, event_loop, external_spec("https://example.com/b.js", true, false))?;
+    scheduler.handle_script(
+      host,
+      event_loop,
+      external_spec("https://example.com/b.js", true, false),
+    )?;
   }
 
   // Complete `b` first, ensuring it runs first.
@@ -72,18 +88,32 @@ fn async_external_scripts_execute_in_completion_order() -> Result<()> {
 fn defer_external_scripts_execute_in_document_order_after_parsing_finished() -> Result<()> {
   let mut harness = Harness::new("https://example.com/", "<!doctype html><html></html>")?;
   harness.set_external_script_sources(HashMap::from([
-    ("https://example.com/1.js".to_string(), "console.log('d1');".to_string()),
-    ("https://example.com/2.js".to_string(), "console.log('d2');".to_string()),
+    (
+      "https://example.com/1.js".to_string(),
+      "console.log('d1');".to_string(),
+    ),
+    (
+      "https://example.com/2.js".to_string(),
+      "console.log('d2');".to_string(),
+    ),
   ]));
 
   let mut scheduler = ClassicScriptScheduler::<HostState>::new();
   {
     let (host, event_loop) = harness.host_and_event_loop_mut();
-    scheduler.handle_script(host, event_loop, external_spec("https://example.com/1.js", false, true))?;
+    scheduler.handle_script(
+      host,
+      event_loop,
+      external_spec("https://example.com/1.js", false, true),
+    )?;
   }
   {
     let (host, event_loop) = harness.host_and_event_loop_mut();
-    scheduler.handle_script(host, event_loop, external_spec("https://example.com/2.js", false, true))?;
+    scheduler.handle_script(
+      host,
+      event_loop,
+      external_spec("https://example.com/2.js", false, true),
+    )?;
   }
 
   // Defer scripts should execute in insertion order (1 then 2), regardless of fetch completion
@@ -110,10 +140,7 @@ fn defer_external_scripts_execute_in_document_order_after_parsing_finished() -> 
     harness.run_until_idle(RunLimits::unbounded())?,
     RunUntilIdleOutcome::Idle
   );
-  assert_eq!(
-    harness.take_log(),
-    vec!["d1".to_string(), "d2".to_string()]
-  );
+  assert_eq!(harness.take_log(), vec!["d1".to_string(), "d2".to_string()]);
 
   Ok(())
 }

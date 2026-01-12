@@ -155,10 +155,7 @@ pub fn install_time_bindings(
     };
     scope.push_root(Value::Object(intrinsic_date))?;
 
-    let date_obj = if scope
-      .heap()
-      .is_constructor(Value::Object(intrinsic_date))?
-    {
+    let date_obj = if scope.heap().is_constructor(Value::Object(intrinsic_date))? {
       let date_call_id = vm.register_native_call(date_constructor_call_native)?;
       let date_construct_id = vm.register_native_construct(date_constructor_construct_native)?;
       let date_name = scope.alloc_string("Date")?;
@@ -246,7 +243,8 @@ pub fn install_time_bindings(
     scope.push_root(Value::Object(date_prototype))?;
     let date_get_time_id = vm.register_native_call(date_get_time_native)?;
     let date_get_time_name = scope.alloc_string("getTime")?;
-    let date_get_time = scope.alloc_native_function(date_get_time_id, None, date_get_time_name, 0)?;
+    let date_get_time =
+      scope.alloc_native_function(date_get_time_id, None, date_get_time_name, 0)?;
     scope
       .heap_mut()
       .object_set_prototype(date_get_time, Some(realm.intrinsics().function_prototype()))?;
@@ -328,7 +326,10 @@ pub fn install_time_bindings(
 /// This is useful for embeddings that create the JS realm before they have access to the final
 /// event loop instance (and its clock), but still want `Date.now()` / `performance.now()` to track
 /// the event loop clock once scripts execute.
-pub(crate) fn update_time_bindings_clock(heap: &Heap, clock: Arc<dyn Clock>) -> Result<(), VmError> {
+pub(crate) fn update_time_bindings_clock(
+  heap: &Heap,
+  clock: Arc<dyn Clock>,
+) -> Result<(), VmError> {
   let heap_key = heap as *const Heap as usize;
   let mut map = time_contexts()
     .lock()

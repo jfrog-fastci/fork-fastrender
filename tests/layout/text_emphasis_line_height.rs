@@ -62,4 +62,3 @@ fn text_emphasis_under_increases_line_height() {
     baseline_emphasis
   );
 }
-

@@ -5,8 +5,8 @@ use fastrender::render_control::StageHeartbeat;
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{
-  spawn_browser_worker, spawn_browser_worker_for_test, NavigationReason, PointerButton, RenderedFrame,
-  TabId, UiToWorker, WorkerToUi,
+  spawn_browser_worker, spawn_browser_worker_for_test, NavigationReason, PointerButton,
+  RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 
 use super::support::{
@@ -25,8 +25,11 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
 fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
   let _lock = super::stage_listener_test_lock();
 
-  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
-    spawn_browser_worker().expect("spawn browser worker");
+  let fastrender::ui::BrowserWorkerHandle {
+    tx,
+    rx,
+    join: handle,
+  } = spawn_browser_worker().expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -71,8 +74,11 @@ fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
 fn scroll_produces_scroll_update_and_frame() {
   let _lock = super::stage_listener_test_lock();
 
-  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
-    spawn_browser_worker().expect("spawn browser worker");
+  let fastrender::ui::BrowserWorkerHandle {
+    tx,
+    rx,
+    join: handle,
+  } = spawn_browser_worker().expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -138,8 +144,11 @@ fn navigation_cancellation_drops_stale_frame() {
 
   // Slow down render stages on this worker thread to make cancellation deterministic without
   // mutating the process-global `FASTR_TEST_RENDER_DELAY_MS` env var.
-  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
-    spawn_browser_worker_for_test(Some(1)).expect("spawn browser worker");
+  let fastrender::ui::BrowserWorkerHandle {
+    tx,
+    rx,
+    join: handle,
+  } = spawn_browser_worker_for_test(Some(1)).expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -151,8 +160,12 @@ fn navigation_cancellation_drops_stale_frame() {
   let first_url = "about:test-heavy".to_string();
   let second_url = "about:blank".to_string();
 
-  tx.send(navigate_msg(tab_id, first_url.clone(), NavigationReason::TypedUrl))
-    .unwrap();
+  tx.send(navigate_msg(
+    tab_id,
+    first_url.clone(),
+    NavigationReason::TypedUrl,
+  ))
+  .unwrap();
 
   let mut started_first = false;
   let mut sent_second = false;
@@ -196,12 +209,18 @@ fn navigation_cancellation_drops_stale_frame() {
   drop(tx);
   handle.join().unwrap();
 
-  assert!(started_first, "expected to observe NavigationStarted for the first URL");
+  assert!(
+    started_first,
+    "expected to observe NavigationStarted for the first URL"
+  );
   assert!(
     sent_second,
     "expected to observe a stage heartbeat during the first navigation"
   );
-  assert!(saw_second_frame, "expected FrameReady for the second navigation");
+  assert!(
+    saw_second_frame,
+    "expected FrameReady for the second navigation"
+  );
   assert!(
     !saw_first_frame,
     "expected no FrameReady for the cancelled first navigation"
@@ -212,8 +231,11 @@ fn navigation_cancellation_drops_stale_frame() {
 fn enter_submits_focused_text_input_form() {
   let _lock = super::stage_listener_test_lock();
 
-  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
-    spawn_browser_worker().expect("spawn browser worker");
+  let fastrender::ui::BrowserWorkerHandle {
+    tx,
+    rx,
+    join: handle,
+  } = spawn_browser_worker().expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -293,8 +315,11 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
 "#,
   );
 
-  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
-    spawn_browser_worker().expect("spawn browser worker");
+  let fastrender::ui::BrowserWorkerHandle {
+    tx,
+    rx,
+    join: handle,
+  } = spawn_browser_worker().expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -302,8 +327,12 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
     .unwrap();
   tx.send(viewport_changed_msg(tab_id, (160, 160), 1.0))
     .unwrap();
-  tx.send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
-    .unwrap();
+  tx.send(navigate_msg(
+    tab_id,
+    url.clone(),
+    NavigationReason::TypedUrl,
+  ))
+  .unwrap();
 
   // A newly created tab may emit an initial `about:newtab` navigation+frame before we get our
   // explicit `Navigate` message through. Wait specifically for the file:// navigation to commit and

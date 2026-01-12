@@ -3058,10 +3058,12 @@ mod tests {
     // Expose a detached <script> element so we can inspect the host-side internal slot.
     let node_id = ctx
       .with(|ctx| {
-        ctx.eval::<u32, _>(r#"(function () {
+        ctx.eval::<u32, _>(
+          r#"(function () {
           globalThis.__test_script = document.createElement("script");
           return globalThis.__test_script.__node_id;
-        })()"#)
+        })()"#,
+        )
       })
       .map_err(|e| Error::Other(e.to_string()))?;
 

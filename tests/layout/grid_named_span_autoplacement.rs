@@ -33,10 +33,16 @@ fn make_named_grid_container(child: BoxNode) -> BoxNode {
 
   // Name every grid line "foo" so that `span foo 2` corresponds to spanning two tracks in either
   // direction while still exercising the named-line occurrence search.
-  container_style.grid_column_line_names =
-    vec![vec!["foo".to_string()], vec!["foo".to_string()], vec!["foo".to_string()]];
-  container_style.grid_row_line_names =
-    vec![vec!["foo".to_string()], vec!["foo".to_string()], vec!["foo".to_string()]];
+  container_style.grid_column_line_names = vec![
+    vec!["foo".to_string()],
+    vec!["foo".to_string()],
+    vec!["foo".to_string()],
+  ];
+  container_style.grid_row_line_names = vec![
+    vec!["foo".to_string()],
+    vec!["foo".to_string()],
+    vec!["foo".to_string()],
+  ];
 
   BoxNode::new_block(
     Arc::new(container_style),

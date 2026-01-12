@@ -10,7 +10,7 @@
 #![cfg(feature = "quickjs")]
 
 use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{DomError, Document, NodeId, NodeKind};
+use crate::dom2::{Document, DomError, NodeId, NodeKind};
 use crate::js::cookie_jar::CookieJar;
 use crate::resource::ResourceFetcher;
 use rquickjs::{Ctx, Function};
@@ -377,7 +377,11 @@ fn install_dom2_bindings_internal<'js>(
             "slot".to_string()
           }
         }
-        NodeKind::Element { tag_name, namespace, .. } => {
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } => {
           if is_html_namespace(namespace) {
             tag_name.to_ascii_uppercase()
           } else {
@@ -391,44 +395,50 @@ fn install_dom2_bindings_internal<'js>(
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32| -> rquickjs::Result<Option<String>> {
-      let dom = dom.borrow();
-      let Ok(id) = dom.node_id_from_index(raw as usize) else {
-        return Ok(None);
-      };
-      let Some(node) = dom.nodes().get(id.index()) else {
-        return Ok(None);
-      };
-      match &node.kind {
-        NodeKind::Text { content } => Ok(Some(content.clone())),
-        NodeKind::Comment { content } => Ok(Some(content.clone())),
-        NodeKind::ProcessingInstruction { data, .. } => Ok(Some(data.clone())),
-        _ => Ok(None),
-      }
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32| -> rquickjs::Result<Option<String>> {
+        let dom = dom.borrow();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(None);
+        };
+        let Some(node) = dom.nodes().get(id.index()) else {
+          return Ok(None);
+        };
+        match &node.kind {
+          NodeKind::Text { content } => Ok(Some(content.clone())),
+          NodeKind::Comment { content } => Ok(Some(content.clone())),
+          NodeKind::ProcessingInstruction { data, .. } => Ok(Some(data.clone())),
+          _ => Ok(None),
+        }
+      },
+    )?;
     globals.set("__dom_node_value", f)?;
   }
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32, value: String| -> rquickjs::Result<()> {
-      let mut dom = dom.borrow_mut();
-      let Ok(id) = dom.node_id_from_index(raw as usize) else {
-        return Ok(());
-      };
-      match &mut dom.node_mut(id).kind {
-        NodeKind::Text { content } | NodeKind::Comment { content } => {
-          content.clear();
-          content.push_str(&value);
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32, value: String| -> rquickjs::Result<()> {
+        let mut dom = dom.borrow_mut();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(());
+        };
+        match &mut dom.node_mut(id).kind {
+          NodeKind::Text { content } | NodeKind::Comment { content } => {
+            content.clear();
+            content.push_str(&value);
+          }
+          NodeKind::ProcessingInstruction { data, .. } => {
+            data.clear();
+            data.push_str(&value);
+          }
+          _ => {}
         }
-        NodeKind::ProcessingInstruction { data, .. } => {
-          data.clear();
-          data.push_str(&value);
-        }
-        _ => {}
-      }
-      Ok(())
-    })?;
+        Ok(())
+      },
+    )?;
     globals.set("__dom_set_node_value", f)?;
   }
 
@@ -457,121 +467,146 @@ fn install_dom2_bindings_internal<'js>(
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32| -> rquickjs::Result<Option<u32>> {
-      let dom = dom.borrow();
-      let Ok(id) = dom.node_id_from_index(raw as usize) else {
-        return Ok(None);
-      };
-      let Some(node) = dom.nodes().get(id.index()) else {
-        return Ok(None);
-      };
-      let Some(parent) = node.parent else {
-        return Ok(None);
-      };
-      let Some(parent_node) = dom.nodes().get(parent.index()) else {
-        return Ok(None);
-      };
-      // Cut off inert template contents: template children observe a null parent.
-      if parent_node.inert_subtree {
-        return Ok(None);
-      }
-      Ok(Some(parent.index() as u32))
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32| -> rquickjs::Result<Option<u32>> {
+        let dom = dom.borrow();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(None);
+        };
+        let Some(node) = dom.nodes().get(id.index()) else {
+          return Ok(None);
+        };
+        let Some(parent) = node.parent else {
+          return Ok(None);
+        };
+        let Some(parent_node) = dom.nodes().get(parent.index()) else {
+          return Ok(None);
+        };
+        // Cut off inert template contents: template children observe a null parent.
+        if parent_node.inert_subtree {
+          return Ok(None);
+        }
+        Ok(Some(parent.index() as u32))
+      },
+    )?;
     globals.set("__dom_parent_node", f)?;
   }
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32| -> rquickjs::Result<Option<u32>> {
-      let dom = dom.borrow();
-      let Some(parent) = dom_parent_node_index(&dom, raw)? else {
-        return Ok(None);
-      };
-      let Ok(parent_id) = dom.node_id_from_index(parent as usize) else {
-        return Ok(None);
-      };
-      let Some(parent_node) = dom.nodes().get(parent_id.index()) else {
-        return Ok(None);
-      };
-      match &parent_node.kind {
-        NodeKind::Element { .. } | NodeKind::Slot { .. } => Ok(Some(parent)),
-        _ => Ok(None),
-      }
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32| -> rquickjs::Result<Option<u32>> {
+        let dom = dom.borrow();
+        let Some(parent) = dom_parent_node_index(&dom, raw)? else {
+          return Ok(None);
+        };
+        let Ok(parent_id) = dom.node_id_from_index(parent as usize) else {
+          return Ok(None);
+        };
+        let Some(parent_node) = dom.nodes().get(parent_id.index()) else {
+          return Ok(None);
+        };
+        match &parent_node.kind {
+          NodeKind::Element { .. } | NodeKind::Slot { .. } => Ok(Some(parent)),
+          _ => Ok(None),
+        }
+      },
+    )?;
     globals.set("__dom_parent_element", f)?;
   }
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32| -> rquickjs::Result<Option<u32>> {
-      let dom = dom.borrow();
-      let Ok(id) = dom.node_id_from_index(raw as usize) else {
-        return Ok(None);
-      };
-      let Some(node) = dom.nodes().get(id.index()) else {
-        return Ok(None);
-      };
-      if node.inert_subtree {
-        return Ok(None);
-      }
-      Ok(node
-        .children
-        .iter()
-        .copied()
-        .find(|child| dom.nodes().get(child.index()).is_some())
-        .map(|child| child.index() as u32))
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32| -> rquickjs::Result<Option<u32>> {
+        let dom = dom.borrow();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(None);
+        };
+        let Some(node) = dom.nodes().get(id.index()) else {
+          return Ok(None);
+        };
+        if node.inert_subtree {
+          return Ok(None);
+        }
+        Ok(
+          node
+            .children
+            .iter()
+            .copied()
+            .find(|child| dom.nodes().get(child.index()).is_some())
+            .map(|child| child.index() as u32),
+        )
+      },
+    )?;
     globals.set("__dom_first_child", f)?;
   }
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32| -> rquickjs::Result<Option<u32>> {
-      let dom = dom.borrow();
-      let Ok(id) = dom.node_id_from_index(raw as usize) else {
-        return Ok(None);
-      };
-      let Some(node) = dom.nodes().get(id.index()) else {
-        return Ok(None);
-      };
-      if node.inert_subtree {
-        return Ok(None);
-      }
-      Ok(node
-        .children
-        .iter()
-        .rev()
-        .copied()
-        .find(|child| dom.nodes().get(child.index()).is_some())
-        .map(|child| child.index() as u32))
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32| -> rquickjs::Result<Option<u32>> {
+        let dom = dom.borrow();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(None);
+        };
+        let Some(node) = dom.nodes().get(id.index()) else {
+          return Ok(None);
+        };
+        if node.inert_subtree {
+          return Ok(None);
+        }
+        Ok(
+          node
+            .children
+            .iter()
+            .rev()
+            .copied()
+            .find(|child| dom.nodes().get(child.index()).is_some())
+            .map(|child| child.index() as u32),
+        )
+      },
+    )?;
     globals.set("__dom_last_child", f)?;
   }
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32| -> rquickjs::Result<Option<u32>> {
-      let dom = dom.borrow();
-      sibling_index(&dom, raw, SiblingDir::Previous)
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32| -> rquickjs::Result<Option<u32>> {
+        let dom = dom.borrow();
+        sibling_index(&dom, raw, SiblingDir::Previous)
+      },
+    )?;
     globals.set("__dom_previous_sibling", f)?;
   }
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32| -> rquickjs::Result<Option<u32>> {
-      let dom = dom.borrow();
-      sibling_index(&dom, raw, SiblingDir::Next)
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32| -> rquickjs::Result<Option<u32>> {
+        let dom = dom.borrow();
+        sibling_index(&dom, raw, SiblingDir::Next)
+      },
+    )?;
     globals.set("__dom_next_sibling", f)?;
   }
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |a: u32, b: u32| -> rquickjs::Result<bool> {
-      let dom = dom.borrow();
-      contains_node(&dom, a, b)
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |a: u32, b: u32| -> rquickjs::Result<bool> {
+        let dom = dom.borrow();
+        contains_node(&dom, a, b)
+      },
+    )?;
     globals.set("__dom_contains", f)?;
   }
 
@@ -600,7 +635,11 @@ fn install_dom2_bindings_internal<'js>(
         return Ok(String::new());
       };
       Ok(match &node.kind {
-        NodeKind::Element { tag_name, namespace, .. } => {
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } => {
           if is_html_namespace(namespace) {
             tag_name.to_ascii_uppercase()
           } else {
@@ -634,14 +673,17 @@ fn install_dom2_bindings_internal<'js>(
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32, value: String| -> rquickjs::Result<()> {
-      let mut dom = dom.borrow_mut();
-      let Ok(id) = dom.node_id_from_index(raw as usize) else {
-        return Ok(());
-      };
-      let _ = dom.set_attribute(id, "id", &value);
-      Ok(())
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32, value: String| -> rquickjs::Result<()> {
+        let mut dom = dom.borrow_mut();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(());
+        };
+        let _ = dom.set_attribute(id, "id", &value);
+        Ok(())
+      },
+    )?;
     globals.set("__dom_set_element_id", f)?;
   }
 
@@ -659,14 +701,17 @@ fn install_dom2_bindings_internal<'js>(
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32, value: String| -> rquickjs::Result<()> {
-      let mut dom = dom.borrow_mut();
-      let Ok(id) = dom.node_id_from_index(raw as usize) else {
-        return Ok(());
-      };
-      let _ = dom.set_attribute(id, "class", &value);
-      Ok(())
-    })?;
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32, value: String| -> rquickjs::Result<()> {
+        let mut dom = dom.borrow_mut();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(());
+        };
+        let _ = dom.set_attribute(id, "class", &value);
+        Ok(())
+      },
+    )?;
     globals.set("__dom_set_element_class_name", f)?;
   }
 
@@ -684,29 +729,32 @@ fn install_dom2_bindings_internal<'js>(
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |raw: u32, value: String| -> rquickjs::Result<()> {
-      let mut dom = dom.borrow_mut();
-      let Ok(parent) = dom.node_id_from_index(raw as usize) else {
-        return Ok(());
-      };
+    let f = Function::new(
+      ctx.clone(),
+      move |raw: u32, value: String| -> rquickjs::Result<()> {
+        let mut dom = dom.borrow_mut();
+        let Ok(parent) = dom.node_id_from_index(raw as usize) else {
+          return Ok(());
+        };
 
-      // Remove existing children.
-      let old_children = dom
-        .nodes()
-        .get(parent.index())
-        .map(|node| node.children.clone())
-        .unwrap_or_default();
-      for child in old_children {
-        let _ = dom.remove_child(parent, child);
-      }
+        // Remove existing children.
+        let old_children = dom
+          .nodes()
+          .get(parent.index())
+          .map(|node| node.children.clone())
+          .unwrap_or_default();
+        for child in old_children {
+          let _ = dom.remove_child(parent, child);
+        }
 
-      if !value.is_empty() {
-        let text = dom.create_text(&value);
-        let _ = dom.append_child(parent, text);
-      }
+        if !value.is_empty() {
+          let text = dom.create_text(&value);
+          let _ = dom.append_child(parent, text);
+        }
 
-      Ok(())
-    })?;
+        Ok(())
+      },
+    )?;
     globals.set("__dom_set_inner_text", f)?;
   }
 
@@ -714,19 +762,22 @@ fn install_dom2_bindings_internal<'js>(
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |js_ctx: Ctx<'_>, raw: u32| -> rquickjs::Result<String> {
-      let result = {
-        let dom = dom.borrow();
-        let Ok(id) = dom.node_id_from_index(raw as usize) else {
-          return Ok(String::new());
+    let f = Function::new(
+      ctx.clone(),
+      move |js_ctx: Ctx<'_>, raw: u32| -> rquickjs::Result<String> {
+        let result = {
+          let dom = dom.borrow();
+          let Ok(id) = dom.node_id_from_index(raw as usize) else {
+            return Ok(String::new());
+          };
+          dom.inner_html(id)
         };
-        dom.inner_html(id)
-      };
-      match result {
-        Ok(html) => Ok(html),
-        Err(err) => throw_dom_error(js_ctx, err),
-      }
-    })?;
+        match result {
+          Ok(html) => Ok(html),
+          Err(err) => throw_dom_error(js_ctx, err),
+        }
+      },
+    )?;
     globals.set("__dom_inner_html", f)?;
   }
 
@@ -735,37 +786,40 @@ fn install_dom2_bindings_internal<'js>(
     let f = Function::new(
       ctx.clone(),
       move |js_ctx: Ctx<'_>, raw: u32, html: String| -> rquickjs::Result<()> {
-      let result = {
-        let mut dom = dom.borrow_mut();
-        let Ok(id) = dom.node_id_from_index(raw as usize) else {
-          return Ok(());
+        let result = {
+          let mut dom = dom.borrow_mut();
+          let Ok(id) = dom.node_id_from_index(raw as usize) else {
+            return Ok(());
+          };
+          dom.set_inner_html(id, &html)
         };
-        dom.set_inner_html(id, &html)
-      };
-      match result {
-        Ok(()) => Ok(()),
-        Err(err) => throw_dom_error(js_ctx, err),
-      }
-    },
+        match result {
+          Ok(()) => Ok(()),
+          Err(err) => throw_dom_error(js_ctx, err),
+        }
+      },
     )?;
     globals.set("__dom_set_inner_html", f)?;
   }
 
   {
     let dom = Rc::clone(&dom);
-    let f = Function::new(ctx.clone(), move |js_ctx: Ctx<'_>, raw: u32| -> rquickjs::Result<String> {
-      let result = {
-        let dom = dom.borrow();
-        let Ok(id) = dom.node_id_from_index(raw as usize) else {
-          return Ok(String::new());
+    let f = Function::new(
+      ctx.clone(),
+      move |js_ctx: Ctx<'_>, raw: u32| -> rquickjs::Result<String> {
+        let result = {
+          let dom = dom.borrow();
+          let Ok(id) = dom.node_id_from_index(raw as usize) else {
+            return Ok(String::new());
+          };
+          dom.outer_html(id)
         };
-        dom.outer_html(id)
-      };
-      match result {
-        Ok(html) => Ok(html),
-        Err(err) => throw_dom_error(js_ctx, err),
-      }
-    })?;
+        match result {
+          Ok(html) => Ok(html),
+          Err(err) => throw_dom_error(js_ctx, err),
+        }
+      },
+    )?;
     globals.set("__dom_outer_html", f)?;
   }
 
@@ -774,18 +828,18 @@ fn install_dom2_bindings_internal<'js>(
     let f = Function::new(
       ctx.clone(),
       move |js_ctx: Ctx<'_>, raw: u32, html: String| -> rquickjs::Result<()> {
-      let result = {
-        let mut dom = dom.borrow_mut();
-        let Ok(id) = dom.node_id_from_index(raw as usize) else {
-          return Ok(());
+        let result = {
+          let mut dom = dom.borrow_mut();
+          let Ok(id) = dom.node_id_from_index(raw as usize) else {
+            return Ok(());
+          };
+          dom.set_outer_html(id, &html)
         };
-        dom.set_outer_html(id, &html)
-      };
-      match result {
-        Ok(()) => Ok(()),
-        Err(err) => throw_dom_error(js_ctx, err),
-      }
-    },
+        match result {
+          Ok(()) => Ok(()),
+          Err(err) => throw_dom_error(js_ctx, err),
+        }
+      },
     )?;
     globals.set("__dom_set_outer_html", f)?;
   }
@@ -795,18 +849,18 @@ fn install_dom2_bindings_internal<'js>(
     let f = Function::new(
       ctx.clone(),
       move |js_ctx: Ctx<'_>, raw: u32, position: String, html: String| -> rquickjs::Result<()> {
-      let result = {
-        let mut dom = dom.borrow_mut();
-        let Ok(id) = dom.node_id_from_index(raw as usize) else {
-          return Ok(());
+        let result = {
+          let mut dom = dom.borrow_mut();
+          let Ok(id) = dom.node_id_from_index(raw as usize) else {
+            return Ok(());
+          };
+          dom.insert_adjacent_html(id, &position, &html)
         };
-        dom.insert_adjacent_html(id, &position, &html)
-      };
-      match result {
-        Ok(()) => Ok(()),
-        Err(err) => throw_dom_error(js_ctx, err),
-      }
-    },
+        match result {
+          Ok(()) => Ok(()),
+          Err(err) => throw_dom_error(js_ctx, err),
+        }
+      },
     )?;
     globals.set("__dom_insert_adjacent_html", f)?;
   }
@@ -971,7 +1025,10 @@ mod tests {
 
   impl CookieRecordingFetcher {
     fn cookie_header(&self) -> String {
-      let lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let lock = self
+        .cookies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       lock
         .iter()
         .map(|(name, value)| format!("{name}={value}"))
@@ -1005,7 +1062,10 @@ mod tests {
         return;
       }
 
-      let mut lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let mut lock = self
+        .cookies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       if let Some(existing) = lock.iter_mut().find(|(n, _)| n == name) {
         existing.1 = value.to_string();
       } else {

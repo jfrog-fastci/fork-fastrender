@@ -97,7 +97,8 @@ fn dummy_construct(
 fn get_global(vm: &mut Vm, scope: &mut vm_js::Scope<'_>, global: GcObject, name: &str) -> Value {
   let key_s = scope.alloc_string(name).unwrap();
   scope.push_root(Value::String(key_s)).unwrap();
-  vm.get(scope, global, PropertyKey::from_string(key_s)).unwrap()
+  vm.get(scope, global, PropertyKey::from_string(key_s))
+    .unwrap()
 }
 
 fn get_string_prop(vm: &mut Vm, scope: &mut vm_js::Scope<'_>, obj: GcObject, name: &str) -> String {
@@ -196,10 +197,12 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
 
     let new_target_name = scope.alloc_string("SubURLSearchParams")?;
     scope.push_root(Value::String(new_target_name))?;
-    let new_target_obj = scope.alloc_native_function(call_id, Some(construct_id), new_target_name, 0)?;
-    scope
-      .heap_mut()
-      .object_set_prototype(new_target_obj, Some(realm.intrinsics().function_prototype()))?;
+    let new_target_obj =
+      scope.alloc_native_function(call_id, Some(construct_id), new_target_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      new_target_obj,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
     scope.push_root(Value::Object(new_target_obj))?;
 
     let proto_key_s = scope.alloc_string("prototype")?;

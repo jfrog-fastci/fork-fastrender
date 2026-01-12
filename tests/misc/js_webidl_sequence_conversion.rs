@@ -144,7 +144,11 @@ where
   Host: WebHostBindings<R>,
 {
   let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-  let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+  let v0 = if args.len() > 0 {
+    args[0]
+  } else {
+    rt.js_undefined()
+  };
 
   // This is the shape emitted by the bindings codegen for `sequence<long>`.
   converted_args.push({
@@ -153,18 +157,22 @@ where
     }
     rt.with_stack_roots(&[v0], |rt| {
       let mut iterator_record = rt.get_iterator(host, v0)?;
-      rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
-        let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-        while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
-          if values.len() >= rt.limits().max_sequence_length {
-            return Err(rt.throw_range_error("sequence exceeds maximum length"));
+      rt.with_stack_roots(
+        &[iterator_record.iterator, iterator_record.next_method],
+        |rt| {
+          let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+          while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
+            if values.len() >= rt.limits().max_sequence_length {
+              return Err(rt.throw_range_error("sequence exceeds maximum length"));
+            }
+            let converted = rt.with_stack_roots(&[next], |rt| {
+              Ok(BindingValue::Number(rt.to_number(host, next)?))
+            })?;
+            values.push(converted);
           }
-          let converted =
-            rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(host, next)?)))?;
-          values.push(converted);
-        }
-        Ok(BindingValue::Sequence(values))
-      })
+          Ok(BindingValue::Sequence(values))
+        },
+      )
     })?
   });
 
@@ -183,7 +191,11 @@ where
   Host: WebHostBindings<R>,
 {
   let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-  let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+  let v0 = if args.len() > 0 {
+    args[0]
+  } else {
+    rt.js_undefined()
+  };
 
   // This is the shape emitted by the bindings codegen for `FrozenArray<long>`.
   converted_args.push({
@@ -192,18 +204,22 @@ where
     }
     rt.with_stack_roots(&[v0], |rt| {
       let mut iterator_record = rt.get_iterator(host, v0)?;
-      rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
-        let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-        while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
-          if values.len() >= rt.limits().max_sequence_length {
-            return Err(rt.throw_range_error("FrozenArray exceeds maximum length"));
+      rt.with_stack_roots(
+        &[iterator_record.iterator, iterator_record.next_method],
+        |rt| {
+          let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+          while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
+            if values.len() >= rt.limits().max_sequence_length {
+              return Err(rt.throw_range_error("FrozenArray exceeds maximum length"));
+            }
+            let converted = rt.with_stack_roots(&[next], |rt| {
+              Ok(BindingValue::Number(rt.to_number(host, next)?))
+            })?;
+            values.push(converted);
           }
-          let converted =
-            rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(host, next)?)))?;
-          values.push(converted);
-        }
-        Ok(BindingValue::FrozenArray(values))
-      })
+          Ok(BindingValue::FrozenArray(values))
+        },
+      )
     })?
   });
 
@@ -382,7 +398,10 @@ fn generated_bindings_enforce_max_sequence_length() -> Result<(), VmError> {
     })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "RangeError");
-  assert!(!host.called, "host should not be called on conversion error");
+  assert!(
+    !host.called,
+    "host should not be called on conversion error"
+  );
   Ok(())
 }
 
@@ -408,12 +427,16 @@ fn generated_bindings_sequence_conversion_throws_type_error_on_non_object() -> R
     })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
-  assert!(!host.called, "host should not be called on conversion error");
+  assert!(
+    !host.called,
+    "host should not be called on conversion error"
+  );
   Ok(())
 }
 
 #[test]
-fn generated_bindings_sequence_conversion_throws_type_error_on_non_iterable() -> Result<(), VmError> {
+fn generated_bindings_sequence_conversion_throws_type_error_on_non_iterable() -> Result<(), VmError>
+{
   // Stress rooting: force a GC before each allocation.
   let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
   let mut host = SeqHost::new("takesSequence");
@@ -435,12 +458,16 @@ fn generated_bindings_sequence_conversion_throws_type_error_on_non_iterable() ->
     })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
-  assert!(!host.called, "host should not be called on conversion error");
+  assert!(
+    !host.called,
+    "host should not be called on conversion error"
+  );
   Ok(())
 }
 
 #[test]
-fn generated_bindings_sequence_conversion_throws_type_error_on_non_callable_iterator() -> Result<(), VmError> {
+fn generated_bindings_sequence_conversion_throws_type_error_on_non_callable_iterator(
+) -> Result<(), VmError> {
   // Stress rooting: force a GC before each allocation.
   let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
   let mut host = SeqHost::new("takesSequence");
@@ -473,12 +500,16 @@ fn generated_bindings_sequence_conversion_throws_type_error_on_non_callable_iter
     })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
-  assert!(!host.called, "host should not be called on conversion error");
+  assert!(
+    !host.called,
+    "host should not be called on conversion error"
+  );
   Ok(())
 }
 
 #[test]
-fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_object() -> Result<(), VmError> {
+fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_object(
+) -> Result<(), VmError> {
   // Stress rooting: force a GC before each allocation.
   let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
   let mut host = SeqHost::new("takesFrozenArray");
@@ -499,12 +530,16 @@ fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_object() 
     })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
-  assert!(!host.called, "host should not be called on conversion error");
+  assert!(
+    !host.called,
+    "host should not be called on conversion error"
+  );
   Ok(())
 }
 
 #[test]
-fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_iterable() -> Result<(), VmError> {
+fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_iterable(
+) -> Result<(), VmError> {
   // Stress rooting: force a GC before each allocation.
   let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
   let mut host = SeqHost::new("takesFrozenArray");
@@ -526,12 +561,16 @@ fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_iterable(
     })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
-  assert!(!host.called, "host should not be called on conversion error");
+  assert!(
+    !host.called,
+    "host should not be called on conversion error"
+  );
   Ok(())
 }
 
 #[test]
-fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_callable_iterator() -> Result<(), VmError> {
+fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_callable_iterator(
+) -> Result<(), VmError> {
   // Stress rooting: force a GC before each allocation.
   let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
   let mut host = SeqHost::new("takesFrozenArray");
@@ -564,7 +603,10 @@ fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_callable_
     })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
-  assert!(!host.called, "host should not be called on conversion error");
+  assert!(
+    !host.called,
+    "host should not be called on conversion error"
+  );
   Ok(())
 }
 
@@ -595,6 +637,9 @@ fn generated_bindings_enforce_max_frozen_array_length() -> Result<(), VmError> {
     })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "RangeError");
-  assert!(!host.called, "host should not be called on conversion error");
+  assert!(
+    !host.called,
+    "host should not be called on conversion error"
+  );
   Ok(())
 }

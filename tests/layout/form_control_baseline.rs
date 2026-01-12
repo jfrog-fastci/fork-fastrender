@@ -7,7 +7,9 @@ use fastrender::tree::box_tree::{
   FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem, TextControlKind,
 };
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{BoxNode, BoxTree, ComputedStyle, FormattingContextType, LayoutConfig, LayoutEngine, Size};
+use fastrender::{
+  BoxNode, BoxTree, ComputedStyle, FormattingContextType, LayoutConfig, LayoutEngine, Size,
+};
 use std::sync::Arc;
 
 fn find_first_line<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
@@ -40,10 +42,7 @@ fn find_form_control<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
   None
 }
 
-fn baseline_and_control_bottom(
-  kind: FormControlKind,
-  intrinsic_size: Size,
-) -> (f32, f32) {
+fn baseline_and_control_bottom(kind: FormControlKind, intrinsic_size: Size) -> (f32, f32) {
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;
 
@@ -194,7 +193,12 @@ fn inline_text_like_form_controls_use_text_baseline() {
         selected: vec![0],
       }),
     ),
-    ("button", FormControlKind::Button { label: "Ok".to_string() }),
+    (
+      "button",
+      FormControlKind::Button {
+        label: "Ok".to_string(),
+      },
+    ),
   ];
 
   for (label, kind) in cases {
@@ -267,7 +271,12 @@ fn inline_baseline_accounts_for_centered_form_control_text() {
         selection: None,
       },
     ),
-    ("input-button", FormControlKind::Button { label: "Ok".to_string() }),
+    (
+      "input-button",
+      FormControlKind::Button {
+        label: "Ok".to_string(),
+      },
+    ),
     (
       "unknown-with-label",
       FormControlKind::Unknown {

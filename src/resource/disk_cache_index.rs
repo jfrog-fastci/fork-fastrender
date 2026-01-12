@@ -538,12 +538,14 @@ impl DiskCacheIndex {
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(offset))?;
     let mut line: Vec<u8> = Vec::new();
-    line.try_reserve_exact(MAX_JOURNAL_LINE_BYTES).map_err(|err| {
-      std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!("journal line buffer allocation failed: {err}"),
-      )
-    })?;
+    line
+      .try_reserve_exact(MAX_JOURNAL_LINE_BYTES)
+      .map_err(|err| {
+        std::io::Error::new(
+          std::io::ErrorKind::Other,
+          format!("journal line buffer allocation failed: {err}"),
+        )
+      })?;
     let mut processed_bytes: u64 = 0;
     loop {
       let n = match (|| -> std::io::Result<usize> {
@@ -1137,19 +1139,19 @@ mod tests {
           let meta = StoredMetadata {
             url: format!("https://example.com/{key}"),
             status: None,
-              content_type: Some("application/octet-stream".to_string()),
-              nosniff: false,
-               content_encoding: None,
-              response_headers: None,
-               etag: None,
-               last_modified: None,
-               response_referrer_policy: None,
-               vary: None,
-               access_control_allow_origin: None,
-               timing_allow_origin: None,
-             access_control_allow_credentials: false,
-             final_url: Some(format!("https://example.com/{key}")),
-             stored_at,
+            content_type: Some("application/octet-stream".to_string()),
+            nosniff: false,
+            content_encoding: None,
+            response_headers: None,
+            etag: None,
+            last_modified: None,
+            response_referrer_policy: None,
+            vary: None,
+            access_control_allow_origin: None,
+            timing_allow_origin: None,
+            access_control_allow_credentials: false,
+            final_url: Some(format!("https://example.com/{key}")),
+            stored_at,
             len: body.len(),
             cache: None,
             error: None,

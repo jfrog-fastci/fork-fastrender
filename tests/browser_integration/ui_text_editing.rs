@@ -72,7 +72,8 @@ fn click_to_place_caret_then_text_input_inserts_at_caret() -> Result<()> {
 
   // Click inside the text, not at the edges, so caret placement is expected to land in the middle.
   let click = (160.0, 20.0);
-  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
 
   let input = find_element_by_id(controller.document().dom(), "txt");
@@ -138,7 +139,8 @@ fn arrow_left_moves_caret_and_typing_inserts_before_last_char() -> Result<()> {
 
   // Focus the input and force the caret to the end.
   let click = (270.0, 20.0);
-  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
 
@@ -183,7 +185,8 @@ fn shift_arrow_creates_selection_and_typing_replaces_it() -> Result<()> {
   let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
 
   let click = (270.0, 20.0);
-  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
 
@@ -230,7 +233,8 @@ fn delete_removes_following_character() -> Result<()> {
   let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
 
   let click = (10.0, 20.0);
-  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
 
   // Move caret to after "a", then delete "b".
@@ -277,7 +281,8 @@ def</textarea>
   let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
 
   let click = (10.0, 80.0);
-  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
 

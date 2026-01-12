@@ -72,7 +72,12 @@ fn flex_column_gap_calc_percentage_resolves_against_container_inner_width() {
 
   // For 200px container inline size: 10% = 20px; gap = calc(20px - 5px) = 15px.
   let actual_gap = second.bounds.x() - (first.bounds.x() + first.bounds.width());
-  assert_approx(actual_gap, 15.0, 0.5, "gap between first and second flex items");
+  assert_approx(
+    actual_gap,
+    15.0,
+    0.5,
+    "gap between first and second flex items",
+  );
 }
 
 #[test]
@@ -122,7 +127,10 @@ fn flex_row_gap_calc_percentage_resolves_against_container_inner_height() {
   let fragment = fc
     .layout(
       &container,
-      &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Definite(200.0)),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(200.0),
+        AvailableSpace::Definite(200.0),
+      ),
     )
     .expect("layout succeeds");
 
@@ -132,7 +140,12 @@ fn flex_row_gap_calc_percentage_resolves_against_container_inner_height() {
 
   // For 200px container block size: 10% = 20px; gap = calc(20px - 5px) = 15px.
   let actual_gap = second.bounds.y() - (first.bounds.y() + first.bounds.height());
-  assert_approx(actual_gap, 15.0, 0.5, "gap between first and second flex items");
+  assert_approx(
+    actual_gap,
+    15.0,
+    0.5,
+    "gap between first and second flex items",
+  );
 }
 
 #[test]
@@ -162,5 +175,10 @@ fn flex_row_gap_calc_percentage_with_indefinite_percentage_base_is_zero() {
   let first = &fragment.children[0];
   let second = &fragment.children[1];
   let actual_gap = second.bounds.y() - (first.bounds.y() + first.bounds.height());
-  assert_approx(actual_gap, 0.0, 0.5, "indefinite percentage base treats calc(%) row-gap as 0");
+  assert_approx(
+    actual_gap,
+    0.0,
+    0.5,
+    "indefinite percentage base treats calc(%) row-gap as 0",
+  );
 }

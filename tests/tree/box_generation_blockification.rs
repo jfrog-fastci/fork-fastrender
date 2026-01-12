@@ -54,8 +54,7 @@ fn grid_items_are_blockified() {
 
 #[test]
 fn display_contents_descendants_are_blockified_as_items() {
-  let html =
-    r#"<div style="display:flex"><div style="display:contents"><span class="item">Item</span></div></div>"#;
+  let html = r#"<div style="display:flex"><div style="display:contents"><span class="item">Item</span></div></div>"#;
   let dom: dom::DomNode = dom::parse_html(html).expect("parse html");
   let styled = apply_styles(&dom, &StyleSheet::new());
   let box_tree = generate_box_tree_with_anonymous_fixup(&styled).expect("box tree");
@@ -75,7 +74,10 @@ fn flex_replaced_items_are_blockified() {
 
   let item = find_first_by_class(&box_tree.root, "item").expect("item present");
 
-  assert!(item.box_type.is_replaced(), "expected <img> to create a replaced box");
+  assert!(
+    item.box_type.is_replaced(),
+    "expected <img> to create a replaced box"
+  );
   assert_eq!(
     item.style.display,
     Display::Block,

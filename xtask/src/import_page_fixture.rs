@@ -1490,13 +1490,11 @@ fn is_html_asset(asset: &AssetData) -> bool {
 }
 
 fn sniff_font_extension(bytes: &[u8]) -> Option<&'static str> {
-  bytes
-    .get(..4)
-    .and_then(|prefix| match prefix {
-      b"wOF2" => Some("woff2"),
-      b"wOFF" => Some("woff"),
-      _ => None,
-    })
+  bytes.get(..4).and_then(|prefix| match prefix {
+    b"wOF2" => Some("woff2"),
+    b"wOFF" => Some("woff"),
+    _ => None,
+  })
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -1805,10 +1803,10 @@ fn rewrite_lazy_load_image_attrs(
   let source_tag = Regex::new("(?is)<source\\b[^>]*>").expect("source tag regex must compile");
   let attr_src = Regex::new("(?is)(?:^|\\s)src\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
     .expect("img src attr regex must compile");
-  let attr_srcset =
-    Regex::new("(?is)(?:^|\\s)srcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')").expect("srcset attr regex must compile");
-  let attr_sizes =
-    Regex::new("(?is)(?:^|\\s)sizes\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").expect("sizes attr regex must compile");
+  let attr_srcset = Regex::new("(?is)(?:^|\\s)srcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+    .expect("srcset attr regex must compile");
+  let attr_sizes = Regex::new("(?is)(?:^|\\s)sizes\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+    .expect("sizes attr regex must compile");
 
   let attr_data_src =
     Regex::new("(?is)(?:^|\\s)data-src\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
@@ -1849,8 +1847,13 @@ fn rewrite_lazy_load_image_attrs(
     let mut data_srcset_rewritten: Option<String> = None;
     if let Some(caps) = attr_data_srcset.captures(&rewritten_tag) {
       if let Some(m) = capture_first_match(&caps, &[1, 2]) {
-        let new_value =
-          rewrite_srcset_with_limit(m.as_str(), base_url, ctx, catalog, IMG_SRCSET_MAX_CANDIDATES)?;
+        let new_value = rewrite_srcset_with_limit(
+          m.as_str(),
+          base_url,
+          ctx,
+          catalog,
+          IMG_SRCSET_MAX_CANDIDATES,
+        )?;
         let start = m.start();
         let end = m.end();
         rewritten_tag = format!(
@@ -1901,9 +1904,9 @@ fn rewrite_lazy_load_image_attrs(
       }
     }
 
-    let data_sizes_value = attr_data_sizes
-      .captures(&rewritten_tag)
-      .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string()));
+    let data_sizes_value = attr_data_sizes.captures(&rewritten_tag).and_then(|caps| {
+      capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string())
+    });
     if let Some(value) = data_sizes_value {
       if !value.is_empty() && !attr_sizes.is_match(&rewritten_tag) {
         insert_attr(&mut rewritten_tag, "sizes", &value);
@@ -1959,9 +1962,9 @@ fn rewrite_lazy_load_image_attrs(
       }
     }
 
-    let data_sizes_value = attr_data_sizes
-      .captures(&rewritten_tag)
-      .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string()));
+    let data_sizes_value = attr_data_sizes.captures(&rewritten_tag).and_then(|caps| {
+      capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string())
+    });
     if let Some(value) = data_sizes_value {
       if !value.is_empty() && !attr_sizes.is_match(&rewritten_tag) {
         insert_attr(&mut rewritten_tag, "sizes", &value);
@@ -2922,7 +2925,9 @@ body{background:url("/bg.png");}
       "expected rewritten css to drop non-decodable eot sources: {rewritten_css}"
     );
     assert!(
-      !rewritten_css.contains(".woff)") && !rewritten_css.contains(".woff\"") && !rewritten_css.contains(".woff'"),
+      !rewritten_css.contains(".woff)")
+        && !rewritten_css.contains(".woff\"")
+        && !rewritten_css.contains(".woff'"),
       "expected rewritten css to drop missing woff fallback sources: {rewritten_css}"
     );
     assert!(

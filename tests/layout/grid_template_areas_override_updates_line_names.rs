@@ -52,14 +52,20 @@ fn grid_template_areas_override_updates_synthesized_area_line_names() {
   // Base template: 3 columns, `b` spans all rows in the third column.
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-columns", PropertyValue::Keyword("10px 10px 10px".into())),
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("10px 10px 10px".into()),
+    ),
     &base,
     16.0,
     16.0,
   );
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-rows", PropertyValue::Keyword("10px 10px 10px".into())),
+    &decl(
+      "grid-template-rows",
+      PropertyValue::Keyword("10px 10px 10px".into()),
+    ),
     &base,
     16.0,
     16.0,
@@ -88,7 +94,10 @@ fn grid_template_areas_override_updates_synthesized_area_line_names() {
   );
   apply_declaration(
     &mut grid_style,
-    &decl("grid-template-columns", PropertyValue::Keyword("10px 10px".into())),
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("10px 10px".into()),
+    ),
     &base,
     16.0,
     16.0,
@@ -124,9 +133,21 @@ fn grid_template_areas_override_updates_synthesized_area_line_names() {
     16.0,
   );
 
-  let child_a = BoxNode::new_block(std::sync::Arc::new(a_style), FormattingContextType::Block, vec![]);
-  let child_c = BoxNode::new_block(std::sync::Arc::new(c_style), FormattingContextType::Block, vec![]);
-  let child_b = BoxNode::new_block(std::sync::Arc::new(b_style), FormattingContextType::Block, vec![]);
+  let child_a = BoxNode::new_block(
+    std::sync::Arc::new(a_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+  let child_c = BoxNode::new_block(
+    std::sync::Arc::new(c_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+  let child_b = BoxNode::new_block(
+    std::sync::Arc::new(b_style),
+    FormattingContextType::Block,
+    vec![],
+  );
   let grid = BoxNode::new_block(
     std::sync::Arc::new(grid_style),
     FormattingContextType::Grid,

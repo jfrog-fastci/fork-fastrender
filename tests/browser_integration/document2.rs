@@ -1,7 +1,7 @@
+use fastrender::render_control::{push_stage_listener, StageHeartbeat};
 use fastrender::{
   BrowserDocument2, BrowserDocumentDom2, FastRender, FontConfig, RenderOptions, Result,
 };
-use fastrender::render_control::{push_stage_listener, StageHeartbeat};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -213,16 +213,14 @@ fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() 
   assert!(doc.render_if_needed()?.is_none());
 
   // setAttribute should dirty only when it changes the underlying attribute value.
-  let changed =
-    fastrender::js::dom2_bindings::set_attribute(&mut doc, box_id, "data-x", "1")
-      .expect("setAttribute should succeed");
+  let changed = fastrender::js::dom2_bindings::set_attribute(&mut doc, box_id, "data-x", "1")
+    .expect("setAttribute should succeed");
   assert!(changed);
   assert!(doc.render_if_needed()?.is_some());
   assert!(doc.render_if_needed()?.is_none());
 
-  let changed =
-    fastrender::js::dom2_bindings::set_attribute(&mut doc, box_id, "data-x", "1")
-      .expect("setAttribute should succeed");
+  let changed = fastrender::js::dom2_bindings::set_attribute(&mut doc, box_id, "data-x", "1")
+    .expect("setAttribute should succeed");
   assert!(!changed);
   assert!(doc.render_if_needed()?.is_none());
 
@@ -280,7 +278,9 @@ fn browser_document_dom2_text_mutation_skips_full_restyle() -> Result<()> {
       .first()
       .copied()
       .expect("#box text child");
-    dom.set_text_data(text_id, "Goodbye").expect("set_text_data")
+    dom
+      .set_text_data(text_id, "Goodbye")
+      .expect("set_text_data")
   });
   assert!(changed);
 
@@ -308,7 +308,10 @@ fn browser_document_dom2_text_mutation_skips_full_restyle() -> Result<()> {
   let after = doc.invalidation_counters();
   assert_eq!(after.full_restyles, before.full_restyles);
   assert_eq!(after.full_relayouts, before.full_relayouts);
-  assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+  assert_eq!(
+    after.incremental_relayouts,
+    before.incremental_relayouts + 1
+  );
 
   // A successful incremental relayout should also satisfy generation-based dirty detection; we
   // should not need a follow-up full pipeline run to "clear" the dirty state.
@@ -317,7 +320,10 @@ fn browser_document_dom2_text_mutation_skips_full_restyle() -> Result<()> {
     frame2 = doc.render_if_needed()?;
     Ok(())
   })?;
-  assert!(frame2.is_none(), "expected no rerender after dirty flags cleared");
+  assert!(
+    frame2.is_none(),
+    "expected no rerender after dirty flags cleared"
+  );
   assert!(
     stages2.is_empty(),
     "expected no pipeline stages once document is clean; got {stages2:?}"
@@ -429,13 +435,12 @@ fn browser_document_dom2_insert_remove_triggers_recompute() -> Result<()> {
   let box_node = doc.dom_mut().create_element("div", "");
   doc.render_frame()?; // clear unconditional invalidation from dom_mut() above
 
-  doc
-    .mutate_dom(|dom| {
-      dom
-        .set_attribute(box_node, "id", "box")
-        .expect("set_attribute");
-      dom.append_child(body, box_node).expect("append_child")
-    });
+  doc.mutate_dom(|dom| {
+    dom
+      .set_attribute(box_node, "id", "box")
+      .expect("set_attribute");
+    dom.append_child(body, box_node).expect("append_child")
+  });
 
   let mut inserted: Option<fastrender::Pixmap> = None;
   let stages_insert = capture_stages(|| {
@@ -449,8 +454,7 @@ fn browser_document_dom2_insert_remove_triggers_recompute() -> Result<()> {
     "expected cascade stage after insertion; got {stages_insert:?}"
   );
 
-  doc
-    .mutate_dom(|dom| dom.remove_child(body, box_node).expect("remove_child"));
+  doc.mutate_dom(|dom| dom.remove_child(body, box_node).expect("remove_child"));
   let mut removed: Option<fastrender::Pixmap> = None;
   let stages_remove = capture_stages(|| {
     removed = doc.render_if_needed()?;

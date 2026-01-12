@@ -3,8 +3,8 @@ use std::path::Path;
 
 use xtask::webidl::resolve::ExposureTarget;
 use xtask::webidl_bindings_codegen::{
-  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend, WebIdlBindingsCodegenConfig,
-  WebIdlBindingsGenerationMode,
+  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend,
+  WebIdlBindingsCodegenConfig, WebIdlBindingsGenerationMode,
 };
 
 #[test]

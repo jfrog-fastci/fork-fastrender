@@ -47,4 +47,3 @@ fn stacking_context_layer_bounds_include_descendant_filter_outset() {
     p.alpha()
   );
 }
-

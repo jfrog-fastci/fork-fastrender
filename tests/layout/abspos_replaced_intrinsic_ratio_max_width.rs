@@ -16,14 +16,23 @@ use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::Size;
 use std::sync::Arc;
 
-fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+fn find_fragment_by_box_id<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+) -> Option<&'a FragmentNode> {
   let mut stack = vec![fragment];
   while let Some(node) = stack.pop() {
     let matches_id = match &node.content {
       FragmentContent::Block { box_id: Some(id) }
-      | FragmentContent::Inline { box_id: Some(id), .. }
-      | FragmentContent::Text { box_id: Some(id), .. }
-      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      | FragmentContent::Inline {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Text {
+        box_id: Some(id), ..
+      }
+      | FragmentContent::Replaced {
+        box_id: Some(id), ..
+      } => *id == box_id,
       _ => false,
     };
     if matches_id {
@@ -75,8 +84,11 @@ fn abspos_replaced_max_width_clamp_preserves_intrinsic_ratio() {
   );
   img.id = 2;
 
-  let mut container =
-    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Block, vec![img]);
+  let mut container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Block,
+    vec![img],
+  );
   container.id = 1;
 
   let root = BoxNode::new_block(
@@ -101,4 +113,3 @@ fn abspos_replaced_max_width_clamp_preserves_intrinsic_ratio() {
     img_fragment.bounds.height()
   );
 }
-

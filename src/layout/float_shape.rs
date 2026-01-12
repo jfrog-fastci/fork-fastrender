@@ -5,8 +5,8 @@
 //! `shape-margin` and support basic shapes as well as simple image/gradient
 //! masks.
 
-use crate::error::{RenderError, RenderStage};
 use crate::css::types::{ColorStop, RadialGradientShape, RadialGradientSize};
+use crate::error::{RenderError, RenderStage};
 use crate::geometry::{Point, Rect, Size};
 use crate::image_loader::ImageCache;
 use crate::layout::formatting_context::LayoutError;

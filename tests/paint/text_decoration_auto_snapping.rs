@@ -130,7 +130,10 @@ fn text_decoration_auto_uses_font_thickness_and_snaps_solid_underlines() {
       blue_rows.push(y);
     }
   }
-  assert!(blue_pixels > 0, "expected some underline pixels to be painted");
+  assert!(
+    blue_pixels > 0,
+    "expected some underline pixels to be painted"
+  );
   assert_eq!(
     non_solid_blue_pixels, 0,
     "expected solid underline pixels to be pure blue (no subpixel AA), found {non_solid_blue_pixels}/{blue_pixels}"
@@ -147,7 +150,10 @@ fn text_decoration_auto_uses_font_thickness_and_snaps_solid_underlines() {
 
   for (idx, expected) in expected_device_thicknesses.iter().enumerate() {
     let expected_start = expected_start_rows[idx];
-    let Some((start, end)) = clusters.iter().copied().find(|(start, _)| *start == expected_start)
+    let Some((start, end)) = clusters
+      .iter()
+      .copied()
+      .find(|(start, _)| *start == expected_start)
     else {
       panic!(
         "expected underline band {idx} to start on row {expected_start}, but underline rows were {clusters:?}"

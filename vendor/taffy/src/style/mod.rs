@@ -510,7 +510,10 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
   pub subgrid_gap: Size<LengthPercentage>,
   /// Whether the corresponding `row-gap`/`column-gap` was specified as `normal`.
   #[cfg(feature = "grid")]
-  #[cfg_attr(feature = "serde", serde(default = "style_helpers::subgrid_gap_is_normal"))]
+  #[cfg_attr(
+    feature = "serde",
+    serde(default = "style_helpers::subgrid_gap_is_normal")
+  )]
   pub subgrid_gap_is_normal: Size<bool>,
 
   // Block container properties

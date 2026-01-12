@@ -48,7 +48,11 @@ fn abspos_auto_auto_aspect_ratio_does_not_use_in_flow_width_for_non_replaced() {
   child_style.height = Some(Length::px(50.0));
 
   let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
-  let abs_box = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Flex, vec![child]);
+  let abs_box = BoxNode::new_block(
+    Arc::new(abs_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
   let root = BoxNode::new_block(
     Arc::new(root_style),
     FormattingContextType::Block,
@@ -62,7 +66,12 @@ fn abspos_auto_auto_aspect_ratio_does_not_use_in_flow_width_for_non_replaced() {
   let abs_fragment = fragment
     .children
     .iter()
-    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| {
+      matches!(
+        child.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute fragment");
 
   assert_approx(
@@ -76,4 +85,3 @@ fn abspos_auto_auto_aspect_ratio_does_not_use_in_flow_width_for_non_replaced() {
     "abspos auto height should shrink-to-fit content",
   );
 }
-

@@ -439,8 +439,7 @@ fn bench_layout_parallel(c: &mut Criterion) {
 
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
-  let parallelism =
-    LayoutParallelism::enabled(4).with_max_threads(Some(available_threads()));
+  let parallelism = LayoutParallelism::enabled(4).with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -533,8 +532,7 @@ fn bench_block_parallel(c: &mut Criterion) {
 
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
-  let parallelism =
-    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
+  let parallelism = LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -558,8 +556,7 @@ fn bench_flex_parallel(c: &mut Criterion) {
 
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
-  let parallelism =
-    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
+  let parallelism = LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -583,8 +580,7 @@ fn bench_flex_item_children_parallel(c: &mut Criterion) {
 
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
-  let parallelism =
-    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
+  let parallelism = LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,

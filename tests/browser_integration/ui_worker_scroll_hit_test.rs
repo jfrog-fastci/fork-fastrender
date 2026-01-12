@@ -1,17 +1,15 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::scroll::ScrollState;
-use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
-};
+use fastrender::ui::messages::{NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use url::Url;
 
 use super::support::{
-  create_tab_msg, navigate_msg, pointer_down, pointer_up, rgba_at, scroll_msg, viewport_changed_msg,
-  TempSite,
+  create_tab_msg, navigate_msg, pointer_down, pointer_up, rgba_at, scroll_msg,
+  viewport_changed_msg, TempSite,
 };
 
 // Rendering + worker startup can take a few seconds under load when tests run in parallel.
@@ -111,7 +109,12 @@ fn wait_for_navigation_committed(
           break;
         }
       }
-      Ok(WorkerToUi::NavigationFailed { tab_id: msg_tab, url, error, .. }) if msg_tab == tab_id => {
+      Ok(WorkerToUi::NavigationFailed {
+        tab_id: msg_tab,
+        url,
+        error,
+        ..
+      }) if msg_tab == tab_id => {
         panic!("navigation failed for {url}: {error}");
       }
       Ok(_) => {}
@@ -124,12 +127,19 @@ fn wait_for_navigation_committed(
   assert!(committed, "expected NavigationCommitted for {expected_url}");
 }
 
-fn wait_for_scroll_state_updated(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> ScrollState {
+fn wait_for_scroll_state_updated(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+) -> ScrollState {
   let deadline = Instant::now() + timeout;
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, scroll }) if msg_tab == tab_id => {
+      Ok(WorkerToUi::ScrollStateUpdated {
+        tab_id: msg_tab,
+        scroll,
+      }) if msg_tab == tab_id => {
         return scroll;
       }
       Ok(_) => continue,

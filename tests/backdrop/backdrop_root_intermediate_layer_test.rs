@@ -87,4 +87,3 @@ fn backdrop_filter_composites_only_from_backdrop_root_depth() {
   // background (red) rather than sampling it and inverting to cyan.
   assert_eq!(pixel(&pixmap, 30, 20), (255, 0, 0, 255));
 }
-

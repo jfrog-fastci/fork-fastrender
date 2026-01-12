@@ -586,7 +586,10 @@ mod tests {
   #[test]
   fn non_ascii_whitespace_pageset_stem_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
-    assert_eq!(pageset_stem(&format!("{nbsp}example.com")).as_deref(), Some("_example.com"));
+    assert_eq!(
+      pageset_stem(&format!("{nbsp}example.com")).as_deref(),
+      Some("_example.com")
+    );
   }
 
   #[test]

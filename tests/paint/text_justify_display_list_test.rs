@@ -95,7 +95,11 @@ fn block_pos(item: &TextItem, axis: InlineAxis) -> f32 {
     // For vertical writing modes, individual glyph runs can have different baseline origins in X
     // (e.g. when the renderer centers glyphs of varying widths within the column). Using the
     // conservative bounds center is a more stable way to group runs into columns/lines.
-    InlineAxis::Vertical => fastrender::paint::display_list::text_bounds(item).center().x,
+    InlineAxis::Vertical => {
+      fastrender::paint::display_list::text_bounds(item)
+        .center()
+        .x
+    }
   }
 }
 
@@ -118,7 +122,11 @@ fn line_metrics_for_text_items(items: &[(usize, &TextItem)], axis: InlineAxis) -
       let adv = inline_advance(glyph, axis);
       let start = origin_inline + pen_inline + offset;
       let end = start + adv;
-      let (span_start, span_end) = if end >= start { (start, end) } else { (end, start) };
+      let (span_start, span_end) = if end >= start {
+        (start, end)
+      } else {
+        (end, start)
+      };
 
       min_inline = min_inline.min(span_start);
       max_inline = max_inline.max(span_end);

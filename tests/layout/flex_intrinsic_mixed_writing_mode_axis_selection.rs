@@ -48,4 +48,3 @@ fn flex_intrinsic_mixed_writing_mode_uses_child_physical_axis() {
     "expected inline-size≈30, got {inline}"
   );
 }
-

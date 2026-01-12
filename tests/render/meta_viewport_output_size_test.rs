@@ -41,4 +41,3 @@ fn meta_viewport_zoom_preserves_requested_output_size() {
     (1040, 1240)
   );
 }
-

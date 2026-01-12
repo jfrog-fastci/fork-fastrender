@@ -85,7 +85,11 @@ fn hit_testing_fixed_inside_scroller_ignores_element_scroll_offsets() {
     "div",
     vec![("id", "scroller")],
     vec![
-      elem("a", vec![("id", "fixed"), ("href", "/ok")], vec![text("Target")]),
+      elem(
+        "a",
+        vec![("id", "fixed"), ("href", "/ok")],
+        vec![text("Target")],
+      ),
       elem("div", vec![("id", "spacer")], vec![]),
     ],
   )]);

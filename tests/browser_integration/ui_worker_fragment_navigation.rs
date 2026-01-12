@@ -20,9 +20,14 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Worker
   .unwrap_or_else(|| panic!("timed out waiting for NavigationCommitted for tab {tab_id:?}"))
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messages::RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+fn next_frame_ready(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> fastrender::ui::messages::RenderedFrame {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
     other => panic!("unexpected WorkerToUi message: {other:?}"),
@@ -68,13 +73,20 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
     .unwrap();
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let msg = next_navigation_committed(&worker.ui_rx, tab_id);
   match msg {
     WorkerToUi::NavigationCommitted { url, .. } => {
-      assert!(url.contains("#target"), "expected committed URL to include #target, got {url}");
+      assert!(
+        url.contains("#target"),
+        "expected committed URL to include #target, got {url}"
+      );
     }
     WorkerToUi::NavigationFailed { url, error, .. } => {
       panic!("navigation failed for {url}: {error}");
@@ -136,7 +148,11 @@ fn navigation_with_percent_encoded_fragment_scrolls_to_target_before_first_frame
     .unwrap();
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let msg = next_navigation_committed(&worker.ui_rx, tab_id);
@@ -208,7 +224,11 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
     .expect("viewport");
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("navigate");
 
   // Wait for an initial frame so hit-testing has a layout cache.
@@ -266,7 +286,10 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
               committed_can_go_back = Some(*can_go_back);
             }
           }
-          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+          WorkerToUi::ScrollStateUpdated {
+            tab_id: got,
+            scroll,
+          } if *got == tab_id => {
             if committed_url.is_some() {
               scroll_y = Some(scroll.viewport.y);
             }
@@ -294,7 +317,10 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
 
   if committed_url.is_none() || scroll_y.is_none() || final_pixel.is_none() {
     // Drain for a moment to provide better assertion errors.
-    captured.extend(support::drain_for(&worker.ui_rx, Duration::from_millis(200)));
+    captured.extend(support::drain_for(
+      &worker.ui_rx,
+      Duration::from_millis(200),
+    ));
   }
 
   assert!(
@@ -375,7 +401,11 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
     .expect("viewport");
   worker
     .ui_tx
-    .send(support::navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
+    .send(support::navigate_msg(
+      tab_id,
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("navigate");
 
   // Wait for an initial frame so hit-testing has a layout cache.
@@ -435,7 +465,10 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
               committed_can_go_back = Some(*can_go_back);
             }
           }
-          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+          WorkerToUi::ScrollStateUpdated {
+            tab_id: got,
+            scroll,
+          } if *got == tab_id => {
             if committed_url.is_some() {
               scroll_y = Some(scroll.viewport.y);
             }
@@ -463,7 +496,10 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
 
   if committed_url.is_none() || scroll_y.is_none() || final_pixel.is_none() {
     // Drain for a moment to provide better assertion errors.
-    captured.extend(support::drain_for(&worker.ui_rx, Duration::from_millis(200)));
+    captured.extend(support::drain_for(
+      &worker.ui_rx,
+      Duration::from_millis(200),
+    ));
   }
 
   assert!(

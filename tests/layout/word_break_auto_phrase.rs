@@ -117,4 +117,3 @@ fn word_break_auto_phrase_gitlab_supports_gate_enables_rule() {
   let lines = line_texts(html);
   assert_eq!(lines, ["おじいさんと", "おばあさん"]);
 }
-

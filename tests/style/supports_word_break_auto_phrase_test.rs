@@ -36,4 +36,3 @@ fn supports_word_break_auto_phrase_matches_in_supports_rule() {
     "expected @supports-gated `word-break:auto-phrase` to apply"
   );
 }
-

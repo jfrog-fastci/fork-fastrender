@@ -90,4 +90,3 @@ fn flex_auto_min_height_uses_container_cross_size_when_definite() {
     "expected column flex item height to match block layout at the same definite width; got flex={flex_height:.2}, block={expected_height:.2}"
   );
 }
-

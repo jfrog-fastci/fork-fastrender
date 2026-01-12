@@ -126,19 +126,39 @@ fn bundles_and_renders_local_fixture_without_rendering_capture() {
     "data: URLs should not be persisted in bundle manifests"
   );
   let css_url = url::Url::from_file_path(&css_path).unwrap().to_string();
-  let imported_css_url = url::Url::from_file_path(&imported_css_path).unwrap().to_string();
-  let imported2_css_url = url::Url::from_file_path(&imported2_css_path).unwrap().to_string();
+  let imported_css_url = url::Url::from_file_path(&imported_css_path)
+    .unwrap()
+    .to_string();
+  let imported2_css_url = url::Url::from_file_path(&imported2_css_path)
+    .unwrap()
+    .to_string();
   let image_url = url::Url::from_file_path(&image_path).unwrap().to_string();
   let image2_url = url::Url::from_file_path(&image2_path).unwrap().to_string();
   let source_url = url::Url::from_file_path(&source_path).unwrap().to_string();
-  let iframe_html_url = url::Url::from_file_path(&iframe_html_path).unwrap().to_string();
-  let iframe_css_url = url::Url::from_file_path(&iframe_css_path).unwrap().to_string();
-  let iframe_image_url = url::Url::from_file_path(&iframe_image_path).unwrap().to_string();
-  let iframe_bg_url = url::Url::from_file_path(&iframe_bg_path).unwrap().to_string();
-  let inline_bg_url = url::Url::from_file_path(&inline_bg_path).unwrap().to_string();
-  let inline_attr_url = url::Url::from_file_path(&inline_attr_path).unwrap().to_string();
-  let imported_bg_url = url::Url::from_file_path(&imported_bg_path).unwrap().to_string();
-  let imported2_bg_url = url::Url::from_file_path(&imported2_bg_path).unwrap().to_string();
+  let iframe_html_url = url::Url::from_file_path(&iframe_html_path)
+    .unwrap()
+    .to_string();
+  let iframe_css_url = url::Url::from_file_path(&iframe_css_path)
+    .unwrap()
+    .to_string();
+  let iframe_image_url = url::Url::from_file_path(&iframe_image_path)
+    .unwrap()
+    .to_string();
+  let iframe_bg_url = url::Url::from_file_path(&iframe_bg_path)
+    .unwrap()
+    .to_string();
+  let inline_bg_url = url::Url::from_file_path(&inline_bg_path)
+    .unwrap()
+    .to_string();
+  let inline_attr_url = url::Url::from_file_path(&inline_attr_path)
+    .unwrap()
+    .to_string();
+  let imported_bg_url = url::Url::from_file_path(&imported_bg_path)
+    .unwrap()
+    .to_string();
+  let imported2_bg_url = url::Url::from_file_path(&imported2_bg_path)
+    .unwrap()
+    .to_string();
   let font_url = url::Url::from_file_path(&font_path).unwrap().to_string();
 
   assert!(
@@ -250,10 +270,18 @@ fn bundles_embedded_css_without_rendering_capture() {
 
   let resources = manifest["resources"].as_object().expect("resources object");
   let css_url = url::Url::from_file_path(&css_path).unwrap().to_string();
-  let imported_css_url = url::Url::from_file_path(&imported_css_path).unwrap().to_string();
-  let imported2_css_url = url::Url::from_file_path(&imported2_css_path).unwrap().to_string();
-  let imported_bg_url = url::Url::from_file_path(&imported_bg_path).unwrap().to_string();
-  let imported2_bg_url = url::Url::from_file_path(&imported2_bg_path).unwrap().to_string();
+  let imported_css_url = url::Url::from_file_path(&imported_css_path)
+    .unwrap()
+    .to_string();
+  let imported2_css_url = url::Url::from_file_path(&imported2_css_path)
+    .unwrap()
+    .to_string();
+  let imported_bg_url = url::Url::from_file_path(&imported_bg_path)
+    .unwrap()
+    .to_string();
+  let imported2_bg_url = url::Url::from_file_path(&imported2_bg_path)
+    .unwrap()
+    .to_string();
   let font_url = url::Url::from_file_path(&font_path).unwrap().to_string();
 
   assert!(

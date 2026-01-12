@@ -256,8 +256,14 @@ fn query_selector_works_for_detached_subtrees() {
   assert_eq!(doc.query_selector(".hit", None).unwrap(), None);
 
   // But querying within the detached subtree should still work.
-  assert_eq!(doc.query_selector(".hit", Some(scope)).unwrap(), Some(target));
-  assert_eq!(doc.query_selector_all(".hit", Some(scope)).unwrap(), vec![target]);
+  assert_eq!(
+    doc.query_selector(".hit", Some(scope)).unwrap(),
+    Some(target)
+  );
+  assert_eq!(
+    doc.query_selector_all(".hit", Some(scope)).unwrap(),
+    vec![target]
+  );
 }
 
 #[test]
@@ -391,7 +397,10 @@ fn selector_apis_work_for_inert_template_subtrees() {
   let scope = scope.expect("inert scope node not found");
   let target = target.expect("inert target node not found");
 
-  assert_eq!(doc.query_selector(".hit", Some(scope)).unwrap(), Some(target));
+  assert_eq!(
+    doc.query_selector(".hit", Some(scope)).unwrap(),
+    Some(target)
+  );
   assert!(doc.matches_selector(target, "div span.hit").unwrap());
 }
 
@@ -415,7 +424,8 @@ fn get_element_by_id_ignores_shadow_root_subtrees() {
 }
 
 #[test]
-fn query_selector_skips_inert_templates_and_shadow_roots_by_default_but_can_scope_into_shadow_root() {
+fn query_selector_skips_inert_templates_and_shadow_roots_by_default_but_can_scope_into_shadow_root()
+{
   let html = concat!(
     "<!doctype html>",
     "<html><body>",
@@ -438,9 +448,14 @@ fn query_selector_skips_inert_templates_and_shadow_roots_by_default_but_can_scop
     .nodes()
     .iter()
     .enumerate()
-    .find_map(|(idx, node)| matches!(&node.kind, NodeKind::ShadowRoot { .. }).then_some(NodeId(idx)))
+    .find_map(|(idx, node)| {
+      matches!(&node.kind, NodeKind::ShadowRoot { .. }).then_some(NodeId(idx))
+    })
     .expect("shadow root not found");
 
-  let shadow_el = doc.query_selector("#shadow", Some(shadow_root)).unwrap().unwrap();
+  let shadow_el = doc
+    .query_selector("#shadow", Some(shadow_root))
+    .unwrap()
+    .unwrap();
   assert_eq!(tag_name(&doc, shadow_el), Some("span"));
 }

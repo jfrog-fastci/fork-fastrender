@@ -231,7 +231,7 @@ fn gpu_html() -> String {
         info.instance_backends.as_str(),
       ),
       None => ("unknown", "unknown", "unknown", "unknown", "unknown"),
-  };
+    };
   let safe_name = escape_html(adapter_name);
   let safe_backend = escape_html(backend);
   let safe_power_preference = escape_html(power_preference);

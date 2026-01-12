@@ -53,7 +53,9 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   };
 
   // Only scripts in the HTML namespace participate in the HTML script processing model.
-  if !tag_name.eq_ignore_ascii_case("script") || !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+  if !tag_name.eq_ignore_ascii_case("script")
+    || !(namespace.is_empty() || namespace == HTML_NAMESPACE)
+  {
     return ignored();
   }
 
@@ -86,7 +88,8 @@ pub fn build_parser_inserted_script_element_spec_dom2(
 
   let (integrity_attr_present, integrity) =
     super::clamp_integrity_attribute(doc.get_attribute(script, "integrity").ok().flatten());
-  let crossorigin = super::parse_crossorigin_attr(doc.get_attribute(script, "crossorigin").ok().flatten());
+  let crossorigin =
+    super::parse_crossorigin_attr(doc.get_attribute(script, "crossorigin").ok().flatten());
 
   let mut inline_text = String::new();
   for &child in &doc.node(script).children {

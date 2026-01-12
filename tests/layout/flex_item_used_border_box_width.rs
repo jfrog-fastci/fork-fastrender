@@ -47,14 +47,21 @@ fn flex_item_used_border_box_width_drives_block_child_percentage_resolution() {
   content_style.flex_grow = 0.0;
   content_style.flex_shrink = 0.0;
 
-  let content =
-    BoxNode::new_block(Arc::new(content_style), FormattingContextType::Block, vec![inner]);
+  let content = BoxNode::new_block(
+    Arc::new(content_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
 
   let container = BoxNode::new_block(
     Arc::new(container_style),
     FormattingContextType::Flex,
     vec![
-      BoxNode::new_block(Arc::new(sidebar_style), FormattingContextType::Block, vec![]),
+      BoxNode::new_block(
+        Arc::new(sidebar_style),
+        FormattingContextType::Block,
+        vec![],
+      ),
       content,
     ],
   );

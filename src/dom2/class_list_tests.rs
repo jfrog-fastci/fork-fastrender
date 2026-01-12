@@ -48,14 +48,9 @@ fn class_list_tokenization_does_not_split_on_vertical_tab() {
   let el = make_element(&mut doc);
 
   // U+000B VERTICAL TAB is not part of DOM "ASCII whitespace".
-  doc
-    .set_attribute(el, "class", "a\u{000B}b c")
-    .unwrap();
+  doc.set_attribute(el, "class", "a\u{000B}b c").unwrap();
 
-  assert_eq!(
-    doc.class_list_tokens(el).unwrap(),
-    vec!["a\u{000B}b", "c"]
-  );
+  assert_eq!(doc.class_list_tokens(el).unwrap(), vec!["a\u{000B}b", "c"]);
 }
 
 #[test]
@@ -137,10 +132,7 @@ fn class_list_errors_on_non_elements() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let text = make_text(&mut doc, "x");
 
-  assert_eq!(
-    doc.class_list_tokens(text),
-    Err(DomError::InvalidNodeType)
-  );
+  assert_eq!(doc.class_list_tokens(text), Err(DomError::InvalidNodeType));
   assert_eq!(
     doc.class_list_add(text, &["a"]),
     Err(DomError::InvalidNodeType)

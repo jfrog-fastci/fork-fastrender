@@ -93,7 +93,10 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   let (status, stderr, stdout) = run_browser_headless_smoke(
     &[],
     &session_path,
-    &[("FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON", &expected_json)],
+    &[(
+      "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON",
+      &expected_json,
+    )],
   );
   assert_browser_succeeded(status, &stderr, &stdout);
   assert!(

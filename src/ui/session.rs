@@ -240,8 +240,12 @@ pub fn save_session_atomic(path: &Path, session: &BrowserSession) -> Result<(), 
 
   let data = serde_json::to_vec_pretty(&session).map_err(|err| err.to_string())?;
 
-  let mut tmp = tempfile::NamedTempFile::new_in(parent_dir)
-    .map_err(|err| format!("failed to create temp session file in {}: {err}", parent_dir.display()))?;
+  let mut tmp = tempfile::NamedTempFile::new_in(parent_dir).map_err(|err| {
+    format!(
+      "failed to create temp session file in {}: {err}",
+      parent_dir.display()
+    )
+  })?;
   use std::io::Write;
   tmp
     .write_all(&data)
@@ -263,11 +267,13 @@ pub fn save_session_atomic(path: &Path, session: &BrowserSession) -> Result<(), 
         std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
       ) {
         let _ = std::fs::remove_file(path);
-        err
-          .file
-          .persist(path)
-          .map(|_| ())
-          .map_err(|err| format!("failed to persist session file {}: {}", path.display(), err.error))
+        err.file.persist(path).map(|_| ()).map_err(|err| {
+          format!(
+            "failed to persist session file {}: {}",
+            path.display(),
+            err.error
+          )
+        })
       } else {
         Err(format!(
           "failed to persist session file {}: {}",

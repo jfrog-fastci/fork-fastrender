@@ -59,7 +59,11 @@ fn vertical_shaping_applies_opentype_vertical_alternates() {
   let vertical_runs = pipeline
     .shape("A", &vertical_style, &ctx)
     .expect("shape vertical text");
-  assert_eq!(vertical_runs.len(), 1, "expected a single run for vertical 'A'");
+  assert_eq!(
+    vertical_runs.len(),
+    1,
+    "expected a single run for vertical 'A'"
+  );
   let vertical_run = &vertical_runs[0];
   assert_eq!(
     vertical_run.glyphs.len(),
@@ -86,4 +90,3 @@ fn vertical_shaping_applies_opentype_vertical_alternates() {
     "vertical shaping should enable the `vrt2` feature"
   );
 }
-

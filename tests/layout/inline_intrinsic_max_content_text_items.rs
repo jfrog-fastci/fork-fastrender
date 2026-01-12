@@ -36,7 +36,10 @@ fn max_content_width_sums_across_adjacent_text_items() {
   let mut first_style = ComputedStyle::default();
   first_style.display = Display::Inline;
   first_style.font_weight = FontWeight::Normal;
-  let first = block_container(vec![BoxNode::new_text(Arc::new(first_style), "Hello".into())]);
+  let first = block_container(vec![BoxNode::new_text(
+    Arc::new(first_style),
+    "Hello".into(),
+  )]);
   let first_width = ctx
     .compute_intrinsic_inline_size(&first, IntrinsicSizingMode::MaxContent)
     .expect("first max-content width");
@@ -44,7 +47,10 @@ fn max_content_width_sums_across_adjacent_text_items() {
   let mut second_style = ComputedStyle::default();
   second_style.display = Display::Inline;
   second_style.font_weight = FontWeight::Bold;
-  let second = block_container(vec![BoxNode::new_text(Arc::new(second_style), "World".into())]);
+  let second = block_container(vec![BoxNode::new_text(
+    Arc::new(second_style),
+    "World".into(),
+  )]);
   let second_width = ctx
     .compute_intrinsic_inline_size(&second, IntrinsicSizingMode::MaxContent)
     .expect("second max-content width");

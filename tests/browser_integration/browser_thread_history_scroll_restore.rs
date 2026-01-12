@@ -7,11 +7,19 @@ use std::time::{Duration, Instant};
 // Worker startup + navigation + render can take a few seconds under parallel load (CI).
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn recv_nav_committed(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> (String, bool, bool) {
+fn recv_nav_committed(
+  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> (String, bool, bool) {
   let deadline = Instant::now() + TIMEOUT;
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let msg = support::recv_for_tab(rx, tab_id, remaining.min(Duration::from_millis(200)), |_| true);
+    let msg = support::recv_for_tab(
+      rx,
+      tab_id,
+      remaining.min(Duration::from_millis(200)),
+      |_| true,
+    );
     let Some(msg) = msg else { continue };
     match msg {
       WorkerToUi::NavigationCommitted {
@@ -33,7 +41,12 @@ fn recv_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> Rend
   let deadline = Instant::now() + TIMEOUT;
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let msg = support::recv_for_tab(rx, tab_id, remaining.min(Duration::from_millis(200)), |_| true);
+    let msg = support::recv_for_tab(
+      rx,
+      tab_id,
+      remaining.min(Duration::from_millis(200)),
+      |_| true,
+    );
     let Some(msg) = msg else { continue };
     match msg {
       WorkerToUi::FrameReady { frame, .. } => return frame,
@@ -133,4 +146,3 @@ fn browser_thread_back_restores_scroll_saved_before_navigation_paint() {
   drop(rx);
   join.join().expect("worker join");
 }
-

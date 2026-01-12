@@ -5,7 +5,10 @@ use fastrender::scroll::{
 use fastrender::style::types::{ScrollBehavior, ScrollSnapStop, ScrollSnapStrictness};
 use fastrender::{FragmentNode, FragmentTree};
 
-fn run_snap_with_targets(targets_x: Vec<f32>, scroll_x: f32) -> fastrender::scroll::ScrollSnapResult {
+fn run_snap_with_targets(
+  targets_x: Vec<f32>,
+  scroll_x: f32,
+) -> fastrender::scroll::ScrollSnapResult {
   let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 300.0, 100.0), vec![]);
   let viewport = Size::new(100.0, 100.0);
   let mut tree = FragmentTree::with_viewport(root, viewport);
@@ -36,7 +39,10 @@ fn run_snap_with_targets(targets_x: Vec<f32>, scroll_x: f32) -> fastrender::scro
     }],
   });
 
-  apply_scroll_snap(&mut tree, &ScrollState::with_viewport(Point::new(scroll_x, 0.0)))
+  apply_scroll_snap(
+    &mut tree,
+    &ScrollState::with_viewport(Point::new(scroll_x, 0.0)),
+  )
 }
 
 #[test]

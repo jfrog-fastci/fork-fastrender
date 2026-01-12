@@ -144,10 +144,16 @@ fn run_sampling_case(backend: &str) {
   let mut renderer = FastRender::new().expect("renderer");
 
   let baseline = renderer
-    .render_html_with_diagnostics(&build_html_with_backdrop_sensitive_descendant(false), options.clone())
+    .render_html_with_diagnostics(
+      &build_html_with_backdrop_sensitive_descendant(false),
+      options.clone(),
+    )
     .expect("baseline render");
   let will_change = renderer
-    .render_html_with_diagnostics(&build_html_with_backdrop_sensitive_descendant(true), options)
+    .render_html_with_diagnostics(
+      &build_html_with_backdrop_sensitive_descendant(true),
+      options,
+    )
     .expect("will-change render");
 
   // Without `will-change`, the child backdrop-filter should sample and invert the red page

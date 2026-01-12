@@ -123,7 +123,11 @@ mod tests {
       .expect("generated world should include Document interface");
     assert_eq!(doc.inherits, Some("Node"));
 
-    let member_names = doc.members.iter().filter_map(|m| m.name).collect::<Vec<_>>();
+    let member_names = doc
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
     assert!(
       member_names.contains(&"createElement"),
       "expected Document to contain createElement (from DOM spec): {member_names:?}"
@@ -139,7 +143,11 @@ mod tests {
     let url = WORLD
       .interface("URL")
       .expect("generated world should include URL interface (WHATWG URL)");
-    let url_member_names = url.members.iter().filter_map(|m| m.name).collect::<Vec<_>>();
+    let url_member_names = url
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
     for member in ["href", "origin", "searchParams"] {
       assert!(
         url_member_names.contains(&member),
@@ -150,7 +158,11 @@ mod tests {
     let params = WORLD
       .interface("URLSearchParams")
       .expect("generated world should include URLSearchParams interface (WHATWG URL)");
-    let params_member_names = params.members.iter().filter_map(|m| m.name).collect::<Vec<_>>();
+    let params_member_names = params
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
     for member in ["append", "getAll", "sort", "size"] {
       assert!(
         params_member_names.contains(&member),
@@ -160,11 +172,7 @@ mod tests {
     assert!(
       params.members.iter().any(|m| m.raw.starts_with("iterable")),
       "expected URLSearchParams to contain iterable member; found: {:?}",
-      params
-        .members
-        .iter()
-        .map(|m| m.raw)
-        .collect::<Vec<_>>()
+      params.members.iter().map(|m| m.raw).collect::<Vec<_>>()
     );
   }
 
@@ -228,13 +236,12 @@ mod tests {
       );
     }
     assert!(
-      headers.members.iter().any(|m| m.raw.starts_with("iterable")),
-      "expected Headers to contain iterable member; found: {:?}",
       headers
         .members
         .iter()
-        .map(|m| m.raw)
-        .collect::<Vec<_>>()
+        .any(|m| m.raw.starts_with("iterable")),
+      "expected Headers to contain iterable member; found: {:?}",
+      headers.members.iter().map(|m| m.raw).collect::<Vec<_>>()
     );
 
     let request = WORLD

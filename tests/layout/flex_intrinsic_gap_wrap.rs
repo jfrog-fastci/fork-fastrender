@@ -18,7 +18,11 @@ fn find_block_child<'a>(fragment: &'a FragmentNode, box_id: usize) -> &'a Fragme
     .unwrap_or_else(|| {
       panic!(
         "missing fragment for box_id={box_id}; got children ids={:?}",
-        fragment.children.iter().map(|c| c.box_id()).collect::<Vec<_>>()
+        fragment
+          .children
+          .iter()
+          .map(|c| c.box_id())
+          .collect::<Vec<_>>()
       )
     })
 }
@@ -63,7 +67,8 @@ fn flex_wrap_uses_max_content_including_gap() {
   item_style.flex_shrink = 0.0;
   let item_style = Arc::new(item_style);
 
-  let mut nested_child_1 = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
+  let mut nested_child_1 =
+    BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
   nested_child_1.id = 3;
   let mut nested_child_2 = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
   nested_child_2.id = 4;
@@ -97,4 +102,3 @@ fn flex_wrap_uses_max_content_including_gap() {
     nested_fragment.bounds.y()
   );
 }
-
