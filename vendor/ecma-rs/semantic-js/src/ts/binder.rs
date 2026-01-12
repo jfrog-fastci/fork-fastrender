@@ -518,6 +518,19 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       match &aug.target {
         AugmentationTarget::File(target) => {
           if let Some(mut state) = self.modules.remove(target) {
+            if !self.is_module_augmentable_for_augmentation(&state) {
+              self.diagnostics.push(Diagnostic::error(
+                "TS2671",
+                format!(
+                  "Cannot augment module '{}' because it resolves to a non-module entity.",
+                  aug.module.name
+                ),
+                Span::new(aug.origin, aug.module.name_span),
+              ));
+              self.modules.insert(*target, state);
+              applied_any = true;
+              continue;
+            }
             let owner = SymbolOwner::Module(*target);
             self.report_module_augmentation_imports_and_exports(aug.origin, &aug.module);
             self.bind_module_items(
@@ -656,6 +669,32 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     }
   }
 
+  fn is_module_augmentable_for_augmentation(&self, module: &ModuleState) -> bool {
+    let export_assignment = module.export_specs.iter().find_map(|spec| {
+      if let ExportSpec::ExportAssignment { path, .. } = spec {
+        Some(path)
+      } else {
+        None
+      }
+    });
+
+    let Some(path) = export_assignment else {
+      return true;
+    };
+
+    if path.len() != 1 {
+      return false;
+    }
+
+    let Some(group) = module.symbols.get(&path[0]) else {
+      return false;
+    };
+
+    group
+      .namespaces(&self.symbols)
+      .contains(Namespace::NAMESPACE)
+  }
+
   fn bind_ambient_module(
     &mut self,
     file_id: FileId,
@@ -716,11 +755,10 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     ambient_modules: &[AmbientModule],
     deps: &mut Vec<FileId>,
   ) {
-    let has_explicit_exports = decls.iter().any(|decl| !matches!(decl.exported, Exported::No))
-      || import_equals.iter().any(|ie| ie.is_exported)
-      || !exports.is_empty()
-      || !export_as_namespace.is_empty();
-    let implicit_export = implicit_export && !has_explicit_exports;
+    let implicit_export = implicit_export
+      && !exports
+        .iter()
+        .any(|export| matches!(export, Export::ExportAssignment { .. }));
     let mut has_exports = false;
     let mut first_export_span: Option<Span> = None;
     let mut has_export_assignment = false;

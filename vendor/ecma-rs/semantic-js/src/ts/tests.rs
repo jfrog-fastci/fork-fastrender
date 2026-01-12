@@ -4337,6 +4337,105 @@ fn module_augmentation_rejects_imports_and_exports() {
 }
 
 #[test]
+fn module_augmentation_export_equals_value_reports_ts2671() {
+  let file_1 = FileId(5000);
+  let file_2 = FileId(5001);
+
+  let src_1 = r#"
+    var x = 1;
+    export = x;
+  "#;
+  let ast_1 = parse(src_1).expect("parse file1");
+  let lower_1 = lower_file(file_1, HirFileKind::Ts, &ast_1);
+  let hir_1 = lower_to_ts_hir(&ast_1, &lower_1);
+
+  let src_2 = r#"
+    import x = require("./file1");
+    declare module "./file1" {
+      interface A { a }
+    }
+  "#;
+  let ast_2 = parse(src_2).expect("parse file2");
+  let lower_2 = lower_file(file_2, HirFileKind::Ts, &ast_2);
+  let hir_2 = lower_to_ts_hir(&ast_2, &lower_2);
+
+  let module_name_span = hir_2
+    .ambient_modules
+    .first()
+    .expect("module augmentation present")
+    .name_span;
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_1 => Arc::new(hir_1),
+    file_2 => Arc::new(hir_2),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "./file1".to_string() => file_1,
+  });
+
+  let (_semantics, diags) = bind_ts_program(&[file_2, file_1], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+
+  let ts2671: Vec<_> = diags.iter().filter(|d| d.code == "TS2671").collect();
+  assert_eq!(
+    ts2671.len(),
+    1,
+    "expected TS2671 for non-augmentable export= target, got: {:?}",
+    diags
+  );
+  assert_eq!(ts2671[0].primary.file, file_2);
+  assert_eq!(ts2671[0].primary.range, module_name_span);
+  assert_eq!(
+    ts2671[0].message,
+    "Cannot augment module './file1' because it resolves to a non-module entity."
+  );
+}
+
+#[test]
+fn module_augmentation_export_equals_namespace_is_allowed() {
+  let file_1 = FileId(5002);
+  let file_2 = FileId(5003);
+
+  let src_1 = r#"
+    function foo() {}
+    namespace foo { export const v = 1; }
+    export = foo;
+  "#;
+  let ast_1 = parse(src_1).expect("parse file1");
+  let lower_1 = lower_file(file_1, HirFileKind::Ts, &ast_1);
+  let hir_1 = lower_to_ts_hir(&ast_1, &lower_1);
+
+  let src_2 = r#"
+    import x = require("./file1");
+    declare module "./file1" {
+      interface A { a }
+    }
+  "#;
+  let ast_2 = parse(src_2).expect("parse file2");
+  let lower_2 = lower_file(file_2, HirFileKind::Ts, &ast_2);
+  let hir_2 = lower_to_ts_hir(&ast_2, &lower_2);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_1 => Arc::new(hir_1),
+    file_2 => Arc::new(hir_2),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "./file1".to_string() => file_1,
+  });
+
+  let (_semantics, diags) = bind_ts_program(&[file_2, file_1], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+
+  assert!(
+    diags.iter().all(|d| d.code != "TS2671"),
+    "unexpected TS2671 diagnostics: {:?}",
+    diags
+  );
+}
+
+#[test]
 fn imports_use_ambient_modules_when_file_missing() {
   let file_import = FileId(130);
   let file_ambient = FileId(131);
