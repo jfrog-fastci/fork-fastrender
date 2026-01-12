@@ -17,9 +17,12 @@ pub struct IteratorRecord {
 pub enum CloseCompletionKind {
   /// Closing on a *throw* completion.
   ///
-  /// Per ECMA-262 `IteratorClose`, errors from getting/calling `iterator.return` are **suppressed**
-  /// when the incoming completion is itself a throw completion, and the non-object return-result
-  /// TypeError check is also skipped.
+  /// Per ECMA-262 `IteratorClose`, when closing due to a throw completion, errors from
+  /// getting/calling `iterator.return` are suppressed and the non-object return-result TypeError
+  /// check is also skipped.
+  ///
+  /// `vm-js` also has non-catchable VM failures (termination, OOM, invariant violations, etc);
+  /// those are never suppressed.
   Throw,
   /// Closing on a *non-throw* completion.
   ///
@@ -321,11 +324,11 @@ pub fn iterator_close(
     record.iterator,
     return_key,
   ) {
-    Ok(m) => m,
+    Ok(v) => v,
     Err(err) => {
-      // Spec: `IteratorClose` suppresses iterator-closing errors when the incoming completion is a
-      // throw completion.
       if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
+        // Spec: `IteratorClose` suppresses iterator-closing throw completions when the incoming
+        // completion is itself a throw completion.
         return Ok(());
       }
       return Err(err);
@@ -377,9 +380,10 @@ pub fn iterator_close(
 /// This is a convenience wrapper for callers that need the *full* `IteratorClose` semantics from
 /// ECMA-262 (which takes an input completion):
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
-/// - If `completion_is_throw` is `true`, iterator-closing errors are suppressed and the "return
-///   result is not object" TypeError check is skipped.
-/// - If `completion_is_throw` is `false`, iterator-closing errors override the incoming completion.
+/// - If `completion_is_throw` is `true`, iterator-closing throw completions are suppressed and the
+///   "return result is not object" TypeError check is skipped.
+/// - If `completion_is_throw` is `false`, iterator-closing throw completions override the incoming
+///   completion.
 pub fn iterator_close_strict(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -400,9 +404,9 @@ pub fn iterator_close_strict(
 ///
 /// This is the spec-shaped form of iterator closing used by `for..of` and iterator-consuming
 /// algorithms:
-/// - For throw completions, iterator-closing errors are suppressed (and the return-result type
-///   check is skipped).
-/// - For non-throw completions, iterator-closing errors override the incoming completion.
+/// - For throw completions, iterator-closing throw completions are suppressed (and the return-result
+///   type check is skipped).
+/// - For non-throw completions, iterator-closing throw completions override the incoming completion.
 pub fn iterator_close_with_completion(
   vm: &mut Vm,
   host: &mut dyn VmHost,

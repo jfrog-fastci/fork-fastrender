@@ -321,6 +321,67 @@ glob = "built-ins/Object/prototype/propertyIsEnumerable/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Function/prototype/apply/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/isFinite/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/isInteger/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/isNaN/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/isSafeInteger/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/parseFloat/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/parseInt/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/prototype/toString/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/prototype/valueOf/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/MAX_VALUE/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/MIN_VALUE/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/POSITIVE_INFINITY/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Number/NEGATIVE_INFINITY/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Boolean/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Boolean/prototype/S15.6.3.1_A3.js"
+status = "xfail"
+reason = "vm-js: Boolean.prototype.valueOf does not throw a TypeError for non-Boolean receivers."
+
+[[expectations]]
 id = "built-ins/Object/getOwnPropertyNames/15.2.3.4-4-1.js"
 status = "xfail"
 reason = "vm-js: global object is missing some standard built-ins (e.g. Date/RegExp/Error constructors)."
@@ -1285,8 +1346,7 @@ reason = "vm-js: built-in coverage is still incomplete; tracked via curated test
 
 [[expectations]]
 id = "staging/sm/Function/15.3.4.3-01.js"
-status = "xfail"
-reason = "vm-js: staging tests depend on more complete Function.prototype.apply semantics; tracked via curated test262 progress."
+status = "pass"
 
 # --- Known-passing tests (keep regressions unexpected) ---
 [[expectations]]

@@ -5624,262 +5624,262 @@
     "built-ins/Boolean/S15.6.1.1_A1_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T5.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A1_T5.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.1.1_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.2.1_A1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.2.1_A1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.2.1_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.2.1_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.2.1_A3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.2.1_A3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.2.1_A4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.2.1_A4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.3_A1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.3_A1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.3_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.3_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.3_A3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S15.6.3_A3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A1_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A1_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A2_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A2_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A3_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A3_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A4_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A4_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A4_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A4_T3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A5_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A5_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A5_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A5_T3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A6_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/S9.2_A6_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/is-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/is-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/proto-from-ctor-realm.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/proto-from-ctor-realm.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/S15.6.3.1_A1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/S15.6.3.1_A1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/S15.6.3.1_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/S15.6.3.1_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/S15.6.3.1_A3.js#strict": {
       "outcome": "failed",
@@ -5889,672 +5889,672 @@
     "built-ins/Boolean/prototype/S15.6.3.1_A4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/S15.6.3.1_A4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/S15.6.4_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/S15.6.4_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/constructor/S15.6.4.1_A1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/constructor/S15.6.4.1_A1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A1_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A1_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A1_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A1_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T5.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T5.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/toString/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A1_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A1_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A1_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A1_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T5.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T5.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/prototype/valueOf/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/symbol-coercion.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Boolean/symbol-coercion.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/15.3.4.3-1-s.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/15.3.4.3-2-s.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/15.3.4.3-3-s.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A12.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A12.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A1_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A1_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A1_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A1_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T10.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T5.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T5.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T6.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T7.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T7.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T8.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T9.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A3_T9.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T5.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T5.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T6.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T6.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T7.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T7.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T8.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A5_T8.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T10.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T10.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T5.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T5.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T6.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T6.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T7.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T7.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T8.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T8.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T9.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A7_T9.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A8_T3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A8_T3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A8_T4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A8_T4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A8_T5.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A8_T5.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A8_T6.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/S15.3.4.3_A8_T6.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/argarray-not-object-realm.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/argarray-not-object-realm.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/argarray-not-object.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/argarray-not-object.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/get-index-abrupt.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/get-index-abrupt.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/get-length-abrupt.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/get-length-abrupt.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/this-not-callable-realm.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/this-not-callable-realm.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/this-not-callable.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Function/prototype/apply/this-not-callable.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/JSON/15.12-0-1.js#non_strict": {
       "outcome": "passed",
@@ -7187,13 +7187,13 @@
       "expectation": "xfail"
     },
     "built-ins/JSON/parse/reviver-array-delete-err.js#non_strict": {
-      "outcome": "failed",
-      "mismatched": true,
+      "outcome": "passed",
+      "mismatched": false,
       "expectation": "xfail"
     },
     "built-ins/JSON/parse/reviver-array-delete-err.js#strict": {
-      "outcome": "failed",
-      "mismatched": true,
+      "outcome": "passed",
+      "mismatched": false,
       "expectation": "xfail"
     },
     "built-ins/JSON/parse/reviver-array-get-prop-from-prototype.js#non_strict": {
@@ -11479,1512 +11479,1512 @@
     "built-ins/Number/MAX_VALUE/S15.7.3.2_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MAX_VALUE/S15.7.3.2_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MAX_VALUE/S15.7.3.2_A3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MAX_VALUE/S15.7.3.2_A3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MAX_VALUE/S15.7.3.2_A4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MAX_VALUE/S15.7.3.2_A4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MIN_VALUE/S15.7.3.3_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MIN_VALUE/S15.7.3.3_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MIN_VALUE/S15.7.3.3_A3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MIN_VALUE/S15.7.3.3_A3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MIN_VALUE/S15.7.3.3_A4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/MIN_VALUE/S15.7.3.3_A4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/NEGATIVE_INFINITY/S15.7.3.5_A1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/NEGATIVE_INFINITY/S15.7.3.5_A1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/NEGATIVE_INFINITY/S15.7.3.5_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/NEGATIVE_INFINITY/S15.7.3.5_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/NEGATIVE_INFINITY/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/NEGATIVE_INFINITY/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/NEGATIVE_INFINITY/value.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/NEGATIVE_INFINITY/value.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/POSITIVE_INFINITY/S15.7.3.6_A1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/POSITIVE_INFINITY/S15.7.3.6_A1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/POSITIVE_INFINITY/S15.7.3.6_A2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/POSITIVE_INFINITY/S15.7.3.6_A2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/POSITIVE_INFINITY/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/POSITIVE_INFINITY/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/POSITIVE_INFINITY/value.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/POSITIVE_INFINITY/value.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/arg-is-not-number.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/arg-is-not-number.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/finite-numbers.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/finite-numbers.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/infinity.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/infinity.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/nan.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/nan.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isFinite/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/arg-is-not-number.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/arg-is-not-number.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/infinity.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/infinity.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/integers.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/integers.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/nan.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/nan.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/non-integers.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/non-integers.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isInteger/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/arg-is-not-number.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/arg-is-not-number.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/nan.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/nan.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/not-nan.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/not-nan.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isNaN/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/arg-is-not-number.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/arg-is-not-number.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/infinity.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/infinity.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/nan.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/nan.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/not-integer.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/not-integer.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/not-safe-integer.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/not-safe-integer.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/safe-integers.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/isSafeInteger/safe-integers.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/parseFloat/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/parseFloat/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/parseInt/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/parseInt/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A1_T01.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A1_T01.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A1_T02.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A1_T02.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A1_T03.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A1_T03.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T01.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T01.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T02.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T02.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T03.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T03.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T04.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T04.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T05.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T05.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T06.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T06.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T07.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T07.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T08.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T08.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T09.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T09.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T10.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T10.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T11.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T11.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T12.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T12.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T13.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T13.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T14.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T14.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T15.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T15.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T16.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T16.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T17.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T17.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T18.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T18.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T19.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T19.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T20.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T20.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T21.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T21.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T22.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T22.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T23.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T23.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T24.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T24.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T25.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T25.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T26.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T26.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T27.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T27.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T28.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T28.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T29.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T29.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T30.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T30.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T31.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T31.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T32.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T32.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T33.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T33.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T34.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A2_T34.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A3_T01.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A3_T01.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A3_T02.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A3_T02.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A3_T03.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A3_T03.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A3_T04.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A3_T04.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T01.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T01.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T02.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T02.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T03.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T03.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T04.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T04.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T05.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/S15.7.4.2_A4_T05.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/a-z.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/a-z.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-default-radix.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-default-radix.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-1.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-1.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-10.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-10.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-11.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-11.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-12.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-12.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-13.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-13.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-14.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-14.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-15.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-15.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-16.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-16.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-17.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-17.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-18.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-18.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-19.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-19.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-2.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-2.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-20.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-20.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-21.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-21.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-22.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-22.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-23.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-23.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-24.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-24.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-25.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-25.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-26.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-26.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-27.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-27.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-28.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-28.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-29.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-29.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-3.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-3.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-30.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-30.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-31.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-31.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-32.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-32.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-33.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-33.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-34.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-34.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-35.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-35.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-36.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-36.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-37.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-37.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-4.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-4.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-5.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-5.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-6.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-6.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-7.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-7.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-8.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-8.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-9.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-9.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-poisoned.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/numeric-literal-tostring-radix-poisoned.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/toString/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A1_T01.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A1_T01.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A1_T02.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A1_T02.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T01.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T01.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T02.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T02.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T03.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T03.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T04.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T04.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T05.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T05.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/length.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/length.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/name.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/name.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/not-a-constructor.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/not-a-constructor.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/prop-desc.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Number/prototype/valueOf/prop-desc.js#strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     },
     "built-ins/Object/assign/ObjectOverride-sameproperty.js#non_strict": {
       "outcome": "passed",
@@ -68083,12 +68083,12 @@
     },
     "language/statements/generators/param-dflt-yield.js#non_strict": {
       "outcome": "failed",
-      "mismatched": true,
+      "mismatched": false,
       "expectation": "xfail"
     },
     "language/statements/generators/param-dflt-yield.js#strict": {
       "outcome": "failed",
-      "mismatched": true,
+      "mismatched": false,
       "expectation": "xfail"
     },
     "language/statements/generators/params-dflt-args-unmapped.js#non_strict": {
@@ -76889,7 +76889,7 @@
     "staging/sm/Function/15.3.4.3-01.js#non_strict": {
       "outcome": "passed",
       "mismatched": false,
-      "expectation": "xfail"
+      "expectation": "pass"
     }
   }
 }
