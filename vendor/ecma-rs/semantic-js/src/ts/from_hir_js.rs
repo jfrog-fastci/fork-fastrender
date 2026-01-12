@@ -67,6 +67,7 @@ pub fn lower_to_ts_hir(ast: &Node<TopLevel>, lower: &LowerResult) -> HirFile {
   let block = lower_block(
     &ast.stx.body,
     lower,
+    module_kind,
     Some(&item_ids),
     &import_specifier_span,
     &export_specifier_span,
@@ -149,6 +150,7 @@ struct LoweredBlock {
 fn lower_block(
   stmts: &[Node<Stmt>],
   lower: &LowerResult,
+  outer_module_kind: ModuleKind,
   allowed_defs: Option<&HashSet<DefId>>,
   import_specifier_span: &impl Fn(TextRange) -> Option<TextRange>,
   export_specifier_span: &impl Fn(TextRange) -> Option<TextRange>,
@@ -503,11 +505,12 @@ fn lower_block(
           let nested = lower_block(
             module.stx.body.as_deref().unwrap_or(&[]),
             lower,
+            outer_module_kind,
             None,
             import_specifier_span,
             export_specifier_span,
           );
-          let nested = finalize_block(nested, lower, ModuleKind::Module);
+          let nested = finalize_block(nested, lower, outer_module_kind);
           result.ambient_modules.push(AmbientModule {
             name: spec.clone(),
             name_span,
@@ -527,6 +530,7 @@ fn lower_block(
         let nested = lower_block(
           &global.stx.body,
           lower,
+          outer_module_kind,
           allowed_defs,
           import_specifier_span,
           export_specifier_span,

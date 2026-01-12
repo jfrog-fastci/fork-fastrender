@@ -1463,6 +1463,81 @@ fn ambient_modules_lower_from_ast() {
 }
 
 #[test]
+fn ambient_module_in_dts_script_reports_export_mismatch_for_unexported_namespace_merge() {
+  // Mirrors TypeScript's `tests/cases/compiler/namespaceNotMergedWithFunctionDefaultExport.ts`
+  // (`replace-in-file/types/index.d.ts`).
+  let source = r#"
+    declare module 'replace-in-file' {
+      export function replaceInFile(config: unknown): Promise<unknown[]>;
+      export default replaceInFile;
+
+      namespace replaceInFile {
+        export function sync(config: unknown): unknown[];
+      }
+    }
+  "#;
+
+  let file = FileId(3000);
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Dts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let resolver = StaticResolver::new(HashMap::new());
+
+  let (_semantics, diags) =
+    bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  assert!(
+    diags.iter().any(|d| d.code == "TS2395"),
+    "expected TS2395, got diagnostics: {diags:?}"
+  );
+}
+
+#[test]
+fn module_augmentation_implicitly_exports_unexported_decls() {
+  let file_a = FileId(3100);
+  let src_a = "export {};";
+  let ast_a = parse(src_a).expect("parse");
+  let lowered_a = lower_file(file_a, HirFileKind::Dts, &ast_a);
+  let hir_a = lower_to_ts_hir(&ast_a, &lowered_a);
+
+  let file_aug = FileId(3101);
+  let src_aug = r#"
+    export {};
+    declare module "./a" {
+      interface X {}
+      namespace X {}
+      let y: number;
+    }
+  "#;
+  let ast_aug = parse(src_aug).expect("parse");
+  let lowered_aug = lower_file(file_aug, HirFileKind::Dts, &ast_aug);
+  let hir_aug = lower_to_ts_hir(&ast_aug, &lowered_aug);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(hir_a),
+    file_aug => Arc::new(hir_aug),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "./a".to_string() => file_a,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_aug], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+  assert!(
+    semantics.resolve_export(file_a, "y", Namespace::VALUE).is_some(),
+    "augmentation should export y"
+  );
+  assert!(
+    semantics.resolve_export(file_a, "X", Namespace::TYPE).is_some(),
+    "augmentation should export type X"
+  );
+}
+
+#[test]
 fn type_only_imports_skip_value_namespace() {
   let file_a = FileId(60);
   let file_b = FileId(61);
