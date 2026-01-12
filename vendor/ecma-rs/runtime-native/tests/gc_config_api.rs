@@ -11,6 +11,8 @@ use runtime_native::rt_gc_get_limits;
 use runtime_native::rt_gc_get_young_range;
 use runtime_native::rt_gc_set_config;
 use runtime_native::rt_gc_set_limits;
+use runtime_native::rt_thread_deinit;
+use runtime_native::rt_thread_init;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
 
@@ -169,3 +171,99 @@ fn gc_config_env_overrides() {
   assert!(status.success(), "expected child to exit successfully");
 }
 
+#[test]
+fn gc_config_rejected_after_thread_init_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_CONFIG_AFTER_THREAD_INIT_CHILD").is_none() {
+    return;
+  }
+
+  // Thread registration eagerly initializes the process-global heap.
+  rt_thread_init(3);
+
+  let cfg = RtGcConfig {
+    nursery_size_bytes: 256 * 1024,
+    los_threshold_bytes: 8 * 1024,
+    minor_gc_nursery_used_percent: 50,
+    major_gc_old_bytes_threshold: usize::MAX,
+    major_gc_old_blocks_threshold: usize::MAX,
+    major_gc_external_bytes_threshold: usize::MAX,
+    promote_after_minor_survivals: 1,
+  };
+  let limits = RtGcLimits {
+    max_heap_bytes: 8 * 1024 * 1024,
+    max_total_bytes: 16 * 1024 * 1024,
+  };
+
+  assert!(!rt_gc_set_config(&cfg));
+  assert!(!rt_gc_set_limits(&limits));
+
+  rt_thread_deinit();
+}
+
+#[test]
+fn gc_config_rejected_after_thread_init() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let status = Command::new(exe)
+    .env("RT_GC_CONFIG_AFTER_THREAD_INIT_CHILD", "1")
+    .arg("--exact")
+    .arg("gc_config_rejected_after_thread_init_child")
+    .status()
+    .expect("spawn child");
+
+  assert!(status.success(), "expected child to exit successfully");
+}
+
+#[test]
+fn gc_config_env_overrides_do_not_override_explicit_setter_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_CONFIG_ENV_SETTER_CHILD").is_none() {
+    return;
+  }
+
+  // Env overrides apply only when the embedder didn't set an explicit config.
+  let cfg = RtGcConfig {
+    nursery_size_bytes: 256 * 1024,
+    los_threshold_bytes: 8 * 1024,
+    minor_gc_nursery_used_percent: 50,
+    major_gc_old_bytes_threshold: usize::MAX,
+    major_gc_old_blocks_threshold: usize::MAX,
+    major_gc_external_bytes_threshold: usize::MAX,
+    promote_after_minor_survivals: 1,
+  };
+
+  assert!(rt_gc_set_config(&cfg));
+
+  ensure_shape_table();
+  let _ = rt_alloc(256, RtShapeId(1));
+
+  let mut young_start: *mut u8 = core::ptr::null_mut();
+  let mut young_end: *mut u8 = core::ptr::null_mut();
+  unsafe {
+    rt_gc_get_young_range(&mut young_start, &mut young_end);
+  }
+  assert!(!young_start.is_null());
+  assert!(!young_end.is_null());
+
+  assert_eq!(
+    young_end as usize - young_start as usize,
+    cfg.nursery_size_bytes,
+    "env overrides must not override explicit rt_gc_set_config"
+  );
+}
+
+#[test]
+fn gc_config_env_overrides_do_not_override_explicit_setter() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let status = Command::new(exe)
+    .env("RT_GC_CONFIG_ENV_SETTER_CHILD", "1")
+    .env("ECMA_RS_GC_NURSERY_MB", "1")
+    .arg("--exact")
+    .arg("gc_config_env_overrides_do_not_override_explicit_setter_child")
+    .status()
+    .expect("spawn child");
+
+  assert!(status.success(), "expected child to exit successfully");
+}
