@@ -814,4 +814,18 @@ mod tests {
     realm.teardown();
     Ok(())
   }
+
+  #[test]
+  fn blob_ctor_accepts_file_parts() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let v = realm.exec_script("new Blob([new File(['hi'], 'x.txt')]).size")?;
+    assert_eq!(v, Value::Number(2.0));
+
+    let ty = realm.exec_script("(() => { const file = new File(['hi'], 'x.txt', { type: 'text/plain' }); return new Blob([file]).type; })()")?;
+    assert_eq!(get_string(realm.heap(), ty), "");
+
+    realm.teardown();
+    Ok(())
+  }
 }

@@ -9487,6 +9487,63 @@ mod tests {
   }
 
   #[test]
+  fn response_ctor_accepts_file_body_and_sets_content_type() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_obj = host.window.exec_script(
+      "(function(){\
+         const resp = new Response(new File(['hi'], 'x.txt', { type: 'Text/Plain' }));\
+         return { ct: resp.headers.get('Content-Type'), promise: resp.text() };\
+       })()",
+    )?;
+    let Value::Object(result_obj) = result_obj else {
+      return Err(VmError::InvariantViolation(
+        "expected response ctor test script to return an object",
+      ));
+    };
+
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(result_obj))?;
+
+    let ct_key = alloc_key(&mut scope, "ct")?;
+    let Value::String(ct_s) = vm.get(&mut scope, result_obj, ct_key)? else {
+      return Err(VmError::InvariantViolation("expected ct to be a string"));
+    };
+    assert_eq!(scope.heap().get_string(ct_s)?.to_utf8_lossy(), "text/plain");
+
+    let promise_key = alloc_key(&mut scope, "promise")?;
+    let promise = vm.get(&mut scope, result_obj, promise_key)?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation("expected promise to be an object"));
+    };
+    assert_eq!(
+      scope.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = scope.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Response.text promise missing result",
+      ));
+    };
+    let Value::String(text_s) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.text must resolve to a string",
+      ));
+    };
+    assert_eq!(scope.heap().get_string(text_s)?.to_utf8_lossy(), "hi");
+
+    Ok(())
+  }
+
+  #[test]
   fn response_ctor_accepts_form_data_body_and_sets_boundary() -> Result<(), VmError> {
     let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
 
@@ -9808,6 +9865,52 @@ mod tests {
         &mut hooks,
         "fetch('https://example.invalid/upload', { method: 'POST', body: new Blob(['hi'], { type: 'text/plain' }) });",
       ).unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url, "https://example.invalid/upload");
+    assert_eq!(captured.body.as_deref(), Some(b"hi".as_slice()));
+    assert_eq!(
+      header_value(&captured.headers, "content-type"),
+      Some("text/plain"),
+      "headers={:?}",
+      captured.headers
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_file_body_sends_bytes_and_sets_content_type() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(
+      fetcher.clone(),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          "fetch('https://example.invalid/upload', { method: 'POST', body: new File(['hi'], 'x.txt', { type: 'text/plain' }) });",
+        )
+        .unwrap();
     }
 
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
