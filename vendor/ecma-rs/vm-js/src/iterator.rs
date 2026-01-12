@@ -232,11 +232,11 @@ pub fn iterator_step(
 
   let result = iterator_next(vm, host, hooks, scope, record, None)?;
 
-  // Spec: if `IteratorComplete` throws, do *not* update `[[Done]]`. Callers may still attempt
-  // `IteratorClose` (and `IteratorNext` has not guaranteed the iterator is already closed).
+  // Spec: if `IteratorComplete` throws, set `[[Done]] = true` so callers skip `IteratorClose`.
   let done = match iterator_complete(vm, host, hooks, scope, result) {
     Ok(v) => v,
     Err(err) => {
+      record.done = true;
       return Err(err);
     }
   };
@@ -266,7 +266,13 @@ pub fn iterator_step_value(
     return Ok(None);
   };
 
-  iterator_value(vm, host, hooks, scope, result).map(Some)
+  match iterator_value(vm, host, hooks, scope, result) {
+    Ok(v) => Ok(Some(v)),
+    Err(err) => {
+      record.done = true;
+      Err(err)
+    }
+  }
 }
 
 /// `IteratorClose` (ECMA-262).

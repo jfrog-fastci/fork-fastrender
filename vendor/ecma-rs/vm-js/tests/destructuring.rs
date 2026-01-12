@@ -5,7 +5,10 @@ use vm_js::{
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Destructuring tests allocate a variety of iterator scaffolding (functions/objects/symbol keys).
+  // As vm-js grows, a 1MiB heap can be too tight and lead to spurious `VmError::OutOfMemory`
+  // failures unrelated to destructuring semantics.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -261,7 +264,7 @@ fn array_destructuring_elision_does_not_access_iterator_value() {
 }
 
 #[test]
-fn array_destructuring_closes_iterator_when_iterator_value_throws() {
+fn array_destructuring_does_not_close_iterator_when_iterator_value_throws() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -281,7 +284,7 @@ fn array_destructuring_closes_iterator_when_iterator_value_throws() {
         };
       };
       try { var [x] = iter; } catch (e) { err = e; }
-      err === "boom" && returnCalls === 1
+      err === "boom" && returnCalls === 0
       "#,
     )
     .unwrap();
