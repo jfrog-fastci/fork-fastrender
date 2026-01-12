@@ -111,6 +111,10 @@ pub(crate) unsafe fn spawn_promise_rooted_h(
   data: GcHandle,
   layout: PromiseLayout,
 ) -> PromiseRef {
+  // Ensure the current thread participates in GC safepoints before we potentially block on the
+  // persistent handle table lock while creating `root`.
+  crate::threading::register_current_thread(ThreadKind::External);
+
   // Safety: caller must uphold the rooted-task contract that `data` is a valid pointer to a
   // writable `GcPtr` slot containing the base pointer of a GC-managed object.
   let root = unsafe { PersistentRoot::new_from_slot_unchecked(data) };
@@ -260,6 +264,10 @@ pub(crate) fn spawn_promise_with_shape_rooted(
   promise_align: usize,
   promise_shape: RtShapeId,
 ) -> PromiseRef {
+  // Ensure `PersistentRoot::new_unchecked` is moving-GC safe by registering this thread before it
+  // may contend on the persistent handle table lock.
+  crate::threading::register_current_thread(ThreadKind::External);
+
   // Safety: caller must uphold the rooted-task contract that `data` is the base pointer of a
   // GC-managed object.
   let root = unsafe { PersistentRoot::new_unchecked(data) };
@@ -280,6 +288,10 @@ pub(crate) unsafe fn spawn_promise_with_shape_rooted_h(
   promise_align: usize,
   promise_shape: RtShapeId,
 ) -> PromiseRef {
+  // Ensure the current thread participates in GC safepoints before we potentially block on the
+  // persistent handle table lock while creating `root`.
+  crate::threading::register_current_thread(ThreadKind::External);
+
   // Safety: caller must uphold the rooted-task contract that `data` is a valid pointer to a
   // writable `GcPtr` slot containing the base pointer of a GC-managed object.
   let root = unsafe { PersistentRoot::new_from_slot_unchecked(data) };
