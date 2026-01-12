@@ -2,11 +2,11 @@
   "schema_version": 2,
   "metadata": {
     "typescript_version": "5.9.3",
+    "bundled_typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
       "jsx": 4,
       "jsxImportSource": "preact",
-      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -14,18 +14,18 @@
       "skipLibCheck": true,
       "strictFunctionTypes": true,
       "strictNullChecks": true,
-      "target": 99,
+      "target": 2,
       "useDefineForClassFields": true
     }
   },
   "diagnostics": [
     {
-      "code": 2875,
+      "code": 2792,
       "file": "main.tsx",
       "start": 59,
       "end": 66,
       "category": "error",
-      "message": "This JSX tag requires the module path 'preact/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed."
+      "message": "Cannot find module 'preact/jsx-runtime'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?"
     }
   ]
 }
