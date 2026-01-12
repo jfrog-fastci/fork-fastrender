@@ -901,7 +901,6 @@ impl Document {
     // Comments are currently ignored by renderer DOM snapshots, so treat comment data changes as
     // non-render-affecting. Still queue MutationObserver CharacterData records so observers and
     // future live-mutation hooks (e.g. Range/NodeIterator) observe the update.
-    self.bump_mutation_generation();
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
   }
@@ -936,7 +935,6 @@ impl Document {
     // Processing instructions are currently ignored by renderer DOM snapshots, so treat data
     // changes as non-render-affecting. Still queue MutationObserver CharacterData records so
     // observers and future live-mutation hooks observe the update.
-    self.bump_mutation_generation();
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
   }
