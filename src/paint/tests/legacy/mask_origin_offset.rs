@@ -1,8 +1,8 @@
-use fastrender::image_loader::ImageCache;
-use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
-use fastrender::scroll::ScrollState;
-use fastrender::{FastRender, Point, Rgba};
+use crate::image_loader::ImageCache;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
+use crate::scroll::ScrollState;
+use crate::{FastRender, Point, Rgba};
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
@@ -26,10 +26,10 @@ fn assert_close(actual: (u8, u8, u8, u8), expected: (u8, u8, u8, u8), tol: u8) {
 }
 
 #[test]
-fn legacy_clip_path_respects_stacking_context_origin_offset() {
-  // Clip-path uses an alpha mask built in device space. When stacking contexts render into
-  // smaller intermediate pixmaps, the mask must account for the painter's CSS-space origin offset
-  // or it will clip the wrong pixels.
+fn legacy_mask_respects_stacking_context_origin_offset() {
+  // `mask-image` is rasterized into an alpha mask. When a stacking context is rendered into a
+  // smaller intermediate pixmap, mask tile placement must subtract the painter's CSS-space origin
+  // offset or the mask will be shifted by the stacking context's position.
   let html = r#"<!doctype html>
 <style>
   html, body { margin: 0; padding: 0; background: white; }
@@ -40,7 +40,16 @@ fn legacy_clip_path_respects_stacking_context_origin_offset() {
     width: 4px;
     height: 1px;
     background: rgb(255 0 0);
-    clip-path: inset(0 0 0 1px);
+    mask-image: linear-gradient(
+      to right,
+      rgba(0 0 0 / 1) 0%,
+      rgba(0 0 0 / 1) 50%,
+      rgba(0 0 0 / 0) 50%,
+      rgba(0 0 0 / 0) 100%
+    );
+    mask-size: 2px 1px;
+    mask-repeat: repeat;
+    mask-position: 0 0;
   }
 </style>
 <div class="sc"></div>
@@ -69,11 +78,11 @@ fn legacy_clip_path_respects_stacking_context_origin_offset() {
   )
   .expect("painted");
 
-  // The element begins at x=13 and is clipped to start at x=14.
+  // The mask tile is 2px wide, opaque on the left 1px and transparent on the right 1px.
   assert_close(pixel(&pixmap, 12, 0), (255, 255, 255, 255), 0);
-  assert_close(pixel(&pixmap, 13, 0), (255, 255, 255, 255), 0);
-  assert_close(pixel(&pixmap, 14, 0), (255, 0, 0, 255), 0);
-  assert_close(pixel(&pixmap, 15, 0), (255, 0, 0, 255), 0);
-  assert_close(pixel(&pixmap, 16, 0), (255, 0, 0, 255), 0);
+  assert_close(pixel(&pixmap, 13, 0), (255, 0, 0, 255), 1);
+  assert_close(pixel(&pixmap, 14, 0), (255, 255, 255, 255), 1);
+  assert_close(pixel(&pixmap, 15, 0), (255, 0, 0, 255), 1);
+  assert_close(pixel(&pixmap, 16, 0), (255, 255, 255, 255), 1);
   assert_close(pixel(&pixmap, 17, 0), (255, 255, 255, 255), 0);
 }

@@ -1,10 +1,10 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use fastrender::image_loader::ImageCache;
-use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
-use fastrender::scroll::ScrollState;
-use fastrender::{FastRender, Point, Rgba};
+use crate::image_loader::ImageCache;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
+use crate::scroll::ScrollState;
+use crate::{FastRender, Point, Rgba};
 use image::codecs::png::PngEncoder;
 use image::ColorType;
 use image::ImageEncoder;

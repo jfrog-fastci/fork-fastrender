@@ -1,5 +1,5 @@
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{FastRender, FastRenderConfig};
+use crate::debug::runtime::RuntimeToggles;
+use crate::{FastRender, FastRenderConfig};
 use std::collections::HashMap;
 use tempfile::tempdir;
 use tiny_skia::Pixmap;

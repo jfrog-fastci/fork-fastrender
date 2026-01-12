@@ -1,9 +1,9 @@
 use base64::Engine;
-use fastrender::image_loader::ImageCache;
-use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
-use fastrender::scroll::ScrollState;
-use fastrender::{FastRender, Point, Rgba};
+use crate::image_loader::ImageCache;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
+use crate::scroll::ScrollState;
+use crate::{FastRender, Point, Rgba};
 use image::codecs::png::PngEncoder;
 use image::ColorType;
 use image::ImageEncoder;
@@ -14,6 +14,8 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn render(html: &str, backend: PaintBackend) -> tiny_skia::Pixmap {
+  crate::testing::init_rayon_for_tests(1);
+
   let viewport_w = 20;
   let viewport_h = 20;
 

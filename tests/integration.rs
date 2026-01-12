@@ -13,7 +13,6 @@ mod browser_integration;
 mod layout;
 mod paint;
 mod backdrop;
-mod legacy;
 mod determinism;
 mod dom_integration;
 mod iframe;

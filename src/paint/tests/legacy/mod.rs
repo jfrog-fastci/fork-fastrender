@@ -1,4 +1,4 @@
-//! Legacy tests consolidated from tests/legacy_*.rs
+//! Legacy paint backend regression suite.
 
 mod background_repeat_pattern_origin_offset;
 mod background_tiling;

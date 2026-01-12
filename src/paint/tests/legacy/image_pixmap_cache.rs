@@ -1,5 +1,5 @@
-use fastrender::api::{DiagnosticsLevel, FastRender, RenderOptions};
-use fastrender::debug::runtime::RuntimeToggles;
+use crate::api::{DiagnosticsLevel, FastRender, RenderOptions};
+use crate::debug::runtime::RuntimeToggles;
 use std::collections::HashMap;
 
 const PNG_1X1_BASE64: &str =

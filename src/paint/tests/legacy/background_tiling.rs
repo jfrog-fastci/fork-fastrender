@@ -1,7 +1,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{DiagnosticsLevel, FastRender, RenderOptions};
+use crate::debug::runtime::RuntimeToggles;
+use crate::{DiagnosticsLevel, FastRender, RenderOptions};
 use image::codecs::png::PngEncoder;
 use image::ColorType;
 use image::ImageEncoder;
