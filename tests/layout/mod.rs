@@ -8,6 +8,7 @@ mod absolute_position_body;
 mod abspos_bottom_inset_auto_height_containing_block;
 mod box_shadow_outset_cutout;
 mod fixed_flex_auto_height_does_not_use_intrinsic_block_size;
+mod float_context_stress_timeout;
 mod float_external_base_x;
 mod grid_column_shorthand_longhand_merge;
 mod html_body_percent_height;

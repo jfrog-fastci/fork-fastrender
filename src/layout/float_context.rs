@@ -350,9 +350,14 @@ struct FloatSweepState {
   /// `y` is constant and many floats share a start edge.
   pending_start_events: BinaryHeap<Reverse<FloatEvent>>,
   active: Vec<bool>,
-  active_left: BinaryHeap<(FloatKey, usize)>,
-  active_right: BinaryHeap<(Reverse<FloatKey>, usize)>,
-  active_end: BinaryHeap<(Reverse<FloatKey>, usize)>,
+  /// Active left floats, ordered by:
+  /// 1) greatest right edge (most constraining)
+  /// 2) greatest bottom edge (so we skip over shorter floats that don't relax constraints)
+  active_left: BinaryHeap<(FloatKey, FloatKey, usize)>,
+  /// Active right floats, ordered by:
+  /// 1) smallest left edge (most constraining)
+  /// 2) greatest bottom edge (so we skip over shorter floats that don't relax constraints)
+  active_right: BinaryHeap<(Reverse<FloatKey>, FloatKey, usize)>,
   active_shape_left: Vec<usize>,
   active_shape_right: Vec<usize>,
 }
@@ -373,7 +378,6 @@ impl FloatSweepState {
       active: vec![false; float_count],
       active_left: BinaryHeap::new(),
       active_right: BinaryHeap::new(),
-      active_end: BinaryHeap::new(),
       active_shape_left: Vec::new(),
       active_shape_right: Vec::new(),
     }
@@ -390,7 +394,6 @@ impl Clone for FloatSweepState {
       active: self.active.clone(),
       active_left: self.active_left.clone(),
       active_right: self.active_right.clone(),
-      active_end: self.active_end.clone(),
       active_shape_left: self.active_shape_left.clone(),
       active_shape_right: self.active_shape_right.clone(),
     }
@@ -752,9 +755,6 @@ impl FloatContext {
     match event.kind {
       FloatEventKind::Start => {
         state.active[event.float_id] = true;
-        state
-          .active_end
-          .push((Reverse(FloatKey(float.bottom())), event.float_id));
         match float.side {
           FloatSide::Left => {
             if float.shape.is_some() {
@@ -762,7 +762,11 @@ impl FloatContext {
             } else {
               state
                 .active_left
-                .push((FloatKey(float.right_edge()), event.float_id));
+                .push((
+                  FloatKey(float.right_edge()),
+                  FloatKey(float.bottom()),
+                  event.float_id,
+                ));
             }
           }
           FloatSide::Right => {
@@ -771,7 +775,11 @@ impl FloatContext {
             } else {
               state
                 .active_right
-                .push((Reverse(FloatKey(float.left_edge())), event.float_id));
+                .push((
+                  Reverse(FloatKey(float.left_edge())),
+                  FloatKey(float.bottom()),
+                  event.float_id,
+                ));
             }
           }
         }
@@ -797,23 +805,17 @@ impl FloatContext {
   }
 
   fn prune_heaps(&self, state: &mut FloatSweepState) {
-    while let Some(&(_, id)) = state.active_left.peek() {
+    while let Some(&(_, _, id)) = state.active_left.peek() {
       if state.active[id] {
         break;
       }
       state.active_left.pop();
     }
-    while let Some(&(Reverse(_), id)) = state.active_right.peek() {
+    while let Some(&(Reverse(_), _, id)) = state.active_right.peek() {
       if state.active[id] {
         break;
       }
       state.active_right.pop();
-    }
-    while let Some(&(Reverse(_), id)) = state.active_end.peek() {
-      if state.active[id] {
-        break;
-      }
-      state.active_end.pop();
     }
   }
 
@@ -846,13 +848,13 @@ impl FloatContext {
     let left_edge = state
       .active_left
       .peek()
-      .map(|(edge, _)| edge.0)
+      .map(|(edge, _, _)| edge.0)
       .unwrap_or(containing_left)
       .max(containing_left);
     let right_edge = state
       .active_right
       .peek()
-      .map(|(Reverse(edge), _)| edge.0)
+      .map(|(Reverse(edge), _, _)| edge.0)
       .unwrap_or(containing_right)
       .min(containing_right);
     (left_edge, right_edge)
@@ -956,9 +958,10 @@ impl FloatContext {
         self.record_timeout(elapsed);
         break;
       }
-
+ 
       let segment_start = cache.sweep_state.current_y;
-      let segment_end = self.next_float_boundary_after_internal(&cache.sweep_state, segment_start);
+      let segment_end =
+        self.next_float_boundary_after_internal(&mut cache.sweep_state, segment_start);
       let (left_edge, right_edge) = self.edges_at_in_containing_block_with_state(
         &mut cache.sweep_state,
         segment_start,
@@ -1021,7 +1024,7 @@ impl FloatContext {
       if next_start >= end {
         let (left_edge, right_edge) =
           self.rect_edges_in_containing_block(state, containing_left, containing_right);
-        let next_boundary = self.next_float_boundary_after_internal(&*state, start);
+        let next_boundary = self.next_float_boundary_after_internal(state, start);
         return (left_edge, right_edge, next_boundary);
       }
     }
@@ -1051,7 +1054,7 @@ impl FloatContext {
       .segments
       .get(start_idx)
       .map(|seg| seg.end_y)
-      .unwrap_or_else(|| self.next_float_boundary_after_internal(&*state, start));
+      .unwrap_or_else(|| self.next_float_boundary_after_internal(state, start));
 
     let mut counter = 0usize;
     let mut scanned = 0u64;
@@ -1100,14 +1103,6 @@ impl FloatContext {
     )
   }
 
-  fn next_event_y(&self, state: &FloatSweepState) -> f32 {
-    state
-      .pending_events
-      .peek()
-      .map(|Reverse(event)| event.y)
-      .unwrap_or(f32::INFINITY)
-  }
-
   fn next_float_start_y(&self, state: &mut FloatSweepState) -> f32 {
     while let Some(Reverse(event)) = state.pending_start_events.peek().copied() {
       // `advance_sweep_to` consumes all events with `event.y <= current_y`, so anything at or below
@@ -1128,7 +1123,12 @@ impl FloatContext {
       .iter()
       .chain(state.active_shape_right.iter())
     {
-      if let Some(shape) = self.float_info(*id).shape.as_ref() {
+      let float = self.float_info(*id);
+      let bottom = float.bottom();
+      if bottom > y {
+        next = next.min(bottom);
+      }
+      if let Some(shape) = float.shape.as_ref() {
         if let Some(change) = shape.next_change_after(y) {
           if change > y {
             next = next.min(change);
@@ -1139,13 +1139,28 @@ impl FloatContext {
     next
   }
 
-  fn next_float_boundary_after_internal(&self, state: &FloatSweepState, y: f32) -> f32 {
-    let next = self.next_event_y(state);
-    if state.active_shape_left.is_empty() && state.active_shape_right.is_empty() {
-      next
-    } else {
-      next.min(self.next_shape_boundary_after(state, y))
+  fn next_float_boundary_after_internal(&self, state: &mut FloatSweepState, y: f32) -> f32 {
+    // The next boundary that can change the available width band is:
+    // - the next float start (tightens constraints)
+    // - the end of the *currently constraining* left/right floats (relaxes constraints)
+    // - any shape-outside boundary/end (shape spans can vary per row)
+    //
+    // Importantly, we intentionally **do not** return the next end event of any active float.
+    // Ending a non-constraining float cannot change the active max/min edges, and stepping through
+    // those irrelevant boundaries is a primary source of O(n^2) behavior on float-heavy pages.
+    let mut next = self.next_float_start_y(state);
+
+    if let Some((_, bottom, _)) = state.active_left.peek() {
+      next = next.min(bottom.0);
     }
+    if let Some((_, bottom, _)) = state.active_right.peek() {
+      next = next.min(bottom.0);
+    }
+    if !state.active_shape_left.is_empty() || !state.active_shape_right.is_empty() {
+      next = next.min(self.next_shape_boundary_after(state, y));
+    }
+
+    next
   }
 
   /// Returns the current Y position
@@ -1424,7 +1439,7 @@ impl FloatContext {
   pub fn next_float_boundary_after(&self, y: f32) -> f32 {
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
-    let next = self.next_float_boundary_after_internal(&*state, y);
+    let next = self.next_float_boundary_after_internal(&mut state, y);
     if next.is_finite() && next > y {
       next
     } else {
