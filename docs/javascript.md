@@ -94,6 +94,9 @@ Hand-authoring JS bindings does not scale. The binding surface should be **Web I
 Contributor workflow details (codegen, determinism, committed snapshot): see
 [`docs/webidl_bindings.md`](webidl_bindings.md).
 
+For the consolidated WebIDL crate layout and ownership boundaries (what belongs in `vendor/ecma-rs/`
+vs `src/js/`), see [`docs/webidl_stack.md`](webidl_stack.md).
+
 The goal is that adding a new web API looks like:
 
 1. pick the spec IDL + algorithms,
