@@ -684,9 +684,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Some(FuncBody::Block(stmts)) => self.detect_use_strict_directive(stmts)?,
       _ => false,
     };
-    let func_strict = ctx.strict || body_strict;
 
     // `eval` and `arguments` are restricted identifiers in strict mode (ES5 strict).
+    let func_strict = ctx.strict || body_strict;
     if func_strict {
       if let Some(name) = name {
         if is_restricted_identifier(&name.stx.name) {
@@ -699,6 +699,18 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
 
     let simple = Self::is_simple_parameter_list(params);
+    // It's a syntax error for a function with a non-simple parameter list to contain a `"use strict"`
+    // directive (ECMA-262 `ContainsUseStrict` / `IsSimpleParameterList` early errors).
+    //
+    // This applies even if the function is already strict due to its surrounding context (e.g.
+    // class bodies are always strict mode code).
+    if body_strict && !simple {
+      self.push_error(
+        func.loc,
+        "Illegal 'use strict' directive in function with non-simple parameter list.",
+      )?;
+    }
+
     let disallow_duplicates = unique_formals || func_strict || !simple || func.stx.arrow;
     if disallow_duplicates {
       let mut seen: HashMap<String, Loc> = HashMap::new();
