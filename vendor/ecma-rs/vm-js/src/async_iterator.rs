@@ -45,7 +45,11 @@ impl AsyncIteratorRecord {
 }
 
 fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
-  Ok(PropertyKey::from_string(scope.alloc_string(s)?))
+  // Root the key string across any subsequent operations (property lookup/definition can allocate
+  // and trigger GC, and values on the Rust stack are not traced).
+  let key_s = scope.alloc_string(s)?;
+  scope.push_root(Value::String(key_s))?;
+  Ok(PropertyKey::from_string(key_s))
 }
 
 fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
@@ -192,10 +196,10 @@ fn create_iter_result_object(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
 
-  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+  let value_key = string_key(&mut scope, "value")?;
   scope.create_data_property_or_throw(obj, value_key, value)?;
 
-  let done_key = PropertyKey::from_string(scope.alloc_string("done")?);
+  let done_key = string_key(&mut scope, "done")?;
   scope.create_data_property_or_throw(obj, done_key, Value::Bool(done))?;
 
   Ok(Value::Object(obj))
@@ -246,13 +250,18 @@ pub fn async_iterator_close(
   scope: &mut Scope<'_>,
   record: &AsyncIteratorRecord,
 ) -> Result<Option<Value>, VmError> {
+  // Root the iterator while allocating the `"return"` key and performing the `GetMethod` / `Call`
+  // sequence (both can allocate and trigger GC).
   let iterator = record.iterator();
+  let mut close_scope = scope.reborrow();
+  close_scope.push_root(iterator)?;
 
-  let return_key = string_key(scope, "return")?;
-  let Some(return_method) = get_method(vm, host, hooks, scope, iterator, return_key)? else {
+  let return_key = string_key(&mut close_scope, "return")?;
+  let Some(return_method) = get_method(vm, host, hooks, &mut close_scope, iterator, return_key)? else {
     return Ok(None);
   };
 
-  let result = vm.call_with_host_and_hooks(host, scope, hooks, return_method, iterator, &[])?;
+  let result =
+    vm.call_with_host_and_hooks(host, &mut close_scope, hooks, return_method, iterator, &[])?;
   Ok(Some(result))
 }
