@@ -43,3 +43,31 @@ test(() => {
   assert_equals(el.innerHTML, "a<!--d-->b");
   assert_equals(el.textContent, "ab");
 }, "Comment nodes appear in childNodes and affect sibling relationships");
+
+test(() => {
+  const el = document.createElement("div");
+  const comment = document.createComment("c");
+  el.appendChild(document.createTextNode("a"));
+  el.appendChild(comment);
+  el.appendChild(document.createTextNode("b"));
+
+  assert_equals(comment.nodeType, Node.COMMENT_NODE, "createComment() should create a Comment node");
+  assert_equals(comment.data, "c");
+  assert_equals(comment.nodeValue, "c");
+  assert_equals(comment.textContent, "c");
+  assert_equals(comment.ownerDocument, document);
+
+  assert_equals(el.innerHTML, "a<!--c-->b", "Comment node should serialize in innerHTML");
+
+  comment.textContent = "d";
+  assert_equals(comment.data, "d", "Setting Comment.textContent should update data");
+  assert_equals(el.innerHTML, "a<!--d-->b");
+
+  el.removeChild(comment);
+  assert_equals(el.innerHTML, "ab", "Removing a Comment should remove its serialization");
+  assert_equals(el.childNodes.length, 2, "Removing a Comment should leave the two Text siblings");
+  assert_equals(el.childNodes[0].data, "a");
+  assert_equals(el.childNodes[1].data, "b");
+  assert_equals(el.childNodes[0].nextSibling, el.childNodes[1]);
+  assert_equals(el.childNodes[1].previousSibling, el.childNodes[0]);
+}, "document.createComment() creates Comment nodes that serialize and participate in tree mutation");

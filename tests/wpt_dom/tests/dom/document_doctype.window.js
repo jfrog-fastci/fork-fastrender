@@ -36,4 +36,6 @@ test(() => {
 
   assert_equals(doctype.nextSibling, document.documentElement);
   assert_equals(document.documentElement.previousSibling, doctype);
+  assert_equals(document.documentElement.nextSibling, null);
+  assert_equals(document.lastChild, document.documentElement);
 }, "DocumentType participates in document.childNodes ordering");
