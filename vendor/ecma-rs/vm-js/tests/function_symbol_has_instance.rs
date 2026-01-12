@@ -18,6 +18,23 @@ fn assert_value_is_utf8(rt: &JsRuntime, value: Value, expected: &str) {
 fn function_prototype_symbol_has_instance() {
   let mut rt = new_runtime();
 
+  // `Function.prototype[@@hasInstance]` should exist and be a non-writable, non-enumerable,
+  // non-configurable builtin named "[Symbol.hasInstance]" with length 1.
+  let value = rt
+    .exec_script(
+      r#"
+        const desc = Object.getOwnPropertyDescriptor(Function.prototype, Symbol.hasInstance);
+        desc.writable === false
+          && desc.enumerable === false
+          && desc.configurable === false
+          && typeof desc.value === "function"
+          && desc.value.name === "[Symbol.hasInstance]"
+          && desc.value.length === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+
   // Non-constructable generator functions still participate in `instanceof` via
   // `Function.prototype[Symbol.hasInstance]` (OrdinaryHasInstance).
   match rt.exec_script(r#"function* g(){ yield 1; } var it = g(); (it instanceof g)"#) {
