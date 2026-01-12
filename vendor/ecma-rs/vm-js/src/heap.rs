@@ -1273,11 +1273,21 @@ impl Heap {
   }
 
   pub(crate) fn data_view_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
-    Ok(self.get_data_view(obj)?.byte_length)
+    let view = self.get_data_view(obj)?;
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    if buf.data.is_none() {
+      return Ok(0);
+    }
+    Ok(view.byte_length)
   }
 
   pub(crate) fn data_view_byte_offset(&self, obj: GcObject) -> Result<usize, VmError> {
-    Ok(self.get_data_view(obj)?.byte_offset)
+    let view = self.get_data_view(obj)?;
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    if buf.data.is_none() {
+      return Ok(0);
+    }
+    Ok(view.byte_offset)
   }
 
   pub(crate) fn data_view_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {

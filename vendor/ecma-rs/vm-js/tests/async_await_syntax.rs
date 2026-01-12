@@ -1404,3 +1404,77 @@ fn await_in_compound_assignment_expression() -> Result<(), VmError> {
   assert!(matches!(value, Value::Number(n) if n == 3.0));
   Ok(())
 }
+
+#[test]
+fn await_in_new_constructor_expr() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f(){
+        function C(){ this.x = "ok"; }
+        return (new (await Promise.resolve(C))()).x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_delete_operand_member_base() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f(){
+        const o = { x: 1 };
+        const ok = delete (await Promise.resolve(o)).x;
+        return ok && (o.x === undefined);
+      }
+      f().then(function (v) { out = v ? 1 : 2; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_number(value), 0.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_number(value), 1.0);
+  Ok(())
+}
+
+#[test]
+fn await_in_prefix_increment_member_base() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f(){
+        const o = { x: 1 };
+        const r = ++(await Promise.resolve(o)).x;
+        return r + o.x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_number(value), 0.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_number(value), 4.0);
+  Ok(())
+}

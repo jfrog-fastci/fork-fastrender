@@ -8817,6 +8817,35 @@ enum AsyncFrame {
     expr: *const UnaryExpr,
   },
 
+  /// Continue evaluating a `new` expression after evaluating the constructor value.
+  NewAfterCallee {
+    expr: *const UnaryExpr,
+  },
+  /// Continue evaluating a `new` expression while evaluating arguments.
+  NewArgs {
+    expr: *const UnaryExpr,
+    callee_root: RootId,
+    arg_roots: Vec<RootId>,
+    arg_index: usize,
+  },
+
+  /// Continue evaluating a `delete` expression after evaluating its operand.
+  DeleteAfterArgument,
+  /// Continue evaluating a `delete` member expression after evaluating its base.
+  DeleteMemberAfterBase {
+    expr: *const MemberExpr,
+  },
+  /// Continue evaluating a `delete` computed member expression after evaluating its base.
+  DeleteComputedMemberAfterBase {
+    expr: *const ComputedMemberExpr,
+  },
+  /// Continue evaluating a `delete` computed member expression after evaluating its member key
+  /// expression.
+  DeleteComputedMemberAfterMember {
+    expr: *const ComputedMemberExpr,
+    base_root: RootId,
+  },
+
   /// Continue a member access after evaluating the base value.
   MemberAfterBase {
     expr: *const MemberExpr,
@@ -9218,6 +9247,7 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
       heap.remove_root(*base_root);
       heap.remove_root(*key_root);
     }
+    AsyncFrame::DeleteComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::CallArgs {
       callee_root,
       this_root,
@@ -9226,6 +9256,16 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     } => {
       heap.remove_root(*callee_root);
       heap.remove_root(*this_root);
+      for id in arg_roots.drain(..) {
+        heap.remove_root(id);
+      }
+    }
+    AsyncFrame::NewArgs {
+      callee_root,
+      arg_roots,
+      ..
+    } => {
+      heap.remove_root(*callee_root);
       for id in arg_roots.drain(..) {
         heap.remove_root(id);
       }
@@ -13953,6 +13993,12 @@ fn async_eval_expr(
         _ => unreachable!(),
       }
     }
+    Expr::Unary(unary) if unary.stx.operator == OperatorName::New => {
+      async_eval_new_expr(evaluator, scope, &unary.stx)
+    }
+    Expr::Unary(unary) if unary.stx.operator == OperatorName::Delete => {
+      async_eval_delete_expr(evaluator, scope, &unary.stx)
+    }
     Expr::Unary(unary)
       if matches!(
         unary.stx.operator,
@@ -16001,6 +16047,333 @@ fn async_eval_tagged_template_from_roots(
   }
 }
 
+fn async_eval_new_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+) -> Result<AsyncEval<Value>, VmError> {
+  let callee_expr = match &*expr.argument.stx {
+    // `parse-js` represents `new f()` as a `UnaryExpr` whose argument is a `CallExpr`.
+    Expr::Call(call) => &call.stx.callee,
+    _ => &expr.argument,
+  };
+
+  match async_eval_expr(evaluator, scope, callee_expr)? {
+    AsyncEval::Complete(callee_value) => async_new_begin(evaluator, scope, expr, callee_value),
+    AsyncEval::Suspend(mut suspend) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::NewAfterCallee {
+          expr: expr as *const UnaryExpr,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+  }
+}
+
+fn async_new_begin(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+  callee_value: Value,
+) -> Result<AsyncEval<Value>, VmError> {
+  let call_args = match &*expr.argument.stx {
+    Expr::Call(call) => Some(&call.stx.arguments),
+    _ => None,
+  };
+
+  // Fast path: `new C` / `new C()` (no arguments) cannot suspend once the callee is known.
+  if call_args.map_or(true, |args| args.is_empty()) {
+    let mut new_scope = scope.reborrow();
+    new_scope.push_root(callee_value)?;
+    let res = evaluator.vm.construct_with_host_and_hooks(
+      &mut *evaluator.host,
+      &mut new_scope,
+      &mut *evaluator.hooks,
+      callee_value,
+      &[],
+      // For `new`, the `newTarget` is the same as the constructor.
+      callee_value,
+    );
+    return match res {
+      Ok(v) => Ok(AsyncEval::Complete(v)),
+      Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, &mut new_scope, err)),
+    };
+  }
+
+  // Create a persistent root for the constructor so it survives across argument-evaluation `await`
+  // points.
+  let callee_root = {
+    let mut root_scope = scope.reborrow();
+    root_scope.push_root(callee_value)?;
+    root_scope.heap_mut().add_root(callee_value)?
+  };
+
+  async_new_continue_args(evaluator, scope, expr, callee_root, Vec::new(), 0)
+}
+
+fn async_new_cleanup(scope: &mut Scope<'_>, callee_root: RootId, arg_roots: &mut Vec<RootId>) {
+  scope.heap_mut().remove_root(callee_root);
+  for id in arg_roots.drain(..) {
+    scope.heap_mut().remove_root(id);
+  }
+}
+
+fn async_new_continue_args(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+  callee_root: RootId,
+  mut arg_roots: Vec<RootId>,
+  start_index: usize,
+) -> Result<AsyncEval<Value>, VmError> {
+  let Expr::Call(call) = &*expr.argument.stx else {
+    async_new_cleanup(scope, callee_root, &mut arg_roots);
+    return Err(VmError::InvariantViolation(
+      "async new arg continuation without call expression",
+    ));
+  };
+
+  // Evaluate each remaining argument in order.
+  for (idx, arg) in call.stx.arguments.iter().enumerate().skip(start_index) {
+    match async_eval_expr(evaluator, scope, &arg.stx.value) {
+      Ok(AsyncEval::Complete(v)) => {
+        if let Err(err) =
+          async_call_store_arg_value(evaluator, scope, arg.stx.spread, v, &mut arg_roots)
+        {
+          async_new_cleanup(scope, callee_root, &mut arg_roots);
+          return Err(err);
+        }
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::NewArgs {
+            expr: expr as *const UnaryExpr,
+            callee_root,
+            arg_roots,
+            arg_index: idx,
+          },
+        )?;
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+      Err(err) => {
+        async_new_cleanup(scope, callee_root, &mut arg_roots);
+        return Err(err);
+      }
+    }
+  }
+
+  // Invoke the constructor with the collected arguments.
+  let callee_value = scope
+    .heap()
+    .get_root(callee_root)
+    .ok_or(VmError::InvariantViolation("missing new callee root"))?;
+
+  let mut args: Vec<Value> = Vec::new();
+  args
+    .try_reserve_exact(arg_roots.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for id in arg_roots.iter().copied() {
+    let v = scope
+      .heap()
+      .get_root(id)
+      .ok_or(VmError::InvariantViolation("missing new arg root"))?;
+    args.push(v);
+  }
+
+  let res = evaluator
+    .vm
+    .construct_with_host_and_hooks(
+      &mut *evaluator.host,
+      scope,
+      &mut *evaluator.hooks,
+      callee_value,
+      &args,
+      // For `new`, the `newTarget` is the same as the constructor.
+      callee_value,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+
+  // Clean up roots after construct completion.
+  async_new_cleanup(scope, callee_root, &mut arg_roots);
+
+  match res {
+    Ok(v) => Ok(AsyncEval::Complete(v)),
+    Err(err) => Err(err),
+  }
+}
+
+fn async_eval_delete_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+) -> Result<AsyncEval<Value>, VmError> {
+  match &*expr.argument.stx {
+    Expr::Member(member) => match async_eval_expr(evaluator, scope, &member.stx.left)? {
+      AsyncEval::Complete(base) => Ok(AsyncEval::Complete(async_delete_member_after_base(
+        evaluator,
+        scope,
+        &member.stx,
+        base,
+      )?)),
+      AsyncEval::Suspend(mut suspend) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::DeleteMemberAfterBase {
+            expr: &*member.stx as *const MemberExpr,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+    },
+    Expr::ComputedMember(member) => match async_eval_expr(evaluator, scope, &member.stx.object)? {
+      AsyncEval::Complete(base) => async_delete_computed_member_after_base(evaluator, scope, &member.stx, base),
+      AsyncEval::Suspend(mut suspend) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::DeleteComputedMemberAfterBase {
+            expr: &*member.stx as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+    },
+    _ => match async_eval_expr(evaluator, scope, &expr.argument)? {
+      AsyncEval::Complete(_) => Ok(AsyncEval::Complete(Value::Bool(true))),
+      AsyncEval::Suspend(mut suspend) => {
+        async_frames_push(&mut suspend.frames, AsyncFrame::DeleteAfterArgument)?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+    },
+  }
+}
+
+fn async_delete_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &MemberExpr,
+  base: Value,
+) -> Result<Value, VmError> {
+  // `delete obj?.prop` short-circuits to `true` when the base is nullish.
+  if expr.optional_chaining && is_nullish(base) {
+    return Ok(Value::Bool(true));
+  }
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
+  let mut del_scope = scope.reborrow();
+  del_scope.push_root(base)?;
+  let key_s = del_scope.alloc_string(&expr.right)?;
+  del_scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+
+  let object = evaluator
+    .to_object_operator(&mut del_scope, base)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+  del_scope.push_root(Value::Object(object))?;
+
+  Ok(Value::Bool(
+    crate::spec_ops::internal_delete_with_host_and_hooks(
+      evaluator.vm,
+      &mut del_scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      object,
+      key,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?,
+  ))
+}
+
+fn async_delete_computed_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &ComputedMemberExpr,
+  base: Value,
+) -> Result<AsyncEval<Value>, VmError> {
+  // `delete obj?.[expr]` short-circuits to `true` when the base is nullish and does not evaluate
+  // the member expression.
+  if expr.optional_chaining && is_nullish(base) {
+    return Ok(AsyncEval::Complete(Value::Bool(true)));
+  }
+
+  match async_eval_expr(evaluator, scope, &expr.member)? {
+    AsyncEval::Complete(member_value) => Ok(AsyncEval::Complete(
+      async_delete_computed_member_after_member(evaluator, scope, expr, base, member_value)?,
+    )),
+    AsyncEval::Suspend(mut suspend) => {
+      let base_root = {
+        let mut root_scope = scope.reborrow();
+        root_scope.push_root(base)?;
+        root_scope.heap_mut().add_root(base)?
+      };
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::DeleteComputedMemberAfterMember {
+          expr: expr as *const ComputedMemberExpr,
+          base_root,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+  }
+}
+
+fn async_delete_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  _expr: &ComputedMemberExpr,
+  base: Value,
+  member_value: Value,
+) -> Result<Value, VmError> {
+  let mut del_scope = scope.reborrow();
+  del_scope.push_roots(&[base, member_value])?;
+  let key = evaluator
+    .to_property_key_operator(&mut del_scope, member_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+  // Root the allocated key across `ToObject(base)` / `[[Delete]]` in case either operation triggers
+  // a GC.
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  del_scope.push_root(key_root)?;
+
+  // For computed property deletion, the member expression is evaluated (and `ToPropertyKey` is
+  // performed) before throwing on a nullish base.
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut del_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
+  let object = evaluator
+    .to_object_operator(&mut del_scope, base)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+  del_scope.push_root(Value::Object(object))?;
+
+  Ok(Value::Bool(
+    crate::spec_ops::internal_delete_with_host_and_hooks(
+      evaluator.vm,
+      &mut del_scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      object,
+      key,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?,
+  ))
+}
+
 fn async_apply_unary_operator(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -17131,6 +17504,188 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "unary operator frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::NewAfterCallee { expr } => match state {
+        AsyncState::Expr(Ok(callee_value)) => {
+          let expr = unsafe { &*expr };
+          match async_new_begin(evaluator, scope, expr, callee_value) {
+            Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              state = AsyncState::Expr(Err(err))
+            }
+            Err(err) => return Err(err),
+          }
+        }
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "new callee frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::NewArgs {
+        expr,
+        callee_root,
+        mut arg_roots,
+        arg_index,
+      } => match state {
+        AsyncState::Expr(arg_res) => {
+          let expr = unsafe { &*expr };
+          let Expr::Call(call) = &*expr.argument.stx else {
+            async_new_cleanup(scope, callee_root, &mut arg_roots);
+            return Err(VmError::InvariantViolation(
+              "async new args continuation without call expression",
+            ));
+          };
+          let Some(arg) = call.stx.arguments.get(arg_index) else {
+            async_new_cleanup(scope, callee_root, &mut arg_roots);
+            return Err(VmError::InvariantViolation(
+              "async new args continuation out of bounds",
+            ));
+          };
+
+          match arg_res {
+            Ok(v) => {
+              if let Err(err) =
+                async_call_store_arg_value(evaluator, scope, arg.stx.spread, v, &mut arg_roots)
+              {
+                async_new_cleanup(scope, callee_root, &mut arg_roots);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+
+              match async_new_continue_args(
+                evaluator,
+                scope,
+                expr,
+                callee_root,
+                arg_roots,
+                arg_index.saturating_add(1),
+              ) {
+                Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+                Ok(AsyncEval::Suspend(mut suspend)) => {
+                  suspend.frames.append(&mut frames);
+                  return Ok(AsyncBodyResult::Await {
+                    await_value: suspend.await_value,
+                    frames: suspend.frames,
+                  });
+                }
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  state = AsyncState::Expr(Err(err))
+                }
+                Err(err) => return Err(err),
+              }
+            }
+            Err(err) => {
+              async_new_cleanup(scope, callee_root, &mut arg_roots);
+              state = AsyncState::Expr(Err(err));
+            }
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "new args frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::DeleteAfterArgument => match state {
+        AsyncState::Expr(Ok(_)) => state = AsyncState::Expr(Ok(Value::Bool(true))),
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "delete operand frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::DeleteMemberAfterBase { expr } => match state {
+        AsyncState::Expr(Ok(base)) => {
+          let expr = unsafe { &*expr };
+          match async_delete_member_after_base(evaluator, scope, expr, base) {
+            Ok(v) => state = AsyncState::Expr(Ok(v)),
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              state = AsyncState::Expr(Err(err))
+            }
+            Err(err) => return Err(err),
+          }
+        }
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "delete member base frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::DeleteComputedMemberAfterBase { expr } => match state {
+        AsyncState::Expr(Ok(base)) => {
+          let expr = unsafe { &*expr };
+          match async_delete_computed_member_after_base(evaluator, scope, expr, base) {
+            Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              state = AsyncState::Expr(Err(err))
+            }
+            Err(err) => return Err(err),
+          }
+        }
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "delete computed member base frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::DeleteComputedMemberAfterMember { expr, base_root } => match state {
+        AsyncState::Expr(member_res) => {
+          let expr = unsafe { &*expr };
+          let base = scope
+            .heap()
+            .get_root(base_root)
+            .ok_or(VmError::InvariantViolation(
+              "missing delete computed member base root",
+            ))?;
+          scope.heap_mut().remove_root(base_root);
+
+          match member_res {
+            Ok(member_value) => match async_delete_computed_member_after_member(
+              evaluator,
+              scope,
+              expr,
+              base,
+              member_value,
+            ) {
+              Ok(v) => state = AsyncState::Expr(Ok(v)),
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Expr(Err(err))
+              }
+              Err(err) => return Err(err),
+            },
+            Err(err) => state = AsyncState::Expr(Err(err)),
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "delete computed member after member frame received completion state",
           ))
         }
       },

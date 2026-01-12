@@ -1446,6 +1446,17 @@ impl<'a> Scope<'a> {
       return Ok(result);
     }
 
+    // Integer-indexed exotic objects (typed arrays): numeric index writes update the underlying
+    // ArrayBuffer when in-bounds, but are otherwise a no-op that still reports success.
+    if self.heap().is_typed_array_object(obj) {
+      if let Some(index) = self.heap().array_index(&key) {
+        let _ = self
+          .heap_mut()
+          .typed_array_set_element_value(obj, index as usize, value)?;
+        return Ok(true);
+      }
+    }
+
     let mut desc = self
       .heap()
       .get_property_with_tick(obj, &key, || vm.tick())?;
