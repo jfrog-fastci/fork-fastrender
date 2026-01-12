@@ -2143,6 +2143,34 @@ fn inline_svg_image_references<'a>(
   const MAX_EMBEDDED_BYTES_TOTAL: usize = 4 * 1024 * 1024;
   const MAX_INJECTED_BYTES: usize = 8 * 1024 * 1024;
 
+  fn maybe_decompress_svgz_for_image_inline(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
+    if bytes.len() < 2 || bytes[0] != 0x1F || bytes[1] != 0x8B {
+      return Ok(None);
+    }
+
+    let mut decoder = GzDecoder::new(bytes);
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut deadline_counter = 0usize;
+
+    loop {
+      check_root_periodic(&mut deadline_counter, 32, RenderStage::Paint).map_err(Error::Render)?;
+      let n = match decoder.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return Ok(None),
+      };
+      if n == 0 {
+        break;
+      }
+      if out.len().saturating_add(n) > MAX_SVGZ_DECOMPRESSED_BYTES {
+        return Ok(None);
+      }
+      out.extend_from_slice(&buf[..n]);
+    }
+
+    Ok(Some(out))
+  }
+
   check_root(RenderStage::Paint).map_err(Error::Render)?;
 
   let svg_for_parse = svg_markup_for_roxmltree(svg_content);
@@ -2412,12 +2440,34 @@ fn inline_svg_image_references<'a>(
             continue;
           }
 
-          let bytes_len = res.bytes.len();
+          let bytes_are_gzipped =
+            res.bytes.len() >= 2 && res.bytes[0] == 0x1F && res.bytes[1] == 0x8B;
+          let url_is_svgz = url_ends_with_svgz(&resolved_url)
+            || res.final_url.as_deref().is_some_and(url_ends_with_svgz);
+          let mime_is_svg = res
+            .content_type
+            .as_deref()
+            .map(|m| m.contains("image/svg"))
+            .unwrap_or(false);
+
+          let mut bytes_for_data_url: Cow<'_, [u8]> = Cow::Borrowed(&res.bytes);
+          let mut mime = svg_data_url_mime_for_response(res.content_type.as_deref(), &res.bytes);
+
+          if bytes_are_gzipped && (url_is_svgz || mime_is_svg) {
+            if let Some(decompressed) = maybe_decompress_svgz_for_image_inline(&res.bytes)? {
+              if let Ok(text) = std::str::from_utf8(&decompressed) {
+                if svg_text_looks_like_markup(text) {
+                  bytes_for_data_url = Cow::Owned(decompressed);
+                  mime = "image/svg+xml".to_string();
+                }
+              }
+            }
+          }
+
+          let bytes_len = bytes_for_data_url.len();
           if embedded_bytes_total.saturating_add(bytes_len) > MAX_EMBEDDED_BYTES_TOTAL {
             break 'node_loop;
           }
-
-          let mime = svg_data_url_mime_for_response(res.content_type.as_deref(), &res.bytes);
 
           let base64_len = u64::try_from(bytes_len)
             .ok()
@@ -2438,7 +2488,8 @@ fn inline_svg_image_references<'a>(
             break 'node_loop;
           }
 
-          let encoded = base64::engine::general_purpose::STANDARD.encode(&res.bytes);
+          let encoded =
+            base64::engine::general_purpose::STANDARD.encode(bytes_for_data_url.as_ref());
           let data_url = format!("data:{mime};base64,{encoded}");
 
           embedded_bytes_total = embedded_bytes_total.saturating_add(bytes_len);
@@ -2589,12 +2640,34 @@ fn inline_svg_image_references<'a>(
           continue;
         }
 
-        let bytes_len = res.bytes.len();
+        let bytes_are_gzipped =
+          res.bytes.len() >= 2 && res.bytes[0] == 0x1F && res.bytes[1] == 0x8B;
+        let url_is_svgz = url_ends_with_svgz(&resolved_url)
+          || res.final_url.as_deref().is_some_and(url_ends_with_svgz);
+        let mime_is_svg = res
+          .content_type
+          .as_deref()
+          .map(|m| m.contains("image/svg"))
+          .unwrap_or(false);
+
+        let mut bytes_for_data_url: Cow<'_, [u8]> = Cow::Borrowed(&res.bytes);
+        let mut mime = svg_data_url_mime_for_response(res.content_type.as_deref(), &res.bytes);
+
+        if bytes_are_gzipped && (url_is_svgz || mime_is_svg) {
+          if let Some(decompressed) = maybe_decompress_svgz_for_image_inline(&res.bytes)? {
+            if let Ok(text) = std::str::from_utf8(&decompressed) {
+              if svg_text_looks_like_markup(text) {
+                bytes_for_data_url = Cow::Owned(decompressed);
+                mime = "image/svg+xml".to_string();
+              }
+            }
+          }
+        }
+
+        let bytes_len = bytes_for_data_url.len();
         if embedded_bytes_total.saturating_add(bytes_len) > MAX_EMBEDDED_BYTES_TOTAL {
           break 'node_loop;
         }
-
-        let mime = svg_data_url_mime_for_response(res.content_type.as_deref(), &res.bytes);
 
         let base64_len = u64::try_from(bytes_len)
           .ok()
@@ -2615,7 +2688,8 @@ fn inline_svg_image_references<'a>(
           break 'node_loop;
         }
 
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&res.bytes);
+        let encoded =
+          base64::engine::general_purpose::STANDARD.encode(bytes_for_data_url.as_ref());
         let data_url = format!("data:{mime};base64,{encoded}");
 
         embedded_bytes_total = embedded_bytes_total.saturating_add(bytes_len);
@@ -15109,6 +15183,54 @@ mod tests_inline {
         .iter()
         .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for feImage href {img_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn inline_svg_image_references_decompresses_svgz() {
+    let main_url = "https://example.test/main.svg";
+    let nested_url = "https://example.test/nested.svgz";
+
+    let nested_svg =
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#;
+    let nested_svgz = gzip_bytes(nested_svg.as_bytes());
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="/nested.svgz" width="1" height="1"/></svg>"#;
+
+    let mut nested_res =
+      FetchedResource::new(nested_svgz, Some("application/octet-stream".to_string()));
+    nested_res.status = Some(200);
+    nested_res.final_url = Some(nested_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(nested_url.to_string(), nested_res)]);
+
+    let inlined =
+      inline_svg_image_references(main_svg, main_url, &fetcher, None).expect("inlined svg");
+    let output = inlined.as_ref();
+    let prefix = "data:image/svg+xml;base64,";
+    let start = output
+      .find(prefix)
+      .unwrap_or_else(|| panic!("expected SVG data URL rewrite, got: {output}"));
+    let b64_after_prefix = &output[start + prefix.len()..];
+    let end = b64_after_prefix.find('"').expect("closing quote");
+    let payload_b64 = &b64_after_prefix[..end];
+    let decoded = base64::engine::general_purpose::STANDARD
+      .decode(payload_b64)
+      .expect("decoded base64 payload");
+    assert!(
+      decoded.starts_with(b"<svg"),
+      "expected decoded payload to start with <svg, got: {:?}",
+      &decoded[..decoded.len().min(8)]
+    );
+
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+    let pixmap = cache
+      .render_svg_pixmap_at_size(main_svg, 1, 1, main_url, 1.0)
+      .expect("rendered pixmap");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
     );
   }
 
