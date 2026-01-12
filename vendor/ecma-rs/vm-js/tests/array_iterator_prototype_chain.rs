@@ -48,6 +48,35 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   )?;
   assert_eq!(tag_desc_value, Value::Bool(true));
 
+  // `%ArrayIteratorPrototype%.next` should exist as an own data property and match the expected
+  // descriptor shape.
+  let next_desc_shape = rt.exec_script(
+    r#"
+      (() => {
+        const proto = Object.getPrototypeOf([][Symbol.iterator]());
+        const desc = Object.getOwnPropertyDescriptor(proto, "next");
+        return (
+          typeof desc.value === "function" &&
+          desc.writable === true &&
+          desc.enumerable === false &&
+          desc.configurable === true
+        );
+      })()
+    "#,
+  )?;
+  assert_eq!(next_desc_shape, Value::Bool(true));
+
+  // Iterator instances must not have an own `next` property (it is inherited from the prototype).
+  let iter_has_own_next = rt.exec_script(
+    r#"
+      (() => {
+        const it = [][Symbol.iterator]();
+        return Object.prototype.hasOwnProperty.call(it, "next");
+      })()
+    "#,
+  )?;
+  assert_eq!(iter_has_own_next, Value::Bool(false));
+
   // Per spec, `%ArrayIteratorPrototype%` should inherit `@@iterator` from `%IteratorPrototype%`
   // (i.e. it should *not* define its own `Symbol.iterator` property).
   let array_iter_proto_has_own_iterator = rt.exec_script(
