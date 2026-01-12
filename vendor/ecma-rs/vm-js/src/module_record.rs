@@ -1980,6 +1980,11 @@ fn stmt_contains_top_level_await(
         true
       } else {
         if let Some(catch) = stmt.stx.catch.as_ref() {
+          if let Some(param) = catch.stx.parameter.as_ref() {
+            if pat_contains_top_level_await(&param.stx.pat, ctx)? {
+              return Ok(true);
+            }
+          }
           if stmt_list_contains_top_level_await(&catch.stx.body, ctx)? {
             return Ok(true);
           }

@@ -25,3 +25,10 @@ fn for_await_of_inside_function_does_not_set_has_tla() {
     .expect("parse module");
   assert!(!record.has_tla);
 }
+
+#[test]
+fn await_in_catch_param_sets_has_tla() {
+  let record = SourceTextModuleRecord::parse("try { throw {}; } catch ({ x = await p }) {} export {};")
+    .expect("parse module");
+  assert!(record.has_tla);
+}

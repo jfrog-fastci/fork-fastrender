@@ -8485,6 +8485,13 @@ enum AsyncFrame {
     pending: RootedCompletion,
   },
 
+  /// Continue a `catch` clause after binding its parameter pattern (which may suspend due to
+  /// `await` inside destructuring defaults/computed keys).
+  CatchAfterParamBind {
+    catch: *const CatchBlock,
+    outer: GcEnv,
+  },
+
   /// Continue evaluating a unary `await` after its operand expression completes (nested await).
   AwaitAfterOperand,
   /// Continue evaluating a non-`await` unary expression after its operand completes.
@@ -9432,12 +9439,16 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
         || if_stmt.stx.alternate.as_ref().is_some_and(stmt_contains_await)
     }
     Stmt::Try(try_stmt) => {
-      try_stmt.stx.wrapped.stx.body.iter().any(stmt_contains_await)
-        || try_stmt
-          .stx
-          .catch
+      let catch_has_await = try_stmt.stx.catch.as_ref().is_some_and(|c| {
+        c.stx
+          .parameter
           .as_ref()
-          .is_some_and(|c| c.stx.body.iter().any(stmt_contains_await))
+          .is_some_and(|p| pat_contains_await(&p.stx.pat.stx))
+          || c.stx.body.iter().any(stmt_contains_await)
+      });
+
+      try_stmt.stx.wrapped.stx.body.iter().any(stmt_contains_await)
+        || catch_has_await
         || try_stmt
           .stx
           .finally
@@ -9654,9 +9665,46 @@ fn async_eval_catch(
     // Root thrown across catch binding instantiation which may allocate.
     let mut catch_scope = scope.reborrow();
     catch_scope.push_root(thrown)?;
-    evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, catch_env, &catch.body)?;
+    if let Err(err) =
+      evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, catch_env, &catch.body)
+    {
+      evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+      return Err(err);
+    }
     if let Some(param) = &catch.parameter {
-      evaluator.bind_catch_param(&mut catch_scope, &param.stx, thrown, catch_env)?;
+      let pat = &param.stx.pat.stx;
+      if pat_contains_await(pat) {
+        match async_bind_pattern(
+          evaluator,
+          &mut catch_scope,
+          pat,
+          thrown,
+          BindingKind::Let,
+        ) {
+          Ok(AsyncEval::Complete(())) => {}
+          Ok(AsyncEval::Suspend(mut suspend)) => {
+            if let Err(_) = suspend.frames.try_reserve(1) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(catch_scope.heap_mut(), &mut frame);
+              }
+              evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+              return Err(VmError::OutOfMemory);
+            }
+            suspend.frames.push_back(AsyncFrame::CatchAfterParamBind {
+              catch: catch as *const CatchBlock,
+              outer,
+            });
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+          Err(err) => {
+            evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+            return Err(err);
+          }
+        }
+      } else if let Err(err) = evaluator.bind_catch_param(&mut catch_scope, &param.stx, thrown, catch_env) {
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+        return Err(err);
+      }
     }
   }
 
@@ -18387,6 +18435,52 @@ fn async_resume_from_frames(
         AsyncState::Expr(_) => {
           return Err(VmError::InvariantViolation(
             "restore lexical env frame received expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::CatchAfterParamBind { catch, outer } => match state {
+        AsyncState::Expr(param_res) => match param_res {
+          Ok(_) => {
+            let catch = unsafe { &*catch };
+            match async_eval_stmt_list(evaluator, scope, &catch.body) {
+              Ok(AsyncEval::Complete(c)) => {
+                evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                state = AsyncState::Completion(c);
+              }
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                if let Err(err) =
+                  async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })
+                {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  for mut frame in frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                  return Err(err);
+                }
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err) => {
+                evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                return Err(err);
+              }
+            }
+          }
+          Err(err) => {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+            state = AsyncState::Completion(completion_from_expr_result(Err(err))?);
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "catch param bind frame received completion state",
           ))
         }
       },

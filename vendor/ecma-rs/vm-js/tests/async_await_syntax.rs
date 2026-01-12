@@ -273,6 +273,60 @@ fn await_in_object_pattern_computed_key() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_catch_param_default_value() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        try {
+          throw {};
+        } catch ({ x = await Promise.resolve("ok") }) {
+          return x;
+        }
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_catch_param_computed_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        try {
+          throw { x: "ok" };
+        } catch ({ [await Promise.resolve("x")]: v }) {
+          return v;
+        }
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
 fn await_in_return_method_call() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
