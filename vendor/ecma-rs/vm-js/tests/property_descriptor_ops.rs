@@ -66,6 +66,52 @@ fn to_property_descriptor_observes_accessor_getters_on_descriptor_object() -> Re
 }
 
 #[test]
+fn to_property_descriptor_is_proxy_aware_for_has_and_get() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let mut vm = Vm::new(VmOptions::default());
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = TestHost::default();
+
+  let call_id = vm.register_native_call(enumerable_getter)?;
+
+  let mut scope = heap.scope();
+  let target = scope.alloc_object()?;
+  scope.push_root(Value::Object(target))?;
+
+  let handler = scope.alloc_object()?;
+  scope.push_root(Value::Object(handler))?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  scope.push_root(Value::Object(proxy))?;
+
+  let getter_name = scope.alloc_string("getter")?;
+  let getter = scope.alloc_native_function(call_id, None, getter_name, 0)?;
+  scope.push_root(Value::Object(getter))?;
+
+  let enumerable_key_s = scope.alloc_string("enumerable")?;
+  let enumerable_key = PropertyKey::from_string(enumerable_key_s);
+  scope.define_property(
+    target,
+    enumerable_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(getter),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  let patch =
+    to_property_descriptor_with_host_and_hooks(&mut vm, &mut scope, &mut host, &mut hooks, proxy)?;
+  assert_eq!(patch.enumerable, Some(true));
+  assert!(host.called);
+  Ok(())
+}
+
+#[test]
 fn to_property_descriptor_rejects_mixing_value_and_get_even_if_get_is_undefined() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());

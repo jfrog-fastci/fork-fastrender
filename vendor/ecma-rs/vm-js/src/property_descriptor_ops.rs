@@ -1,6 +1,60 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::{GcObject, Heap, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
+fn has_property_proxy_aware(
+  vm: &mut Vm,
+  scope: &Scope<'_>,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<bool, VmError> {
+  let mut current = obj;
+  let mut steps = 0usize;
+  loop {
+    if steps != 0 && steps % 1024 == 0 {
+      vm.tick()?;
+    }
+    steps = steps.saturating_add(1);
+    if !scope.heap().is_proxy_object(current) {
+      return scope.ordinary_has_property_with_tick(current, key, || vm.tick());
+    }
+    let Some(target) = scope.heap().proxy_target(current)? else {
+      return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
+    };
+    current = target;
+  }
+}
+
+fn get_proxy_aware(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+  receiver: Value,
+) -> Result<Value, VmError> {
+  // Proxy-aware `[[Get]]` internal method dispatch.
+  //
+  // This intentionally mirrors `spec_ops::get_with_host_and_hooks_internal`, but `ToPropertyDescriptor`
+  // is used by operations like Proxy trap validation and Reflect/Object builtins and should not
+  // depend on a private helper.
+  let mut current = obj;
+  let mut steps = 0usize;
+  loop {
+    if steps != 0 && steps % 1024 == 0 {
+      vm.tick()?;
+    }
+    steps = steps.saturating_add(1);
+    if !scope.heap().is_proxy_object(current) {
+      return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
+    }
+    let Some(target) = scope.heap().proxy_target(current)? else {
+      return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+    };
+    current = target;
+  }
+}
+
 pub fn to_property_descriptor_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -37,29 +91,69 @@ pub fn to_property_descriptor_with_host_and_hooks(
 
   let mut desc = PropertyDescriptorPatch::default();
 
-  if scope.heap().has_property(desc_obj, &enumerable_key)? {
-    let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, desc_obj, enumerable_key)?;
+  if has_property_proxy_aware(vm, &scope, desc_obj, enumerable_key)? {
+    let value = get_proxy_aware(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      desc_obj,
+      enumerable_key,
+      Value::Object(desc_obj),
+    )?;
     desc.enumerable = Some(scope.heap().to_boolean(value)?);
   }
 
-  if scope.heap().has_property(desc_obj, &configurable_key)? {
-    let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, desc_obj, configurable_key)?;
+  if has_property_proxy_aware(vm, &scope, desc_obj, configurable_key)? {
+    let value = get_proxy_aware(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      desc_obj,
+      configurable_key,
+      Value::Object(desc_obj),
+    )?;
     desc.configurable = Some(scope.heap().to_boolean(value)?);
   }
 
-  if scope.heap().has_property(desc_obj, &value_key)? {
-    let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, desc_obj, value_key)?;
+  if has_property_proxy_aware(vm, &scope, desc_obj, value_key)? {
+    let value = get_proxy_aware(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      desc_obj,
+      value_key,
+      Value::Object(desc_obj),
+    )?;
     scope.push_root(value)?;
     desc.value = Some(value);
   }
 
-  if scope.heap().has_property(desc_obj, &writable_key)? {
-    let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, desc_obj, writable_key)?;
+  if has_property_proxy_aware(vm, &scope, desc_obj, writable_key)? {
+    let value = get_proxy_aware(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      desc_obj,
+      writable_key,
+      Value::Object(desc_obj),
+    )?;
     desc.writable = Some(scope.heap().to_boolean(value)?);
   }
 
-  if scope.heap().has_property(desc_obj, &get_key)? {
-    let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, desc_obj, get_key)?;
+  if has_property_proxy_aware(vm, &scope, desc_obj, get_key)? {
+    let value = get_proxy_aware(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      desc_obj,
+      get_key,
+      Value::Object(desc_obj),
+    )?;
     if !matches!(value, Value::Undefined) && !scope.heap().is_callable(value)? {
       return Err(VmError::TypeError("PropertyDescriptor.get is not callable"));
     }
@@ -67,8 +161,16 @@ pub fn to_property_descriptor_with_host_and_hooks(
     desc.get = Some(value);
   }
 
-  if scope.heap().has_property(desc_obj, &set_key)? {
-    let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, desc_obj, set_key)?;
+  if has_property_proxy_aware(vm, &scope, desc_obj, set_key)? {
+    let value = get_proxy_aware(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      desc_obj,
+      set_key,
+      Value::Object(desc_obj),
+    )?;
     if !matches!(value, Value::Undefined) && !scope.heap().is_callable(value)? {
       return Err(VmError::TypeError("PropertyDescriptor.set is not callable"));
     }
@@ -102,6 +204,12 @@ pub fn from_property_descriptor(scope: &mut Scope<'_>, desc: PropertyDescriptor)
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
+  // Spec: `FromPropertyDescriptor` creates a new ordinary object. If a realm has been initialized,
+  // use the heap's default `%Object.prototype%` so callers (e.g. `Reflect.getOwnPropertyDescriptor`)
+  // produce spec-shaped results. In low-level tests without a realm, leave the prototype as `null`.
+  if let Some(proto) = scope.heap().default_object_prototype() {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
 
   let enumerable_key = PropertyKey::from_string(scope.alloc_string("enumerable")?);
   scope.create_data_property_or_throw(obj, enumerable_key, Value::Bool(desc.enumerable))?;
@@ -155,6 +263,9 @@ pub fn from_property_descriptor_patch(
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = scope.heap().default_object_prototype() {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
 
   if let Some(enumerable) = desc.enumerable {
     let key = PropertyKey::from_string(scope.alloc_string("enumerable")?);
@@ -288,4 +399,3 @@ pub fn is_compatible_property_descriptor(
 
   true
 }
-
