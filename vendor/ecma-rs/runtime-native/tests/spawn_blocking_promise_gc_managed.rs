@@ -1,4 +1,4 @@
-use runtime_native::abi::PromiseRef;
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef};
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::roots::Root;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -6,8 +6,7 @@ use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use runtime_native::PromiseLayout;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -55,6 +54,29 @@ extern "C" fn rooted_data_task_block(_data: *mut u8, _out_payload: *mut u8) -> u
   }
   ROOTED_DATA_FINISHED.store(true, Ordering::Release);
   0 // fulfill
+}
+
+#[repr(C)]
+struct CancelCtx {
+  started: AtomicUsize,
+  finished: AtomicUsize,
+  release: AtomicBool,
+}
+
+extern "C" fn occupy_blocking_thread(data: *mut u8, promise: LegacyPromiseRef) {
+  let ctx = unsafe { &*(data as *const CancelCtx) };
+  ctx.started.fetch_add(1, Ordering::AcqRel);
+  while !ctx.release.load(Ordering::Acquire) {
+    std::thread::sleep(Duration::from_millis(1));
+  }
+  runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
+  ctx.finished.fetch_add(1, Ordering::AcqRel);
+}
+
+extern "C" fn should_not_run(data: *mut u8, _out_payload: *mut u8) -> u8 {
+  let ran = unsafe { &*(data as *const AtomicBool) };
+  ran.store(true, Ordering::Release);
+  0
 }
 
 #[test]
@@ -306,6 +328,105 @@ fn spawn_blocking_promise_rooted_keeps_data_alive_until_task_finishes() {
     "data should be collectible after the rooted blocking task finishes"
   );
   runtime_native::rt_weak_remove(weak);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn cancel_all_drops_queued_spawn_blocking_promise_work() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  const TIMEOUT: Duration = if cfg!(debug_assertions) {
+    Duration::from_secs(30)
+  } else {
+    Duration::from_secs(2)
+  };
+
+  // Mirror blocking pool sizing logic so we can saturate all workers deterministically.
+  let default_threads = std::thread::available_parallelism()
+    .map(|n| n.get())
+    .unwrap_or(1)
+    .min(4);
+  let threads = std::env::var("ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS")
+    .ok()
+    .or_else(|| std::env::var("RT_BLOCKING_THREADS").ok())
+    .and_then(|val| val.parse::<usize>().ok())
+    .filter(|n| *n > 0)
+    .unwrap_or(default_threads);
+
+  let ctx = Box::new(CancelCtx {
+    started: AtomicUsize::new(0),
+    finished: AtomicUsize::new(0),
+    release: AtomicBool::new(false),
+  });
+  let ctx_ptr = Box::into_raw(ctx);
+
+  // Saturate the blocking pool so the promise task we spawn below remains queued (never starts).
+  let mut blockers: Vec<LegacyPromiseRef> = Vec::with_capacity(threads);
+  for _ in 0..threads {
+    blockers.push(runtime_native::rt_spawn_blocking(
+      occupy_blocking_thread,
+      ctx_ptr.cast::<u8>(),
+    ));
+  }
+  let deadline = Instant::now() + TIMEOUT;
+  while unsafe { &*ctx_ptr }.started.load(Ordering::Acquire) < threads {
+    assert!(Instant::now() < deadline, "timeout waiting for blocking pool to saturate");
+    std::thread::yield_now();
+  }
+
+  let ran = Box::new(AtomicBool::new(false));
+  let ran_ptr = Box::into_raw(ran);
+
+  let mut p = runtime_native::rt_spawn_blocking_promise(
+    should_not_run,
+    ran_ptr.cast::<u8>(),
+    PromiseLayout { size: 0, align: 1 },
+  );
+  let weak = runtime_native::rt_weak_add(p.0.cast::<u8>());
+
+  // Avoid accidentally retaining the promise pointer via conservative scanning fallbacks.
+  unsafe {
+    ptr::write_volatile(&mut p, PromiseRef::null());
+  }
+
+  // The queued work item must be dropped here; otherwise the blocking pool leaks the persistent
+  // promise handle and the promise remains strongly reachable.
+  runtime_native::rt_async_cancel_all();
+
+  assert!(
+    !unsafe { &*ran_ptr }.load(Ordering::Acquire),
+    "spawn_blocking_promise task unexpectedly ran (test requires it to stay queued)"
+  );
+
+  runtime_native::rt_gc_collect();
+  assert_eq!(
+    runtime_native::rt_weak_get(weak),
+    core::ptr::null_mut(),
+    "queued spawn_blocking_promise promise should be collectible after rt_async_cancel_all"
+  );
+  runtime_native::rt_weak_remove(weak);
+
+  // Unblock the running legacy tasks and clean up their legacy promises.
+  unsafe { &*ctx_ptr }.release.store(true, Ordering::Release);
+  let deadline = Instant::now() + TIMEOUT;
+  while unsafe { &*ctx_ptr }.finished.load(Ordering::Acquire) < threads {
+    assert!(Instant::now() < deadline, "timeout waiting for blocking tasks to finish");
+    std::thread::yield_now();
+  }
+  for p in blockers {
+    runtime_native::rt_promise_drop_legacy(p);
+  }
+
+  // Defensive: legacy promise resolution may enqueue microtasks; clear any pending work so this test
+  // doesn't leak across the process.
+  runtime_native::rt_async_cancel_all();
+
+  unsafe {
+    drop(Box::from_raw(ran_ptr));
+    drop(Box::from_raw(ctx_ptr));
+  }
 
   threading::unregister_current_thread();
 }

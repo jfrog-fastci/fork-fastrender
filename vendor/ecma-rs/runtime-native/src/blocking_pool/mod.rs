@@ -30,6 +30,10 @@ pub(crate) unsafe fn spawn_promise_rooted_h(
 ) -> PromiseRef {
   pool::global().spawn_promise_rooted_h(task, data, layout)
 }
+
+pub(crate) fn cancel_all_pending() {
+  pool::cancel_all_pending();
+}
 #[doc(hidden)]
 pub(crate) fn debug_hold_queue_lock() -> impl Drop {
   pool::debug_hold_queue_lock()

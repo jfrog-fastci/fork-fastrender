@@ -63,6 +63,13 @@ pub(crate) fn global() -> &'static BlockingPool {
   POOL.get_or_init(BlockingPool::new)
 }
 
+pub(crate) fn cancel_all_pending() {
+  let Some(pool) = POOL.get() else {
+    return;
+  };
+  pool.cancel_all_pending();
+}
+
 #[inline]
 fn maybe_clear_external_pending(promise: *mut PromiseHeader) {
   if promise.is_null() {
@@ -342,6 +349,47 @@ impl BlockingPool {
     // writable `GcPtr` slot containing the base pointer of a GC-managed object.
     let root = unsafe { async_rt::gc::Root::new_from_slot_unchecked(slot) };
     self.spawn_promise_impl(task, WorkData::Rooted(root), layout)
+  }
+
+  fn cancel_all_pending(&self) {
+    // Drain the queue while holding the lock, then drop items without holding the queue mutex so
+    // teardown paths (persistent handle free, tmp payload dealloc) cannot block other enqueue/dequeue
+    // operations.
+    let pending: VecDeque<WorkItem> = {
+      let mut q = self.shared.queue.lock();
+      std::mem::take(&mut *q)
+    };
+
+    for WorkItem { data, kind } in pending {
+      if let WorkKind::Promise {
+        promise,
+        tmp_payload,
+        layout,
+        ..
+      } = kind
+      {
+        if let Some(promise_ptr) = crate::roots::global_persistent_handle_table().get(promise) {
+          maybe_clear_external_pending(promise_ptr.cast::<PromiseHeader>());
+        }
+        let _ = crate::roots::global_persistent_handle_table().free(promise);
+
+        // Free the temporary payload buffer allocated for the blocking task.
+        if layout.size != 0 && !tmp_payload.is_null() {
+          let align = layout.align.max(1);
+          if !align.is_power_of_two() {
+            std::process::abort();
+          }
+          let layout =
+            Layout::from_size_align(layout.size, align).unwrap_or_else(|_| std::process::abort());
+          unsafe {
+            std::alloc::dealloc(tmp_payload, layout);
+          }
+        }
+      }
+
+      // Drop `data` after any promise-handle cleanup so a rooted userdata handle is released too.
+      drop(data);
+    }
   }
 }
 

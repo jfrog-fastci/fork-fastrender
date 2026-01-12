@@ -2012,6 +2012,10 @@ pub extern "C" fn rt_async_cancel_all() {
       // Cancel all legacy executor work (microtasks/macrotasks/timers/I/O watchers).
       async_rt::cancel_all_pending_work_under_driver_guard();
 
+      // Drop queued blocking-pool promise work so shutdown doesn't leak persistent roots for
+      // GC-managed promises that will never be settled.
+      crate::blocking_pool::cancel_all_pending();
+
       // Drop pending promise reactions stored on unresolved promises (otherwise those reactions can
       // keep awaiting coroutines alive indefinitely after shutdown).
       async_rt::promise::cancel_all_pending_reactions();
