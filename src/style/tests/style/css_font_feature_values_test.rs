@@ -32,4 +32,3 @@ fn font_feature_values_at_rule_does_not_break_stylesheet_parsing() {
     "expected `.a` style rule to be collected even with @font-feature-values present"
   );
 }
-

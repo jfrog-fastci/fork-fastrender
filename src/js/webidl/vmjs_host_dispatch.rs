@@ -3991,11 +3991,14 @@ mod element_dispatch_tests {
       crate::dom2::parse_html("<!doctype html><html><body><div id=\"target\"></div></body></html>")
       .expect("parse_html");
     let mut doc_host = DocumentHostState::new(dom);
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = crate::js::window_realm::WindowRealm::new(
+      crate::js::window_realm::WindowRealmConfig::new("https://example.com/"),
+    )?;
     let global = realm.global_object();
 
-    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
-    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+    let mut host_dispatch =
+      VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<crate::js::WindowHostState>::new_with_vm_host_and_window_realm(
       &mut doc_host,
       &mut realm,
       Some(&mut host_dispatch),
