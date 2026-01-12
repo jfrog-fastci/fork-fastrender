@@ -10002,7 +10002,10 @@ impl Clone for ImageCache {
 // ============================================================================
 
 #[cfg(test)]
-mod tests {
+mod tests;
+
+#[cfg(test)]
+mod tests_inline {
   use super::*;
   use crate::error::{Error, RenderError, RenderStage};
   use crate::render_control::RenderDeadline;

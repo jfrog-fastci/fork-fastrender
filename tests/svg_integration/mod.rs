@@ -1,6 +1,5 @@
 //! SVG integration tests consolidated from tests/svg_*.rs
 
-mod css_transform_style_support;
 mod document_css_policy_test;
 mod filter_region;
 mod filter_tests;
@@ -11,4 +10,3 @@ mod filter_turbulence_differential;
 mod filter_turbulence_parsing_defaults_reference;
 mod filter_turbulence_reference;
 mod filter_turbulence_scale_filterres_reference;
-mod root_viewport_size_rasterization;
