@@ -44,7 +44,8 @@ pub use patterns::{
 pub use semantic_patterns::{
   recognize_pattern_tables as recognize_semantic_pattern_tables,
   recognize_patterns as recognize_semantic_patterns, ArrayOp as SemanticArrayOp,
-  PatternTables as SemanticPatternTables, RecognizedPattern as SemanticPattern,
+  PatternTables as SemanticPatternTables, PromiseCombinatorKind as SemanticPromiseCombinatorKind,
+  PromiseInputPattern as SemanticPromiseInputPattern, RecognizedPattern as SemanticPattern,
   RecognizedPatternId as SemanticPatternId,
 };
 pub use recognize::{

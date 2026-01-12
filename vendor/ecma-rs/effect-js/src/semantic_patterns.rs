@@ -1,12 +1,11 @@
-use hir_js::{Body, BodyId, ExprId, LowerResult};
+use hir_js::{ArrayElement, Body, BodyId, ExprId, ExprKind, LowerResult};
 #[cfg(feature = "typed")]
-use hir_js::{ExprKind, FunctionBody, StmtId, StmtKind};
+use hir_js::{FunctionBody, StmtId, StmtKind};
 use knowledge_base::{ApiDatabase, ApiId};
 
 use crate::resolve::resolve_call;
 use crate::types::{TypeId, TypeProvider};
 
-#[cfg(feature = "typed")]
 fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
   loop {
     let Some(node) = body.exprs.get(expr.0 as usize) else {
@@ -37,10 +36,40 @@ pub enum ArrayOp {
   Reduce { callback: ExprId, init: ExprId },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseCombinatorKind {
+  All,
+  Race,
+  AllSettled,
+  Any,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromiseInputPattern {
+  ArrayLiteral {
+    array_expr: ExprId,
+    elements: Vec<ExprId>,
+  },
+  ArrayMap {
+    base: ExprId,
+    map_expr: ExprId,
+    callback: ExprId,
+  },
+  Unknown {
+    expr: ExprId,
+  },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecognizedPattern {
   /// `arr.map(f).filter(g).reduce(h, init)` (typed only).
   MapFilterReduce { array: ExprId, ops: Vec<ArrayOp> },
+  /// `Promise.all(..)` / `Promise.race(..)` / `Promise.allSettled(..)` / `Promise.any(..)` with
+  /// a structured input.
+  PromiseCombinator {
+    kind: PromiseCombinatorKind,
+    input: PromiseInputPattern,
+  },
   /// `Promise.all(urls.map(url => fetch(url)))` (typed only).
   PromiseAllFetch { urls: ExprId },
   /// `const x: T = JSON.parse(input)` (typed only; uses inferred `TypeId`).
@@ -126,17 +155,34 @@ pub fn recognize_pattern_tables(
       }
     }
 
+    // PromiseCombinator.
+    if let Some(api) = resolved_call[expr_idx] {
+      let kind = if api == ApiId::from_name("Promise.all") {
+        Some(PromiseCombinatorKind::All)
+      } else if api == ApiId::from_name("Promise.race") {
+        Some(PromiseCombinatorKind::Race)
+      } else if api == ApiId::from_name("Promise.allSettled") {
+        Some(PromiseCombinatorKind::AllSettled)
+      } else if api == ApiId::from_name("Promise.any") {
+        Some(PromiseCombinatorKind::Any)
+      } else {
+        None
+      };
+      if let Some(kind) = kind {
+        if let Some(pattern_rec) = recognize_promise_combinator(body, expr_id, kind, &resolved_call)
+        {
+          let pat_id = RecognizedPatternId(recognized.len() as u32);
+          recognized.push(pattern_rec);
+          patterns[expr_idx].push(pat_id);
+        }
+      }
+    }
+
     // PromiseAllFetch.
     if resolved_call[expr_idx] == Some(ApiId::from_name("Promise.all")) {
-      if let Some(pattern_rec) = recognize_promise_all_fetch(
-        lowered,
-        body_id,
-        body,
-        expr_id,
-        db,
-        &resolved_call,
-        types,
-      ) {
+      if let Some(pattern_rec) =
+        recognize_promise_all_fetch(lowered, body_id, body, expr_id, db, &resolved_call, types)
+      {
         let pat_id = RecognizedPatternId(recognized.len() as u32);
         recognized.push(pattern_rec);
         patterns[expr_idx].push(pat_id);
@@ -149,6 +195,173 @@ pub fn recognize_pattern_tables(
     patterns,
     recognized,
   }
+}
+
+fn recognize_promise_combinator(
+  body: &Body,
+  promise_call: ExprId,
+  kind: PromiseCombinatorKind,
+  resolved_call: &[Option<ApiId>],
+) -> Option<RecognizedPattern> {
+  let expr = body.exprs.get(promise_call.0 as usize)?;
+
+  // `hir-js/semantic-ops` may lower `Promise.{all,race}([..])` into a dedicated node that
+  // discards the wrapper array literal.
+  #[cfg(feature = "hir-semantic-ops")]
+  match &expr.kind {
+    ExprKind::PromiseAll { promises } => {
+      if kind != PromiseCombinatorKind::All {
+        return None;
+      }
+      let array_expr = recover_promise_semantic_op_array_expr(body, promise_call, promises)
+        .unwrap_or(promise_call);
+      return Some(RecognizedPattern::PromiseCombinator {
+        kind,
+        input: PromiseInputPattern::ArrayLiteral {
+          array_expr,
+          elements: promises.clone(),
+        },
+      });
+    }
+    ExprKind::PromiseRace { promises } => {
+      if kind != PromiseCombinatorKind::Race {
+        return None;
+      }
+      let array_expr = recover_promise_semantic_op_array_expr(body, promise_call, promises)
+        .unwrap_or(promise_call);
+      return Some(RecognizedPattern::PromiseCombinator {
+        kind,
+        input: PromiseInputPattern::ArrayLiteral {
+          array_expr,
+          elements: promises.clone(),
+        },
+      });
+    }
+    _ => {}
+  }
+
+  let ExprKind::Call(call) = &expr.kind else {
+    return None;
+  };
+  if call.optional || call.is_new || call.args.len() != 1 {
+    return None;
+  }
+  if call.args[0].spread {
+    return None;
+  }
+
+  let arg0 = strip_transparent_wrappers(body, call.args[0].expr);
+  let input = classify_promise_input(body, arg0, resolved_call);
+
+  Some(RecognizedPattern::PromiseCombinator { kind, input })
+}
+
+fn classify_promise_input(
+  body: &Body,
+  input_expr: ExprId,
+  resolved_call: &[Option<ApiId>],
+) -> PromiseInputPattern {
+  let input_expr = strip_transparent_wrappers(body, input_expr);
+  let Some(expr) = body.exprs.get(input_expr.0 as usize) else {
+    return PromiseInputPattern::Unknown { expr: input_expr };
+  };
+
+  // Array literal input.
+  if let ExprKind::Array(arr) = &expr.kind {
+    let mut elements = Vec::with_capacity(arr.elements.len());
+    for element in arr.elements.iter() {
+      match element {
+        ArrayElement::Expr(expr) => elements.push(*expr),
+        ArrayElement::Spread(_) | ArrayElement::Empty => {
+          return PromiseInputPattern::Unknown { expr: input_expr };
+        }
+      }
+    }
+    return PromiseInputPattern::ArrayLiteral {
+      array_expr: input_expr,
+      elements,
+    };
+  }
+
+  // `Array.prototype.map` input.
+  if resolved_call.get(input_expr.0 as usize).copied().flatten()
+    == Some(ApiId::from_name("Array.prototype.map"))
+  {
+    match &expr.kind {
+      ExprKind::Call(call) => {
+        if call.optional || call.is_new || call.args.len() != 1 {
+          return PromiseInputPattern::Unknown { expr: input_expr };
+        }
+        if call.args[0].spread {
+          return PromiseInputPattern::Unknown { expr: input_expr };
+        }
+        let callback = strip_transparent_wrappers(body, call.args[0].expr);
+        let callee = strip_transparent_wrappers(body, call.callee);
+        let Some(ExprKind::Member(member)) = body.exprs.get(callee.0 as usize).map(|e| &e.kind)
+        else {
+          return PromiseInputPattern::Unknown { expr: input_expr };
+        };
+        if member.optional {
+          return PromiseInputPattern::Unknown { expr: input_expr };
+        }
+        let base = strip_transparent_wrappers(body, member.object);
+        return PromiseInputPattern::ArrayMap {
+          base,
+          map_expr: input_expr,
+          callback,
+        };
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { array, callback } => {
+        return PromiseInputPattern::ArrayMap {
+          base: strip_transparent_wrappers(body, *array),
+          map_expr: input_expr,
+          callback: strip_transparent_wrappers(body, *callback),
+        };
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        let [hir_js::ArrayChainOp::Map(cb)] = ops.as_slice() else {
+          return PromiseInputPattern::Unknown { expr: input_expr };
+        };
+        return PromiseInputPattern::ArrayMap {
+          base: strip_transparent_wrappers(body, *array),
+          map_expr: input_expr,
+          callback: strip_transparent_wrappers(body, *cb),
+        };
+      }
+      _ => {}
+    }
+  }
+
+  PromiseInputPattern::Unknown { expr: input_expr }
+}
+
+#[cfg(feature = "hir-semantic-ops")]
+fn recover_promise_semantic_op_array_expr(
+  body: &Body,
+  call_expr: ExprId,
+  promises: &[ExprId],
+) -> Option<ExprId> {
+  let call_expr = body.exprs.get(call_expr.0 as usize)?;
+  let span = (call_expr.span.start, call_expr.span.end);
+
+  body.exprs.iter().enumerate().find_map(|(idx, candidate)| {
+    if candidate.span.start < span.0 || candidate.span.end > span.1 {
+      return None;
+    }
+    let ExprKind::Array(arr) = &candidate.kind else {
+      return None;
+    };
+    let mut elements = Vec::with_capacity(arr.elements.len());
+    for element in arr.elements.iter() {
+      match element {
+        ArrayElement::Expr(expr) => elements.push(*expr),
+        ArrayElement::Empty | ArrayElement::Spread(_) => return None,
+      }
+    }
+    (elements == promises).then_some(ExprId(idx as u32))
+  })
 }
 
 #[cfg(feature = "typed")]
@@ -239,7 +452,9 @@ fn collect_typed_json_parse_targets(
           continue;
         };
 
-        if resolved_call.get(init.0 as usize).copied().flatten() != Some(ApiId::from_name("JSON.parse")) {
+        if resolved_call.get(init.0 as usize).copied().flatten()
+          != Some(ApiId::from_name("JSON.parse"))
+        {
           continue;
         }
 
@@ -412,12 +627,16 @@ fn recognize_map_filter_reduce(
       }
       #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayMap { array, callback } => {
-        ops_rev.push(ArrayOp::Map { callback: *callback });
+        ops_rev.push(ArrayOp::Map {
+          callback: *callback,
+        });
         cur = *array;
       }
       #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayFilter { array, callback } => {
-        ops_rev.push(ArrayOp::Filter { callback: *callback });
+        ops_rev.push(ArrayOp::Filter {
+          callback: *callback,
+        });
         cur = *array;
       }
       #[cfg(feature = "hir-semantic-ops")]
@@ -489,7 +708,10 @@ fn recognize_promise_all_fetch(
   let promises_expr = promise_all.args[0].expr;
 
   // Promise.all(arg0) where arg0 is `urls.map(...)`.
-  if resolved_call.get(promises_expr.0 as usize).copied().flatten()
+  if resolved_call
+    .get(promises_expr.0 as usize)
+    .copied()
+    .flatten()
     != Some(ApiId::from_name("Array.prototype.map"))
   {
     return None;
@@ -546,8 +768,15 @@ fn recognize_promise_all_fetch(
     fetch_call_expr = strip_transparent_wrappers(cb_body, inner);
   }
 
-  if resolve_call(lowered, *callback_body, cb_body, fetch_call_expr, db, Some(types))
-    .map(|c| c.api_id)
+  if resolve_call(
+    lowered,
+    *callback_body,
+    cb_body,
+    fetch_call_expr,
+    db,
+    Some(types),
+  )
+  .map(|c| c.api_id)
     != Some(ApiId::from_name("fetch"))
   {
     return None;
