@@ -781,6 +781,38 @@ mod tests {
   }
 
   #[test]
+  fn bidi_clipboard_cut_preserves_split_caret_affinity() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input dir=\"ltr\" value=\"ABC אבג DEF\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Select the first RTL character ("א") while keeping the caret on the upstream (LTR) side of
+    // the split caret boundary at char_idx=4.
+    engine.text_edit = Some(TextEditState {
+      node_id: input_id,
+      caret: 4,
+      caret_affinity: CaretAffinity::Upstream,
+      selection_anchor: Some(5),
+      preferred_column: None,
+    });
+
+    let (changed, text) = engine.clipboard_cut(&mut dom);
+    assert!(changed);
+    assert_eq!(text.as_deref(), Some("א"));
+    assert_eq!(input_value(&mut dom, input_id), "ABC בג DEF");
+
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), None);
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+  }
+
+  #[test]
   fn bidi_arrow_down_selection_collapse_preserves_split_caret_affinity() {
     let mut dom =
       crate::dom::parse_html("<html><body><textarea dir=\"ltr\">ABC אבג</textarea></body></html>")
@@ -3654,6 +3686,8 @@ impl InteractionEngine {
     let Some((start, end)) = edit.selection() else {
       return (dom_changed, None);
     };
+    let prev_caret = edit.caret;
+    let prev_affinity = edit.caret_affinity;
 
     let start_byte = byte_offset_for_char_idx(&current, start);
     let end_byte = byte_offset_for_char_idx(&current, end);
@@ -3691,7 +3725,11 @@ impl InteractionEngine {
     }
 
     edit.caret = start.min(next_len);
-    edit.caret_affinity = CaretAffinity::Downstream;
+    edit.caret_affinity = if edit.caret == prev_caret {
+      prev_affinity
+    } else {
+      CaretAffinity::Downstream
+    };
     edit.selection_anchor = None;
     edit.preferred_column = None;
     self.text_edit = Some(edit);
