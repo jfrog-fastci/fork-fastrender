@@ -1097,7 +1097,10 @@ impl Heap {
   /// Returns a `TypeError` if the `ArrayBuffer` is detached.
   pub fn array_buffer_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     let buf = self.get_array_buffer(obj)?;
-    Ok(buf.data.as_deref().unwrap_or(&[]))
+    buf
+      .data
+      .as_deref()
+      .ok_or(VmError::TypeError("ArrayBuffer is detached"))
   }
 
   /// Detaches an `ArrayBuffer` by dropping its backing store.
