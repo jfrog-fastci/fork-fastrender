@@ -3173,6 +3173,67 @@ impl Vm {
       .get(code_id.0 as usize)
       .ok_or_else(|| VmError::invalid_handle())?;
 
+    if func_ast.stx.generator {
+      if func_ast.stx.async_ {
+        return Err(VmError::Unimplemented("async generator functions"));
+      }
+
+      let intr = self
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let default_proto = intr.generator_prototype();
+
+      // GetPrototypeFromConstructor(callee, %GeneratorPrototype%) (subset):
+      // - read `callee.prototype` (ordinary Get with receiver = callee)
+      // - use it if it's an object
+      // - otherwise fall back to `%GeneratorPrototype%`.
+      let mut gen_scope = scope.reborrow();
+      gen_scope.push_root(Value::Object(callee))?;
+
+      let prototype_key_s = gen_scope.alloc_string("prototype")?;
+      gen_scope.push_root(Value::String(prototype_key_s))?;
+      let prototype_key = PropertyKey::from_string(prototype_key_s);
+      let receiver = Value::Object(callee);
+      let value = gen_scope.ordinary_get_with_host_and_hooks(
+        self,
+        host,
+        hooks,
+        callee,
+        prototype_key,
+        receiver,
+      )?;
+      let proto = match value {
+        Value::Object(o) => o,
+        _ => default_proto,
+      };
+
+      let gen_obj = gen_scope.alloc_object_with_prototype(Some(proto))?;
+      gen_scope.push_root(Value::Object(gen_obj))?;
+
+      // Internal-slot-like marker used by `%GeneratorPrototype%` methods to validate receivers.
+      let marker_s = gen_scope.alloc_string("vm-js.internal.GeneratorState")?;
+      gen_scope.push_root(Value::String(marker_s))?;
+      let marker_sym = gen_scope.heap_mut().symbol_for(marker_s)?;
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+
+      let state_s = gen_scope.alloc_string("suspendedStart")?;
+      gen_scope.push_root(Value::String(state_s))?;
+      gen_scope.define_property(
+        gen_obj,
+        marker_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::String(state_s),
+            writable: true,
+          },
+        },
+      )?;
+
+      return Ok(Value::Object(gen_obj));
+    }
+
     let func_env = scope.env_create(outer)?;
     let mut env =
       RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;

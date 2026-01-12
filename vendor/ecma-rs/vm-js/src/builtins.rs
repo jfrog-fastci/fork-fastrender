@@ -2984,42 +2984,6 @@ pub fn generator_function_constructor_construct(
   Ok(Value::Object(func_obj))
 }
 
-pub fn generator_prototype_next(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("%GeneratorPrototype%.next"))
-}
-
-pub fn generator_prototype_return(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("%GeneratorPrototype%.return"))
-}
-
-pub fn generator_prototype_throw(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("%GeneratorPrototype%.throw"))
-}
-
 pub fn error_constructor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -6693,6 +6657,7 @@ fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, Vm
 const ARRAY_ITERATOR_ARRAY_MARKER: &str = "vm-js.internal.ArrayIteratorArray";
 const ARRAY_ITERATOR_INDEX_MARKER: &str = "vm-js.internal.ArrayIteratorIndex";
 const ARRAY_ITERATOR_KIND_MARKER: &str = "vm-js.internal.ArrayIteratorKind";
+const GENERATOR_STATE_MARKER: &str = "vm-js.internal.GeneratorState";
 /// `Array.prototype.map` (minimal).
 pub fn array_prototype_map(
   vm: &mut Vm,
@@ -8801,6 +8766,72 @@ pub fn array_iterator_next(
   scope.define_property(out, value_key, data_desc(out_value, true, true, true))?;
   scope.define_property(out, done_key, data_desc(Value::Bool(false), true, true, true))?;
   Ok(Value::Object(out))
+}
+
+fn require_generator_object(vm: &mut Vm, scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let this_obj = match this {
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("Generator method called on non-object")),
+  };
+
+  // Root `this` across the internal symbol allocation and property lookup.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let marker_key = internal_symbol_key(&mut scope, GENERATOR_STATE_MARKER)?;
+  let marker_value = get_data_property_value(vm, &mut scope, this_obj, &marker_key)?
+    .ok_or(VmError::TypeError("Generator method called on incompatible receiver"))?;
+
+  // The marker must be present and not `undefined`; the exact value is engine-internal for now.
+  if matches!(marker_value, Value::Undefined) {
+    return Err(VmError::TypeError(
+      "Generator method called on incompatible receiver",
+    ));
+  }
+
+  Ok(this_obj)
+}
+
+/// `%GeneratorPrototype%.next` (validation + stub).
+pub fn generator_prototype_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = require_generator_object(vm, scope, this)?;
+  Err(VmError::Unimplemented("Generator.prototype.next"))
+}
+
+/// `%GeneratorPrototype%.return` (validation + stub).
+pub fn generator_prototype_return(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = require_generator_object(vm, scope, this)?;
+  Err(VmError::Unimplemented("Generator.prototype.return"))
+}
+
+/// `%GeneratorPrototype%.throw` (validation + stub).
+pub fn generator_prototype_throw(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = require_generator_object(vm, scope, this)?;
+  Err(VmError::Unimplemented("Generator.prototype.throw"))
 }
 
 /// `String` constructor called as a function.
