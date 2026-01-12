@@ -253,7 +253,20 @@ fn new_target_falls_back_to_unknown_without_function_type() {
   options.no_default_lib = true;
 
   let mut host = MemoryHost::with_options(options);
-  // Intentionally omit `common::core_globals_lib()` so `Function` is not resolvable.
+  // Provide the required core global types, but intentionally omit the `Function`
+  // *type* so `new.target` falls back to `unknown`.
+  host.add_lib(lib_file(
+    "core_globals_without_function.d.ts",
+    r#"
+interface Array<T> {}
+interface Boolean {}
+interface IArguments {}
+interface Number {}
+interface Object {}
+interface RegExp {}
+interface String {}
+"#,
+  ));
   let entry = FileKey::new("entry.ts");
   let source = r#"
 export function f() {
@@ -264,9 +277,19 @@ export function f() {
 
   let program = Program::new(host, vec![entry.clone()]);
   let diagnostics = program.check();
+  assert_eq!(
+    diagnostics.len(),
+    1,
+    "expected only the required-global-types diagnostic for Function, got {diagnostics:?}"
+  );
+  assert_eq!(
+    diagnostics[0].code.as_str(),
+    codes::CANNOT_FIND_GLOBAL_TYPE.as_str(),
+    "expected TS2318 for missing global type Function, got {diagnostics:?}"
+  );
   assert!(
-    diagnostics.is_empty(),
-    "unexpected diagnostics: {diagnostics:?}"
+    diagnostics[0].message.contains("Function"),
+    "expected missing Function global type diagnostic, got {diagnostics:?}"
   );
 
   let file_id = program.file_id(&entry).expect("file id");
