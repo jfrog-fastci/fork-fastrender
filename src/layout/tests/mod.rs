@@ -302,6 +302,7 @@ mod intrinsic_sizing_keywords;
 mod layout_float_stress_fixture;
 mod layout_intrinsic_sizing_stress_fixture;
 mod layout_parallel_determinism;
+mod fragment_fingerprint_determinism_in_process;
 mod legend_shrink_to_fit;
 mod line_height_normal_metrics;
 mod list_marker_outside_whitespace;

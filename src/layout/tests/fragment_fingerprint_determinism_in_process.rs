@@ -358,7 +358,14 @@ fn write_json_pretty(path: &Path, value: &impl serde::Serialize) -> Result<(), S
 fn run_diff_snapshots(before_dir: &Path, after_dir: &Path, out_dir: &Path) -> Result<(), String> {
   let json_path = out_dir.join("diff_snapshots.json");
   let html_path = out_dir.join("diff_snapshots.html");
-  let status = Command::new(env!("CARGO_BIN_EXE_diff_snapshots"))
+
+  let diff_snapshots = env::var_os("CARGO_BIN_EXE_diff_snapshots").ok_or_else(|| {
+    "CARGO_BIN_EXE_diff_snapshots is not set (diff_snapshots binary not built). \
+Run `cargo test` (without `--lib`) or build the `diff_snapshots` binary to enable HTML diffs."
+      .to_string()
+  })?;
+
+  let status = Command::new(diff_snapshots)
     .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")))
     .args([
       "--before",
