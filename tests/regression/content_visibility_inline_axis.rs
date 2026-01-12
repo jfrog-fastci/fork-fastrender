@@ -1,9 +1,8 @@
-use crate::r#ref;
-
+use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
+use crate::r#ref::CompareConfig;
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::{FastRender, RenderOptions};
-use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -67,7 +66,7 @@ fn run_fixture_with_options(options: RenderOptions) -> Vec<u8> {
 fn assert_matches_golden(
   golden_name: &str,
   rendered: &[u8],
-  compare_config: &r#ref::CompareConfig,
+  compare_config: &CompareConfig,
 ) {
   let golden_path = golden_path(golden_name);
   if should_update_goldens() {

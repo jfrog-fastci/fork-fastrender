@@ -4,6 +4,7 @@
 //! (glyph IDs + positions) into rendered pixels using font outlines
 //! and tiny-skia.
 
+use crate::r#ref::compare::{compare_images, load_png_from_bytes, CompareConfig};
 use fastrender::image_compare::encode_png;
 use fastrender::text::color_fonts::{ColorFontRenderer, ColorGlyphRaster};
 use fastrender::text::font_db::{FontStretch, FontStyle, FontWeight, LoadedFont};
@@ -19,7 +20,6 @@ use fastrender::GlyphCache;
 use fastrender::Rgba;
 use fastrender::TextRasterizer;
 use image::RgbaImage;
-use crate::r#ref::compare::{compare_images, load_png_from_bytes, CompareConfig};
 use rustybuzz::Variation;
 use std::fs;
 use std::path::{Path, PathBuf};

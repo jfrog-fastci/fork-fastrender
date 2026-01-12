@@ -1,8 +1,8 @@
+use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::text::font_db::FontConfig;
 use fastrender::{FastRender, RenderArtifactRequest, RenderArtifacts, RenderOptions};
-use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use std::fs;
 use std::path::{Path, PathBuf};
 

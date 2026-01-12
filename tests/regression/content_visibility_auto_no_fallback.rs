@@ -1,9 +1,7 @@
-use crate::r#ref;
-
+use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::{FastRender, RenderOptions};
-use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
