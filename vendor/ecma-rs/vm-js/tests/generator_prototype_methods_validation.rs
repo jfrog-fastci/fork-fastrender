@@ -1,6 +1,6 @@
 use vm_js::{
-  GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
-  Vm, VmError, VmOptions,
+  GcObject, Heap, HeapLimits, JsRuntime, PropertyDescriptor, PropertyKey, PropertyKind, Scope,
+  Value, Vm, VmError, VmOptions,
 };
 
 fn get_own_data_property(
@@ -57,18 +57,18 @@ fn assert_function_name_and_length(
 }
 
 #[test]
-fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmError> {
+fn generator_prototype_methods_validate_this_and_resume_generator() -> Result<(), VmError> {
   // This test deliberately allocates many TypeError instances (receiver validation), so give it a
   // little more headroom than the minimum 1MiB heap used by most tests.
-  let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
-  let mut vm = Vm::new(VmOptions::default());
-  let mut realm = Realm::new(&mut vm, &mut heap)?;
-  let intr = *realm.intrinsics();
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  let intr = *rt.realm().intrinsics();
 
   let generator_prototype = intr.generator_prototype();
 
-  {
-    let mut scope = heap.scope();
+  let (next, return_, throw_) = {
+    let mut scope = rt.heap.scope();
 
     let next = get_own_data_property(&mut scope, generator_prototype, "next")?
       .expect("Generator.prototype.next should exist");
@@ -103,17 +103,20 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
 
     // Primitive `this` values throw TypeError.
     for &this in &primitive_this_values {
-      let err = vm
+      let err = rt
+        .vm
         .call_without_host(&mut scope, Value::Object(next), this, &[Value::Undefined])
         .unwrap_err();
       assert_is_type_error(&mut scope, &intr, err)?;
 
-      let err = vm
+      let err = rt
+        .vm
         .call_without_host(&mut scope, Value::Object(return_), this, &[Value::Undefined])
         .unwrap_err();
       assert_is_type_error(&mut scope, &intr, err)?;
 
-      let err = vm
+      let err = rt
+        .vm
         .call_without_host(&mut scope, Value::Object(throw_), this, &[Value::Undefined])
         .unwrap_err();
       assert_is_type_error(&mut scope, &intr, err)?;
@@ -123,12 +126,14 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
     let obj = scope.alloc_object()?;
     scope.push_root(Value::Object(obj))?;
 
-    let err = vm
+    let err = rt
+      .vm
       .call_without_host(&mut scope, Value::Object(next), Value::Object(obj), &[Value::Undefined])
       .unwrap_err();
     assert_is_type_error(&mut scope, &intr, err)?;
 
-    let err = vm
+    let err = rt
+      .vm
       .call_without_host(
         &mut scope,
         Value::Object(return_),
@@ -138,7 +143,8 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
       .unwrap_err();
     assert_is_type_error(&mut scope, &intr, err)?;
 
-    let err = vm
+    let err = rt
+      .vm
       .call_without_host(
         &mut scope,
         Value::Object(throw_),
@@ -177,7 +183,8 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
       },
     )?;
 
-    let err = vm
+    let err = rt
+      .vm
       .call_without_host(
         &mut scope,
         Value::Object(next),
@@ -187,7 +194,8 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
       .unwrap_err();
     assert_is_type_error(&mut scope, &intr, err)?;
 
-    let err = vm
+    let err = rt
+      .vm
       .call_without_host(
         &mut scope,
         Value::Object(return_),
@@ -197,7 +205,8 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
       .unwrap_err();
     assert_is_type_error(&mut scope, &intr, err)?;
 
-    let err = vm
+    let err = rt
+      .vm
       .call_without_host(
         &mut scope,
         Value::Object(throw_),
@@ -206,8 +215,143 @@ fn generator_prototype_methods_validate_this_and_are_stubbed() -> Result<(), VmE
       )
       .unwrap_err();
     assert_is_type_error(&mut scope, &intr, err)?;
+
+    (next, return_, throw_)
+  };
+
+  // Create a generator function we can instantiate multiple times for `return` vs `throw` tests.
+  rt.exec_script(r#"function* g() { yield 1; }"#)?;
+
+  // `return` should close the generator and return an iterator result object with `done: true`.
+  let gen_return = match rt.exec_script("g()")? {
+    Value::Object(o) => o,
+    other => panic!("expected generator object, got {other:?}"),
+  };
+  {
+    let mut scope = rt.heap.scope();
+    scope.push_root(Value::Object(gen_return))?;
+
+    let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+    let done_key = PropertyKey::from_string(scope.alloc_string("done")?);
+
+    let result = rt.vm.call_without_host(
+      &mut scope,
+      Value::Object(next),
+      Value::Object(gen_return),
+      &[Value::Undefined],
+    )?;
+    let Value::Object(result_obj) = result else {
+      panic!("expected iterator result object");
+    };
+    scope.push_root(Value::Object(result_obj))?;
+    assert_eq!(
+      scope
+        .heap()
+        .object_get_own_data_property_value(result_obj, &value_key)?,
+      Some(Value::Number(1.0))
+    );
+    assert_eq!(
+      scope
+        .heap()
+        .object_get_own_data_property_value(result_obj, &done_key)?,
+      Some(Value::Bool(false))
+    );
+
+    let result = rt.vm.call_without_host(
+      &mut scope,
+      Value::Object(return_),
+      Value::Object(gen_return),
+      &[Value::Undefined],
+    )?;
+    let Value::Object(result_obj) = result else {
+      panic!("expected iterator result object");
+    };
+    scope.push_root(Value::Object(result_obj))?;
+    assert_eq!(
+      scope
+        .heap()
+        .object_get_own_data_property_value(result_obj, &value_key)?,
+      Some(Value::Undefined)
+    );
+    assert_eq!(
+      scope
+        .heap()
+        .object_get_own_data_property_value(result_obj, &done_key)?,
+      Some(Value::Bool(true))
+    );
   }
 
-  realm.teardown(&mut heap);
+  // `throw` should throw the provided value into the generator. When not caught, it propagates and
+  // closes the generator.
+  let gen_throw = match rt.exec_script("g()")? {
+    Value::Object(o) => o,
+    other => panic!("expected generator object, got {other:?}"),
+  };
+  {
+    let mut scope = rt.heap.scope();
+    scope.push_root(Value::Object(gen_throw))?;
+
+    let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+    let done_key = PropertyKey::from_string(scope.alloc_string("done")?);
+
+    let result = rt.vm.call_without_host(
+      &mut scope,
+      Value::Object(next),
+      Value::Object(gen_throw),
+      &[Value::Undefined],
+    )?;
+    let Value::Object(result_obj) = result else {
+      panic!("expected iterator result object");
+    };
+    scope.push_root(Value::Object(result_obj))?;
+    assert_eq!(
+      scope
+        .heap()
+        .object_get_own_data_property_value(result_obj, &value_key)?,
+      Some(Value::Number(1.0))
+    );
+    assert_eq!(
+      scope
+        .heap()
+        .object_get_own_data_property_value(result_obj, &done_key)?,
+      Some(Value::Bool(false))
+    );
+
+    let thrown = rt
+      .vm
+      .call_without_host(
+        &mut scope,
+        Value::Object(throw_),
+        Value::Object(gen_throw),
+        &[Value::Number(42.0)],
+      )
+      .unwrap_err();
+    let thrown_value = match thrown {
+      VmError::Throw(v) => v,
+      VmError::ThrowWithStack { value, .. } => value,
+      other => panic!("expected thrown completion, got {other:?}"),
+    };
+    assert_eq!(thrown_value, Value::Number(42.0));
+
+    // Once closed, subsequent `next` calls should return `done: true`.
+    let result = rt.vm.call_without_host(
+      &mut scope,
+      Value::Object(next),
+      Value::Object(gen_throw),
+      &[Value::Undefined],
+    )?;
+    let Value::Object(result_obj) = result else {
+      panic!("expected iterator result object");
+    };
+    scope.push_root(Value::Object(result_obj))?;
+    assert_eq!(
+      scope
+        .heap()
+        .object_get_own_data_property_value(result_obj, &done_key)?,
+      Some(Value::Bool(true))
+    );
+  }
+
   Ok(())
 }
+

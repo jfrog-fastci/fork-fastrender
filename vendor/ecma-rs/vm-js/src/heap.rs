@@ -8982,6 +8982,163 @@ mod detached_array_buffer_tests {
 }
 
 #[cfg(test)]
+mod generator_object_tests {
+  use super::*;
+  use parse_js::ast::stmt::Stmt;
+
+  fn dummy_generator_func() -> Arc<Node<Func>> {
+    let program = parse_js::parse("function* g() {}").expect("parse generator function");
+    let mut stmts = program.stx.body.into_iter();
+    let Some(stmt) = stmts.next() else {
+      panic!("expected at least one statement");
+    };
+    match *stmt.stx {
+      Stmt::FunctionDecl(func_decl) => {
+        let parse_js::ast::stmt::decl::FuncDecl { function, .. } = *func_decl.stx;
+        Arc::new(function)
+      }
+      _ => panic!("expected generator function declaration"),
+    }
+  }
+
+  #[test]
+  fn generator_objects_are_ordinary_objects_and_gc_traces_continuation() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let gen;
+    let this_obj;
+    let arg_obj;
+    let global;
+    let env;
+    let prop_obj;
+    let key;
+    let continuation_bytes;
+
+    {
+      let mut scope = heap.scope();
+
+      // Create a generator object without a continuation, then attach one so we can validate
+      // heap-accounting deltas and GC tracing behaviour.
+      gen = scope.alloc_generator_with_prototype(None, GeneratorState::SuspendedStart, None)?;
+      scope.push_root(Value::Object(gen))?;
+
+      this_obj = scope.alloc_object()?;
+      arg_obj = scope.alloc_object()?;
+      global = scope.alloc_object()?;
+      env = scope.env_create(None)?;
+      prop_obj = scope.alloc_object()?;
+      key = scope.alloc_string("x")?;
+
+      // Attach a continuation that references `this_obj`, `arg_obj`, and `env`, and ensure those
+      // values stay alive only via the generator object's internal slots.
+      {
+        let mut init_scope = scope.reborrow();
+        init_scope.push_roots(&[
+          Value::Object(this_obj),
+          Value::Object(arg_obj),
+          Value::Object(global),
+          Value::String(key),
+        ])?;
+        init_scope.push_env_root(env)?;
+
+        let mut runtime_env = RuntimeEnv::new_with_lexical_env(init_scope.heap_mut(), global, env)?;
+        runtime_env.teardown(init_scope.heap_mut());
+
+        let cont = GeneratorContinuation {
+          env: runtime_env,
+          strict: false,
+          this: Value::Object(this_obj),
+          new_target: Value::Undefined,
+          func: dummy_generator_func(),
+          args: vec![Value::Object(arg_obj)].into_boxed_slice(),
+          frames: VecDeque::new(),
+        };
+        continuation_bytes = cont.heap_size_bytes();
+
+        let used_before_cont_set = init_scope.heap().used_bytes();
+        init_scope
+          .heap_mut()
+          .generator_set_continuation(gen, Some(Box::new(cont)))?;
+        let used_after_cont_set = init_scope.heap().used_bytes();
+        assert_eq!(
+          used_after_cont_set - used_before_cont_set,
+          continuation_bytes
+        );
+      }
+
+      // Generator objects are still ordinary objects for property operations.
+      scope.define_property(
+        gen,
+        PropertyKey::from_string(key),
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(prop_obj),
+            writable: true,
+          },
+        },
+      )?;
+      assert_eq!(
+        scope.heap().get(gen, &PropertyKey::from_string(key))?,
+        Value::Object(prop_obj)
+      );
+
+      // Exercise object property deletion plumbing for Generator objects.
+      assert!(scope
+        .heap_mut()
+        .ordinary_delete(gen, PropertyKey::from_string(key))?);
+      assert_eq!(
+        scope.heap().get(gen, &PropertyKey::from_string(key))?,
+        Value::Undefined
+      );
+
+      // `prop_obj` is now unreachable (the property was deleted), but continuation references should
+      // keep `this_obj`/`arg_obj`/`env` live.
+      scope.heap_mut().collect_garbage();
+      assert!(scope.heap().is_valid_object(gen));
+      assert!(scope.heap().is_valid_object(this_obj));
+      assert!(scope.heap().is_valid_object(arg_obj));
+      assert!(scope.heap().is_valid_env(env));
+      assert!(!scope.heap().is_valid_object(prop_obj));
+
+      // Clearing the continuation should release the last references to `this_obj`/`arg_obj`/`env`
+      // and shrink heap accounting accordingly.
+      let used_before_cont_unset = scope.heap().used_bytes();
+      scope.heap_mut().generator_set_continuation(gen, None)?;
+      let used_after_cont_unset = scope.heap().used_bytes();
+      assert_eq!(
+        used_before_cont_unset - used_after_cont_unset,
+        continuation_bytes
+      );
+      assert_eq!(
+        used_after_cont_unset,
+        used_before_cont_unset.saturating_sub(continuation_bytes)
+      );
+
+      scope.heap_mut().collect_garbage();
+      assert!(scope.heap().is_valid_object(gen));
+      assert!(!scope.heap().is_valid_object(this_obj));
+      assert!(!scope.heap().is_valid_object(arg_obj));
+      assert!(!scope.heap().is_valid_env(env));
+    }
+
+    // Stack roots were removed when the scope was dropped.
+    heap.collect_garbage();
+    assert!(!heap.is_valid_object(gen));
+    assert!(!heap.is_valid_object(this_obj));
+    assert!(!heap.is_valid_object(arg_obj));
+    assert!(!heap.is_valid_env(env));
+    assert!(!heap.is_valid_object(prop_obj));
+    assert!(matches!(
+      heap.get(gen, &PropertyKey::from_string(key)),
+      Err(VmError::InvalidHandle { .. })
+    ));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
 mod typed_array_helper_tests {
   use super::*;
 

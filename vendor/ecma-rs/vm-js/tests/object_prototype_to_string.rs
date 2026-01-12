@@ -153,7 +153,6 @@ fn object_prototype_to_string_tags_generator_objects() {
 #[test]
 fn object_prototype_to_string_tags_generator_heap_object() {
   let mut rt = new_runtime();
-
   let value = rt
     .exec_script(
       r#"var toString = Object.prototype.toString;

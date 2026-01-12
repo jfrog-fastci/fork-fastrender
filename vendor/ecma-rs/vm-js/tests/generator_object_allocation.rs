@@ -30,8 +30,8 @@ ok;
   )?;
   assert_eq!(value, Value::Bool(true));
 
-  // `%GeneratorPrototype%.next` should recognize the generator object (marker + continuation id
-  // present) and return an iterator result object.
+  // `%GeneratorPrototype%.next` should recognize the generator object and return an iterator result
+  // object (rather than throwing a TypeError for an incompatible receiver).
   let value = rt.exec_script(
     r#"
 function* g() {}

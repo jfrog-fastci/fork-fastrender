@@ -6446,6 +6446,10 @@ impl<'a> Evaluator<'a> {
     use crate::function::ThisMode;
     use crate::vm::EcmaFunctionKind;
 
+    // Use a nested scope so any temporary roots (including environment roots) are popped before
+    // returning to the caller.
+    let mut scope = scope.reborrow();
+
     if func.generator && func.async_ {
       // See `create_function_object_for_decl`: throw a catchable SyntaxError instead of surfacing
       // as a host-level `Unimplemented` error.
@@ -6454,7 +6458,7 @@ impl<'a> Evaluator<'a> {
         .intrinsics()
         .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
       let err_obj =
-        crate::error_object::new_syntax_error_object(scope, &intr, "async generator functions")?;
+        crate::error_object::new_syntax_error_object(&mut scope, &intr, "async generator functions")?;
       return Err(VmError::Throw(err_obj));
     }
     let is_generator = func.generator;
@@ -6470,6 +6474,24 @@ impl<'a> Evaluator<'a> {
       ThisMode::Strict
     } else {
       ThisMode::Global
+    };
+
+    // Named function expressions introduce an inner immutable binding for their name so the body
+    // can reliably reference itself (for recursion) even when the outer binding is reassigned.
+    //
+    // Spec: https://tc39.es/ecma262/#sec-runtime-semantics-instantiateordinaryfunctionexpression
+    //
+    // Note: This is distinct from `SetFunctionName` (function object `name` property), which is
+    // handled separately.
+    let outer_env = self.env.lexical_env;
+    let (closure_env, name_binding_env) = if let Some(name) = name {
+      // Create the function name environment and keep it rooted across function allocation.
+      let func_env = scope.env_create(Some(outer_env))?;
+      scope.push_env_root(func_env)?;
+      scope.env_create_immutable_binding(func_env, name)?;
+      (Some(func_env), Some((func_env, name)))
+    } else {
+      (Some(outer_env), None)
     };
 
     let name_s = match name {
@@ -6497,8 +6519,16 @@ impl<'a> Evaluator<'a> {
       length,
       this_mode,
       is_strict,
-      Some(self.env.lexical_env),
+      closure_env,
     )?;
+
+    // If this was a named function expression, initialize its name binding now that the function
+    // object exists.
+    if let Some((env, name)) = name_binding_env {
+      scope
+        .heap_mut()
+        .env_initialize_binding(env, name, Value::Object(func_obj))?;
+    }
     let intr = self
       .vm
       .intrinsics()
@@ -6521,7 +6551,7 @@ impl<'a> Evaluator<'a> {
     }
     if is_generator {
       crate::function_properties::make_generator_function_instance_prototype(
-        scope,
+        &mut scope,
         func_obj,
         intr.generator_prototype(),
       )?;

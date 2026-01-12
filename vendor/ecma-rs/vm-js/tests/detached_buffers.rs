@@ -60,7 +60,7 @@ fn heap_byte_access_helpers_throw_type_error_on_detached() -> Result<(), VmError
   let view = scope.alloc_uint8_array(ab, 0, 4)?;
   scope.push_root(Value::Object(view))?;
 
-  // Preserve index-out-of-bounds behaviour (no-op write).
+  // Out-of-bounds behaviour for host writes is a no-op.
   assert_eq!(scope.heap_mut().uint8_array_write(view, 4, &[1, 2])?, 0);
 
   scope.heap_mut().detach_array_buffer(ab)?;
@@ -78,7 +78,7 @@ fn heap_byte_access_helpers_throw_type_error_on_detached() -> Result<(), VmError
   // `Uint8Array` writes on detached buffers are a safe no-op.
   assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
 
-  // Preserve out-of-bounds behaviour (no-op write).
+  // Preserve out-of-bounds behaviour (no-op write) even if the view is detached.
   assert_eq!(scope.heap_mut().uint8_array_write(view, 4, &[1, 2])?, 0);
 
   Ok(())
