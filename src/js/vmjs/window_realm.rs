@@ -15733,6 +15733,7 @@ fn init_window_globals(
   drop(scope);
   crate::js::window_abort::install_window_abort_bindings(vm, realm, heap)?;
   crate::js::window_crypto::install_window_crypto_bindings(vm, realm, heap)?;
+  crate::js::window_css::install_window_css_bindings(vm, realm, heap)?;
   crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
   crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;

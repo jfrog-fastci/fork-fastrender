@@ -63,6 +63,7 @@ mod js_dom_integration_export;
 mod js_dom_quickjs_bindings;
 mod js_dom_realm_selectors;
 mod js_dom_shims;
+mod js_css_supports;
 mod js_dom_wrapper_identity;
 mod js_event_loop_timers;
 mod js_execution_budgets;

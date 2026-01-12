@@ -95,6 +95,8 @@ pub mod window_animation_frame;
 pub mod window_blob;
 #[path = "vmjs/window_crypto.rs"]
 pub mod window_crypto;
+#[path = "vmjs/window_css.rs"]
+pub mod window_css;
 #[path = "vmjs/window_env.rs"]
 pub mod window_env;
 #[path = "vmjs/window_fetch.rs"]
