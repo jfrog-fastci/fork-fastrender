@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use crate::common::{global_test_lock, StageListenerGuard};
+use crate::common::StageListenerGuard;
 use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
@@ -259,7 +259,6 @@ fn rapid_scroll_cancels_stale_paint() {
   // the first scroll paint enters the paint pipeline.
   let worker_thread = worker.join.thread().id();
   let (paint_stage_tx, paint_stage_rx) = std::sync::mpsc::channel::<StageHeartbeat>();
-  let _global_lock = global_test_lock();
   let _global_stage_guard = StageListenerGuard::new(std::sync::Arc::new(move |stage| {
     if std::thread::current().id() != worker_thread {
       return;
