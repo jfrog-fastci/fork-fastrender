@@ -47,9 +47,7 @@ impl BrowserIcon {
       Self::ArrowUp => "arrow_up",
       Self::ArrowDown => "arrow_down",
       Self::Reload => "reload",
-      // `StopLoading` reuses the close-tab SVG asset, so use the shared name to avoid caching the
-      // same texture multiple times under different semantic variants.
-      Self::StopLoading => "close_tab",
+      Self::StopLoading => "stop_loading",
       Self::Home => "home",
       Self::Menu => "menu",
       Self::Search => "search",
@@ -119,7 +117,7 @@ impl BrowserIcon {
       Self::ArrowUp => include_bytes!("../../assets/browser_icons/arrow_up.svg"),
       Self::ArrowDown => include_bytes!("../../assets/browser_icons/arrow_down.svg"),
       Self::Reload => include_bytes!("../../assets/browser_icons/reload.svg"),
-      Self::StopLoading => include_bytes!("../../assets/browser_icons/close_tab.svg"),
+      Self::StopLoading => include_bytes!("../../assets/browser_icons/stop_loading.svg"),
       Self::Home => include_bytes!("../../assets/browser_icons/home.svg"),
       Self::Menu => include_bytes!("../../assets/browser_icons/menu.svg"),
       Self::Search => include_bytes!("../../assets/browser_icons/search.svg"),
@@ -675,10 +673,10 @@ mod tests {
     let calls_after_stop = ctx.data_mut(|d| {
       d.get_temp_mut_or_default::<IconCache>(cache_id()).rasterize_calls
     });
-    assert_eq!(id_close_tab, id_stop);
+    assert_ne!(id_close_tab, id_stop);
     assert_eq!(
-      calls_after_stop, 1,
-      "expected StopLoading to reuse the CloseTab SVG texture"
+      calls_after_stop, 2,
+      "expected StopLoading to rasterize its own SVG texture"
     );
   }
 
