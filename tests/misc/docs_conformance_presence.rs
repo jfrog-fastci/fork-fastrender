@@ -65,15 +65,18 @@ fn conformance_doc_links_to_real_code_and_tests() {
     "src/animation/mod.rs",
     "src/accessibility.rs",
     "src/js/legacy/ecma_embed.rs",
+    "src/js/vmjs/window.rs",
     "src/js/vmjs/window_realm.rs",
     "src/js/event_loop.rs",
     "src/js/html_script_processing.rs",
     "src/js/webidl/mod.rs",
+    "src/js/legacy/vm_dom.rs",
     "src/js/vmjs/window_timers.rs",
     "src/js/url.rs",
     "src/js/vmjs/window_url.rs",
     "src/js/fetch.rs",
     "src/js/vmjs/window_fetch.rs",
+    "src/js/legacy/quickjs/fetch.rs",
     "tests/dom_integration/compatibility_test.rs",
     "tests/tree/shadow_dom.rs",
     "tests/css_integration/loader_tests.rs",
@@ -111,9 +114,6 @@ fn conformance_doc_links_to_real_code_and_tests() {
     "tests/style/container_style_queries.rs",
     "tests/html_script_processing.rs",
     "tests/bin/fetch_and_render_js_test.rs",
-    "tests/misc/js_window_realm.rs",
-    "src/js/legacy/vm_dom.rs",
-    "tests/misc/js_fetch_tests.rs",
   ];
 
   for path in required_paths {
