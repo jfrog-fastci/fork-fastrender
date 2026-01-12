@@ -19,7 +19,8 @@ use crate::web::events::{Event, EventTargetId};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
-  GcObject, HostDefined, ModuleGraph, ModuleId, PromiseState, SourceText, Value, VmError, VmHost,
+  GcObject, HostDefined, ModuleGraph, ModuleId, PromiseState, RootId, SourceText, Value, VmError,
+  VmHost,
 };
 use webidl_vm_js::WebIdlBindingsHost;
 
@@ -30,6 +31,7 @@ use super::{BrowserTabHost, BrowserTabJsExecutor, ConsoleMessageLevel, SharedRen
 struct PendingModuleEvaluation {
   module: ModuleId,
   promise: GcObject,
+  promise_root: RootId,
 }
 
 /// `vm-js`-backed [`BrowserTabJsExecutor`] that provides a minimal `window`/`document` environment.
@@ -84,6 +86,23 @@ impl VmJsBrowserTabExecutor {
     diag.record_js_exception(message, stack);
   }
 
+  fn abort_pending_module_evaluation(&mut self) {
+    let Some(pending) = self.pending_module_evaluation.take() else {
+      return;
+    };
+    let Some(realm) = self.realm.as_mut() else {
+      return;
+    };
+    let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    if let Some(modules_ptr) = vm.module_graph_ptr() {
+      // SAFETY: `module_graph_ptr` points at the boxed module graph stored in realm user data when
+      // module loading is enabled.
+      let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+      module_graph.abort_tla_evaluation(vm, heap, pending.module);
+    }
+    heap.remove_root(pending.promise_root);
+  }
+
   fn next_inline_module_id(&mut self, spec: &ScriptElementSpec) -> String {
     if let Some(node_id) = spec.node_id {
       return format!("inline-module-{}", node_id.index());
@@ -102,6 +121,8 @@ impl Default for VmJsBrowserTabExecutor {
 
 impl Drop for VmJsBrowserTabExecutor {
   fn drop(&mut self) {
+    // Ensure any pending module evaluation does not leak roots/state in `vm-js`.
+    self.abort_pending_module_evaluation();
     // Drop the realm first so any remaining JS globals stop referencing the document host.
     self.fetch_bindings = None;
     self.xhr_bindings = None;
@@ -148,7 +169,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     js_execution_options: JsExecutionOptions,
   ) -> Result<()> {
     self.pending_navigation = None;
-    self.pending_module_evaluation = None;
+    // If a module evaluation is in-progress (top-level await), abort it before tearing down the
+    // existing realm so any internal `vm-js` resources are released and our persistent roots are
+    // removed.
+    self.abort_pending_module_evaluation();
     self.diagnostics = document.shared_diagnostics();
     // `document.currentScript` is read from the embedder `VmHost` (the document) by vm-js native
     // handlers. Share the stable per-tab `CurrentScriptStateHandle` so JS observes the same
@@ -636,10 +660,14 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           return Err(VmError::InvariantViolation("expected a Promise object"));
         };
         match scope.heap().promise_state(promise_obj)? {
-          PromiseState::Pending => Ok(Some(PendingModuleEvaluation {
-            module: entry_module,
-            promise: promise_obj,
-          })),
+          PromiseState::Pending => {
+            let promise_root = scope.heap_mut().add_root(Value::Object(promise_obj))?;
+            Ok(Some(PendingModuleEvaluation {
+              module: entry_module,
+              promise: promise_obj,
+              promise_root,
+            }))
+          }
           _ => {
             ensure_promise_fulfilled(scope.heap(), eval_promise)?;
             Ok(None)
@@ -648,6 +676,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       })();
 
       if let Some(err) = hooks.finish(scope.heap_mut()) {
+        if let Ok(Some(pending)) = &module_result {
+          module_graph.abort_tla_evaluation(&mut vm, scope.heap_mut(), pending.module);
+          scope.heap_mut().remove_root(pending.promise_root);
+        }
         return Err(err);
       }
 
@@ -826,44 +858,42 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
 
     let diagnostics = self.diagnostics.clone();
-    let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
-
-    let Some(modules_ptr) = vm.module_graph_ptr() else {
-      // Module loading disabled; nothing to do.
-      return Ok(());
-    };
-    let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+    let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
 
     let state = match heap.promise_state(pending.promise) {
       Ok(state) => state,
-      Err(err) => return Err(vm_error_format::vm_error_to_error(heap, err)),
+      Err(err) => {
+        // Preserve state so teardown can still abort/remove roots.
+        self.pending_module_evaluation = Some(pending);
+        return Err(vm_error_format::vm_error_to_error(heap, err));
+      }
     };
 
     match state {
-      PromiseState::Fulfilled => Ok(()),
+      PromiseState::Fulfilled => {
+        heap.remove_root(pending.promise_root);
+        Ok(())
+      }
       PromiseState::Rejected => {
         let reason = match heap.promise_result(pending.promise) {
           Ok(reason) => reason.unwrap_or(Value::Undefined),
-          Err(err) => return Err(vm_error_format::vm_error_to_error(heap, err)),
+          Err(err) => {
+            self.pending_module_evaluation = Some(pending);
+            return Err(vm_error_format::vm_error_to_error(heap, err));
+          }
         };
         if let Some(diag) = diagnostics.as_ref() {
           let (message, stack) =
             vm_error_format::vm_error_to_message_and_stack(heap, VmError::Throw(reason));
           diag.record_js_exception(message, stack);
         }
+        heap.remove_root(pending.promise_root);
         Ok(())
       }
       PromiseState::Pending => {
-        // The evaluation promise did not settle after draining microtasks, meaning it requires real
-        // async work (timers/tasks/network). Abort the in-progress TLA state so we do not leak
-        // persistent roots in `vm-js`.
-        module_graph.abort_tla_evaluation(vm, heap, pending.module);
-        if let Some(diag) = diagnostics.as_ref() {
-          diag.record_js_exception(
-            "asynchronous module loading/evaluation is not supported".to_string(),
-            None,
-          );
-        }
+        // Top-level await is allowed to remain pending across event loop turns (e.g. timers/network).
+        // Keep the evaluation alive and observe it on a future microtask checkpoint.
+        self.pending_module_evaluation = Some(pending);
         Ok(())
       }
     }

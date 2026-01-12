@@ -4711,6 +4711,13 @@ impl BrowserTab {
           event_loop.clear_all_pending_work();
           return Ok(());
         }
+        // Notify the JS executor after every microtask checkpoint so it can observe Promise-job
+        // side effects that span multiple event loop turns (e.g. module top-level await resuming
+        // after timers/network tasks).
+        {
+          let (executor, document) = (&mut host.executor, &mut host.document);
+          executor.after_microtask_checkpoint(document.as_mut(), event_loop)?;
+        }
         if render_between_turns && host.document.is_dirty() {
           if let Some(frame) = host.document.render_if_needed()? {
             *pending_frame = Some(frame);
@@ -11721,7 +11728,7 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
-  fn module_top_level_await_that_never_settles_errors_deterministically() -> Result<()> {
+  fn module_top_level_await_that_never_settles_remains_pending_without_unsupported_diagnostic() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;
 
@@ -11757,10 +11764,98 @@ html, body { margin: 0; padding: 0; }
       .clone()
       .into_inner();
     assert!(
-      diagnostics.js_exceptions.iter().any(|exc| exc
-        .message
-        .contains("asynchronous module loading/evaluation is not supported")),
-      "expected async module evaluation failure to be reported, got js_exceptions={:?}",
+      !diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc.message.contains("asynchronous module loading/evaluation is not supported")),
+      "unexpected unsupported-module-evaluation diagnostic, got js_exceptions={:?}",
+      diagnostics.js_exceptions
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_top_level_await_resumes_after_timer_task() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut options = RenderOptions::default();
+    options.diagnostics_level = crate::api::DiagnosticsLevel::Basic;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          document.body.setAttribute("data-timer", "ok");
+        </script>
+      </body>"#,
+      options,
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom
+        .get_attribute(body, "data-timer")
+        .expect("get_attribute should succeed"),
+      Some("ok")
+    );
+
+    let diagnostics = tab
+      .diagnostics
+      .as_ref()
+      .expect("diagnostics should be enabled")
+      .clone()
+      .into_inner();
+    assert!(
+      !diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc.message.contains("asynchronous module loading/evaluation is not supported")),
+      "unexpected unsupported-module-evaluation diagnostic, got js_exceptions={:?}",
+      diagnostics.js_exceptions
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn module_top_level_await_rejection_is_reported_as_uncaught_exception() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut options = RenderOptions::default();
+    options.diagnostics_level = crate::api::DiagnosticsLevel::Basic;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          await Promise.reject(new Error("boom"));
+          document.body.setAttribute("data-after", "unreachable");
+        </script>
+      </body>"#,
+      options,
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let diagnostics = tab
+      .diagnostics
+      .as_ref()
+      .expect("diagnostics should be enabled")
+      .clone()
+      .into_inner();
+    assert!(
+      diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc.message.contains("boom")),
+      "expected top-level await rejection to be reported, got js_exceptions={:?}",
       diagnostics.js_exceptions
     );
     Ok(())
