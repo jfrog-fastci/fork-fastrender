@@ -23,6 +23,7 @@ fn assert_module_syntax_error(source: &str) {
 // - language/module-code/early-dup-export-id.js
 // - language/module-code/early-dup-export-decl.js
 // - language/module-code/early-dup-export-dflt-id.js
+// - language/module-code/early-dup-export-dflt.js
 // - language/module-code/early-dup-export-id-as.js
 // - language/module-code/early-dup-export-as-star-as.js
 // - language/module-code/early-dup-export-star-as-dflt.js
@@ -172,6 +173,18 @@ fn rejects_duplicate_exported_name_default_vs_named() {
       var x, y;
       export default x;
       export { y as default };
+    "#,
+  );
+}
+
+#[test]
+fn rejects_invalid_export_default_var_syntax() {
+  // test262 `early-dup-export-dflt.js` uses `export default var ...`, which is invalid syntax
+  // (duplicate exported names are moot once parsing fails).
+  assert_module_syntax_error(
+    r#"
+      export default var x = null;
+      export default var x = null;
     "#,
   );
 }
