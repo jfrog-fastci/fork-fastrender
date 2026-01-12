@@ -139,11 +139,18 @@ impl ForInEnumerator {
           continue;
         }
 
-        // For-in enumeration yields only keys that satisfy `HasProperty` for the original RHS
-        // object. This matters for typed arrays: `[[HasProperty]]` for canonical numeric index
-        // strings does not consult prototypes, so prototype numeric keys must be skipped when they
-        // are not valid integer indices for the typed array.
-        if !scope.ordinary_has_property_with_tick(self.original_object, key, || vm.tick())? {
+        // Typed arrays have integer-indexed exotic `[[HasProperty]]` semantics: for numeric index
+        // keys they do **not** consult prototypes. This means prototype numeric keys must be
+        // skipped when the typed array does not actually have a valid index (e.g. length 0,
+        // detached/out-of-bounds).
+        //
+        // Avoid a general `HasProperty` call here so `for..in` over Proxy objects (and objects with
+        // Proxy objects in their prototype chain) remains trap-driven; we only need this filtering
+        // for typed array numeric indices.
+        if scope.heap().is_typed_array_object(self.original_object)
+          && scope.heap().array_index(&key).is_some()
+          && !scope.ordinary_has_property_with_tick(self.original_object, key, || vm.tick())?
+        {
           continue;
         }
 
