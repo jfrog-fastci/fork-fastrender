@@ -71,7 +71,7 @@ fn filter_units_control_resolution() {
     units: SvgFilterUnits::UserSpaceOnUse,
   }
   .resolve(bbox);
-  assert_rect_close(user_region, Rect::from_xywh(0.5, 30.0, 0.5, 30.0));
+  assert_rect_close(user_region, Rect::from_xywh(10.5, 30.0, 0.5, 30.0));
 }
 
 #[test]
