@@ -47,7 +47,7 @@ impl<'a> Parser<'a> {
     matches!(t2.typ, TT::Comma | TT::KeywordFrom | TT::Equals)
   }
 
-  /// Parses `target`, `target as alias`, `default as alias`, `"target" as alias`.
+  /// Parses `target`, `target as alias`, `default as alias`, `"target"` / `"target" as alias`.
   ///
   /// Note: "arbitrary module namespace identifiers" (string-literal module export names)
   /// apply to the imported/exported *name* positions, not local bindings. TypeScript
@@ -70,7 +70,9 @@ impl<'a> Parser<'a> {
           return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(TT::LiteralString)));
         }
         target_escape = escape_loc;
-        (ModuleExportImportName::Str(name), true)
+        // Imports require an explicit local binding name, but exports can re-export string
+        // names without an `as` clause (e.g. `export { "☿" } from "./m.js";`).
+        (ModuleExportImportName::Str(name), !is_export)
       },
       t if is_valid_pattern_identifier(t, ctx.rules) => (ModuleExportImportName::Ident(self.consume_as_string()), false),
       // `default` is special: in exports it can be used without alias, but in imports it requires an alias
@@ -807,6 +809,7 @@ mod tests {
     assert!(
       parse_with_options(r#"export {Moon as "\uD83C\uDF19"} from "./m.js";"#, opts).is_ok()
     );
+    assert!(parse_with_options(r#"export {"\uD83C\uDF19"} from "./m.js";"#, opts).is_ok());
     assert!(
       parse_with_options(r#"import {'\uD83C\uDF19' as Usagi} from "./m.js";"#, opts).is_ok()
     );
