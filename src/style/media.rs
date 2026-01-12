@@ -4090,97 +4090,11 @@ fn ascii_lowercase_cow(s: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
   use crate::style::values::CalcLength;
   use crate::LengthUnit;
-  use std::cell::RefCell;
-  use std::env;
+  use std::collections::HashMap;
   use std::sync::Arc;
-
-  struct EnvGuard {
-    key: &'static str,
-    old: Option<String>,
-  }
-
-  fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    // If a prior test panicked while holding the lock, avoid poisoning subsequent tests.
-    LOCK
-      .get_or_init(std::sync::Mutex::default)
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-  }
-
-  impl EnvGuard {
-    fn new(key: &'static str, value: Option<&str>) -> Self {
-      thread_local! {
-        static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-        static ENV_LOCK: RefCell<Option<std::sync::MutexGuard<'static, ()>>> = const { RefCell::new(None) };
-        static BASE_TOGGLES: RefCell<Option<Arc<crate::debug::runtime::RuntimeToggles>>> = const { RefCell::new(None) };
-      }
-
-      let outermost = DEPTH.with(|depth| {
-        let outermost = depth.get() == 0;
-        depth.set(depth.get().saturating_add(1));
-        outermost
-      });
-
-      if outermost {
-        ENV_LOCK.with(|cell| {
-          *cell.borrow_mut() = Some(env_lock());
-        });
-        BASE_TOGGLES.with(|cell| {
-          *cell.borrow_mut() = Some(crate::debug::runtime::runtime_toggles());
-        });
-      }
-
-      let old = env::var(key).ok();
-      match value {
-        Some(v) => env::set_var(key, v),
-        None => env::remove_var(key),
-      }
-      crate::debug::runtime::update_runtime_toggles(Arc::new(
-        crate::debug::runtime::RuntimeToggles::from_env(),
-      ));
-      EnvGuard { key, old }
-    }
-  }
-
-  impl Drop for EnvGuard {
-    fn drop(&mut self) {
-      thread_local! {
-        static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-        static ENV_LOCK: RefCell<Option<std::sync::MutexGuard<'static, ()>>> = const { RefCell::new(None) };
-        static BASE_TOGGLES: RefCell<Option<Arc<crate::debug::runtime::RuntimeToggles>>> = const { RefCell::new(None) };
-      }
-
-      if let Some(ref val) = self.old {
-        env::set_var(self.key, val);
-      } else {
-        env::remove_var(self.key);
-      }
-
-      let last = DEPTH.with(|depth| {
-        let current = depth.get();
-        let next = current.saturating_sub(1);
-        depth.set(next);
-        next == 0
-      });
-
-      if last {
-        let base = BASE_TOGGLES.with(|cell| cell.borrow_mut().take());
-        if let Some(base) = base {
-          crate::debug::runtime::update_runtime_toggles(base);
-        }
-        ENV_LOCK.with(|cell| {
-          cell.borrow_mut().take();
-        });
-      } else {
-        crate::debug::runtime::update_runtime_toggles(Arc::new(
-          crate::debug::runtime::RuntimeToggles::from_env(),
-        ));
-      }
-    }
-  }
 
   #[test]
   fn media_context_fingerprint_canonicalizes_negative_zero() {
@@ -5017,115 +4931,111 @@ mod tests {
 
   #[test]
   fn env_overrides_scripting() {
-    let guard_scripting = EnvGuard::new("FASTR_SCRIPTING", Some("enabled"));
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_SCRIPTING".into(),
+      "enabled".into(),
+    )])));
+    with_runtime_toggles(toggles, || {
+      let ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();
+      assert_eq!(ctx.scripting, Scripting::Enabled);
 
-    let ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();
-    assert_eq!(ctx.scripting, Scripting::Enabled);
-
-    let enabled = MediaQuery::parse("(scripting: enabled)").unwrap();
-    let none = MediaQuery::parse("(scripting: none)").unwrap();
-    assert!(ctx.evaluate(&enabled));
-    assert!(!ctx.evaluate(&none));
-
-    drop(guard_scripting);
+      let enabled = MediaQuery::parse("(scripting: enabled)").unwrap();
+      let none = MediaQuery::parse("(scripting: none)").unwrap();
+      assert!(ctx.evaluate(&enabled));
+      assert!(!ctx.evaluate(&none));
+    });
   }
 
   #[test]
   fn env_overrides_color_scheme_and_motion() {
-    let guard_scheme = EnvGuard::new("FASTR_PREFERS_COLOR_SCHEME", Some("dark"));
-    let guard_motion = EnvGuard::new("FASTR_PREFERS_REDUCED_MOTION", Some("reduce"));
-    let guard_contrast = EnvGuard::new("FASTR_PREFERS_CONTRAST", Some("high"));
-    let guard_transparency = EnvGuard::new("FASTR_PREFERS_REDUCED_TRANSPARENCY", Some("1"));
-    let guard_data = EnvGuard::new("FASTR_PREFERS_REDUCED_DATA", Some("yes"));
-    let guard_gamut = EnvGuard::new("FASTR_COLOR_GAMUT", Some("p3"));
-    let guard_inverted = EnvGuard::new("FASTR_INVERTED_COLORS", Some("inverted"));
-    let guard_color_depth = EnvGuard::new("FASTR_COLOR_DEPTH", Some("10"));
-    let guard_color_index = EnvGuard::new("FASTR_COLOR_INDEX", Some("512"));
-    let guard_mono = EnvGuard::new("FASTR_MONOCHROME_DEPTH", Some("0"));
-    let guard_forced = EnvGuard::new("FASTR_FORCED_COLORS", Some("active"));
-
-    let ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();
-    assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::Dark));
-    assert!(ctx.prefers_reduced_motion);
-    assert!(matches!(ctx.prefers_contrast, ContrastPreference::More));
-    assert!(ctx.prefers_reduced_transparency);
-    assert!(ctx.prefers_reduced_data);
-    assert_eq!(ctx.color_gamut, ColorGamut::P3);
-    assert!(matches!(ctx.inverted_colors, InvertedColors::Inverted));
-    assert_eq!(ctx.color_depth, 10);
-    assert_eq!(ctx.color_index, 512);
-    assert_eq!(ctx.monochrome_depth, 0);
-    assert!(ctx.forced_colors);
-
-    drop(guard_scheme);
-    drop(guard_motion);
-    drop(guard_contrast);
-    drop(guard_transparency);
-    drop(guard_data);
-    drop(guard_gamut);
-    drop(guard_inverted);
-    drop(guard_color_depth);
-    drop(guard_color_index);
-    drop(guard_mono);
-    drop(guard_forced);
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_PREFERS_COLOR_SCHEME".into(), "dark".into()),
+      ("FASTR_PREFERS_REDUCED_MOTION".into(), "reduce".into()),
+      ("FASTR_PREFERS_CONTRAST".into(), "high".into()),
+      ("FASTR_PREFERS_REDUCED_TRANSPARENCY".into(), "1".into()),
+      ("FASTR_PREFERS_REDUCED_DATA".into(), "yes".into()),
+      ("FASTR_COLOR_GAMUT".into(), "p3".into()),
+      ("FASTR_INVERTED_COLORS".into(), "inverted".into()),
+      ("FASTR_COLOR_DEPTH".into(), "10".into()),
+      ("FASTR_COLOR_INDEX".into(), "512".into()),
+      ("FASTR_MONOCHROME_DEPTH".into(), "0".into()),
+      ("FASTR_FORCED_COLORS".into(), "active".into()),
+    ])));
+    with_runtime_toggles(toggles, || {
+      let ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();
+      assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::Dark));
+      assert!(ctx.prefers_reduced_motion);
+      assert!(matches!(ctx.prefers_contrast, ContrastPreference::More));
+      assert!(ctx.prefers_reduced_transparency);
+      assert!(ctx.prefers_reduced_data);
+      assert_eq!(ctx.color_gamut, ColorGamut::P3);
+      assert!(matches!(ctx.inverted_colors, InvertedColors::Inverted));
+      assert_eq!(ctx.color_depth, 10);
+      assert_eq!(ctx.color_index, 512);
+      assert_eq!(ctx.monochrome_depth, 0);
+      assert!(ctx.forced_colors);
+    });
   }
 
   #[test]
   fn env_overrides_color_scheme_to_no_preference() {
-    let guard_scheme = EnvGuard::new("FASTR_PREFERS_COLOR_SCHEME", Some("no-preference"));
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_PREFERS_COLOR_SCHEME".into(),
+      "no-preference".into(),
+    )])));
+    with_runtime_toggles(toggles, || {
+      let dark_query = MediaQuery::parse("(prefers-color-scheme: dark)").unwrap();
+      let no_pref_query = MediaQuery::parse("(prefers-color-scheme: no-preference)").unwrap();
 
-    let dark_query = MediaQuery::parse("(prefers-color-scheme: dark)").unwrap();
-    let no_pref_query = MediaQuery::parse("(prefers-color-scheme: no-preference)").unwrap();
-
-    let ctx = MediaContext::screen(800.0, 600.0)
-      .with_color_scheme(ColorScheme::Dark)
-      .with_env_overrides();
-    assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::NoPreference));
-    assert!(ctx.evaluate(&no_pref_query));
-    assert!(!ctx.evaluate(&dark_query));
-
-    drop(guard_scheme);
+      let ctx = MediaContext::screen(800.0, 600.0)
+        .with_color_scheme(ColorScheme::Dark)
+        .with_env_overrides();
+      assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::NoPreference));
+      assert!(ctx.evaluate(&no_pref_query));
+      assert!(!ctx.evaluate(&dark_query));
+    });
   }
 
   #[test]
   fn env_overrides_ignore_invalid_values() {
-    let guard_scheme = EnvGuard::new("FASTR_PREFERS_COLOR_SCHEME", Some("invalid"));
-    let guard_gamut = EnvGuard::new("FASTR_COLOR_GAMUT", Some("nope"));
-    let guard_inverted = EnvGuard::new("FASTR_INVERTED_COLORS", Some("maybe"));
-    let guard_color_depth = EnvGuard::new("FASTR_COLOR_DEPTH", Some("abc"));
-    let guard_forced = EnvGuard::new("FASTR_FORCED_COLORS", Some("maybe"));
-    let guard_transparency = EnvGuard::new("FASTR_PREFERS_REDUCED_TRANSPARENCY", Some("maybe"));
-    let guard_contrast = EnvGuard::new("FASTR_PREFERS_CONTRAST", Some("maybe"));
-    let ctx = MediaContext::screen(800.0, 600.0)
-      .with_color_scheme(ColorScheme::Light)
-      .with_env_overrides();
-    assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::Light));
-    assert_eq!(ctx.color_gamut, ColorGamut::Srgb);
-    assert!(matches!(ctx.inverted_colors, InvertedColors::None));
-    assert_eq!(ctx.color_depth, 8);
-    assert!(!ctx.forced_colors);
-    assert!(!ctx.prefers_reduced_transparency);
-    assert!(matches!(
-      ctx.prefers_contrast,
-      ContrastPreference::NoPreference
-    ));
-    drop(guard_scheme);
-    drop(guard_gamut);
-    drop(guard_inverted);
-    drop(guard_color_depth);
-    drop(guard_forced);
-    drop(guard_transparency);
-    drop(guard_contrast);
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_PREFERS_COLOR_SCHEME".into(), "invalid".into()),
+      ("FASTR_COLOR_GAMUT".into(), "nope".into()),
+      ("FASTR_INVERTED_COLORS".into(), "maybe".into()),
+      ("FASTR_COLOR_DEPTH".into(), "abc".into()),
+      ("FASTR_FORCED_COLORS".into(), "maybe".into()),
+      ("FASTR_PREFERS_REDUCED_TRANSPARENCY".into(), "maybe".into()),
+      ("FASTR_PREFERS_CONTRAST".into(), "maybe".into()),
+    ])));
+    with_runtime_toggles(toggles, || {
+      let ctx = MediaContext::screen(800.0, 600.0)
+        .with_color_scheme(ColorScheme::Light)
+        .with_env_overrides();
+      assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::Light));
+      assert_eq!(ctx.color_gamut, ColorGamut::Srgb);
+      assert!(matches!(ctx.inverted_colors, InvertedColors::None));
+      assert_eq!(ctx.color_depth, 8);
+      assert!(!ctx.forced_colors);
+      assert!(!ctx.prefers_reduced_transparency);
+      assert!(matches!(
+        ctx.prefers_contrast,
+        ContrastPreference::NoPreference
+      ));
+    });
   }
 
   #[test]
   fn env_overrides_no_preference_scheme() {
-    let guard_scheme = EnvGuard::new("FASTR_PREFERS_COLOR_SCHEME", Some("no-preference"));
-    let ctx = MediaContext::screen(800.0, 600.0)
-      .with_color_scheme(ColorScheme::Dark)
-      .with_env_overrides();
-    assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::NoPreference));
-    drop(guard_scheme);
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_PREFERS_COLOR_SCHEME".into(),
+      "no-preference".into(),
+    )])));
+    with_runtime_toggles(toggles, || {
+      let ctx = MediaContext::screen(800.0, 600.0)
+        .with_color_scheme(ColorScheme::Dark)
+        .with_env_overrides();
+      assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::NoPreference));
+    });
   }
 
   #[test]
