@@ -10143,6 +10143,13 @@ mod tests {
     png
   }
 
+  fn fixture_file_url(rel_path: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+    Url::from_file_path(path)
+      .unwrap_or_else(|_| panic!("failed to build file URL for {rel_path}"))
+      .to_string()
+  }
+
   #[test]
   fn raster_pixmap_allocation_budget_exceeded() {
     let url = "test://alloc-budget.png";
@@ -10205,6 +10212,96 @@ mod tests {
     assert_eq!(rgba.dimensions(), (245, 192));
     let px = rgba.get_pixel(140, 33).0;
     assert_eq!(px, [200, 231, 250, 255]);
+  }
+
+  #[test]
+  fn image_cache_preserves_gif_alpha_metadata() {
+    let cache = ImageCache::new();
+
+    // This GIF includes a Graphics Control Extension with the transparency flag set.
+    let gif_with_alpha =
+      fixture_file_url("tests/pages/fixtures/ft.com/assets/ef1955ae757c8b966c83248350331bd3.gif");
+    let img = cache.load(&gif_with_alpha).expect("load gif with alpha");
+    assert!(
+      img.has_alpha,
+      "expected gif transparency metadata to be preserved (has_alpha=true)"
+    );
+
+    // This GIF omits transparency (GCE packed field bit 0 is unset), so it should be treated as a
+    // luminance mask under `mask-mode: match-source`.
+    let gif_without_alpha = fixture_file_url(
+      "tests/pages/fixtures/slashdot.org/assets/4e0705327480ad2323cb03d9c450ffca.gif",
+    );
+    let img = cache
+      .load(&gif_without_alpha)
+      .expect("load gif without alpha");
+    assert!(
+      !img.has_alpha,
+      "expected gif without transparency to report has_alpha=false"
+    );
+  }
+
+  #[test]
+  fn image_cache_preserves_webp_alpha_metadata() {
+    let cache = ImageCache::new();
+
+    // Lossless WebP fixture with the alpha flag set in the VP8L header.
+    let webp_with_alpha = fixture_file_url("tests/fixtures/avif/solid.webp");
+    let img = cache.load(&webp_with_alpha).expect("load webp with alpha");
+    assert!(
+      img.has_alpha,
+      "expected webp alpha metadata to be preserved (has_alpha=true)"
+    );
+
+    // Lossless WebP without alpha (VP8L header alpha bit unset).
+    let webp_without_alpha = fixture_file_url(
+      "tests/pages/fixtures/foxnews.com/assets/25aa2ed5a0afc0c31b18c51de6df7437.webp",
+    );
+    let img = cache
+      .load(&webp_without_alpha)
+      .expect("load webp without alpha");
+    assert!(
+      !img.has_alpha,
+      "expected webp without alpha to report has_alpha=false"
+    );
+  }
+
+  #[cfg(feature = "avif")]
+  #[test]
+  fn image_cache_decodes_avif_pixels() {
+    let cache = ImageCache::new();
+
+    // How-To Geek fixtures are AVIF-heavy; if AVIF decodes fail we end up with blank (white) pages.
+    let url = fixture_file_url(
+      "tests/pages/fixtures/howtogeek.com/assets/fb5e72f6b237f006dd9df83e1aa8e008.avif",
+    );
+    let img = cache.load(&url).expect("load avif fixture");
+
+    let rgba = img.image.to_rgba8();
+    let bytes = rgba.as_raw();
+    assert!(
+      !bytes.is_empty(),
+      "decoded AVIF should contain RGBA pixels (got empty buffer)"
+    );
+
+    let mut alpha_max = 0u8;
+    let mut has_non_white = false;
+    for px in bytes.chunks_exact(4) {
+      alpha_max = alpha_max.max(px[3]);
+      has_non_white |= px[0] != 0xFF || px[1] != 0xFF || px[2] != 0xFF;
+      if alpha_max == 0xFF && has_non_white {
+        break;
+      }
+    }
+
+    assert!(
+      alpha_max > 0,
+      "decoded AVIF unexpectedly has alpha=0 for all pixels (fully transparent)"
+    );
+    assert!(
+      has_non_white,
+      "decoded AVIF unexpectedly contains only white pixels"
+    );
   }
 
   #[test]

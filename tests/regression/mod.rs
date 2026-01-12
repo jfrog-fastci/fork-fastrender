@@ -6,7 +6,6 @@ mod abspos_inline_relative_offset_rtl_precedence;
 mod abspos_left_top_padding_edge;
 mod abspos_static_position_margin;
 mod abspos_static_position_margin_collapse;
-mod avif_decode_pixels;
 mod block_padding_offset;
 mod containment_containing_block;
 mod containment_inline_containing_block;
@@ -19,7 +18,6 @@ mod content_visibility_nested_offset;
 mod content_visibility_vertical_writing_mode;
 mod content_visibility_writing_mode;
 mod fixed_cb_propagation;
-mod image_alpha_metadata;
 mod inline_abspos_padding_edge;
 #[cfg(feature = "quickjs")]
 mod js_fetch_bindings;
