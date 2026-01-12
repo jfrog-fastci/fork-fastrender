@@ -37,6 +37,7 @@ mod common;
 mod r#ref;
 
 use crate::common::with_large_stack;
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::{FastRender, FontConfig};
 use r#ref::compare::load_png_from_bytes;
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
@@ -121,6 +122,8 @@ fn test_fixture(name: &str) -> Result<(), String> {
     crate::common::init_rayon_for_tests(2);
     let mut renderer = FastRender::builder()
       .font_sources(FontConfig::bundled_only())
+      // Avoid host `FASTR_*` env vars affecting deterministic fixture renders.
+      .runtime_toggles(RuntimeToggles::default())
       .build()
       .map_err(|e| format!("Failed to create renderer: {:?}", e))?;
 
@@ -153,8 +156,8 @@ fn test_fixture(name: &str) -> Result<(), String> {
         "Warning: No golden image for {}. Run with UPDATE_GOLDEN=1 to create.",
         name
       );
-      Ok(())
-    }
+        Ok(())
+      }
   })
 }
 

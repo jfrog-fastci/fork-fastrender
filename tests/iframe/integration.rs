@@ -1,5 +1,6 @@
 use crate::r#ref;
 
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::{FastRender, FontConfig};
 use r#ref::compare::{compare_images, load_png_from_bytes, CompareConfig};
 use std::path::PathBuf;
@@ -19,13 +20,15 @@ fn iframe_file_src_renders_nested_document() {
   let src = Url::from_file_path(&inner_path).unwrap().to_string();
 
   let parent_html = format!(
-    r#"<!doctype html><html><body style=\"margin:0; background: rgb(0, 128, 0);\">\
-  <iframe src=\"{src}\" style=\"width:48px; height:48px; border:0;\"></iframe>\
-  </body></html>"#
+    "<!doctype html><html><body style=\"margin:0; background: rgb(0, 128, 0);\">\
+ <iframe src=\"{src}\" style=\"display:block; width:48px; height:48px; border:0;\"></iframe>\
+ </body></html>"
   );
 
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())
+    // Avoid host `FASTR_*` env vars affecting deterministic iframe renders.
+    .runtime_toggles(RuntimeToggles::default())
     .build()
     .unwrap();
   let rendered = renderer.render_to_png(&parent_html, 64, 64).unwrap();

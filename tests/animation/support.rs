@@ -1,3 +1,4 @@
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::{FastRender, FontConfig};
 use std::sync::Once;
 
@@ -21,6 +22,8 @@ pub fn create_test_renderer() -> FastRender {
   ensure_test_env();
   FastRender::builder()
     .font_sources(FontConfig::bundled_only())
+    // Avoid letting host `FASTR_*` env vars influence suite results.
+    .runtime_toggles(RuntimeToggles::default())
     .build()
     .expect("renderer")
 }

@@ -1,3 +1,4 @@
+use crate::debug::runtime::RuntimeToggles;
 use crate::{
   FastRender, FontConfig, FragmentContent, FragmentNode, FragmentTree, LayoutParallelism,
   RenderOptions, ResourcePolicy,
@@ -11,7 +12,8 @@ fn create_test_renderer() -> FastRender {
   FastRender::builder()
     .font_sources(FontConfig::bundled_only())
     .resource_policy(ResourcePolicy::default().allow_http(false).allow_https(false))
-    .font_sources(FontConfig::bundled_only())
+    // Avoid host `FASTR_*` env vars affecting determinism fingerprints.
+    .runtime_toggles(RuntimeToggles::default())
     .build()
     .expect("renderer")
 }

@@ -1,8 +1,8 @@
 use crate::common::global_state::global_test_lock;
 use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
-use fastrender::api::{FastRender, RenderOptions};
+use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::{FastRender, FontConfig, RenderOptions};
 use fastrender::image_output::{encode_image, OutputFormat};
-use fastrender::FontConfig;
 use std::fs;
 use std::path::PathBuf;
 
@@ -16,6 +16,8 @@ fn visual_fixture_matches_goldens() {
   let compare_config = compare_config_from_env(CompareEnvVars::fixtures()).expect("compare config");
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())
+    // Avoid host `FASTR_*` env vars affecting deterministic fixture renders.
+    .runtime_toggles(RuntimeToggles::default())
     .build()
     .expect("renderer");
   let prepared = renderer
