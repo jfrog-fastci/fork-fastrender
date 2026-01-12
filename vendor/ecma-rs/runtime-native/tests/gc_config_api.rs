@@ -267,3 +267,52 @@ fn gc_config_env_overrides_do_not_override_explicit_setter() {
 
   assert!(status.success(), "expected child to exit successfully");
 }
+
+#[test]
+fn gc_config_misaligned_ptr_aborts_child() {
+  let _rt = TestRuntimeGuard::new();
+  if std::env::var_os("RT_GC_CONFIG_MISALIGNED_CHILD").is_none() {
+    return;
+  }
+
+  // Intentionally pass a misaligned pointer; the runtime should trap instead of triggering UB.
+  let cfg = RtGcConfig {
+    nursery_size_bytes: 256 * 1024,
+    los_threshold_bytes: 8 * 1024,
+    minor_gc_nursery_used_percent: 50,
+    major_gc_old_bytes_threshold: usize::MAX,
+    major_gc_old_blocks_threshold: usize::MAX,
+    major_gc_external_bytes_threshold: usize::MAX,
+    promote_after_minor_survivals: 1,
+  };
+  let misaligned = unsafe { (&cfg as *const RtGcConfig).cast::<u8>().add(1).cast::<RtGcConfig>() };
+
+  // Expected: abort.
+  let _ = rt_gc_set_config(misaligned);
+}
+
+#[test]
+fn gc_config_misaligned_ptr_aborts() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let output = Command::new(exe)
+    .env("RT_GC_CONFIG_MISALIGNED_CHILD", "1")
+    .arg("--exact")
+    .arg("gc_config_misaligned_ptr_aborts_child")
+    // Avoid losing the trap output: the Rust test harness captures per-test output in memory by
+    // default. If the child process aborts, it can't flush that buffer, so the parent would see an
+    // empty stderr.
+    .arg("--nocapture")
+    .output()
+    .expect("spawn child");
+
+  assert!(
+    !output.status.success(),
+    "expected misaligned rt_gc_set_config call to abort"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("rt_gc_set_config: cfg was misaligned"),
+    "expected stderr to mention misaligned cfg, got:\n{stderr}"
+  );
+}
