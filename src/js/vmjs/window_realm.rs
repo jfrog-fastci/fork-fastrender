@@ -20226,7 +20226,9 @@ fn node_text_content_set_native(
             if dom.node(child).parent != Some(node_id) {
               return false;
             }
-            if preserve_shadow_roots && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
+            if preserve_shadow_roots
+              && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
+            {
               return false;
             }
             true
@@ -20239,7 +20241,6 @@ fn node_text_content_set_native(
           return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
         }
       }
-
       if !value.is_empty() {
         let text_node = dom.create_text(&value);
         if let Err(err) = dom.append_child(node_id, text_node) {
@@ -20247,8 +20248,9 @@ fn node_text_content_set_native(
         }
       }
 
-      // Keep cached `childNodes` live NodeLists updated.
+      // Keep cached `childNodes`/`children` live NodeLists updated.
       sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, node_id)?;
+      sync_cached_children_for_node_id(vm, scope, document_obj, dom, node_id)?;
 
       if is_html_script_element(dom, node_id) {
         maybe_script_children_changed = Some(node_id);
@@ -37130,6 +37132,63 @@ mod tests {
 
     let root = host.dom().get_element_by_id("root").expect("missing #root");
     assert_eq!(host.dom().inner_html(root).unwrap(), "ab");
+
+    Ok(())
+  }
+
+  #[test]
+  fn node_text_content_set_queues_mutation_records_and_keeps_live_node_lists_in_sync(
+  ) -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=root></div></body></html>")
+        .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        root.appendChild(document.createElement('span'));\n\
+        root.appendChild(document.createElement('b'));\n\
+        root.appendChild(document.createTextNode('c'));\n\
+\n\
+        const cachedChildNodes = root.childNodes;\n\
+        const cachedChildren = root.children;\n\
+        if (cachedChildNodes.length !== 3) return 'pre_nodes:' + cachedChildNodes.length;\n\
+        if (cachedChildren.length !== 2) return 'pre_children:' + cachedChildren.length;\n\
+\n\
+        const obs = new MutationObserver(() => {});\n\
+        obs.observe(root, { childList: true });\n\
+        root.textContent = 'X';\n\
+        const records = obs.takeRecords();\n\
+\n\
+        let removed = 0;\n\
+        let added = 0;\n\
+        for (let i = 0; i < records.length; i++) {\n\
+          removed += records[i].removedNodes.length;\n\
+          added += records[i].addedNodes.length;\n\
+        }\n\
+        if (records.length !== 4) return 'records:' + records.length;\n\
+        if (removed !== 3) return 'removed:' + removed;\n\
+        if (added !== 1) return 'added:' + added;\n\
+        if (cachedChildNodes.length !== 1) return 'post_nodes:' + cachedChildNodes.length;\n\
+        if (cachedChildren.length !== 0) return 'post_children:' + cachedChildren.length;\n\
+\n\
+        const c = document.createComment('old');\n\
+        const obs2 = new MutationObserver(() => {});\n\
+        obs2.observe(c, { characterData: true, characterDataOldValue: true });\n\
+        c.textContent = 'new';\n\
+        const r2 = obs2.takeRecords();\n\
+        if (r2.length !== 1) return 'c_records:' + r2.length;\n\
+        if (r2[0].type !== 'characterData') return 'c_type:' + r2[0].type;\n\
+        if (r2[0].oldValue !== 'old') return 'c_old:' + r2[0].oldValue;\n\
+\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), ok), "ok");
 
     Ok(())
   }
