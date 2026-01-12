@@ -3974,13 +3974,21 @@ impl<'a> Evaluator<'a> {
       ) {
         Ok(v) => v,
         Err(err) => {
-          let _ = iterator::iterator_close(
+          // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+          let pending_root = err.thrown_value().map(|v| iter_scope.heap_mut().add_root(v)).transpose()?;
+          let close_res = iterator::iterator_close(
             self.vm,
             &mut *self.host,
             &mut *self.hooks,
             &mut iter_scope,
             &iterator_record,
           );
+          if let Some(root) = pending_root {
+            iter_scope.heap_mut().remove_root(root);
+          }
+          if let Err(close_err) = close_res {
+            return Err(close_err);
+          }
           return Err(err);
         }
       };
@@ -4041,13 +4049,21 @@ impl<'a> Evaluator<'a> {
         if iter_env.is_some() {
           self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
         }
-        let _ = iterator::iterator_close(
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        let pending_root = err.thrown_value().map(|v| iter_scope.heap_mut().add_root(v)).transpose()?;
+        let close_res = iterator::iterator_close(
           self.vm,
           &mut *self.host,
           &mut *self.hooks,
           &mut iter_scope,
           &iterator_record,
         );
+        if let Some(root) = pending_root {
+          iter_scope.heap_mut().remove_root(root);
+        }
+        if let Err(close_err) = close_res {
+          return Err(close_err);
+        }
         return Err(err);
       }
 
@@ -4057,13 +4073,21 @@ impl<'a> Evaluator<'a> {
           if iter_env.is_some() {
             self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
           }
-          let _ = iterator::iterator_close(
+          // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+          let pending_root = err.thrown_value().map(|v| iter_scope.heap_mut().add_root(v)).transpose()?;
+          let close_res = iterator::iterator_close(
             self.vm,
             &mut *self.host,
             &mut *self.hooks,
             &mut iter_scope,
             &iterator_record,
           );
+          if let Some(root) = pending_root {
+            iter_scope.heap_mut().remove_root(root);
+          }
+          if let Err(close_err) = close_res {
+            return Err(close_err);
+          }
           return Err(err);
         }
       };
@@ -4073,13 +4097,22 @@ impl<'a> Evaluator<'a> {
       }
 
       if !Self::loop_continues(&body_completion, label_set) {
-        let _ = iterator::iterator_close(
+        // If iterator close throws, it overrides the original completion (ECMA-262 `IteratorClose`).
+        let pending_root =
+          body_completion.value().map(|v| iter_scope.heap_mut().add_root(v)).transpose()?;
+        let close_res = iterator::iterator_close(
           self.vm,
           &mut *self.host,
           &mut *self.hooks,
           &mut iter_scope,
           &iterator_record,
         );
+        if let Some(root) = pending_root {
+          iter_scope.heap_mut().remove_root(root);
+        }
+        if let Err(close_err) = close_res {
+          return Err(close_err);
+        }
         return Ok(body_completion.update_empty(Some(v)));
       }
 

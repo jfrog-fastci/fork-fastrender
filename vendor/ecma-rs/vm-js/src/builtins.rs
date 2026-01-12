@@ -839,7 +839,15 @@ pub fn object_from_entries(
     Ok(v) => Ok(v),
     Err(err) => {
       if !iterator_record.done {
-        let _ = crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        let pending_root = err.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
+        let close_res = crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
+        if let Err(close_err) = close_res {
+          return Err(close_err);
+        }
       }
       Err(err)
     }
@@ -3470,10 +3478,20 @@ pub fn promise_all(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
+      let mut completion = err;
       if !iterator_record.done {
-        let _ = crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record);
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        let pending_root =
+          completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
+        match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
+          Ok(()) => {}
+          Err(close_err) => completion = close_err,
+        }
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
       }
-      if_abrupt_reject_promise(vm, scope, host, hooks, capability, err)
+      if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
     }
   }
 }
@@ -3556,10 +3574,20 @@ pub fn promise_race(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
+      let mut completion = err;
       if !iterator_record.done {
-        let _ = crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record);
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        let pending_root =
+          completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
+        match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
+          Ok(()) => {}
+          Err(close_err) => completion = close_err,
+        }
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
       }
-      if_abrupt_reject_promise(vm, scope, host, hooks, capability, err)
+      if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
     }
   }
 }
@@ -3752,10 +3780,20 @@ pub fn promise_all_settled(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
+      let mut completion = err;
       if !iterator_record.done {
-        let _ = crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record);
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        let pending_root =
+          completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
+        match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
+          Ok(()) => {}
+          Err(close_err) => completion = close_err,
+        }
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
       }
-      if_abrupt_reject_promise(vm, scope, host, hooks, capability, err)
+      if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
     }
   }
 }
@@ -3932,10 +3970,20 @@ pub fn promise_any(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
+      let mut completion = err;
       if !iterator_record.done {
-        let _ = crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record);
+        // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+        let pending_root =
+          completion.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
+        match crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record) {
+          Ok(()) => {}
+          Err(close_err) => completion = close_err,
+        }
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
       }
-      if_abrupt_reject_promise(vm, scope, host, hooks, capability, err)
+      if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
     }
   }
 }

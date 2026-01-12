@@ -1,0 +1,89 @@
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+
+fn new_runtime() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
+fn assert_value_is_utf8(rt: &JsRuntime, value: Value, expected: &str) {
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  let actual = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+  assert_eq!(actual, expected);
+}
+
+#[test]
+fn iterator_close_calls_return_on_break() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var closed = false;
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        var i = 0;
+        return {
+          next: function () { return { value: i++, done: false }; },
+          "return": function () { closed = true; return {}; }
+        };
+      };
+      for (var x of iterable) { break; }
+      closed
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn iterator_close_return_throw_overrides_break() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { return { value: 1, done: false }; },
+          "return": function () { throw "close"; }
+        };
+      };
+      for (var x of iterable) { break; }
+    "#,
+    )
+    .unwrap_err();
+
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  assert_value_is_utf8(&rt, thrown, "close");
+}
+
+#[test]
+fn iterator_close_return_non_object_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { return { value: 1, done: false }; },
+          "return": function () { return 1; }
+        };
+      };
+      try {
+        for (var x of iterable) { break; }
+      } catch (e) {
+        ok = e && e.name === "TypeError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+

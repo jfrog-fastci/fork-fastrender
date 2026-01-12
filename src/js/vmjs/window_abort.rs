@@ -776,14 +776,21 @@ fn abort_signal_static_any_native(
   })();
 
   if let Err(err) = collect_result {
-    // Abrupt completion: best-effort iterator close.
-    let _ = iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record);
+    // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`).
+    let pending_root = err.thrown_value().map(|v| scope.heap_mut().add_root(v)).transpose()?;
+    let close_res = iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record);
+    if let Some(root) = pending_root {
+      scope.heap_mut().remove_root(root);
+    }
+    if let Err(close_err) = close_res {
+      return Err(close_err);
+    }
     return Err(err);
   }
 
   // If an input signal is already aborted, synchronously create an already-aborted composite signal.
   if pre_aborted {
-    let _ = iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record);
+    iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record)?;
     let reason = pre_aborted_reason.unwrap_or(Value::Undefined);
     abort_signal(
       vm, scope, host_ctx, host_hooks, signal, reason, /* dispatch_event */ false,

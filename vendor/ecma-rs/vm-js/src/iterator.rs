@@ -162,11 +162,10 @@ pub fn iterator_step_value(
   Ok(Some(iterator_value(vm, host, hooks, scope, result)?))
 }
 
-/// `IteratorClose` (ECMA-262) (best-effort).
+/// `IteratorClose` (ECMA-262).
 ///
-/// This is used by `for..of` to close iterators on abrupt completion. For now we intentionally
-/// swallow any error from the `return` call since the surrounding interpreter does not yet have a
-/// full exception model.
+/// This is used by `for..of` and iterator-consuming builtins to close iterators on abrupt
+/// completion.
 pub fn iterator_close(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -174,10 +173,16 @@ pub fn iterator_close(
   scope: &mut Scope<'_>,
   record: &IteratorRecord,
 ) -> Result<(), VmError> {
-  let return_key = string_key(scope, "return")?;
+  // Root the iterator across property-key allocation and the `GetMethod`/`Call` sequence. Without
+  // this, the iterator object could be collected while closing (since values on the Rust stack are
+  // not traced by the GC).
+  let mut close_scope = scope.reborrow();
+  close_scope.push_root(record.iterator)?;
+
+  let return_key = string_key(&mut close_scope, "return")?;
   let Some(return_method) = crate::spec_ops::get_method_with_host_and_hooks(
     vm,
-    scope,
+    &mut close_scope,
     host,
     hooks,
     record.iterator,
@@ -187,7 +192,19 @@ pub fn iterator_close(
     return Ok(());
   };
 
-  // Best-effort: ignore errors.
-  let _ = vm.call_with_host_and_hooks(host, scope, hooks, return_method, record.iterator, &[]);
+  close_scope.push_root(return_method)?;
+  let result =
+    vm.call_with_host_and_hooks(host, &mut close_scope, hooks, return_method, record.iterator, &[])?;
+
+  if !matches!(result, Value::Object(_)) {
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    return Err(crate::throw_type_error(
+      &mut close_scope,
+      intr,
+      "IteratorClose: iterator.return did not return an object",
+    ));
+  }
   Ok(())
 }
