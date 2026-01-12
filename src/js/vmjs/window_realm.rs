@@ -16749,6 +16749,7 @@ fn mutation_observer_notify_native(
     Value::Object(obj) => obj,
     _ => return Ok(Value::Undefined),
   };
+
   let document_id = gc_object_id(document_obj);
   let (deliveries, dom_ptr_for_wrappers) = if is_host_document_id(vm, document_id) {
     // Borrow the DOM host only long enough to drain deliveries. We must not hold a borrowed
@@ -16803,7 +16804,7 @@ fn mutation_observer_notify_native(
     if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
       continue;
     }
- 
+
     let records_array = {
       // SAFETY: `dom_ptr_for_wrappers` is only used to create wrappers. The reference must not live
       // across the callback invocation (callbacks can mutate the DOM), so keep it scoped to this

@@ -1733,6 +1733,29 @@ impl GridFormattingContext {
 
     let mut min_start = f32::INFINITY;
     let mut max_end = f32::NEG_INFINITY;
+    // Prefer grid track extents when available so we don't trim away empty explicit tracks.
+    //
+    // Example: `grid-template-rows: 10px 10px` with a single item in `grid-row: 2 / 3` should
+    // preserve the empty first row. Using only in-flow child extents would treat the first row as
+    // "unwanted leading space" and incorrectly translate the item to `y=0` while shrinking the
+    // grid container to 10px.
+    if let Some(tracks) = fragment.grid_tracks.as_deref() {
+      let ranges: &[(f32, f32)] = match axes.block_axis() {
+        PhysicalAxis::Y => tracks.rows.as_slice(),
+        PhysicalAxis::X => tracks.columns.as_slice(),
+      };
+      for &(start_phys, end_phys) in ranges {
+        let (start, end) = if axes.block_positive() {
+          (start_phys, end_phys)
+        } else {
+          (container_block_size - end_phys, container_block_size - start_phys)
+        };
+        if start.is_finite() && end.is_finite() {
+          min_start = min_start.min(start);
+          max_end = max_end.max(end);
+        }
+      }
+    }
     for child in fragment.children.iter() {
       match child.content {
         FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. } => continue,
@@ -16502,6 +16525,51 @@ mod tests {
 
   fn make_item_style() -> Arc<ComputedStyle> {
     Arc::new(ComputedStyle::default())
+  }
+
+  #[test]
+  fn grid_trim_auto_block_size_preserves_explicit_tracks() {
+    let fc = GridFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.writing_mode = WritingMode::HorizontalTb;
+    style.direction = Direction::Ltr;
+    let style = Arc::new(style);
+
+    let child_style = Arc::new(ComputedStyle::default());
+    let child = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 10.0, 10.0, 10.0),
+      vec![],
+      child_style,
+    );
+
+    // Start with an exaggerated container height to simulate Taffy returning the viewport height
+    // for an auto-sized grid with indefinite available block space.
+    let mut fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 600.0),
+      vec![child],
+      style.clone(),
+    );
+    fragment.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 10.0), (10.0, 20.0)],
+      columns: Vec::new(),
+    }));
+
+    let constraints =
+      LayoutConstraints::new(CrateAvailableSpace::Definite(100.0), CrateAvailableSpace::Indefinite);
+    let _hint_guard = set_fragmentainer_block_size_hint(None);
+    fc.maybe_trim_auto_block_size_in_scrollable_layout(style.as_ref(), &constraints, &mut fragment);
+
+    assert!((fragment.bounds.height() - 20.0).abs() < 1e-6);
+    assert!((fragment.children[0].bounds.y() - 10.0).abs() < 1e-6);
+    assert_eq!(
+      fragment
+        .grid_tracks
+        .as_deref()
+        .expect("grid tracks should remain present")
+        .rows,
+      vec![(0.0, 10.0), (10.0, 20.0)]
+    );
   }
 
   #[test]

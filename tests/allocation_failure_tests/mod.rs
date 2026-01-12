@@ -1,4 +1,4 @@
-//! Shared allocator + helpers for allocation-failure tests.
+/// Shared allocator + helpers for allocation-failure tests.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
