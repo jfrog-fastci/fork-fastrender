@@ -672,7 +672,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
             )]
           })?;
           let value =
-            cg.with_body(body, export_body, export_types.as_ref(), |cg| cg.codegen_expr(expr))?;
+            cg.with_body(export_body, export_types.as_ref(), |cg| cg.codegen_expr(expr))?;
           match (global.kind, value) {
             (TsAbiKind::Number, NativeValue::Number(v)) => {
               cg.builder
@@ -1364,17 +1364,28 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       return;
     }
     // Emit `dbg.value` only for currently visible locals (per lexical scopes in `self.env`), to
-    // avoid producing debug loads for out-of-scope variables (which can be uninitialized along some
-    // control-flow paths).
+    // avoid producing debug loads for out-of-scope variables.
+    //
+    // NOTE: Keep emission order deterministic by sorting on `NameId`. The underlying `HashMap`
+    // iteration order is intentionally randomized and would otherwise produce unstable IR.
     let mut seen_names: HashSet<NameId> = HashSet::new();
+    let mut visible: Vec<(NameId, BindingId)> = Vec::new();
     for scope in self.env.scopes.iter().rev() {
       for (&name, &binding) in scope.iter() {
-        if !seen_names.insert(name) {
-          continue;
+        if seen_names.insert(name) {
+          visible.push((name, binding));
         }
-        let Some(slot) = self.locals.get(&binding).copied() else {
-          continue;
-        };
+      }
+    }
+    visible.sort_by_key(|(name, _binding)| *name);
+
+    for (_name, binding) in visible {
+      if !self.debug_vars.contains_key(&binding) {
+        continue;
+      }
+      let Some(slot) = self.locals.get(&binding).copied() else {
+        continue;
+      };
       let loaded = match slot.kind {
         TsAbiKind::Number => NativeValue::Number(
           self
@@ -1394,12 +1405,10 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       };
       self.dbg_value(binding, loaded, span);
     }
-    }
   }
 
   fn with_body<R>(
     &mut self,
-    _body_id: hir_js::BodyId,
     body: &'a hir_js::Body,
     types: &'a typecheck_ts::BodyCheckResult,
     f: impl FnOnce(&mut Self) -> R,
@@ -2310,12 +2319,15 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .expect("failed to build branch");
 
       self.builder.position_at_end(end_bb);
-      self.dbg_value_locals_from_slots(span.range);
       Ok(true)
     })();
 
     if needs_loop_scope {
       self.env.pop_scope();
+    }
+
+    if result.is_ok() {
+      self.dbg_value_locals_from_slots(span.range);
     }
 
     result
