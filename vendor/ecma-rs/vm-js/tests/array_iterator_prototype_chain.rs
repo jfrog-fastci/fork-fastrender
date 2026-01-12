@@ -8,158 +8,138 @@ fn new_runtime() -> Result<JsRuntime, VmError> {
   JsRuntime::new(vm, heap)
 }
 
+fn get_array_index(
+  scope: &mut vm_js::Scope<'_>,
+  arr: vm_js::GcObject,
+  index: usize,
+) -> Result<Value, VmError> {
+  // Root `arr` and the key string so `get_property` can allocate freely.
+  scope.push_root(Value::Object(arr))?;
+
+  let key_s = scope.alloc_string(&index.to_string())?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+
+  let desc = scope
+    .heap()
+    .get_property(arr, &key)?
+    .ok_or(VmError::InvariantViolation("missing array element"))?;
+  match desc.kind {
+    PropertyKind::Data { value, .. } => Ok(value),
+    _ => Err(VmError::InvariantViolation("array element is not a data property")),
+  }
+}
+
 #[test]
 fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
   let intr = *rt.realm().intrinsics();
   let wks = *rt.realm().well_known_symbols();
 
-  // Two separately created Array iterator instances should share the same prototype object.
-  let same_array_iterator_proto = rt.exec_script(
-    r#"
-      (() => {
-        const it1 = [][Symbol.iterator]();
-        const it2 = [][Symbol.iterator]();
-        return Object.getPrototypeOf(it1) === Object.getPrototypeOf(it2);
-      })()
-    "#,
-  )?;
-  assert_eq!(same_array_iterator_proto, Value::Bool(true));
-
-  // `Array.prototype.values` should produce the same iterator shape as `%Array.prototype%[@@iterator]`.
-  let same_values_proto =
-    rt.exec_script("Object.getPrototypeOf([].values()) === Object.getPrototypeOf([][Symbol.iterator]())")?;
-  assert_eq!(same_values_proto, Value::Bool(true));
-
-  // `Object.prototype.toString` should observe the `@@toStringTag` on `%ArrayIteratorPrototype%`.
-  let to_string_tag =
-    rt.exec_script(r#"Object.prototype.toString.call([][Symbol.iterator]()) === "[object Array Iterator]""#)?;
-  assert_eq!(to_string_tag, Value::Bool(true));
-
-  // `Object.getOwnPropertyDescriptor(%ArrayIteratorPrototype%, @@toStringTag).value` should be
-  // `"Array Iterator"` (matches test262-style assertions).
-  let tag_desc_value = rt.exec_script(
-    r#"
-      (() => {
-        const proto = Object.getPrototypeOf([][Symbol.iterator]());
-        return Object.getOwnPropertyDescriptor(proto, Symbol.toStringTag).value === "Array Iterator";
-      })()
-    "#,
-  )?;
-  assert_eq!(tag_desc_value, Value::Bool(true));
-
-  // `%ArrayIteratorPrototype%.next` should exist as an own data property and match the expected
-  // descriptor shape.
-  let next_desc_shape = rt.exec_script(
-    r#"
-      (() => {
-        const proto = Object.getPrototypeOf([][Symbol.iterator]());
-        const desc = Object.getOwnPropertyDescriptor(proto, "next");
-        return (
-          typeof desc.value === "function" &&
-          desc.writable === true &&
-          desc.enumerable === false &&
-          desc.configurable === true
-        );
-      })()
-    "#,
-  )?;
-  assert_eq!(next_desc_shape, Value::Bool(true));
-
-  // Iterator instances must not have an own `next` property (it is inherited from the prototype).
-  let iter_has_own_next = rt.exec_script(
-    r#"
-      (() => {
-        const it = [][Symbol.iterator]();
-        return Object.prototype.hasOwnProperty.call(it, "next");
-      })()
-    "#,
-  )?;
-  assert_eq!(iter_has_own_next, Value::Bool(false));
-
-  // Per spec, `%ArrayIteratorPrototype%` should inherit `@@iterator` from `%IteratorPrototype%`
-  // (i.e. it should *not* define its own `Symbol.iterator` property).
-  let array_iter_proto_has_own_iterator = rt.exec_script(
-    r#"
-      (() => {
-        const proto = Object.getPrototypeOf([][Symbol.iterator]());
-        return Object.prototype.hasOwnProperty.call(proto, Symbol.iterator);
-      })()
-    "#,
-  )?;
-  assert_eq!(array_iter_proto_has_own_iterator, Value::Bool(false));
-
-  // Array iterator instances must be iterable (calling `@@iterator` returns the iterator itself).
-  let array_iter_is_iterable = rt.exec_script(
-    r#"
-      (() => {
-        const it = [][Symbol.iterator]();
-        return it[Symbol.iterator]() === it;
-      })()
-    "#,
-  )?;
-  assert_eq!(array_iter_is_iterable, Value::Bool(true));
-
   // Generator tests in test262 compute `%IteratorPrototype%` from an Array iterator and compare it
   // to `Object.getPrototypeOf(%GeneratorPrototype%)`.
+  //
+  // Run this check before borrowing `rt.heap` via a `Scope`, since `Scope` holds a mutable heap
+  // borrow and would otherwise prevent calling `exec_script`.
   let generator_iterator_proto_match = rt.exec_script(
-    r#"
-      (() => {
-        const IteratorProto = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
-        function* g() {}
-        const GeneratorProto = Object.getPrototypeOf(g.prototype);
-        return Object.getPrototypeOf(GeneratorProto) === IteratorProto;
-      })()
-    "#,
+    "(()=>{const IteratorProto=Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));function* g(){};const GeneratorProto=Object.getPrototypeOf(g.prototype);return Object.getPrototypeOf(GeneratorProto)===IteratorProto;})()",
   )?;
   assert_eq!(generator_iterator_proto_match, Value::Bool(true));
 
-  let it = rt.exec_script("[][Symbol.iterator]()")?;
-  let array_iter_proto_v = rt.exec_script("Object.getPrototypeOf([][Symbol.iterator]())")?;
-  let iterator_proto_v =
-    rt.exec_script("Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()))")?;
-
-  let Value::Object(it) = it else {
+  // Use a single script to materialize the objects needed for the assertions below. Each
+  // `exec_script` call stores `SourceText` + compiled code in the VM, which can exhaust small test
+  // heaps when many scripts are executed.
+  let init = rt.exec_script(
+    "(()=>{const it1=[][Symbol.iterator]();const it2=[][Symbol.iterator]();const v=[].values();return [it1,it2,v,Object.prototype.toString.call(it1)===\"[object Array Iterator]\"];})()",
+  )?;
+  let Value::Object(init) = init else {
     return Err(VmError::InvariantViolation(
-      "[][Symbol.iterator]() did not return an object",
-    ));
-  };
-  let Value::Object(array_iter_proto) = array_iter_proto_v else {
-    return Err(VmError::InvariantViolation(
-      "Object.getPrototypeOf(ArrayIterator) did not return an object",
-    ));
-  };
-  let Value::Object(iterator_proto) = iterator_proto_v else {
-    return Err(VmError::InvariantViolation(
-      "Object.getPrototypeOf(ArrayIteratorPrototype) did not return an object",
+      "expected init array from exec_script",
     ));
   };
 
   let mut scope = rt.heap.scope();
-  scope.push_root(Value::Object(it))?;
+  scope.push_root(Value::Object(init))?;
+
+  let Value::Object(it1) = get_array_index(&mut scope, init, 0)? else {
+    return Err(VmError::InvariantViolation(
+      "returned iterator instance is not an object",
+    ));
+  };
+  let Value::Object(it2) = get_array_index(&mut scope, init, 1)? else {
+    return Err(VmError::InvariantViolation(
+      "returned iterator instance is not an object",
+    ));
+  };
+  let Value::Object(values_it) = get_array_index(&mut scope, init, 2)? else {
+    return Err(VmError::InvariantViolation(
+      "returned values() iterator is not an object",
+    ));
+  };
+  assert_eq!(get_array_index(&mut scope, init, 3)?, Value::Bool(true));
+
+  scope.push_root(Value::Object(it1))?;
+  scope.push_root(Value::Object(it2))?;
+  scope.push_root(Value::Object(values_it))?;
+
+  let array_iter_proto = scope
+    .heap()
+    .object_prototype(it1)?
+    .ok_or(VmError::InvariantViolation("Array iterator missing prototype"))?;
+  let iterator_proto = scope
+    .heap()
+    .object_prototype(array_iter_proto)?
+    .ok_or(VmError::InvariantViolation(
+      "%ArrayIteratorPrototype% missing prototype",
+    ))?;
+
   scope.push_root(Value::Object(array_iter_proto))?;
   scope.push_root(Value::Object(iterator_proto))?;
+
+  // Two separately created Array iterator instances should share the same prototype object.
+  assert_eq!(scope.heap().object_prototype(it2)?, Some(array_iter_proto));
+
+  // `Array.prototype.values` should produce the same iterator shape as `%Array.prototype%[@@iterator]`.
+  assert_eq!(scope.heap().object_prototype(values_it)?, Some(array_iter_proto));
 
   assert_eq!(iterator_proto, intr.iterator_prototype());
   assert_eq!(
     scope.heap().object_prototype(iterator_proto)?,
     Some(intr.object_prototype())
   );
+
+  // `%ArrayIteratorPrototype%.[[Prototype]]` is `%IteratorPrototype%`.
   assert_eq!(
     scope.heap().object_prototype(array_iter_proto)?,
     Some(iterator_proto)
   );
+
+  // Array iterator instances should have [[Prototype]] = %ArrayIteratorPrototype%.
   assert_eq!(
-    scope.heap().object_prototype(it)?,
+    scope.heap().object_prototype(it1)?,
     Some(array_iter_proto),
     "Array iterator instances should have [[Prototype]] = %ArrayIteratorPrototype%",
+  );
+
+  // Per spec, `%ArrayIteratorPrototype%` should inherit `@@iterator` from `%IteratorPrototype%`
+  // (i.e. it should *not* define its own `Symbol.iterator` property).
+  let iterator_key = PropertyKey::from_symbol(wks.iterator);
+  assert!(
+    scope
+      .heap()
+      .object_get_own_property(array_iter_proto, &iterator_key)?
+      .is_none()
+  );
+  assert!(
+    scope.heap().get_property(array_iter_proto, &iterator_key)?.is_some(),
+    "%ArrayIteratorPrototype% should inherit @@iterator from %IteratorPrototype%",
   );
 
   // The iterator instance should inherit `.next` from `%ArrayIteratorPrototype%`.
   let next_key = PropertyKey::from_string(scope.alloc_string("next")?);
   let next_desc_on_it = scope
     .heap()
-    .get_property(it, &next_key)?
+    .get_property(it1, &next_key)?
     .ok_or(VmError::InvariantViolation("Array iterator missing next"))?;
   match next_desc_on_it.kind {
     PropertyKind::Data { value, .. } => {
@@ -173,7 +153,7 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   }
   assert!(scope
     .heap()
-    .object_get_own_property(it, &next_key)?
+    .object_get_own_property(it1, &next_key)?
     .is_none());
   let next_desc = scope
     .heap()
