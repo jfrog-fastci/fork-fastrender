@@ -57,7 +57,6 @@ mod url_search_params_iterator_kind_tests {
     assert!(matches!(err, VmError::TypeError(_)));
   }
 }
-
 #[derive(Debug, Clone, Copy)]
 struct RootedCallback {
   value: Value,

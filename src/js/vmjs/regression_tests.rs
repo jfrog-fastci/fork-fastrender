@@ -181,6 +181,30 @@ fn symbol_coercions_throw_typeerror() {
 }
 
 #[test]
+fn vm_js_string_pad_start_end() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        "a".padStart(3, "0") === "00a"
+          && "a".padEnd(3, "0") === "a00"
+          && "a".padStart(3) === "  a"
+          && "a".padEnd(3) === "a  "
+          && "abc".padStart(6, "01") === "010abc"
+          && "abc".padEnd(6, "01") === "abc010"
+          && "a".padStart(3, "") === "a"
+          && "a".padEnd(3, "") === "a"
+          && "abcd".padStart(2, "0") === "abcd"
+          && "abcd".padEnd(2, "0") === "abcd"
+          && "abc".padStart() === "abc"
+          && "abc".padEnd() === "abc"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn promise_rejection_tracker_api_smoke() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
