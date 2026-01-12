@@ -233,7 +233,7 @@ use types::WhiteSpace;
 use types::WillChange;
 use types::WordBreak;
 use types::WritingMode;
-use values::Length;
+use values::{Length, LengthUnit};
 
 // Re-export common types from values module
 // These are now public via the module system
@@ -1853,6 +1853,22 @@ impl ComputedStyle {
 
     if order < 0 && width.to_px() <= 0.0 {
       return Length::px(3.0);
+    }
+
+    // Chromium effectively snaps common half-pixel border widths (e.g. `1.5px`) to whole device
+    // pixels at dpr=1, yielding crisp borders and integer-aligned content (see `xkcd.com` fixture).
+    //
+    // Keep sub-1px borders as-authored so hairline borders can still be represented.
+    if width.calc.is_none()
+      && matches!(width.unit, LengthUnit::Px)
+      && width.value.is_finite()
+      && width.value >= 1.0
+    {
+      const EPS: f32 = 0.01;
+      let frac = width.value.fract().abs();
+      if (frac - 0.5).abs() <= EPS {
+        return Length::px(width.value.floor());
+      }
     }
 
     width

@@ -7,6 +7,7 @@
 mod absolute_position_body;
 mod abspos_bottom_inset_auto_height_containing_block;
 mod box_shadow_outset_cutout;
+mod inline_border_padding_line_box_height;
 mod fixed_flex_auto_height_does_not_use_intrinsic_block_size;
 mod float_external_base_x;
 mod grid_column_shorthand_longhand_merge;

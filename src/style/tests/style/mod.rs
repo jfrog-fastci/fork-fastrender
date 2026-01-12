@@ -12,6 +12,7 @@ mod background_repeat_logical_test;
 mod background_repeat_shorthand_order_test;
 mod background_repeat_shorthand_override_test;
 mod background_size_strict_test;
+mod border_width_half_pixel_snapping_test;
 mod border_image_properties_test;
 mod box_shorthand_invalid_values_ignored_test;
 mod cascade_no_panic_internal_invariants_test;
