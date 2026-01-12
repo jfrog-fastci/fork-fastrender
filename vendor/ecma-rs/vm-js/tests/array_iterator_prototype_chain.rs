@@ -4,7 +4,11 @@ use vm_js::{
 
 fn new_runtime() -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // This test executes a non-trivial inline script to observe iterator prototype chains via
+  // ordinary JS operations (`Object.getPrototypeOf`, `Object.prototype.toString`, etc.). `vm-js`
+  // retains `SourceText` + compiled code per `exec_script` call, so we give it a little more
+  // headroom than the 1MiB heaps used by many unit tests to avoid spurious OOM failures.
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap)
 }
 
@@ -36,21 +40,11 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   let intr = *rt.realm().intrinsics();
   let wks = *rt.realm().well_known_symbols();
 
-  // Generator tests in test262 compute `%IteratorPrototype%` from an Array iterator and compare it
-  // to `Object.getPrototypeOf(%GeneratorPrototype%)`.
-  //
-  // Run this check before borrowing `rt.heap` via a `Scope`, since `Scope` holds a mutable heap
-  // borrow and would otherwise prevent calling `exec_script`.
-  let generator_iterator_proto_match = rt.exec_script(
-    "(()=>{const IteratorProto=Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));function* g(){};const GeneratorProto=Object.getPrototypeOf(g.prototype);return Object.getPrototypeOf(GeneratorProto)===IteratorProto;})()",
-  )?;
-  assert_eq!(generator_iterator_proto_match, Value::Bool(true));
-
   // Use a single script to materialize the objects needed for the assertions below. Each
   // `exec_script` call stores `SourceText` + compiled code in the VM, which can exhaust small test
   // heaps when many scripts are executed.
   let init = rt.exec_script(
-    "(()=>{const it1=[][Symbol.iterator]();const it2=[][Symbol.iterator]();const v=[].values();return [it1,it2,v,Object.prototype.toString.call(it1)===\"[object Array Iterator]\"];})()",
+    "(()=>{const it1=[][Symbol.iterator]();const it2=[][Symbol.iterator]();const v=[].values();const IteratorProto=Object.getPrototypeOf(Object.getPrototypeOf(it1));function* g(){};const GeneratorProto=Object.getPrototypeOf(g.prototype);const okGen=Object.getPrototypeOf(GeneratorProto)===IteratorProto;return [it1,it2,v,Object.prototype.toString.call(it1)===\"[object Array Iterator]\",okGen];})()",
   )?;
   let Value::Object(init) = init else {
     return Err(VmError::InvariantViolation(
@@ -77,6 +71,7 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
     ));
   };
   assert_eq!(get_array_index(&mut scope, init, 3)?, Value::Bool(true));
+  assert_eq!(get_array_index(&mut scope, init, 4)?, Value::Bool(true));
 
   scope.push_root(Value::Object(it1))?;
   scope.push_root(Value::Object(it2))?;
