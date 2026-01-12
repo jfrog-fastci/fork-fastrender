@@ -290,6 +290,7 @@ pub(crate) struct WindowRealmUserData {
   /// This enables `window`/`document` (and `new EventTarget()`) event listeners in minimal realms
   /// created without a host DOM.
   events_dom_fallback: dom2::Document,
+  realm_document_registry: RealmDocumentRegistry,
   /// Cached JS `window` global object for mapping `EventTargetId::Window` back into JS when the
   /// target is not a DOM-backed node/document.
   window_obj: Option<GcObject>,
@@ -302,6 +303,43 @@ pub(crate) struct WindowRealmUserData {
   console_counts: HashMap<String, u64>,
   console_timers: HashMap<String, Duration>,
   console_group_depth: u8,
+}
+
+#[derive(Default)]
+struct RealmDocumentRegistry {
+  last_gc_runs: u64,
+  documents: HashMap<vm_js::WeakGcObject, Box<dom2::Document>>,
+}
+
+impl RealmDocumentRegistry {
+  fn sweep_if_needed(&mut self, heap: &Heap) {
+    let gc_runs = heap.gc_runs();
+    if gc_runs == self.last_gc_runs {
+      return;
+    }
+    self
+      .documents
+      .retain(|doc_obj, _dom| doc_obj.upgrade(heap).is_some());
+    self.last_gc_runs = gc_runs;
+  }
+
+  fn register(&mut self, document_obj: GcObject, dom: dom2::Document) {
+    self
+      .documents
+      .insert(vm_js::WeakGcObject::new(document_obj), Box::new(dom));
+  }
+
+  fn get_dom_ptr_for_events(
+    &mut self,
+    heap: &Heap,
+    document_obj: GcObject,
+  ) -> Option<NonNull<dom2::Document>> {
+    self.sweep_if_needed(heap);
+    self
+      .documents
+      .get_mut(&vm_js::WeakGcObject::new(document_obj))
+      .map(|dom| NonNull::from(dom.as_mut()))
+  }
 }
 
 impl std::fmt::Debug for WindowRealmUserData {
@@ -368,6 +406,7 @@ impl WindowRealmUserData {
       owned_dom2_documents: HashMap::new(),
       crypto_rng_state,
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
+      realm_document_registry: RealmDocumentRegistry::default(),
       window_obj: None,
       document_obj: None,
       location_obj: None,
@@ -375,6 +414,10 @@ impl WindowRealmUserData {
       console_timers: HashMap::new(),
       console_group_depth: 0,
     }
+  }
+
+  pub(crate) fn register_realm_document(&mut self, document_obj: GcObject, dom: dom2::Document) {
+    self.realm_document_registry.register(document_obj, dom);
   }
 
   pub(crate) fn document_url(&self) -> &str {
@@ -5464,6 +5507,38 @@ fn dom_ptr_for_event_registry(host: &mut dyn VmHost) -> Option<NonNull<dom2::Doc
   }
 
   None
+}
+
+pub(crate) fn resolve_document_dom_ptr_for_events(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  document_obj: GcObject,
+) -> Result<(NonNull<dom2::Document>, bool), VmError> {
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::InvariantViolation(
+      "WindowRealm is missing required VM user data",
+    ));
+  };
+
+  data
+    .realm_document_registry
+    .sweep_if_needed(scope.heap());
+
+  if data.document_obj == Some(document_obj) {
+    if let Some(dom_ptr) = dom_ptr_for_event_registry(host) {
+      Ok((dom_ptr, false))
+    } else {
+      Ok((NonNull::from(&mut data.events_dom_fallback), true))
+    }
+  } else if let Some(dom_ptr) = data
+    .realm_document_registry
+    .get_dom_ptr_for_events(scope.heap(), document_obj)
+  {
+    Ok((dom_ptr, false))
+  } else {
+    Err(VmError::TypeError("Illegal invocation"))
+  }
 }
 
 fn dom_platform_mut(vm: &mut Vm) -> Option<&mut DomPlatform> {
@@ -28265,6 +28340,68 @@ mod tests {
     assert!(
       !document.is_dirty(),
       "no-op attribute writes must not mark BrowserDocumentDom2 dirty"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn realm_document_registry_sweeps_after_gc() -> Result<(), VmError> {
+    let mut window = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut host = VmJsHostContext::default();
+    let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
+
+    let extra_doc_obj = {
+      let mut scope = heap.scope();
+      let extra_doc_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(extra_doc_obj))?;
+
+      vm
+        .user_data_mut::<WindowRealmUserData>()
+        .expect("missing WindowRealmUserData")
+        .register_realm_document(extra_doc_obj, dom2::Document::new(QuirksMode::NoQuirks));
+
+      assert_eq!(
+        vm.user_data_mut::<WindowRealmUserData>()
+          .expect("missing WindowRealmUserData")
+          .realm_document_registry
+          .documents
+          .len(),
+        1
+      );
+
+      let (_dom_ptr, is_fallback) =
+        resolve_document_dom_ptr_for_events(vm, &mut scope, &mut host, extra_doc_obj)?;
+      assert!(!is_fallback);
+
+      extra_doc_obj
+    };
+
+    heap.collect_garbage();
+    assert!(!heap.is_valid_object(extra_doc_obj));
+
+    assert_eq!(
+      vm.user_data_mut::<WindowRealmUserData>()
+        .expect("missing WindowRealmUserData")
+        .realm_document_registry
+        .documents
+        .len(),
+      1
+    );
+
+    let err = {
+      let mut scope = heap.scope();
+      resolve_document_dom_ptr_for_events(vm, &mut scope, &mut host, extra_doc_obj).unwrap_err()
+    };
+    assert!(matches!(err, VmError::TypeError("Illegal invocation")));
+
+    assert_eq!(
+      vm.user_data_mut::<WindowRealmUserData>()
+        .expect("missing WindowRealmUserData")
+        .realm_document_registry
+        .documents
+        .len(),
+      0
     );
 
     Ok(())
