@@ -330,4 +330,11 @@ reason = "second"
     let flaky = expectations.lookup("multi/sample.ts");
     assert_eq!(flaky.expectation.kind, ExpectationKind::Flaky);
   }
+
+  #[test]
+  fn manifest_loads_upstream_conformance_manifest() {
+    let path =
+      Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/conformance-upstream/manifest.toml");
+    Expectations::from_path(&path).expect("upstream conformance manifest parsed from file");
+  }
 }
