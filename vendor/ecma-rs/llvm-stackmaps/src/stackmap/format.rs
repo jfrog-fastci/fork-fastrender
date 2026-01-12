@@ -19,7 +19,8 @@ pub enum Location {
     Direct { size: u16, dwarf_reg: u16, offset: i32 },
     /// A value is held at the memory address `[register + offset]`.
     ///
-    /// For statepoints, stack slots are typically encoded as `Indirect` relative to SP.
+    /// For statepoints, stack slots are typically encoded as `Indirect` spill slots relative to SP
+    /// or FP (most commonly SP).
     Indirect { size: u16, dwarf_reg: u16, offset: i32 },
     /// A small (signed) constant stored inline as an `i32`.
     Constant { size: u16, value: i64 },
@@ -140,7 +141,10 @@ impl StackMapRecord {
 ///
 /// This also carries per-function metadata required by stack walkers:
 /// - `function_address`: base address used to compute `pc`
-/// - `stack_size`: frame size (used to translate SP-relative stack slots to absolute addresses)
+/// - `stack_size`: fixed per-function frame size reported by LLVM.
+///
+///   Note: this value does **not** account for per-call stack adjustments (outgoing stack arguments,
+///   alignment shims, etc), so it cannot reconstruct an exact *callsite* SP in general.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Callsite {
     pub pc: u64,
