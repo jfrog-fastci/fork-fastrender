@@ -321,6 +321,9 @@ impl RememberedSet for WorldStoppedRememberedSet {
     // those buffers as part of the remembered set.
     registry::for_each_thread(|thread| {
       thread.remset_for_each_raw(|obj| {
+        if obj.is_null() {
+          return;
+        }
         if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
           std::process::abort();
         }
@@ -346,14 +349,18 @@ impl RememberedSet for WorldStoppedRememberedSet {
       }
     }
 
-    // Clear per-thread buffers as well; otherwise the remembered bits would remain set and future
-    // write-barrier inserts would be dropped as duplicates.
+    // Clear per-thread buffers too. These entries are only visible to stop-the-world GC; if we
+    // leave them behind then:
+    // - future minor GCs can rescan stale remembered objects, and
+    // - `remembered_set_contains` (header bit) will remain set unexpectedly.
     registry::for_each_thread(|thread| {
       thread.remset_drain_raw(|obj| {
+        if obj.is_null() {
+          return;
+        }
         if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
           std::process::abort();
         }
-        // SAFETY: Entries originate from the write barrier contract (object base pointers).
         unsafe {
           (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
         }
