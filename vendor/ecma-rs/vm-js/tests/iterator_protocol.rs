@@ -73,3 +73,65 @@ fn get_iterator_protocol_over_array_returns_iterator_result_objects() -> Result<
 
   Ok(())
 }
+
+#[test]
+fn get_iterator_protocol_respects_array_symbol_iterator_override() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let array = rt
+    .exec_script(
+      r#"
+        var a = [1,2,3];
+        a[Symbol.iterator] = function() {
+          var i = 0;
+          return {
+            next: function() {
+              i++;
+              if (i === 1) return { value: 10, done: false };
+              if (i === 2) return { value: 20, done: false };
+              return { value: undefined, done: true };
+            }
+          };
+        };
+        a
+      "#,
+    )
+    .unwrap();
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut scope = heap.scope();
+
+  // Root the array across iterator acquisition to keep it alive if allocations trigger GC.
+  scope.push_root(array)?;
+
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+
+  let mut record = iterator::get_iterator_protocol(vm, &mut host, &mut hooks, &mut scope, array)?;
+  scope.push_root(record.iterator)?;
+
+  let r1 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &mut record, None)?;
+  scope.push_root(r1)?;
+  assert_eq!(
+    iterator::iterator_value(vm, &mut host, &mut hooks, &mut scope, r1)?,
+    Value::Number(10.0)
+  );
+  assert!(!iterator::iterator_complete(vm, &mut host, &mut hooks, &mut scope, r1)?);
+
+  let r2 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &mut record, None)?;
+  scope.push_root(r2)?;
+  assert_eq!(
+    iterator::iterator_value(vm, &mut host, &mut hooks, &mut scope, r2)?,
+    Value::Number(20.0)
+  );
+  assert!(!iterator::iterator_complete(vm, &mut host, &mut hooks, &mut scope, r2)?);
+
+  let r3 = iterator::iterator_next(vm, &mut host, &mut hooks, &mut scope, &mut record, None)?;
+  scope.push_root(r3)?;
+  assert_eq!(
+    iterator::iterator_value(vm, &mut host, &mut hooks, &mut scope, r3)?,
+    Value::Undefined
+  );
+  assert!(iterator::iterator_complete(vm, &mut host, &mut hooks, &mut scope, r3)?);
+
+  Ok(())
+}

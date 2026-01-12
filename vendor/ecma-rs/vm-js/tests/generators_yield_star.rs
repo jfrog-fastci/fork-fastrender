@@ -11,16 +11,76 @@ fn yield_star_over_array_delegates_values() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let script = r#"
+    var log = '';
+
+    function IteratorWrapper(iterator) {
+        return {
+            next: function (val) {
+                log += 'n';
+                return iterator.next(val);
+            },
+
+            throw: function (exn) {
+                log += 't';
+                return iterator.throw(exn);
+            }
+        };
+    }
+
+    function IterableWrapper(iterable) {
+        var ret = {};
+
+        ret[Symbol.iterator] = function () {
+            log += 'i';
+            return IteratorWrapper(iterable[Symbol.iterator]());
+        }
+
+        return ret;
+    }
+
     function* d(x) { return yield* x; }
-    var it = d([1,2,3]);
+
+    // Wrapper iterable: yield* must call @@iterator to acquire the iterator and then call `next`
+    // repeatedly.
+    var it = d(IterableWrapper([1,2,3]));
     var r1 = it.next();
     var r2 = it.next();
     var r3 = it.next();
     var r4 = it.next();
-    r1.value === 1 && r1.done === false &&
-    r2.value === 2 && r2.done === false &&
-    r3.value === 3 && r3.done === false &&
-    r4.value === undefined && r4.done === true
+
+    var ok1 =
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.value === 3 && r3.done === false &&
+      r4.value === undefined && r4.done === true &&
+      log === 'innnn';
+
+    // Array: yield* must still use the iterator protocol (i.e. it must call @@iterator), even when
+    // the delegate is a normal Array.
+    var saved = Array.prototype[Symbol.iterator];
+    Array.prototype.__origIterator = saved;
+    Array.prototype[Symbol.iterator] = function () {
+      log += 'i';
+      return IteratorWrapper(this.__origIterator());
+    };
+
+    it = d([1,2,3]);
+    r1 = it.next();
+    r2 = it.next();
+    r3 = it.next();
+    r4 = it.next();
+
+    var ok2 =
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.value === 3 && r3.done === false &&
+      r4.value === undefined && r4.done === true &&
+      log === 'innnninnnn';
+
+    Array.prototype[Symbol.iterator] = saved;
+    Array.prototype.__origIterator = undefined;
+
+    ok1 && ok2
   "#;
 
   match rt.exec_script(script) {

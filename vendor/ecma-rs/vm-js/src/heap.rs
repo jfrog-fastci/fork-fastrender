@@ -1380,6 +1380,9 @@ impl Heap {
   ///
   /// Returns a `TypeError` if the backing `ArrayBuffer` is detached.
   ///
+  /// If the backing `ArrayBuffer` is detached or the view is out of bounds, this also returns
+  /// `Ok(0)` and does not write.
+  ///
   /// # Errors
   ///
   /// Returns an error if `obj` is not a live `Uint8Array` object or if its backing `ArrayBuffer` is
