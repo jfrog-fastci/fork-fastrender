@@ -418,9 +418,31 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
   }
 }
 
+/// Returns true when handling the shortcut should immediately remove page focus.
+///
+/// Some shortcuts open a chrome-controlled text input surface (address bar, find bar, tab search,
+/// etc). The `browser` binary uses this to prevent `WindowEvent::ReceivedCharacter` events (which can
+/// arrive before the next egui frame) from being forwarded into the page.
+pub fn shortcut_preempts_page_focus(action: ShortcutAction) -> bool {
+  matches!(
+    action,
+    ShortcutAction::FocusAddressBar
+      | ShortcutAction::FindInPage
+      | ShortcutAction::NewTab
+      | ShortcutAction::OpenTabSearch
+      | ShortcutAction::ToggleBookmarksManager
+      | ShortcutAction::ShowBookmarksManager
+      | ShortcutAction::ShowHistory
+      | ShortcutAction::OpenClearBrowsingDataDialog
+  )
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{map_shortcut_with_platform, Key, KeyEvent, Modifiers, Platform, ShortcutAction};
+  use super::{
+    map_shortcut_with_platform, shortcut_preempts_page_focus, Key, KeyEvent, Modifiers, Platform,
+    ShortcutAction,
+  };
 
   #[test]
   fn ctrl_l_focuses_address_bar() {
@@ -1190,5 +1212,54 @@ mod tests {
       ),
       Some(ShortcutAction::OpenClearBrowsingDataDialog)
     );
+  }
+
+  #[test]
+  fn shortcuts_that_open_chrome_text_inputs_preempt_page_focus() {
+    for action in [
+      ShortcutAction::FocusAddressBar,
+      ShortcutAction::FindInPage,
+      ShortcutAction::NewTab,
+      ShortcutAction::OpenTabSearch,
+      ShortcutAction::ToggleBookmarksManager,
+      ShortcutAction::ShowBookmarksManager,
+      ShortcutAction::ShowHistory,
+      ShortcutAction::OpenClearBrowsingDataDialog,
+    ] {
+      assert!(
+        shortcut_preempts_page_focus(action),
+        "{action:?} should preempt page focus"
+      );
+    }
+  }
+
+  #[test]
+  fn other_shortcuts_do_not_preempt_page_focus() {
+    for action in [
+      ShortcutAction::Back,
+      ShortcutAction::Forward,
+      ShortcutAction::Reload,
+      ShortcutAction::GoHome,
+      ShortcutAction::NextTab,
+      ShortcutAction::PrevTab,
+      ShortcutAction::ActivateTabNumber(1),
+      ShortcutAction::ZoomIn,
+      ShortcutAction::ZoomOut,
+      ShortcutAction::ZoomReset,
+      ShortcutAction::Copy,
+      ShortcutAction::Cut,
+      ShortcutAction::Paste,
+      ShortcutAction::SelectAll,
+      ShortcutAction::PageUp,
+      ShortcutAction::PageDown,
+      ShortcutAction::Space,
+      ShortcutAction::Home,
+      ShortcutAction::End,
+    ] {
+      assert!(
+        !shortcut_preempts_page_focus(action),
+        "{action:?} should not preempt page focus"
+      );
+    }
   }
 }

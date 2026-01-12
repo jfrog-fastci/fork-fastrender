@@ -1874,6 +1874,7 @@ struct App {
   bookmarks: fastrender::ui::BookmarkStore,
   profile_autosave: Option<fastrender::ui::ProfileAutosaveHandle>,
   history_panel_open: bool,
+  history_panel_request_focus_search: bool,
   bookmarks_panel_open: bool,
   downloads_panel_open: bool,
   clear_browsing_data_dialog_open: bool,
@@ -2343,6 +2344,7 @@ impl App {
       bookmarks,
       profile_autosave: None,
       history_panel_open: false,
+      history_panel_request_focus_search: false,
       bookmarks_panel_open: false,
       downloads_panel_open: false,
       clear_browsing_data_dialog_open: false,
@@ -6029,10 +6031,12 @@ impl App {
 
             // Ensure any pending hover update is applied before we start a new pointer interaction.
             self.flush_pending_pointer_move();
-            let Some(rect) = self.page_rect_points else {
-              return;
-            };
-            if !rect.contains(pos_points) {
+            if !ensure_page_focus_cleared_for_chrome_click(
+              self.page_rect_points,
+              pos_points,
+              &mut self.page_has_focus,
+              &mut self.cursor_in_page,
+            ) {
               return;
             }
             let pos = fastrender::Point::new(pos_points.x, pos_points.y);
@@ -6333,6 +6337,10 @@ impl App {
           if let Some(action) = shortcut_action {
             use fastrender::ui::shortcuts::ShortcutAction;
 
+            if fastrender::ui::shortcuts::shortcut_preempts_page_focus(action) {
+              self.page_has_focus = false;
+            }
+
             match action {
               ShortcutAction::Back | ShortcutAction::Forward => {
                 // On macOS, egui does not expose bracket keys as `egui::Key` variants, so chrome
@@ -6392,20 +6400,20 @@ impl App {
 
               // Page-level shortcuts only apply when the rendered page has focus and egui isn't
               // actively editing text (e.g. address bar).
-               ShortcutAction::Copy
-               | ShortcutAction::Cut
-               | ShortcutAction::Paste
-               | ShortcutAction::SelectAll
-               | ShortcutAction::PageUp
-               | ShortcutAction::PageDown => {
-                  // If egui is actively editing text (e.g. the address bar), don't handle page-level
-                  // key events.
-                  if self.egui_ctx.wants_keyboard_input() {
-                    return;
-                  }
-                  if !self.page_has_focus {
-                    return;
-                  }
+              ShortcutAction::Copy
+              | ShortcutAction::Cut
+              | ShortcutAction::Paste
+              | ShortcutAction::SelectAll
+              | ShortcutAction::PageUp
+              | ShortcutAction::PageDown => {
+                // If egui is actively editing text (e.g. the address bar), don't handle page-level
+                // key events.
+                if self.egui_ctx.wants_keyboard_input() {
+                  return;
+                }
+                if !self.page_has_focus {
+                  return;
+                }
                 let Some(tab_id) = self.browser_state.active_tab_id() else {
                   return;
                 };
@@ -6456,6 +6464,7 @@ impl App {
                 }
                 return;
               }
+
               // Allow these keys to be forwarded to the page so focused text controls can handle
               // them for caret navigation and text entry.
               ShortcutAction::Space | ShortcutAction::Home | ShortcutAction::End => {}
@@ -6817,6 +6826,14 @@ impl App {
           if self.history_panel_open {
             self.bookmarks_panel_open = false;
             self.downloads_panel_open = false;
+            self.bookmarks_manager.clear_transient();
+            self.history_panel_request_focus_search = true;
+            self.page_has_focus = false;
+          } else {
+            self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+              && !self.bookmarks_panel_open
+              && !self.browser_state.chrome.tab_search.open
+              && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
           }
           self.window.request_redraw();
         }
@@ -6831,7 +6848,10 @@ impl App {
             self.page_has_focus = false;
           } else {
             self.bookmarks_manager.clear_transient();
-            self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus;
+            self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+              && !self.history_panel_open
+              && !self.browser_state.chrome.tab_search.open
+              && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
           }
           self.window.request_redraw();
         }
@@ -7422,12 +7442,29 @@ impl App {
             self.history_panel_open = !self.history_panel_open;
             if self.history_panel_open {
               self.bookmarks_panel_open = false;
+              self.bookmarks_manager.clear_transient();
+              self.history_panel_request_focus_search = true;
+              self.page_has_focus = false;
+            } else {
+              self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+                && !self.bookmarks_panel_open
+                && !self.browser_state.chrome.tab_search.open
+                && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
             }
           }
           fastrender::ui::MenuCommand::ToggleBookmarksPanel => {
             self.bookmarks_panel_open = !self.bookmarks_panel_open;
             if self.bookmarks_panel_open {
               self.history_panel_open = false;
+              self.history_panel_request_focus_search = false;
+              self.bookmarks_manager.request_focus_search();
+              self.page_has_focus = false;
+            } else {
+              self.bookmarks_manager.clear_transient();
+              self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
+                && !self.history_panel_open
+                && !self.browser_state.chrome.tab_search.open
+                && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
             }
           }
           fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
@@ -7610,14 +7647,24 @@ impl App {
           });
 
           ui.horizontal(|ui| {
+            let search_id = ui.make_persistent_id("history_panel_search");
             let search = ui.add(
               egui::TextEdit::singleline(&mut self.browser_state.chrome.history_search_text)
+                .id(search_id)
                 .hint_text("Search history…")
                 .desired_width(f32::INFINITY),
             );
             search.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search history")
             });
+            if self.history_panel_request_focus_search {
+              search.request_focus();
+              self.history_panel_request_focus_search = false;
+              self.page_has_focus = false;
+            }
+            if search.has_focus() || search.clicked() {
+              self.page_has_focus = false;
+            }
             if ui.button("Clear browsing data…").clicked() {
               panel_actions.push(fastrender::ui::ChromeAction::OpenClearBrowsingDataDialog);
             }
@@ -8614,6 +8661,22 @@ fn reveal_file_in_os_file_manager(path: &std::path::Path) {
   }
 }
 
+#[cfg(feature = "browser_ui")]
+fn ensure_page_focus_cleared_for_chrome_click(
+  page_rect_points: Option<egui::Rect>,
+  pos_points: egui::Pos2,
+  page_has_focus: &mut bool,
+  cursor_in_page: &mut bool,
+) -> bool {
+  let in_page = page_rect_points.is_some_and(|rect| rect.contains(pos_points));
+  if in_page {
+    return true;
+  }
+  *page_has_focus = false;
+  *cursor_in_page = false;
+  false
+}
+
 #[cfg(test)]
 mod debug_log_env_tests {
   use super::{parse_env_bool, should_show_debug_log_ui};
@@ -8662,5 +8725,57 @@ mod mouse_button_mapping_tests {
       map_mouse_button(MouseButton::Other(10)),
       PointerButton::Other(10)
     );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod page_focus_tests {
+  use super::ensure_page_focus_cleared_for_chrome_click;
+
+  #[test]
+  fn chrome_click_clears_page_focus_when_outside_page_rect() {
+    let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(100.0, 80.0));
+    let mut page_has_focus = true;
+    let mut cursor_in_page = true;
+    let ok = ensure_page_focus_cleared_for_chrome_click(
+      Some(rect),
+      egui::pos2(0.0, 0.0),
+      &mut page_has_focus,
+      &mut cursor_in_page,
+    );
+    assert!(!ok);
+    assert!(!page_has_focus);
+    assert!(!cursor_in_page);
+  }
+
+  #[test]
+  fn page_click_does_not_clear_page_focus_when_inside_page_rect() {
+    let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(100.0, 80.0));
+    let mut page_has_focus = true;
+    let mut cursor_in_page = true;
+    let ok = ensure_page_focus_cleared_for_chrome_click(
+      Some(rect),
+      egui::pos2(15.0, 25.0),
+      &mut page_has_focus,
+      &mut cursor_in_page,
+    );
+    assert!(ok);
+    assert!(page_has_focus);
+    assert!(cursor_in_page);
+  }
+
+  #[test]
+  fn click_clears_page_focus_when_page_rect_unknown() {
+    let mut page_has_focus = true;
+    let mut cursor_in_page = true;
+    let ok = ensure_page_focus_cleared_for_chrome_click(
+      None,
+      egui::pos2(0.0, 0.0),
+      &mut page_has_focus,
+      &mut cursor_in_page,
+    );
+    assert!(!ok);
+    assert!(!page_has_focus);
+    assert!(!cursor_in_page);
   }
 }
