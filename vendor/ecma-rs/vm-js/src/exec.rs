@@ -1917,48 +1917,6 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn iterator_close_on_error_force_close(
-    &mut self,
-    scope: &mut Scope<'_>,
-    record: &iterator::IteratorRecord,
-    err: VmError,
-  ) -> VmError {
-    let original_is_throw = err.is_throw_completion();
-
-    // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
-    if original_is_throw {
-      if let Some(thrown) = err.thrown_value() {
-        if let Err(root_err) = scope.push_root(thrown) {
-          return root_err;
-        }
-      }
-    }
-
-    match iterator::iterator_close(
-      self.vm,
-      &mut *self.host,
-      &mut *self.hooks,
-      scope,
-      record,
-      iterator::CloseCompletionKind::Throw,
-    ) {
-      Ok(()) => err,
-      Err(close_err) => {
-        // `IteratorClose` suppression rules:
-        // - If the original completion is a throw completion, suppress errors from
-        //   `GetMethod("return")` / `Call(return)`.
-        // - Never suppress fatal VM errors (OOM/termination).
-        if original_is_throw && close_err.is_throw_completion() {
-          err
-        } else if original_is_throw {
-          close_err
-        } else {
-          err
-        }
-      }
-    }
-  }
-
   /// Implements `IteratorClose` for operations that return a `Completion` record.
   ///
   /// Iterator closing errors override non-throw completions, but are suppressed for throw
