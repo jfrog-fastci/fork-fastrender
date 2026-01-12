@@ -644,3 +644,294 @@ fn animations_override_transitions_when_both_apply() {
   );
   assert_eq!((g, b, a), (0, 0, 255));
 }
+
+#[test]
+fn animation_play_state_paused_freezes_time_and_resume_preserves_current_time() {
+  ensure_test_env();
+
+  use fastrender::animation::{apply_animations_with_state, AnimationStateStore};
+  use fastrender::css::parser::parse_stylesheet;
+  use fastrender::scroll::ScrollState;
+  use fastrender::style::media::MediaContext;
+  use fastrender::style::types::{AnimationPlayState, TransitionTimingFunction};
+  use fastrender::{ComputedStyle, FragmentNode, FragmentTree, Point, Rect, Size};
+  use std::sync::Arc;
+  use std::time::Duration;
+
+  let sheet =
+    parse_stylesheet("@keyframes fade { from { opacity: 0; } to { opacity: 1; } }").expect("sheet");
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(100.0, 100.0));
+  let rule = keyframes
+    .into_iter()
+    .find(|k| k.name == "fade")
+    .expect("fade keyframes");
+
+  let mut style_running = ComputedStyle::default();
+  style_running.opacity = 1.0;
+  style_running.animation_names = vec![Some("fade".to_string())];
+  style_running.animation_durations = vec![1000.0].into();
+  style_running.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+  style_running.animation_play_states = vec![AnimationPlayState::Running].into();
+
+  let mut style_paused = style_running.clone();
+  style_paused.animation_play_states = vec![AnimationPlayState::Paused].into();
+
+  let make_tree = |style: ComputedStyle| {
+    let mut root =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), 1, vec![]);
+    root.style = Some(Arc::new(style));
+    let mut tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
+    tree.keyframes.insert("fade".to_string(), rule.clone());
+    tree
+  };
+
+  let scroll_state = ScrollState::with_viewport(Point::ZERO);
+  let mut store = AnimationStateStore::new();
+
+  // Initialize at t=0 so the timing state represents a document that started at 0ms.
+  let mut running_0 = make_tree(style_running.clone());
+  apply_animations_with_state(
+    &mut running_0,
+    &scroll_state,
+    Duration::from_millis(0),
+    &mut store,
+  );
+  let opacity_running_0 = running_0.root.style.as_deref().expect("style").opacity;
+  assert!(
+    opacity_running_0.abs() < 1e-6,
+    "expected opacity=0 at t=0ms, got {}",
+    opacity_running_0
+  );
+
+  // Frame 1: running at t=700ms => opacity 0.7.
+  let mut running_700 = make_tree(style_running.clone());
+  apply_animations_with_state(
+    &mut running_700,
+    &scroll_state,
+    Duration::from_millis(700),
+    &mut store,
+  );
+  let opacity_running_700 = running_700.root.style.as_deref().expect("style").opacity;
+  assert!(
+    (opacity_running_700 - 0.7).abs() < 1e-6,
+    "expected opacity=0.7, got {}",
+    opacity_running_700
+  );
+
+  // Frame 2: pause at t=700ms. Value should not jump.
+  let mut paused_700 = make_tree(style_paused.clone());
+  apply_animations_with_state(
+    &mut paused_700,
+    &scroll_state,
+    Duration::from_millis(700),
+    &mut store,
+  );
+  let opacity_paused_700 = paused_700.root.style.as_deref().expect("style").opacity;
+  assert!(
+    (opacity_paused_700 - opacity_running_700).abs() < 1e-6,
+    "expected pause to preserve opacity at t=700ms (running={}, paused={})",
+    opacity_running_700,
+    opacity_paused_700
+  );
+
+  // Frame 3: still paused at t=900ms. Current time should remain frozen at 700ms.
+  let mut paused_900 = make_tree(style_paused.clone());
+  apply_animations_with_state(
+    &mut paused_900,
+    &scroll_state,
+    Duration::from_millis(900),
+    &mut store,
+  );
+  let opacity_paused_900 = paused_900.root.style.as_deref().expect("style").opacity;
+  assert!(
+    (opacity_paused_900 - opacity_running_700).abs() < 1e-6,
+    "expected paused opacity to remain frozen (expected={}, got={})",
+    opacity_running_700,
+    opacity_paused_900
+  );
+
+  // Frame 4: resume at t=900ms. Value should still be the paused value at the moment of resuming.
+  let mut running_900 = make_tree(style_running.clone());
+  apply_animations_with_state(
+    &mut running_900,
+    &scroll_state,
+    Duration::from_millis(900),
+    &mut store,
+  );
+  let opacity_running_900 = running_900.root.style.as_deref().expect("style").opacity;
+  assert!(
+    (opacity_running_900 - opacity_running_700).abs() < 1e-6,
+    "expected resume to start from paused time (expected={}, got={})",
+    opacity_running_700,
+    opacity_running_900
+  );
+
+  // Frame 5: after resuming, time continues to advance from the paused point.
+  // Between t=900ms and t=1000ms, only 100ms should elapse on the animation clock:
+  // 700ms + 100ms = 800ms => opacity 0.8.
+  let mut running_1000 = make_tree(style_running.clone());
+  apply_animations_with_state(
+    &mut running_1000,
+    &scroll_state,
+    Duration::from_millis(1000),
+    &mut store,
+  );
+  let opacity_running_1000 = running_1000.root.style.as_deref().expect("style").opacity;
+  assert!(
+    (opacity_running_1000 - 0.8).abs() < 1e-6,
+    "expected opacity=0.8 after resuming, got {}",
+    opacity_running_1000
+  );
+}
+
+#[test]
+fn animation_fill_mode_none_switches_to_keyframes_at_delay_boundary() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        opacity: 1;
+        animation: fade 1000ms linear 500ms none;
+      }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  // Before delay: animation has no effect (fill-mode: none), so the element uses opacity: 1.
+  let pixmap_499 = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(499.0),
+    )
+    .expect("paint at 499ms");
+  assert_eq!(pixel(&pixmap_499, 5, 5), (255, 0, 0, 255));
+
+  // At the delay boundary, the animation becomes active and should sample its start keyframe.
+  let pixmap_500 = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(500.0),
+    )
+    .expect("paint at 500ms");
+  assert_eq!(pixel(&pixmap_500, 5, 5), (0, 0, 0, 255));
+}
+
+#[test]
+fn animation_fill_mode_forwards_applies_end_state_at_end_boundary() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(30, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      .box {
+        position: absolute;
+        top: 0;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        opacity: 0;
+        animation: fade 1000ms linear;
+      }
+      #none { left: 0; animation-fill-mode: none; }
+      #forwards { left: 10px; animation-fill-mode: forwards; }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="none" class="box"></div>
+    <div id="forwards" class="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  // At the end boundary, fill-forwards should hold the end keyframe (opacity 1), while fill none
+  // should fall back to the underlying style (opacity 0).
+  let pixmap = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(1000.0),
+    )
+    .expect("paint at 1000ms");
+
+  assert_eq!(pixel(&pixmap, 5, 5), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 5), (255, 0, 0, 255));
+}
+
+#[test]
+fn starting_style_transition_respects_delay_and_end_boundaries() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      @starting-style { #box { opacity: 0; } }
+      #box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        opacity: 1;
+        transition: opacity 1000ms linear 500ms;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  // Before and at the delay boundary, transitions hold their start value (opacity 0).
+  for time_ms in [0.0, 499.0, 500.0] {
+    let pixmap = prepared
+      .paint_with_options(
+        PreparedPaintOptions::new()
+          .with_background(bg)
+          .with_animation_time(time_ms),
+      )
+      .expect("paint");
+    assert_eq!(
+      pixel(&pixmap, 5, 5),
+      (0, 0, 0, 255),
+      "expected start value at t={time_ms}ms"
+    );
+  }
+
+  // Mid-transition: (1000 - 500) / 1000 == 0.5.
+  let pixmap_mid = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(1000.0),
+    )
+    .expect("paint mid");
+  let (r, g, b, a) = pixel(&pixmap_mid, 5, 5);
+  assert!(
+    (120..=135).contains(&r),
+    "expected ~50% blended red at 1000ms, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+
+  // At the end boundary (delay + duration), the transition should stop applying and the element
+  // should render at its after-change computed value (opacity 1).
+  let pixmap_end = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(1500.0),
+    )
+    .expect("paint end");
+  assert_eq!(pixel(&pixmap_end, 5, 5), (255, 0, 0, 255));
+}

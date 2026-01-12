@@ -2,12 +2,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::geometry::Size;
-use crate::style::types::{OutlineColor, TransitionBehavior, TransitionTimingFunction};
+use crate::style::types::{
+  AnimationDirection, AnimationFillMode, OutlineColor, TransitionBehavior, TransitionTimingFunction,
+};
 use crate::style::values::{CustomPropertySyntax, CustomPropertyValue};
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::{BoxNode, BoxTree, GeneratedPseudoElement};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
+use super::timing as wa_timing;
 use super::{AnimatedValue, AnimationResolveContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,7 +36,7 @@ pub(super) struct SampledTransition {
 #[derive(Debug, Clone)]
 pub(super) struct TransitionRecord {
   pub(super) property: Arc<str>,
-  pub(super) start_time_ms: f32,
+  timing: wa_timing::AnimationTimingState,
   pub(super) delay_ms: f32,
   pub(super) duration_ms: f32,
   pub(super) timing_function: TransitionTimingFunction,
@@ -46,9 +49,21 @@ pub(super) struct TransitionRecord {
 }
 
 impl TransitionRecord {
-  fn raw_progress(&self, now_ms: f32) -> f32 {
+  pub(super) fn start_time_ms(&self) -> f32 {
+    self.timing.start_time().as_millis().unwrap_or(0.0) as f32
+  }
+
+  fn raw_progress(&self, timeline_time: wa_timing::TimeValue) -> f32 {
     let duration_ms = self.duration_ms.max(0.0);
-    let elapsed = now_ms - self.start_time_ms - self.delay_ms;
+    let current_time_ms = self
+      .timing
+      .current_time_at_timeline_time(timeline_time)
+      .as_millis()
+      .unwrap_or(0.0) as f32;
+    if !current_time_ms.is_finite() {
+      return 0.0;
+    }
+    let elapsed = current_time_ms - self.delay_ms;
     if duration_ms == 0.0 {
       // A 0-duration transition can still be "active" due to a positive delay: the property holds
       // the start value until the start time and then snaps to the end value.
@@ -63,9 +78,17 @@ impl TransitionRecord {
     (elapsed / duration_ms).clamp(0.0, 1.0)
   }
 
-  fn is_finished(&self, now_ms: f32) -> bool {
+  fn is_finished(&self, timeline_time: wa_timing::TimeValue) -> bool {
     let duration_ms = self.duration_ms.max(0.0);
-    now_ms - self.start_time_ms - self.delay_ms >= duration_ms
+    let current_time_ms = self
+      .timing
+      .current_time_at_timeline_time(timeline_time)
+      .as_millis()
+      .unwrap_or(0.0) as f32;
+    if !current_time_ms.is_finite() {
+      return false;
+    }
+    current_time_ms - self.delay_ms >= duration_ms
   }
 
   fn extract_value(
@@ -85,12 +108,7 @@ impl TransitionRecord {
     Some(TransitionValue::Builtin(value))
   }
 
-  fn sample_builtin(
-    &self,
-    _now_ms: f32,
-    ctx: &AnimationResolveContext,
-    progress: f32,
-  ) -> Option<AnimatedValue> {
+  fn sample_builtin(&self, ctx: &AnimationResolveContext, progress: f32) -> Option<AnimatedValue> {
     let name = self.property.as_ref();
 
     if !self.allow_discrete
@@ -211,69 +229,31 @@ impl TransitionRecord {
 
   pub(super) fn sample(
     &self,
-    now_ms: f32,
+    timeline_time: wa_timing::TimeValue,
     ctx: &AnimationResolveContext,
   ) -> Option<SampledTransition> {
     let duration_ms = self.duration_ms.max(0.0);
-    let elapsed = now_ms - self.start_time_ms - self.delay_ms;
+    let current_time = self.timing.current_time_at_timeline_time(timeline_time);
 
-    // CSS Transitions 1: A transition with a 0s duration can still be active due to a positive
-    // delay. During that delay, the property value holds the start value and then snaps to the end
-    // value when the start time is reached.
-    if duration_ms == 0.0 {
-      if elapsed >= 0.0 {
-        return None;
-      }
-      // During the delay, always use the start value regardless of the timing function.
-      let progress = 0.0;
+    // Model transitions as a single-iteration effect with backwards fill (the start value applies
+    // during the delay) and no forwards fill (once finished, the underlying computed style is the
+    // transition's end value).
+    let raw = wa_timing::sample_css_animation_effect(
+      current_time,
+      self.delay_ms,
+      duration_ms,
+      1.0,
+      AnimationDirection::Normal,
+      AnimationFillMode::Backwards,
+    )?;
 
-      let value = if self.property.starts_with("--") {
-        let value = self.sample_custom(ctx, progress)?;
-        TransitionValue::Custom(value)
-      } else {
-        let value = self.sample_builtin(now_ms, ctx, progress)?;
-        TransitionValue::Builtin(value)
-      };
-
-      return Some(SampledTransition {
-        value,
-        progress,
-        delay_ms: self.delay_ms,
-        duration_ms,
-      });
-    }
-    if elapsed >= duration_ms {
-      return None;
-    }
-
-    if elapsed < 0.0 {
-      // During the delay, always use the start value regardless of the timing function.
-      let progress = 0.0;
-
-      let value = if self.property.starts_with("--") {
-        let value = self.sample_custom(ctx, progress)?;
-        TransitionValue::Custom(value)
-      } else {
-        let value = self.sample_builtin(now_ms, ctx, progress)?;
-        TransitionValue::Builtin(value)
-      };
-
-      return Some(SampledTransition {
-        value,
-        progress,
-        delay_ms: self.delay_ms,
-        duration_ms,
-      });
-    }
-
-    let raw_progress = (elapsed / duration_ms).clamp(0.0, 1.0);
-    let progress = self.timing_function.value_at(raw_progress);
+    let progress = self.timing_function.value_at(raw.progress);
 
     let value = if self.property.starts_with("--") {
       let value = self.sample_custom(ctx, progress)?;
       TransitionValue::Custom(value)
     } else {
-      let value = self.sample_builtin(now_ms, ctx, progress)?;
+      let value = self.sample_builtin(ctx, progress)?;
       TransitionValue::Builtin(value)
     };
 
@@ -464,6 +444,7 @@ impl TransitionState {
     let cmp_ctx = default_update_context();
     let prev_styles = prev_box_tree.map(|tree| collect_element_data(tree).0);
     let event_time_ms = if prev_styles.is_some() { now_ms } else { 0.0 };
+    let now_time = wa_timing::TimeValue::resolved(now_ms as f64);
 
     for (key, after_style_arc) in new_styles {
       let before_style_arc = prev_styles
@@ -481,7 +462,7 @@ impl TransitionState {
         if let Some(prev_element) = prev_state.elements.get(&key) {
           element.completed = prev_element.completed.clone();
           for (name, record) in &prev_element.running {
-            if record.is_finished(now_ms) {
+            if record.is_finished(now_time) {
               element.completed.insert(name.clone(), record.clone());
             } else {
               element.running.insert(name.clone(), record.clone());
@@ -571,7 +552,7 @@ impl TransitionState {
             .map(|state| state.update_context_for_element(&key))
             .unwrap_or(cmp_ctx);
           let before_value = existing
-            .sample(now_ms, &sample_ctx)
+            .sample(now_time, &sample_ctx)
             .map(|sample| sample.value)
             .or_else(|| TransitionRecord::extract_value(before_style, name, &sample_ctx));
 
@@ -624,7 +605,7 @@ impl TransitionState {
               continue;
             };
 
-            let old_raw_progress = existing.raw_progress(now_ms);
+            let old_raw_progress = existing.raw_progress(now_time);
             let timing_output = existing.timing_function.value_at(old_raw_progress);
             let old_factor = existing.reversing_shortening_factor;
             let mut new_factor = (timing_output * old_factor + (1.0 - old_factor)).abs();
@@ -751,9 +732,11 @@ impl TransitionState {
           continue;
         }
 
+        let mut transition_timing = wa_timing::AnimationTimingState::new();
+        transition_timing.play(wa_timing::TimeValue::resolved(event_time_ms as f64));
         let record = TransitionRecord {
           property: name_arc.clone(),
-          start_time_ms: event_time_ms,
+          timing: transition_timing,
           delay_ms: delay,
           duration_ms: duration_clamped,
           timing_function: timing,
@@ -864,9 +847,11 @@ fn start_transition_record(
     (interpolator.apply)(&mut start_style, value);
   }
 
+  let mut transition_timing = wa_timing::AnimationTimingState::new();
+  transition_timing.play(wa_timing::TimeValue::resolved(now_ms as f64));
   Some(TransitionRecord {
     property: name_arc,
-    start_time_ms: now_ms,
+    timing: transition_timing,
     delay_ms,
     duration_ms,
     timing_function: timing,
@@ -1129,9 +1114,9 @@ mod tests {
       .and_then(|el| el.running.get("opacity"))
       .expect("reverse transition record");
     assert!(
-      (record.start_time_ms - 200.0).abs() < 1e-6,
+      (record.start_time_ms() - 200.0).abs() < 1e-6,
       "expected start time at reversal event, got {}",
-      record.start_time_ms,
+      record.start_time_ms(),
     );
     assert!(
       (record.duration_ms - 200.0).abs() < 1e-6,
@@ -1205,9 +1190,9 @@ mod tests {
     let eps = 1e-4;
 
     assert!(
-      (new_record.start_time_ms - 500.0).abs() < eps,
+      (new_record.start_time_ms() - 500.0).abs() < eps,
       "start_time={}",
-      new_record.start_time_ms
+      new_record.start_time_ms()
     );
     assert!(
       (new_record.duration_ms - expected_duration).abs() < eps,
@@ -1390,9 +1375,9 @@ mod tests {
     //   new factor = 0.25 * 0.2 + (1 - 0.2) = 0.85
     let eps = 1e-6;
     assert!(
-      (new_record.start_time_ms - 250.0).abs() < eps,
+      (new_record.start_time_ms() - 250.0).abs() < eps,
       "start_time={}",
-      new_record.start_time_ms
+      new_record.start_time_ms()
     );
     assert!(
       (new_record.reversing_shortening_factor - 0.85).abs() < eps,
@@ -1410,8 +1395,14 @@ mod tests {
     );
 
     let ctx = default_update_context();
-    let old_value = old_record.sample(250.0, &ctx).expect("old sample").value;
-    let new_value = new_record.sample(250.0, &ctx).expect("new sample").value;
+    let old_value = old_record
+      .sample(wa_timing::TimeValue::resolved(250.0), &ctx)
+      .expect("old sample")
+      .value;
+    let new_value = new_record
+      .sample(wa_timing::TimeValue::resolved(250.0), &ctx)
+      .expect("new sample")
+      .value;
     assert_eq!(
       old_value, new_value,
       "expected repeated reversal to be continuous at t=250ms"
@@ -1717,9 +1708,11 @@ mod tests {
   fn transition_state_completed_gate_prevents_restart_when_end_matches_after_value() {
     let before_style = make_opacity_style(0.0);
     let after_style = make_opacity_style(1.0);
+    let mut timing = wa_timing::AnimationTimingState::new();
+    timing.play(wa_timing::TimeValue::resolved(0.0));
     let completed_record = TransitionRecord {
       property: Arc::from("opacity"),
-      start_time_ms: 0.0,
+      timing,
       delay_ms: 0.0,
       duration_ms: 1000.0,
       timing_function: TransitionTimingFunction::Linear,

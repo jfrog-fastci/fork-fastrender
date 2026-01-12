@@ -10,6 +10,8 @@ pub mod timing;
 
 pub use state_store::AnimationStateStore;
 
+use self::timing as wa_timing;
+
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -6331,96 +6333,29 @@ fn pick<'a, T: Clone>(list: &'a [T], idx: usize, default: T) -> T {
     .unwrap_or_else(|| list.last().cloned().unwrap_or(default))
 }
 
-fn fill_backwards(fill: AnimationFillMode) -> bool {
-  matches!(fill, AnimationFillMode::Backwards | AnimationFillMode::Both)
+type AnimationProgress = wa_timing::EffectProgress;
+
+fn snapshot_current_time_for_time_based_animation(
+  timeline_time: wa_timing::TimeValue,
+  play_state: AnimationPlayState,
+) -> wa_timing::TimeValue {
+  // CSS time-based animations start at document time 0 for single-frame renders
+  // (elements exist from the initial render), and can be paused from the start
+  // without any prior frame history.
+  let start_time = wa_timing::TimeValue::resolved(0.0);
+  let mut timing = wa_timing::AnimationTimingState::new();
+  timing.play(start_time);
+  if matches!(play_state, AnimationPlayState::Paused) {
+    timing.pause(start_time);
+  }
+  timing.current_time_at_timeline_time(timeline_time)
 }
 
-fn fill_forwards(fill: AnimationFillMode) -> bool {
-  matches!(fill, AnimationFillMode::Forwards | AnimationFillMode::Both)
-}
-
-fn iteration_reverses(direction: AnimationDirection, iteration: u64) -> bool {
-  match direction {
-    AnimationDirection::Normal => false,
-    AnimationDirection::Reverse => true,
-    AnimationDirection::Alternate => iteration % 2 == 1,
-    AnimationDirection::AlternateReverse => iteration % 2 == 0,
-  }
-}
-
-fn animation_end_progress(direction: AnimationDirection, iterations: f32) -> f32 {
-  if !iterations.is_finite() {
-    return 0.0;
-  }
-  let iterations = iterations.max(0.0);
-  let reversed_start = iteration_reverses(direction, 0);
-  if iterations <= 0.0 {
-    return if reversed_start { 1.0 } else { 0.0 };
-  }
-
-  let whole = iterations.floor();
-  let frac = (iterations - whole).clamp(0.0, 1.0);
-  if frac <= f32::EPSILON {
-    let last_iteration = (whole.max(1.0) as u64).saturating_sub(1);
-    let reversed = iteration_reverses(direction, last_iteration);
-    if reversed {
-      0.0
-    } else {
-      1.0
-    }
-  } else {
-    let iteration = whole as u64;
-    let reversed = iteration_reverses(direction, iteration);
-    if reversed {
-      1.0 - frac
-    } else {
-      frac
-    }
-  }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct AnimationProgress {
-  progress: f32,
-  iteration: u64,
-}
-
-fn animation_end_iteration(iterations: f32) -> u64 {
-  if !iterations.is_finite() {
-    return 0;
-  }
-  let iterations = iterations.max(0.0);
-  if iterations <= 0.0 {
-    return 0;
-  }
-  let whole = iterations.floor();
-  let frac = (iterations - whole).clamp(0.0, 1.0);
-  if frac <= f32::EPSILON {
-    (whole.max(1.0) as u64).saturating_sub(1)
-  } else {
-    whole as u64
-  }
-}
-
-fn time_based_animation_progress_impl(
+fn time_based_animation_state_at_current_time(
   style: &ComputedStyle,
   idx: usize,
-  time_ms: f32,
-  respect_play_state: bool,
-) -> Option<f32> {
-  time_based_animation_state_impl(style, idx, time_ms, respect_play_state).map(|s| s.progress)
-}
-
-fn time_based_animation_state_impl(
-  style: &ComputedStyle,
-  idx: usize,
-  time_ms: f32,
-  respect_play_state: bool,
+  current_time: wa_timing::TimeValue,
 ) -> Option<AnimationProgress> {
-  if time_ms < 0.0 {
-    return None;
-  }
-
   let raw_duration = pick(&style.animation_durations, idx, 0.0);
   // CSS Animations Level 2 adds `animation-duration: auto`, primarily for scroll-driven
   // animations. This engine stores the keyword as a negative sentinel.
@@ -6432,6 +6367,7 @@ fn time_based_animation_state_impl(
   } else {
     raw_duration.max(0.0)
   };
+
   let delay = pick(&style.animation_delays, idx, 0.0);
   let iteration_count = pick(
     &style.animation_iteration_counts,
@@ -6448,85 +6384,41 @@ fn time_based_animation_state_impl(
     idx,
     AnimationFillMode::default(),
   );
+
+  wa_timing::sample_css_animation_effect(
+    current_time,
+    delay,
+    duration,
+    iteration_count.as_f32(),
+    direction,
+    fill,
+  )
+}
+
+fn time_based_animation_state_at_timeline_time(
+  style: &ComputedStyle,
+  idx: usize,
+  timeline_time_ms: f32,
+) -> Option<AnimationProgress> {
+  if !(timeline_time_ms.is_finite() && timeline_time_ms >= 0.0) {
+    return None;
+  }
+
+  let mut timeline = wa_timing::DocumentTimeline::new(0.0);
+  timeline.update(timeline_time_ms as f64);
+  let timeline_time = timeline.current_time();
+
   let play_state = pick(
     &style.animation_play_states,
     idx,
     AnimationPlayState::default(),
   );
-
-  let effective_time_ms = if respect_play_state {
-    match play_state {
-      AnimationPlayState::Running => time_ms,
-      AnimationPlayState::Paused => 0.0,
-    }
-  } else {
-    time_ms
-  };
-
-  let local_time = effective_time_ms - delay;
-  let iterations = iteration_count.as_f32();
-  let active_duration = if duration <= 0.0 {
-    0.0
-  } else if iterations.is_infinite() {
-    f32::INFINITY
-  } else {
-    duration * iterations.max(0.0)
-  };
-
-  let start_progress = if iteration_reverses(direction, 0) {
-    1.0
-  } else {
-    0.0
-  };
-  let end_progress = animation_end_progress(direction, iterations);
-  let end_iteration = animation_end_iteration(iterations);
-
-  if local_time < 0.0 {
-    return if fill_backwards(fill) {
-      Some(AnimationProgress {
-        progress: start_progress,
-        iteration: 0,
-      })
-    } else {
-      None
-    };
-  }
-
-  if active_duration.is_finite() && local_time >= active_duration {
-    return if fill_forwards(fill) {
-      Some(AnimationProgress {
-        progress: end_progress,
-        iteration: end_iteration,
-      })
-    } else {
-      None
-    };
-  }
-
-  if duration <= 0.0 {
-    return Some(AnimationProgress {
-      progress: end_progress,
-      iteration: end_iteration,
-    });
-  }
-
-  let total = (local_time / duration).max(0.0);
-  let iteration = total.floor() as u64;
-  let iteration_progress = (total - iteration as f32).clamp(0.0, 1.0);
-  let reversed = iteration_reverses(direction, iteration);
-  let directed = if reversed {
-    1.0 - iteration_progress
-  } else {
-    iteration_progress
-  };
-  Some(AnimationProgress {
-    progress: directed,
-    iteration,
-  })
+  let current_time = snapshot_current_time_for_time_based_animation(timeline_time, play_state);
+  time_based_animation_state_at_current_time(style, idx, current_time)
 }
 
 fn time_based_animation_progress(style: &ComputedStyle, idx: usize, time_ms: f32) -> Option<f32> {
-  time_based_animation_progress_impl(style, idx, time_ms, true)
+  time_based_animation_state_at_timeline_time(style, idx, time_ms).map(|s| s.progress)
 }
 
 fn settled_time_based_animation_progress(style: &ComputedStyle, idx: usize) -> Option<f32> {
@@ -6543,7 +6435,9 @@ fn settled_time_based_animation_state(
     AnimationPlayState::default(),
   );
   if matches!(play_state, AnimationPlayState::Paused) {
-    return time_based_animation_state_impl(style, idx, 0.0, true);
+    // In deterministic "settled" mode, paused animations are treated as paused
+    // from the initial state (currentTime=0).
+    return time_based_animation_state_at_timeline_time(style, idx, 0.0);
   }
 
   // `animation-duration: auto` is represented by a negative sentinel. For time-based timelines we
@@ -6553,7 +6447,7 @@ fn settled_time_based_animation_state(
     idx,
     AnimationFillMode::default(),
   );
-  if !fill_forwards(fill) {
+  if !wa_timing::fill_forwards(fill) {
     return None;
   }
 
@@ -6574,10 +6468,10 @@ fn settled_time_based_animation_state(
     AnimationDirection::default(),
   );
 
-  let end_progress = animation_end_progress(direction, iterations);
+  let end_progress = wa_timing::animation_end_progress(direction, iterations);
   Some(AnimationProgress {
     progress: end_progress,
-    iteration: animation_end_iteration(iterations),
+    iteration: wa_timing::animation_end_iteration(iterations),
   })
 }
 
@@ -7036,9 +6930,9 @@ fn scroll_driven_fill_progress(raw: f32, fill: AnimationFillMode) -> Option<f32>
     return None;
   }
   if raw < 0.0 {
-    fill_backwards(fill).then_some(0.0)
+    wa_timing::fill_backwards(fill).then_some(0.0)
   } else if raw > 1.0 {
-    fill_forwards(fill).then_some(1.0)
+    wa_timing::fill_forwards(fill).then_some(1.0)
   } else {
     Some(raw)
   }
@@ -7088,7 +6982,11 @@ fn progress_based_animation_state(
   // duration (clamped to be non-negative for pathological negative delays).
   let end_time_ms = (specified_delay_ms + active_duration_ms).max(0.0);
   let time_ms = overall_progress * end_time_ms;
-  time_based_animation_state_impl(style, idx, time_ms, false)
+  time_based_animation_state_at_current_time(
+    style,
+    idx,
+    wa_timing::TimeValue::resolved(time_ms as f64),
+  )
 }
 
 fn scroll_driven_effect_state(
@@ -7108,13 +7006,13 @@ fn scroll_driven_effect_state(
   );
 
   let iterations = iteration_count.as_f32();
-  let start_progress = if iteration_reverses(direction, 0) {
+  let start_progress = if wa_timing::iteration_reverses(direction, 0) {
     1.0
   } else {
     0.0
   };
-  let end_progress = animation_end_progress(direction, iterations);
-  let end_iteration = animation_end_iteration(iterations);
+  let end_progress = wa_timing::animation_end_progress(direction, iterations);
+  let end_iteration = wa_timing::animation_end_iteration(iterations);
 
   // Scroll/view timelines are finite (progress-based) timelines. When converting an animation to
   // proportions for a finite timeline, the Web Animations Level 2 proportional timing algorithm
@@ -7155,7 +7053,7 @@ fn scroll_driven_effect_state(
   let total = overall * finite_iterations;
   let iteration = total.floor() as u64;
   let iteration_progress = (total - iteration as f32).clamp(0.0, 1.0);
-  let reversed = iteration_reverses(direction, iteration);
+  let reversed = wa_timing::iteration_reverses(direction, iteration);
   let directed = if reversed {
     1.0 - iteration_progress
   } else {
@@ -7288,7 +7186,7 @@ fn view_progress_for_function(
 }
 
 struct AnimationApplyContext<'a> {
-  animation_time_ms: Option<f32>,
+  document_timeline: wa_timing::DocumentTimeline,
   state_store: Option<&'a mut AnimationStateStore>,
 }
 
@@ -7460,27 +7358,36 @@ fn apply_animations_to_node_scoped(
 
         let mut view_timeline_keyframe_resolver: Option<ViewTimelineKeyframeResolver> = None;
         let progress = match timeline_ref {
-          AnimationTimeline::Auto => match apply_ctx.animation_time_ms {
-            Some(timeline_time_ms) => {
-              if let Some(store) = apply_ctx.state_store.as_deref_mut() {
-                if let Some(box_id) = node.box_id() {
-                  let current_time_ms = store.sample_time_based_animation(
-                    box_id,
-                    idx,
-                    name,
-                    timeline_time_ms,
-                    play_state,
-                  );
-                  time_based_animation_state_impl(&*style_arc, idx, current_time_ms, false)
-                } else {
-                  time_based_animation_state_impl(&*style_arc, idx, timeline_time_ms, true)
-                }
+          AnimationTimeline::Auto => {
+            let timeline_time = apply_ctx.document_timeline.current_time();
+            if timeline_time.is_unresolved() {
+              settled_time_based_animation_state(&*style_arc, idx)
+            } else if let Some(store) = apply_ctx.state_store.as_deref_mut() {
+              if let Some(box_id) = node.box_id() {
+                let timeline_time_ms = timeline_time.as_millis().unwrap_or(0.0) as f32;
+                let current_time_ms = store.sample_time_based_animation(
+                  box_id,
+                  idx,
+                  name,
+                  timeline_time_ms,
+                  play_state,
+                );
+                time_based_animation_state_at_current_time(
+                  &*style_arc,
+                  idx,
+                  wa_timing::TimeValue::resolved(current_time_ms as f64),
+                )
               } else {
-                time_based_animation_state_impl(&*style_arc, idx, timeline_time_ms, true)
+                let current_time =
+                  snapshot_current_time_for_time_based_animation(timeline_time, play_state);
+                time_based_animation_state_at_current_time(&*style_arc, idx, current_time)
               }
+            } else {
+              let current_time =
+                snapshot_current_time_for_time_based_animation(timeline_time, play_state);
+              time_based_animation_state_at_current_time(&*style_arc, idx, current_time)
             }
-            None => settled_time_based_animation_state(&*style_arc, idx),
-          },
+          }
           AnimationTimeline::None => None,
           AnimationTimeline::Named(ref timeline_name) => {
             if matches!(play_state, AnimationPlayState::Paused) {
@@ -7681,7 +7588,7 @@ fn apply_animations_to_node_scoped(
             && progress.iteration > 0
             && !sample.animated.is_empty()
           {
-            let (start_progress, end_progress) = if iteration_reverses(direction, 0) {
+            let (start_progress, end_progress) = if wa_timing::iteration_reverses(direction, 0) {
               (1.0, 0.0)
             } else {
               (0.0, 1.0)
@@ -7910,9 +7817,14 @@ pub fn apply_animations(
     return;
   }
 
-  let animation_time_ms = animation_time.map(|time| time.as_secs_f32() * 1000.0);
+  let mut document_timeline = wa_timing::DocumentTimeline::new(0.0);
+  if let Some(time) = animation_time {
+    document_timeline.update(time.as_secs_f64() * 1000.0);
+  } else {
+    document_timeline.set_active(false);
+  }
   let mut apply_ctx = AnimationApplyContext {
-    animation_time_ms,
+    document_timeline,
     state_store: None,
   };
   let viewport = Rect::from_xywh(
@@ -8024,7 +7936,8 @@ pub fn apply_animations_with_state(
     return;
   }
 
-  let animation_time_ms = animation_time.as_secs_f32() * 1000.0;
+  let mut document_timeline = wa_timing::DocumentTimeline::new(0.0);
+  document_timeline.update(animation_time.as_secs_f64() * 1000.0);
   let viewport = Rect::from_xywh(
     0.0,
     0.0,
@@ -8077,7 +7990,7 @@ pub fn apply_animations_with_state(
 
   {
     let mut apply_ctx = AnimationApplyContext {
-      animation_time_ms: Some(animation_time_ms),
+      document_timeline,
       state_store: Some(state),
     };
 
@@ -8256,7 +8169,7 @@ fn transition_value_for_property(
   durations: &[f32],
   delays: &[f32],
   timings: &[TransitionTimingFunction],
-  time_ms: f32,
+  current_time: wa_timing::TimeValue,
   ctx: &AnimationResolveContext,
 ) -> Option<(AnimatedValue, f32, f32, f32)> {
   transition_value_for_property_with_duration_override(
@@ -8268,7 +8181,7 @@ fn transition_value_for_property(
     durations,
     delays,
     timings,
-    time_ms,
+    current_time,
     ctx,
     None,
   )
@@ -8283,7 +8196,7 @@ fn transition_value_for_property_with_duration_override(
   durations: &[f32],
   delays: &[f32],
   timings: &[TransitionTimingFunction],
-  time_ms: f32,
+  current_time: wa_timing::TimeValue,
   ctx: &AnimationResolveContext,
   duration_override_ms: Option<f32>,
 ) -> Option<(AnimatedValue, f32, f32, f32)> {
@@ -8299,25 +8212,16 @@ fn transition_value_for_property_with_duration_override(
   if duration + delay <= 0.0 {
     return None;
   }
-  let elapsed = time_ms - delay;
   let timing = pick(timings, idx, TransitionTimingFunction::Ease);
-  let progress = if duration == 0.0 {
-    if elapsed >= 0.0 {
-      return None;
-    }
-    0.0
-  } else {
-    if elapsed >= duration {
-      return None;
-    }
-    if elapsed < 0.0 {
-      // During the delay, always sample the start value regardless of the timing function.
-      0.0
-    } else {
-      let raw_progress = (elapsed / duration).clamp(0.0, 1.0);
-      timing.value_at(raw_progress)
-    }
-  };
+  let raw = wa_timing::sample_css_animation_effect(
+    current_time,
+    delay,
+    duration,
+    1.0,
+    AnimationDirection::Normal,
+    AnimationFillMode::Backwards,
+  )?;
+  let progress = timing.value_at(raw.progress);
 
   if !allow_discrete
     && matches!(
@@ -8403,7 +8307,7 @@ fn transition_value_for_custom_property(
   durations: &[f32],
   delays: &[f32],
   timings: &[TransitionTimingFunction],
-  time_ms: f32,
+  current_time: wa_timing::TimeValue,
   ctx: &AnimationResolveContext,
 ) -> Option<(CustomPropertyValue, f32, f32, f32)> {
   transition_value_for_custom_property_with_duration_override(
@@ -8415,7 +8319,7 @@ fn transition_value_for_custom_property(
     durations,
     delays,
     timings,
-    time_ms,
+    current_time,
     ctx,
     None,
   )
@@ -8430,7 +8334,7 @@ fn transition_value_for_custom_property_with_duration_override(
   durations: &[f32],
   delays: &[f32],
   timings: &[TransitionTimingFunction],
-  time_ms: f32,
+  current_time: wa_timing::TimeValue,
   ctx: &AnimationResolveContext,
   duration_override_ms: Option<f32>,
 ) -> Option<(CustomPropertyValue, f32, f32, f32)> {
@@ -8443,24 +8347,16 @@ fn transition_value_for_custom_property_with_duration_override(
   if duration + delay <= 0.0 {
     return None;
   }
-  let elapsed = time_ms - delay;
   let timing = pick(timings, idx, TransitionTimingFunction::Ease);
-  let progress = if duration == 0.0 {
-    if elapsed >= 0.0 {
-      return None;
-    }
-    0.0
-  } else {
-    if elapsed >= duration {
-      return None;
-    }
-    if elapsed < 0.0 {
-      0.0
-    } else {
-      let raw_progress = (elapsed / duration).clamp(0.0, 1.0);
-      timing.value_at(raw_progress)
-    }
-  };
+  let raw = wa_timing::sample_css_animation_effect(
+    current_time,
+    delay,
+    duration,
+    1.0,
+    AnimationDirection::Normal,
+    AnimationFillMode::Backwards,
+  )?;
+  let progress = timing.value_at(raw.progress);
 
   let from_val = start_style.custom_properties.get(name)?.clone();
   let to_val = style.custom_properties.get(name)?.clone();
@@ -8579,7 +8475,7 @@ fn transition_pairs<'a>(
 
 fn apply_transitions_to_fragment(
   fragment: &mut FragmentNode,
-  time_ms: f32,
+  current_time: wa_timing::TimeValue,
   viewport: Size,
   log_enabled: bool,
   parent_styles: Option<&ComputedStyle>,
@@ -8605,7 +8501,7 @@ fn apply_transitions_to_fragment(
       }
       apply_transitions_to_fragment(
         child,
-        time_ms,
+        current_time,
         viewport,
         log_enabled,
         Some(parent_for_children),
@@ -8628,7 +8524,7 @@ fn apply_transitions_to_fragment(
       }
       apply_transitions_to_fragment(
         snapshot_node,
-        time_ms,
+        current_time,
         viewport,
         log_enabled,
         Some(parent_for_children),
@@ -8638,11 +8534,9 @@ fn apply_transitions_to_fragment(
   };
 
   let start_arc = fragment.starting_style.clone();
-  let start_time_ms = 0.0;
   let duration_overrides_ms: Option<&HashMap<String, f32>> = None;
 
   if let Some(start_arc) = start_arc {
-    let time_ms = (time_ms - start_time_ms).max(0.0);
     if let Some(pairs) = transition_pairs(&style_arc.transition_properties, &start_arc, &style_arc)
     {
       let ctx = AnimationResolveContext::new(
@@ -8673,7 +8567,7 @@ fn apply_transitions_to_fragment(
             &style_arc.transition_durations,
             &style_arc.transition_delays,
             &style_arc.transition_timing_functions,
-            time_ms,
+            current_time,
             &ctx,
             duration_override_ms,
           );
@@ -8702,7 +8596,7 @@ fn apply_transitions_to_fragment(
           &style_arc.transition_durations,
           &style_arc.transition_delays,
           &style_arc.transition_timing_functions,
-          time_ms,
+          current_time,
           &ctx,
           duration_override_ms,
         );
@@ -8796,7 +8690,7 @@ fn apply_transitions_to_fragment(
     }
     apply_transitions_to_fragment(
       child,
-      time_ms,
+      current_time,
       viewport,
       log_enabled,
       Some(parent_for_children),
@@ -8826,7 +8720,7 @@ fn apply_transitions_to_fragment(
     }
     apply_transitions_to_fragment(
       snapshot_node,
-      time_ms,
+      current_time,
       viewport,
       log_enabled,
       Some(parent_for_children),
@@ -8837,7 +8731,7 @@ fn apply_transitions_to_fragment(
 fn apply_transition_state_to_fragment(
   fragment: &mut FragmentNode,
   transition_state: &TransitionState,
-  time_ms: f32,
+  timeline_time: wa_timing::TimeValue,
   viewport: Size,
   log_enabled: bool,
   parent_styles: Option<&ComputedStyle>,
@@ -8867,7 +8761,7 @@ fn apply_transition_state_to_fragment(
       apply_transition_state_to_fragment(
         child,
         transition_state,
-        time_ms,
+        timeline_time,
         viewport,
         log_enabled,
         Some(parent_for_children),
@@ -8895,7 +8789,7 @@ fn apply_transition_state_to_fragment(
       apply_transition_state_to_fragment(
         snapshot_node,
         transition_state,
-        time_ms,
+        timeline_time,
         viewport,
         log_enabled,
         Some(parent_for_children),
@@ -8923,7 +8817,7 @@ fn apply_transition_state_to_fragment(
         let mut custom_updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
         for (name_arc, record) in ordered_running {
           let name = name_arc.as_ref();
-          let Some(sample) = record.sample(time_ms, &ctx) else {
+          let Some(sample) = record.sample(timeline_time, &ctx) else {
             continue;
           };
           match sample.value {
@@ -9020,7 +8914,7 @@ fn apply_transition_state_to_fragment(
     apply_transition_state_to_fragment(
       child,
       transition_state,
-      time_ms,
+      timeline_time,
       viewport,
       log_enabled,
       Some(parent_for_children),
@@ -9047,7 +8941,7 @@ fn apply_transition_state_to_fragment(
     apply_transition_state_to_fragment(
       snapshot_node,
       transition_state,
-      time_ms,
+      timeline_time,
       viewport,
       log_enabled,
       Some(parent_for_children),
@@ -9064,15 +8958,29 @@ pub fn apply_transitions(tree: &mut FragmentTree, time_ms: f32, viewport: Size) 
     return;
   }
   let log_enabled = runtime::runtime_toggles().truthy("FASTR_LOG_TRANSITIONS");
+  let mut document_timeline = wa_timing::DocumentTimeline::new(0.0);
+  document_timeline.update(time_ms as f64);
+  let timeline_time = document_timeline.current_time();
   if let Some(state) = tree.transition_state.as_deref() {
-    apply_transition_state_to_fragment(&mut tree.root, state, time_ms, viewport, log_enabled, None);
+    apply_transition_state_to_fragment(
+      &mut tree.root,
+      state,
+      timeline_time,
+      viewport,
+      log_enabled,
+      None,
+    );
     for root in &mut tree.additional_fragments {
-      apply_transition_state_to_fragment(root, state, time_ms, viewport, log_enabled, None);
+      apply_transition_state_to_fragment(root, state, timeline_time, viewport, log_enabled, None);
     }
   } else {
-    apply_transitions_to_fragment(&mut tree.root, time_ms, viewport, log_enabled, None);
+    let mut transition_timing = wa_timing::AnimationTimingState::new();
+    transition_timing.play(wa_timing::TimeValue::resolved(0.0));
+    let current_time = transition_timing.current_time_at_timeline_time(timeline_time);
+
+    apply_transitions_to_fragment(&mut tree.root, current_time, viewport, log_enabled, None);
     for root in &mut tree.additional_fragments {
-      apply_transitions_to_fragment(root, time_ms, viewport, log_enabled, None);
+      apply_transitions_to_fragment(root, current_time, viewport, log_enabled, None);
     }
   }
 }
@@ -10701,7 +10609,7 @@ mod tests {
       &style.transition_durations,
       &style.transition_delays,
       &style.transition_timing_functions,
-      500.0,
+      wa_timing::TimeValue::resolved(500.0),
       &ctx,
     )
     .expect("sample top");
@@ -10714,7 +10622,7 @@ mod tests {
       &style.transition_durations,
       &style.transition_delays,
       &style.transition_timing_functions,
-      500.0,
+      wa_timing::TimeValue::resolved(500.0),
       &ctx,
     )
     .expect("sample right");
@@ -10755,6 +10663,7 @@ mod tests {
     let ctx = AnimationResolveContext::new(Size::new(800.0, 600.0), Size::new(100.0, 100.0));
 
     for time_ms in [0.0, 500.0] {
+      let current_time = wa_timing::TimeValue::resolved(time_ms as f64);
       let (value, progress, delay, duration) = transition_value_for_property(
         "opacity",
         idx,
@@ -10764,7 +10673,7 @@ mod tests {
         &style.transition_durations,
         &style.transition_delays,
         &style.transition_timing_functions,
-        time_ms,
+        current_time,
         &ctx,
       )
       .expect("expected delay-only transition sample");
@@ -10787,7 +10696,7 @@ mod tests {
         &style.transition_durations,
         &style.transition_delays,
         &style.transition_timing_functions,
-        1000.0,
+        wa_timing::TimeValue::resolved(1000.0),
         &ctx,
       )
       .is_none(),
@@ -10825,6 +10734,7 @@ mod tests {
     let ctx = AnimationResolveContext::new(Size::new(800.0, 600.0), Size::new(100.0, 100.0));
 
     for time_ms in [0.0, 500.0] {
+      let current_time = wa_timing::TimeValue::resolved(time_ms as f64);
       let (value, progress, delay, duration) = transition_value_for_custom_property(
         "--x",
         idx,
@@ -10834,7 +10744,7 @@ mod tests {
         &style.transition_durations,
         &style.transition_delays,
         &style.transition_timing_functions,
-        time_ms,
+        current_time,
         &ctx,
       )
       .expect("expected delay-only custom property transition sample");
@@ -10854,7 +10764,7 @@ mod tests {
         &style.transition_durations,
         &style.transition_delays,
         &style.transition_timing_functions,
-        1000.0,
+        wa_timing::TimeValue::resolved(1000.0),
         &ctx,
       )
       .is_none(),
@@ -10909,7 +10819,7 @@ mod tests {
       &style.transition_durations,
       &style.transition_delays,
       &style.transition_timing_functions,
-      500.0,
+      wa_timing::TimeValue::resolved(500.0),
       &ctx,
     )
     .expect("sample corner");
@@ -11537,9 +11447,9 @@ mod tests {
       .expect("interrupted corner transition record");
 
     assert!(
-      (record.start_time_ms - 500.0).abs() < 1e-6,
+      (record.start_time_ms() - 500.0).abs() < 1e-6,
       "start_time_ms={}",
-      record.start_time_ms
+      record.start_time_ms()
     );
     assert!((record.from_style.border_top_left_radius.x.to_px() - 5.0).abs() < 1e-6);
     assert!((record.from_style.border_top_left_radius.y.to_px() - 5.0).abs() < 1e-6);
@@ -11609,14 +11519,14 @@ mod tests {
       .expect("border-right-color record");
 
     assert!(
-      (top.start_time_ms - 500.0).abs() < 1e-6,
+      (top.start_time_ms() - 500.0).abs() < 1e-6,
       "start_time_ms={}",
-      top.start_time_ms
+      top.start_time_ms()
     );
     assert!(
-      (right.start_time_ms - 500.0).abs() < 1e-6,
+      (right.start_time_ms() - 500.0).abs() < 1e-6,
       "start_time_ms={}",
-      right.start_time_ms
+      right.start_time_ms()
     );
     assert_eq!(top.from_style.border_top_color, Rgba::rgb(128, 0, 0));
     assert_eq!(right.from_style.border_right_color, Rgba::rgb(0, 128, 0));

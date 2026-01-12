@@ -1,14 +1,16 @@
 //! Web Animations (WA1) timing primitives.
 //!
-//! This module provides a minimal, spec-shaped timing model that is suitable for
-//! integrating an animation engine later. It is intentionally standalone and is
-//! not yet wired into CSS animation sampling.
+//! This module provides a minimal, spec-shaped timing model used by FastRender's
+//! CSS animation/transition sampling pipeline for deterministic, single-frame
+//! renders as well as multi-frame "pause/resume" state.
 //!
 //! References:
 //! - Web Animations 1: <https://www.w3.org/TR/web-animations-1/>
 //!   - "Document timelines"
 //!   - "Calculating the current time of an animation" (Overview.bs §2.4)
 //!   - "Setting the playback rate"
+
+use crate::style::types::{AnimationDirection, AnimationFillMode};
 
 /// A time value in milliseconds that can be resolved or unresolved.
 ///
@@ -393,6 +395,173 @@ impl AnimationTimingState {
 
     self.previous_current_time = self.calculate_current_time(/* ignore_hold_time */ false);
   }
+}
+
+/// A minimal "computed timing" result used by the CSS animation/transition
+/// sampling code.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EffectProgress {
+  pub(crate) progress: f32,
+  pub(crate) iteration: u64,
+}
+
+#[inline]
+pub(crate) fn fill_backwards(fill: AnimationFillMode) -> bool {
+  matches!(fill, AnimationFillMode::Backwards | AnimationFillMode::Both)
+}
+
+#[inline]
+pub(crate) fn fill_forwards(fill: AnimationFillMode) -> bool {
+  matches!(fill, AnimationFillMode::Forwards | AnimationFillMode::Both)
+}
+
+#[inline]
+pub(crate) fn iteration_reverses(direction: AnimationDirection, iteration: u64) -> bool {
+  match direction {
+    AnimationDirection::Normal => false,
+    AnimationDirection::Reverse => true,
+    AnimationDirection::Alternate => iteration % 2 == 1,
+    AnimationDirection::AlternateReverse => iteration % 2 == 0,
+  }
+}
+
+pub(crate) fn animation_end_progress(direction: AnimationDirection, iterations: f32) -> f32 {
+  if !iterations.is_finite() {
+    return 0.0;
+  }
+  let iterations = iterations.max(0.0);
+  let reversed_start = iteration_reverses(direction, 0);
+  if iterations <= 0.0 {
+    return if reversed_start { 1.0 } else { 0.0 };
+  }
+
+  let whole = iterations.floor();
+  let frac = (iterations - whole).clamp(0.0, 1.0);
+  if frac <= f32::EPSILON {
+    let last_iteration = (whole.max(1.0) as u64).saturating_sub(1);
+    let reversed = iteration_reverses(direction, last_iteration);
+    if reversed {
+      0.0
+    } else {
+      1.0
+    }
+  } else {
+    let iteration = whole as u64;
+    let reversed = iteration_reverses(direction, iteration);
+    if reversed {
+      1.0 - frac
+    } else {
+      frac
+    }
+  }
+}
+
+pub(crate) fn animation_end_iteration(iterations: f32) -> u64 {
+  if !iterations.is_finite() {
+    return 0;
+  }
+  let iterations = iterations.max(0.0);
+  if iterations <= 0.0 {
+    return 0;
+  }
+  let whole = iterations.floor();
+  let frac = (iterations - whole).clamp(0.0, 1.0);
+  if frac <= f32::EPSILON {
+    (whole.max(1.0) as u64).saturating_sub(1)
+  } else {
+    whole as u64
+  }
+}
+
+/// Sample a CSS keyframe effect at a given WA1 `currentTime` (milliseconds).
+///
+/// This implements a subset of WA1 computed timing sufficient for FastRender's
+/// CSS animation and transition engines:
+/// - start delays (including negative)
+/// - iteration count/duration/direction
+/// - fill modes (`none|backwards|forwards|both`)
+///
+/// The returned progress is the *directed* iteration progress in the range
+/// [0,1], before applying any easing functions.
+pub(crate) fn sample_css_animation_effect(
+  current_time: TimeValue,
+  delay_ms: f32,
+  duration_ms: f32,
+  iterations: f32,
+  direction: AnimationDirection,
+  fill: AnimationFillMode,
+) -> Option<EffectProgress> {
+  let current_ms = current_time.as_millis()? as f32;
+  if !(current_ms.is_finite()
+    && delay_ms.is_finite()
+    && duration_ms.is_finite()
+    && (iterations.is_finite() || iterations.is_infinite()))
+  {
+    return None;
+  }
+
+  let duration = duration_ms.max(0.0);
+  let delay = delay_ms;
+  let local_time = current_ms - delay;
+
+  let active_duration = if duration <= 0.0 {
+    0.0
+  } else if iterations.is_infinite() {
+    f32::INFINITY
+  } else {
+    duration * iterations.max(0.0)
+  };
+
+  let start_progress = if iteration_reverses(direction, 0) {
+    1.0
+  } else {
+    0.0
+  };
+  let end_progress = animation_end_progress(direction, iterations);
+  let end_iteration = animation_end_iteration(iterations);
+
+  if local_time < 0.0 {
+    return fill_backwards(fill).then_some(EffectProgress {
+      progress: start_progress,
+      iteration: 0,
+    });
+  }
+
+  if active_duration.is_finite() && local_time >= active_duration {
+    return fill_forwards(fill).then_some(EffectProgress {
+      progress: end_progress,
+      iteration: end_iteration,
+    });
+  }
+
+  if duration <= 0.0 {
+    // Active duration is 0, so we can only reach this point if it is infinite
+    // (which can happen for non-finite inputs we reject above). Keep this as a
+    // defensive fallback.
+    return Some(EffectProgress {
+      progress: end_progress,
+      iteration: end_iteration,
+    });
+  }
+
+  let total = local_time / duration;
+  if !total.is_finite() {
+    return None;
+  }
+
+  let iteration = total.floor() as u64;
+  let iteration_progress = (total - iteration as f32).clamp(0.0, 1.0);
+  let reversed = iteration_reverses(direction, iteration);
+  let directed = if reversed {
+    1.0 - iteration_progress
+  } else {
+    iteration_progress
+  };
+
+  Some(EffectProgress {
+    progress: directed,
+    iteration,
+  })
 }
 
 #[cfg(test)]
