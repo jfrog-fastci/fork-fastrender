@@ -24351,13 +24351,20 @@ pub(crate) fn dom_ptr_for_document_id_read(
   host: &mut dyn VmHost,
   document_id: DocumentId,
 ) -> Option<NonNull<dom2::Document>> {
-  if is_host_document_id(vm, document_id) {
-    return dom_from_vm_host(host).map(NonNull::from);
+  // First consult the realm-owned document registry (e.g. `document.implementation.createHTMLDocument()`).
+  //
+  // NOTE: `DocumentId` identifies a JS `Document` wrapper, not necessarily a distinct `dom2::Document`
+  // allocation. Detached documents created by `DOMParser.parseFromString()` are currently stored as
+  // additional `NodeKind::Document` roots inside the *host* `dom2::Document`, so those document IDs
+  // intentionally fall back to the host DOM when they are not present in `owned_dom2_documents`.
+  if let Some(data) = vm.user_data::<WindowRealmUserData>() {
+    let owned_dom2_documents = data.owned_dom2_documents.borrow();
+    if let Some(dom) = owned_dom2_documents.get(&document_id) {
+      return Some(NonNull::from(dom.as_ref()));
+    }
   }
-  let data = vm.user_data::<WindowRealmUserData>()?;
-  let owned_dom2_documents = data.owned_dom2_documents.borrow();
-  let dom = owned_dom2_documents.get(&document_id)?;
-  Some(NonNull::from(dom.as_ref()))
+
+  dom_from_vm_host(host).map(NonNull::from)
 }
 
 fn dom_ptr_for_document_id_mut(
@@ -24365,16 +24372,15 @@ fn dom_ptr_for_document_id_mut(
   host: &mut dyn VmHost,
   document_id: DocumentId,
 ) -> Option<NonNull<dom2::Document>> {
-  if is_host_document_id(vm, document_id) {
-    return dom_from_vm_host_mut(host).map(NonNull::from);
-  }
-  let dom_ptr = {
-    let data = vm.user_data_mut::<WindowRealmUserData>()?;
+  // Prefer a realm-owned `dom2::Document` when present (see `dom_ptr_for_document_id_read`).
+  if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
     let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
-    let dom = owned_dom2_documents.get_mut(&document_id)?;
-    NonNull::from(dom.as_mut())
-  };
-  Some(dom_ptr)
+    if let Some(dom) = owned_dom2_documents.get_mut(&document_id) {
+      return Some(NonNull::from(dom.as_mut()));
+    }
+  }
+
+  dom_from_vm_host_mut(host).map(NonNull::from)
 }
 
 fn html_element_handle_from_this(
@@ -39096,17 +39102,25 @@ mod tests {
       &mut host,
       r#"(() => {
         const doc = new DOMParser().parseFromString('<html><body><div id="a">hi</div></body></html>', 'text/html');
+        const el = doc.getElementById('a');
         const children = doc.body.children;
+        const serialized = new XMLSerializer().serializeToString(el);
         return typeof doc.body.appendChild + '|' +
-          doc.getElementById('a').textContent + '|' +
+          el.textContent + '|' +
+          el.getAttribute('id') + '|' +
           (doc.documentElement.parentNode === doc) + '|' +
           (children instanceof HTMLCollection) + '|' +
           children.length + '|' +
-          children.item(0).id;
+          children.item(0).id + '|' +
+          (serialized.includes('id=\"a\"') && serialized.includes('hi')) + '|' +
+          (document.getElementById('a') === null);
       })()"#,
     )?;
 
-    assert_eq!(get_string(realm.heap(), result), "function|hi|true|true|1|a");
+    assert_eq!(
+      get_string(realm.heap(), result),
+      "function|hi|a|true|true|1|a|true|true"
+    );
     Ok(())
   }
 
