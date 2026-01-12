@@ -15,8 +15,8 @@ use std::sync::{Mutex, OnceLock};
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use vm_js::{
-  GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
-  Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, Heap, HostSlots, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
+  PropertyKind, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 use crate::js::event_loop::TaskSource;
@@ -26,8 +26,9 @@ use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop
 
 const REALM_ID_SLOT: usize = 0;
 
+const FILE_READER_HOST_TAG: u64 = 0x4649_4C45_5245_4144; // "FILEREAD"
+
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
-const FILE_READER_BRAND_KEY: &str = "__fastrender_file_reader";
 
 const READY_STATE_EMPTY: u8 = 0;
 const READY_STATE_LOADING: u8 = 1;
@@ -376,9 +377,10 @@ fn require_file_reader(
   };
 
   // Fast pre-check: reject obviously wrong receivers without taking the global registry lock.
-  if !matches!(get_own_data_prop(scope, obj, FILE_READER_BRAND_KEY)?, Value::Bool(true)) {
-    return Err(VmError::TypeError("FileReader: illegal invocation"));
-  }
+  match scope.heap().object_host_slots(obj)? {
+    Some(slots) if slots.a == FILE_READER_HOST_TAG => {}
+    _ => return Err(VmError::TypeError("FileReader: illegal invocation")),
+  };
 
   let state = with_realm_state_mut(vm, scope, callee, |realm_state| {
     realm_state
@@ -430,10 +432,16 @@ fn file_reader_ctor_construct(
   if let Some(proto) = proto {
     scope.heap_mut().object_set_prototype(reader, Some(proto))?;
   }
+  scope.heap_mut().object_set_host_slots(
+    reader,
+    HostSlots {
+      a: FILE_READER_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Brand-check for EventTarget.prototype methods.
   set_brand(scope, reader, EVENT_TARGET_BRAND_KEY)?;
-  set_brand(scope, reader, FILE_READER_BRAND_KEY)?;
 
   // Public instance properties.
   set_own_data_prop(
@@ -1218,6 +1226,25 @@ mod tests {
     let heap = host.host_mut().window_realm().heap();
     assert_eq!(get_string(heap, events), "abort,loadend");
     assert_eq!(host.exec_script("reader.result")?, Value::Null);
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_file_reader() -> crate::error::Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.com/")?;
+
+    let ok = host.exec_script(
+      "(() => {\
+         try {\
+           structuredClone(new FileReader());\
+           return false;\
+         } catch (e) {\
+           return !!e && e.name === 'DataCloneError';\
+         }\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 }
