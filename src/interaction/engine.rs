@@ -359,7 +359,13 @@ mod tests {
     let node = index.node(node_id).expect("node");
     match &node.node_type {
       DomNodeType::Element { attributes, .. } | DomNodeType::Slot { attributes, .. } => {
-        attributes.len()
+        // Ignore the internal textarea value snapshot. The DOM layer models user-edited textarea
+        // values via `data-fastr-value`, so text-editing operations can legitimately add/update
+        // that attribute even when they avoid mutating author-provided attributes.
+        attributes
+          .iter()
+          .filter(|(name, _)| name != "data-fastr-value")
+          .count()
       }
       _ => 0,
     }
@@ -3187,11 +3193,11 @@ impl InteractionEngine {
     let max_node_id = index.id_to_node.len().saturating_sub(1);
 
     let check_node_id = |label: &str, node_id: usize| {
-      assert!(
+      debug_assert!(
         node_id > 0 && node_id <= max_node_id,
         "{label} node id {node_id} out of range (max={max_node_id})"
       );
-      assert!(
+      debug_assert!(
         index.node(node_id).is_some_and(DomNode::is_element),
         "{label} node id {node_id} does not refer to a live element"
       );
@@ -3247,19 +3253,19 @@ impl InteractionEngine {
 
     if let Some(edit) = &self.text_edit {
       check_node_id("text_edit", edit.node_id);
-      assert_eq!(
+      debug_assert_eq!(
         self.state.focused,
         Some(edit.node_id),
         "text_edit must track the focused node"
       );
       let len = text_control_len(edit.node_id);
-      assert!(
+      debug_assert!(
         edit.caret <= len,
         "text_edit caret {} out of bounds for length {len}",
         edit.caret
       );
       if let Some(anchor) = edit.selection_anchor {
-        assert!(
+        debug_assert!(
           anchor <= len,
           "text_edit selection anchor {anchor} out of bounds for length {len}"
         );
@@ -3268,23 +3274,23 @@ impl InteractionEngine {
 
     if let Some(paint) = self.state.text_edit {
       check_node_id("text_edit_paint_state", paint.node_id);
-      assert_eq!(
+      debug_assert_eq!(
         self.state.focused,
         Some(paint.node_id),
         "text_edit paint state must track the focused node"
       );
       let len = text_control_len(paint.node_id);
-      assert!(
+      debug_assert!(
         paint.caret <= len,
         "paint caret {} out of bounds for length {len}",
         paint.caret
       );
       if let Some((start, end)) = paint.selection {
-        assert!(
+        debug_assert!(
           start < end,
           "paint selection must be normalized (start < end), got ({start}, {end})"
         );
-        assert!(
+        debug_assert!(
           end <= len,
           "paint selection end {end} out of bounds for length {len}"
         );
@@ -3292,7 +3298,7 @@ impl InteractionEngine {
     }
 
     let check_point = |label: &str, p: Point| {
-      assert!(
+      debug_assert!(
         p.x.is_finite() && p.y.is_finite(),
         "{label} contains non-finite values ({}, {})",
         p.x,
