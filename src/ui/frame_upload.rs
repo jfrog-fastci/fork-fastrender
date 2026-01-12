@@ -8,9 +8,9 @@ use std::collections::HashMap;
 /// Uploading every intermediate pixmap into a GPU texture is expensive, so we keep only the most
 /// recent frame per tab and drop the rest.
 ///
-/// Callers are expected to decide whether frames from inactive tabs should be stored; the browser
-/// UI passes the current active tab id to [`Self::push_for_active_tab`] so background tabs do not
-/// consume GPU bandwidth/memory.
+/// The windowed browser UI relies on this to keep at least the latest frame for background tabs so
+/// switching tabs can display immediately (no "Waiting for first frame…"). Call [`Self::remove_tab`]
+/// when a tab is closed so stale pixmaps do not accumulate.
 #[derive(Debug, Default)]
 pub struct FrameUploadCoalescer {
   latest_by_tab: HashMap<TabId, FrameReadyUpdate>,
@@ -39,13 +39,8 @@ impl FrameUploadCoalescer {
     self.latest_by_tab.clear();
   }
 
-  /// Stores `frame` if its `tab_id` is the current `active_tab`.
-  ///
-  /// Frames for inactive tabs are dropped immediately.
-  pub fn push_for_active_tab(&mut self, active_tab: Option<TabId>, frame: FrameReadyUpdate) {
-    if Some(frame.tab_id) != active_tab {
-      return;
-    }
+  /// Store `frame`, coalescing with any already-pending upload for the same tab.
+  pub fn push(&mut self, frame: FrameReadyUpdate) {
     // Overwrite older pending frames for this tab (dropping the pixmap without uploading).
     self.latest_by_tab.insert(frame.tab_id, frame);
   }
@@ -59,6 +54,7 @@ impl FrameUploadCoalescer {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::collections::HashSet;
 
   fn make_frame(
     tab_id: TabId,
@@ -79,8 +75,8 @@ mod tests {
     let tab = TabId(1);
     let mut coalescer = FrameUploadCoalescer::new();
 
-    coalescer.push_for_active_tab(Some(tab), make_frame(tab, (1, 1), (100, 100), 1.0));
-    coalescer.push_for_active_tab(Some(tab), make_frame(tab, (2, 3), (200, 150), 2.0));
+    coalescer.push(make_frame(tab, (1, 1), (100, 100), 1.0));
+    coalescer.push(make_frame(tab, (2, 3), (200, 150), 2.0));
 
     let mut drained: Vec<_> = coalescer.drain().collect();
     assert_eq!(drained.len(), 1);
@@ -92,14 +88,21 @@ mod tests {
   }
 
   #[test]
-  fn drops_frames_for_inactive_tabs() {
-    let active = TabId(1);
-    let inactive = TabId(2);
+  fn stores_frames_for_multiple_tabs() {
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
     let mut coalescer = FrameUploadCoalescer::new();
 
-    coalescer.push_for_active_tab(Some(active), make_frame(inactive, (1, 1), (10, 10), 1.0));
+    coalescer.push(make_frame(tab_a, (1, 1), (10, 10), 1.0));
+    coalescer.push(make_frame(tab_b, (2, 2), (20, 20), 1.0));
 
-    assert!(coalescer.is_empty());
-    assert!(!coalescer.has_pending_for_tab(inactive));
+    assert!(!coalescer.is_empty());
+    assert!(coalescer.has_pending_for_tab(tab_a));
+    assert!(coalescer.has_pending_for_tab(tab_b));
+
+    let drained: Vec<_> = coalescer.drain().collect();
+    assert_eq!(drained.len(), 2);
+    let ids: HashSet<_> = drained.into_iter().map(|f| f.tab_id).collect();
+    assert_eq!(ids, HashSet::from([tab_a, tab_b]));
   }
 }

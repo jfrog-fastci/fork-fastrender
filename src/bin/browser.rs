@@ -2965,10 +2965,8 @@ impl App {
       // Ignore stale frames for tabs that have already been closed.
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
         // Coalesce uploads until the next `render_frame`: uploading each intermediate pixmap is
-        // expensive, and we do not upload frames for inactive/background tabs.
-        self
-          .pending_frame_uploads
-          .push_for_active_tab(self.browser_state.active_tab_id(), frame_ready);
+        // expensive.
+        self.pending_frame_uploads.push(frame_ready);
       }
     }
 
@@ -3052,14 +3050,7 @@ impl App {
   }
 
   fn flush_pending_frame_uploads(&mut self) {
-    let active_tab = self.browser_state.active_tab_id();
     for frame_ready in self.pending_frame_uploads.drain() {
-      // If the active tab changed after we queued this frame (e.g. the user clicked another tab
-      // before the next redraw), do not upload it.
-      if Some(frame_ready.tab_id) != active_tab {
-        continue;
-      }
-
       // Ignore stale frames for tabs that have already been closed.
       if self.browser_state.tab(frame_ready.tab_id).is_none() {
         continue;
@@ -5665,7 +5656,6 @@ impl App {
           self.cursor_in_page = false;
           self.hover_sync_pending = true;
           self.pending_pointer_move = None;
-          self.pending_frame_uploads.clear();
 
           self.send_worker_msg(UiToWorker::CreateTab {
             tab_id,
@@ -5757,7 +5747,6 @@ impl App {
             self.captured_button = fastrender::ui::PointerButton::None;
             self.cursor_in_page = false;
             self.pending_pointer_move = None;
-            self.pending_frame_uploads.clear();
           }
 
           if let Some(created_tab) = close_result.created_tab {
@@ -5806,7 +5795,6 @@ impl App {
             self.cursor_in_page = false;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
-            self.pending_frame_uploads.clear();
             self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
             self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id,

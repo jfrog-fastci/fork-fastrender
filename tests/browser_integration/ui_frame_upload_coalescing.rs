@@ -7,9 +7,8 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 #[test]
-fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
+fn inactive_tab_frames_schedule_uploads_without_activation() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
-  let _lock = super::stage_listener_test_lock();
 
   let handle = fastrender::ui::spawn_ui_worker("fastr-ui-frame-upload-coalescing-test")
     .expect("spawn ui worker");
@@ -92,7 +91,7 @@ fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
   for (tab_id, frame) in [(tab_a, frame_a), (tab_b, frame_b)] {
     let update = app_state.apply_worker_msg(WorkerToUi::FrameReady { tab_id, frame });
     if let Some(frame_ready) = update.frame_ready {
-      pending_uploads.push_for_active_tab(app_state.active_tab_id(), frame_ready);
+      pending_uploads.push(frame_ready);
     }
 
     for frame_ready in pending_uploads.drain() {
@@ -105,8 +104,8 @@ fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
     "expected active tab A to schedule an upload"
   );
   assert!(
-    !textures.contains(&tab_b),
-    "expected inactive tab B to not schedule an upload until activated"
+    textures.contains(&tab_b),
+    "expected inactive tab B to schedule an upload so switching is instant"
   );
 
   assert!(
@@ -115,51 +114,6 @@ fn inactive_tab_frames_do_not_schedule_uploads_until_activated() {
       .and_then(|t| t.latest_frame_meta.as_ref())
       .is_some(),
     "expected UI-side metadata to be updated for inactive tab B"
-  );
-
-  // Activate tab B: the UI requests a fresh repaint so a new frame is produced and uploaded.
-  assert!(app_state.set_active_tab(tab_b));
-  pending_uploads.clear();
-  ui_tx
-    .send(UiToWorker::SetActiveTab { tab_id: tab_b })
-    .expect("set active B");
-  ui_tx
-    .send(request_repaint(tab_b, RepaintReason::Explicit))
-    .expect("repaint B after activation");
-
-  let deadline = Instant::now() + DEFAULT_TIMEOUT;
-  let mut activated_frame_b = None;
-  while Instant::now() < deadline {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let slice = remaining.min(Duration::from_millis(50));
-    match ui_rx.recv_timeout(slice) {
-      Ok(WorkerToUi::FrameReady { tab_id, frame }) if tab_id == tab_b => {
-        activated_frame_b = Some(frame);
-        break;
-      }
-      Ok(_) => continue,
-      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("worker disconnected"),
-    }
-  }
-  let activated_frame_b = activated_frame_b
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for activated tab B"));
-
-  let update = app_state.apply_worker_msg(WorkerToUi::FrameReady {
-    tab_id: tab_b,
-    frame: activated_frame_b,
-  });
-  if let Some(frame_ready) = update.frame_ready {
-    pending_uploads.push_for_active_tab(app_state.active_tab_id(), frame_ready);
-  }
-
-  for frame_ready in pending_uploads.drain() {
-    textures.insert(frame_ready.tab_id);
-  }
-
-  assert!(
-    textures.contains(&tab_b),
-    "expected activated tab B to schedule an upload"
   );
 
   drop(ui_tx);
