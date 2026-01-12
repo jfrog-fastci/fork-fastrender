@@ -880,6 +880,22 @@ fn parse_jsonish_value(raw: &str, notes: &mut Vec<String>) -> Option<Value> {
 
 fn tsc_only_option_notes(options: &HarnessOptions) -> Vec<String> {
   let mut notes = Vec::new();
+  if options.allow_js.is_some() {
+    notes.push(
+      "tsc option allowJs is set via directives but is ignored by the Rust checker".to_string(),
+    );
+  }
+  if options.check_js.is_some() {
+    notes.push(
+      "tsc option checkJs is set via directives but is ignored by the Rust checker".to_string(),
+    );
+  }
+  if options.module_detection.is_some() {
+    notes.push(
+      "tsc option moduleDetection is set via directives but is ignored by the Rust checker"
+        .to_string(),
+    );
+  }
   if !options.type_roots.is_empty() {
     notes.push(
       "tsc option typeRoots is set via directives but is ignored by the Rust checker".to_string(),
