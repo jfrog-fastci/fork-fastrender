@@ -15376,11 +15376,15 @@ fn mutation_observer_take_records_native(
 
   let document_id = gc_object_id(document_obj);
   let (records, dom_for_wrappers) = if is_host_document_id(vm, document_id) {
-    let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
-      let empty = alloc_mutation_records_array(vm, scope, document_obj, None, &[])?;
-      return Ok(Value::Object(empty));
+    let records = {
+      let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
+        let empty = alloc_mutation_records_array(vm, scope, document_obj, None, &[])?;
+        return Ok(Value::Object(empty));
+      };
+      dom_host.mutation_observer_take_records(observer_id)
     };
-    (dom_host.mutation_observer_take_records(observer_id), dom_from_vm_host(host))
+    let dom_for_wrappers = dom_from_vm_host(host);
+    (records, dom_for_wrappers)
   } else {
     let Some(mut dom_ptr) = (|| {
       let data = vm.user_data_mut::<WindowRealmUserData>()?;
