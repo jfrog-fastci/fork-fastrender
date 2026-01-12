@@ -2548,6 +2548,7 @@ mod window_document_tests {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::api::RenderOptions;
   use std::any::Any;
   use vm_js::{
     Heap, HeapLimits, Job, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
@@ -2834,6 +2835,51 @@ mod tests {
 
     assert_eq!(result, Value::Undefined);
     assert_eq!(dom_host.last_call, None);
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dispatch_helpers_do_not_delegate_to_browser_document_dom2() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new_without_global();
+
+    let mut dom = BrowserDocumentDom2::from_html(
+      "<!doctype html><html><body></body></html>",
+      RenderOptions::new().with_viewport(1, 1),
+    )
+    .expect("BrowserDocumentDom2");
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom);
+
+    let mut scope = heap.scope();
+
+    let delegated = vm.with_host_hooks_override(&mut hooks, |vm| {
+      dispatch.try_delegate_dom_call_operation(
+        vm,
+        &mut scope,
+        None,
+        "Document",
+        "testOperation",
+        0,
+        &[],
+      )
+    })?;
+    assert_eq!(delegated, None);
+
+    let delegated = vm.with_host_hooks_override(&mut hooks, |vm| {
+      dispatch.try_delegate_dom_iterable_snapshot(
+        vm,
+        &mut scope,
+        None,
+        "NodeList",
+        IterableKind::Values,
+      )
+    })?;
+    assert_eq!(delegated, None);
+
     Ok(())
   }
 }
