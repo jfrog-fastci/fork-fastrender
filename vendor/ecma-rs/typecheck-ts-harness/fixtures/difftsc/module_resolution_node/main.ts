@@ -1,3 +1,4 @@
+// @noLib: true
 // @moduleResolution: node
 import { x } from "difftsc-module-resolution-pkg";
 
