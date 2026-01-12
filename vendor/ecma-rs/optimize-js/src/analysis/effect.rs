@@ -373,6 +373,7 @@ fn inst_local_effect_with_value_types(inst: &Inst, value_types: Option<&ValueTyp
       effects.mark_unknown();
     }
     InstTyp::CondGoto
+    | InstTyp::Assume
     | InstTyp::Return
     | InstTyp::Un
     | InstTyp::VarAssign

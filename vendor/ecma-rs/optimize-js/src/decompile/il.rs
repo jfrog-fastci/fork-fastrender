@@ -1379,7 +1379,7 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
           stmts.push(throw_stmt(expr_from_arg(value, &env)));
           return Ok(stmts);
         }
-        InstTyp::_Dummy => {}
+        InstTyp::Assume | InstTyp::_Dummy => {}
         InstTyp::CondGoto | InstTyp::Phi | InstTyp::_Goto | InstTyp::_Label => {
           return Err(DecompileError::Unsupported(
             "control flow not supported".to_string(),
@@ -1424,6 +1424,9 @@ pub enum LoweredArg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInst {
+  Assume {
+    cond: LoweredArg,
+  },
   Bin {
     tgt: u32,
     left: LoweredArg,
@@ -1528,6 +1531,9 @@ fn lowered_arg(arg: &Arg) -> LoweredArg {
 
 fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
   match inst.t {
+    InstTyp::Assume => LoweredInst::Assume {
+      cond: lowered_arg(&inst.args[0]),
+    },
     InstTyp::Bin => LoweredInst::Bin {
       tgt: inst.tgts[0],
       left: lowered_arg(&inst.args[0]),

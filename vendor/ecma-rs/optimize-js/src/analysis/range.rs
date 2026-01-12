@@ -1,5 +1,5 @@
 use crate::analysis::dataflow_edge::{ForwardEdgeDataFlowAnalysis, ForwardEdgeDataFlowResult};
-use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
+use crate::analysis::facts::{Edge, InstLoc};
 use crate::analysis::loop_info::LoopInfo;
 use crate::analysis::value_types::ValueTypeSummaries;
 use crate::cfg::cfg::Cfg;
@@ -304,22 +304,32 @@ impl RangeResult {
       .entry(label)
       .cloned()
       .unwrap_or_else(|| State::bottom(cfg_var_count(cfg)));
+    let block = cfg.bblocks.get(label);
+    assert!(
+      inst_idx <= block.len(),
+      "inst index {inst_idx} out of bounds for block {label} (len={})",
+      block.len()
+    );
     let mut analysis = RangeAnalysis::new_for_replay(entry.ranges.len());
-    replay_forward_before_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
-      analysis.apply_to_instruction(label, inst_idx, inst, state);
-    })
+    let mut state = entry.clone();
+    for (idx, inst) in block.iter().enumerate().take(inst_idx) {
+      analysis.apply_to_instruction_in_block(label, idx, inst, block, &mut state);
+    }
+    state
   }
 
   /// Compute the analysis state immediately after `inst_idx` in `label`.
   pub fn state_after_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> State {
-    let entry = self
-      .entry(label)
-      .cloned()
-      .unwrap_or_else(|| State::bottom(cfg_var_count(cfg)));
-    let mut analysis = RangeAnalysis::new_for_replay(entry.ranges.len());
-    replay_forward_after_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
-      analysis.apply_to_instruction(label, inst_idx, inst, state);
-    })
+    let block = cfg.bblocks.get(label);
+    assert!(
+      inst_idx < block.len(),
+      "inst index {inst_idx} out of bounds for block {label} (len={})",
+      block.len()
+    );
+    let mut state = self.state_before_inst(cfg, label, inst_idx);
+    let mut analysis = RangeAnalysis::new_for_replay(state.ranges.len());
+    analysis.apply_to_instruction_in_block(label, inst_idx, &block[inst_idx], block, &mut state);
+    state
   }
 
   pub fn state_before_loc(&self, cfg: &Cfg, loc: InstLoc) -> State {
@@ -771,6 +781,176 @@ impl RangeAnalysis {
       Void | Typeof | Not | _Dummy => IntRange::Unknown,
     }
   }
+
+  fn apply_to_instruction_in_block(
+    &mut self,
+    label: u32,
+    inst_idx: usize,
+    inst: &Inst,
+    block: &[Inst],
+    state: &mut State,
+  ) {
+    if inst.t == InstTyp::Assume {
+      self.apply_assume(&block[..inst_idx], inst.as_assume(), state);
+    } else {
+      self.apply_to_instruction(label, inst_idx, inst, state);
+    }
+  }
+
+  fn apply_assume(&self, prior_insts: &[Inst], cond: &Arg, state: &mut State) {
+    if !state.reachable {
+      return;
+    }
+
+    match cond {
+      Arg::Const(Const::Bool(true)) => {}
+      Arg::Const(Const::Bool(false)) => state.set_unreachable(),
+      Arg::Var(cond_var) => self.refine_for_condition(prior_insts, *cond_var, true, state),
+      _ => {}
+    }
+  }
+
+  fn refine_for_condition(&self, block: &[Inst], cond_var: u32, mut is_true: bool, state: &mut State) {
+    // Chase boolean negation and var assignments to find a comparison we can use
+    // to refine integer ranges.
+    let mut probe_var = cond_var;
+    let mut negate = false;
+    let mut resolved: Option<(u32, BinOp, i64)> = None;
+    for _ in 0..8 {
+      if let Some((x, op, c)) = Self::find_cond_compare(block, probe_var) {
+        resolved = Some((x, op, c));
+        break;
+      }
+
+      let Some(def) = block
+        .iter()
+        .rev()
+        .find(|inst| inst.tgts.first() == Some(&probe_var))
+      else {
+        break;
+      };
+
+      match def.t {
+        InstTyp::Un => {
+          let (_tgt, op, arg) = def.as_un();
+          if op != UnOp::Not {
+            break;
+          }
+          let Some(inner) = arg.maybe_var() else {
+            break;
+          };
+          probe_var = inner;
+          negate = !negate;
+        }
+        InstTyp::VarAssign => {
+          let (_tgt, arg) = def.as_var_assign();
+          let Some(inner) = arg.maybe_var() else {
+            break;
+          };
+          probe_var = inner;
+        }
+        _ => break,
+      }
+    }
+
+    let Some((x, op, c)) = resolved else {
+      return;
+    };
+    let (x, c) = {
+      let (base, offset) = self.chase_linear_int_expr(block, x);
+      (base, c.saturating_sub(offset))
+    };
+
+    if negate {
+      is_true = !is_true;
+    }
+
+    let c_minus_1 = c.saturating_sub(1);
+    let c_plus_1 = c.saturating_add(1);
+
+    let current = state.range_of_var(x);
+    let new_range = match op {
+      BinOp::Lt => {
+        let constraint = if is_true {
+          IntRange::interval(Bound::NegInf, Bound::I64(c_minus_1))
+        } else {
+          IntRange::interval(Bound::I64(c), Bound::PosInf)
+        };
+        current.intersect(constraint)
+      }
+      BinOp::Leq => {
+        let constraint = if is_true {
+          IntRange::interval(Bound::NegInf, Bound::I64(c))
+        } else {
+          IntRange::interval(Bound::I64(c_plus_1), Bound::PosInf)
+        };
+        current.intersect(constraint)
+      }
+      BinOp::Gt => {
+        let constraint = if is_true {
+          IntRange::interval(Bound::I64(c_plus_1), Bound::PosInf)
+        } else {
+          IntRange::interval(Bound::NegInf, Bound::I64(c))
+        };
+        current.intersect(constraint)
+      }
+      BinOp::Geq => {
+        let constraint = if is_true {
+          IntRange::interval(Bound::I64(c), Bound::PosInf)
+        } else {
+          IntRange::interval(Bound::NegInf, Bound::I64(c_minus_1))
+        };
+        current.intersect(constraint)
+      }
+      BinOp::StrictEq => {
+        if is_true {
+          current.intersect(IntRange::const_i64(c))
+        } else {
+          // Excluding a single value is optional; skip.
+          return;
+        }
+      }
+      BinOp::NotStrictEq => {
+        if !is_true {
+          // `!(x !== c)` implies `x === c`.
+          current.intersect(IntRange::const_i64(c))
+        } else {
+          // Best-effort exclusion of a single value. We can represent this when
+          // the current interval lies entirely on one side of `c` or `c` is a
+          // boundary.
+          match current {
+            IntRange::Bottom => IntRange::Bottom,
+            IntRange::Unknown => IntRange::Unknown,
+            IntRange::Interval { lo, hi } => {
+              let lo_i = lo.as_i64();
+              let hi_i = hi.as_i64();
+              // If the current interval is a singleton equal to `c`, this path
+              // is unreachable.
+              if lo_i == Some(c) && hi_i == Some(c) {
+                IntRange::Bottom
+              } else if lo_i == Some(c) {
+                // [c, hi] -> [c+1, hi]
+                IntRange::interval(Bound::I64(c_plus_1), hi).intersect(current)
+              } else if hi_i == Some(c) {
+                // [lo, c] -> [lo, c-1]
+                IntRange::interval(lo, Bound::I64(c_minus_1)).intersect(current)
+              } else {
+                current
+              }
+            }
+          }
+        }
+      }
+      _ => return,
+    };
+
+    if let Some(slot) = state.ranges.get_mut(x as usize) {
+      *slot = new_range;
+      if matches!(*slot, IntRange::Bottom) {
+        state.set_unreachable();
+      }
+    }
+  }
 }
 
 impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
@@ -890,6 +1070,7 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       InstTyp::Phi => {}
       // Non-defining instructions.
       InstTyp::PropAssign
+      | InstTyp::Assume
       | InstTyp::CondGoto
       | InstTyp::Return
       | InstTyp::Throw
@@ -899,6 +1080,14 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       | InstTyp::_Goto
       | InstTyp::_Dummy => {}
     }
+  }
+
+  fn apply_to_block(&mut self, label: u32, block: &[Inst], state: &Self::State) -> Self::State {
+    let mut next = state.clone();
+    for (idx, inst) in block.iter().enumerate() {
+      self.apply_to_instruction_in_block(label, idx, inst, block, &mut next);
+    }
+    next
   }
 
   fn apply_edge(
@@ -926,62 +1115,6 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       return next;
     };
 
-    // Chase simple boolean negation and var assignments:
-    //
-    //   %1 = (x < 10)
-    //   %2 = !%1
-    //   %3 = %2
-    //   if %3 goto ...
-    //
-    // This keeps the refinement logic local and avoids needing a full def-use graph.
-    let mut probe_var = cond_var;
-    let mut negate = false;
-    let mut resolved: Option<(u32, BinOp, i64)> = None;
-    for _ in 0..8 {
-      if let Some((x, op, c)) = Self::find_cond_compare(pred_block, probe_var) {
-        resolved = Some((x, op, c));
-        break;
-      }
-
-      let Some(def) = pred_block
-        .iter()
-        .rev()
-        .find(|inst| inst.tgts.first() == Some(&probe_var))
-      else {
-        break;
-      };
-
-      match def.t {
-        InstTyp::Un => {
-          let (_tgt, op, arg) = def.as_un();
-          if op != UnOp::Not {
-            break;
-          }
-          let Some(inner) = arg.maybe_var() else {
-            break;
-          };
-          probe_var = inner;
-          negate = !negate;
-        }
-        InstTyp::VarAssign => {
-          let (_tgt, arg) = def.as_var_assign();
-          let Some(inner) = arg.maybe_var() else {
-            break;
-          };
-          probe_var = inner;
-        }
-        _ => break,
-      }
-    }
-
-    let Some((x, op, c)) = resolved else {
-      return next;
-    };
-    let (x, c) = {
-      let (base, offset) = self.chase_linear_int_expr(pred_block, x);
-      (base, c.saturating_sub(offset))
-    };
-
     let is_true_edge = if succ == then_label {
       true
     } else if succ == else_label {
@@ -989,56 +1122,7 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
     } else {
       return next;
     };
-    let is_true_edge = if negate { !is_true_edge } else { is_true_edge };
-
-    let c_minus_1 = c.saturating_sub(1);
-    let c_plus_1 = c.saturating_add(1);
-    let constraint = match op {
-      BinOp::Lt => {
-        if is_true_edge {
-          IntRange::interval(Bound::NegInf, Bound::I64(c_minus_1))
-        } else {
-          IntRange::interval(Bound::I64(c), Bound::PosInf)
-        }
-      }
-      BinOp::Leq => {
-        if is_true_edge {
-          IntRange::interval(Bound::NegInf, Bound::I64(c))
-        } else {
-          IntRange::interval(Bound::I64(c_plus_1), Bound::PosInf)
-        }
-      }
-      BinOp::Gt => {
-        if is_true_edge {
-          IntRange::interval(Bound::I64(c_plus_1), Bound::PosInf)
-        } else {
-          IntRange::interval(Bound::NegInf, Bound::I64(c))
-        }
-      }
-      BinOp::Geq => {
-        if is_true_edge {
-          IntRange::interval(Bound::I64(c), Bound::PosInf)
-        } else {
-          IntRange::interval(Bound::NegInf, Bound::I64(c_minus_1))
-        }
-      }
-      BinOp::StrictEq => {
-        if is_true_edge {
-          IntRange::const_i64(c)
-        } else {
-          // Excluding a single value is optional; skip.
-          return next;
-        }
-      }
-      _ => return next,
-    };
-
-    if let Some(slot) = next.ranges.get_mut(x as usize) {
-      *slot = (*slot).intersect(constraint);
-      if matches!(*slot, IntRange::Bottom) {
-        next.set_unreachable();
-      }
-    }
+    self.refine_for_condition(pred_block, cond_var, is_true_edge, &mut next);
     next
   }
 

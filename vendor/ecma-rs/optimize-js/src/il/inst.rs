@@ -181,6 +181,15 @@ pub enum InstTyp {
   Un,         // tgts[0] = un_op args[0]
   VarAssign,  // tgts[0] = args[0]
   PropAssign, // args[0][args[1]] = args[2]
+  /// Branch-local assertion/assumption used for analysis-driven optimizations.
+  ///
+  /// This instruction has no runtime semantics and is expected to be inserted
+  /// immediately after a runtime assertion call (e.g. `assert(cond)`), so that
+  /// analyses can treat `cond` as true for the remainder of the control-flow
+  /// path.
+  ///
+  /// `args[0]` is the assumed condition.
+  Assume,
   CondGoto,   // goto labels[0] if args[0] else labels[1]
   /// Return from the current body (function).
   ///
@@ -415,6 +424,14 @@ impl Inst {
     }
   }
 
+  pub fn assume(cond: Arg) -> Self {
+    Self {
+      t: InstTyp::Assume,
+      args: vec![cond],
+      ..Default::default()
+    }
+  }
+
   pub fn goto(label: u32) -> Self {
     Self {
       t: InstTyp::_Goto,
@@ -572,6 +589,11 @@ impl Inst {
   pub fn as_prop_assign(&self) -> (&Arg, &Arg, &Arg) {
     assert_eq!(self.t, InstTyp::PropAssign);
     (&self.args[0], &self.args[1], &self.args[2])
+  }
+
+  pub fn as_assume(&self) -> &Arg {
+    assert_eq!(self.t, InstTyp::Assume);
+    &self.args[0]
   }
 
   pub fn as_cond_goto(&self) -> (&Arg, u32, u32) {

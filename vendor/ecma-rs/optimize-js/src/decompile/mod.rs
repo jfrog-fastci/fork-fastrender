@@ -656,7 +656,7 @@ impl<'a> FunctionDecompiler<'a> {
       InstTyp::Phi => Err(il::DecompileError::Unsupported(
         "phi instructions are not supported in decompiler output".into(),
       )),
-      InstTyp::CondGoto | InstTyp::_Goto | InstTyp::_Label | InstTyp::_Dummy => Ok(None),
+      InstTyp::Assume | InstTyp::CondGoto | InstTyp::_Goto | InstTyp::_Label | InstTyp::_Dummy => Ok(None),
     }
   }
 

@@ -1685,6 +1685,93 @@ impl<'p> HirSourceToInst<'p> {
       return Ok(Arg::Var(res_tmp_var));
     }
 
+    // Assertion-as-contract support: treat certain runtime assertions as
+    // analysis-visible assumptions.
+    //
+    // Semantics:
+    // - The call itself remains (runtime check).
+    // - An `Assume(cond)` instruction is appended so analyses can treat `cond` as
+    //   true on the fallthrough path.
+    //
+    // We only match simple, statically-recognizable forms:
+    // - `assert(cond, ...)`
+    // - `console.assert(cond, ...)`
+    //
+    // NOTE: This is intentionally conservative and ignores dynamic call targets.
+    let is_assert_call = (|| {
+      if call.optional {
+        return false;
+      }
+      let callee_expr = &self.body.exprs[call.callee.0 as usize];
+      match &callee_expr.kind {
+        ExprKind::Ident(name) => self.name_for(*name) == "assert",
+        ExprKind::Member(member) => {
+          if member.optional {
+            return false;
+          }
+          let prop_is_assert = match &member.property {
+            hir_js::ObjectKey::Ident(name) => self.name_for(*name) == "assert",
+            hir_js::ObjectKey::String(s) => s == "assert",
+            _ => false,
+          };
+          if !prop_is_assert {
+            return false;
+          }
+          match &self.body.exprs[member.object.0 as usize].kind {
+            ExprKind::Ident(obj_name) => {
+              self.name_for(*obj_name) == "console" && self.symbol_for_expr(member.object).is_none()
+            }
+            _ => false,
+          }
+        }
+        _ => false,
+      }
+    })();
+
+    if is_assert_call {
+      // If we can prove the condition is always truthy/falsy at compile time,
+      // handle it eagerly:
+      // - always truthy => drop the assert entirely.
+      // - always falsy  => hard error.
+      if let Some(first_arg) = call.args.first() {
+        let cond_expr = first_arg.expr;
+        let cond_is_bool_lit = match &self.body.exprs[cond_expr.0 as usize].kind {
+          ExprKind::Literal(hir_js::Literal::Boolean(v)) => Some(*v),
+          _ => None,
+        };
+
+        #[allow(unused_mut)]
+        let mut proven = cond_is_bool_lit;
+        #[cfg(feature = "typed")]
+        {
+          // Prefer type-driven literal/truthiness when available.
+          if proven.is_none() {
+            proven = self.bool_literal_expr(cond_expr);
+          }
+          if proven.is_none() {
+            proven = match self.expr_truthiness(cond_expr) {
+              Some(crate::types::Truthiness::AlwaysTruthy) => Some(true),
+              Some(crate::types::Truthiness::AlwaysFalsy) => Some(false),
+              None => None,
+            };
+          }
+        }
+
+        if proven == Some(true) {
+          // `assert(true)` is a no-op.
+          return Ok(Arg::Const(Const::Undefined));
+        }
+        if proven == Some(false) {
+          return Err(vec![crate::diagnostic_with_span(
+            self.program.lower.hir.file,
+            "OPT0010",
+            "assertion is always false",
+            span,
+          )]);
+        }
+      }
+    }
+
     let (did_chain_setup, chain) = self.maybe_setup_chain(chain);
     let (this_arg, callee_arg) = match self.body.exprs[call.callee.0 as usize].kind.clone() {
       ExprKind::Member(m) => {
@@ -1711,10 +1798,16 @@ impl<'p> HirSourceToInst<'p> {
         spreads.push(arg_idx + 2);
       }
     }
+    let assumed_cond = is_assert_call.then(|| args.first().cloned()).flatten();
     self.push_value_inst(
       expr_id,
       Inst::call(res_tmp_var, callee_arg, this_arg, args, spreads),
     );
+
+    if let Some(cond) = assumed_cond {
+      self.out.push(Inst::assume(cond));
+    }
+
     self.complete_chain_setup(expr_id, did_chain_setup, res_tmp_var, chain);
     Ok(Arg::Var(res_tmp_var))
   }

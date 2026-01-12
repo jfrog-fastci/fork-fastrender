@@ -1,4 +1,5 @@
 use crate::analysis::nullability;
+use crate::analysis::range;
 use crate::cfg::cfg::Cfg;
 use crate::eval::consteval::coerce_to_bool;
 use crate::il::inst::{Arg, InstTyp};
@@ -15,6 +16,7 @@ pub fn optpass_impossible_branches(cfg: &mut Cfg) -> PassResult {
   loop {
     let mut iteration_changed = false;
     let mut nullability_result: Option<nullability::NullabilityResult> = None;
+    let mut range_result: Option<range::RangeResult> = None;
     for label in cfg.graph.labels_sorted() {
       let Some(inst) = cfg.bblocks.get(label).last() else {
         continue;
@@ -51,8 +53,13 @@ pub fn optpass_impossible_branches(cfg: &mut Cfg) -> PassResult {
       // Non-constant conditions: try nullability-driven pruning (e.g. `%x` is proven null,
       // so `%x !== null` can never take the true edge).
       let nullability = nullability_result.get_or_insert_with(|| nullability::calculate_nullability(cfg));
-      let true_reachable = nullability.edge_is_reachable(label, true_label);
-      let false_reachable = nullability.edge_is_reachable(label, false_label);
+      let range = range_result.get_or_insert_with(|| range::analyze_ranges(cfg));
+      // An edge is only considered reachable if *all* reachability-oriented analyses agree it is.
+      // This lets us prune when either analysis can prove an edge is impossible.
+      let true_reachable =
+        nullability.edge_is_reachable(label, true_label) && range.edge_is_reachable(label, true_label);
+      let false_reachable =
+        nullability.edge_is_reachable(label, false_label) && range.edge_is_reachable(label, false_label);
       if true_reachable == false_reachable {
         continue;
       }

@@ -1,5 +1,5 @@
 use crate::analysis::dataflow_edge::{ForwardEdgeDataFlowAnalysis, ForwardEdgeDataFlowResult};
-use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
+use crate::analysis::facts::{Edge, InstLoc};
 use crate::analysis::value_types::ValueTypeSummaries;
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
@@ -242,21 +242,34 @@ impl NullabilityResult {
       var_count: entry.masks.len(),
       types: ValueTypeSummaries::new(cfg),
     };
-    replay_forward_before_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
-      analysis.apply_to_instruction(label, inst_idx, inst, state);
-    })
+    let block = cfg.bblocks.get(label);
+    assert!(
+      inst_idx <= block.len(),
+      "inst index {inst_idx} out of bounds for block {label} (len={})",
+      block.len()
+    );
+    let mut state = entry;
+    for (idx, inst) in block.iter().enumerate().take(inst_idx) {
+      analysis.apply_to_instruction_in_block(label, idx, inst, block, &mut state);
+    }
+    state
   }
 
   /// Compute the analysis state immediately after `inst_idx` in `label`.
   pub fn state_after_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> State {
-    let entry = self.entry_state(label).clone();
+    let block = cfg.bblocks.get(label);
+    assert!(
+      inst_idx < block.len(),
+      "inst index {inst_idx} out of bounds for block {label} (len={})",
+      block.len()
+    );
+    let mut state = self.state_before_inst(cfg, label, inst_idx);
     let mut analysis = NullabilityAnalysis {
-      var_count: entry.masks.len(),
+      var_count: state.masks.len(),
       types: ValueTypeSummaries::new(cfg),
     };
-    replay_forward_after_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
-      analysis.apply_to_instruction(label, inst_idx, inst, state);
-    })
+    analysis.apply_to_instruction_in_block(label, inst_idx, &block[inst_idx], block, &mut state);
+    state
   }
 
   pub fn state_before_loc(&self, cfg: &Cfg, loc: InstLoc) -> State {
@@ -369,6 +382,141 @@ impl NullabilityAnalysis {
       _ => NullabilityMask::TOP,
     }
   }
+
+  fn apply_to_instruction_in_block(
+    &mut self,
+    label: u32,
+    inst_idx: usize,
+    inst: &Inst,
+    block: &[Inst],
+    state: &mut State,
+  ) {
+    if inst.t == InstTyp::Assume {
+      self.apply_assume(&block[..inst_idx], inst.as_assume(), state);
+    } else {
+      self.apply_to_instruction(label, inst_idx, inst, state);
+    }
+  }
+
+  fn apply_assume(&self, prior_insts: &[Inst], cond: &Arg, state: &mut State) {
+    if !state.reachable {
+      return;
+    }
+
+    match cond {
+      Arg::Const(Const::Bool(true)) => {}
+      Arg::Const(Const::Bool(false)) => state.set_unreachable(),
+      Arg::Var(cond_var) => {
+        // Treat `assume(%x)` as "x is truthy", which implies it is not nullish.
+        if let Some(slot) = state.masks.get_mut(*cond_var as usize) {
+          *slot &= NullabilityMask::OTHER;
+          if slot.is_bottom() {
+            state.set_unreachable();
+            return;
+          }
+        }
+
+        // Existing narrowing based on null/undefined comparisons.
+        let mut negate = false;
+        let mut probe_var = *cond_var;
+        let mut cmp: Option<(&Arg, BinOp, &Arg)> = None;
+        for _ in 0..8 {
+          let mut found_def = false;
+          for inst in prior_insts.iter().rev() {
+            if inst.t == InstTyp::CondGoto {
+              continue;
+            }
+            if inst.tgts.get(0).copied() != Some(probe_var) {
+              continue;
+            }
+            found_def = true;
+            match inst.t {
+              InstTyp::Bin => {
+                let (_tgt, left, op, right) = inst.as_bin();
+                cmp = Some((left, op, right));
+              }
+              InstTyp::Un => {
+                let (_tgt, un_op, arg) = inst.as_un();
+                if un_op == UnOp::Not {
+                  if let Arg::Var(v) = arg {
+                    probe_var = *v;
+                    negate = !negate;
+                    continue;
+                  }
+                }
+              }
+              InstTyp::VarAssign => {
+                let (_tgt, arg) = inst.as_var_assign();
+                if let Arg::Var(v) = arg {
+                  probe_var = *v;
+                  continue;
+                }
+              }
+              _ => {}
+            }
+            break;
+          }
+          if cmp.is_some() || !found_def {
+            break;
+          }
+        }
+
+        let Some((left, op, right)) = cmp else {
+          return;
+        };
+
+        let (var, is_null) = match (left, right) {
+          (Arg::Var(v), other) | (other, Arg::Var(v)) => {
+            if matches!(other, Arg::Const(Const::Null)) {
+              (*v, true)
+            } else if matches!(other, Arg::Const(Const::Undefined))
+              || matches!(other, Arg::Builtin(name) if name == "undefined")
+            {
+              (*v, false)
+            } else {
+              return;
+            }
+          }
+          _ => return,
+        };
+
+        let nullish = NullabilityMask::NULL | NullabilityMask::UNDEF;
+        let non_nullish = NullabilityMask::OTHER;
+
+        let (mut when_true, mut when_false) = match op {
+          BinOp::LooseEq => (nullish, non_nullish),
+          BinOp::NotLooseEq => (non_nullish, nullish),
+          BinOp::StrictEq => {
+            if is_null {
+              (NullabilityMask::NULL, NullabilityMask::UNDEF | NullabilityMask::OTHER)
+            } else {
+              (NullabilityMask::UNDEF, NullabilityMask::NULL | NullabilityMask::OTHER)
+            }
+          }
+          BinOp::NotStrictEq => {
+            if is_null {
+              (NullabilityMask::UNDEF | NullabilityMask::OTHER, NullabilityMask::NULL)
+            } else {
+              (NullabilityMask::NULL | NullabilityMask::OTHER, NullabilityMask::UNDEF)
+            }
+          }
+          _ => return,
+        };
+
+        if negate {
+          std::mem::swap(&mut when_true, &mut when_false);
+        }
+        let refine = when_true; // assume condition is true
+        if let Some(slot) = state.masks.get_mut(var as usize) {
+          *slot &= refine;
+          if slot.is_bottom() {
+            state.set_unreachable();
+          }
+        }
+      }
+      _ => {}
+    }
+  }
 }
 
 impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
@@ -468,6 +616,14 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
       }
       _ => {}
     }
+  }
+
+  fn apply_to_block(&mut self, label: u32, block: &[Inst], state: &Self::State) -> Self::State {
+    let mut next = state.clone();
+    for (idx, inst) in block.iter().enumerate() {
+      self.apply_to_instruction_in_block(label, idx, inst, block, &mut next);
+    }
+    next
   }
 
   fn apply_edge(
