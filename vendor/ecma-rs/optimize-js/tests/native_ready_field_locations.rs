@@ -29,7 +29,15 @@ fn compile_native_ready(source: &str, native_strict: bool) -> optimize_js::Nativ
     file_id,
     TopLevelMode::Module,
     false,
-    NativeReadyOptions { run_opt_passes: false },
+    NativeReadyOptions {
+      run_opt_passes: false,
+      // When optimizations are disabled, the SSA graph can still contain
+      // redundant copy `VarAssign`s without full typed metadata. The strict-native
+      // verifier is intended for the optimized native pipeline, so disable it
+      // here to focus this test on field-level effect modeling.
+      verify_strict_native: false,
+      ..NativeReadyOptions::default()
+    },
   )
   .expect("compile_file_native_ready")
 }
@@ -122,4 +130,3 @@ fn native_ready_non_strict_native_falls_back_to_heap() {
     effects.writes
   );
 }
-
