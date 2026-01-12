@@ -1397,9 +1397,10 @@ fn reader_read_native(
         "ReadableStreamDefaultReader has no stream (lock released)".to_string(),
       ));
     };
+
     let Some(stream_state) = state.streams.get_mut(&stream_weak) else {
       return Ok(ReadOutcome::Error(
-        "ReadableStreamDefaultReader has an invalid stream".to_string(),
+        "ReadableStream has been garbage collected".to_string(),
       ));
     };
 

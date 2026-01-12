@@ -1261,9 +1261,9 @@ fn store_test_rect(ctx: &egui::Context, key: &'static str, rect: egui::Rect) {
 mod tests {
   use super::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
+  use crate::ui::BookmarkStore;
   use crate::ui::messages::TabId;
   use crate::ui::omnibox::{OmniboxSuggestionSource, OmniboxUrlSource};
-  use crate::ui::BookmarkStore;
 
   fn new_context() -> egui::Context {
     let ctx = egui::Context::default();

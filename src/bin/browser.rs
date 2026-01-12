@@ -764,13 +764,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
   let mut session_autosave =
-    match fastrender::ui::session::SessionAutosave::new(session_path.clone()) {
-      Ok(autosave) => Some(autosave),
-      Err(err) => {
-        eprintln!("failed to start session autosave: {err}");
-        None
-      }
-    };
+    fastrender::ui::session_autosave::SessionAutosave::new(session_path.clone());
   use winit::event::Event;
   use winit::event::StartCause;
   use winit::event::WindowEvent;
@@ -921,17 +915,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   }
 
-  if let Some(autosave) = session_autosave.as_ref() {
-    // Mark the session as "running" as soon as the restored session state is in memory.
-    //
-    // This is the crash marker: if the process is terminated unexpectedly, `did_exit_cleanly`
-    // remains false on disk and the next launch can restore + log.
-    let mut session =
-      fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
-    session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
-    session.did_exit_cleanly = false;
-    autosave.request_save_immediate(session);
-  }
+  // Mark the session as "running" as soon as the restored session state is in memory.
+  //
+  // This is the crash marker: if the process is terminated unexpectedly, `did_exit_cleanly`
+  // remains false on disk and the next launch can restore + log.
+  let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
+  session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
+  session.did_exit_cleanly = false;
+  session_autosave.request_save(session);
 
   let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
 
@@ -973,13 +964,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
         session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
         session.did_exit_cleanly = true;
+        session_autosave.request_save(session.clone());
 
-        if let Some(autosave) = session_autosave.as_ref() {
-          autosave.request_save_immediate(session);
-        } else if let Err(err) =
-          fastrender::ui::session::save_session_atomic(&session_path, &session)
-        {
-          eprintln!("failed to save session to {}: {err}", session_path.display());
+        // Best-effort flush + mark clean. If the autosave worker isn't running, fall back to a
+        // direct atomic save on the UI thread (bounded by the same timeout).
+        if let Err(err) = session_autosave.shutdown(std::time::Duration::from_millis(500)) {
+          eprintln!("session autosave shutdown failed: {err}");
+          if let Err(err) =
+            fastrender::ui::session::save_session_atomic(&session_path, &session)
+          {
+            eprintln!("failed to save session to {}: {err}", session_path.display());
+          }
         }
 
         if let Err(err) =
@@ -1005,10 +1000,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.shutdown();
       }
 
-      if let Some(autosave) = session_autosave.take() {
-        autosave.shutdown(std::time::Duration::from_millis(500));
-      }
-
       if let Some(join) = bridge_join.take() {
         let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
         let _ = std::thread::spawn(move || {
@@ -1032,14 +1023,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let request_autosave = |app: &App| {
-      let Some(autosave) = session_autosave.as_ref() else {
-        return;
-      };
       let mut session =
         fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
       session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
       session.did_exit_cleanly = false;
-      autosave.request_save(session);
+      session_autosave.request_save(session);
     };
 
     match event {

@@ -213,10 +213,10 @@ pub fn apply_page_context_menu_action(
       if url.is_empty() {
         return ApplyPageContextMenuActionResult::default();
       }
-      let was_bookmarked = bookmarks.contains_url(url);
-      let now_bookmarked = bookmarks.toggle(url, None);
+      let before = bookmarks.contains_url(url);
+      let after = bookmarks.toggle(url, None);
       ApplyPageContextMenuActionResult {
-        bookmarks_changed: was_bookmarked || now_bookmarked,
+        bookmarks_changed: before != after,
         ui_changed: false,
       }
     }

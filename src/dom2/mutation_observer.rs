@@ -184,7 +184,7 @@ impl MutationObserverAgent {
   fn state_for_observer_mut(
     &mut self,
     observer: MutationObserverId,
-  ) -> Result<&mut ObserverState, DomError> {
+    ) -> Result<&mut ObserverState, DomError> {
     let exists = self.observers.contains_key(&observer);
     if !exists && self.observers.len() >= self.limits.max_observers {
       return Err(DomError::NotSupportedError);
