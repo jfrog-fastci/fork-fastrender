@@ -2781,9 +2781,31 @@ pub fn chrome_ui_with_bookmarks(
         .iter()
         .position(|t| t.id == tab_id)
         .is_some_and(|idx| idx + 1 < app.tabs.len());
-      let is_pinned = app
+      let (is_pinned, tab_group) = app
         .tab(tab_id)
-        .is_some_and(|tab| tab.pinned);
+        .map(|tab| (tab.pinned, tab.group))
+        .unwrap_or((false, None));
+      let groups_in_order = {
+        let mut out = Vec::new();
+        for tab in &app.tabs {
+          let Some(group_id) = tab.group else {
+            continue;
+          };
+          if out.iter().any(|(id, _, _)| *id == group_id) {
+            continue;
+          }
+          if let Some(group) = app.tab_groups.get(&group_id) {
+            let title = group.title.trim();
+            let label = if title.is_empty() {
+              "Group".to_string()
+            } else {
+              title.to_string()
+            };
+            out.push((group_id, label, group.color));
+          }
+        }
+        out
+      };
 
       let menu_pos = egui::pos2(open_menu.anchor_points.0, open_menu.anchor_points.1);
 
@@ -2824,6 +2846,60 @@ pub fn chrome_ui_with_bookmarks(
               app.chrome.open_tab_context_menu = None;
               app.chrome.tab_context_menu_rect = None;
             }
+
+            if !is_pinned {
+              match tab_group {
+                Some(_) => {
+                  if ui.button("Remove from Group").clicked() {
+                    app.remove_tab_from_group(tab_id);
+                    app.chrome.open_tab_context_menu = None;
+                    app.chrome.tab_context_menu_rect = None;
+                  }
+
+                  let has_other_groups = groups_in_order
+                    .iter()
+                    .any(|(group_id, _, _)| Some(*group_id) != tab_group);
+                  if has_other_groups {
+                    ui.menu_button("Move to Group", |ui| {
+                      for (group_id, title, _) in &groups_in_order {
+                        if Some(*group_id) == tab_group {
+                          continue;
+                        }
+                        if ui.button(title).clicked() {
+                          app.add_tab_to_group(tab_id, *group_id);
+                          app.chrome.open_tab_context_menu = None;
+                          app.chrome.tab_context_menu_rect = None;
+                          ui.close_menu();
+                        }
+                      }
+                    });
+                  }
+                }
+                None => {
+                  if ui.button("Add to New Group").clicked() {
+                    app.create_group_with_tabs(&[tab_id]);
+                    app.chrome.open_tab_context_menu = None;
+                    app.chrome.tab_context_menu_rect = None;
+                  }
+
+                  if groups_in_order.is_empty() {
+                    ui.add_enabled(false, egui::Button::new("Add to Existing Group"));
+                  } else {
+                    ui.menu_button("Add to Existing Group", |ui| {
+                      for (group_id, title, _) in &groups_in_order {
+                        if ui.button(title).clicked() {
+                          app.add_tab_to_group(tab_id, *group_id);
+                          app.chrome.open_tab_context_menu = None;
+                          app.chrome.tab_context_menu_rect = None;
+                          ui.close_menu();
+                        }
+                      }
+                    });
+                  }
+                }
+              }
+            }
+
             if ui
               .add_enabled(can_close_tabs, egui::Button::new("Close Tab"))
               .clicked()

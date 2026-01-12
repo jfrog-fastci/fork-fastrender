@@ -130,7 +130,8 @@ pub use search_suggest::{SearchSuggestConfig, SearchSuggestService, SearchSugges
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, DownloadEntry,
   DownloadProgressSummary, DownloadStatus, DownloadsState, FrameReadyUpdate, FindInPageState,
-  LatestFrameMeta, OpenSelectDropdownUpdate, RemoteSearchSuggestCache,
+  LatestFrameMeta, OpenSelectDropdownUpdate, RemoteSearchSuggestCache, TabGroupColor, TabGroupId,
+  TabGroupState,
 };
 pub use global_history::{
   ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistoryStore, DEFAULT_GLOBAL_HISTORY_CAPACITY,

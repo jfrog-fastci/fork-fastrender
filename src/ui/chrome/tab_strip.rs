@@ -1,5 +1,5 @@
 use crate::ui::browser_app::{
-  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState,
+  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState, TabGroupColor, TabGroupId,
 };
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::messages::TabId;
@@ -17,6 +17,9 @@ const TAB_MAX_WIDTH: f32 = 240.0;
 const PINNED_TAB_WIDTH: f32 = 44.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_PADDING_X: f32 = 10.0;
+const GROUP_CHIP_MIN_WIDTH: f32 = 90.0;
+const GROUP_CHIP_MAX_WIDTH: f32 = 180.0;
+const GROUP_CHIP_PADDING_X: f32 = 10.0;
 const CONTROL_BUTTON_SIZE: f32 = 28.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_GAP: f32 = 8.0;
@@ -122,11 +125,28 @@ fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
   egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
+fn group_color_egui(color: TabGroupColor) -> Color32 {
+  let (r, g, b) = color.rgb();
+  Color32::from_rgb(r, g, b)
+}
+
+fn group_color_fill(color: TabGroupColor) -> Color32 {
+  let (r, g, b) = color.rgb();
+  Color32::from_rgba_unmultiplied(r, g, b, 48)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct TabStripSizing {
   pub tab_width: f32,
   pub overflow: bool,
   pub total_content_width: f32,
+}
+
+#[derive(Debug)]
+enum TabStripOp {
+  ToggleGroupCollapsed(TabGroupId),
+  Ungroup(TabGroupId),
+  SetGroupColor(TabGroupId, TabGroupColor),
 }
 
 /// Pure sizing logic for the tab strip.
@@ -196,6 +216,85 @@ fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visu
   painter.rect_stroke(rect, rounding, stroke);
 }
 
+fn group_chip_width(ui: &egui::Ui, label: &str) -> f32 {
+  let font_id = egui::TextStyle::Button.resolve(ui.style());
+  let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, ui.visuals().text_color()));
+  (galley.size().x + GROUP_CHIP_PADDING_X * 2.0).clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH)
+}
+
+fn group_chip_ui(
+  ui: &mut egui::Ui,
+  app: &mut BrowserAppState,
+  group_id: TabGroupId,
+  ops: &mut Vec<TabStripOp>,
+) {
+  let Some(group) = app.tab_groups.get(&group_id) else {
+    return;
+  };
+
+  let collapsed = group.collapsed;
+  let color = group.color;
+  let title = if group.title.trim().is_empty() {
+    "Group".to_string()
+  } else {
+    group.title.clone()
+  };
+
+  let arrow = if collapsed { "▸" } else { "▾" };
+  let label = format!("{arrow} {title}");
+  let width = group_chip_width(ui, &label);
+
+  let id = ui.make_persistent_id(("tab_group_chip", group_id.0));
+  let mut response = ui
+    .push_id(id, |ui| {
+      ui.add_sized(
+        Vec2::new(width, TAB_HEIGHT),
+        egui::Button::new(label)
+          .fill(group_color_fill(color))
+          .stroke(Stroke::new(1.0, group_color_egui(color))),
+      )
+    })
+    .inner;
+
+  if response.clicked() {
+    ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
+  }
+
+  response = response.context_menu(|ui| {
+    ui.label("Rename group");
+    if let Some(group) = app.tab_groups.get_mut(&group_id) {
+      ui.text_edit_singleline(&mut group.title);
+    }
+
+    ui.separator();
+
+    ui.menu_button("Change color", |ui| {
+      for color in TabGroupColor::ALL {
+        let button = egui::Button::new(color.as_str())
+          .fill(group_color_fill(color))
+          .stroke(Stroke::new(1.0, group_color_egui(color)));
+        if ui.add(button).clicked() {
+          ops.push(TabStripOp::SetGroupColor(group_id, color));
+          ui.close_menu();
+        }
+      }
+    });
+
+    ui.separator();
+
+    if ui.button("Ungroup").clicked() {
+      ops.push(TabStripOp::Ungroup(group_id));
+      ui.close_menu();
+    }
+
+    let label = if collapsed { "Expand group" } else { "Collapse group" };
+    if ui.button(label).clicked() {
+      ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
+      ui.close_menu();
+    }
+  });
+}
+
 fn tab_ui(
   ui: &mut egui::Ui,
   motion: UiMotion,
@@ -206,6 +305,7 @@ fn tab_ui(
   favicon_tex: Option<egui::TextureId>,
   chrome: &mut ChromeState,
   focus_ring: FocusRingStyle,
+  group_color: Option<Color32>,
 ) -> (Rect, Response, Option<ChromeAction>) {
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
@@ -261,15 +361,14 @@ fn tab_ui(
   {
     let painter = ui.painter();
     painter.rect_filled(tab_rect, rounding, bg);
-  }
 
-  if response.has_focus() {
-    let focus_stroke = visuals.selection.stroke;
-    let expand = 1.0 + focus_stroke.width * 0.5;
-    let focus_rect = tab_rect.expand(expand);
-    let focus_rounding = egui::Rounding::same(rounding.nw + expand);
-    ui.painter()
-      .rect_stroke(focus_rect, focus_rounding, focus_stroke);
+    if let Some(color) = group_color {
+      painter.rect_stroke(
+        tab_rect.shrink(0.5),
+        rounding,
+        Stroke::new(1.0, color),
+      );
+    }
   }
 
   // Favicon.
@@ -627,8 +726,9 @@ pub(super) fn tab_strip_ui(
 
   let tab_count = app.tabs.len();
   let can_close_tabs = tab_count > 1;
-  let pinned_count = app.tabs.iter().take_while(|t| t.pinned).count();
-  let unpinned_count = tab_count - pinned_count;
+  let pinned_len = app.tabs.iter().take_while(|t| t.pinned).count();
+  let pinned_count = pinned_len;
+  let unpinned_count = tab_count.saturating_sub(pinned_len);
   let active_id = app.active_tab_id();
   let last_active_id_key = ui.make_persistent_id("tab_strip_last_active");
   let last_active_id = ui
@@ -662,7 +762,25 @@ pub(super) fn tab_strip_ui(
   );
   let unpinned_viewport_width = unpinned_viewport_rect.width().max(0.0);
 
-  let sizing = compute_tab_strip_sizing(unpinned_viewport_width, unpinned_count);
+  let mut visible_unpinned_count = 0usize;
+  {
+    let mut idx = pinned_len;
+    while idx < app.tabs.len() {
+      if let Some(group_id) = app.tabs[idx].group {
+        if app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed) {
+          while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
+            idx += 1;
+          }
+          continue;
+        }
+      }
+      visible_unpinned_count += 1;
+      idx += 1;
+    }
+  }
+  let sizing = compute_tab_strip_sizing(unpinned_viewport_width, visible_unpinned_count);
+
+  let mut ops: Vec<TabStripOp> = Vec::new();
 
   #[cfg(test)]
   let mut tab_rects_for_test: Vec<Rect> = Vec::new();
@@ -706,7 +824,6 @@ pub(super) fn tab_strip_ui(
           }
           #[cfg(test)]
           tab_rects_for_test.push(tab_rect);
-
           pinned_tab_rects_for_drag.push((tab_id, tab_rect));
           if tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
             chrome.dragging_tab_id = Some(tab_id);
@@ -715,7 +832,6 @@ pub(super) fn tab_strip_ui(
           if chrome.dragging_tab_id == Some(tab_id) {
             dragged_tab_rect = Some(tab_rect);
           }
-
           if let Some(action) = maybe_action {
             actions.push(action);
           }
@@ -736,23 +852,49 @@ pub(super) fn tab_strip_ui(
         .show(&mut unpinned_ui, |ui| {
           ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
           ui.horizontal(|ui| {
-            let (tabs, chrome) = (&app.tabs, &mut app.chrome);
-            for idx in pinned_count..tab_count {
-              let tab = &tabs[idx];
-              let tab_id = tab.id;
+            let mut idx = pinned_len;
+            while idx < app.tabs.len() {
+              let tab_id = app.tabs[idx].id;
+              let tab_group = app.tabs[idx].group;
+
+              if let Some(group_id) = tab_group {
+                let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
+                if is_first {
+                  group_chip_ui(ui, app, group_id, &mut ops);
+                }
+
+                if app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed) {
+                  // Skip all member tabs when collapsed.
+                  while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
+                    idx += 1;
+                  }
+                  continue;
+                }
+              }
+
               let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
-              let (tab_rect, tab_response, maybe_action) = tab_ui(
-                ui,
-                motion,
-                tab,
-                is_active,
-                can_close_tabs,
-                sizing.tab_width,
-                favicon_tex,
-                chrome,
-                focus_ring,
-              );
+              let (tab_rect, tab_response, maybe_action) = {
+                let tab = &app.tabs[idx];
+                let group_border = tab.group.and_then(|gid| {
+                  app
+                    .tab_groups
+                    .get(&gid)
+                    .map(|g| group_color_egui(g.color))
+                });
+                tab_ui(
+                  ui,
+                  motion,
+                  tab,
+                  is_active,
+                  can_close_tabs,
+                  sizing.tab_width,
+                  favicon_tex,
+                  &mut app.chrome,
+                  focus_ring,
+                  group_border,
+                )
+              };
               if is_active {
                 active_tab_rect = Some(tab_rect);
                 active_tab_is_pinned = false;
@@ -767,17 +909,19 @@ pub(super) fn tab_strip_ui(
               tab_rects_for_test.push(tab_rect);
 
               unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
-              if tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
-                chrome.dragging_tab_id = Some(tab_id);
-                chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+              if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
+                app.chrome.dragging_tab_id = Some(tab_id);
+                app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
               }
-              if chrome.dragging_tab_id == Some(tab_id) {
+              if app.chrome.dragging_tab_id == Some(tab_id) {
                 dragged_tab_rect = Some(tab_rect);
               }
 
               if let Some(action) = maybe_action {
                 actions.push(action);
               }
+
+              idx += 1;
             }
           });
         });
@@ -919,12 +1063,48 @@ pub(super) fn tab_strip_ui(
         insertion_index += 1;
       }
 
-      let target_index_in_group = insertion_index.min(tab_rects_for_drag.len() - 1);
-      let target_index = group_start_index + target_index_in_group;
+      // Map the insertion point (computed from visible tab rects) back to an index into
+      // `BrowserAppState.tabs` so group invariants are preserved even with collapsed groups.
+      let src_idx = app.tabs.iter().position(|t| t.id == dragging_tab_id);
+      let before_id = {
+        let mut count = 0usize;
+        let mut out = None::<TabId>;
+        for (tab_id, _) in tab_rects_for_drag {
+          if *tab_id == dragging_tab_id {
+            continue;
+          }
+          if count == insertion_index {
+            out = Some(*tab_id);
+            break;
+          }
+          count += 1;
+        }
+        out
+      };
+      let mut target_index = if let Some(before_id) = before_id {
+        app
+          .tabs
+          .iter()
+          .position(|t| t.id == before_id)
+          .unwrap_or(group_start_index)
+      } else {
+        let last_id = tab_rects_for_drag
+          .iter()
+          .rev()
+          .find_map(|(tab_id, _)| (*tab_id != dragging_tab_id).then_some(*tab_id));
+        last_id
+          .and_then(|id| app.tabs.iter().position(|t| t.id == id).map(|idx| idx + 1))
+          .unwrap_or(group_start_index)
+      };
+      if let Some(src_idx) = src_idx {
+        if src_idx < target_index {
+          target_index = target_index.saturating_sub(1);
+        }
+      }
       app.chrome.drag_target_index = Some(target_index);
 
       // Apply the reorder immediately while dragging (standard browser behaviour).
-      let _ = app.reorder_tab(dragging_tab_id, target_index);
+      app.drag_reorder_tab(dragging_tab_id, target_index);
 
       // Draw drop indicator.
       let tab_strip_rect = tab_rects_for_drag
@@ -966,6 +1146,20 @@ pub(super) fn tab_strip_ui(
         .painter()
         .with_clip_rect(group_clip_rect)
         .line_segment([Pos2::new(drop_x, y1), Pos2::new(drop_x, y2)], stroke);
+    }
+  }
+
+  for op in ops.drain(..) {
+    match op {
+      TabStripOp::ToggleGroupCollapsed(group_id) => {
+        app.toggle_group_collapsed(group_id);
+      }
+      TabStripOp::Ungroup(group_id) => {
+        app.ungroup(group_id);
+      }
+      TabStripOp::SetGroupColor(group_id, color) => {
+        app.set_group_color(group_id, color);
+      }
     }
   }
 

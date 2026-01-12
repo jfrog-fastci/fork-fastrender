@@ -11,13 +11,94 @@ use crate::ui::{
   resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore, OmniboxSuggestion,
   VisitedUrlStore,
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use url::Url;
 
 const DEBUG_LOG_CAPACITY: usize = 256;
 const CLOSED_TAB_STACK_CAPACITY: usize = 20;
+
+static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Identifier for a chrome tab group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabGroupId(pub u64);
+
+impl TabGroupId {
+  /// Generate a new process-unique tab group id.
+  pub fn new() -> Self {
+    // Keep `0` as a reserved "invalid" value, mirroring `TabId`.
+    loop {
+      let id = NEXT_TAB_GROUP_ID.fetch_add(1, Ordering::Relaxed);
+      if id != 0 {
+        return Self(id);
+      }
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TabGroupColor {
+  #[default]
+  Blue,
+  Gray,
+  Red,
+  Orange,
+  Yellow,
+  Green,
+  Purple,
+  Pink,
+}
+
+impl TabGroupColor {
+  pub const ALL: [Self; 8] = [
+    Self::Blue,
+    Self::Gray,
+    Self::Red,
+    Self::Orange,
+    Self::Yellow,
+    Self::Green,
+    Self::Purple,
+    Self::Pink,
+  ];
+
+  pub fn as_str(self) -> &'static str {
+    match self {
+      Self::Blue => "Blue",
+      Self::Gray => "Gray",
+      Self::Red => "Red",
+      Self::Orange => "Orange",
+      Self::Yellow => "Yellow",
+      Self::Green => "Green",
+      Self::Purple => "Purple",
+      Self::Pink => "Pink",
+    }
+  }
+
+  pub fn rgb(self) -> (u8, u8, u8) {
+    match self {
+      // Roughly matches Chrome's tab group palette.
+      Self::Blue => (66, 133, 244),
+      Self::Gray => (95, 99, 104),
+      Self::Red => (234, 67, 53),
+      Self::Orange => (251, 188, 4),
+      Self::Yellow => (255, 214, 0),
+      Self::Green => (52, 168, 83),
+      Self::Purple => (138, 74, 218),
+      Self::Pink => (233, 30, 99),
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct TabGroupState {
+  pub id: TabGroupId,
+  pub title: String,
+  pub color: TabGroupColor,
+  pub collapsed: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatestFrameMeta {
@@ -221,6 +302,7 @@ pub struct BrowserTabState {
   /// Invariant (enforced by [`BrowserAppState`]): all pinned tabs are stored contiguously at the
   /// start of [`BrowserAppState::tabs`].
   pub pinned: bool,
+  pub group: Option<TabGroupId>,
   /// Shared cancellation generations for this tab.
   ///
   /// The UI thread can bump these counters (without blocking on the worker) to cancel in-flight
@@ -276,6 +358,7 @@ impl BrowserTabState {
     Self {
       id: tab_id,
       pinned: false,
+      group: None,
       cancel: CancelGens::new(),
       current_url: Some(initial_url),
       committed_url: Some(committed_url),
@@ -650,6 +733,7 @@ pub struct BrowserAppState {
   pub closed_tabs: Vec<ClosedTabState>,
   pub history: GlobalHistoryStore,
   pub visited: VisitedUrlStore,
+  pub tab_groups: HashMap<TabGroupId, TabGroupState>,
   pub chrome: ChromeState,
   pub downloads: DownloadsState,
   pub appearance: AppearanceSettings,
@@ -671,6 +755,7 @@ impl BrowserAppState {
       closed_tabs: Vec::new(),
       history: GlobalHistoryStore::default(),
       visited: VisitedUrlStore::new(),
+      tab_groups: HashMap::new(),
       chrome: ChromeState::default(),
       downloads: DownloadsState::default(),
       appearance: AppearanceSettings::default(),
@@ -718,6 +803,11 @@ impl BrowserAppState {
       return false;
     }
     self.active_tab = Some(tab_id);
+    if let Some(group_id) = self.tab(tab_id).and_then(|t| t.group) {
+      if let Some(group) = self.tab_groups.get_mut(&group_id) {
+        group.collapsed = false;
+      }
+    }
     // Switching tabs should always reflect the newly active tab URL in the address bar. If the
     // user was typing, cancel that edit rather than carrying the partially typed URL across tabs.
     self.chrome.address_bar_editing = false;
@@ -753,8 +843,10 @@ impl BrowserAppState {
     let pinned_end = self.pinned_len();
     let mut tab = self.tabs.remove(idx);
     tab.pinned = true;
+    tab.group = None;
     let insert_at = pinned_end.min(self.tabs.len());
     self.tabs.insert(insert_at, tab);
+    self.prune_empty_tab_groups();
     true
   }
 
@@ -768,8 +860,10 @@ impl BrowserAppState {
     let pinned_end = self.pinned_len();
     let mut tab = self.tabs.remove(idx);
     tab.pinned = false;
+    tab.group = None;
     let insert_at = pinned_end.saturating_sub(1).min(self.tabs.len());
     self.tabs.insert(insert_at, tab);
+    self.prune_empty_tab_groups();
     true
   }
 
@@ -783,7 +877,9 @@ impl BrowserAppState {
 
   pub fn push_tab(&mut self, tab: BrowserTabState, make_active: bool) {
     let tab_id = tab.id;
+    let mut tab = tab;
     if tab.pinned {
+      tab.group = None;
       let idx = self.pinned_len();
       self.tabs.insert(idx, tab);
     } else {
@@ -855,6 +951,311 @@ impl BrowserAppState {
     self.visited.seed_from_global_history(&self.history);
   }
 
+  fn tab_group_range(&self, group_id: TabGroupId) -> Option<std::ops::Range<usize>> {
+    let mut start: Option<usize> = None;
+    let mut end: usize = 0;
+    for (idx, tab) in self.tabs.iter().enumerate() {
+      if tab.group == Some(group_id) {
+        if start.is_none() {
+          start = Some(idx);
+        }
+        end = idx + 1;
+      } else if start.is_some() {
+        break;
+      }
+    }
+    start.map(|s| s..end)
+  }
+
+  fn prune_empty_tab_groups(&mut self) {
+    let mut in_use = HashSet::new();
+    for tab in &self.tabs {
+      if let Some(group_id) = tab.group {
+        in_use.insert(group_id);
+      }
+    }
+    self.tab_groups.retain(|id, _| in_use.contains(id));
+  }
+
+  fn adjust_insertion_index_to_avoid_splitting_groups(&self, mut idx: usize) -> usize {
+    if idx == 0 || idx >= self.tabs.len() {
+      return idx;
+    }
+    let left = self.tabs[idx - 1].group;
+    let right = self.tabs[idx].group;
+    if left.is_some() && left == right {
+      let group_id = left.expect("checked is_some above");
+      // Insert after the group block to preserve contiguity.
+      if let Some(range) = self.tab_group_range(group_id) {
+        idx = range.end;
+      }
+    }
+    idx
+  }
+
+  pub fn create_group_with_tabs(&mut self, tab_ids: &[TabId]) -> TabGroupId {
+    if tab_ids.is_empty() {
+      return TabGroupId(0);
+    }
+
+    let selected: HashSet<TabId> = tab_ids
+      .iter()
+      .copied()
+      .filter(|tab_id| self.tab(*tab_id).is_some_and(|t| !t.pinned))
+      .collect();
+    if selected.is_empty() {
+      return TabGroupId(0);
+    }
+
+    let mut remaining = Vec::with_capacity(self.tabs.len());
+    let mut extracted = Vec::new();
+    let mut insert_idx: Option<usize> = None;
+
+    for tab in self.tabs.drain(..) {
+      if selected.contains(&tab.id) {
+        if insert_idx.is_none() {
+          insert_idx = Some(remaining.len());
+        }
+        extracted.push(tab);
+      } else {
+        remaining.push(tab);
+      }
+    }
+    self.tabs = remaining;
+
+    let Some(insert_idx) = insert_idx else {
+      // None of the requested tabs exist.
+      return TabGroupId(0);
+    };
+
+    for tab in &mut extracted {
+      tab.group = None;
+    }
+
+    let group_id = TabGroupId::new();
+    self.tab_groups.insert(
+      group_id,
+      TabGroupState {
+        id: group_id,
+        title: "Group".to_string(),
+        color: TabGroupColor::default(),
+        collapsed: false,
+      },
+    );
+
+    let insert_idx = self.adjust_insertion_index_to_avoid_splitting_groups(insert_idx);
+
+    for tab in &mut extracted {
+      tab.group = Some(group_id);
+    }
+
+    self.tabs.splice(insert_idx..insert_idx, extracted);
+    self.prune_empty_tab_groups();
+    group_id
+  }
+
+  pub fn add_tab_to_group(&mut self, tab_id: TabId, group_id: TabGroupId) {
+    if !self.tab_groups.contains_key(&group_id) {
+      return;
+    }
+
+    if self.tab(tab_id).is_some_and(|t| t.pinned) {
+      // Pinned tabs cannot be grouped.
+      return;
+    }
+
+    // If the tab is currently grouped elsewhere, ungroup it first (this may move it).
+    if self
+      .tabs
+      .iter()
+      .find(|t| t.id == tab_id)
+      .and_then(|t| t.group)
+      .is_some_and(|existing| existing != group_id)
+    {
+      self.remove_tab_from_group(tab_id);
+    }
+
+    let Some(src_idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+      return;
+    };
+    if self.tabs[src_idx].group == Some(group_id) {
+      return;
+    }
+
+    let Some(range) = self.tab_group_range(group_id) else {
+      // The group exists, but has no tabs; repair by removing it.
+      self.tab_groups.remove(&group_id);
+      return;
+    };
+
+    let mut insert_idx = range.end;
+    if src_idx < insert_idx {
+      insert_idx = insert_idx.saturating_sub(1);
+    }
+
+    let mut tab = self.tabs.remove(src_idx);
+    tab.group = Some(group_id);
+    self.tabs.insert(insert_idx, tab);
+
+    if self.active_tab == Some(tab_id) {
+      if let Some(group) = self.tab_groups.get_mut(&group_id) {
+        group.collapsed = false;
+      }
+    }
+
+    self.prune_empty_tab_groups();
+  }
+
+  pub fn remove_tab_from_group(&mut self, tab_id: TabId) {
+    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+      return;
+    };
+    let Some(group_id) = self.tabs[idx].group else {
+      return;
+    };
+
+    let Some(range) = self.tab_group_range(group_id) else {
+      // The tab claims to be grouped, but the group isn't contiguous; treat as ungrouped.
+      self.tabs[idx].group = None;
+      self.prune_empty_tab_groups();
+      return;
+    };
+
+    let start = range.start;
+    let end = range.end;
+
+    if idx == start || idx + 1 == end {
+      self.tabs[idx].group = None;
+    } else {
+      let mut tab = self.tabs.remove(idx);
+      tab.group = None;
+      let insert_idx = end.saturating_sub(1);
+      self.tabs.insert(insert_idx, tab);
+    }
+
+    self.prune_empty_tab_groups();
+  }
+
+  pub fn set_group_title(&mut self, group_id: TabGroupId, title: String) {
+    if let Some(group) = self.tab_groups.get_mut(&group_id) {
+      group.title = title;
+    }
+  }
+
+  pub fn set_group_color(&mut self, group_id: TabGroupId, color: TabGroupColor) {
+    if let Some(group) = self.tab_groups.get_mut(&group_id) {
+      group.color = color;
+    }
+  }
+
+  pub fn toggle_group_collapsed(&mut self, group_id: TabGroupId) {
+    let active_in_group = self
+      .active_tab
+      .and_then(|id| self.tab(id))
+      .is_some_and(|t| t.group == Some(group_id));
+    let Some(group) = self.tab_groups.get_mut(&group_id) else {
+      return;
+    };
+    if active_in_group {
+      group.collapsed = false;
+      return;
+    }
+    group.collapsed = !group.collapsed;
+  }
+
+  pub fn ungroup(&mut self, group_id: TabGroupId) {
+    for tab in &mut self.tabs {
+      if tab.group == Some(group_id) {
+        tab.group = None;
+      }
+    }
+    self.tab_groups.remove(&group_id);
+  }
+
+  /// Drag-style reordering helper that preserves tab group invariants.
+  ///
+  /// This is intended to be used by the chrome tab strip drag/reorder UX.
+  ///
+  /// Rules:
+  /// - Dragging a grouped tab outside its group removes it from the group.
+  /// - Dragging an ungrouped tab into a group region adds it to that group.
+  /// - Dragging within a group preserves membership and reorders within the group.
+  pub fn drag_reorder_tab(&mut self, tab_id: TabId, dst_index: usize) {
+    let Some(src_idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+      return;
+    };
+
+    let mut tab = self.tabs.remove(src_idx);
+    let old_group = tab.group;
+
+    let mut insert_idx = dst_index.min(self.tabs.len());
+
+    let pinned_end = self.pinned_len();
+    if tab.pinned {
+      // Pinned tabs are kept in a fixed leading segment and cannot be grouped.
+      tab.group = None;
+      insert_idx = insert_idx.min(pinned_end);
+      self.tabs.insert(insert_idx, tab);
+      self.prune_empty_tab_groups();
+      return;
+    }
+    // Ungrouped tabs cannot be inserted into the pinned segment.
+    insert_idx = insert_idx.max(pinned_end);
+
+    let left_group = insert_idx
+      .checked_sub(1)
+      .and_then(|idx| self.tabs.get(idx))
+      .and_then(|t| t.group);
+    let right_group = self.tabs.get(insert_idx).and_then(|t| t.group);
+
+    let inferred_group = if left_group.is_some() && left_group == right_group {
+      left_group
+    } else if let Some(left) = left_group {
+      if right_group.is_none() {
+        Some(left)
+      } else {
+        None
+      }
+    } else {
+      right_group
+    };
+
+    let new_group = match old_group {
+      Some(group_id) => {
+        // After removing this tab, check whether the destination is still within the group block.
+        if let Some(range) = self.tab_group_range(group_id) {
+          if insert_idx >= range.start && insert_idx <= range.end {
+            Some(group_id)
+          } else {
+            inferred_group
+          }
+        } else {
+          // The tab was the last in its group; treat it as an ungrouped tab being inserted.
+          inferred_group
+        }
+      }
+      None => inferred_group,
+    }
+    .filter(|group_id| self.tab_groups.contains_key(group_id));
+
+    tab.group = new_group;
+
+    if self.active_tab == Some(tab_id) {
+      if let Some(group_id) = tab.group {
+        if let Some(group) = self.tab_groups.get_mut(&group_id) {
+          group.collapsed = false;
+        }
+      }
+    }
+
+    if tab.group.is_none() {
+      insert_idx = self.adjust_insertion_index_to_avoid_splitting_groups(insert_idx);
+    }
+
+    self.tabs.insert(insert_idx, tab);
+    self.prune_empty_tab_groups();
+  }
+
   /// Removes a tab, returning the new active tab if the active tab changed.
   ///
   /// Invariant: closing the last remaining tab is a no-op.
@@ -874,6 +1275,7 @@ impl BrowserAppState {
     }
 
     let closed = self.tabs.remove(idx);
+    self.prune_empty_tab_groups();
     self.push_closed_tab_state(ClosedTabState {
       url: closed
         .committed_url
@@ -911,10 +1313,7 @@ impl BrowserAppState {
         created_tab: Some(new_tab_id),
       };
     };
-    self.active_tab = Some(new_active);
-    self.chrome.address_bar_editing = false;
-    self.chrome.omnibox.reset();
-    self.sync_address_bar_to_active();
+    let _ = self.set_active_tab(new_active);
     RemoveTabResult {
       new_active: Some(new_active),
       created_tab: None,
@@ -2426,5 +2825,158 @@ mod address_bar_tests {
       app.chrome.address_bar_text, "https://after.example/",
       "after commit, address bar should follow tab display_url again"
     );
+  }
+}
+
+#[cfg(test)]
+mod tab_group_tests {
+  use super::*;
+
+  fn assert_group_contiguous(app: &BrowserAppState, group_id: TabGroupId) {
+    let indices: Vec<usize> = app
+      .tabs
+      .iter()
+      .enumerate()
+      .filter_map(|(idx, tab)| (tab.group == Some(group_id)).then_some(idx))
+      .collect();
+
+    if indices.is_empty() {
+      assert!(
+        !app.tab_groups.contains_key(&group_id),
+        "group state should not exist without member tabs"
+      );
+      return;
+    }
+
+    assert!(
+      app.tab_groups.contains_key(&group_id),
+      "group state must exist when tabs reference it"
+    );
+    for window in indices.windows(2) {
+      assert_eq!(
+        window[1],
+        window[0] + 1,
+        "group tabs must remain contiguous (indices={indices:?}, tabs={:?})",
+        app.tabs.iter().map(|t| (t.id, t.group)).collect::<Vec<_>>()
+      );
+    }
+  }
+
+  #[test]
+  fn create_group_makes_tabs_contiguous_and_moves_block() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+    let d = TabId(4);
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(d, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    let group = app.create_group_with_tabs(&[b, d]);
+    assert_ne!(group, TabGroupId(0));
+    assert!(app.tab_groups.contains_key(&group));
+
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![a, b, d, c],
+      "expected non-contiguous tabs to be moved adjacent to the first selected tab"
+    );
+    assert_eq!(app.tab(b).and_then(|t| t.group), Some(group));
+    assert_eq!(app.tab(d).and_then(|t| t.group), Some(group));
+    assert_eq!(app.tab(a).and_then(|t| t.group), None);
+    assert_eq!(app.tab(c).and_then(|t| t.group), None);
+    assert_group_contiguous(&app, group);
+  }
+
+  #[test]
+  fn removing_last_tab_deletes_group() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    let group = app.create_group_with_tabs(&[a, b]);
+    assert!(app.tab_groups.contains_key(&group));
+
+    app.remove_tab_from_group(a);
+    assert!(app.tab_groups.contains_key(&group));
+    assert_eq!(app.tab(a).and_then(|t| t.group), None);
+    assert_group_contiguous(&app, group);
+
+    app.remove_tab_from_group(b);
+    assert!(!app.tab_groups.contains_key(&group));
+    assert_eq!(app.tab(b).and_then(|t| t.group), None);
+    assert_group_contiguous(&app, group);
+  }
+
+  #[test]
+  fn collapsing_group_hides_tabs_but_active_tab_expands_it() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    let group = app.create_group_with_tabs(&[a, b]);
+    assert!(app.set_active_tab(c));
+
+    app.toggle_group_collapsed(group);
+    assert!(
+      app.tab_groups.get(&group).is_some_and(|g| g.collapsed),
+      "expected group to collapse when active tab is outside the group"
+    );
+
+    assert!(app.set_active_tab(a));
+    assert!(
+      app.tab_groups.get(&group).is_some_and(|g| !g.collapsed),
+      "expected activating a tab in a collapsed group to expand it"
+    );
+
+    // Prevent collapsing the group while it contains the active tab.
+    app.toggle_group_collapsed(group);
+    assert!(
+      app.tab_groups.get(&group).is_some_and(|g| !g.collapsed),
+      "expected group not to collapse while it contains the active tab"
+    );
+  }
+
+  #[test]
+  fn drag_reorder_adds_and_removes_group_membership() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+    let d = TabId(4);
+    let e = TabId(5);
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(d, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(e, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    let group = app.create_group_with_tabs(&[b, c, d]);
+    assert_group_contiguous(&app, group);
+
+    // Drag a grouped tab outside the group: it should become ungrouped.
+    app.drag_reorder_tab(b, 0);
+    assert_eq!(app.tab(b).and_then(|t| t.group), None);
+    assert_group_contiguous(&app, group);
+
+    // Drag an ungrouped tab into the group region: it should join the group.
+    app.drag_reorder_tab(e, 3);
+    assert_eq!(app.tab(e).and_then(|t| t.group), Some(group));
+    assert_group_contiguous(&app, group);
+
+    // Drag within the group should reorder while staying grouped.
+    app.drag_reorder_tab(d, 2);
+    assert_eq!(app.tab(d).and_then(|t| t.group), Some(group));
+    assert_group_contiguous(&app, group);
   }
 }
