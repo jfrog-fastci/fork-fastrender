@@ -3,7 +3,13 @@ use std::{env, fs, path::PathBuf, process};
 use llvm_stackmaps::{elf, verify, verify::VerifyOptions};
 
 fn usage() -> ! {
-    eprintln!("usage: verify_stackmaps (--elf <path-to-elf> | --raw <path-to-llvm_stackmaps-bytes>)");
+    eprintln!(
+        "usage: verify_stackmaps (--elf <path-to-elf> | --raw <path-to-llvm_stackmaps-bytes>)\n\
+         \n\
+         - Writes a human summary to stderr.\n\
+         - Writes a deterministic JSON report to stdout.\n\
+         - Exits non-zero on verification failure."
+    );
     process::exit(2);
 }
 
@@ -49,7 +55,17 @@ fn main() {
     let report = match fs::read(&path) {
         Ok(file) => match input_kind {
             InputKind::Elf => match elf::stackmaps_section_bytes(&file) {
-                Ok(section) => verify::verify_stackmaps_bytes(section, VerifyOptions::default()),
+                Ok(section) => {
+                    // If we can infer the target arch from the ELF header, use it for DWARF
+                    // register-policy checks (e.g. SP/FP base regs for Indirect roots).
+                    let inferred_arch = verify::infer_arch_from_elf_header(&file)
+                        .unwrap_or(verify::TargetArch::host());
+                    let opts = VerifyOptions {
+                        arch: inferred_arch,
+                        ..VerifyOptions::default()
+                    };
+                    verify::verify_stackmaps_bytes(section, opts)
+                }
                 Err(e) => verify::VerificationReport {
                     functions: 0,
                     constants: 0,
@@ -85,6 +101,28 @@ fn main() {
         },
     };
 
+    // Human summary for interactive use.
+    if report.ok() {
+        eprintln!(
+            "OK: {} functions, {} constants, {} records, {} callsites, {} decoded statepoints",
+            report.functions,
+            report.constants,
+            report.records,
+            report.callsites,
+            report.decoded_statepoints
+        );
+    } else {
+        eprintln!(
+            "FAIL: {} failure(s) ({} records, {} callsites)",
+            report.failures.len(),
+            report.records,
+            report.callsites
+        );
+        for f in &report.failures {
+            eprintln!("  - {}: {}", f.kind, f.message);
+        }
+    }
+
     print!("{}", report.to_json());
 
     if report.ok() {
@@ -93,4 +131,3 @@ fn main() {
         process::exit(1);
     }
 }
-

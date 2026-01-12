@@ -11,6 +11,74 @@
 use crate::stackmap::{records_semantically_equal, MAX_STACKMAP_SECTION_BYTES};
 use crate::{Location, LocationKind, ParseError, StackMapRecord, StackMaps, StatepointRecordView};
 
+/// Target architecture used for verifier policy checks (DWARF register conventions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetArch {
+    X86_64,
+    Aarch64,
+    Unknown,
+}
+
+impl TargetArch {
+    pub fn host() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            return TargetArch::X86_64;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            return TargetArch::Aarch64;
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            TargetArch::Unknown
+        }
+    }
+
+    /// Allowed DWARF base registers for `Indirect` GC root locations.
+    ///
+    /// The runtime stack-walking contract expects stack slots to be referenced as `[SP/FP + off]`.
+    pub fn allowed_indirect_base_regs(self) -> &'static [u16] {
+        match self {
+            // x86_64 DWARF: 6=RBP (FP), 7=RSP (SP)
+            TargetArch::X86_64 => &[6, 7],
+            // aarch64 DWARF: 29=X29 (FP), 31=SP
+            TargetArch::Aarch64 => &[29, 31],
+            TargetArch::Unknown => &[],
+        }
+    }
+
+    /// DWARF registers that must never appear as `Register` GC roots under our policy.
+    pub fn forbidden_register_roots(self) -> &'static [(u16, &'static str)] {
+        match self {
+            TargetArch::X86_64 => &[(6, "FP"), (7, "SP"), (16, "IP")],
+            TargetArch::Aarch64 => &[(29, "FP"), (31, "SP"), (32, "IP")],
+            TargetArch::Unknown => &[],
+        }
+    }
+}
+
+pub fn is_elf(file: &[u8]) -> bool {
+    file.get(0..4) == Some(b"\x7FELF")
+}
+
+/// Infer the target arch from the ELF header's `e_machine`.
+///
+/// Supports ELF64 little-endian. Returns `None` if the input does not look like ELF.
+pub fn infer_arch_from_elf_header(file: &[u8]) -> Option<TargetArch> {
+    if !is_elf(file) || file.len() < 0x14 {
+        return None;
+    }
+    // e_machine: u16 at offset 0x12 for both ELF32 and ELF64.
+    let b = file.get(0x12..0x14)?;
+    let e_machine = u16::from_le_bytes([b[0], b[1]]);
+    match e_machine {
+        62 => Some(TargetArch::X86_64),   // EM_X86_64
+        183 => Some(TargetArch::Aarch64), // EM_AARCH64
+        _ => Some(TargetArch::Unknown),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct VerifyOptions {
     /// Expected pointer width (in bytes) for GC roots.
@@ -25,6 +93,13 @@ pub struct VerifyOptions {
     /// catches obviously-corrupted stackmaps where a header field causes the decoder to interpret
     /// a large tail of locations as GC roots.
     pub max_gc_roots: usize,
+
+    /// Target architecture used for DWARF register policy checks.
+    ///
+    /// This is used to validate:
+    /// - `Indirect` root base registers (must be SP/FP), and
+    /// - forbidden `Register` roots (must not use SP/FP/IP).
+    pub arch: TargetArch,
 }
 
 impl Default for VerifyOptions {
@@ -33,6 +108,7 @@ impl Default for VerifyOptions {
             // `llvm-stackmaps` is only used by 64-bit runtimes today.
             pointer_width: 8,
             max_gc_roots: 4096,
+            arch: TargetArch::host(),
         }
     }
 }
@@ -586,6 +662,9 @@ fn verify_statepoints(
     record_metas: &Option<Vec<RecordMeta>>,
     record_function_info: &[Option<RecordFunctionInfo>],
 ) {
+    let allowed_base_regs = opts.arch.allowed_indirect_base_regs();
+    let forbidden_register_roots = opts.arch.forbidden_register_roots();
+
     for (record_index, rec) in maps.records.iter().enumerate() {
         if !looks_like_statepoint_record(rec) {
             continue;
@@ -650,6 +729,8 @@ fn verify_statepoints(
                 .and_then(|v| v.map(|i| i.address));
             verify_gc_root_location(
                 opts.pointer_width,
+                allowed_base_regs,
+                forbidden_register_roots,
                 report,
                 record_metas
                     .as_ref()
@@ -663,6 +744,8 @@ fn verify_statepoints(
             );
             verify_gc_root_location(
                 opts.pointer_width,
+                allowed_base_regs,
+                forbidden_register_roots,
                 report,
                 record_metas
                     .as_ref()
@@ -680,6 +763,8 @@ fn verify_statepoints(
 
 fn verify_gc_root_location(
     pointer_width: u16,
+    allowed_base_regs: &[u16],
+    forbidden_register_roots: &[(u16, &'static str)],
     report: &mut VerificationReport,
     record_offset: Option<usize>,
     pc: u64,
@@ -722,6 +807,56 @@ fn verify_gc_root_location(
             function_address,
             record_index: Some(record_index),
         });
+    }
+
+    // Additional runtime-policy checks for addressable roots.
+    match loc {
+        Location::Indirect { dwarf_reg, offset, .. } => {
+            // The stack-walking contract expects GC root stack slots to be relative to SP/FP.
+            if !allowed_base_regs.is_empty() && !allowed_base_regs.contains(dwarf_reg) {
+                report.failures.push(VerificationFailure {
+                    kind: "gc_root_unsupported_base_reg",
+                    message: format!(
+                        "gc root {role}#{pair_index} uses unsupported Indirect base reg {dwarf_reg} (allowed: {allowed_base_regs:?})"
+                    ),
+                    offset: record_offset,
+                    pc: Some(pc),
+                    function_address,
+                    record_index: Some(record_index),
+                });
+            }
+
+            // GC root stack slots should be pointer-aligned so relocation can treat them as
+            // `*mut usize`-like lvalues safely.
+            let pw = pointer_width as i32;
+            if pw != 0 && offset.rem_euclid(pw) != 0 {
+                report.failures.push(VerificationFailure {
+                    kind: "gc_root_unaligned_offset",
+                    message: format!(
+                        "gc root {role}#{pair_index} has unaligned Indirect offset {offset} (ptr size {pointer_width})"
+                    ),
+                    offset: record_offset,
+                    pc: Some(pc),
+                    function_address,
+                    record_index: Some(record_index),
+                });
+            }
+        }
+        Location::Register { dwarf_reg, .. } => {
+            if let Some((_, kind)) = forbidden_register_roots.iter().find(|(r, _)| r == dwarf_reg) {
+                report.failures.push(VerificationFailure {
+                    kind: "gc_root_forbidden_register",
+                    message: format!(
+                        "gc root {role}#{pair_index} uses forbidden Register DWARF reg {dwarf_reg} ({kind})"
+                    ),
+                    offset: record_offset,
+                    pc: Some(pc),
+                    function_address,
+                    record_index: Some(record_index),
+                });
+            }
+        }
+        _ => {}
     }
 }
 

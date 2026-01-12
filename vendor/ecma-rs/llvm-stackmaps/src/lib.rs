@@ -32,8 +32,8 @@ pub mod verify;
 
 pub use stackmap::{
     stackmaps_bytes, Callsite, GcRootPair, LiveOut, LoadError, Location, LocationKind, ParseError,
-    ParseOptions,
-    StackMapFunction, StackMapHeader, StackMapRecord, StackMaps, StatepointRecordView,
+    ParseOptions, StackMapFunction, StackMapHeader, StackMapRecord, StackMaps, StatepointDecodeError,
+    StatepointRecordView,
 };
 
 #[derive(Debug)]

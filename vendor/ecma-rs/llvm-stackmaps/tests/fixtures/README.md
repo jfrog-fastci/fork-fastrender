@@ -41,3 +41,10 @@ To regenerate them (overwriting the committed binaries):
 bash vendor/ecma-rs/llvm-stackmaps/tests/fixtures/llvm18_stackmaps/gen.sh
 git diff
 ```
+
+## Intentionally-corrupt fixtures
+
+- `corrupt_bad_base_reg.stackmaps.bin` is a small hand-constructed StackMap v3 blob that is
+  *parseable* but violates the runtime stack-walking contract (it uses an `Indirect` GC root location
+  with a non-SP/FP DWARF base register). It is used by the `verify_stackmaps` CLI regression tests
+  to ensure verifier failures are reported as structured errors (no panics).
