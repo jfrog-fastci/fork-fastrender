@@ -14,31 +14,30 @@
     "layout": 7.007552766666667,
     "paint": 23.024816233333333
   },
-  "notes": "",
+  "notes": "Remaining diffs are dominated by text rasterization/hinting differences vs Chrome/Skia (glyph AA and font metric quantization). Layout/paint structure matches.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 92792,
-    "diff_percent": 9.6658,
-    "perceptual": 0.3171,
+    "diff_pixels": 53434,
+    "diff_percent": 5.566,
+    "perceptual": 0.0732,
     "first_mismatch": {
-      "x": 76,
-      "y": 2,
+      "x": 78,
+      "y": 7,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        216,
+        225,
+        229,
         255
       ],
       "rendered_rgba": [
-        250,
-        251,
-        252,
+        239,
+        242,
+        244,
         255
       ]
     },
     "tolerance": 0,
-    "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "max_diff_percent": 0.0
   },
   "hotspot": "paint",
   "failure_stage": null,

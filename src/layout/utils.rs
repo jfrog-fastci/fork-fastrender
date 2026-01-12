@@ -1156,7 +1156,20 @@ fn compute_font_relative_metrics(
           .and_then(|xh| ratio_from_units(m.units_per_em, xh))
       })
       .unwrap_or(0.5);
-    let x_height = x_height_ratio * used_size;
+    // Blink/Skia uses hinted (grid-fitted) font metrics. For common UI font sizes, FreeType hinting
+    // tends to quantize the x-height metric to whole CSS pixels. Using the raw float-scaled x-height
+    // for `ex`-based lengths can accumulate into visible layout drift (e.g. `padding: 0.7ex` menu
+    // items ending up a pixel taller than Chrome).
+    //
+    // Approximate this by snapping the computed x-height to whole CSS pixels.
+    let x_height_raw = x_height_ratio * used_size;
+    let x_height_snapped = x_height_raw.round();
+    let x_height = if x_height_raw.is_finite() && x_height_raw > 0.0 && x_height_snapped <= 0.0 {
+      // Avoid collapsing `ex` to 0 for tiny font sizes.
+      x_height_raw
+    } else {
+      x_height_snapped
+    };
 
     let cap_height_ratio = metrics
       .as_ref()
@@ -1166,7 +1179,16 @@ fn compute_font_relative_metrics(
           .or_else(|| ratio_from_units(m.units_per_em, m.ascent))
       })
       .unwrap_or(0.7);
-    let cap_height = cap_height_ratio * used_size;
+    let cap_height_raw = cap_height_ratio * used_size;
+    let cap_height_snapped = cap_height_raw.round();
+    let cap_height = if cap_height_raw.is_finite()
+      && cap_height_raw > 0.0
+      && cap_height_snapped <= 0.0
+    {
+      cap_height_raw
+    } else {
+      cap_height_snapped
+    };
 
     let (ch_width_ratio, ch_height_ratio, ic_width_ratio, ic_height_ratio) =
       crate::text::face_cache::with_face(&font, |face| {
@@ -2021,6 +2043,7 @@ mod tests {
   use crate::style::values::Length;
   use crate::style::values::LengthUnit;
   use crate::style::ComputedStyle;
+  use crate::text::font_db::FontConfig;
   use crate::text::font_loader::FontContext;
   use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::ReplacedBox;
@@ -2132,6 +2155,27 @@ mod tests {
     assert!(
       (resolved - 24.0).abs() < 0.01,
       "expected 24px, got {resolved}"
+    );
+  }
+
+  #[test]
+  fn resolves_ex_with_snapped_x_height_metrics() {
+    // Roboto Flex's raw `xHeight` metric at 16px resolves to a fractional pixel value
+    // (~8.21875px). Chrome/FreeType hinting snaps the used x-height to whole pixels, which in
+    // turn affects `ex`-based lengths.
+    //
+    // Ensure our `ex` resolution uses the snapped value so UI layouts that use `ex` (e.g.
+    // padding:0.7ex menus) don't drift by ~1px compared to Chrome.
+    let font_context = FontContext::with_config(FontConfig::bundled_only());
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["Roboto Flex".to_string()].into();
+    style.font_size = 16.0;
+    style.root_font_size = 16.0;
+
+    let ex = resolve_font_relative_length(Length::new(1.0, LengthUnit::Ex), &style, &font_context);
+    assert!(
+      (ex - 8.0).abs() < 0.01,
+      "expected 1ex to snap to ~8px, got {ex}"
     );
   }
 
