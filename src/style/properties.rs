@@ -33986,8 +33986,8 @@ mod tests {
 
   #[test]
   fn image_set_unescapes_string_url_literals() {
-    let parsed = parse_image_set("image-set(\"foo\\20 bar.png\" 1x)").expect("image-set");
-    assert_eq!(parsed, BackgroundImage::Url("foo bar.png".to_string()));
+    let parsed = parse_image_set("image-set(\"a\\29.png\" 1x)").expect("image-set");
+    assert_eq!(parsed, BackgroundImage::Url("a).png".to_string()));
   }
 
   #[test]
@@ -34029,9 +34029,9 @@ mod tests {
   #[test]
   fn image_set_rejects_multiple_resolution_descriptors_per_candidate() {
     with_image_set_dpr(2.0, || {
-      let parsed = parse_image_set("image-set(url(\"bad.png\") 2x 2x, url(\"good.png\") 3x)")
+      let parsed = parse_image_set("image-set(url(\"bad.png\") 1x 2x, url(\"ok.png\") 1x)")
         .expect("image-set");
-      assert_eq!(parsed, BackgroundImage::Url("good.png".to_string()));
+      assert_eq!(parsed, BackgroundImage::Url("ok.png".to_string()));
     });
   }
 
