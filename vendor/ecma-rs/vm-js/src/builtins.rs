@@ -1131,7 +1131,6 @@ pub fn reflect_get_own_property_descriptor(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.getownpropertydescriptor
-  let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -1142,50 +1141,13 @@ pub fn reflect_get_own_property_descriptor(
   let key = scope.to_property_key(vm, host, hooks, prop)?;
   root_property_key(&mut scope, key)?;
 
-  let Some(desc) = scope.ordinary_get_own_property_with_tick(target, key, || vm.tick())? else {
+  let Some(desc) =
+    scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?
+  else {
     return Ok(Value::Undefined);
   };
 
-  // `FromPropertyDescriptor(desc)`
-  let desc_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(desc_obj))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(desc_obj, Some(intr.object_prototype()))?;
-
-  // enumerable / configurable (always present)
-  {
-    let key_s = scope.alloc_string("enumerable")?;
-    scope.push_root(Value::String(key_s))?;
-    scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(Value::Bool(desc.enumerable), true, true, true))?;
-  }
-  {
-    let key_s = scope.alloc_string("configurable")?;
-    scope.push_root(Value::String(key_s))?;
-    scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(Value::Bool(desc.configurable), true, true, true))?;
-  }
-
-  match desc.kind {
-    PropertyKind::Data { value, writable } => {
-      let key_s = scope.alloc_string("value")?;
-      scope.push_root(Value::String(key_s))?;
-      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(value, true, true, true))?;
-
-      let key_s = scope.alloc_string("writable")?;
-      scope.push_root(Value::String(key_s))?;
-      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(Value::Bool(writable), true, true, true))?;
-    }
-    PropertyKind::Accessor { get, set } => {
-      let key_s = scope.alloc_string("get")?;
-      scope.push_root(Value::String(key_s))?;
-      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(get, true, true, true))?;
-
-      let key_s = scope.alloc_string("set")?;
-      scope.push_root(Value::String(key_s))?;
-      scope.define_property(desc_obj, PropertyKey::from_string(key_s), data_desc(set, true, true, true))?;
-    }
-  }
-
+  let desc_obj = crate::property_descriptor_ops::from_property_descriptor(&mut scope, desc)?;
   Ok(Value::Object(desc_obj))
 }
 
