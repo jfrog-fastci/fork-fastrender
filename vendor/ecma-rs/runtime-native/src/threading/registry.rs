@@ -465,8 +465,15 @@ impl Drop for ThreadRegistration {
 
 fn set_tls_thread_registration(reg: ThreadRegistration) {
   let ptr = Arc::as_ptr(&reg.state);
-  TLS_THREAD_STATE_PTR.with(|cell| cell.set(ptr));
-  TLS_THREAD_REGISTRATION.with(|cell| {
+  // `set_tls_thread_registration` can theoretically be called from other TLS destructors during
+  // thread teardown (e.g. embedders calling runtime entrypoints in `Drop`). If the thread-local
+  // storage for this key has already been destroyed, `LocalKey::with` would panic with
+  // `AccessError` and abort the process (`abort_on_dtor_unwind`).
+  //
+  // Treat such calls as best-effort no-ops; the thread is exiting and cannot safely participate in
+  // further GC coordination anyway.
+  let _ = TLS_THREAD_STATE_PTR.try_with(|cell| cell.set(ptr));
+  let _ = TLS_THREAD_REGISTRATION.try_with(|cell| {
     // Important: drop the previous registration *after* releasing the RefCell borrow.
     // Dropping while the RefCell is mutably borrowed makes it easy to accidentally
     // re-enter TLS access from `Drop` and panic.
@@ -475,8 +482,8 @@ fn set_tls_thread_registration(reg: ThreadRegistration) {
 }
 
 fn clear_tls_thread_registration() {
-  TLS_THREAD_STATE_PTR.with(|cell| cell.set(std::ptr::null()));
-  TLS_THREAD_REGISTRATION.with(|cell| {
+  let _ = TLS_THREAD_STATE_PTR.try_with(|cell| cell.set(std::ptr::null()));
+  let _ = TLS_THREAD_REGISTRATION.try_with(|cell| {
     // See comment in `set_tls_thread_registration`: drop outside the borrow.
     drop(cell.replace(None));
   });
