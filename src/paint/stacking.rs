@@ -392,6 +392,26 @@ pub struct StackingContext {
   pub tree_order: usize,
 }
 
+impl Drop for StackingContext {
+  fn drop(&mut self) {
+    // Dropping a deeply nested stacking context tree with Rust's default recursive drop can
+    // overflow the stack. Drain the children iteratively so drop cost is proportional to depth
+    // without consuming call stack.
+    if self.children.is_empty() {
+      return;
+    }
+
+    let mut stack = std::mem::take(&mut self.children);
+    while let Some(mut context) = stack.pop() {
+      if !context.children.is_empty() {
+        stack.append(&mut std::mem::take(&mut context.children));
+      }
+      // `context` is dropped here with an empty `children` list, so this `Drop` implementation is a
+      // cheap no-op for drained descendants.
+    }
+  }
+}
+
 impl StackingContext {
   fn compare_children_for_paint(a: &StackingContext, b: &StackingContext) -> Ordering {
     match a.z_index.cmp(&b.z_index) {
@@ -1347,7 +1367,7 @@ fn build_stacking_tree_internal(
 
     let Frame {
       fragment: child_fragment,
-      context,
+      mut context,
       ..
     } = stack.pop().expect("frame must exist");
     let Some(parent) = stack.last_mut() else {
@@ -1362,7 +1382,7 @@ fn build_stacking_tree_internal(
     }
 
     if !context.children.is_empty() {
-      parent.context.children.extend(context.children);
+      parent.context.children.append(&mut context.children);
     }
     parent
       .context

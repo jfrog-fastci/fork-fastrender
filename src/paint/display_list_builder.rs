@@ -220,7 +220,12 @@ const DEADLINE_STRIDE: usize = 256;
 /// `DisplayListBuilder::build_stacking_context` is still implemented recursively. Deep stacking
 /// context chains (e.g. adversarial `opacity < 1` wrappers) can otherwise overflow the call stack
 /// and abort the process. Prefer the non-recursive fragment path (`build_checked`) when possible.
-const MAX_STACKING_CONTEXT_DEPTH: usize = 64;
+//
+// This value is tuned to keep recursive `build_stacking_context` traversal from overflowing the
+// tiny (256KB) stacks used by paint regression tests. If this needs to be increased for real-world
+// pages, consider refactoring stacking-context painting to use an explicit stack instead of
+// recursion.
+const MAX_STACKING_CONTEXT_DEPTH: usize = 32;
 
 /// Builder that converts a fragment tree to a display list
 ///

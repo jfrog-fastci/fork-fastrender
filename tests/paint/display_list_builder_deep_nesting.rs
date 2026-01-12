@@ -2,8 +2,8 @@ use fastrender::geometry::Rect;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::stacking::build_stacking_tree_from_fragment_tree_checked;
 use fastrender::style::types::{BackgroundBox, BackgroundLayer};
-use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::system::DEFAULT_RENDER_STACK_SIZE;
+use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::ComputedStyle;
 use fastrender::Rgba;
 use std::collections::HashSet;
@@ -203,12 +203,14 @@ fn display_list_builder_deep_stacking_context_nesting_fails_cleanly_without_stac
     root = FragmentNode::new_block_styled(rect, vec![root], Arc::clone(&style));
   }
 
-  // Build the stacking tree on a large-stack thread (the stacking-tree builder itself is still
-  // recursive).
+  // Build the stacking tree on a large-stack thread: stacking tree construction + bounds computation
+  // can use significant stack space, so do not run it on the tiny-stack paint thread.
+  let root = Arc::new(root);
+  let root_for_build = Arc::clone(&root);
   let build_handle = std::thread::Builder::new()
     .name("build_deep_stacking_tree".to_string())
     .stack_size(DEFAULT_RENDER_STACK_SIZE)
-    .spawn(move || build_stacking_tree_from_fragment_tree_checked(&root))
+    .spawn(move || build_stacking_tree_from_fragment_tree_checked(root_for_build.as_ref()))
     .expect("spawn stacking-tree build thread");
 
   let stacking = build_handle
@@ -222,10 +224,7 @@ fn display_list_builder_deep_stacking_context_nesting_fails_cleanly_without_stac
     .name("paint_deep_stacking_context_nesting".to_string())
     .stack_size(256 * 1024)
     .spawn(move || {
-      let result = DisplayListBuilder::new().build_from_stacking_checked(&stacking);
-      // Avoid recursive drop of the deep stacking context tree on the small-stack thread.
-      std::mem::forget(stacking);
-      result
+      DisplayListBuilder::new().build_from_stacking_checked(&stacking)
     })
     .expect("spawn paint thread");
 
@@ -235,5 +234,15 @@ fn display_list_builder_deep_stacking_context_nesting_fails_cleanly_without_stac
     "expected deep stacking-context paint to fail cleanly; got {result:?}"
   );
 
-  // `stacking` is forgotten inside the paint thread to avoid recursive drops.
+  // Drop the deeply nested fragment chain iteratively to avoid recursive drop overhead in the test
+  // harness.
+  let mut current = Arc::try_unwrap(root).expect("deep-nesting root unexpectedly shared");
+  loop {
+    let mut children = std::mem::take(&mut current.children).into_iter();
+    if let Some(child) = children.next() {
+      current = child;
+    } else {
+      break;
+    }
+  }
 }
