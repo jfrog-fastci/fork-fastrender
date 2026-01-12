@@ -728,6 +728,50 @@ mod tests {
   }
 
   #[test]
+  fn svg_filter_convolve_matrix_wrap_requests_full_region_halo() {
+    let kernel = vec![0.0, 0.0, 1.0];
+    let mut filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::ConvolveMatrix {
+          input: FilterInput::SourceGraphic,
+          order_x: 3,
+          order_y: 1,
+          kernel,
+          divisor: None,
+          bias: 0.0,
+          target_x: 1,
+          target_y: 0,
+          edge_mode: EdgeMode::Wrap,
+          preserve_alpha: false,
+        },
+        region: None,
+      }],
+      // Filter region = bbox.
+      region: SvgFilterRegion {
+        x: SvgLength::Number(0.0),
+        y: SvgLength::Number(0.0),
+        width: SvgLength::Number(1.0),
+        height: SvgLength::Number(1.0),
+        units: SvgFilterUnits::ObjectBoundingBox,
+      },
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    filter.refresh_fingerprint();
+    let filters = vec![ResolvedFilter::SvgFilter(Arc::new(filter))];
+    let bbox = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
+    let (l, t, r, b) = compute_filter_outset(&filters, bbox, 1.0);
+    assert!(
+      l >= 100.0 - 0.01 && r >= 100.0 - 0.01 && t >= 50.0 - 0.01 && b >= 50.0 - 0.01,
+      "expected convolve edgeMode=wrap to request full-region halo, got {l},{t},{r},{b}"
+    );
+  }
+
+  #[test]
   fn svg_filter_displacement_map_expands_outset() {
     let mut filter = SvgFilter {
       color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
