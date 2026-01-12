@@ -147,6 +147,7 @@ jobs:
             --root parse-js/tests/TypeScript/tests/cases/conformance \
             --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
             --shard ${{ matrix.shard }}/16 \
+            --shard-strategy hash \
             --compare tsc \
             --timeout-secs 20 \
             --fail-on new \
