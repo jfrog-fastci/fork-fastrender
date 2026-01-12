@@ -60,6 +60,20 @@ fn first_string_literal(result: &hir_js::LowerResult) -> hir_js::StringLiteral {
   panic!("expected at least one string literal in lowered output");
 }
 
+fn assert_no_missing_exprs(result: &hir_js::LowerResult) {
+  for body in result.bodies.iter() {
+    for (idx, expr) in body.exprs.iter().enumerate() {
+      assert!(
+        !matches!(expr.kind, ExprKind::Missing),
+        "unexpected ExprKind::Missing in {:?} body {:?} at expr #{idx} (span {:?})",
+        body.kind,
+        body.owner,
+        expr.span,
+      );
+    }
+  }
+}
+
 #[test]
 fn def_ids_are_sorted_and_stable() {
   let source = "function f() {}\nconst b = 2;\nconst a = 1;";
@@ -2063,6 +2077,37 @@ fn lowers_imports_and_exports() {
       .any(|e| matches!(e.kind, ExportKind::Assignment(_))),
     "export assignment should be captured"
   );
+}
+
+#[test]
+fn collects_defs_in_module_item_attributes() {
+  let source = r#"
+    import x from "m" with { type: (() => "json")() };
+    export { x } from "m" with { type: (() => "json")() };
+  "#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+
+  assert_eq!(result.hir.imports.len(), 1);
+  let import = match &result.hir.imports[0].kind {
+    ImportKind::Es(es) => es,
+    _ => panic!("expected es import"),
+  };
+  assert!(
+    import.attributes.is_some(),
+    "expected module attributes to be parsed/lowered for import"
+  );
+
+  assert_eq!(result.hir.exports.len(), 1);
+  let export = match &result.hir.exports[0].kind {
+    ExportKind::Named(named) => named,
+    _ => panic!("expected named export"),
+  };
+  assert!(
+    export.attributes.is_some(),
+    "expected module attributes to be parsed/lowered for export"
+  );
+
+  assert_no_missing_exprs(&result);
 }
 
 #[test]

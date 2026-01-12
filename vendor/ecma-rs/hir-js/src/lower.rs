@@ -3595,6 +3595,9 @@ fn collect_stmt<'a>(
           }
         }
       }
+      if let Some(attrs) = &stmt_import.stx.attributes {
+        collect_expr(attrs, descriptors, module_items, names, ambient, in_global, ctx);
+      }
     }
     AstStmt::ExportList(export) => {
       if record_module_item {
