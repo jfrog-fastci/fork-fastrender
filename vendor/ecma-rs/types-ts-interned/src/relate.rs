@@ -523,6 +523,15 @@ impl<'a> RelateCtx<'a> {
     self.cache.len()
   }
 
+  /// Access the configured [`RelateTypeExpander`], if any.
+  ///
+  /// This is useful for downstream analyses that need to inspect expanded
+  /// `TypeKind::Ref` nodes (e.g. determining whether a type is callable after
+  /// reference expansion).
+  pub fn expander(&self) -> Option<&'a dyn RelateTypeExpander> {
+    self.hooks.expander
+  }
+
   pub fn is_assignable(&self, src: TypeId, dst: TypeId) -> bool {
     #[cfg(feature = "tracing")]
     {

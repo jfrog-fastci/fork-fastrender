@@ -6,7 +6,9 @@ use hir_js::{
   StmtKind,
 };
 use std::collections::{HashMap, HashSet};
-use types_ts_interned::{Indexer, ObjectType, RelateCtx, Shape, TypeId, TypeKind, TypeStore};
+use types_ts_interned::{
+  Indexer, ObjectType, PropKey, RelateCtx, RelateTypeExpander, Shape, TypeId, TypeKind, TypeStore,
+};
 
 pub fn validate_native_strict_body(
   body: &Body,
@@ -37,6 +39,14 @@ pub fn validate_native_strict_body(
   let assign_name = name_interner.intern("assign");
   let prototype_name = name_interner.intern("prototype");
   let proto_name = name_interner.intern("__proto__");
+  let constructor_name = name_interner.intern("constructor");
+
+  // Used for type-based detection of "function-like" values when validating
+  // `.constructor` access. (Do not confuse with `hir_js::NameId` above.)
+  let type_call_name = store.intern_name("call");
+  let type_apply_name = store.intern_name("apply");
+  let type_bind_name = store.intern_name("bind");
+  let type_expander = relate.expander();
 
   fn object_key_is_ident(key: &ObjectKey, name: hir_js::NameId) -> bool {
     matches!(key, ObjectKey::Ident(id) if *id == name)
@@ -62,6 +72,16 @@ pub fn validate_native_strict_body(
       }
       _ => false,
     }
+  }
+
+  fn object_key_is_constructor(
+    body: &Body,
+    key: &ObjectKey,
+    constructor_name: hir_js::NameId,
+  ) -> bool {
+    object_key_is_ident(key, constructor_name)
+      || object_key_is_string(key, "constructor")
+      || object_key_is_literal_string(body, key, "constructor")
   }
 
   fn expr_unwrap_comma(body: &Body, mut expr_id: hir_js::ExprId) -> hir_js::ExprId {
@@ -373,6 +393,169 @@ pub fn validate_native_strict_body(
     }
   }
 
+  fn type_is_function_like(
+    store: &TypeStore,
+    ty: TypeId,
+    expander: Option<&dyn RelateTypeExpander>,
+    call_name: types_ts_interned::NameId,
+    apply_name: types_ts_interned::NameId,
+    bind_name: types_ts_interned::NameId,
+    cache: &mut HashMap<TypeId, bool>,
+    visiting: &mut HashSet<TypeId>,
+  ) -> bool {
+    let ty = store.canon(ty);
+    if let Some(hit) = cache.get(&ty) {
+      return *hit;
+    }
+
+    // Break cycles conservatively (treat as not function-like on this path).
+    if !visiting.insert(ty) {
+      return false;
+    }
+
+    let result = match store.type_kind(ty) {
+      TypeKind::Any => true,
+      TypeKind::Callable { .. } => true,
+      TypeKind::Object(obj) => {
+        let shape = store.shape(store.object(obj).shape);
+        if !shape.call_signatures.is_empty() || !shape.construct_signatures.is_empty() {
+          true
+        } else {
+          // `lib.es5.d.ts` models `Function` as a non-callable interface but it is still a
+          // function object at runtime (and is used as the type of `Object.prototype.constructor`).
+          // Treat values with the standard `Function` methods as function-like to avoid missing
+          // `.constructor.constructor` bypasses (e.g. `({}).constructor.constructor(...)`).
+          let mut has_call = false;
+          let mut has_apply = false;
+          let mut has_bind = false;
+          for prop in &shape.properties {
+            if let PropKey::String(name) = prop.key {
+              if name == call_name {
+                has_call = true;
+              } else if name == apply_name {
+                has_apply = true;
+              } else if name == bind_name {
+                has_bind = true;
+              }
+            }
+          }
+          has_call && has_apply && has_bind
+        }
+      }
+      TypeKind::Union(members) | TypeKind::Intersection(members) => members
+        .into_iter()
+        .any(|member| type_is_function_like(
+          store,
+          member,
+          expander,
+          call_name,
+          apply_name,
+          bind_name,
+          cache,
+          visiting,
+        )),
+      TypeKind::Intrinsic { ty, .. } => type_is_function_like(
+        store,
+        ty,
+        expander,
+        call_name,
+        apply_name,
+        bind_name,
+        cache,
+        visiting,
+      ),
+      TypeKind::Ref { def, args } => expander
+        .and_then(|expander| expander.expand_ref(store, def, &args))
+        .is_some_and(|expanded| type_is_function_like(
+          store,
+          expanded,
+          expander,
+          call_name,
+          apply_name,
+          bind_name,
+          cache,
+          visiting,
+        )),
+      _ => false,
+    };
+
+    visiting.remove(&ty);
+    cache.insert(ty, result);
+    result
+  }
+
+  fn expr_is_function_constructor_via_constructor_access(
+    body: &Body,
+    expr_id: hir_js::ExprId,
+    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+    result: &BodyCheckResult,
+    store: &TypeStore,
+    expander: Option<&dyn RelateTypeExpander>,
+    constructor_name: hir_js::NameId,
+    type_call_name: types_ts_interned::NameId,
+    type_apply_name: types_ts_interned::NameId,
+    type_bind_name: types_ts_interned::NameId,
+    cache: &mut HashMap<TypeId, bool>,
+  ) -> Option<TextRange> {
+    let expr_id = expr_unwrap_comma_and_alias(body, expr_id, aliases);
+    let expr = body.exprs.get(expr_id.0 as usize)?;
+    let ExprKind::Member(mem) = &expr.kind else {
+      return None;
+    };
+    if !object_key_is_constructor(body, &mem.property, constructor_name) {
+      return None;
+    }
+
+    // `.constructor` yields the `Function`/`AsyncFunction`/`GeneratorFunction` constructors when
+    // accessed on a function object. This can be used to bypass name-based detection of `Function`.
+    let receiver_id = expr_unwrap_comma_and_alias(body, mem.object, aliases);
+    let receiver_expr_is_function_like = body
+      .exprs
+      .get(receiver_id.0 as usize)
+      .is_some_and(|receiver_expr| match &receiver_expr.kind {
+        // Any function/class value has `.constructor === Function` (or a derived constructor in the
+        // async/generator cases).
+        ExprKind::FunctionExpr { .. } | ExprKind::ClassExpr { .. } => true,
+        // `.constructor` on *any* object yields its constructor function, which is itself a
+        // function object whose `.constructor` is `Function`. This handles chained forms like:
+        // `({}).constructor.constructor.call(...)`.
+        ExprKind::Member(mem)
+          if object_key_is_constructor(body, &mem.property, constructor_name) =>
+        {
+          true
+        }
+        _ => false,
+      });
+    if !receiver_expr_is_function_like {
+      let receiver_ty = result
+        .expr_types
+        .get(receiver_id.0 as usize)
+        .copied()
+        .unwrap_or(store.primitive_ids().unknown);
+      let mut visiting = HashSet::new();
+      if !type_is_function_like(
+        store,
+        receiver_ty,
+        expander,
+        type_call_name,
+        type_apply_name,
+        type_bind_name,
+        cache,
+        &mut visiting,
+      ) {
+        return None;
+      }
+    }
+
+    Some(
+      result
+        .expr_spans
+        .get(expr_id.0 as usize)
+        .copied()
+        .unwrap_or(expr.span),
+    )
+  }
+
   fn is_effective_any(store: &TypeStore, relate: &RelateCtx, ty: TypeId) -> bool {
     let ty = store.canon(ty);
     match store.type_kind(ty) {
@@ -549,6 +732,8 @@ pub fn validate_native_strict_body(
     }
   }
 
+  let mut function_like_cache: HashMap<TypeId, bool> = HashMap::new();
+
   for (idx, expr) in body.exprs.iter().enumerate() {
     match &expr.kind {
       ExprKind::Call(call) => {
@@ -633,6 +818,26 @@ pub fn validate_native_strict_body(
                   "`Function` constructor is forbidden when `native_strict` is enabled",
                   Span::new(file, callee_span),
                 ));
+              }
+              if is_call_like {
+                if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                  body,
+                  member.object,
+                  &const_aliases,
+                  result,
+                  store,
+                  type_expander,
+                  constructor_name,
+                  type_call_name,
+                  type_apply_name,
+                  type_bind_name,
+                  &mut function_like_cache,
+                ) {
+                  diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                    "`Function` constructor is forbidden when `native_strict` is enabled",
+                    Span::new(file, constructor_span),
+                  ));
+                }
               }
               if is_call_like
                 && expr_is_builtin_member(
@@ -725,6 +930,24 @@ pub fn validate_native_strict_body(
                       diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                         "`Function` constructor is forbidden when `native_strict` is enabled",
                         Span::new(file, target_span),
+                      ));
+                    }
+                    if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      result,
+                      store,
+                      type_expander,
+                      constructor_name,
+                      type_call_name,
+                      type_apply_name,
+                      type_bind_name,
+                      &mut function_like_cache,
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                        "`Function` constructor is forbidden when `native_strict` is enabled",
+                        Span::new(file, constructor_span),
                       ));
                     }
                     if obj_is_reflect_apply {
@@ -1014,6 +1237,24 @@ pub fn validate_native_strict_body(
                       diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                         "`Function` constructor is forbidden when `native_strict` is enabled",
                         Span::new(file, target_span),
+                      ));
+                    }
+                    if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                      body,
+                      target_arg,
+                      &const_aliases,
+                      result,
+                      store,
+                      type_expander,
+                      constructor_name,
+                      type_call_name,
+                      type_apply_name,
+                      type_bind_name,
+                      &mut function_like_cache,
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                        "`Function` constructor is forbidden when `native_strict` is enabled",
+                        Span::new(file, constructor_span),
                       ));
                     }
                     if expr_is_ident_or_global_this_member(
@@ -1460,6 +1701,24 @@ pub fn validate_native_strict_body(
                             Span::new(file, target_span),
                           ));
                         }
+                        if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                          body,
+                          target_arg,
+                          &const_aliases,
+                          result,
+                          store,
+                          type_expander,
+                          constructor_name,
+                          type_call_name,
+                          type_apply_name,
+                          type_bind_name,
+                          &mut function_like_cache,
+                        ) {
+                          diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                            "`Function` constructor is forbidden when `native_strict` is enabled",
+                            Span::new(file, constructor_span),
+                          ));
+                        }
                         if expr_is_ident_or_global_this_member(
                           body,
                           target_arg,
@@ -1576,6 +1835,24 @@ pub fn validate_native_strict_body(
                               diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                                 "`Function` constructor is forbidden when `native_strict` is enabled",
                                 Span::new(file, called_target_span),
+                              ));
+                            }
+                            if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                              body,
+                              called_target,
+                              &const_aliases,
+                              result,
+                              store,
+                              type_expander,
+                              constructor_name,
+                              type_call_name,
+                              type_apply_name,
+                              type_bind_name,
+                              &mut function_like_cache,
+                            ) {
+                              diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                                "`Function` constructor is forbidden when `native_strict` is enabled",
+                                Span::new(file, constructor_span),
                               ));
                             }
                             if expr_is_ident_or_global_this_member(
@@ -1909,6 +2186,24 @@ pub fn validate_native_strict_body(
                           diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                             "`Function` constructor is forbidden when `native_strict` is enabled",
                             Span::new(file, target_span),
+                          ));
+                        }
+                        if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                          body,
+                          target_arg,
+                          &const_aliases,
+                          result,
+                          store,
+                          type_expander,
+                          constructor_name,
+                          type_call_name,
+                          type_apply_name,
+                          type_bind_name,
+                          &mut function_like_cache,
+                        ) {
+                          diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                            "`Function` constructor is forbidden when `native_strict` is enabled",
+                            Span::new(file, constructor_span),
                           ));
                         }
                         if expr_is_ident_or_global_this_member(
@@ -2605,6 +2900,24 @@ pub fn validate_native_strict_body(
                       Span::new(file, target_span),
                     ));
                   }
+                  if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                    body,
+                    target_arg,
+                    &const_aliases,
+                    result,
+                    store,
+                    type_expander,
+                    constructor_name,
+                    type_call_name,
+                    type_apply_name,
+                    type_bind_name,
+                    &mut function_like_cache,
+                  ) {
+                    diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                      "`Function` constructor is forbidden when `native_strict` is enabled",
+                      Span::new(file, constructor_span),
+                    ));
+                  }
                   if expr_is_ident_or_global_this_member(
                     body,
                     target_arg,
@@ -2723,6 +3036,24 @@ pub fn validate_native_strict_body(
                         diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                           "`Function` constructor is forbidden when `native_strict` is enabled",
                           Span::new(file, called_target_span),
+                        ));
+                      }
+                      if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                        body,
+                        called_target,
+                        &const_aliases,
+                        result,
+                        store,
+                        type_expander,
+                        constructor_name,
+                        type_call_name,
+                        type_apply_name,
+                        type_bind_name,
+                        &mut function_like_cache,
+                      ) {
+                        diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                          "`Function` constructor is forbidden when `native_strict` is enabled",
+                          Span::new(file, constructor_span),
                         ));
                       }
                       if expr_is_ident_or_global_this_member(
@@ -3310,6 +3641,24 @@ pub fn validate_native_strict_body(
               Span::new(file, callee_span),
             ));
           }
+          if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+            body,
+            call.callee,
+            &const_aliases,
+            result,
+            store,
+            type_expander,
+            constructor_name,
+            type_call_name,
+            type_apply_name,
+            type_bind_name,
+            &mut function_like_cache,
+          ) {
+            diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+              "`Function` constructor is forbidden when `native_strict` is enabled",
+              Span::new(file, constructor_span),
+            ));
+          }
 
           if call.is_new
             && expr_is_ident_or_global_this_member(
@@ -3388,6 +3737,24 @@ pub fn validate_native_strict_body(
                   diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
                     "`Function` constructor is forbidden when `native_strict` is enabled",
                     Span::new(file, target_span),
+                  ));
+                }
+                if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                  body,
+                  target_arg,
+                  &const_aliases,
+                  result,
+                  store,
+                  type_expander,
+                  constructor_name,
+                  type_call_name,
+                  type_apply_name,
+                  type_bind_name,
+                  &mut function_like_cache,
+                ) {
+                  diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                    "`Function` constructor is forbidden when `native_strict` is enabled",
+                    Span::new(file, constructor_span),
                   ));
                 }
                 if expr_is_ident_or_global_this_member(

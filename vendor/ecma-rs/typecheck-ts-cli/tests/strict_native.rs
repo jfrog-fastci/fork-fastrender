@@ -413,3 +413,64 @@ fn native_strict_requires_strict_null_checks() {
       codes::NATIVE_STRICT_REQUIRES_STRICT_NULL_CHECKS.as_str(),
     ));
 }
+
+#[test]
+fn strict_native_reports_function_constructor_via_object_constructor() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(&entry, "Object.constructor.call(null, \"return 1\");\n").expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_NEW_FUNCTION.as_str()));
+}
+
+#[test]
+fn strict_native_reports_function_constructor_via_chained_constructor_access() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    "({}).constructor.constructor.call(null, \"return 1\");\n",
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_NEW_FUNCTION.as_str()));
+}
+
+#[test]
+fn strict_native_allows_non_function_constructor_call_sanity() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(&entry, "({}).constructor.call(null, {});\n").expect("write main.ts");
+
+  let output = typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+
+  let stdout = String::from_utf8_lossy(&output);
+  assert!(
+    !stdout.contains(codes::NATIVE_STRICT_NEW_FUNCTION.as_str()),
+    "did not expect {}, got {stdout}",
+    codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+  );
+}
