@@ -127,3 +127,49 @@ fn single_edge_bottom_border_does_not_shift_when_pixel_aligned() {
     "expected pixel below border to remain background"
   );
 }
+
+#[test]
+fn single_edge_bottom_border_does_not_shift_when_integer_aligned() {
+  // The Chrome/Skia bias applied by `render_border` is only correct when the border's top edge
+  // lands on a fractional device pixel. When the edge is already integer-aligned, shifting the
+  // border down by half a pixel incorrectly moves it *outside* the border box (swapping a stripe
+  // of border/background color).
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: #ff6600; }
+      #box {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 20px;
+        height: 51px;
+        border-bottom: 1px solid #fff;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut renderer = create_stacking_context_bounds_renderer();
+  let pixmap = renderer.render_html(html, 30, 60).expect("render");
+
+  let above = pixmap.pixel(5, 50).expect("above pixel");
+  assert_eq!(
+    (above.red(), above.green(), above.blue(), above.alpha()),
+    (255, 102, 0, 255),
+    "expected pixel above border to remain background"
+  );
+
+  let border = pixmap.pixel(5, 51).expect("border pixel");
+  assert_eq!(
+    (border.red(), border.green(), border.blue(), border.alpha()),
+    (255, 255, 255, 255),
+    "expected bottom border to paint the last row *inside* the border box"
+  );
+
+  let below = pixmap.pixel(5, 52).expect("below pixel");
+  assert_eq!(
+    (below.red(), below.green(), below.blue(), below.alpha()),
+    (255, 102, 0, 255),
+    "expected pixel below border to remain background"
+  );
+}
