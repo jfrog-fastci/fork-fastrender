@@ -1573,6 +1573,8 @@ struct ProgressAccuracy {
   diff_percent: f64,
   perceptual: f64,
   #[serde(default, skip_serializing_if = "Option::is_none")]
+  perceptual_metric: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   first_mismatch: Option<ProgressAccuracyFirstMismatch>,
   tolerance: u8,
   max_diff_percent: f64,
@@ -1613,6 +1615,7 @@ impl ProgressAccuracy {
       diff_pixels: diff.statistics.different_pixels,
       diff_percent: round_accuracy_metric(diff.statistics.different_percent, 4),
       perceptual: round_accuracy_metric(diff.statistics.perceptual_distance, 4),
+      perceptual_metric: Some(image_compare::PERCEPTUAL_METRIC_ID.to_string()),
       first_mismatch,
       tolerance: diff.config.channel_tolerance,
       max_diff_percent: diff.config.max_different_percent,
@@ -1810,6 +1813,7 @@ fn compute_accuracy_for_pixmap(
     diff_pixels: different_pixels,
     diff_percent: round_accuracy_metric(diff_percent, 4),
     perceptual: round_accuracy_metric(perceptual, 4),
+    perceptual_metric: Some(image_compare::PERCEPTUAL_METRIC_ID.to_string()),
     first_mismatch: first_mismatch.and_then(|(x, y)| {
       first_mismatch_rgba.map(|(rendered_rgba, baseline_rgba)| ProgressAccuracyFirstMismatch {
         x,
@@ -13084,6 +13088,7 @@ mod tests {
       diff_pixels: 123,
       diff_percent: 1.2345,
       perceptual: 0.042,
+      perceptual_metric: Some(image_compare::PERCEPTUAL_METRIC_ID.to_string()),
       first_mismatch: None,
       tolerance: 0,
       max_diff_percent: 0.0,
@@ -13107,6 +13112,7 @@ mod tests {
       diff_pixels: 123,
       diff_percent: 1.5,
       perceptual: 0.0,
+      perceptual_metric: Some(image_compare::PERCEPTUAL_METRIC_ID.to_string()),
       first_mismatch: Some(ProgressAccuracyFirstMismatch {
         x: 1,
         y: 2,
@@ -13164,6 +13170,10 @@ mod tests {
     assert_eq!(acc.diff_pixels, 1);
     assert_eq!(acc.diff_percent, 25.0);
     assert!(acc.perceptual > 0.0, "perceptual={}", acc.perceptual);
+    assert_eq!(
+      acc.perceptual_metric.as_deref(),
+      Some(image_compare::PERCEPTUAL_METRIC_ID)
+    );
     let expected_mismatch = {
       let mut found = None;
       for y in 0..baseline_img.height() {

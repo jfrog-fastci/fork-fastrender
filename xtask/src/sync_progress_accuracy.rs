@@ -32,6 +32,8 @@ pub struct SyncProgressAccuracyArgs {
 struct DiffReport {
   tolerance: u8,
   max_diff_percent: f64,
+  #[serde(default)]
+  perceptual_metric: Option<String>,
   results: Vec<DiffReportEntry>,
 }
 
@@ -73,16 +75,23 @@ pub fn run_sync_progress_accuracy(mut args: SyncProgressAccuracyArgs) -> Result<
   let report: DiffReport =
     serde_json::from_str(&report_raw).context("parse diff_renders report JSON")?;
 
+  let DiffReport {
+    tolerance,
+    max_diff_percent,
+    perceptual_metric,
+    results,
+  } = report;
+
   let computed_at_commit = current_git_sha(&repo_root);
 
-  let total_report_entries = report.results.len();
+  let total_report_entries = results.len();
   let mut entries_with_metrics = 0usize;
   let mut updated_progress_files = 0usize;
   let mut skipped_missing_progress = 0usize;
   let mut skipped_no_metrics = 0usize;
   let mut missing_progress: Vec<String> = Vec::new();
 
-  for entry in report.results {
+  for entry in results {
     let Some(metrics) = entry.metrics else {
       skipped_no_metrics += 1;
       continue;
@@ -105,9 +114,10 @@ pub fn run_sync_progress_accuracy(mut args: SyncProgressAccuracyArgs) -> Result<
 
     let accuracy = build_accuracy_value(
       &metrics,
-      report.tolerance,
-      report.max_diff_percent,
+      tolerance,
+      max_diff_percent,
       computed_at_commit.as_deref(),
+      perceptual_metric.as_deref(),
     )?;
     apply_accuracy(&mut progress_json, accuracy)
       .with_context(|| format!("update accuracy for {}", progress_path.display()))?;
@@ -207,6 +217,7 @@ fn build_accuracy_value(
   tolerance: u8,
   max_diff_percent: f64,
   computed_at_commit: Option<&str>,
+  perceptual_metric: Option<&str>,
 ) -> Result<Value> {
   let diff_percent = round_accuracy_metric(metrics.diff_percentage, 4);
   let perceptual = round_accuracy_metric(metrics.perceptual_distance, 4);
@@ -229,6 +240,15 @@ fn build_accuracy_value(
     Value::Number(diff_percent_value),
   );
   obj.insert("perceptual".to_string(), Value::Number(perceptual_value));
+  if let Some(metric) = perceptual_metric {
+    let trimmed = metric.trim();
+    if !trimmed.is_empty() {
+      obj.insert(
+        "perceptual_metric".to_string(),
+        Value::String(trimmed.to_string()),
+      );
+    }
+  }
   if let Some(mismatch) = metrics.first_mismatch.as_ref() {
     obj.insert(
       "first_mismatch".to_string(),

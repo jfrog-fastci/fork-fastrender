@@ -87,6 +87,8 @@ struct ProgressAccuracy {
   #[serde(default)]
   perceptual: Option<f64>,
   #[serde(default)]
+  perceptual_metric: Option<String>,
+  #[serde(default)]
   first_mismatch: Option<ProgressFirstMismatch>,
 }
 
@@ -440,9 +442,19 @@ fn render_page_section(
   ) {
     (Some((diff_percent, perceptual)), _) => {
       out.push_str(&format!(
-        "- Accuracy: diff_percent={:.4}% perceptual={:.4}\n",
+        "- Accuracy: diff_percent={:.4}% perceptual={:.4}",
         diff_percent, perceptual
       ));
+      if let Some(metric) = page
+        .accuracy
+        .as_ref()
+        .and_then(|acc| acc.perceptual_metric.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+      {
+        out.push_str(&format!(" metric={metric}"));
+      }
+      out.push('\n');
       if let Some(mismatch) = page
         .accuracy
         .as_ref()

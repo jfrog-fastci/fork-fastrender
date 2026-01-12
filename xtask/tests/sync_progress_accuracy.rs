@@ -47,8 +47,8 @@ fn write_progress(dir: &Path, stem: &str) {
   .unwrap_or_else(|_| panic!("write {}", path.display()));
 }
 
-fn write_report(path: &Path) {
-  let report = json!({
+fn write_report(path: &Path, perceptual_metric: Option<&str>) {
+  let mut report = json!({
     "tolerance": 2,
     "max_diff_percent": 0.5,
     "results": [{
@@ -68,6 +68,14 @@ fn write_report(path: &Path) {
       }
     }]
   });
+
+  if let Some(metric) = perceptual_metric {
+    report
+      .as_object_mut()
+      .expect("report should be an object")
+      .insert("perceptual_metric".to_string(), json!(metric));
+  }
+
   fs::write(path, serde_json::to_string_pretty(&report).unwrap())
     .unwrap_or_else(|_| panic!("write {}", path.display()));
 }
@@ -80,7 +88,7 @@ fn sync_progress_accuracy_writes_accuracy_block() {
   write_progress(&progress_dir, "a");
 
   let report_path = temp.path().join("report.json");
-  write_report(&report_path);
+  write_report(&report_path, Some("ssim_windowed_v2"));
 
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())
@@ -121,6 +129,10 @@ fn sync_progress_accuracy_writes_accuracy_block() {
   assert_eq!(
     accuracy.get("perceptual").and_then(|v| v.as_f64()),
     Some(0.1235)
+  );
+  assert_eq!(
+    accuracy.get("perceptual_metric").and_then(|v| v.as_str()),
+    Some("ssim_windowed_v2")
   );
   assert_eq!(accuracy.get("tolerance").and_then(|v| v.as_u64()), Some(2));
   assert_eq!(
@@ -171,6 +183,46 @@ fn sync_progress_accuracy_writes_accuracy_block() {
 }
 
 #[test]
+fn sync_progress_accuracy_omits_metric_when_report_missing() {
+  let temp = tempdir().expect("tempdir");
+  let progress_dir = temp.path().join("progress");
+  fs::create_dir_all(&progress_dir).expect("create progress dir");
+  write_progress(&progress_dir, "a");
+
+  let report_path = temp.path().join("report.json");
+  write_report(&report_path, None);
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .arg("sync-progress-accuracy")
+    .arg("--report")
+    .arg(&report_path)
+    .arg("--progress-dir")
+    .arg(&progress_dir)
+    .output()
+    .expect("run xtask sync-progress-accuracy");
+
+  assert!(
+    output.status.success(),
+    "expected sync-progress-accuracy to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let updated_raw =
+    fs::read_to_string(progress_dir.join("a.json")).expect("read updated progress file");
+  let updated: serde_json::Value = serde_json::from_str(&updated_raw).expect("parse updated json");
+  let accuracy = updated
+    .get("accuracy")
+    .expect("accuracy field should exist");
+
+  assert!(
+    accuracy.get("perceptual_metric").is_none(),
+    "expected missing perceptual_metric field when report does not specify it, got: {accuracy}"
+  );
+}
+
+#[test]
 fn sync_progress_accuracy_dry_run_does_not_write() {
   let temp = tempdir().expect("tempdir");
   let progress_dir = temp.path().join("progress");
@@ -178,7 +230,7 @@ fn sync_progress_accuracy_dry_run_does_not_write() {
   write_progress(&progress_dir, "a");
 
   let report_path = temp.path().join("report.json");
-  write_report(&report_path);
+  write_report(&report_path, Some("ssim_windowed_v2"));
 
   let original = fs::read_to_string(progress_dir.join("a.json")).expect("read original progress");
 
