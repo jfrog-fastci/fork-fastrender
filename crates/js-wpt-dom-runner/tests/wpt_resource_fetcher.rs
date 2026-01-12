@@ -1,3 +1,5 @@
+#![cfg(feature = "vmjs")]
+
 use fastrender::resource::ResourceFetcher;
 use js_wpt_dom_runner::WptResourceFetcher;
 use std::path::PathBuf;

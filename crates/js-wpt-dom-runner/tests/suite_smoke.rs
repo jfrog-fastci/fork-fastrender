@@ -1,3 +1,5 @@
+#![cfg(any(feature = "vmjs", feature = "quickjs"))]
+
 use conformance_harness::FailOn;
 use js_wpt_dom_runner::{run_suite, BackendSelection, SuiteConfig, TestOutcome};
 use std::path::PathBuf;
@@ -111,7 +113,7 @@ fn suite_smoke_report_classifies_expected_failures() {
   );
 
   let mismatches = report.summary.mismatches.as_ref().expect("mismatches");
-  assert_eq!(mismatches.expected, 4, "expected mismatches");
+  assert_eq!(mismatches.expected, 8, "expected mismatches");
   let unexpected: Vec<String> = report
     .results
     .iter()

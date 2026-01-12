@@ -1,3 +1,5 @@
+#![cfg(feature = "vmjs")]
+
 use fastrender::js::{
   Clock, EventLoop, MicrotaskCheckpointLimitedOutcome, RunLimits, RunNextTaskLimitedOutcome,
   RunState, RunUntilIdleStopReason, TaskSource, VirtualClock,
