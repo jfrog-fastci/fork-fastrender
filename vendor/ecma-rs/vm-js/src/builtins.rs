@@ -2329,8 +2329,11 @@ pub fn array_constructor_from(
       Err(err) => {
         // IteratorClose on abrupt completion, matching other iterator-consuming builtins.
         if !iterator_record.done {
-          // If iterator close throws, it overrides the original error (ECMA-262 `IteratorClose`),
-          // but it must not replace VM-internal fatal errors (termination, OOM, etc).
+          // Per ECMA-262 `IteratorClose`:
+          // - If the original completion is a throw completion, any *throw completion* produced
+          //   while getting/calling `iterator.return` is suppressed (original error preserved).
+          // - vm-js also has non-catchable VM failures (termination, OOM, etc) which must never be
+          //   replaced by a catchable iterator-closing error.
           let original_is_throw = err.is_throw_completion();
           let completion_kind = if original_is_throw {
             crate::iterator::CloseCompletionKind::Throw
