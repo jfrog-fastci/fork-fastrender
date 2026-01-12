@@ -2910,19 +2910,16 @@ pub fn typed_array_prototype_subarray(
     .typed_array_length(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
 
-  // Spec: `%TypedArray%.prototype.subarray` validates the typed array (including detached buffer
-  // checks) before coercing start/end arguments.
-  //
-  // Ensure detached buffers throw *before* `slice_range_from_args`, which can execute user code via
-  // `valueOf`/`toString`.
   let buffer = scope
     .heap()
     .typed_array_buffer(obj)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.subarray called on incompatible receiver"))?;
-  if scope.heap().array_buffer_data(buffer).is_err() {
-    return Err(VmError::TypeError("ArrayBuffer is detached"));
-  }
 
+  // Spec: `%TypedArray%.prototype.subarray` performs `ToIntegerOrInfinity` conversions on `start`
+  // and `end` even if the typed array is out-of-bounds/detached.
+  //
+  // Any eventual detached-buffer TypeError comes later (during typed array creation), *after*
+  // argument conversions (which can have user-observable side effects).
   let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
   let bytes_per_element = kind.bytes_per_element();
 
