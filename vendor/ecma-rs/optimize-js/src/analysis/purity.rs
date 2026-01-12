@@ -78,9 +78,11 @@ fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummarie
       && !ty.contains(ValueTypeSummary::FUNCTION)
   };
 
-  let first_arg_type = || match args.get(0) {
-    Some(arg) => value_types.arg(arg).unwrap_or(ValueTypeSummary::UNKNOWN),
-    None => ValueTypeSummary::UNDEFINED,
+  let all_args_safe_to_number = || {
+    args.iter().all(|arg| {
+      let ty = value_types.arg(arg).unwrap_or(ValueTypeSummary::UNKNOWN);
+      safe_to_number_arg(ty)
+    })
   };
 
   match path {
@@ -92,10 +94,15 @@ fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummarie
     | "Math.clz32"
     | "Math.cos"
     | "Math.floor"
+    | "Math.fround"
+    | "Math.imul"
     | "Math.log"
     | "Math.log10"
     | "Math.log1p"
     | "Math.log2"
+    | "Math.max"
+    | "Math.min"
+    | "Math.pow"
     | "Math.round"
     | "Math.sign"
     | "Math.sin"
@@ -103,7 +110,7 @@ fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummarie
     | "Math.tan"
     | "Math.trunc"
     | "Number" => {
-      if safe_to_number_arg(first_arg_type()) {
+      if all_args_safe_to_number() {
         Purity::Pure
       } else {
         Purity::Impure

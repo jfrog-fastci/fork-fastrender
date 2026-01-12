@@ -636,6 +636,13 @@ pub fn js_sign(value: f64) -> f64 {
   }
 }
 
+pub fn js_fround(value: f64) -> f64 {
+  // https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-math.fround
+  // Convert via `f32` to apply IEEE-754 single-precision rounding. This preserves `-0` and maps all
+  // NaN payloads to a canonical NaN, which is fine for ECMAScript observable semantics.
+  (value as f32) as f64
+}
+
 pub fn js_mod(a: f64, b: f64) -> f64 {
   match (a, b) {
     (_, 0.0) => f64::NAN,
@@ -829,6 +836,11 @@ pub fn maybe_eval_const_un_expr(op: UnOp, a: &Const) -> Option<Const> {
 pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const> {
   #[rustfmt::skip]
   let v = match args.len() {
+    0 => match func {
+      "Math.max" => Num(JN(f64::NEG_INFINITY)),
+      "Math.min" => Num(JN(f64::INFINITY)),
+      _ => return None,
+    }
     1 => match (func, &args[0]) {
       ("BigInt", BigInt(v)) => BigInt(v.clone()),
       ("BigInt", Bool(v)) => BigInt(BigInt::from(*v as u8)),
@@ -846,7 +858,10 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       | ("Math.atan", BigInt(_))
       | ("Math.ceil", BigInt(_))
       | ("Math.cos", BigInt(_))
+      | ("Math.max", BigInt(_))
+      | ("Math.min", BigInt(_))
       | ("Math.floor", BigInt(_))
+      | ("Math.fround", BigInt(_))
       | ("Math.log", BigInt(_))
       | ("Math.log10", BigInt(_))
       | ("Math.log1p", BigInt(_))
@@ -865,10 +880,13 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.clz32", a) => Num(JN((coerce_to_uint32(a)?).leading_zeros() as f64)),
       ("Math.cos", a) => Num(JN(coerce_to_num(a).cos())),
       ("Math.floor", a) => Num(JN(coerce_to_num(a).floor())),
+      ("Math.fround", a) => Num(JN(js_fround(coerce_to_num(a)))),
       ("Math.log", a) => Num(JN(coerce_to_num(a).ln())),
       ("Math.log10", a) => Num(JN(coerce_to_num(a).log10())),
       ("Math.log1p", a) => Num(JN(coerce_to_num(a).ln_1p())),
       ("Math.log2", a) => Num(JN(coerce_to_num(a).log2())),
+      ("Math.max", a) => Num(JN(coerce_to_num(a))),
+      ("Math.min", a) => Num(JN(coerce_to_num(a))),
       ("Math.round", a) => Num(JN(js_round(coerce_to_num(a)))),
       ("Math.sign", a) => Num(JN(js_sign(coerce_to_num(a)))),
       ("Math.sin", a) => Num(JN(coerce_to_num(a).sin())),
@@ -880,8 +898,45 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       _ => return None,
     }
     2 => match (func, &args[0], &args[1]) {
+      ("Math.max", BigInt(_), _) | ("Math.max", _, BigInt(_)) => return None,
+      ("Math.min", BigInt(_), _) | ("Math.min", _, BigInt(_)) => return None,
+      ("Math.max", a, b) => {
+        let a = coerce_to_num(a);
+        let b = coerce_to_num(b);
+        if a.is_nan() || b.is_nan() {
+          Num(JN(f64::NAN))
+        } else if a > b {
+          Num(JN(a))
+        } else if b > a {
+          Num(JN(b))
+        } else if a == 0.0 {
+          // `Math.max(-0, +0) === +0`.
+          let both_neg = a.is_sign_negative() && b.is_sign_negative();
+          Num(JN(if both_neg { -0.0 } else { 0.0 }))
+        } else {
+          Num(JN(a))
+        }
+      }
+      ("Math.min", a, b) => {
+        let a = coerce_to_num(a);
+        let b = coerce_to_num(b);
+        if a.is_nan() || b.is_nan() {
+          Num(JN(f64::NAN))
+        } else if a < b {
+          Num(JN(a))
+        } else if b < a {
+          Num(JN(b))
+        } else if a == 0.0 {
+          // `Math.min(+0, -0) === -0`.
+          let any_neg = a.is_sign_negative() || b.is_sign_negative();
+          Num(JN(if any_neg { -0.0 } else { 0.0 }))
+        } else {
+          Num(JN(a))
+        }
+      }
       ("Math.pow", BigInt(_), _) | ("Math.pow", _, BigInt(_)) => return None,
       ("Math.pow", base, exp) => Num(JN(coerce_to_num(base).powf(coerce_to_num(exp)))),
+      ("Math.imul", a, b) => Num(JN((coerce_to_int32(a)?).wrapping_mul(coerce_to_int32(b)?) as f64)),
       ("BigInt.asIntN", bits, value) => {
         let bits = coerce_to_index(bits)?;
         let value = coerce_to_bigint_for_bigint_bitop(value)?;
@@ -894,7 +949,37 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       }
       _ => return None,
     }
-    _ => return None,
+    _ => match func {
+      "Math.max" | "Math.min" => {
+        let mut out = if func == "Math.max" { f64::NEG_INFINITY } else { f64::INFINITY };
+        for arg in args {
+          if matches!(arg, BigInt(_)) {
+            return None;
+          }
+          let v = coerce_to_num(arg);
+          if v.is_nan() {
+            return Some(Num(JN(f64::NAN)));
+          }
+          if func == "Math.max" {
+            if v > out {
+              out = v;
+            } else if v == out && v == 0.0 && out.is_sign_negative() && v.is_sign_positive() {
+              // `Math.max(-0, +0) === +0`.
+              out = v;
+            }
+          } else {
+            if v < out {
+              out = v;
+            } else if v == out && v == 0.0 && out.is_sign_positive() && v.is_sign_negative() {
+              // `Math.min(+0, -0) === -0`.
+              out = v;
+            }
+          }
+        }
+        Num(JN(out))
+      }
+      _ => return None,
+    },
   };
   Some(v)
 }

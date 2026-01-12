@@ -160,6 +160,101 @@ fn math_clz32_matches_ecmascript() {
 }
 
 #[test]
+fn math_fround_matches_ecmascript_float32_rounding() {
+  let eval_fround = |arg: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call("Math.fround", &[arg]) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result: {other:?}"),
+  };
+
+  // f32 rounding behavior.
+  assert_eq!(eval_fround(ConstNum(JN(0.1))), 0.1_f32 as f64);
+  assert_eq!(eval_fround(ConstStr("0.1".into())), 0.1_f32 as f64);
+
+  // Preserve -0.
+  let neg_zero = eval_fround(ConstNum(JN(-0.0)));
+  assert_eq!(neg_zero, 0.0);
+  assert!(
+    neg_zero.is_sign_negative(),
+    "Math.fround(-0) should preserve -0"
+  );
+
+  // BigInt cannot be coerced to Number for Math.* builtins.
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.fround", &[ConstBigInt(BigInt::from(1))]),
+    None
+  );
+}
+
+#[test]
+fn math_imul_matches_ecmascript_int32_multiplication() {
+  let eval_imul =
+    |a: optimize_js::il::inst::Const, b: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call("Math.imul", &[a, b]) {
+      Some(ConstNum(JN(v))) => v,
+      other => panic!("unexpected eval result: {other:?}"),
+    };
+
+  assert_eq!(eval_imul(ConstNum(JN(2.0)), ConstNum(JN(3.0))), 6.0);
+  assert_eq!(eval_imul(ConstStr("2".into()), ConstStr("3".into())), 6.0);
+
+  // 0xFFFF_FFFF is -1 as an int32.
+  assert_eq!(eval_imul(ConstNum(JN(4294967295.0)), ConstNum(JN(5.0))), -5.0);
+
+  // BigInt cannot be coerced to Number for Math.* builtins.
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.imul", &[ConstBigInt(BigInt::from(1)), ConstNum(JN(2.0))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.imul", &[ConstNum(JN(1.0)), ConstBigInt(BigInt::from(2))]),
+    None
+  );
+}
+
+#[test]
+fn math_max_min_preserve_signed_zero_and_reject_bigint() {
+  let eval_max = |args: &[optimize_js::il::inst::Const]| match maybe_eval_const_builtin_call("Math.max", args) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result: {other:?}"),
+  };
+  let eval_min = |args: &[optimize_js::il::inst::Const]| match maybe_eval_const_builtin_call("Math.min", args) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result: {other:?}"),
+  };
+
+  assert!(eval_max(&[]).is_infinite() && eval_max(&[]).is_sign_negative());
+  assert!(eval_min(&[]).is_infinite() && eval_min(&[]).is_sign_positive());
+
+  let max_zero = eval_max(&[ConstNum(JN(-0.0)), ConstNum(JN(0.0))]);
+  assert_eq!(max_zero, 0.0);
+  assert!(
+    max_zero.is_sign_positive(),
+    "Math.max(-0, +0) should return +0"
+  );
+  let min_zero = eval_min(&[ConstNum(JN(-0.0)), ConstNum(JN(0.0))]);
+  assert_eq!(min_zero, 0.0);
+  assert!(
+    min_zero.is_sign_negative(),
+    "Math.min(-0, +0) should return -0"
+  );
+
+  assert_eq!(eval_max(&[ConstNum(JN(1.0)), ConstNum(JN(2.0))]), 2.0);
+  assert_eq!(eval_min(&[ConstNum(JN(1.0)), ConstNum(JN(2.0))]), 1.0);
+
+  assert!(eval_max(&[ConstStr("not a number".into()), ConstNum(JN(2.0))]).is_nan());
+  assert!(eval_min(&[ConstNum(JN(1.0)), ConstStr("not a number".into())]).is_nan());
+
+  // BigInt cannot be coerced to Number for Math.* builtins.
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.max", &[ConstBigInt(BigInt::from(1)), ConstNum(JN(2.0))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.min", &[ConstNum(JN(1.0)), ConstBigInt(BigInt::from(2))]),
+    None
+  );
+}
+
+#[test]
 fn bigint_and_string_loose_equality_follows_string_to_bigint() {
   assert!(js_loose_eq(
     &ConstBigInt(BigInt::from(1)),
