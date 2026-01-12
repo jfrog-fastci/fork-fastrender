@@ -240,8 +240,9 @@ completion/cancellation (destroying the frame if `CORO_FLAG_RUNTIME_OWNS_FRAME` 
 Drive the runtime's async/event-loop queues for one turn.
 
 - Runs at most one macrotask (after promoting due timers), then performs a microtask checkpoint.
-- May block waiting for timer deadlines or I/O readiness when the runtime has pending work but
-  nothing is immediately runnable.
+- May block waiting for timer deadlines, I/O readiness, or external wakeups when the runtime has
+  pending work but nothing is immediately runnable (e.g. while a `rt_parallel_spawn_promise` task is
+  still outstanding).
 - Returns `true` iff there is still pending work after this turn (queued microtasks/macrotasks,
   active timers, I/O watchers, or outstanding external work such as a promise returned by
   `rt_parallel_spawn_promise` that has not yet settled). Returns `false` when the runtime is fully

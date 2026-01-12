@@ -387,8 +387,9 @@ pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRe
 /// This drives the process-global async runtime for one event-loop turn:
 /// - drains any queued microtasks
 /// - promotes due timers and executes at most one macrotask
-/// - may block waiting for I/O readiness or timer deadlines when work is pending but nothing is
-///   immediately runnable
+/// - may block waiting for I/O readiness, timer deadlines, or external wakeups when work is pending
+///   but nothing is immediately runnable (e.g. while a `rt_parallel_spawn_promise` task is still
+///   outstanding)
 ///
 /// Returns `true` if there is still pending work after this poll turn (queued tasks, active timers,
 /// I/O watchers, or outstanding external work like a promise returned by `rt_parallel_spawn_promise`
