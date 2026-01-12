@@ -118,6 +118,7 @@ fn nursery_fills_triggers_minor_and_preserves_graph() {
   let config = HeapConfig {
     nursery_size_bytes: 512,
     los_threshold_bytes: 128,
+    major_gc_mark_threads: 0,
     minor_gc_nursery_used_percent: 50,
     major_gc_old_bytes_threshold: usize::MAX,
     major_gc_old_blocks_threshold: usize::MAX,
@@ -235,6 +236,7 @@ fn tiny_heap_is_deterministic_oom() {
   let config = HeapConfig {
     nursery_size_bytes: 256,
     los_threshold_bytes: 128,
+    major_gc_mark_threads: 0,
     minor_gc_nursery_used_percent: 100,
     major_gc_old_bytes_threshold: usize::MAX,
     major_gc_old_blocks_threshold: usize::MAX,
@@ -287,6 +289,7 @@ fn los_allocations_do_not_consume_nursery() {
   let config = HeapConfig {
     nursery_size_bytes: 1024,
     los_threshold_bytes: 128,
+    major_gc_mark_threads: 0,
     minor_gc_nursery_used_percent: 100,
     major_gc_old_bytes_threshold: usize::MAX,
     major_gc_old_blocks_threshold: usize::MAX,

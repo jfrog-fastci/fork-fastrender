@@ -9,6 +9,13 @@ pub struct HeapConfig {
   /// Allocation size threshold above which objects go to the large object space (LOS).
   pub los_threshold_bytes: usize,
 
+  /// Number of threads to use for the major-GC mark phase (including the calling thread).
+  ///
+  /// A value of `0` means "auto" (use the runtime default based on available parallelism).
+  ///
+  /// Set to `1` to disable parallel marking.
+  pub major_gc_mark_threads: usize,
+
   /// Trigger a minor collection when nursery usage exceeds this percentage (`0..=100`).
   pub minor_gc_nursery_used_percent: u8,
 
@@ -36,6 +43,7 @@ impl Default for HeapConfig {
     Self {
       nursery_size_bytes: crate::nursery::DEFAULT_NURSERY_SIZE_BYTES,
       los_threshold_bytes: 8 * 1024,
+      major_gc_mark_threads: 0,
       minor_gc_nursery_used_percent: 80,
       major_gc_old_bytes_threshold: 64 * 1024 * 1024,
       major_gc_old_blocks_threshold: 2048,
@@ -135,6 +143,9 @@ impl TryFrom<crate::abi::RtGcConfig> for HeapConfig {
     let config = Self {
       nursery_size_bytes: cfg.nursery_size_bytes,
       los_threshold_bytes: cfg.los_threshold_bytes,
+      // The public C ABI config does not currently expose mark-thread tuning. Use the runtime
+      // default unless configured programmatically via `HeapConfig`.
+      major_gc_mark_threads: 0,
       minor_gc_nursery_used_percent: cfg.minor_gc_nursery_used_percent,
       major_gc_old_bytes_threshold: cfg.major_gc_old_bytes_threshold,
       major_gc_old_blocks_threshold: cfg.major_gc_old_blocks_threshold,

@@ -146,6 +146,10 @@ harness = false
 name = "gc_major_pause"
 harness = false
 
+[[bench]]
+name = "gc_major_mark"
+harness = false
+
 [[test]]
 name = "stackmaps_symbols_runtime"
 path = "tests/bin/stackmaps_symbols_runtime.rs"

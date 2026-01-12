@@ -38,8 +38,28 @@ pub fn set_line(map: &LineMap, line: usize) {
 pub fn set_range(map: &LineMap, start_line: usize, end_line: usize) {
   debug_assert!(start_line <= end_line);
   debug_assert!(end_line <= LINES_PER_BLOCK);
-  for line in start_line..end_line {
-    set_line(map, line);
+
+  if start_line == end_line {
+    return;
+  }
+
+  let start_word = start_line / 64;
+  let end_word = (end_line - 1) / 64;
+
+  for word in start_word..=end_word {
+    let word_start = word * 64;
+    let word_end = word_start + 64;
+    let s = start_line.max(word_start) - word_start;
+    let e = end_line.min(word_end) - word_start;
+    debug_assert!(s < 64);
+    debug_assert!(e <= 64);
+    debug_assert!(s < e);
+
+    let lower = if s == 0 { 0 } else { (1u64 << s) - 1 };
+    let upper = if e == 64 { !0u64 } else { (1u64 << e) - 1 };
+    let mask = upper & !lower;
+
+    map[word].fetch_or(mask, Ordering::Relaxed);
   }
 }
 

@@ -81,7 +81,10 @@ impl GcHeap {
     // Reset all Immix liveness maps.
     self.immix.clear_line_marks();
 
-    let mark_workers = mark_workers.unwrap_or_else(|| parallel_marker_pool().max_workers);
+    let mark_workers = mark_workers.unwrap_or_else(|| {
+      let cfg = self.config().major_gc_mark_threads;
+      if cfg == 0 { parallel_marker_pool().max_workers } else { cfg }
+    });
     parallel_mark_major(self, epoch, roots, mark_workers);
 
     let cfg = self.major_compaction;
@@ -274,7 +277,7 @@ impl ParallelMarkPool {
       let name = format!("rt-gc-mark-{worker_id}");
       let _ = thread::Builder::new()
         .name(name)
-        .spawn(move || mark_worker_loop(worker_id, pool, local))
+        .spawn(move || crate::ffi::abort_on_panic(|| mark_worker_loop(worker_id, pool, local)))
         .unwrap_or_else(|_| std::process::abort());
     }
 

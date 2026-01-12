@@ -5,7 +5,6 @@ use super::bitmap;
 use super::BLOCK_SIZE;
 use super::LINE_SIZE;
 use super::LINES_PER_BLOCK;
-
 use core::sync::atomic::AtomicU64;
 
 #[derive(Clone, Copy, Debug)]
