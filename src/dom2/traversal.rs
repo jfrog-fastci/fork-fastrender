@@ -44,6 +44,25 @@ impl Document {
       .find(|&child| self.contains_node(child))
   }
 
+  pub fn first_element_child(&self, node: NodeId) -> Option<NodeId> {
+    let node_ref = self.get_node(node)?;
+    if node_ref.inert_subtree {
+      return None;
+    }
+    node_ref.children.iter().copied().find(|&child| {
+      let Some(child_node) = self.get_node(child) else {
+        return false;
+      };
+      if child_node.parent != Some(node) {
+        return false;
+      }
+      matches!(
+        &child_node.kind,
+        super::NodeKind::Element { .. } | super::NodeKind::Slot { .. }
+      )
+    })
+  }
+
   pub fn last_child(&self, node: NodeId) -> Option<NodeId> {
     let node = self.get_node(node)?;
     node
@@ -52,6 +71,77 @@ impl Document {
       .rev()
       .copied()
       .find(|&child| self.contains_node(child))
+  }
+
+  pub fn last_element_child(&self, node: NodeId) -> Option<NodeId> {
+    let node_ref = self.get_node(node)?;
+    if node_ref.inert_subtree {
+      return None;
+    }
+    node_ref.children.iter().rev().copied().find(|&child| {
+      let Some(child_node) = self.get_node(child) else {
+        return false;
+      };
+      if child_node.parent != Some(node) {
+        return false;
+      }
+      matches!(
+        &child_node.kind,
+        super::NodeKind::Element { .. } | super::NodeKind::Slot { .. }
+      )
+    })
+  }
+
+  pub fn child_element_count(&self, node: NodeId) -> usize {
+    let Some(node_ref) = self.get_node(node) else {
+      return 0;
+    };
+    if node_ref.inert_subtree {
+      return 0;
+    }
+    node_ref
+      .children
+      .iter()
+      .copied()
+      .filter(|&child| {
+        let Some(child_node) = self.get_node(child) else {
+          return false;
+        };
+        if child_node.parent != Some(node) {
+          return false;
+        }
+        matches!(
+          &child_node.kind,
+          super::NodeKind::Element { .. } | super::NodeKind::Slot { .. }
+        )
+      })
+      .count()
+  }
+
+  pub fn children_elements(&self, node: NodeId) -> Vec<NodeId> {
+    let Some(node_ref) = self.get_node(node) else {
+      return Vec::new();
+    };
+    if node_ref.inert_subtree {
+      return Vec::new();
+    }
+    node_ref
+      .children
+      .iter()
+      .copied()
+      .filter(|&child| {
+        let Some(child_node) = self.get_node(child) else {
+          return false;
+        };
+        if child_node.parent != Some(node) {
+          return false;
+        }
+        matches!(
+          &child_node.kind,
+          super::NodeKind::Element { .. } | super::NodeKind::Slot { .. }
+        )
+      })
+      .collect()
   }
 
   pub fn previous_sibling(&self, node: NodeId) -> Option<NodeId> {
@@ -68,6 +158,30 @@ impl Document {
       .find(|&sib| self.contains_node(sib))
   }
 
+  pub fn previous_element_sibling(&self, node: NodeId) -> Option<NodeId> {
+    let parent = self.parent_node(node)?;
+    let parent_node = self.get_node(parent)?;
+    let pos = parent_node.children.iter().position(|&c| c == node)?;
+    parent_node
+      .children
+      .iter()
+      .take(pos)
+      .rev()
+      .copied()
+      .find(|&sib| {
+        let Some(sib_node) = self.get_node(sib) else {
+          return false;
+        };
+        if sib_node.parent != Some(parent) {
+          return false;
+        }
+        matches!(
+          &sib_node.kind,
+          super::NodeKind::Element { .. } | super::NodeKind::Slot { .. }
+        )
+      })
+  }
+
   pub fn next_sibling(&self, node: NodeId) -> Option<NodeId> {
     let parent = self.parent_node(node)?;
     let parent_node = self.get_node(parent)?;
@@ -79,6 +193,29 @@ impl Document {
       .skip(pos + 1)
       .copied()
       .find(|&sib| self.contains_node(sib))
+  }
+
+  pub fn next_element_sibling(&self, node: NodeId) -> Option<NodeId> {
+    let parent = self.parent_node(node)?;
+    let parent_node = self.get_node(parent)?;
+    let pos = parent_node.children.iter().position(|&c| c == node)?;
+    parent_node
+      .children
+      .iter()
+      .skip(pos + 1)
+      .copied()
+      .find(|&sib| {
+        let Some(sib_node) = self.get_node(sib) else {
+          return false;
+        };
+        if sib_node.parent != Some(parent) {
+          return false;
+        }
+        matches!(
+          &sib_node.kind,
+          super::NodeKind::Element { .. } | super::NodeKind::Slot { .. }
+        )
+      })
   }
 
   pub fn is_connected(&self, node: NodeId) -> bool {

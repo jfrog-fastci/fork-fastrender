@@ -23,6 +23,7 @@ mod html5ever_tree_sink;
 mod html_parse;
 pub mod import;
 mod js_shims;
+mod live_collection_query;
 mod mutation;
 mod mutation_observer;
 mod scripting_parser;
@@ -1937,6 +1938,8 @@ mod mutation_generation_tests;
 mod mutation_tests;
 #[cfg(test)]
 mod query_tests;
+#[cfg(test)]
+mod get_elements_by_tests;
 #[cfg(test)]
 mod script_internal_slots_tests;
 #[cfg(test)]
