@@ -2128,6 +2128,17 @@ mod tests {
   }
 
   #[test]
+  fn available_width_in_range_zero_height_matches_at_y() {
+    let mut ctx = FloatContext::new(800.0);
+    ctx.add_float_at(FloatSide::Left, 0.0, 0.0, 200.0, 100.0);
+    ctx.add_float_at(FloatSide::Right, 600.0, 0.0, 200.0, 100.0);
+
+    let (left_range, width_range) = ctx.available_width_in_range(50.0, 50.0);
+    let (left_at, width_at) = ctx.available_width_at_y(50.0);
+    assert_eq!((left_range, width_range), (left_at, width_at));
+  }
+
+  #[test]
   fn test_edges_at_y() {
     let mut ctx = FloatContext::new(800.0);
     ctx.add_float_at(FloatSide::Left, 0.0, 0.0, 200.0, 100.0);
