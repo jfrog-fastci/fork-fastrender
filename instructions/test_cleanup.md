@@ -178,7 +178,7 @@ Create a tracking file or spreadsheet:
 |------|------|-------------|-------|
 | `tests/layout/flex_wrap.rs` | unit | `src/layout/flex.rs` | Tests internal flex logic |
 | `tests/fixtures_test.rs` | integration | `tests/fixtures/` | Fixture runner |
-| `tests/allocation_failure/` | special | keep | Custom allocator |
+| `tests/allocation_failure/` | special | keep | Custom allocator harness module for `tests/allocation_failure.rs` |
 
 ---
 
@@ -395,11 +395,14 @@ Keep `tests/allocation_failure.rs` as a separate binary:
 ```rust
 // tests/allocation_failure.rs
 #![cfg(not(miri))]  // if needed
-
-#[global_allocator]
-static ALLOC: FailingAllocator = FailingAllocator::new();
-
-mod allocation_failure;
+// Note: `mod allocation_failure;` is ambiguous here because it would match both:
+// - this crate root (`tests/allocation_failure.rs`), and
+// - the harness module directory (`tests/allocation_failure/mod.rs`).
+//
+// We avoid `#[path = ...]` shims by using `include!` instead.
+mod allocation_failure {
+    include!("allocation_failure/mod.rs");
+}
 ```
 
 ### 6.2 Fixture tests
