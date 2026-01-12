@@ -17527,7 +17527,7 @@ mod tests {
   fn referer_header_strips_url_credentials() {
     // The `Referer` header should never include embedded URL credentials (`user:pass@`).
     // Ensure browser-like headers are enabled for deterministic header generation.
-    crate::debug::runtime::with_runtime_toggles(
+    runtime::with_thread_runtime_toggles(
       Arc::new(RuntimeToggles::from_map(HashMap::from([(
         "FASTR_HTTP_BROWSER_HEADERS".to_string(),
         "1".to_string(),
