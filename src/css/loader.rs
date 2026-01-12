@@ -464,6 +464,12 @@ pub fn absolutize_css_urls_cow<'a>(
       return false;
     }
 
+    fn matches_ignore_ascii_case_at(bytes: &[u8], at: usize, needle: &[u8]) -> bool {
+      bytes
+        .get(at..at + needle.len())
+        .is_some_and(|slice| slice.eq_ignore_ascii_case(needle))
+    }
+
     let mut in_string: Option<u8> = None;
     let mut in_comment = false;
     let mut i = 0usize;
@@ -503,6 +509,12 @@ pub fn absolutize_css_urls_cow<'a>(
         in_string = Some(byte);
         i += 1;
         continue;
+      }
+
+      if matches_ignore_ascii_case_at(bytes, i, b"image-set(")
+        || matches_ignore_ascii_case_at(bytes, i, b"-webkit-image-set(")
+      {
+        return true;
       }
 
       if matches!(byte, b'u' | b'U')
@@ -651,15 +663,28 @@ pub fn absolutize_css_urls_cow<'a>(
     }
   }
 
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  enum UrlRewriteMode {
+    Normal,
+    /// Rewriting inside `image-set()` / `-webkit-image-set()` argument lists.
+    ///
+    /// CSS Images allows candidates to be specified as a quoted string URL (e.g.
+    /// `image-set("foo.png" 1x, url(bar.png) 2x)`). Those quoted strings are treated as URL
+    /// references and must resolve relative to the stylesheet base URL, not the document base.
+    ImageSet,
+  }
+
   fn rewrite_urls_in_parser<'i, 't>(
     parser: &mut Parser<'i, 't>,
     base_url: &mut BaseUrlJoinCache<'_>,
     capacity_hint: usize,
     deadline_counter: &mut usize,
+    mode: UrlRewriteMode,
   ) -> std::result::Result<Cow<'i, str>, RenderError> {
     let start_pos = parser.position();
     let mut out: Option<String> = None;
     let mut last_emitted = start_pos;
+    let mut image_set_candidate_start = matches!(mode, UrlRewriteMode::ImageSet);
 
     check_active(RenderStage::Css)?;
     // `Parser::is_exhausted()` ignores trailing whitespace/comments, but this routine must preserve
@@ -674,7 +699,48 @@ pub fn absolutize_css_urls_cow<'a>(
         Err(_) => break,
       };
 
+      let is_whitespace_or_comment = matches!(token, Token::WhiteSpace(_) | Token::Comment(_));
+      let is_image_set_comma = matches!(token, Token::Comma);
+      let is_image_set_candidate_token = matches!(mode, UrlRewriteMode::ImageSet)
+        && image_set_candidate_start
+        && !is_whitespace_or_comment
+        && !is_image_set_comma;
+      let is_image_set_string_candidate =
+        is_image_set_candidate_token && matches!(token, Token::QuotedString(_));
+
+      if matches!(mode, UrlRewriteMode::ImageSet) {
+        if is_image_set_comma {
+          image_set_candidate_start = true;
+        } else if !is_whitespace_or_comment && image_set_candidate_start {
+          // We've seen the first real token for this candidate (whether it's a string URL, url(),
+          // gradient, etc). Subsequent quoted strings (e.g. inside `type("image/avif")`) are not
+          // URL candidates.
+          image_set_candidate_start = false;
+        }
+      }
+
       match token {
+        Token::QuotedString(s) if is_image_set_string_candidate => {
+          let url_arg = s.as_ref();
+          if !should_resolve_css_url(url_arg) {
+            continue;
+          }
+          let Some(resolved) = resolve_css_url(base_url, url_arg) else {
+            continue;
+          };
+
+          let token_text = parser.slice_from(token_start);
+          let chunk = parser.slice_from(last_emitted);
+          let prefix_len = chunk.len().saturating_sub(token_text.len());
+          let out = out.get_or_insert_with(|| String::with_capacity(capacity_hint));
+          out.push_str(&chunk[..prefix_len]);
+
+          out.push('"');
+          push_escaped_url_for_css(out, resolved.as_str());
+          out.push('"');
+
+          last_emitted = parser.position();
+        }
         Token::UnquotedUrl(url_value) => {
           let url_value = url_value.as_ref();
           if !should_resolve_css_url(url_value) {
@@ -740,9 +806,61 @@ pub fn absolutize_css_urls_cow<'a>(
           let out = out.get_or_insert_with(|| String::with_capacity(capacity_hint));
           out.push_str(&chunk[..prefix_len]);
 
-          out.push_str("url(\"");
-          push_escaped_url_for_css(out, resolved.as_str());
-          out.push_str("\")");
+           out.push_str("url(\"");
+           push_escaped_url_for_css(out, resolved.as_str());
+           out.push_str("\")");
+
+          last_emitted = parser.position();
+        }
+        Token::Function(ref name)
+          if name.eq_ignore_ascii_case("image-set")
+            || name.eq_ignore_ascii_case("-webkit-image-set") =>
+        {
+          let open_len = parser.slice_from(token_start).len();
+          let mut nested_error: Option<RenderError> = None;
+          let parse_result = parser.parse_nested_block(|nested| {
+            let rewritten = match rewrite_urls_in_parser(
+              nested,
+              base_url,
+              0,
+              deadline_counter,
+              UrlRewriteMode::ImageSet,
+            ) {
+              Ok(r) => r,
+              Err(err) => {
+                nested_error = Some(err);
+                return Err(nested.new_custom_error(()));
+              }
+            };
+            let changed = matches!(rewritten, Cow::Owned(_));
+            Ok::<_, cssparser::ParseError<'i, ()>>((rewritten, changed))
+          });
+
+          if let Some(err) = nested_error {
+            return Err(err);
+          }
+          let Ok((inner_rewritten, changed)) = parse_result else {
+            continue;
+          };
+          if !changed {
+            continue;
+          }
+
+          let block_text = parser.slice_from(token_start);
+          const CLOSING_LEN: usize = 1;
+          if block_text.len() < open_len + CLOSING_LEN {
+            continue;
+          }
+
+          let chunk = parser.slice_from(last_emitted);
+          let prefix_len = chunk.len().saturating_sub(block_text.len());
+          let out = out.get_or_insert_with(|| String::with_capacity(capacity_hint));
+          out.push_str(&chunk[..prefix_len]);
+
+          let close_part = &block_text[block_text.len() - CLOSING_LEN..];
+          out.push_str(&block_text[..open_len]);
+          out.push_str(inner_rewritten.as_ref());
+          out.push_str(close_part);
 
           last_emitted = parser.position();
         }
@@ -753,7 +871,13 @@ pub fn absolutize_css_urls_cow<'a>(
           let open_len = parser.slice_from(token_start).len();
           let mut nested_error: Option<RenderError> = None;
           let parse_result = parser.parse_nested_block(|nested| {
-            let rewritten = match rewrite_urls_in_parser(nested, base_url, 0, deadline_counter) {
+            let rewritten = match rewrite_urls_in_parser(
+              nested,
+              base_url,
+              0,
+              deadline_counter,
+              UrlRewriteMode::Normal,
+            ) {
               Ok(r) => r,
               Err(err) => {
                 nested_error = Some(err);
@@ -816,7 +940,13 @@ pub fn absolutize_css_urls_cow<'a>(
   let mut input = ParserInput::new(css);
   let mut parser = Parser::new(&mut input);
   let mut deadline_counter = 0usize;
-  rewrite_urls_in_parser(&mut parser, &mut base_url, css.len(), &mut deadline_counter)
+  rewrite_urls_in_parser(
+    &mut parser,
+    &mut base_url,
+    css.len(),
+    &mut deadline_counter,
+    UrlRewriteMode::Normal,
+  )
 }
 
 pub fn absolutize_css_urls(css: &str, base_url: &str) -> std::result::Result<String, RenderError> {
@@ -3486,6 +3616,36 @@ mod tests {
     assert_eq!(
       out.as_ref(),
       "@media screen { body { background: url(\"https://example.com/styles/images/bg.png\"); } }"
+    );
+  }
+
+  #[test]
+  fn absolutizes_css_urls_cow_rewrites_image_set_string_candidates() {
+    let css = r#"div{background-image:image-set("foo.png" 1x, url(bar.png) 2x)}"#;
+    let out = absolutize_css_urls_cow(css, "https://example.com/css/main.css").unwrap();
+    assert_eq!(
+      out.as_ref(),
+      r#"div{background-image:image-set("https://example.com/css/foo.png" 1x, url("https://example.com/css/bar.png") 2x)}"#
+    );
+  }
+
+  #[test]
+  fn absolutizes_css_urls_cow_rewrites_webkit_image_set_string_candidates() {
+    let css = r#"div{background-image:-webkit-image-set("foo.png" 1x, url(bar.png) 2x)}"#;
+    let out = absolutize_css_urls_cow(css, "https://example.com/css/main.css").unwrap();
+    assert_eq!(
+      out.as_ref(),
+      r#"div{background-image:-webkit-image-set("https://example.com/css/foo.png" 1x, url("https://example.com/css/bar.png") 2x)}"#
+    );
+  }
+
+  #[test]
+  fn absolutizes_css_urls_cow_does_not_rewrite_non_url_strings_in_image_set() {
+    let css = r#"div{background-image:image-set("foo.png" 1x type("image/avif"), url(bar.png) 2x type("image/avif"))}"#;
+    let out = absolutize_css_urls_cow(css, "https://example.com/css/main.css").unwrap();
+    assert_eq!(
+      out.as_ref(),
+      r#"div{background-image:image-set("https://example.com/css/foo.png" 1x type("image/avif"), url("https://example.com/css/bar.png") 2x type("image/avif"))}"#
     );
   }
 
