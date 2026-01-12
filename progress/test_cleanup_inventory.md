@@ -30,6 +30,7 @@ section in sync with `ls tests/*.rs`.
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
 | `tests/allocation_failure.rs` | special | keep | Contains `#[global_allocator]` (via `tests/allocation_failure/mod.rs`); must remain separate. | DONE |
+| `tests/browser_integration_tests.rs` | integration (shim) | delete | Temporary compatibility shim for `--test browser_integration_tests` (extra binary). Real suite: `tests/integration.rs::browser_integration` (`--features browser_ui`). Remove once automation/docs use `cargo test --features browser_ui --test integration` to satisfy the [end-state invariant](#end-state-invariants-to-verify) <code>ls tests/*.rs &#124; wc -l == 2</code>. | TODO |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
 ### Completed (top-level crate removed)
 
@@ -37,7 +38,6 @@ section in sync with `ls tests/*.rs`.
 |---|---|---|---|---|
 | `tests/accessibility_tests.rs` | integration | `tests/integration.rs::accessibility` | Top-level harness removed; suite now lives under `tests/accessibility/**` and uses `tests/common/accessibility`. | DONE |
 | `tests/bin_tests.rs` | integration | `tests/integration.rs::bin` | Top-level harness removed; suite now lives under `tests/bin/**`. | DONE |
-| `tests/browser_integration_tests.rs` | integration | `tests/integration.rs::browser_integration` | Top-level harness removed and consolidated into `tests/integration.rs`. Browser integration no longer mutates process-wide env vars at init; tests needing serialization use `stage_listener_test_lock()` / `common::global_test_lock()`. | DONE |
 | `tests/browser_tab_render_interleaving.rs` | integration | `tests/integration.rs::browser_integration::browser_tab_render_interleaving` | Moved into `tests/browser_integration/browser_tab_render_interleaving.rs`. | DONE |
 | `tests/` `image_integration` `_tests.rs` | delete | delete | Backwards-compat harness for `tests/` `image_integration/**`; redundant with `tests/integration.rs::image_integration`. | DONE |
 | `tests/session_autosave.rs` | integration | `tests/integration.rs::ui::session_autosave` | Moved into `tests/ui/session_autosave.rs` (feature-gated: `browser_ui`). | DONE |
@@ -57,7 +57,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/determinism_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/determinism/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/dom_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/dom_integration/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/font_tests.rs` | delete | `src/text/tests/font/` | Top-level harness removed; suite moved out of `tests/` into `src/text/tests/font/**` unit tests. | DONE |
-| `tests/js_harness_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/js_harness/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/js_harness_tests.rs` | unit | `src/js/vmjs/window_timers.rs` + `src/js/vmjs/window.rs` | Removed `tests/js_harness_tests.rs` and the old `tests/js_harness/` harness directory; coverage migrated into VM/Window unit tests (timers + window APIs). | DONE |
 | `tests/layout_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/layout/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/legacy_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/legacy/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/misc_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/misc/**` and is pulled into `tests/integration.rs`. | DONE |
