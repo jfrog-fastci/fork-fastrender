@@ -2,7 +2,10 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Promise combinators allocate a fair amount of internal machinery (capabilities, reactions,
+  // microtask jobs, etc). Use a slightly larger heap so these tests focus on iterator-close
+  // semantics rather than baseline heap pressure.
+  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
