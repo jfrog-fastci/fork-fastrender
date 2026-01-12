@@ -409,11 +409,15 @@ impl ProgramState {
     self.import_assignment_requires.retain(|rec| rec.file != file);
 
     // Invalidate cached def types that can be inferred from bodies/initializers
-    // in this file. (Declared types are keyed by `decl_types_fingerprint` and
-    // are handled separately.)
+    // in the edited file *or* in transitive dependents. Inferred types in
+    // downstream files can change when an imported dependency's inferred types
+    // change (e.g. `export const x = foo()` when `foo()`'s return type changes).
+    //
+    // Declared types are keyed by `decl_types_fingerprint` and are handled
+    // separately.
     let mut defs_to_invalidate: Vec<DefId> = Vec::new();
     for (def, data) in self.def_data.iter() {
-      if data.file != file {
+      if !affected.contains(&data.file) {
         continue;
       }
       let depends_on_body = match &data.kind {
@@ -429,6 +433,12 @@ impl ProgramState {
     }
     defs_to_invalidate.sort_by_key(|def| def.0);
     defs_to_invalidate.dedup();
+    if !defs_to_invalidate.is_empty() {
+      // Cached `TypeKind::Ref` expansions are keyed by `(DefId, args)`, so when a
+      // definition's inferred type may change we must invalidate the shared
+      // caches to avoid reusing stale expansions.
+      self.checker_caches.invalidate_shared();
+    }
     for def in defs_to_invalidate {
       self.interned_def_types.remove(&def);
     }

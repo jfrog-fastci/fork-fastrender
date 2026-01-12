@@ -159,6 +159,47 @@ export const x = f();
 }
 
 #[test]
+fn inferred_types_update_in_dependents_after_dependency_body_edit() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+
+  let mut host = MemoryHost::with_options(options);
+  let entry = FileKey::new("main.ts");
+  let dep = FileKey::new("dep.ts");
+  host.insert(
+    entry.clone(),
+    Arc::from("import { foo } from \"./dep\";\nexport const x = foo();\n"),
+  );
+  host.insert(dep.clone(), Arc::from("export function foo() { return 1; }\n"));
+  host.link(entry.clone(), "./dep", dep.clone());
+
+  let mut program = Program::new(host, vec![entry.clone()]);
+  let entry_id = program.file_id(&entry).expect("entry file id");
+  let dep_id = program.file_id(&dep).expect("dep file id");
+
+  // As in `return_type_inference_updates_across_edits`, we allow the missing
+  // global lib diagnostics but still expect inferred types to update correctly.
+  let _ = program.check();
+
+  let exports = program.exports_of(entry_id);
+  let x_ty = exports
+    .get("x")
+    .and_then(|entry| entry.type_id)
+    .expect("x export type");
+  assert_eq!(program.display_type(x_ty).to_string(), "number");
+
+  program.set_file_text(dep_id, Arc::from("export function foo() { return \"a\"; }\n"));
+  let _ = program.check();
+
+  let exports = program.exports_of(entry_id);
+  let x_ty = exports
+    .get("x")
+    .and_then(|entry| entry.type_id)
+    .expect("x export type after dep edit");
+  assert_eq!(program.display_type(x_ty).to_string(), "string");
+}
+
+#[test]
 fn body_check_result_spans_update_across_edits() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
@@ -203,4 +244,3 @@ fn body_check_result_spans_update_across_edits() {
     "expected expr span end to shift after edit"
   );
 }
-
