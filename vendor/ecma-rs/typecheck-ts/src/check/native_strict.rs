@@ -79,6 +79,34 @@ pub fn validate_native_strict_body(
     }
   }
 
+  fn expr_unwrap_comma_and_alias(
+    body: &Body,
+    mut expr_id: hir_js::ExprId,
+    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
+  ) -> hir_js::ExprId {
+    // Keep this intentionally conservative: follow only simple `const x = <expr>` aliases recorded
+    // in `aliases`. This is enough to prevent common "store builtins / prototype objects in locals"
+    // bypasses without requiring full scope-aware binding resolution.
+    let mut visited = Vec::new();
+    loop {
+      expr_id = expr_unwrap_comma(body, expr_id);
+      let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+        return expr_id;
+      };
+      let ExprKind::Ident(name) = &expr.kind else {
+        return expr_id;
+      };
+      if visited.contains(name) {
+        return expr_id;
+      }
+      let Some(next) = aliases.get(name).copied() else {
+        return expr_id;
+      };
+      visited.push(*name);
+      expr_id = next;
+    }
+  }
+
   fn expr_is_const_string(body: &Body, expr_id: hir_js::ExprId, value: &str) -> bool {
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
@@ -144,20 +172,28 @@ pub fn validate_native_strict_body(
   fn expr_is_builtin_member(
     body: &Body,
     expr_id: hir_js::ExprId,
+    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
     global_this_name: hir_js::NameId,
     base_name: hir_js::NameId,
     base_str: &str,
     member_name: hir_js::NameId,
     member_str: &str,
   ) -> bool {
-    let expr_id = expr_unwrap_comma(body, expr_id);
+    let expr_id = expr_unwrap_comma_and_alias(body, expr_id, aliases);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
     let ExprKind::Member(mem) = &expr.kind else {
       return false;
     };
-    expr_is_ident_or_global_this_member(body, mem.object, global_this_name, base_name, base_str)
+    expr_is_ident_or_global_this_member(
+      body,
+      mem.object,
+      aliases,
+      global_this_name,
+      base_name,
+      base_str,
+    )
       && (object_key_is_ident(&mem.property, member_name)
         || object_key_is_string(&mem.property, member_str)
         || object_key_is_literal_string(body, &mem.property, member_str))
@@ -166,13 +202,14 @@ pub fn validate_native_strict_body(
   fn expr_is_function_prototype_member(
     body: &Body,
     expr_id: hir_js::ExprId,
+    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
     global_this_name: hir_js::NameId,
     function_name: hir_js::NameId,
     prototype_name: hir_js::NameId,
     member_name: hir_js::NameId,
     member_str: &str,
   ) -> bool {
-    let expr_id = expr_unwrap_comma(body, expr_id);
+    let expr_id = expr_unwrap_comma_and_alias(body, expr_id, aliases);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
@@ -182,6 +219,7 @@ pub fn validate_native_strict_body(
     expr_is_builtin_member(
       body,
       mem.object,
+      aliases,
       global_this_name,
       function_name,
       "Function",
@@ -195,16 +233,17 @@ pub fn validate_native_strict_body(
   fn expr_is_global_this(
     body: &Body,
     expr_id: hir_js::ExprId,
+    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
     global_this_name: hir_js::NameId,
   ) -> bool {
-    let expr_id = expr_unwrap_comma(body, expr_id);
+    let expr_id = expr_unwrap_comma_and_alias(body, expr_id, aliases);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
     match &expr.kind {
       ExprKind::Ident(name) => *name == global_this_name,
       ExprKind::Member(mem) => {
-        if !expr_is_global_this(body, mem.object, global_this_name) {
+        if !expr_is_global_this(body, mem.object, aliases, global_this_name) {
           return false;
         }
         object_key_is_ident(&mem.property, global_this_name)
@@ -218,18 +257,19 @@ pub fn validate_native_strict_body(
   fn expr_is_ident_or_global_this_member(
     body: &Body,
     expr_id: hir_js::ExprId,
+    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
     global_this_name: hir_js::NameId,
     target_name: hir_js::NameId,
     target_str: &str,
   ) -> bool {
-    let expr_id = expr_unwrap_comma(body, expr_id);
+    let expr_id = expr_unwrap_comma_and_alias(body, expr_id, aliases);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
     match &expr.kind {
       ExprKind::Ident(name) => *name == target_name,
       ExprKind::Member(mem) => {
-        let obj_is_global_this = expr_is_global_this(body, mem.object, global_this_name);
+        let obj_is_global_this = expr_is_global_this(body, mem.object, aliases, global_this_name);
         obj_is_global_this
           && (object_key_is_ident(&mem.property, target_name)
             || object_key_is_string(&mem.property, target_str)
@@ -244,8 +284,10 @@ pub fn validate_native_strict_body(
     mut id: hir_js::ExprId,
     prototype_name: hir_js::NameId,
     proto_name: hir_js::NameId,
+    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
   ) -> bool {
     loop {
+      id = expr_unwrap_comma_and_alias(body, id, aliases);
       let Some(expr) = body.exprs.get(id.0 as usize) else {
         return false;
       };
@@ -273,40 +315,41 @@ pub fn validate_native_strict_body(
     pat: hir_js::PatId,
     prototype_name: hir_js::NameId,
     proto_name: hir_js::NameId,
+    aliases: &HashMap<hir_js::NameId, hir_js::ExprId>,
   ) -> bool {
     let Some(pat) = body.pats.get(pat.0 as usize) else {
       return false;
     };
     match &pat.kind {
       PatKind::AssignTarget(expr) => {
-        expr_chain_contains_proto_mutation(body, *expr, prototype_name, proto_name)
+        expr_chain_contains_proto_mutation(body, *expr, prototype_name, proto_name, aliases)
       }
       PatKind::Assign { target, .. } => {
-        pat_contains_proto_mutation(body, *target, prototype_name, proto_name)
+        pat_contains_proto_mutation(body, *target, prototype_name, proto_name, aliases)
       }
-      PatKind::Rest(inner) => pat_contains_proto_mutation(body, **inner, prototype_name, proto_name),
+      PatKind::Rest(inner) => pat_contains_proto_mutation(body, **inner, prototype_name, proto_name, aliases),
       PatKind::Array(arr) => {
         for elem in &arr.elements {
           let Some(elem) = elem else {
             continue;
           };
-          if pat_contains_proto_mutation(body, elem.pat, prototype_name, proto_name) {
+          if pat_contains_proto_mutation(body, elem.pat, prototype_name, proto_name, aliases) {
             return true;
           }
         }
         arr
           .rest
-          .is_some_and(|rest| pat_contains_proto_mutation(body, rest, prototype_name, proto_name))
+          .is_some_and(|rest| pat_contains_proto_mutation(body, rest, prototype_name, proto_name, aliases))
       }
       PatKind::Object(obj) => {
         for prop in &obj.props {
-          if pat_contains_proto_mutation(body, prop.value, prototype_name, proto_name) {
+          if pat_contains_proto_mutation(body, prop.value, prototype_name, proto_name, aliases) {
             return true;
           }
         }
         obj
           .rest
-          .is_some_and(|rest| pat_contains_proto_mutation(body, rest, prototype_name, proto_name))
+          .is_some_and(|rest| pat_contains_proto_mutation(body, rest, prototype_name, proto_name, aliases))
       }
       PatKind::Ident(_) => false,
     }
@@ -450,16 +493,59 @@ pub fn validate_native_strict_body(
     store.intern_type(TypeKind::Object(obj))
   };
 
+  // Track simple `const` aliases (`const x = expr;`) so `native_strict` bans cannot be bypassed via
+  // indirection (e.g. `const dp = Object.defineProperty; dp(...)`, `const p = Foo.prototype; p.x++`).
+  //
+  // This is name-based (not scope-aware), which matches how this validator already treats global
+  // builtins by name. The rules are intentionally conservative: we only record aliases that are
+  // syntactically obvious and immutable (`const`).
+  let mut const_aliases: HashMap<hir_js::NameId, hir_js::ExprId> = HashMap::new();
+  for stmt in &body.stmts {
+    let StmtKind::Var(var) = &stmt.kind else {
+      continue;
+    };
+    if var.kind != hir_js::VarDeclKind::Const {
+      continue;
+    }
+    for decl in &var.declarators {
+      let Some(init) = decl.init else {
+        continue;
+      };
+      let Some(pat) = body.pats.get(decl.pat.0 as usize) else {
+        continue;
+      };
+      match &pat.kind {
+        PatKind::Ident(name) => {
+          const_aliases.insert(*name, init);
+        }
+        PatKind::Assign { target, .. } => {
+          let Some(target) = body.pats.get(target.0 as usize) else {
+            continue;
+          };
+          if let PatKind::Ident(name) = &target.kind {
+            const_aliases.insert(*name, init);
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+
   for (idx, expr) in body.exprs.iter().enumerate() {
     match &expr.kind {
       ExprKind::Call(call) => {
-        let callee_id = expr_unwrap_comma(body, call.callee);
-        let callee = body.exprs.get(callee_id.0 as usize);
+        // For diagnostics, we want to point at the *callsite* callee. For checks, we additionally
+        // follow simple `const` aliases so users cannot bypass bans by storing dangerous values in
+        // locals.
+        let callee_span_id = expr_unwrap_comma(body, call.callee);
+        let callee_check_id = expr_unwrap_comma_and_alias(body, call.callee, &const_aliases);
+        let callee = body.exprs.get(callee_check_id.0 as usize);
         if let Some(callee) = callee {
           let callee_span = result
             .expr_spans
-            .get(callee_id.0 as usize)
+            .get(callee_span_id.0 as usize)
             .copied()
+            .or_else(|| body.exprs.get(callee_span_id.0 as usize).map(|expr| expr.span))
             .unwrap_or(callee.span);
 
           if !call.is_new {
@@ -472,7 +558,7 @@ pub fn validate_native_strict_body(
                       || object_key_is_string(&mem.property, "eval")
                       || object_key_is_literal_string(body, &mem.property, "eval");
                   let obj_is_global_this =
-                    expr_is_global_this(body, mem.object, global_this_name);
+                    expr_is_global_this(body, mem.object, &const_aliases, global_this_name);
                   prop_is_eval && obj_is_global_this
               }
               _ => false,
@@ -504,6 +590,7 @@ pub fn validate_native_strict_body(
                 && expr_is_ident_or_global_this_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   eval_name,
                   "eval",
@@ -518,6 +605,7 @@ pub fn validate_native_strict_body(
                 && expr_is_ident_or_global_this_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   function_name,
                   "Function",
@@ -532,6 +620,7 @@ pub fn validate_native_strict_body(
                 && expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   proxy_name,
                   "Proxy",
@@ -549,6 +638,7 @@ pub fn validate_native_strict_body(
                 && (expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   object_name,
                   "Object",
@@ -557,6 +647,7 @@ pub fn validate_native_strict_body(
                 ) || expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   reflect_name,
                   "Reflect",
@@ -577,6 +668,7 @@ pub fn validate_native_strict_body(
                 let obj_is_reflect_apply = expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   reflect_name,
                   "Reflect",
@@ -586,6 +678,7 @@ pub fn validate_native_strict_body(
                 let obj_is_reflect_construct = expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   reflect_name,
                   "Reflect",
@@ -606,6 +699,7 @@ pub fn validate_native_strict_body(
                     if expr_is_ident_or_global_this_member(
                       body,
                       target_arg,
+                      &const_aliases,
                       global_this_name,
                       function_name,
                       "Function",
@@ -619,6 +713,7 @@ pub fn validate_native_strict_body(
                       if expr_is_ident_or_global_this_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         eval_name,
                         "eval",
@@ -631,12 +726,14 @@ pub fn validate_native_strict_body(
                       if expr_is_ident_or_global_this_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         proxy_name,
                         "Proxy",
                       ) || expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         proxy_name,
                         "Proxy",
@@ -652,6 +749,7 @@ pub fn validate_native_strict_body(
                       if expr_is_ident_or_global_this_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         proxy_name,
                         "Proxy",
@@ -668,6 +766,7 @@ pub fn validate_native_strict_body(
                       if expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -676,6 +775,7 @@ pub fn validate_native_strict_body(
                       ) || expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         reflect_name,
                         "Reflect",
@@ -691,6 +791,7 @@ pub fn validate_native_strict_body(
                       let target_is_object_define_property = expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -700,6 +801,7 @@ pub fn validate_native_strict_body(
                       let target_is_reflect_define_property = expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         reflect_name,
                         "Reflect",
@@ -709,6 +811,7 @@ pub fn validate_native_strict_body(
                       let target_is_object_define_properties = expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -718,6 +821,7 @@ pub fn validate_native_strict_body(
                       let target_is_object_assign = expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -739,6 +843,7 @@ pub fn validate_native_strict_body(
                                 target_obj,
                                 prototype_name,
                                 proto_name,
+                                &const_aliases,
                               );
 
                               if !is_proto_mutation
@@ -802,6 +907,7 @@ pub fn validate_native_strict_body(
                 let obj_is_call_invoker = expr_is_function_prototype_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   function_name,
                   prototype_name,
@@ -810,6 +916,7 @@ pub fn validate_native_strict_body(
                 ) || expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   function_name,
                   "Function",
@@ -819,6 +926,7 @@ pub fn validate_native_strict_body(
                 let obj_is_apply_invoker = expr_is_function_prototype_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   function_name,
                   prototype_name,
@@ -827,6 +935,7 @@ pub fn validate_native_strict_body(
                 ) || expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   function_name,
                   "Function",
@@ -836,6 +945,7 @@ pub fn validate_native_strict_body(
                 let obj_is_bind_invoker = expr_is_function_prototype_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   function_name,
                   prototype_name,
@@ -844,6 +954,7 @@ pub fn validate_native_strict_body(
                 ) || expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   function_name,
                   "Function",
@@ -864,6 +975,7 @@ pub fn validate_native_strict_body(
                     if expr_is_ident_or_global_this_member(
                       body,
                       target_arg,
+                      &const_aliases,
                       global_this_name,
                       eval_name,
                       "eval",
@@ -876,6 +988,7 @@ pub fn validate_native_strict_body(
                     if expr_is_ident_or_global_this_member(
                       body,
                       target_arg,
+                      &const_aliases,
                       global_this_name,
                       function_name,
                       "Function",
@@ -888,12 +1001,14 @@ pub fn validate_native_strict_body(
                     if expr_is_ident_or_global_this_member(
                       body,
                       target_arg,
+                      &const_aliases,
                       global_this_name,
                       proxy_name,
                       "Proxy",
                     ) || expr_is_builtin_member(
                       body,
                       target_arg,
+                      &const_aliases,
                       global_this_name,
                       proxy_name,
                       "Proxy",
@@ -909,6 +1024,7 @@ pub fn validate_native_strict_body(
                     if expr_is_builtin_member(
                       body,
                       target_arg,
+                      &const_aliases,
                       global_this_name,
                       object_name,
                       "Object",
@@ -917,6 +1033,7 @@ pub fn validate_native_strict_body(
                     ) || expr_is_builtin_member(
                       body,
                       target_arg,
+                      &const_aliases,
                       global_this_name,
                       reflect_name,
                       "Reflect",
@@ -1029,6 +1146,7 @@ pub fn validate_native_strict_body(
                       let mut target_is_object_define_property = expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -1038,6 +1156,7 @@ pub fn validate_native_strict_body(
                       let mut target_is_reflect_define_property = expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         reflect_name,
                         "Reflect",
@@ -1047,6 +1166,7 @@ pub fn validate_native_strict_body(
                       let mut target_is_object_define_properties = expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -1056,6 +1176,7 @@ pub fn validate_native_strict_body(
                       let mut target_is_object_assign = expr_is_builtin_member(
                         body,
                         target_arg,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -1086,6 +1207,7 @@ pub fn validate_native_strict_body(
                                     let bound_is_object_define_property = expr_is_builtin_member(
                                       body,
                                       bound_member.object,
+                                      &const_aliases,
                                       global_this_name,
                                       object_name,
                                       "Object",
@@ -1095,6 +1217,7 @@ pub fn validate_native_strict_body(
                                     let bound_is_reflect_define_property = expr_is_builtin_member(
                                       body,
                                       bound_member.object,
+                                      &const_aliases,
                                       global_this_name,
                                       reflect_name,
                                       "Reflect",
@@ -1104,6 +1227,7 @@ pub fn validate_native_strict_body(
                                     let bound_is_object_define_properties = expr_is_builtin_member(
                                       body,
                                       bound_member.object,
+                                      &const_aliases,
                                       global_this_name,
                                       object_name,
                                       "Object",
@@ -1113,6 +1237,7 @@ pub fn validate_native_strict_body(
                                     let bound_is_object_assign = expr_is_builtin_member(
                                       body,
                                       bound_member.object,
+                                      &const_aliases,
                                       global_this_name,
                                       object_name,
                                       "Object",
@@ -1158,6 +1283,7 @@ pub fn validate_native_strict_body(
                             target_obj,
                             prototype_name,
                             proto_name,
+                            &const_aliases,
                           );
                           if !is_proto_mutation {
                             if let Some(key_arg) = args_for_target.get(1).copied() {
@@ -1179,6 +1305,7 @@ pub fn validate_native_strict_body(
                             target_obj,
                             prototype_name,
                             proto_name,
+                            &const_aliases,
                           ) || expr_is_object_literal_with_proto_key(
                             body,
                             props_arg,
@@ -1194,6 +1321,7 @@ pub fn validate_native_strict_body(
                             target_obj,
                             prototype_name,
                             proto_name,
+                            &const_aliases,
                           );
                           if !is_proto_mutation {
                             for source_arg in args_for_target.iter().skip(1).copied() {
@@ -1234,6 +1362,7 @@ pub fn validate_native_strict_body(
                 let obj_is_reflect_apply = expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   reflect_name,
                   "Reflect",
@@ -1243,6 +1372,7 @@ pub fn validate_native_strict_body(
                 let obj_is_reflect_construct = expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   reflect_name,
                   "Reflect",
@@ -1286,6 +1416,7 @@ pub fn validate_native_strict_body(
                         if expr_is_ident_or_global_this_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           eval_name,
                           "eval",
@@ -1298,6 +1429,7 @@ pub fn validate_native_strict_body(
                         if expr_is_ident_or_global_this_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           function_name,
                           "Function",
@@ -1310,12 +1442,14 @@ pub fn validate_native_strict_body(
                         if expr_is_ident_or_global_this_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           proxy_name,
                           "Proxy",
                         ) || expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           proxy_name,
                           "Proxy",
@@ -1334,6 +1468,7 @@ pub fn validate_native_strict_body(
                         let target_is_call_invoker = expr_is_function_prototype_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           function_name,
                           prototype_name,
@@ -1342,6 +1477,7 @@ pub fn validate_native_strict_body(
                         ) || expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           function_name,
                           "Function",
@@ -1351,6 +1487,7 @@ pub fn validate_native_strict_body(
                         let target_is_apply_invoker = expr_is_function_prototype_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           function_name,
                           prototype_name,
@@ -1359,6 +1496,7 @@ pub fn validate_native_strict_body(
                         ) || expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           function_name,
                           "Function",
@@ -1368,6 +1506,7 @@ pub fn validate_native_strict_body(
                         let target_is_bind_invoker = expr_is_function_prototype_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           function_name,
                           prototype_name,
@@ -1376,6 +1515,7 @@ pub fn validate_native_strict_body(
                         ) || expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           function_name,
                           "Function",
@@ -1394,6 +1534,7 @@ pub fn validate_native_strict_body(
                             if expr_is_ident_or_global_this_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               eval_name,
                               "eval",
@@ -1406,6 +1547,7 @@ pub fn validate_native_strict_body(
                             if expr_is_ident_or_global_this_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               function_name,
                               "Function",
@@ -1418,12 +1560,14 @@ pub fn validate_native_strict_body(
                             if expr_is_ident_or_global_this_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               proxy_name,
                               "Proxy",
                             ) || expr_is_builtin_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               proxy_name,
                               "Proxy",
@@ -1439,6 +1583,7 @@ pub fn validate_native_strict_body(
                             if expr_is_builtin_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               object_name,
                               "Object",
@@ -1447,6 +1592,7 @@ pub fn validate_native_strict_body(
                             ) || expr_is_builtin_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               reflect_name,
                               "Reflect",
@@ -1463,6 +1609,7 @@ pub fn validate_native_strict_body(
                             let called_target_is_object_define_property = expr_is_builtin_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               object_name,
                               "Object",
@@ -1472,6 +1619,7 @@ pub fn validate_native_strict_body(
                             let called_target_is_reflect_define_property = expr_is_builtin_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               reflect_name,
                               "Reflect",
@@ -1481,6 +1629,7 @@ pub fn validate_native_strict_body(
                             let called_target_is_object_define_properties = expr_is_builtin_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               object_name,
                               "Object",
@@ -1490,6 +1639,7 @@ pub fn validate_native_strict_body(
                             let called_target_is_object_assign = expr_is_builtin_member(
                               body,
                               called_target,
+                              &const_aliases,
                               global_this_name,
                               object_name,
                               "Object",
@@ -1524,6 +1674,7 @@ pub fn validate_native_strict_body(
                                       target_obj,
                                       prototype_name,
                                       proto_name,
+                                      &const_aliases,
                                     );
  
                                     if !is_proto_mutation
@@ -1586,6 +1737,7 @@ pub fn validate_native_strict_body(
                         if expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           object_name,
                           "Object",
@@ -1594,6 +1746,7 @@ pub fn validate_native_strict_body(
                         ) || expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           reflect_name,
                           "Reflect",
@@ -1610,6 +1763,7 @@ pub fn validate_native_strict_body(
                         let target_is_object_define_property = expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           object_name,
                           "Object",
@@ -1619,6 +1773,7 @@ pub fn validate_native_strict_body(
                         let target_is_reflect_define_property = expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           reflect_name,
                           "Reflect",
@@ -1628,6 +1783,7 @@ pub fn validate_native_strict_body(
                         let target_is_object_define_properties = expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           object_name,
                           "Object",
@@ -1637,6 +1793,7 @@ pub fn validate_native_strict_body(
                         let target_is_object_assign = expr_is_builtin_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           object_name,
                           "Object",
@@ -1657,6 +1814,7 @@ pub fn validate_native_strict_body(
                                   target_obj,
                                   prototype_name,
                                   proto_name,
+                                  &const_aliases,
                                 );
 
                                 if !is_proto_mutation
@@ -1722,6 +1880,7 @@ pub fn validate_native_strict_body(
                         if expr_is_ident_or_global_this_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           function_name,
                           "Function",
@@ -1734,6 +1893,7 @@ pub fn validate_native_strict_body(
                         if expr_is_ident_or_global_this_member(
                           body,
                           target_arg,
+                          &const_aliases,
                           global_this_name,
                           proxy_name,
                           "Proxy",
@@ -1753,6 +1913,7 @@ pub fn validate_native_strict_body(
                 let obj_is_object_define_property = expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   object_name,
                   "Object",
@@ -1762,6 +1923,7 @@ pub fn validate_native_strict_body(
                 let obj_is_reflect_define_property = expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   reflect_name,
                   "Reflect",
@@ -1771,6 +1933,7 @@ pub fn validate_native_strict_body(
                 let obj_is_object_define_properties = expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   object_name,
                   "Object",
@@ -1780,6 +1943,7 @@ pub fn validate_native_strict_body(
                 let obj_is_object_assign = expr_is_builtin_member(
                   body,
                   member.object,
+                  &const_aliases,
                   global_this_name,
                   object_name,
                   "Object",
@@ -1810,6 +1974,7 @@ pub fn validate_native_strict_body(
                         target_obj,
                         prototype_name,
                         proto_name,
+                        &const_aliases,
                       );
                       if !is_proto_mutation {
                         if let Some(key_arg) = key_arg {
@@ -1832,6 +1997,7 @@ pub fn validate_native_strict_body(
                           target_obj,
                           prototype_name,
                           proto_name,
+                          &const_aliases,
                         ) || expr_is_object_literal_with_proto_key(
                           body,
                           props_arg,
@@ -1848,6 +2014,7 @@ pub fn validate_native_strict_body(
                         target_obj,
                         prototype_name,
                         proto_name,
+                        &const_aliases,
                       );
                       if !is_proto_mutation {
                         for source_arg in call.args.iter().skip(2) {
@@ -1882,6 +2049,7 @@ pub fn validate_native_strict_body(
                             target_obj,
                             prototype_name,
                             proto_name,
+                            &const_aliases,
                           );
                           if !is_proto_mutation {
                             if let Some(key_arg) = key_arg {
@@ -1902,6 +2070,7 @@ pub fn validate_native_strict_body(
                               target_obj,
                               prototype_name,
                               proto_name,
+                              &const_aliases,
                             ) || expr_is_object_literal_with_proto_key(
                               body,
                               props_arg,
@@ -1918,6 +2087,7 @@ pub fn validate_native_strict_body(
                             target_obj,
                             prototype_name,
                             proto_name,
+                            &const_aliases,
                           );
                           if !is_proto_mutation {
                             for source_arg in args_list.iter().skip(1).copied() {
@@ -1965,6 +2135,7 @@ pub fn validate_native_strict_body(
                             let is_object_define_property = expr_is_builtin_member(
                               body,
                               bind_member.object,
+                              &const_aliases,
                               global_this_name,
                               object_name,
                               "Object",
@@ -1974,6 +2145,7 @@ pub fn validate_native_strict_body(
                             let is_reflect_define_property = expr_is_builtin_member(
                               body,
                               bind_member.object,
+                              &const_aliases,
                               global_this_name,
                               reflect_name,
                               "Reflect",
@@ -1983,6 +2155,7 @@ pub fn validate_native_strict_body(
                             let is_object_define_properties = expr_is_builtin_member(
                               body,
                               bind_member.object,
+                              &const_aliases,
                               global_this_name,
                               object_name,
                               "Object",
@@ -1992,6 +2165,7 @@ pub fn validate_native_strict_body(
                             let is_object_assign = expr_is_builtin_member(
                               body,
                               bind_member.object,
+                              &const_aliases,
                               global_this_name,
                               object_name,
                               "Object",
@@ -2038,6 +2212,7 @@ pub fn validate_native_strict_body(
                                       first_arg,
                                       prototype_name,
                                       proto_name,
+                                      &const_aliases,
                                     );
                                     if !is_proto_mutation {
                                       if let Some(key_arg) = effective_arg(1) {
@@ -2057,6 +2232,7 @@ pub fn validate_native_strict_body(
                                         first_arg,
                                         prototype_name,
                                         proto_name,
+                                        &const_aliases,
                                       ) || expr_is_object_literal_with_proto_key(
                                         body,
                                         props_arg,
@@ -2072,6 +2248,7 @@ pub fn validate_native_strict_body(
                                       first_arg,
                                       prototype_name,
                                       proto_name,
+                                      &const_aliases,
                                     );
                                     if !is_proto_mutation {
                                       let outer_sources = call
@@ -2115,18 +2292,19 @@ pub fn validate_native_strict_body(
                                       }
                                     };
 
-                                    if let Some(first_arg) = effective_arg(0) {
-                                      if is_define_property {
-                                        let mut is_proto_mutation = expr_chain_contains_proto_mutation(
-                                          body,
-                                          first_arg,
-                                          prototype_name,
-                                          proto_name,
-                                        );
-                                        if !is_proto_mutation {
-                                          if let Some(key_arg) = effective_arg(1) {
-                                            if expr_is_const_string(body, key_arg, "prototype")
-                                              || expr_is_const_string(body, key_arg, "__proto__")
+                                      if let Some(first_arg) = effective_arg(0) {
+                                        if is_define_property {
+                                          let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                            body,
+                                            first_arg,
+                                            prototype_name,
+                                            proto_name,
+                                            &const_aliases,
+                                          );
+                                          if !is_proto_mutation {
+                                            if let Some(key_arg) = effective_arg(1) {
+                                              if expr_is_const_string(body, key_arg, "prototype")
+                                                || expr_is_const_string(body, key_arg, "__proto__")
                                             {
                                               is_proto_mutation = true;
                                             }
@@ -2141,6 +2319,7 @@ pub fn validate_native_strict_body(
                                             first_arg,
                                             prototype_name,
                                             proto_name,
+                                            &const_aliases,
                                           ) || expr_is_object_literal_with_proto_key(
                                             body,
                                             props_arg,
@@ -2156,6 +2335,7 @@ pub fn validate_native_strict_body(
                                           first_arg,
                                           prototype_name,
                                           proto_name,
+                                          &const_aliases,
                                         );
                                         if !is_proto_mutation {
                                           let call_sources =
@@ -2203,6 +2383,7 @@ pub fn validate_native_strict_body(
                       let is_object_define_property = expr_is_builtin_member(
                         body,
                         bound_member.object,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -2212,6 +2393,7 @@ pub fn validate_native_strict_body(
                       let is_reflect_define_property = expr_is_builtin_member(
                         body,
                         bound_member.object,
+                        &const_aliases,
                         global_this_name,
                         reflect_name,
                         "Reflect",
@@ -2221,6 +2403,7 @@ pub fn validate_native_strict_body(
                       let is_object_define_properties = expr_is_builtin_member(
                         body,
                         bound_member.object,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -2230,6 +2413,7 @@ pub fn validate_native_strict_body(
                       let is_object_assign = expr_is_builtin_member(
                         body,
                         bound_member.object,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -2263,6 +2447,7 @@ pub fn validate_native_strict_body(
                               first_arg,
                               prototype_name,
                               proto_name,
+                              &const_aliases,
                             );
                             if !is_proto_mutation {
                               if let Some(key_arg) = effective_arg(1) {
@@ -2289,6 +2474,7 @@ pub fn validate_native_strict_body(
                                 first_arg,
                                 prototype_name,
                                 proto_name,
+                                &const_aliases,
                               ) || expr_is_object_literal_with_proto_key(
                                 body,
                                 props_arg,
@@ -2311,6 +2497,7 @@ pub fn validate_native_strict_body(
                               first_arg,
                               prototype_name,
                               proto_name,
+                              &const_aliases,
                             );
                             if !is_proto_mutation {
                               let outer_sources = call
@@ -2353,6 +2540,7 @@ pub fn validate_native_strict_body(
               let obj_is_reflect = expr_is_ident_or_global_this_member(
                 body,
                 member.object,
+                &const_aliases,
                 global_this_name,
                 reflect_name,
                 "Reflect",
@@ -2373,6 +2561,7 @@ pub fn validate_native_strict_body(
                   if expr_is_ident_or_global_this_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     eval_name,
                     "eval",
@@ -2385,6 +2574,7 @@ pub fn validate_native_strict_body(
                   if expr_is_ident_or_global_this_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     function_name,
                     "Function",
@@ -2397,12 +2587,14 @@ pub fn validate_native_strict_body(
                   if expr_is_ident_or_global_this_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     proxy_name,
                     "Proxy",
                   ) || expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     proxy_name,
                     "Proxy",
@@ -2421,6 +2613,7 @@ pub fn validate_native_strict_body(
                   let target_is_call_invoker = expr_is_function_prototype_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     function_name,
                     prototype_name,
@@ -2429,6 +2622,7 @@ pub fn validate_native_strict_body(
                   ) || expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     function_name,
                     "Function",
@@ -2438,6 +2632,7 @@ pub fn validate_native_strict_body(
                   let target_is_apply_invoker = expr_is_function_prototype_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     function_name,
                     prototype_name,
@@ -2446,6 +2641,7 @@ pub fn validate_native_strict_body(
                   ) || expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     function_name,
                     "Function",
@@ -2455,6 +2651,7 @@ pub fn validate_native_strict_body(
                   let target_is_bind_invoker = expr_is_function_prototype_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     function_name,
                     prototype_name,
@@ -2463,6 +2660,7 @@ pub fn validate_native_strict_body(
                   ) || expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     function_name,
                     "Function",
@@ -2483,6 +2681,7 @@ pub fn validate_native_strict_body(
                       if expr_is_ident_or_global_this_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         eval_name,
                         "eval",
@@ -2495,6 +2694,7 @@ pub fn validate_native_strict_body(
                       if expr_is_ident_or_global_this_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         function_name,
                         "Function",
@@ -2507,12 +2707,14 @@ pub fn validate_native_strict_body(
                       if expr_is_ident_or_global_this_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         proxy_name,
                         "Proxy",
                       ) || expr_is_builtin_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         proxy_name,
                         "Proxy",
@@ -2528,6 +2730,7 @@ pub fn validate_native_strict_body(
                       if expr_is_builtin_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -2536,6 +2739,7 @@ pub fn validate_native_strict_body(
                       ) || expr_is_builtin_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         reflect_name,
                         "Reflect",
@@ -2552,6 +2756,7 @@ pub fn validate_native_strict_body(
                       let mut called_target_is_object_define_property = expr_is_builtin_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -2561,6 +2766,7 @@ pub fn validate_native_strict_body(
                       let mut called_target_is_reflect_define_property = expr_is_builtin_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         reflect_name,
                         "Reflect",
@@ -2570,6 +2776,7 @@ pub fn validate_native_strict_body(
                       let mut called_target_is_object_define_properties = expr_is_builtin_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -2579,6 +2786,7 @@ pub fn validate_native_strict_body(
                       let mut called_target_is_object_assign = expr_is_builtin_member(
                         body,
                         called_target,
+                        &const_aliases,
                         global_this_name,
                         object_name,
                         "Object",
@@ -2609,6 +2817,7 @@ pub fn validate_native_strict_body(
                                     let bound_is_object_define_property = expr_is_builtin_member(
                                       body,
                                       bound_member.object,
+                                      &const_aliases,
                                       global_this_name,
                                       object_name,
                                       "Object",
@@ -2618,6 +2827,7 @@ pub fn validate_native_strict_body(
                                     let bound_is_reflect_define_property = expr_is_builtin_member(
                                       body,
                                       bound_member.object,
+                                      &const_aliases,
                                       global_this_name,
                                       reflect_name,
                                       "Reflect",
@@ -2627,6 +2837,7 @@ pub fn validate_native_strict_body(
                                     let bound_is_object_define_properties = expr_is_builtin_member(
                                       body,
                                       bound_member.object,
+                                      &const_aliases,
                                       global_this_name,
                                       object_name,
                                       "Object",
@@ -2636,6 +2847,7 @@ pub fn validate_native_strict_body(
                                     let bound_is_object_assign = expr_is_builtin_member(
                                       body,
                                       bound_member.object,
+                                      &const_aliases,
                                       global_this_name,
                                       object_name,
                                       "Object",
@@ -2702,6 +2914,7 @@ pub fn validate_native_strict_body(
                                 target_obj,
                                 prototype_name,
                                 proto_name,
+                                &const_aliases,
                               );
 
                               if !is_proto_mutation
@@ -2761,6 +2974,7 @@ pub fn validate_native_strict_body(
                   if expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     object_name,
                     "Object",
@@ -2769,6 +2983,7 @@ pub fn validate_native_strict_body(
                   ) || expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     reflect_name,
                     "Reflect",
@@ -2785,6 +3000,7 @@ pub fn validate_native_strict_body(
                   let target_is_object_define_property = expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     object_name,
                     "Object",
@@ -2794,6 +3010,7 @@ pub fn validate_native_strict_body(
                   let target_is_reflect_define_property = expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     reflect_name,
                     "Reflect",
@@ -2803,6 +3020,7 @@ pub fn validate_native_strict_body(
                   let target_is_object_define_properties = expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     object_name,
                     "Object",
@@ -2812,6 +3030,7 @@ pub fn validate_native_strict_body(
                   let target_is_object_assign = expr_is_builtin_member(
                     body,
                     target_arg,
+                    &const_aliases,
                     global_this_name,
                     object_name,
                     "Object",
@@ -2834,6 +3053,7 @@ pub fn validate_native_strict_body(
                             target_obj,
                             prototype_name,
                             proto_name,
+                            &const_aliases,
                           );
 
                           if !is_proto_mutation
@@ -2900,6 +3120,7 @@ pub fn validate_native_strict_body(
                               let is_object_define_property = expr_is_builtin_member(
                                 body,
                                 bound_member.object,
+                                &const_aliases,
                                 global_this_name,
                                 object_name,
                                 "Object",
@@ -2909,6 +3130,7 @@ pub fn validate_native_strict_body(
                               let is_reflect_define_property = expr_is_builtin_member(
                                 body,
                                 bound_member.object,
+                                &const_aliases,
                                 global_this_name,
                                 reflect_name,
                                 "Reflect",
@@ -2918,6 +3140,7 @@ pub fn validate_native_strict_body(
                               let is_object_define_properties = expr_is_builtin_member(
                                 body,
                                 bound_member.object,
+                                &const_aliases,
                                 global_this_name,
                                 object_name,
                                 "Object",
@@ -2927,6 +3150,7 @@ pub fn validate_native_strict_body(
                               let is_object_assign = expr_is_builtin_member(
                                 body,
                                 bound_member.object,
+                                &const_aliases,
                                 global_this_name,
                                 object_name,
                                 "Object",
@@ -2975,6 +3199,7 @@ pub fn validate_native_strict_body(
                                           first_arg,
                                           prototype_name,
                                           proto_name,
+                                          &const_aliases,
                                         );
                                         if !is_proto_mutation {
                                           if let Some(key_arg) = effective_arg(1) {
@@ -2995,6 +3220,7 @@ pub fn validate_native_strict_body(
                                             first_arg,
                                             prototype_name,
                                             proto_name,
+                                            &const_aliases,
                                           ) || expr_is_object_literal_with_proto_key(
                                             body,
                                             props_arg,
@@ -3011,6 +3237,7 @@ pub fn validate_native_strict_body(
                                           first_arg,
                                           prototype_name,
                                           proto_name,
+                                          &const_aliases,
                                         );
                                         if !is_proto_mutation {
                                           let call_sources = args_list.iter().skip(if bound_arity == 0 { 1 } else { 0 });
@@ -3052,6 +3279,7 @@ pub fn validate_native_strict_body(
           if expr_is_ident_or_global_this_member(
             body,
             call.callee,
+            &const_aliases,
             global_this_name,
             function_name,
             "Function",
@@ -3066,6 +3294,7 @@ pub fn validate_native_strict_body(
             && expr_is_ident_or_global_this_member(
               body,
               call.callee,
+              &const_aliases,
               global_this_name,
               proxy_name,
               "Proxy",
@@ -3081,6 +3310,7 @@ pub fn validate_native_strict_body(
             let obj_is_proxy = expr_is_ident_or_global_this_member(
               body,
               member.object,
+              &const_aliases,
               global_this_name,
               proxy_name,
               "Proxy",
@@ -3088,6 +3318,7 @@ pub fn validate_native_strict_body(
             let obj_is_object = expr_is_ident_or_global_this_member(
               body,
               member.object,
+              &const_aliases,
               global_this_name,
               object_name,
               "Object",
@@ -3095,6 +3326,7 @@ pub fn validate_native_strict_body(
             let obj_is_reflect = expr_is_ident_or_global_this_member(
               body,
               member.object,
+              &const_aliases,
               global_this_name,
               reflect_name,
               "Reflect",
@@ -3127,6 +3359,7 @@ pub fn validate_native_strict_body(
                 if expr_is_ident_or_global_this_member(
                   body,
                   target_arg,
+                  &const_aliases,
                   global_this_name,
                   function_name,
                   "Function",
@@ -3139,6 +3372,7 @@ pub fn validate_native_strict_body(
                 if expr_is_ident_or_global_this_member(
                   body,
                   target_arg,
+                  &const_aliases,
                   global_this_name,
                   proxy_name,
                   "Proxy",
@@ -3180,7 +3414,7 @@ pub fn validate_native_strict_body(
               let is_reflect_define = is_reflect_define_property;
 
               let mut is_proto_mutation =
-                expr_chain_contains_proto_mutation(body, first_arg, prototype_name, proto_name);
+                expr_chain_contains_proto_mutation(body, first_arg, prototype_name, proto_name, &const_aliases);
               // `Object/Reflect.defineProperty(Foo, "prototype", ...)` is another way to mutate a
               // constructor's prototype after creation. Treat constant `"prototype"` / `"__proto__"`
               // keys as prototype mutation too, even when the first argument isn't already a
@@ -3227,7 +3461,7 @@ pub fn validate_native_strict_body(
         }
       }
       ExprKind::Assignment { target, .. } => {
-        if pat_contains_proto_mutation(body, *target, prototype_name, proto_name) {
+        if pat_contains_proto_mutation(body, *target, prototype_name, proto_name, &const_aliases) {
           let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
           diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
             "prototype mutation is forbidden when `native_strict` is enabled",
@@ -3236,7 +3470,7 @@ pub fn validate_native_strict_body(
         }
       }
       ExprKind::Update { expr: target_expr, .. } => {
-        if expr_chain_contains_proto_mutation(body, *target_expr, prototype_name, proto_name) {
+        if expr_chain_contains_proto_mutation(body, *target_expr, prototype_name, proto_name, &const_aliases) {
           let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
           diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
             "prototype mutation is forbidden when `native_strict` is enabled",
@@ -3246,7 +3480,7 @@ pub fn validate_native_strict_body(
       }
       ExprKind::Unary { op, expr: target_expr } => {
         if *op == hir_js::UnaryOp::Delete
-          && expr_chain_contains_proto_mutation(body, *target_expr, prototype_name, proto_name)
+          && expr_chain_contains_proto_mutation(body, *target_expr, prototype_name, proto_name, &const_aliases)
         {
           let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
           diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
