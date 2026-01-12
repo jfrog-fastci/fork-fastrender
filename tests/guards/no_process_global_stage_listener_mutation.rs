@@ -45,7 +45,7 @@ fn tests_do_not_mutate_process_stage_listener_directly() {
 
     let contents = fs::read_to_string(path)
       .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-    // Strip whitespace so we catch `render_control :: set_stage_listener (` variations too.
+    // Strip whitespace so we catch `render_control :: set_stage_listener` variations too.
     let condensed: String = contents.chars().filter(|c| !c.is_whitespace()).collect();
     for needle in &forbidden {
       assert!(
