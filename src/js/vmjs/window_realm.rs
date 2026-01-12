@@ -33280,6 +33280,7 @@ fn init_window_globals(
 mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
+  use crate::js::vm_error_format;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::RunLimits;
   use crate::js::window::WindowHost;
@@ -35881,7 +35882,9 @@ mod tests {
 
     struct DummyHost;
     impl WindowRealmHost for DummyHost {
-      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
         unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
       }
     }

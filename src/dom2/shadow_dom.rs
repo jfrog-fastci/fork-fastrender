@@ -342,7 +342,7 @@ mod tests {
     assert!(
       inert_inner_children
         .iter()
-        .any(|&child| node_is_template_element(&doc.node(child).kind)),
+        .any(|&child| node_is_template_element(&doc, &doc.node(child).kind)),
       "inert template subtree should retain the declarative shadow root template element"
     );
 
@@ -443,7 +443,7 @@ mod tests {
     assert!(
       host_children
         .iter()
-        .any(|&child| node_is_template_element(&doc.node(child).kind)),
+        .any(|&child| node_is_template_element(&doc, &doc.node(child).kind)),
       "declarative shadow templates on invalid hosts should remain in the light DOM"
     );
     let roundtrip = doc.to_renderer_dom();
@@ -465,7 +465,7 @@ mod tests {
     assert!(
       host_children
         .iter()
-        .all(|&child| !node_is_template_element(&doc.node(child).kind)),
+        .all(|&child| !node_is_template_element(&doc, &doc.node(child).kind)),
       "shadowroot template should be promoted to a shadow root on valid hosts"
     );
     let roundtrip = doc.to_renderer_dom();
