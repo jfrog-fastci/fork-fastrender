@@ -42,11 +42,17 @@ thread_local! {
 }
 
 pub fn current_mutator_thread_ptr() -> *mut MutatorThread {
-  TLS_MUTATOR_THREAD.with(|c| c.get())
+  // `current_mutator_thread_ptr` can be called from other TLS destructors during thread teardown
+  // (e.g. embedding runtimes that clean up write-barrier state from TLS). If this TLS key has
+  // already been destroyed, `LocalKey::with` would panic with `AccessError` and abort the process
+  // (`abort_on_dtor_unwind`). Treat an inaccessible key as "no mutator thread installed".
+  TLS_MUTATOR_THREAD
+    .try_with(|c| c.get())
+    .unwrap_or(ptr::null_mut())
 }
 
 pub fn set_current_mutator_thread_ptr(thread: *mut MutatorThread) {
-  TLS_MUTATOR_THREAD.with(|c| c.set(thread));
+  let _ = TLS_MUTATOR_THREAD.try_with(|c| c.set(thread));
 }
 
 /// RAII guard that installs a thread-local [`MutatorThread`] for the duration
