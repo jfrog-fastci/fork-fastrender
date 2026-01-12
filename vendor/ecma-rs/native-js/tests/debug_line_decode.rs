@@ -5,6 +5,7 @@ use gimli::read::{Dwarf, EndianSlice};
 use gimli::{RunTimeEndian, SectionId};
 use native_js::{compile_program, CompilerOptions, EmitKind, OptLevel};
 use object::{Object, ObjectSection};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
@@ -19,7 +20,7 @@ fn es5_host() -> MemoryHost {
 
 type Reader<'a> = EndianSlice<'a, RunTimeEndian>;
 
-fn load_dwarf(obj: &[u8]) -> Dwarf<Reader<'_>> {
+fn load_dwarf(obj: &[u8]) -> Dwarf<Reader<'static>> {
   let file = object::File::parse(obj).expect("parse object file");
   let endian = if file.is_little_endian() {
     RunTimeEndian::Little
@@ -27,12 +28,21 @@ fn load_dwarf(obj: &[u8]) -> Dwarf<Reader<'_>> {
     RunTimeEndian::Big
   };
 
-  let load_section = |id: SectionId| -> Result<Reader<'_>, gimli::Error> {
-    let data = match file.section_by_name(id.name()) {
-      Some(section) => section.data().unwrap_or(&[][..]),
-      None => &[][..],
-    };
-    Ok(EndianSlice::new(data, endian))
+  let load_section = |id: SectionId| -> Result<Reader<'static>, gimli::Error> {
+    // Use `uncompressed_data()` so the DWARF decoder keeps working if a toolchain
+    // starts emitting `.zdebug_*` sections.
+    let data = file
+      .section_by_name(id.name())
+      .and_then(|section| section.uncompressed_data().ok())
+      .unwrap_or(Cow::Borrowed(&[][..]));
+    // `gimli`'s `EndianSlice` reader borrows the section bytes. `object` may
+    // return owned decompressed buffers, so keep things simple (tests only) by
+    // leaking the buffer for `'static` lifetime.
+    //
+    // This is bounded: native-js test objects are tiny, and the process exits
+    // immediately after the test binary completes.
+    let leaked: &'static [u8] = Box::leak(data.into_owned().into_boxed_slice());
+    Ok(EndianSlice::new(leaked, endian))
   };
 
   Dwarf::load(&load_section).expect("load DWARF sections")
