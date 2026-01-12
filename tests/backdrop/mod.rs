@@ -1,6 +1,6 @@
 //! Backdrop filter / Backdrop Root integration tests.
 //!
-//! These tests are included by the `paint_tests` integration-test harness (see `tests/paint_tests.rs`).
+//! These tests are included by the main integration test harness (see `tests/integration.rs`).
 //!
 //! Historically some of these lived in their own `tests/*.rs` integration-test crates; keep them
 //! consolidated under this directory to avoid spawning dozens of separate test executables.
