@@ -442,6 +442,7 @@ fn expand_ref_no_progress_cycle_does_not_overflow() {
   let hooks = RelateHooks {
     expander: Some(&expander),
     is_same_origin_private_member: None,
+    check_cancelled: None,
   };
   let ctx = RelateCtx::with_hooks(store.clone(), store.options(), hooks);
   let prim = store.primitive_ids();
@@ -513,6 +514,7 @@ proptest! {
     let hooks = RelateHooks {
       expander: Some(&expander),
       is_same_origin_private_member: None,
+      check_cancelled: None,
     };
     let ctx = RelateCtx::with_hooks(store.clone(), store.options(), hooks).with_step_limit(20_000);
     let mut expected = Vec::new();
@@ -532,6 +534,7 @@ proptest! {
     let hooks = RelateHooks {
       expander: Some(&expander),
       is_same_origin_private_member: None,
+      check_cancelled: None,
     };
     let fresh_ctx =
       RelateCtx::with_hooks(store.clone(), store.options(), hooks).with_step_limit(20_000);

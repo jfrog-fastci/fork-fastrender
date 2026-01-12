@@ -170,6 +170,14 @@ enum PropKeyKind {
 pub struct RelateHooks<'a> {
   pub expander: Option<&'a dyn RelateTypeExpander>,
   pub is_same_origin_private_member: Option<&'a dyn Fn(&Property, &Property) -> bool>,
+  /// Optional callback invoked at the start of each relation step.
+  ///
+  /// Callers can use this to implement cooperative cancellation for expensive
+  /// relation checks (e.g. when running under a per-test timeout in a harness).
+  ///
+  /// The callback may panic to abort the operation; `RelateCtx` does not catch
+  /// panics.
+  pub check_cancelled: Option<&'a dyn Fn()>,
 }
 
 impl<'a> fmt::Debug for RelateHooks<'a> {
@@ -183,6 +191,10 @@ impl<'a> fmt::Debug for RelateHooks<'a> {
         "is_same_origin_private_member",
         &self.is_same_origin_private_member.as_ref().map(|_| "Fn"),
       )
+      .field(
+        "check_cancelled",
+        &self.check_cancelled.as_ref().map(|_| "Fn"),
+      )
       .finish()
   }
 }
@@ -192,6 +204,7 @@ impl<'a> Default for RelateHooks<'a> {
     Self {
       expander: None,
       is_same_origin_private_member: None,
+      check_cancelled: None,
     }
   }
 }
@@ -722,6 +735,10 @@ impl<'a> RelateCtx<'a> {
       self.session.set(self.cache.begin_session());
     } else if depth == 0 {
       self.session.set(0);
+    }
+
+    if let Some(check_cancelled) = self.hooks.check_cancelled {
+      check_cancelled();
     }
 
     let key = RelationKey {

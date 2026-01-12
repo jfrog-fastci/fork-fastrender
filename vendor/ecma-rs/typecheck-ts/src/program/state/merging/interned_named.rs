@@ -183,8 +183,15 @@ impl ProgramState {
       &self.interned_class_instances,
       caches.eval.clone(),
     );
+    let cancelled = Arc::clone(&self.cancelled);
+    let check_cancelled = || {
+      if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        std::panic::panic_any(FatalError::Cancelled);
+      }
+    };
     let mut hooks = relate_hooks();
     hooks.expander = Some(&expander);
+    hooks.check_cancelled = Some(&check_cancelled);
     let relate = RelateCtx::with_hooks_and_cache(
       Arc::clone(store),
       store.options(),

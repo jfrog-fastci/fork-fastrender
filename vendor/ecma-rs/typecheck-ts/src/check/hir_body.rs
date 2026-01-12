@@ -1121,6 +1121,14 @@ pub fn check_body_with_expander(
 
   let body_range = body_range(body);
   let mut relate_hooks = super::relate_hooks();
+  let check_cancelled = || {
+    if let Some(flag) = cancelled {
+      if flag.load(Ordering::Relaxed) {
+        panic_any(crate::FatalError::Cancelled);
+      }
+    }
+  };
+  relate_hooks.check_cancelled = Some(&check_cancelled);
   if let Some(expander) = relate_expander {
     relate_hooks.expander = Some(expander);
   }

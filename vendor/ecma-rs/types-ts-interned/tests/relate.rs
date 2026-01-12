@@ -1,4 +1,6 @@
+use std::cell::Cell;
 use ordered_float::OrderedFloat;
+
 use types_ts_interned::Accessibility;
 use types_ts_interned::DefId;
 use types_ts_interned::Indexer;
@@ -86,6 +88,31 @@ fn relation_step_limit_short_circuits_with_reason_note() {
   );
   let reason = result.reason.expect("expected reason node");
   assert_eq!(reason.note.as_deref(), Some("step limit"));
+}
+
+#[test]
+fn relate_hooks_check_cancelled_is_invoked_even_on_cache_hits() {
+  let store = TypeStore::new();
+  let prim = store.primitive_ids();
+
+  let calls = Cell::new(0usize);
+  let check_cancelled = || {
+    calls.set(calls.get() + 1);
+  };
+  let hooks = RelateHooks {
+    expander: None,
+    is_same_origin_private_member: None,
+    check_cancelled: Some(&check_cancelled),
+  };
+  let ctx = RelateCtx::with_hooks(store.clone(), store.options(), hooks);
+
+  assert!(ctx.is_assignable(prim.number, prim.number));
+  let first_calls = calls.get();
+  assert!(first_calls > 0);
+
+  // Ensure the hook is invoked even when we hit the relation cache.
+  assert!(ctx.is_assignable(prim.number, prim.number));
+  assert!(calls.get() > first_calls);
 }
 
 #[test]
@@ -1303,6 +1330,7 @@ fn private_member_hook() {
   let hook = RelateHooks {
     expander: None,
     is_same_origin_private_member: Some(&|_, _| true),
+    check_cancelled: None,
   };
   let ctx_hook = RelateCtx::with_hooks(store.clone(), default_options(), hook);
   assert!(ctx_hook.is_assignable(src, dst));
@@ -1563,6 +1591,7 @@ fn conditional_normalization_uses_relation_ctx_hooks() {
   let hook = RelateHooks {
     expander: None,
     is_same_origin_private_member: Some(&|_, _| true),
+    check_cancelled: None,
   };
   let ctx_hook = RelateCtx::with_hooks(store.clone(), default_options(), hook);
   assert!(ctx_hook.is_assignable(primitives.number, conditional));
@@ -1735,6 +1764,7 @@ fn cyclic_reference_terminates() {
   let hooks = RelateHooks {
     expander: Some(&expander),
     is_same_origin_private_member: None,
+    check_cancelled: None,
   };
 
   let ctx = RelateCtx::with_hooks(store.clone(), default_options(), hooks);
@@ -1982,6 +2012,7 @@ fn cyclic_reference_conditional_normalization_terminates() {
   let hooks = RelateHooks {
     expander: Some(&expander),
     is_same_origin_private_member: None,
+    check_cancelled: None,
   };
 
   let ctx = RelateCtx::with_hooks(store.clone(), store.options(), hooks);

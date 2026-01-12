@@ -338,6 +338,7 @@ impl Program {
       let hooks = tti::RelateHooks {
         expander: Some(&expander),
         is_same_origin_private_member: hooks.is_same_origin_private_member,
+        check_cancelled: hooks.check_cancelled,
       };
       // Use a fresh relation cache so explanation trees contain full structure
       // instead of "cached" sentinel nodes from prior checker passes.

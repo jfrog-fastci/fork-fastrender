@@ -36,5 +36,6 @@ pub(crate) fn relate_hooks<'a>() -> RelateHooks<'a> {
   RelateHooks {
     expander: None,
     is_same_origin_private_member: Some(&same_origin),
+    check_cancelled: None,
   }
 }

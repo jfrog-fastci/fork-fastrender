@@ -1536,12 +1536,16 @@ pub mod body_check {
         Some(&ctx.cancelled),
       );
 
-      if !body.exprs.is_empty()
-        && (matches!(meta.kind, HirBodyKind::Function | HirBodyKind::TopLevel) || strict_native)
-      {
+      let check_cancelled = || {
         if ctx.cancelled.load(Ordering::Relaxed) {
           panic_any(crate::FatalError::Cancelled);
         }
+      };
+
+      if !body.exprs.is_empty()
+        && (matches!(meta.kind, HirBodyKind::Function | HirBodyKind::TopLevel) || strict_native)
+      {
+        check_cancelled();
         let mut initial_env: HashMap<_, _> = HashMap::new();
         fn record_param_pats(
           body: &HirBody,
@@ -1621,6 +1625,7 @@ pub mod body_check {
         }
         let mut flow_hooks = relate_hooks();
         flow_hooks.expander = Some(&expander);
+        flow_hooks.check_cancelled = Some(&check_cancelled);
         let flow_relate = RelateCtx::with_hooks_and_cache(
           Arc::clone(&ctx.store),
           ctx.store.options(),
@@ -1642,6 +1647,7 @@ pub mod body_check {
         );
         let mut relate_hooks = relate_hooks();
         relate_hooks.expander = Some(&expander);
+        relate_hooks.check_cancelled = Some(&check_cancelled);
         let relate = RelateCtx::with_hooks_and_cache(
           Arc::clone(&ctx.store),
           ctx.store.options(),
@@ -1774,6 +1780,7 @@ pub mod body_check {
       if ctx.native_strict {
         let mut strict_hooks = relate_hooks();
         strict_hooks.expander = Some(&expander);
+        strict_hooks.check_cancelled = Some(&check_cancelled);
         let strict_relate = RelateCtx::with_hooks_and_cache(
           Arc::clone(&ctx.store),
           ctx.store.options(),
