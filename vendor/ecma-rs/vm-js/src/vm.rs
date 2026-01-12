@@ -1855,29 +1855,39 @@ impl Vm {
     let mut steps: u64 = 0;
     let mut tick_err: Option<VmError> = None;
 
-    let res = parse_with_options_cancellable_by_with_init(
-      source,
-      opts,
-      || {
-        steps = steps.wrapping_add(1);
-        if steps % PARSE_TICK_EVERY == 0 {
-          if let Err(err) = self.tick() {
-            tick_err = Some(err);
-            return true;
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      parse_with_options_cancellable_by_with_init(
+        source,
+        opts,
+        || {
+          steps = steps.wrapping_add(1);
+          if steps % PARSE_TICK_EVERY == 0 {
+            if let Err(err) = self.tick() {
+              tick_err = Some(err);
+              return true;
+            }
           }
-        }
-        false
-      },
-      |p| {
-        if allow_enclosing_meta_properties {
-          p.set_initial_meta_property_context(
-            /* allow_new_target */ true,
-            /* allow_super_property */ true,
-            /* allow_super_call */ true,
-          );
-        }
-      },
-    );
+          false
+        },
+        |p| {
+          if allow_enclosing_meta_properties {
+            p.set_initial_meta_property_context(
+              /* allow_new_target */ true,
+              /* allow_super_property */ true,
+              /* allow_super_call */ true,
+            );
+          }
+        },
+      )
+    }));
+    let res = match res {
+      Ok(res) => res,
+      Err(_) => {
+        return Err(VmError::InvariantViolation(
+          "parse-js panicked while parsing source",
+        ));
+      }
+    };
 
     match res {
       Ok(top) => Ok(top),

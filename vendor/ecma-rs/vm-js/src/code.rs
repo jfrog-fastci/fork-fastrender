@@ -38,10 +38,16 @@ impl CompiledScript {
       source_type: SourceType::Script,
     };
 
-    let parsed = parse_with_options(source.text.as_ref(), opts)
-      .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      parse_with_options(source.text.as_ref(), opts)
+    }))
+    .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a script"))?
+    .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
 
-    let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
+    let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
+    }))
+    .map_err(|_| VmError::InvariantViolation("hir-js panicked while lowering a script"))?;
     // HIR can be significantly larger than the source text; use a conservative estimate to ensure
     // heap limits apply to compiled code.
     let estimated_hir_bytes = source.text.len().saturating_mul(8);

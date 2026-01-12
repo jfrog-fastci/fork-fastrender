@@ -1,4 +1,7 @@
-use vm_js::{Budget, Heap, HeapLimits, Job, JobKind, JsRuntime, RealmId, RootId, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions};
+use vm_js::{
+  Budget, CompiledScript, Heap, HeapLimits, Job, JobKind, JsRuntime, RealmId, RootId, Value, Vm,
+  VmError, VmHostHooks, VmJobContext, VmOptions,
+};
 
 struct DummyJobContext {
   heap: Heap,
@@ -57,7 +60,8 @@ fn job_run_converts_panics_to_errors() {
     panic!("boom");
   });
 
-  let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run(&mut ctx, &mut host)));
+  let result =
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run(&mut ctx, &mut host)));
   assert!(result.is_ok(), "Job::run must not panic");
 
   let err = result.unwrap().unwrap_err();
@@ -145,3 +149,54 @@ fn exec_script_never_panics_on_adversarial_inputs() -> Result<(), VmError> {
 
   Ok(())
 }
+
+#[test]
+fn compile_script_never_panics_on_adversarial_inputs() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(32 * 1024 * 1024, 32 * 1024 * 1024));
+
+  let mut scripts: Vec<String> = vec![
+    "".into(),
+    "function f() {}".into(),
+    "class C { static {} }".into(),
+    // Syntax error.
+    "function(".into(),
+    // Some TS-ish tokens should still parse as errors in Ecma mode.
+    "interface X {}".into(),
+  ];
+
+  // Deterministic fuzz-like random small programs.
+  let alphabet: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789+-*/%(){}[];,.<>=!&|^?:'\" \n\t";
+  let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
+  for _ in 0..128usize {
+    // Xorshift64*
+    rng ^= rng >> 12;
+    rng ^= rng << 25;
+    rng ^= rng >> 27;
+    let r = rng.wrapping_mul(0x2545F4914F6CDD1D);
+
+    let len = (r as usize) % 64;
+    let mut s = String::new();
+    s.try_reserve(len).map_err(|_| VmError::OutOfMemory)?;
+    for i in 0..len {
+      let idx = (r.wrapping_add(i as u64) as usize) % alphabet.len();
+      s.push(alphabet[idx] as char);
+    }
+    scripts.push(s);
+  }
+
+  for (idx, source) in scripts.iter().enumerate() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      CompiledScript::compile_script(&mut heap, "<inline>", source.as_str())
+    }));
+
+    assert!(
+      result.is_ok(),
+      "compile_script panicked on corpus entry {idx}: {source:?}"
+    );
+    // Ignore errors: syntax errors are expected for many inputs.
+    let _ = result.unwrap();
+  }
+
+  Ok(())
+}
+
