@@ -737,6 +737,12 @@ pub enum ImageRendering {
   Pixelated,
 }
 
+/// URL-backed image reference used by computed style values.
+///
+/// This is an alias for [`BackgroundImageUrl`], which stores an optional `override_resolution`
+/// (dppx) used for density-aware resources selected by `image-set()` or `srcset`.
+pub type UrlImage = BackgroundImageUrl;
+
 /// Preferred resolution for raster images
 ///
 /// CSS: `image-resolution`
@@ -2207,7 +2213,7 @@ impl Default for CursorKeyword {
 /// A custom cursor image with an optional hotspot (x, y) in CSS pixels
 #[derive(Debug, Clone, PartialEq)]
 pub struct CursorImage {
-  pub url: String,
+  pub url: UrlImage,
   pub hotspot: Option<(f32, f32)>,
 }
 
@@ -4990,11 +4996,20 @@ pub struct BackgroundImageUrl {
 }
 
 impl BackgroundImageUrl {
-  pub fn new(url: String) -> Self {
+  pub fn new(url: impl Into<String>) -> Self {
     Self {
-      url,
+      url: url.into(),
       override_resolution: None,
     }
+  }
+}
+
+impl std::hash::Hash for BackgroundImageUrl {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    std::hash::Hash::hash(&self.url, state);
+    // `f32` does not implement `Hash`; encode the raw IEEE bits instead.
+    let bits = self.override_resolution.map(|v| v.to_bits());
+    std::hash::Hash::hash(&bits, state);
   }
 }
 

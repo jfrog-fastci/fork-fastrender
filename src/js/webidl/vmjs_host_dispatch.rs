@@ -1429,10 +1429,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let wrapper = if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
           if let Some(platform) = data.dom_platform_mut() {
-            let document_id = gc_object_id(document_obj);
             platform.get_or_create_wrapper(
               scope,
-              DomNodeKey::new(document_id, node_id),
+              WeakGcObject::from(document_obj),
+              node_id,
               primary_interface,
             )?
           } else {

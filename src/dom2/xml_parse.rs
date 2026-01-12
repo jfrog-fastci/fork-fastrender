@@ -3,7 +3,7 @@ use crate::dom::HTML_NAMESPACE;
 use crate::xml::{markup_for_roxmltree_with_doctypes, ExtractedDoctype};
 use roxmltree::Document as RoDocument;
 
-use super::{Document, NodeId, NodeKind};
+use super::{Document, NodeId, NodeKind, NULL_NAMESPACE};
 
 #[derive(Clone, Copy)]
 enum TopLevel<'a, 'input> {

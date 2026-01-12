@@ -40,7 +40,7 @@ use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal, Computed
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::{
   BoxNode, BoxTree, CrossOriginAttribute, ImageDecodingAttribute, ImageLoadingAttribute,
-  ReplacedType,
+  ReplacedType, SrcsetCandidate, SrcsetDescriptor,
 };
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, TextSourceRange};
 
@@ -79,6 +79,19 @@ fn snapshot_running_elements_for_non_content_page(
   // No running element events should be consumed for these pages.
   let mut idx = 0usize;
   running_elements_for_page(&[], &mut idx, state, 0.0, 0.0)
+}
+
+fn srcset_candidates_for_url_image(url: &crate::style::types::UrlImage) -> Vec<SrcsetCandidate> {
+  match url
+    .override_resolution
+    .filter(|d| d.is_finite() && *d > 0.0)
+  {
+    Some(density) => vec![SrcsetCandidate {
+      url: url.url.clone(),
+      descriptor: SrcsetDescriptor::Density(density),
+    }],
+    None => Vec::new(),
+  }
 }
 
 fn html_and_body_box_ids(node: &FragmentNode) -> (Option<usize>, Option<usize>) {
@@ -3343,16 +3356,7 @@ fn build_margin_box_children(
               continue;
             }
             flush_text(&mut text_buf, &mut children, style);
-            let srcset = url
-              .override_resolution
-              .filter(|d| d.is_finite() && *d > 0.0)
-              .map(|d| {
-                vec![crate::tree::box_tree::SrcsetCandidate {
-                  url: url.url.clone(),
-                  descriptor: crate::tree::box_tree::SrcsetDescriptor::Density(d),
-                }]
-              })
-              .unwrap_or_default();
+            let srcset = srcset_candidates_for_url_image(url);
             children.push(BoxNode::new_replaced(
               style.clone(),
               ReplacedType::Image {

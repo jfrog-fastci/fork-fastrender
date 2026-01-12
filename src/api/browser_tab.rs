@@ -28,6 +28,7 @@ use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerP
 use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
 use crate::web::dom::DocumentVisibilityState;
+use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 use crate::ui::{PointerButton, PointerModifiers};
 
 use encoding_rs::{Encoding, UTF_8};

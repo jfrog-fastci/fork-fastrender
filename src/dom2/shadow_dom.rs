@@ -158,7 +158,7 @@ impl Document {
       _ => return Err(DomError::InvalidNodeType),
     };
 
-    if !is_html_namespace(namespace) || !is_valid_shadow_host_name(tag_name) {
+    if !self.is_html_case_insensitive_namespace(namespace) || !is_valid_shadow_host_name(tag_name) {
       return Err(DomError::NotSupportedError);
     }
 

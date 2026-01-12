@@ -110,7 +110,6 @@ fn trim_ascii_whitespace_end(value: &str) -> &str {
     matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
   })
 }
-
 fn srcset_from_override_resolution(
   image: &crate::style::types::BackgroundImageUrl,
 ) -> Vec<SrcsetCandidate> {
@@ -6225,12 +6224,13 @@ pub(crate) fn marker_content_from_style(
       *quote_depth = context.quote_depth();
       return Some(MarkerContent::Text(text));
     }
-    if let Some(src) = image {
+    if let Some(url) = image {
+      let srcset = srcset_from_override_resolution(&url);
+      let src = url.url;
       *quote_depth = context.quote_depth();
-      let srcset = srcset_from_override_resolution(&src);
       let replaced = ReplacedBox {
         replaced_type: ReplacedType::Image {
-          src: src.url,
+          src,
           alt: None,
           loading: ImageLoadingAttribute::Auto,
           decoding: ImageDecodingAttribute::Auto,

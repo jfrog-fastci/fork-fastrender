@@ -1789,7 +1789,7 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
       })
     }
     "image-set" | "-webkit-image-set" => {
-      let full = format!("{}({})", name, args);
+      let full = format!("{name}({args})");
       match crate::style::properties::parse_image_set(&full) {
         Some(crate::style::types::BackgroundImage::Url(url)) => Some(ContentItem::Url(url)),
         _ => None,
@@ -2459,6 +2459,15 @@ mod tests {
       content,
       ContentValue::Items(vec![ContentItem::Url(expected)])
     );
+  }
+
+  #[test]
+  fn test_parse_webkit_image_set() {
+    let content =
+      parse_content("-webkit-image-set(url(\"one.png\") 1x, url(\"two.png\") 2x)").unwrap();
+    let mut expected = BackgroundImageUrl::new("one.png".to_string());
+    expected.override_resolution = Some(1.0);
+    assert_eq!(content, ContentValue::Items(vec![ContentItem::Url(expected)]));
   }
 
   #[test]

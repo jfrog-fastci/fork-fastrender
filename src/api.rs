@@ -31883,7 +31883,8 @@ mod tests {
       other => panic!("unexpected background image: {:?}", other),
     };
 
-    assert_eq!(url, "https://example.com/app/images/bg.png");
+    assert_eq!(url.url, "https://example.com/app/images/bg.png");
+    assert_eq!(url.override_resolution, None);
   }
 
   #[test]

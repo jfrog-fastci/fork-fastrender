@@ -29917,12 +29917,13 @@ fn dom_implementation_create_html_document_native(
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::InvariantViolation("WindowRealm missing WindowRealmUserData"));
   };
-  if data.owned_dom2_documents.contains_key(&document_id) {
+  let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+  if owned_dom2_documents.contains_key(&document_id) {
     return Err(VmError::InvariantViolation(
       "createHTMLDocument generated a duplicate document id",
     ));
   }
-  data.owned_dom2_documents.insert(document_id, Box::new(dom));
+  owned_dom2_documents.insert(document_id, Box::new(dom));
   Ok(Value::Object(document_obj))
 }
 
@@ -43686,7 +43687,10 @@ mod tests {
           .expect("expected WindowRealmUserData");
         let mut boxed = Box::new(detached_dom);
         let dom_ptr = NonNull::from(boxed.as_mut());
-        data.owned_dom2_documents.insert(detached_document_id, boxed);
+        data
+          .owned_dom2_documents
+          .borrow_mut()
+          .insert(detached_document_id, boxed);
         dom_ptr
       };
 
@@ -45740,7 +45744,10 @@ mod tests {
         },
       )?;
 
-      data.owned_dom2_documents.insert(doc2_id, dom2_box);
+      data
+        .owned_dom2_documents
+        .borrow_mut()
+        .insert(doc2_id, dom2_box);
 
       // Create a JS wrapper for the owned element node and expose both it and its document as
       // globals so the subsequent JS snippet can serialize them.

@@ -4997,11 +4997,11 @@ impl DisplayListBuilder {
 
   fn decode_mask_image_url(
     &self,
-    src: &str,
+    src: &crate::style::types::UrlImage,
     style: &ComputedStyle,
     bounds: Rect,
   ) -> Option<Arc<ImageData>> {
-    let trimmed = trim_ascii_whitespace(src);
+    let trimmed = trim_ascii_whitespace(&src.url);
     if let Some(id) = trimmed.strip_prefix('#') {
       let defs = self.svg_id_defs.as_ref()?;
 
@@ -5050,13 +5050,13 @@ impl DisplayListBuilder {
       return Some(Arc::new(adjusted));
     }
     self.decode_image(
-      src,
+      &src.url,
       Some(style),
       true,
       CrossOriginAttribute::None,
       None,
       false,
-      None,
+      src.override_resolution,
     )
   }
 
@@ -5189,7 +5189,7 @@ impl DisplayListBuilder {
           ResolvedMaskImage::Generated(Box::new(image.clone()))
         }
         BackgroundImage::Url(src) => {
-          let Some(image) = self.decode_mask_image_url(&src.url, style, bounds) else {
+          let Some(image) = self.decode_mask_image_url(src, style, bounds) else {
             continue;
           };
           ResolvedMaskImage::Raster((*image).clone())
@@ -5216,9 +5216,9 @@ impl DisplayListBuilder {
               let resolved_src = image_cache.resolve_url(&src.url);
               match image_cache.load_with_crossorigin(&resolved_src, CrossOriginAttribute::None) {
                 Ok(cached) => {
-                  if cached.is_vector || cached.has_alpha {
-                    MaskMode::Alpha
-                  } else {
+                    if cached.is_vector || cached.has_alpha {
+                      MaskMode::Alpha
+                    } else {
                     MaskMode::Luminance
                   }
                 }
@@ -9773,7 +9773,7 @@ impl DisplayListBuilder {
             let render_h = (tile_h * self.device_pixel_ratio).ceil().max(1.0) as u32;
 
             let used_resolution = style.image_resolution.used_resolution(
-              None,
+              src.override_resolution,
               cached.resolution,
               self.device_pixel_ratio,
             );
@@ -15905,6 +15905,7 @@ mod tests {
   use crate::style::types::BackgroundSize;
   use crate::style::types::BackgroundSizeComponent;
   use crate::style::types::BasicShape;
+  use crate::style::types::UrlImage;
   use crate::style::types::ClipComponent;
   use crate::style::types::ClipPath;
   use crate::style::types::ClipRect;
@@ -15935,7 +15936,7 @@ mod tests {
   use crate::text::font_db::FontDatabase;
   use crate::text::font_loader::FontContext;
   use crate::text::pipeline::ShapingPipeline;
-  use crate::tree::box_tree::{CrossOriginAttribute, ReplacedType};
+  use crate::tree::box_tree::{CrossOriginAttribute, ReplacedType, SrcsetCandidate, SrcsetDescriptor};
   use crate::tree::fragment_tree::FragmentTree;
   use crate::{debug::runtime::RuntimeToggles, paint::painter::enable_paint_diagnostics};
   use base64::engine::general_purpose;
@@ -16387,16 +16388,18 @@ mod tests {
     let builder = DisplayListBuilder::new().with_svg_id_defs(Some(Arc::new(defs)));
     let style = ComputedStyle::default();
     let bounds = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+    let mask_url = UrlImage::new("#mask".to_string());
+    let mask_url_with_nbsp = UrlImage::new(format!("#mask{nbsp}"));
 
     assert!(
       builder
-        .decode_mask_image_url("#mask", &style, bounds)
+        .decode_mask_image_url(&mask_url, &style, bounds)
         .is_some(),
       "expected fragment-only URL to resolve with SVG id defs"
     );
     assert!(
       builder
-        .decode_mask_image_url(&format!("#mask{nbsp}"), &style, bounds)
+        .decode_mask_image_url(&mask_url_with_nbsp, &style, bounds)
         .is_none(),
       "expected NBSP-suffixed fragment to not match existing SVG ids"
     );
@@ -16413,9 +16416,10 @@ mod tests {
       .with_device_pixel_ratio(2.0);
     let style = ComputedStyle::default();
     let bounds = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+    let mask_url = UrlImage::new("#mask".to_string());
 
     let image = builder
-      .decode_mask_image_url("#mask", &style, bounds)
+      .decode_mask_image_url(&mask_url, &style, bounds)
       .expect("expected fragment-only mask to resolve");
 
     assert_eq!(image.width, 32);
@@ -19685,18 +19689,28 @@ mod tests {
       },
       other => panic!("unexpected content value: {other:?}"),
     };
+    let srcset = chosen
+      .override_resolution
+      .filter(|d| d.is_finite() && *d > 0.0)
+      .map(|density| {
+        vec![SrcsetCandidate {
+          url: chosen.url.clone(),
+          descriptor: SrcsetDescriptor::Density(density),
+        }]
+      })
+      .unwrap_or_default();
 
     let fragment = FragmentNode::new_replaced(
       Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       ReplacedType::Image {
-        src: chosen,
+        src: chosen.url.clone(),
         alt: None,
         loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
-        srcset: Vec::new(),
+        srcset,
         picture_sources: Vec::new(),
       },
     );
@@ -19753,6 +19767,16 @@ mod tests {
       crate::tree::box_tree::MarkerContent::Image(replaced) => replaced,
       other => panic!("unexpected marker content: {other:?}"),
     };
+    let srcset = chosen
+      .override_resolution
+      .filter(|d| d.is_finite() && *d > 0.0)
+      .map(|density| {
+        vec![SrcsetCandidate {
+          url: chosen.url.clone(),
+          descriptor: SrcsetDescriptor::Density(density),
+        }]
+      })
+      .unwrap_or_default();
 
     let fragment =
       FragmentNode::new_replaced(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), replaced.replaced_type);

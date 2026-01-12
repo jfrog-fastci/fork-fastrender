@@ -1452,7 +1452,7 @@ fn parse_cursor(value: &PropertyValue) -> Option<(Vec<CursorImage>, CursorKeywor
         }
         if !trim_ascii_whitespace(url).is_empty() {
           images.push(CursorImage {
-            url: url.clone(),
+            url: UrlImage::new(url.clone()),
             hotspot,
           });
         }
@@ -1477,7 +1477,7 @@ fn parse_cursor(value: &PropertyValue) -> Option<(Vec<CursorImage>, CursorKeywor
               idx += 2;
             }
           }
-          images.push(CursorImage { url: url.url, hotspot });
+          images.push(CursorImage { url, hotspot });
         }
       }
       PropertyValue::Keyword(kw) => {
@@ -33930,7 +33930,8 @@ mod tests {
 
     assert_eq!(style.cursor, CursorKeyword::Move);
     assert_eq!(style.cursor_images.len(), 1);
-    assert_eq!(style.cursor_images[0].url, "cursor.cur");
+    assert_eq!(style.cursor_images[0].url.url, "cursor.cur");
+    assert_eq!(style.cursor_images[0].url.override_resolution, None);
     assert_eq!(style.cursor_images[0].hotspot, Some((0.0, 7.0)));
   }
 
@@ -33955,9 +33956,11 @@ mod tests {
 
     assert_eq!(style.cursor, CursorKeyword::Pointer);
     assert_eq!(style.cursor_images.len(), 2);
-    assert_eq!(style.cursor_images[0].url, "a.cur");
+    assert_eq!(style.cursor_images[0].url.url, "a.cur");
+    assert_eq!(style.cursor_images[0].url.override_resolution, None);
     assert_eq!(style.cursor_images[0].hotspot, Some((1.0, 2.0)));
-    assert_eq!(style.cursor_images[1].url, "b.cur");
+    assert_eq!(style.cursor_images[1].url.url, "b.cur");
+    assert_eq!(style.cursor_images[1].url.override_resolution, None);
     assert!(style.cursor_images[1].hotspot.is_none());
   }
 
@@ -33985,7 +33988,8 @@ mod tests {
 
     assert_eq!(style.cursor, CursorKeyword::Crosshair);
     assert_eq!(style.cursor_images.len(), 1);
-    assert_eq!(style.cursor_images[0].url, "c1.cur");
+    assert_eq!(style.cursor_images[0].url.url, "c1.cur");
+    assert_eq!(style.cursor_images[0].url.override_resolution, Some(1.0));
   }
 
   #[test]
@@ -34014,7 +34018,8 @@ mod tests {
 
     assert_eq!(style.cursor, CursorKeyword::Crosshair);
     assert_eq!(style.cursor_images.len(), 1);
-    assert_eq!(style.cursor_images[0].url, "hi.cur");
+    assert_eq!(style.cursor_images[0].url.url, "hi.cur");
+    assert_eq!(style.cursor_images[0].url.override_resolution, Some(2.0));
   }
 
   #[test]
@@ -34041,7 +34046,8 @@ mod tests {
 
     assert_eq!(style.cursor, CursorKeyword::Pointer);
     assert_eq!(style.cursor_images.len(), 1);
-    assert_eq!(style.cursor_images[0].url, "c1.cur");
+    assert_eq!(style.cursor_images[0].url.url, "c1.cur");
+    assert_eq!(style.cursor_images[0].url.override_resolution, Some(1.0));
     assert_eq!(style.cursor_images[0].hotspot, Some((4.0, 12.0)));
   }
 
@@ -34069,7 +34075,8 @@ mod tests {
 
     assert_eq!(style.cursor, CursorKeyword::Pointer);
     assert_eq!(style.cursor_images.len(), 1);
-    assert_eq!(style.cursor_images[0].url, "c1.cur");
+    assert_eq!(style.cursor_images[0].url.url, "c1.cur");
+    assert_eq!(style.cursor_images[0].url.override_resolution, Some(1.0));
     assert_eq!(style.cursor_images[0].hotspot, Some((4.0, 12.0)));
   }
 
@@ -34099,7 +34106,8 @@ mod tests {
 
     assert_eq!(style.cursor, CursorKeyword::Crosshair);
     assert_eq!(style.cursor_images.len(), 1);
-    assert_eq!(style.cursor_images[0].url, "hi.cur");
+    assert_eq!(style.cursor_images[0].url.url, "hi.cur");
+    assert_eq!(style.cursor_images[0].url.override_resolution, Some(2.0));
     assert_eq!(style.cursor_images[0].hotspot, Some((4.0, 12.0)));
   }
 

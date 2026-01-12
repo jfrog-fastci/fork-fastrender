@@ -26482,6 +26482,7 @@ fn gen_apply_unary_operator(
     OperatorName::LogicalNot => Ok(Value::Bool(!to_boolean(scope.heap(), argument)?)),
     OperatorName::UnaryPlus => Ok(Value::Number(evaluator.to_number_operator(scope, argument)?)),
     OperatorName::UnaryNegation => {
+      // `ToNumeric` can allocate/GC (via `ToPrimitive`), so root `argument` across the conversion.
       let mut neg_scope = scope.reborrow();
       neg_scope.push_root(argument)?;
       let num = evaluator.to_numeric(&mut neg_scope, argument)?;
@@ -26498,6 +26499,7 @@ fn gen_apply_unary_operator(
       })
     }
     OperatorName::BitwiseNot => {
+      // `ToNumeric` can allocate/GC (via `ToPrimitive`), so root `argument` across the conversion.
       let mut not_scope = scope.reborrow();
       not_scope.push_root(argument)?;
       let num = evaluator.to_numeric(&mut not_scope, argument)?;

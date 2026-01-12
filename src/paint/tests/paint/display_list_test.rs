@@ -376,14 +376,14 @@ fn background_attachment_local_anchors_to_padding_box() {
 
   let mut style = ComputedStyle::default();
   style.set_background_layers(vec![BackgroundLayer {
-        image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
-            "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='2'%3E%3Crect width='1' height='1' fill='red'/%3E%3Crect y='1' width='1' height='1' fill='blue'/%3E%3C/svg%3E"
-                .into(),
-        ))),
-        attachment: BackgroundAttachment::Local,
-        repeat: BackgroundRepeat::repeat_y(),
-        ..BackgroundLayer::default()
-    }]);
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='2'%3E%3Crect width='1' height='1' fill='red'/%3E%3Crect y='1' width='1' height='1' fill='blue'/%3E%3C/svg%3E"
+        .into(),
+    ))),
+    attachment: BackgroundAttachment::Local,
+    repeat: BackgroundRepeat::repeat_y(),
+    ..BackgroundLayer::default()
+  }]);
   style.padding_left = Length::px(0.0);
   style.padding_right = Length::px(0.0);
   style.padding_top = Length::px(0.0);
@@ -461,13 +461,13 @@ fn fragment_background_image_emits_image_item() {
   let mut style = crate::ComputedStyle::default();
   style.background_color = Rgba::TRANSPARENT;
   style.set_background_layers(vec![BackgroundLayer {
-        image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\" fill=\"blue\"/></svg>"
-                .into(),
-        ))),
-        repeat: BackgroundRepeat::no_repeat(),
-        ..Default::default()
-    }]);
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
+      "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\" fill=\"blue\"/></svg>"
+        .into(),
+    ))),
+    repeat: BackgroundRepeat::no_repeat(),
+    ..Default::default()
+  }]);
   let fragment = crate::FragmentNode::new_block_styled(
     Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     vec![],
@@ -660,7 +660,7 @@ fn background_attachment_fixed_anchors_to_viewport() {
   let mut style = ComputedStyle::default();
   style.background_color = Rgba::TRANSPARENT;
   style.set_background_layers(vec![BackgroundLayer {
-    image: Some(BackgroundImage::Url(data_url)),
+    image: Some(BackgroundImage::Url(BackgroundImageUrl::new(data_url))),
     attachment: crate::style::types::BackgroundAttachment::Fixed,
     repeat: BackgroundRepeat::no_repeat(),
     size: crate::style::types::BackgroundSize::Explicit(
