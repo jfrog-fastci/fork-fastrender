@@ -1378,8 +1378,6 @@ pub fn object_from_entries(
         next_value,
       )?;
       step_scope.push_root(key_val)?;
-      let prop_key = step_scope.to_property_key(vm, host, hooks, key_val)?;
-      root_property_key(&mut step_scope, prop_key)?;
 
       let one_key = string_key(&mut step_scope, "1")?;
       let value = step_scope.ordinary_get_with_host_and_hooks(
@@ -1390,6 +1388,10 @@ pub fn object_from_entries(
         one_key,
         next_value,
       )?;
+      step_scope.push_root(value)?;
+
+      let prop_key = step_scope.to_property_key(vm, host, hooks, key_val)?;
+      root_property_key(&mut step_scope, prop_key)?;
 
       step_scope.create_data_property_or_throw(out, prop_key, value)?;
       Ok(())
