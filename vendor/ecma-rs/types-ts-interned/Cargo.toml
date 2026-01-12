@@ -30,6 +30,7 @@ unicode-ident = { workspace = true }
 smallvec = { workspace = true }
 tracing = { workspace = true, optional = true }
 ryu = { workspace = true }
+itoa = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }

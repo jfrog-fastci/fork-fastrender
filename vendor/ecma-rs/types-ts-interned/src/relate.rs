@@ -4034,7 +4034,8 @@ impl<'a> RelateCtx<'a> {
       PropKey::String(_) => parse_canonical_index_string(self.store.as_ref(), key)
         .and_then(|idx| lookup(&PropKey::Number(idx))),
       PropKey::Number(idx) if *idx >= 0 => {
-        let name = self.store.intern_name(idx.to_string());
+        let mut buf = itoa::Buffer::new();
+        let name = self.store.intern_name_ref(buf.format(*idx));
         lookup(&PropKey::String(name))
       }
       _ => None,

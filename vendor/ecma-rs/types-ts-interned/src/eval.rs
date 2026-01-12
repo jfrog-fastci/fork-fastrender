@@ -3027,6 +3027,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         // in `keyof`/mapped-key enumeration as well.
         let length = self.store.intern_name_ref("length");
         keys.push(Key::Literal(PropKey::String(length)));
+        let mut idx_buf = itoa::Buffer::new();
         for (idx, elem) in elems.iter().enumerate() {
           keys.push(Key::Literal(PropKey::Number(idx as i64)));
           // TypeScript treats numeric properties and their canonical string forms as
@@ -3034,7 +3035,7 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
           // string form so `keyof` works for common utilities that operate on
           // string-indexed tuple keys.
           keys.push(Key::Literal(PropKey::String(
-            self.store.intern_name(idx.to_string()),
+            self.store.intern_name_ref(idx_buf.format(idx)),
           )));
           if elem.rest {
             keys.push(Key::Number);
