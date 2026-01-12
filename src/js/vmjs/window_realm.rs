@@ -892,6 +892,48 @@ impl WindowRealm {
     self.exec_script_source_with_hooks(hooks, Arc::new(SourceText::new("<inline>", source)))
   }
 
+  /// Ensure the `window` global object participates in the DOM `EventTarget` prototype chain.
+  ///
+  /// FastRender models `window` as the realm global object. While the realm global object is
+  /// spec-shaped in `vm-js` (`[[Prototype]]` is `%Object.prototype%`), browser `window` objects are
+  /// `EventTarget`s. Some curated WPT tests rely on `window instanceof EventTarget`.
+  fn ensure_window_inherits_event_target(rt: &mut VmJsRuntime) -> Result<(), VmError> {
+    let (_vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global))?;
+
+    let event_target_key = alloc_key(&mut scope, "EventTarget")?;
+    let event_target_ctor = scope
+      .heap()
+      .object_get_own_data_property_value(global, &event_target_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(event_target_ctor) = event_target_ctor else {
+      // Best effort: some test-only realms may not install `EventTarget`.
+      return Ok(());
+    };
+    scope.push_root(Value::Object(event_target_ctor))?;
+
+    let prototype_key = alloc_key(&mut scope, "prototype")?;
+    let event_target_proto = scope
+      .heap()
+      .object_get_own_data_property_value(event_target_ctor, &prototype_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(event_target_proto) = event_target_proto else {
+      return Ok(());
+    };
+
+    if scope.object_get_prototype(global)? == Some(event_target_proto) {
+      return Ok(());
+    }
+
+    scope
+      .heap_mut()
+      .object_set_prototype(global, Some(event_target_proto))?;
+
+    Ok(())
+  }
+
   pub(crate) fn exec_script_source_with_host_and_hooks(
     &mut self,
     host: &mut dyn VmHost,
@@ -905,7 +947,10 @@ impl WindowRealm {
     // dynamic `import()` will reject immediately and module loading hooks will never be invoked.
     if self.runtime.vm.module_graph_ptr().is_none() {
       return self
-        .with_vm_budget(|rt| rt.exec_script_source_with_host_and_hooks(host, hooks, source));
+        .with_vm_budget(|rt| {
+          Self::ensure_window_inherits_event_target(rt)?;
+          rt.exec_script_source_with_host_and_hooks(host, hooks, source)
+        });
     }
 
     let script_id = vm_js::ScriptId::from_raw(self.next_script_id_raw);
@@ -931,6 +976,8 @@ impl WindowRealm {
     let realm_id = self.realm_id;
 
     self.with_vm_budget(move |rt| {
+      Self::ensure_window_inherits_event_target(rt)?;
+
       // We want `GetActiveScriptOrModule()` to return a Script Record while this script is running
       // so dynamic `import()` calls resolve relative to the script URL rather than the document.
       //
@@ -5763,6 +5810,36 @@ fn dom_from_vm_host_mut(host: &mut dyn VmHost) -> Option<&mut dom2::Document> {
   None
 }
 
+fn mutate_dom_for_vm_host<R, F>(host: &mut dyn VmHost, f: F) -> Option<R>
+where
+  F: FnOnce(&mut dom2::Document) -> (R, bool),
+{
+  use std::any::TypeId;
+
+  let any = host.as_any_mut();
+  let ty = any.type_id();
+  let ptr = any as *mut dyn std::any::Any;
+
+  let mut f = Some(f);
+
+  // SAFETY: we only cast the erased `Any` pointer back to a concrete type after checking its
+  // runtime `TypeId`.
+  unsafe {
+    if ty == TypeId::of::<crate::js::host_document::DocumentHostState>() {
+      let host = &mut *(ptr as *mut crate::js::host_document::DocumentHostState);
+      let f = f.take().expect("closure is only taken once");
+      return Some(crate::js::DomHost::mutate_dom(host, f));
+    }
+    if ty == TypeId::of::<crate::api::BrowserDocumentDom2>() {
+      let host = &mut *(ptr as *mut crate::api::BrowserDocumentDom2);
+      let f = f.take().expect("closure is only taken once");
+      return Some(crate::js::DomHost::mutate_dom(host, f));
+    }
+  }
+
+  None
+}
+
 /// Returns a raw pointer to the active `dom2::Document` for operations that must mutate the
 /// DOM-owned event listener registry without triggering renderer invalidations.
 ///
@@ -9396,6 +9473,45 @@ fn document_create_comment_native(
     "document.createComment requires a DOM-backed document",
   ))?;
   let node_id = dom.create_comment(&data);
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
+fn document_create_processing_instruction_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createProcessingInstruction must be called on a document object",
+    ));
+  };
+
+  let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target_value = scope.heap_mut().to_string(target_value)?;
+  let target = scope
+    .heap()
+    .get_string(target_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let data_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data = scope
+    .heap()
+    .get_string(data_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "document.createProcessingInstruction requires a DOM-backed document",
+  ))?;
+  let node_id = dom.create_processing_instruction(&target, &data);
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
@@ -19081,6 +19197,117 @@ fn node_node_name_get_native(
   Ok(Value::String(scope.alloc_string(&name)?))
 }
 
+fn node_node_value_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  match &dom.node(node_id).kind {
+    NodeKind::Text { content } => Ok(Value::String(scope.alloc_string(content)?)),
+    NodeKind::Comment { content } => Ok(Value::String(scope.alloc_string(content)?)),
+    NodeKind::ProcessingInstruction { data, .. } => Ok(Value::String(scope.alloc_string(data)?)),
+    _ => Ok(Value::Null),
+  }
+}
+
+fn node_node_value_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  #[derive(Clone, Copy)]
+  enum NodeValueTarget {
+    Text,
+    Comment,
+    ProcessingInstruction,
+    Other,
+  }
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let target = {
+    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+    match &dom.node(node_id).kind {
+      NodeKind::Text { .. } => NodeValueTarget::Text,
+      NodeKind::Comment { .. } => NodeValueTarget::Comment,
+      NodeKind::ProcessingInstruction { .. } => NodeValueTarget::ProcessingInstruction,
+      _ => NodeValueTarget::Other,
+    }
+  };
+
+  // Setting `nodeValue` on non-text-like nodes is a no-op.
+  if matches!(target, NodeValueTarget::Other) {
+    return Ok(Value::Undefined);
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+
+  let value_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value = match value_value {
+    // `nodeValue` is `DOMString?`; `null` and `undefined` act as the empty string.
+    Value::Null | Value::Undefined => String::new(),
+    other => {
+      let s = scope.heap_mut().to_string(other)?;
+      scope
+        .heap()
+        .get_string(s)
+        .map(|s| s.to_utf8_lossy())
+        .unwrap_or_default()
+    }
+  };
+
+  let needs_microtask = mutate_dom_for_vm_host(host, |dom| {
+    let res = match target {
+      NodeValueTarget::Text => dom.set_text_data(node_id, &value),
+      NodeValueTarget::Comment => dom.set_comment_data(node_id, &value),
+      NodeValueTarget::ProcessingInstruction => dom.set_processing_instruction_data(node_id, &value),
+      NodeValueTarget::Other => Ok(false),
+    };
+
+    match res {
+      Ok(changed) => {
+        let needs = dom.take_mutation_observer_microtask_needed();
+        (Ok(needs), changed)
+      }
+      Err(err) => {
+        let exc = match make_dom_exception(scope, err.code(), "") {
+          Ok(v) => VmError::Throw(v),
+          Err(e) => e,
+        };
+        (Err(exc), false)
+      }
+    }
+  })
+  .ok_or(VmError::TypeError("Illegal invocation"))??;
+
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  Ok(Value::Undefined)
+}
+
 fn node_owner_document_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -19893,12 +20120,12 @@ fn node_text_content_set_native(
       }
     }
     TextContentTarget::Comment => {
-      if let Err(err) = dom.replace_data(node_id, 0, usize::MAX, &value) {
+      if let Err(err) = dom.set_comment_data(node_id, &value) {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
     }
     TextContentTarget::ProcessingInstruction => {
-      if let Err(err) = dom.replace_data(node_id, 0, usize::MAX, &value) {
+      if let Err(err) = dom.set_processing_instruction_data(node_id, &value) {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
     }
@@ -20024,33 +20251,196 @@ fn text_data_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError("Illegal invocation"))?;
-  let mut dom_ptr = NonNull::from(&mut *dom);
+  let mut dom_ptr =
+    dom_ptr_for_event_registry(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  if let Err(err) = dom.set_text_data(text_id, &new_value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+  let (changed, maybe_script_parent) =
+    mutate_dom_for_vm_host(host, |dom| match dom.set_text_data(text_id, &new_value) {
+      Ok(changed) => {
+        let maybe_script_parent = changed
+          .then(|| dom.node(text_id).parent)
+          .flatten()
+          .filter(|&parent| is_html_script_element(dom, parent));
+        (Ok((changed, maybe_script_parent)), changed)
+      }
+      Err(err) => {
+        let exc = match make_dom_exception(scope, err.code(), "") {
+          Ok(v) => VmError::Throw(v),
+          Err(e) => e,
+        };
+        (Err(exc), false)
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??;
 
-  let maybe_script_parent = dom
-    .node(text_id)
-    .parent
-    .filter(|&parent| is_html_script_element(dom, parent));
-
-  if let Some(parent) = maybe_script_parent {
-    run_dynamic_script_children_changed_steps(
-      vm,
-      scope,
-      host,
-      hooks,
-      document_obj,
-      dom_ptr,
-      parent,
-    )?;
+  if changed {
+    if let Some(parent) = maybe_script_parent {
+      run_dynamic_script_children_changed_steps(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        dom_ptr,
+        parent,
+      )?;
+    }
   }
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
 
+  Ok(Value::Undefined)
+}
+
+fn comment_data_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(comment_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let comment_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_comment_id(scope.heap(), Value::Object(comment_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let data = dom
+    .comment_data(comment_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  Ok(Value::String(scope.alloc_string(data)?))
+}
+
+fn comment_data_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(comment_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let Some(document_obj) = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj)
+  else {
+    return Ok(Value::Undefined);
+  };
+
+  let comment_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_comment_id(scope.heap(), Value::Object(comment_obj))?;
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let needs_microtask = mutate_dom_for_vm_host(host, |dom| match dom.set_comment_data(comment_id, &new_value) {
+    Ok(changed) => {
+      let needs = dom.take_mutation_observer_microtask_needed();
+      (Ok(needs), changed)
+    }
+    Err(err) => {
+      let exc = match make_dom_exception(scope, err.code(), "") {
+        Ok(v) => VmError::Throw(v),
+        Err(e) => e,
+      };
+      (Err(exc), false)
+    }
+  })
+  .ok_or(VmError::TypeError("Illegal invocation"))??;
+
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
+fn processing_instruction_data_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_processing_instruction_id(scope.heap(), Value::Object(obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let data = dom
+    .processing_instruction_data(node_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  Ok(Value::String(scope.alloc_string(data)?))
+}
+
+fn processing_instruction_data_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let Some(document_obj) = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj)
+  else {
+    return Ok(Value::Undefined);
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_processing_instruction_id(scope.heap(), Value::Object(obj))?;
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let needs_microtask =
+    mutate_dom_for_vm_host(host, |dom| match dom.set_processing_instruction_data(node_id, &new_value) {
+      Ok(changed) => {
+        let needs = dom.take_mutation_observer_microtask_needed();
+        (Ok(needs), changed)
+      }
+      Err(err) => {
+        let exc = match make_dom_exception(scope, err.code(), "") {
+          Ok(v) => VmError::Throw(v),
+          Err(e) => e,
+        };
+        (Err(exc), false)
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??;
+
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
   Ok(Value::Undefined)
 }
 
@@ -26006,6 +26396,23 @@ fn init_window_globals(
     data_desc(Value::Object(create_comment_func)),
   )?;
 
+  // document.createProcessingInstruction
+  let create_pi_key = alloc_key(&mut scope, "createProcessingInstruction")?;
+  let create_pi_call_id = vm.register_native_call(document_create_processing_instruction_native)?;
+  let create_pi_name = scope.alloc_string("createProcessingInstruction")?;
+  scope.push_root(Value::String(create_pi_name))?;
+  let create_pi_func = scope.alloc_native_function(create_pi_call_id, None, create_pi_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    create_pi_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_pi_func))?;
+  scope.define_property(
+    document_obj,
+    create_pi_key,
+    data_desc(Value::Object(create_pi_func)),
+  )?;
+
   // document.createDocumentFragment
   let create_fragment_key = alloc_key(&mut scope, "createDocumentFragment")?;
   let create_fragment_call_id =
@@ -27251,6 +27658,8 @@ fn init_window_globals(
     let document_proto = platform.prototype_for(DomInterface::Document);
     let document_fragment_proto = platform.prototype_for(DomInterface::DocumentFragment);
     let text_proto = platform.prototype_for(DomInterface::Text);
+    let comment_proto = platform.prototype_for(DomInterface::Comment);
+    let processing_instruction_proto = platform.prototype_for(DomInterface::ProcessingInstruction);
 
     let make_illegal_ctor = |scope: &mut Scope<'_>, name: &str| -> Result<GcObject, VmError> {
       let name = scope.alloc_string(name)?;
@@ -27415,6 +27824,40 @@ fn init_window_globals(
     )?;
     let text_key = alloc_key(&mut scope, "Text")?;
     scope.define_property(global, text_key, data_desc(Value::Object(text_ctor)))?;
+
+    let comment_ctor = make_illegal_ctor(&mut scope, "Comment")?;
+    scope.push_root(Value::Object(comment_ctor))?;
+    scope.define_property(
+      comment_ctor,
+      prototype_key,
+      data_desc(Value::Object(comment_proto)),
+    )?;
+    scope.define_property(
+      comment_proto,
+      constructor_key,
+      data_desc(Value::Object(comment_ctor)),
+    )?;
+    let comment_key = alloc_key(&mut scope, "Comment")?;
+    scope.define_property(global, comment_key, data_desc(Value::Object(comment_ctor)))?;
+
+    let processing_instruction_ctor = make_illegal_ctor(&mut scope, "ProcessingInstruction")?;
+    scope.push_root(Value::Object(processing_instruction_ctor))?;
+    scope.define_property(
+      processing_instruction_ctor,
+      prototype_key,
+      data_desc(Value::Object(processing_instruction_proto)),
+    )?;
+    scope.define_property(
+      processing_instruction_proto,
+      constructor_key,
+      data_desc(Value::Object(processing_instruction_ctor)),
+    )?;
+    let processing_instruction_key = alloc_key(&mut scope, "ProcessingInstruction")?;
+    scope.define_property(
+      global,
+      processing_instruction_key,
+      data_desc(Value::Object(processing_instruction_ctor)),
+    )?;
 
     // HTMLCollection constructor + prototype.
     //
@@ -27689,6 +28132,42 @@ fn init_window_globals(
       node_proto,
       node_name_key,
       idl_attribute_desc(Value::Object(node_name_get_func), Value::Undefined),
+    )?;
+
+    let node_value_get_call_id = vm.register_native_call(node_node_value_get_native)?;
+    let node_value_get_name = scope.alloc_string("get nodeValue")?;
+    scope.push_root(Value::String(node_value_get_name))?;
+    let node_value_get_func =
+      scope.alloc_native_function(node_value_get_call_id, None, node_value_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      node_value_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_value_get_func))?;
+
+    let node_value_set_call_id = vm.register_native_call(node_node_value_set_native)?;
+    let node_value_set_name = scope.alloc_string("set nodeValue")?;
+    scope.push_root(Value::String(node_value_set_name))?;
+    let node_value_set_func =
+      scope.alloc_native_function(node_value_set_call_id, None, node_value_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      node_value_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_value_set_func))?;
+
+    let node_value_key = alloc_key(&mut scope, "nodeValue")?;
+    scope.define_property(
+      node_proto,
+      node_value_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(node_value_get_func),
+          set: Value::Object(node_value_set_func),
+        },
+      },
     )?;
 
     let owner_document_get_call_id = vm.register_native_call(node_owner_document_get_native)?;
@@ -28178,6 +28657,90 @@ fn init_window_globals(
         Value::Object(text_data_get_func),
         Value::Object(text_data_set_func),
       ),
+    )?;
+
+    // Comment.data
+    let comment_data_get_call_id = vm.register_native_call(comment_data_get_native)?;
+    let comment_data_get_name = scope.alloc_string("get data")?;
+    scope.push_root(Value::String(comment_data_get_name))?;
+    let comment_data_get_func =
+      scope.alloc_native_function(comment_data_get_call_id, None, comment_data_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      comment_data_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(comment_data_get_func))?;
+
+    let comment_data_set_call_id = vm.register_native_call(comment_data_set_native)?;
+    let comment_data_set_name = scope.alloc_string("set data")?;
+    scope.push_root(Value::String(comment_data_set_name))?;
+    let comment_data_set_func =
+      scope.alloc_native_function(comment_data_set_call_id, None, comment_data_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      comment_data_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(comment_data_set_func))?;
+
+    let comment_data_key = alloc_key(&mut scope, "data")?;
+    scope.define_property(
+      comment_proto,
+      comment_data_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(comment_data_get_func),
+          set: Value::Object(comment_data_set_func),
+        },
+      },
+    )?;
+
+    // ProcessingInstruction.data
+    let processing_instruction_data_get_call_id =
+      vm.register_native_call(processing_instruction_data_get_native)?;
+    let processing_instruction_data_get_name = scope.alloc_string("get data")?;
+    scope.push_root(Value::String(processing_instruction_data_get_name))?;
+    let processing_instruction_data_get_func = scope.alloc_native_function(
+      processing_instruction_data_get_call_id,
+      None,
+      processing_instruction_data_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      processing_instruction_data_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(processing_instruction_data_get_func))?;
+
+    let processing_instruction_data_set_call_id =
+      vm.register_native_call(processing_instruction_data_set_native)?;
+    let processing_instruction_data_set_name = scope.alloc_string("set data")?;
+    scope.push_root(Value::String(processing_instruction_data_set_name))?;
+    let processing_instruction_data_set_func = scope.alloc_native_function(
+      processing_instruction_data_set_call_id,
+      None,
+      processing_instruction_data_set_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      processing_instruction_data_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(processing_instruction_data_set_func))?;
+
+    let processing_instruction_data_key = alloc_key(&mut scope, "data")?;
+    scope.define_property(
+      processing_instruction_proto,
+      processing_instruction_data_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(processing_instruction_data_get_func),
+          set: Value::Object(processing_instruction_data_set_func),
+        },
+      },
     )?;
   }
 

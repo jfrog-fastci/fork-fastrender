@@ -1288,6 +1288,9 @@ mod tests {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
 
+    let out = host.exec_script("window instanceof EventTarget")?;
+    assert_eq!(out, Value::Bool(true));
+
     let out = host.exec_script("Object.getPrototypeOf(Node.prototype) === EventTarget.prototype")?;
     assert_eq!(out, Value::Bool(true));
 

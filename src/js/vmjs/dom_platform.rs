@@ -54,6 +54,8 @@ pub enum DomInterface {
   Node,
   DocumentType,
   Text,
+  Comment,
+  ProcessingInstruction,
   Element,
   HTMLElement,
   HTMLInputElement,
@@ -78,6 +80,8 @@ impl DomInterface {
       NodeKind::Document { .. } => Self::Document,
       NodeKind::DocumentFragment => Self::DocumentFragment,
       NodeKind::Text { .. } => Self::Text,
+      NodeKind::Comment { .. } => Self::Comment,
+      NodeKind::ProcessingInstruction { .. } => Self::ProcessingInstruction,
       NodeKind::Element {
         tag_name, namespace, ..
       } => {
@@ -136,9 +140,13 @@ impl DomInterface {
     match self {
       Self::EventTarget => None,
       Self::Node => Some(Self::EventTarget),
-      Self::Text | Self::Element | Self::Document | Self::DocumentFragment | Self::DocumentType => {
-        Some(Self::Node)
-      }
+      Self::Text
+      | Self::Comment
+      | Self::ProcessingInstruction
+      | Self::Element
+      | Self::Document
+      | Self::DocumentFragment
+      | Self::DocumentType => Some(Self::Node),
       Self::HTMLElement => Some(Self::Element),
       Self::HTMLInputElement
       | Self::HTMLSelectElement
@@ -181,6 +189,8 @@ struct DomPrototypes {
   node: GcObject,
   document_type: GcObject,
   text: GcObject,
+  comment: GcObject,
+  processing_instruction: GcObject,
   element: GcObject,
   html_element: GcObject,
   html_input_element: GcObject,
@@ -241,6 +251,10 @@ impl DomPlatform {
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document_type))?);
     let proto_text = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_text))?);
+    let proto_comment = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_comment))?);
+    let proto_processing_instruction = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_processing_instruction))?);
     let proto_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_element))?);
     let proto_html_element = scope.alloc_object()?;
@@ -283,6 +297,8 @@ impl DomPlatform {
     //   Node -> EventTarget
     //   DocumentType -> Node
     //   Text -> Node
+    //   Comment -> Node
+    //   ProcessingInstruction -> Node
     //   Element -> Node
     //   HTMLElement -> Element
     //   HTML*Element -> HTMLElement
@@ -301,6 +317,12 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(proto_text, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_comment, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_processing_instruction, Some(proto_node))?;
     scope
       .heap_mut()
       .object_set_prototype(proto_element, Some(proto_node))?;
@@ -339,6 +361,8 @@ impl DomPlatform {
         node: proto_node,
         document_type: proto_document_type,
         text: proto_text,
+        comment: proto_comment,
+        processing_instruction: proto_processing_instruction,
         element: proto_element,
         html_element: proto_html_element,
         html_input_element: proto_html_input_element,
@@ -379,6 +403,8 @@ impl DomPlatform {
       DomInterface::Node => self.prototypes.node,
       DomInterface::DocumentType => self.prototypes.document_type,
       DomInterface::Text => self.prototypes.text,
+      DomInterface::Comment => self.prototypes.comment,
+      DomInterface::ProcessingInstruction => self.prototypes.processing_instruction,
       DomInterface::Element => self.prototypes.element,
       DomInterface::HTMLElement => self.prototypes.html_element,
       DomInterface::HTMLInputElement => self.prototypes.html_input_element,
@@ -693,6 +719,33 @@ impl DomPlatform {
     Ok(DomNodeKey::new(meta.document_id, meta.node_id))
   }
 
+  pub fn require_comment_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<DomNodeKey, VmError> {
+    let meta = self.require_wrapper_meta(heap, value)?;
+    if !meta.primary_interface.implements(DomInterface::Comment) {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+  }
+
+  pub fn require_processing_instruction_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<DomNodeKey, VmError> {
+    let meta = self.require_wrapper_meta(heap, value)?;
+    if !meta
+      .primary_interface
+      .implements(DomInterface::ProcessingInstruction)
+    {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+  }
+
   pub fn require_document_type_handle(
     &mut self,
     heap: &Heap,
@@ -705,7 +758,11 @@ impl DomPlatform {
     Ok(DomNodeKey::new(meta.document_id, meta.node_id))
   }
 
-  pub fn require_document_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
+  pub fn require_document_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<DomNodeKey, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
     if !meta.primary_interface.implements(DomInterface::Document) {
       return Err(VmError::TypeError("Illegal invocation"));
@@ -738,6 +795,18 @@ impl DomPlatform {
 
   pub fn require_text_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
     Ok(self.require_text_handle(heap, value)?.node_id)
+  }
+
+  pub fn require_comment_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+    Ok(self.require_comment_handle(heap, value)?.node_id)
+  }
+
+  pub fn require_processing_instruction_id(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<NodeId, VmError> {
+    Ok(self.require_processing_instruction_handle(heap, value)?.node_id)
   }
 
   pub fn require_document_type_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {

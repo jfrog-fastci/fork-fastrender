@@ -683,6 +683,17 @@ impl Document {
     )
   }
 
+  pub fn create_processing_instruction(&mut self, target: &str, data: &str) -> NodeId {
+    self.push_node(
+      NodeKind::ProcessingInstruction {
+        target: target.to_string(),
+        data: data.to_string(),
+      },
+      None,
+      /* inert_subtree */ false,
+    )
+  }
+
   pub fn create_document_fragment(&mut self) -> NodeId {
     self.push_node(
       NodeKind::DocumentFragment,
@@ -711,6 +722,22 @@ impl Document {
     let node = self.node_checked(node)?;
     match &node.kind {
       NodeKind::Text { content } => Ok(content.as_str()),
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
+
+  pub fn comment_data(&self, node: NodeId) -> Result<&str, DomError> {
+    let node = self.node_checked(node)?;
+    match &node.kind {
+      NodeKind::Comment { content } => Ok(content.as_str()),
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
+
+  pub fn processing_instruction_data(&self, node: NodeId) -> Result<&str, DomError> {
+    let node = self.node_checked(node)?;
+    match &node.kind {
+      NodeKind::ProcessingInstruction { data, .. } => Ok(data.as_str()),
       _ => Err(DomError::InvalidNodeType),
     }
   }
@@ -821,6 +848,7 @@ impl Document {
     // Comments are currently ignored by renderer DOM snapshots, so treat comment data changes as
     // non-render-affecting. Still queue MutationObserver CharacterData records so observers and
     // future live-mutation hooks (e.g. Range/NodeIterator) observe the update.
+    self.bump_mutation_generation();
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
   }
@@ -855,6 +883,7 @@ impl Document {
     // Processing instructions are currently ignored by renderer DOM snapshots, so treat data
     // changes as non-render-affecting. Still queue MutationObserver CharacterData records so
     // observers and future live-mutation hooks observe the update.
+    self.bump_mutation_generation();
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
   }
