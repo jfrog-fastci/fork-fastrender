@@ -46,6 +46,9 @@
 //! back-to-back, while full LTO (`clang -flto`) tends to emit one merged blob. Runtime parsers must
 //! iterate `stackmaps[..]` and parse blobs until the end of the range. See `docs/stackmaps.md`.
 
+#[cfg(feature = "link-runtime-native")]
+extern crate runtime_native as _;
+
 pub mod builtins;
 pub mod codegen;
 pub mod codes;

@@ -54,6 +54,51 @@ TypeScript source
 
 ## Build prerequisites
 
+### Native executable emission (`EmitKind::Executable`) and `runtime-native`
+
+When `native-js` is asked to emit a native executable (`EmitKind::Executable`), it links the
+generated object file(s) with the `runtime-native` crate’s `staticlib` artifact:
+
+- `libruntime_native.a`
+
+This static library provides the native runtime support used by generated code (including the
+stack-walking / GC infrastructure).
+
+#### Ensuring `libruntime_native.a` is built
+
+`native-js` provides a Cargo feature to ensure `runtime-native` is built as part of the **normal**
+dependency graph:
+
+- `native-js` feature: `link-runtime-native`
+
+`native-js-cli` enables this feature by default, so `cargo run -p native-js-cli -- ...` builds
+`runtime-native` automatically.
+
+Because `runtime-native` requires `-C force-frame-pointers=yes`, prefer running via the LLVM wrapper
+script (it also raises memory limits for LLVM tooling):
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked run path/to/entry.ts
+```
+
+#### How `native-js` locates `libruntime_native.a`
+
+At link time, `native-js` discovers `libruntime_native.a` in this order:
+
+1. `NATIVE_JS_RUNTIME_NATIVE_A` env var override (value is used verbatim).
+2. Next to the running executable (`current_exe()`):
+   - `current_exe().parent()/libruntime_native.a`
+   - `current_exe().parent()/deps/libruntime_native.a`
+3. Cargo `target/` directory fallbacks:
+   - If `CARGO_TARGET_DIR` is set: `$CARGO_TARGET_DIR/{debug,release}/deps/libruntime_native.a`
+   - Otherwise, if a workspace root is detected (walk up from `CARGO_MANIFEST_DIR` until a
+     `Cargo.toml` containing `[workspace]`): `<workspace_root>/target/{debug,release}/deps/libruntime_native.a`
+   - Final fallback (non-workspace builds): `<crate_dir>/target/{debug,release}/deps/libruntime_native.a`
+
+If discovery fails (or you want to link a custom build of the runtime), set
+`NATIVE_JS_RUNTIME_NATIVE_A=/absolute/path/to/libruntime_native.a`.
+
 ### LLVM 18
 
 `native-js` uses the LLVM 18 C API via Rust bindings (e.g. `llvm-sys`/`inkwell`),

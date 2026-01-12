@@ -245,25 +245,86 @@ fn run_tool(opts: LinkCommandOptions, cmd: &mut Command, tool_label: &str) -> Re
   Ok(())
 }
 
+/// Inputs for deterministic `runtime-native` staticlib discovery.
+#[derive(Clone, Debug)]
+#[doc(hidden)]
+pub struct RuntimeNativeStaticlibDiscoveryContext {
+  pub env_runtime_native_a: Option<PathBuf>,
+  pub current_exe: Option<PathBuf>,
+  pub cargo_target_dir: Option<PathBuf>,
+  pub cargo_manifest_dir: PathBuf,
+}
+
+fn has_workspace_toml(cargo_toml: &Path) -> bool {
+  let Ok(contents) = fs::read_to_string(cargo_toml) else {
+    return false;
+  };
+  for line in contents.lines() {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+      continue;
+    }
+    if line == "[workspace]" {
+      return true;
+    }
+  }
+  false
+}
+
+fn infer_workspace_root(manifest_dir: &Path) -> Option<PathBuf> {
+  let mut dir: Option<&Path> = Some(manifest_dir);
+  while let Some(d) = dir {
+    let cargo_toml = d.join("Cargo.toml");
+    if cargo_toml.is_file() && has_workspace_toml(&cargo_toml) {
+      return Some(d.to_path_buf());
+    }
+    dir = d.parent();
+  }
+  None
+}
+
+fn target_dir_candidate_paths(target_dir: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+  ["debug", "release"].into_iter().map(move |profile| {
+    target_dir
+      .join(profile)
+      .join("deps")
+      .join(RUNTIME_NATIVE_STATICLIB_FILENAME)
+  })
+}
+
 /// Best-effort discovery of the `runtime-native` `staticlib` artifact (`libruntime_native.a`).
 ///
-/// Discovery strategy:
+/// Discovery strategy (deterministic):
 /// 1) If `NATIVE_JS_RUNTIME_NATIVE_A` is set, return its value verbatim.
 /// 2) Otherwise, try to locate `libruntime_native.a` next to `current_exe()` (Cargo layouts):
 ///    - `current_exe().parent()/libruntime_native.a`
 ///    - `current_exe().parent()/deps/libruntime_native.a`
-/// 3) Otherwise, fall back to `CARGO_MANIFEST_DIR/target/{debug,release}/deps/libruntime_native.a`.
+/// 3) Otherwise, fall back to workspace/non-workspace `target/` directories:
+///    - Prefer `CARGO_TARGET_DIR` if set.
+///    - Otherwise, walk up from `CARGO_MANIFEST_DIR` until a workspace root is found (a `Cargo.toml`
+///      containing `[workspace]`), and check `<workspace_root>/target/{debug,release}/deps/...`.
+///    - Finally, fall back to `<crate_dir>/target/{debug,release}/deps/...` for non-workspace builds.
 pub fn find_runtime_native_staticlib() -> Option<PathBuf> {
+  find_runtime_native_staticlib_in(RuntimeNativeStaticlibDiscoveryContext {
+    env_runtime_native_a: std::env::var_os("NATIVE_JS_RUNTIME_NATIVE_A").map(PathBuf::from),
+    current_exe: std::env::current_exe().ok(),
+    cargo_target_dir: std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from),
+    cargo_manifest_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+  })
+}
+
+#[doc(hidden)]
+pub fn find_runtime_native_staticlib_in(ctx: RuntimeNativeStaticlibDiscoveryContext) -> Option<PathBuf> {
   // Explicit override.
-  if let Some(p) = std::env::var_os("NATIVE_JS_RUNTIME_NATIVE_A") {
-    return Some(PathBuf::from(p));
+  if let Some(p) = ctx.env_runtime_native_a {
+    return Some(p);
   }
 
   // Cargo layouts:
   // - `cargo test`: test binaries live in `target/**/deps/`, and the staticlib artifact is
   //   co-located there.
   // - `cargo run`: binaries live in `target/**/`, and dependencies live under `target/**/deps/`.
-  if let Ok(exe) = std::env::current_exe() {
+  if let Some(exe) = ctx.current_exe {
     if let Some(dir) = exe.parent() {
       let adjacent = dir.join(RUNTIME_NATIVE_STATICLIB_FILENAME);
       if adjacent.is_file() {
@@ -276,16 +337,30 @@ pub fn find_runtime_native_staticlib() -> Option<PathBuf> {
     }
   }
 
-  // Best-effort fallback for repo-local builds where `target/` sits next to this crate.
-  let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  for profile in ["debug", "release"] {
-    let p = manifest_dir
-      .join("target")
-      .join(profile)
-      .join("deps")
-      .join(RUNTIME_NATIVE_STATICLIB_FILENAME);
-    if p.is_file() {
-      return Some(p);
+  // Workspace/non-workspace `target/` fallbacks.
+  // Prefer `CARGO_TARGET_DIR`, then workspace root's `target/`, then the crate-local `target/`.
+  let mut candidates: Vec<PathBuf> = Vec::new();
+  if let Some(target_dir) = ctx.cargo_target_dir {
+    candidates.push(target_dir);
+  }
+
+  if let Some(workspace_root) = infer_workspace_root(&ctx.cargo_manifest_dir) {
+    let td = workspace_root.join("target");
+    if !candidates.iter().any(|p| p == &td) {
+      candidates.push(td);
+    }
+  }
+
+  let crate_local = ctx.cargo_manifest_dir.join("target");
+  if !candidates.iter().any(|p| p == &crate_local) {
+    candidates.push(crate_local);
+  }
+
+  for target_dir in candidates {
+    for p in target_dir_candidate_paths(&target_dir) {
+      if p.is_file() {
+        return Some(p);
+      }
     }
   }
 
@@ -368,6 +443,7 @@ pub(crate) fn link_elf_executable_with_toolchain_and_static_libs(
   let out_dir = output_path.parent().ok_or_else(|| {
     crate::NativeJsError::Toolchain("output_path must have a parent directory".to_string())
   })?;
+
   // `Path::parent` of a relative filename like `out` is `Some("")`. Treat that as the current
   // directory so `create_dir_all` and script emission work as expected.
   let out_dir: &Path = if out_dir.as_os_str().is_empty() {

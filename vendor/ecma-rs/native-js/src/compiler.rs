@@ -309,11 +309,21 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
 fn require_runtime_native_staticlib() -> Result<PathBuf, NativeJsError> {
   let Some(p) = link::find_runtime_native_staticlib() else {
     return Err(NativeJsError::RuntimeNativeNotFound {
-      message:
-        "unable to locate runtime-native static library `libruntime_native.a` required for native executable linking; \
-build it with `cargo build -p runtime-native` (from the ecma-rs workspace root), \
-or set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override discovery"
-          .to_string(),
+      message: [
+        "unable to locate `libruntime_native.a` (runtime-native static library), required for EmitKind::Executable.",
+        "",
+        "Fix:",
+        "  - Ensure `runtime-native` is built so Cargo produces `libruntime_native.a`.",
+        "    - In this repo, prefer the LLVM wrapper (sets required rustflags like `-C force-frame-pointers=yes`):",
+        "        bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p runtime-native",
+        "        bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- ...",
+        "    - Or build from the ecma-rs workspace root:",
+        "        cargo build -p runtime-native",
+        "  - If you're embedding `native-js`, enable the `native-js` Cargo feature `link-runtime-native`",
+        "    (or add a direct dependency on `runtime-native`) so the staticlib is built.",
+        "  - Or override discovery with: NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a",
+      ]
+      .join("\n"),
     });
   };
 
@@ -326,8 +336,9 @@ or set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override disco
   if std::env::var_os("NATIVE_JS_RUNTIME_NATIVE_A").is_some() {
     return Err(NativeJsError::RuntimeNativeNotFound {
       message: format!(
-        "NATIVE_JS_RUNTIME_NATIVE_A was set to {}, but that file does not exist; \
-set it to the path of `libruntime_native.a`",
+        "NATIVE_JS_RUNTIME_NATIVE_A was set to {}, but that file does not exist.\n\
+\n\
+Set it to the path of `libruntime_native.a` (produced by building the `runtime-native` crate).",
         p.display()
       ),
     });
@@ -335,9 +346,11 @@ set it to the path of `libruntime_native.a`",
 
   Err(NativeJsError::RuntimeNativeNotFound {
     message: format!(
-      "unable to locate runtime-native static library at {}; \
-build it with `cargo build -p runtime-native` (from the ecma-rs workspace root), \
-or set NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a to override discovery",
+      "unable to locate runtime-native static library at {}.\n\
+\n\
+Hint: build `runtime-native` (recommended: `bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p runtime-native`, \
+or `cargo build -p runtime-native` from the ecma-rs workspace root) \
+or override discovery with NATIVE_JS_RUNTIME_NATIVE_A=/path/to/libruntime_native.a",
       p.display()
     ),
   })

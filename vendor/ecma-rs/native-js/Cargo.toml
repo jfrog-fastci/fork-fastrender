@@ -16,6 +16,9 @@ gc-lint = []
 # Enable post-`rewrite-statepoints-for-gc` callsite verification in non-debug builds.
 # Debug builds/tests always run it.
 gc-callsite-verify = []
+# Ensure `runtime-native` is built as part of the normal dependency graph so its
+# `staticlib` artifact (`libruntime_native.a`) is available for `EmitKind::Executable`.
+link-runtime-native = ["dep:runtime-native"]
 # Legacy HIR→LLVM "expression-only" backend (deprecated).
 #
 # This older backend is intentionally kept behind a feature to avoid accidental tests/tools
@@ -30,6 +33,7 @@ inkwell = { workspace = true }
 llvm-sys = { workspace = true }
 parse-js = { workspace = true }
 runtime-native-abi = { workspace = true }
+runtime-native = { workspace = true, optional = true }
 tempfile = { workspace = true }
 target-lexicon = { workspace = true }
 thiserror = { workspace = true }

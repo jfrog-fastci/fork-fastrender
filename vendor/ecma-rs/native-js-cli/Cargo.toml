@@ -13,7 +13,7 @@ addr2line = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 diagnostics = { workspace = true, features = ["serde"] }
 inkwell = { workspace = true }
-native-js = { workspace = true }
+native-js = { workspace = true, features = ["link-runtime-native"] }
 parse-js = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
