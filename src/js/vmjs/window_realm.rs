@@ -1870,7 +1870,9 @@ const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
+const DOM_TOKEN_LIST_HOST_TAG: u64 = 3;
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
+const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
@@ -1995,6 +1997,8 @@ const MUTATION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_mutation_observer_cal
 const MUTATION_OBSERVER_DOCUMENT_KEY: &str = "__fastrender_mutation_observer_document";
 const MUTATION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_mutation_observer_registry";
 const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
+const MUTATION_OBSERVER_HOST_TAG: u64 = 6;
+const MUTATION_RECORD_HOST_TAG: u64 = 7;
 
 const MUTATION_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
 
@@ -4788,6 +4792,13 @@ fn get_or_create_node_wrapper(
     ) {
       let class_list = scope.alloc_object()?;
       scope.push_root(Value::Object(class_list))?;
+      scope.heap_mut().object_set_host_slots(
+        class_list,
+        HostSlots {
+          a: node_id.index() as u64,
+          b: DOM_TOKEN_LIST_HOST_TAG,
+        },
+      )?;
 
       let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
       scope.define_property(
@@ -4945,6 +4956,13 @@ fn get_or_create_node_wrapper(
     ) {
       let style = scope.alloc_object()?;
       scope.push_root(Value::Object(style))?;
+      scope.heap_mut().object_set_host_slots(
+        style,
+        HostSlots {
+          a: node_id.index() as u64,
+          b: CSS_STYLE_DECL_HOST_TAG,
+        },
+      )?;
 
       if let Some(Value::Object(proto)) = css_style_decl_proto {
         scope
@@ -8184,13 +8202,20 @@ fn mutation_observer_constructor_construct_native(
       _ => None,
     });
 
+  let id = NEXT_MUTATION_OBSERVER_ID.fetch_add(1, Ordering::Relaxed);
+
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: id,
+      b: MUTATION_OBSERVER_HOST_TAG,
+    },
+  )?;
   if let Some(proto) = proto {
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
-
-  let id = NEXT_MUTATION_OBSERVER_ID.fetch_add(1, Ordering::Relaxed);
 
   let id_key = alloc_key(scope, MUTATION_OBSERVER_ID_KEY)?;
   scope.define_property(
@@ -8442,6 +8467,13 @@ fn alloc_mutation_record_object(
 ) -> Result<GcObject, VmError> {
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: record.target.index() as u64,
+      b: MUTATION_RECORD_HOST_TAG,
+    },
+  )?;
 
   let type_key = alloc_key(scope, "type")?;
   let type_s = scope.alloc_string(record.type_.as_str())?;
@@ -22554,12 +22586,7 @@ fn init_window_globals(
   scope.define_property(global, btoa_key, data_desc(Value::Object(btoa_func)))?;
 
   // structuredClone(value[, options])
-  crate::js::window_structured_clone::install_window_structured_clone(
-    vm,
-    &mut scope,
-    realm,
-    global,
-  )?;
+  crate::js::window_structured_clone::install_window_structured_clone(vm, &mut scope, realm, global)?;
 
   // reportError(e)
   let report_error_call_id = vm.register_native_call(window_report_error_native)?;
@@ -22983,6 +23010,34 @@ mod tests {
 
     let decoded = realm.exec_script("new TextDecoder().decode(new TextEncoder().encode('hi'))")?;
     assert_eq!(get_string(realm.heap(), decoded), "hi");
+    Ok(())
+  }
+
+  #[test]
+  fn window_structured_clone_clones_plain_objects() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          const a = { x: 1, nested: { y: 2 } };\n\
+          const b = structuredClone(a);\n\
+          if (b === a) return false;\n\
+          if (b.x !== 1) return false;\n\
+          if (!b.nested || b.nested === a.nested) return false;\n\
+          if (b.nested.y !== 2) return false;\n\
+\n\
+          const c = {};\n\
+          c.self = c;\n\
+          const d = structuredClone(c);\n\
+          if (d === c) return false;\n\
+          if (d.self !== d) return false;\n\
+          return true;\n\
+        })()",
+      )?,
+      Value::Bool(true)
+    );
+
     Ok(())
   }
 
@@ -24912,6 +24967,40 @@ mod tests {
       .get_element_by_id("target")
       .expect("missing #target");
     assert_eq!(host.dom().element_class_name(target), "f c d e");
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_dom_helper_objects() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        function isDataCloneError(fn) {\n\
+          try { fn(); return false; } catch (e) { return e && e.name === 'DataCloneError'; }\n\
+        }\n\
+\n\
+        const a = isDataCloneError(() => structuredClone(document.createElement('div').classList));\n\
+        const b = isDataCloneError(() => structuredClone(document.createElement('div').style));\n\
+        const c = isDataCloneError(() => structuredClone(new MutationObserver(() => {})));\n\
+\n\
+        const el = document.createElement('div');\n\
+        document.body.appendChild(el);\n\
+        const obs = new MutationObserver(() => {});\n\
+        obs.observe(el, { attributes: true });\n\
+        el.setAttribute('data-x', '1');\n\
+        const records = obs.takeRecords();\n\
+        if (!records || records.length === 0) return false;\n\
+        const d = isDataCloneError(() => structuredClone(records[0]));\n\
+\n\
+        return a && b && c && d;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 

@@ -540,6 +540,16 @@ fn serialize_object(
     return Ok(EncodedValue::Object(id));
   }
 
+  // Reject platform objects branded via `HostSlots` (e.g. DOM helper interface objects).
+  if scope.heap().object_host_slots(obj)?.is_some() {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone platform object",
+    ));
+  }
+
   // Reject callable objects and Promises.
   if scope.heap().is_callable(Value::Object(obj))? {
     return Err(throw_data_clone_error(
