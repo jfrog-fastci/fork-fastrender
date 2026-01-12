@@ -2648,7 +2648,8 @@ StackMap v3 invariant (LLVM 18, tested; required by our runtime):
     - codegen: `--fixup-allow-gcptr-in-csr=false` (preferred) / `--fixup-max-csr-statepoints=0` (fallback; see `native-js` emitter)
     - runtime: statepoint stackmap verifier (`runtime-native/src/statepoint_verify.rs`)
   - Empirically, on x86_64 SysV + aarch64 SysV, across -O0/-O2 and with/without `-frame-pointer=all`,
-    statepoint roots are `Indirect [SP + off]` under the above codegen settings.
+    statepoint roots are typically `Indirect [SP + off]` (and may also appear as `Indirect [FP + off]`)
+    under the above codegen settings.
   - Repro: `opt-18 -passes=rewrite-statepoints-for-gc ...` → `llc-18 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 ...` → `llvm-readobj-18 --stackmap`.
 
 Write Barrier Elimination:
