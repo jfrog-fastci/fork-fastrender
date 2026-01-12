@@ -20,6 +20,7 @@ mod import_page_fixture;
 mod js;
 mod lint_no_openssl;
 mod lint_no_panics;
+mod lint_test_global_state;
 mod page_loop;
 mod pageset_triage;
 mod recapture_page_fixtures;
@@ -76,6 +77,10 @@ fn main() -> Result<()> {
     Commands::LintNoPanics(args) => {
       let repo_root = repo_root();
       lint_no_panics::run_lint_no_panics(&repo_root, args)
+    }
+    Commands::LintTestGlobalState(args) => {
+      let repo_root = repo_root();
+      lint_test_global_state::run_lint_test_global_state(&repo_root, args)
     }
     Commands::LintNoOpenssl(args) => {
       let repo_root = repo_root();
@@ -164,6 +169,8 @@ enum Commands {
   GenerateEmojiTables(generate_emoji_tables::GenerateEmojiTablesArgs),
   /// Fail CI if new panic sites are introduced in production code (`src/`, excluding `#[cfg(test)]`).
   LintNoPanics(lint_no_panics::LintNoPanicsArgs),
+  /// Fail CI if tests introduce new process-global state mutations (env vars, cwd changes, etc.).
+  LintTestGlobalState(lint_test_global_state::LintTestGlobalStateArgs),
   /// Fail CI if the dependency graph includes `openssl-sys` (and thus requires system OpenSSL headers).
   LintNoOpenssl(lint_no_openssl::LintNoOpenSslArgs),
   /// Generate deterministic WebIDL metadata from vendored WHATWG specs.

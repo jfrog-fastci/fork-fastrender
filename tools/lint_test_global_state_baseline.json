@@ -1,0 +1,134 @@
+[
+  {
+    "path": "tests/animation/support.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FASTR_USE_BUNDLED_FONTS\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/animation/support.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"RAYON_NUM_THREADS\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/common/rayon.rs",
+    "kind": "rayon_build_global",
+    "line": ".build_global()",
+    "count": 1
+  },
+  {
+    "path": "tests/fixtures_test.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FASTR_USE_BUNDLED_FONTS\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/iframe/integration.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FASTR_USE_BUNDLED_FONTS\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/layout/layout_parallel_determinism.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FASTR_USE_BUNDLED_FONTS\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/layout/table_row_group_reorder_rowspan.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"RAYON_NUM_THREADS\", \"4\");",
+    "count": 1
+  },
+  {
+    "path": "tests/layout/table_rowspan_zero.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"RAYON_NUM_THREADS\", \"4\");",
+    "count": 1
+  },
+  {
+    "path": "tests/layout/table_visibility_collapse_layout.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"RAYON_NUM_THREADS\", \"4\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/image_compare.rs",
+    "kind": "env_remove_var",
+    "line": "std::env::remove_var(\"FIXTURE_IGNORE_ALPHA\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/image_compare.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FIXTURE_FUZZY\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/image_compare.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FIXTURE_IGNORE_ALPHA\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/image_compare.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FIXTURE_MAX_PERCEPTUAL_DISTANCE\", \"0.01\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/image_compare.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FIXTURE_MAX_PERCEPTUAL_DISTANCE\", \"0.123\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/image_compare.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FIXTURE_MAX_PERCEPTUAL_DISTANCE\", \"not-a-number\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/image_compare.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"PAGES_IGNORE_ALPHA\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/image_compare.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"PAGES_MAX_PERCEPTUAL_DISTANCE\", \"0.2\");",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/test_utils.rs",
+    "kind": "env_remove_var",
+    "line": "None => std::env::remove_var(key),",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/test_utils.rs",
+    "kind": "env_remove_var",
+    "line": "std::env::remove_var(key);",
+    "count": 1
+  },
+  {
+    "path": "tests/ref/test_utils.rs",
+    "kind": "env_set_var",
+    "line": "Some(v) => std::env::set_var(key, v),",
+    "count": 1
+  },
+  {
+    "path": "tests/regression/pages.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FASTR_USE_BUNDLED_FONTS\", \"1\");",
+    "count": 1
+  },
+  {
+    "path": "tests/style/transitions_starting_style_test.rs",
+    "kind": "env_set_var",
+    "line": "std::env::set_var(\"FASTR_USE_BUNDLED_FONTS\", \"1\");",
+    "count": 1
+  }
+]

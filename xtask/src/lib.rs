@@ -7,6 +7,7 @@ pub mod cmd;
 pub mod freeze_page_fixture;
 pub mod lint_no_openssl;
 pub mod lint_no_panics;
+pub mod lint_test_global_state;
 pub mod page_loop_plan;
 pub mod pageset_failure_fixtures;
 pub mod webidl;
