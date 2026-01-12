@@ -60,6 +60,27 @@ pub fn promise_resolve_with_host_and_hooks(
     "PromiseResolve requires intrinsics (create a Realm first)",
   ))?;
 
+  // Fast path: `Await` frequently calls `PromiseResolve(%Promise%, <non-object>)` (e.g. `await 0`).
+  //
+  // The spec's `PromiseResolve` constructs a `PromiseCapability` and invokes the resolve function,
+  // which in turn calls `FulfillPromise` for non-thenable values. For VM-internal callers that
+  // always resolve with the intrinsic `%Promise%` constructor, we can avoid allocating the
+  // intermediate resolving functions + `alreadyResolved` environment record.
+  //
+  // This matters for small test heaps: the extra allocations can force slot table growth and hit
+  // `HeapLimits` even though the returned Promise is immediately-fulfilled.
+  if !matches!(value, Value::Object(_)) {
+    // Root the input value across Promise allocation in case it triggers a GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(value)?;
+
+    let promise = scope.alloc_promise_with_prototype(Some(intr.promise_prototype()))?;
+    scope.push_root(Value::Object(promise))?;
+    // No reactions exist yet; settle directly.
+    scope.heap_mut().promise_fulfill(promise, value)?;
+    return Ok(Value::Object(promise));
+  }
+
   // PromiseResolve(%Promise%, x) must observe `x.constructor` when `x` is a Promise object.
   //
   // Spec: https://tc39.es/ecma262/#sec-promise-resolve

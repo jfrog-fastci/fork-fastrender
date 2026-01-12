@@ -36,8 +36,8 @@ ok;
     r#"
 function* g() {}
 const gen = g();
-const r = Object.getPrototypeOf(g).prototype.next.call(gen);
-typeof r === "object" && r.value === undefined && r.done === true;
+const res = Object.getPrototypeOf(g).prototype.next.call(gen);
+typeof res === "object" && res.done === true && res.value === undefined
 "#,
   )?;
   assert_eq!(value, Value::Bool(true));
