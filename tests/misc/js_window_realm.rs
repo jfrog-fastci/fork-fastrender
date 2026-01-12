@@ -488,6 +488,60 @@ fn document_title_is_exposed_and_writable() -> Result<()> {
 }
 
 #[test]
+fn pop_state_event_and_hash_change_event_constructors_are_exposed() -> Result<()> {
+  let url = "https://example.com/";
+  let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script("typeof PopStateEvent === 'function' && typeof HashChangeEvent === 'function'")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = realm
+    .exec_script("new PopStateEvent('popstate', { state: 123 }).state === 123")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = realm
+    .exec_script("new PopStateEvent('popstate').state === null")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = realm
+    .exec_script("(function () { let ev = new PopStateEvent('popstate', { state: 1 }); return ev instanceof PopStateEvent && ev instanceof Event; })()")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = realm
+    .exec_script("new HashChangeEvent('hashchange', { oldURL: 'a', newURL: 'b' }).oldURL === 'a' && new HashChangeEvent('hashchange', { oldURL: 'a', newURL: 'b' }).newURL === 'b'")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = realm
+    .exec_script("new HashChangeEvent('hashchange').oldURL === '' && new HashChangeEvent('hashchange').newURL === ''")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = realm
+    .exec_script("document.createEvent('PopStateEvent') instanceof PopStateEvent && document.createEvent('HashChangeEvent') instanceof HashChangeEvent")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = realm
+    .exec_script("Object.getPrototypeOf(PopStateEvent.prototype) === Event.prototype && Object.getPrototypeOf(HashChangeEvent.prototype) === Event.prototype")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let ok = realm
+    .exec_script("(function () { 'use strict'; let e = new PopStateEvent('popstate', { state: 1 }); try { e.state = 2; } catch (_) {} return e.state === 1; })()")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
 fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
   #[derive(Default)]
   struct NoopHostHooks;

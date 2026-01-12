@@ -1879,6 +1879,8 @@ const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
+const POP_STATE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_pop_state_event_prototype";
+const HASH_CHANGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_hash_change_event_prototype";
 const STORAGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_storage_event_prototype";
 const EVENT_ID_KEY: &str = "__fastrender_event_id";
 const EVENT_IMMEDIATE_STOP_KEY: &str = "__fastrender_event_stop_immediate";
@@ -7122,6 +7124,230 @@ fn storage_event_constructor_impl(
   Ok(Value::Object(obj))
 }
 
+fn pop_state_event_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "PopStateEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn pop_state_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut state = Value::Null;
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let state_key = alloc_key(scope, "state")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &state_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          state = value;
+        }
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  define_event_default_properties(scope, obj)?;
+
+  let state_key = alloc_key(scope, "state")?;
+  scope.define_property(obj, state_key, read_only_data_desc(state))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::PopStateEvent)?;
+
+  Ok(Value::Object(obj))
+}
+
+fn hash_change_event_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "HashChangeEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn hash_change_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let empty = scope.alloc_string("")?;
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut old_url = empty;
+  let mut new_url = empty;
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let old_url_key = alloc_key(scope, "oldURL")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &old_url_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          old_url = scope.heap_mut().to_string(value)?;
+        }
+      }
+
+      let new_url_key = alloc_key(scope, "newURL")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &new_url_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          new_url = scope.heap_mut().to_string(value)?;
+        }
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  define_event_default_properties(scope, obj)?;
+
+  let old_url_key = alloc_key(scope, "oldURL")?;
+  scope.define_property(
+    obj,
+    old_url_key,
+    read_only_data_desc(Value::String(old_url)),
+  )?;
+  let new_url_key = alloc_key(scope, "newURL")?;
+  scope.define_property(
+    obj,
+    new_url_key,
+    read_only_data_desc(Value::String(new_url)),
+  )?;
+
+  brand_event_object(scope, obj, BrandedEventKind::HashChangeEvent)?;
+
+  Ok(Value::Object(obj))
+}
+
 fn promise_rejection_event_constructor_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -7640,6 +7866,38 @@ fn storage_event_constructor_construct_native(
     _ => callee,
   };
   storage_event_constructor_impl(scope, ctor, args)
+}
+
+fn pop_state_event_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  pop_state_event_constructor_impl(scope, ctor, args)
+}
+
+fn hash_change_event_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  hash_change_event_constructor_impl(scope, ctor, args)
 }
 
 fn promise_rejection_event_constructor_construct_native(
@@ -9151,6 +9409,8 @@ enum BrandedEventKind {
   CustomEvent = 1,
   PromiseRejectionEvent = 2,
   StorageEvent = 3,
+  PopStateEvent = 4,
+  HashChangeEvent = 5,
 }
 
 impl BrandedEventKind {
@@ -9161,6 +9421,8 @@ impl BrandedEventKind {
         1 => Some(Self::CustomEvent),
         2 => Some(Self::PromiseRejectionEvent),
         3 => Some(Self::StorageEvent),
+        4 => Some(Self::PopStateEvent),
+        5 => Some(Self::HashChangeEvent),
         _ => None,
       },
       _ => None,
@@ -11920,6 +12182,8 @@ fn document_create_event_native(
   enum Kind {
     Event,
     CustomEvent,
+    PopStateEvent,
+    HashChangeEvent,
     StorageEvent,
   }
 
@@ -11927,6 +12191,10 @@ fn document_create_event_native(
     Kind::Event
   } else if name.eq_ignore_ascii_case("CustomEvent") {
     Kind::CustomEvent
+  } else if name.eq_ignore_ascii_case("PopStateEvent") {
+    Kind::PopStateEvent
+  } else if name.eq_ignore_ascii_case("HashChangeEvent") {
+    Kind::HashChangeEvent
   } else if name.eq_ignore_ascii_case("StorageEvent") {
     Kind::StorageEvent
   } else {
@@ -11940,6 +12208,8 @@ fn document_create_event_native(
   let proto_key = match kind {
     Kind::Event => EVENT_PROTOTYPE_KEY,
     Kind::CustomEvent => CUSTOM_EVENT_PROTOTYPE_KEY,
+    Kind::PopStateEvent => POP_STATE_EVENT_PROTOTYPE_KEY,
+    Kind::HashChangeEvent => HASH_CHANGE_EVENT_PROTOTYPE_KEY,
     Kind::StorageEvent => STORAGE_EVENT_PROTOTYPE_KEY,
   };
   let proto_key = alloc_key(scope, proto_key)?;
@@ -11977,6 +12247,24 @@ fn document_create_event_native(
     let detail_key = alloc_key(scope, "detail")?;
     scope.define_property(obj, detail_key, data_desc(Value::Null))?;
   }
+  if matches!(kind, Kind::PopStateEvent) {
+    let state_key = alloc_key(scope, "state")?;
+    scope.define_property(obj, state_key, read_only_data_desc(Value::Null))?;
+  }
+  if matches!(kind, Kind::HashChangeEvent) {
+    let old_url_key = alloc_key(scope, "oldURL")?;
+    scope.define_property(
+      obj,
+      old_url_key,
+      read_only_data_desc(Value::String(empty)),
+    )?;
+    let new_url_key = alloc_key(scope, "newURL")?;
+    scope.define_property(
+      obj,
+      new_url_key,
+      read_only_data_desc(Value::String(empty)),
+    )?;
+  }
 
   if matches!(kind, Kind::StorageEvent) {
     let key_key = alloc_key(scope, "key")?;
@@ -11998,6 +12286,8 @@ fn document_create_event_native(
   let branded_kind = match kind {
     Kind::Event => BrandedEventKind::Event,
     Kind::CustomEvent => BrandedEventKind::CustomEvent,
+    Kind::PopStateEvent => BrandedEventKind::PopStateEvent,
+    Kind::HashChangeEvent => BrandedEventKind::HashChangeEvent,
     Kind::StorageEvent => BrandedEventKind::StorageEvent,
   };
   brand_event_object(scope, obj, branded_kind)?;
@@ -19305,6 +19595,18 @@ fn init_window_globals(
     data_desc(Value::Object(init_storage_event_func)),
   )?;
 
+  let pop_state_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(pop_state_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(pop_state_event_proto, Some(event_proto))?;
+
+  let hash_change_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(hash_change_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(hash_change_event_proto, Some(event_proto))?;
+
   let promise_rejection_event_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(promise_rejection_event_proto))?;
   scope
@@ -19450,6 +19752,73 @@ fn init_window_globals(
     global,
     storage_event_ctor_key,
     data_desc(Value::Object(storage_event_ctor_func)),
+  )?;
+
+  let pop_state_event_ctor_call_id = vm.register_native_call(pop_state_event_constructor_native)?;
+  let pop_state_event_ctor_construct_id =
+    vm.register_native_construct(pop_state_event_constructor_construct_native)?;
+  let pop_state_event_ctor_name = scope.alloc_string("PopStateEvent")?;
+  scope.push_root(Value::String(pop_state_event_ctor_name))?;
+  let pop_state_event_ctor_func = scope.alloc_native_function(
+    pop_state_event_ctor_call_id,
+    Some(pop_state_event_ctor_construct_id),
+    pop_state_event_ctor_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    pop_state_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(pop_state_event_ctor_func))?;
+  scope.define_property(
+    pop_state_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(pop_state_event_proto)),
+  )?;
+  scope.define_property(
+    pop_state_event_proto,
+    constructor_key,
+    data_desc(Value::Object(pop_state_event_ctor_func)),
+  )?;
+  let pop_state_event_ctor_key = alloc_key(&mut scope, "PopStateEvent")?;
+  scope.define_property(
+    global,
+    pop_state_event_ctor_key,
+    data_desc(Value::Object(pop_state_event_ctor_func)),
+  )?;
+
+  let hash_change_event_ctor_call_id =
+    vm.register_native_call(hash_change_event_constructor_native)?;
+  let hash_change_event_ctor_construct_id =
+    vm.register_native_construct(hash_change_event_constructor_construct_native)?;
+  let hash_change_event_ctor_name = scope.alloc_string("HashChangeEvent")?;
+  scope.push_root(Value::String(hash_change_event_ctor_name))?;
+  let hash_change_event_ctor_func = scope.alloc_native_function(
+    hash_change_event_ctor_call_id,
+    Some(hash_change_event_ctor_construct_id),
+    hash_change_event_ctor_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    hash_change_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(hash_change_event_ctor_func))?;
+  scope.define_property(
+    hash_change_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(hash_change_event_proto)),
+  )?;
+  scope.define_property(
+    hash_change_event_proto,
+    constructor_key,
+    data_desc(Value::Object(hash_change_event_ctor_func)),
+  )?;
+  let hash_change_event_ctor_key = alloc_key(&mut scope, "HashChangeEvent")?;
+  scope.define_property(
+    global,
+    hash_change_event_ctor_key,
+    data_desc(Value::Object(hash_change_event_ctor_func)),
   )?;
 
   let promise_rejection_event_ctor_call_id =
@@ -19605,6 +19974,18 @@ fn init_window_globals(
     document_obj,
     storage_event_proto_key,
     data_desc(Value::Object(storage_event_proto)),
+  )?;
+  let pop_state_event_proto_key = alloc_key(&mut scope, POP_STATE_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    pop_state_event_proto_key,
+    data_desc(Value::Object(pop_state_event_proto)),
+  )?;
+  let hash_change_event_proto_key = alloc_key(&mut scope, HASH_CHANGE_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    hash_change_event_proto_key,
+    data_desc(Value::Object(hash_change_event_proto)),
   )?;
 
   // document.createEvent(interfaceName)
