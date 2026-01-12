@@ -552,7 +552,7 @@ impl<F: ResolveFs> Resolver<F> {
       }
     }
 
-    if !base_is_source_root {
+    if !base_is_source_root && self.options.node_modules {
       virtual_join_into(scratch, base_candidate, "package.json");
       if self.fs.is_file(Path::new(scratch.as_str())) {
         if let Some(parsed) = self.package_json(scratch.as_str()) {
@@ -655,19 +655,19 @@ impl<F: ResolveFs> Resolver<F> {
           }
         }
       }
-    }
-
-    scratch.clear();
-    scratch.push_str(base_candidate);
-    if !base_candidate.ends_with('/') {
-      scratch.push('/');
-    }
-    let prefix_len = scratch.len();
-    for index in INDEX_FILES {
-      scratch.truncate(prefix_len);
-      scratch.push_str(index);
-      if let Some(found) = self.try_file(scratch) {
-        return Some(found);
+    
+      scratch.clear();
+      scratch.push_str(base_candidate);
+      if !base_candidate.ends_with('/') {
+        scratch.push('/');
+      }
+      let prefix_len = scratch.len();
+      for index in INDEX_FILES {
+        scratch.truncate(prefix_len);
+        scratch.push_str(index);
+        if let Some(found) = self.try_file(scratch) {
+          return Some(found);
+        }
       }
     }
 
@@ -1436,6 +1436,66 @@ mod tests {
       resolver.resolve(Path::new("/src/app.ts"), "pkg").is_none(),
       "Classic module resolution should not search node_modules for bare specifiers"
     );
+  }
+
+  #[test]
+  fn classic_mode_does_not_resolve_directory_indexes() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert("/src/dir/index.ts", "export const x = 1;\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: false,
+        package_imports: false,
+        ..ResolveOptions::default()
+      },
+    );
+    assert!(
+      resolver.resolve(Path::new("/src/app.ts"), "./dir").is_none(),
+      "Classic module resolution should not resolve directory specifiers via index.* probing"
+    );
+  }
+
+  #[test]
+  fn classic_mode_does_not_consult_package_json_for_directory_specifiers() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert("/src/dir/package.json", r#"{ "types": "./dist/index.d.ts" }"#);
+    fs.insert("/src/dir/dist/index.d.ts", "export const x: number;\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: false,
+        package_imports: false,
+        ..ResolveOptions::default()
+      },
+    );
+    assert!(
+      resolver.resolve(Path::new("/src/app.ts"), "./dir").is_none(),
+      "Classic module resolution should not resolve directory specifiers via package.json"
+    );
+  }
+
+  #[test]
+  fn node_mode_resolves_directory_indexes() {
+    let mut fs = FakeFs::default();
+    fs.insert("/src/app.ts", "");
+    fs.insert("/src/dir/index.ts", "export const x = 1;\n");
+
+    let resolver = Resolver::with_fs(
+      fs,
+      ResolveOptions {
+        node_modules: true,
+        ..ResolveOptions::default()
+      },
+    );
+    let resolved = resolver
+      .resolve(Path::new("/src/app.ts"), "./dir")
+      .expect("./dir should resolve under node resolution");
+    assert_eq!(resolved, PathBuf::from("/src/dir/index.ts"));
   }
 
   #[test]
