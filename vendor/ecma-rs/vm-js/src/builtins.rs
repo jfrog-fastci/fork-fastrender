@@ -1822,8 +1822,28 @@ pub fn reflect_define_property(
   let desc_obj = require_object(args.get(2).copied().unwrap_or(Value::Undefined))?;
   scope.push_root(Value::Object(desc_obj))?;
 
+  // Spec: `ToPropertyDescriptor` reads properties via `HasProperty`/`Get`, so use the shared helper.
   let patch = crate::to_property_descriptor_with_host_and_hooks(vm, &mut scope, host, hooks, desc_obj)?;
-  let ok = scope.define_own_property_with_tick(target, key, patch, || vm.tick())?;
+
+  // Root any descriptor values for the duration of `DefineOwnProperty` in case they were computed
+  // by accessors and are not otherwise reachable.
+  let mut roots = [Value::Undefined; 3];
+  let mut root_count = 0usize;
+  if let Some(v) = patch.value {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  if let Some(v) = patch.get {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  if let Some(v) = patch.set {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  scope.push_roots(&roots[..root_count])?;
+
+  let ok = scope.define_own_property_with_host_and_hooks(vm, host, hooks, target, key, patch)?;
   Ok(Value::Bool(ok))
 }
 
@@ -1953,18 +1973,22 @@ pub fn reflect_has(
 }
 
 pub fn reflect_is_extensible(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.isextensible
+  let mut scope = scope.reborrow();
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
-  Ok(Value::Bool(scope.object_is_extensible(target)?))
+  scope.push_root(Value::Object(target))?;
+  Ok(Value::Bool(
+    scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?,
+  ))
 }
 
 pub fn reflect_own_keys(
@@ -1983,7 +2007,7 @@ pub fn reflect_own_keys(
   let target = require_object(target_val)?;
   scope.push_root(Value::Object(target))?;
 
-  let keys = scope.object_own_property_keys_with_host_and_hooks(vm, host, hooks, target)?;
+  let keys = scope.own_property_keys_with_host_and_hooks(vm, host, hooks, target)?;
 
   let len = u32::try_from(keys.len()).map_err(|_| VmError::OutOfMemory)?;
   let array = create_array_object(vm, &mut scope, len)?;
@@ -2016,19 +2040,21 @@ pub fn reflect_own_keys(
 }
 
 pub fn reflect_prevent_extensions(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.preventextensions
+  let mut scope = scope.reborrow();
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
-  scope.object_prevent_extensions(target)?;
-  Ok(Value::Bool(true))
+  scope.push_root(Value::Object(target))?;
+  let ok = scope.prevent_extensions_with_host_and_hooks(vm, host, hooks, target)?;
+  Ok(Value::Bool(ok))
 }
 
 pub fn reflect_set(
@@ -2060,17 +2086,20 @@ pub fn reflect_set(
 }
 
 pub fn reflect_set_prototype_of(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.setprototypeof
+  let mut scope = scope.reborrow();
+
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
 
   let proto_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let proto = match proto_val {
@@ -2082,22 +2111,8 @@ pub fn reflect_set_prototype_of(
       ))
     }
   };
-
-  let current_proto = scope.object_get_prototype(target)?;
-  if current_proto == proto {
-    return Ok(Value::Bool(true));
-  }
-
-  if !scope.object_is_extensible(target)? {
-    return Ok(Value::Bool(false));
-  }
-
-  match scope.object_set_prototype(target, proto) {
-    Ok(()) => Ok(Value::Bool(true)),
-    // A cycle (or hostile prototype chain) rejects the mutation.
-    Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Bool(false)),
-    Err(e) => Err(e),
-  }
+  let ok = scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, target, proto)?;
+  Ok(Value::Bool(ok))
 }
 
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
@@ -2459,13 +2474,13 @@ pub fn proxy_revocable(
   scope.define_property(
     result,
     proxy_key,
-    data_desc(Value::Object(proxy), true, true, true),
+    data_desc(Value::Object(proxy), true, false, true),
   )?;
   let revoke_key = PropertyKey::from_string(revoke_name);
   scope.define_property(
     result,
     revoke_key,
-    data_desc(Value::Object(revoke), true, true, true),
+    data_desc(Value::Object(revoke), true, false, true),
   )?;
 
   Ok(Value::Object(result))

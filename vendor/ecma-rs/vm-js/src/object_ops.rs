@@ -202,78 +202,6 @@ impl<'a> Scope<'a> {
     self.heap().object_prototype(obj)
   }
 
-  /// ECMAScript `[[OwnPropertyKeys]]` internal method dispatch.
-  ///
-  /// This is Proxy-aware: Proxy objects observe the `ownKeys` trap and throw on revoked proxies.
-  pub(crate) fn own_property_keys_with_host_and_hooks(
-    &mut self,
-    vm: &mut Vm,
-    host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    obj: GcObject,
-  ) -> Result<Vec<PropertyKey>, VmError> {
-    let mut current = obj;
-    let mut steps = 0usize;
-    loop {
-      if steps != 0 && steps % 1024 == 0 {
-        vm.tick()?;
-      }
-      steps = steps.saturating_add(1);
-
-      let proxy = self.heap().get_proxy_data(current)?;
-      let Some(proxy) = proxy else {
-        return self.ordinary_own_property_keys_with_tick(current, || vm.tick());
-      };
-
-      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
-        return Err(VmError::TypeError(
-          "Cannot perform 'ownKeys' on a proxy that has been revoked",
-        ));
-      };
-
-      let mut scope = self.reborrow();
-      scope.push_roots(&[
-        Value::Object(current),
-        Value::Object(target),
-        Value::Object(handler),
-      ])?;
-
-      let own_keys_s = scope.alloc_string("ownKeys")?;
-      scope.push_root(Value::String(own_keys_s))?;
-      let own_keys_key = PropertyKey::from_string(own_keys_s);
-
-      let trap = vm.get_method_with_host_and_hooks(
-        host,
-        &mut scope,
-        hooks,
-        Value::Object(handler),
-        own_keys_key,
-      )?;
-      let Some(trap) = trap else {
-        // No trap: forward to the target's `[[OwnPropertyKeys]]`.
-        current = target;
-        continue;
-      };
-
-      let trap_result = vm.call_with_host_and_hooks(
-        host,
-        &mut scope,
-        hooks,
-        trap,
-        Value::Object(handler),
-        &[Value::Object(target)],
-      )?;
-      scope.push_root(trap_result)?;
-      let Value::Object(array_like) = trap_result else {
-        return Err(VmError::TypeError(
-          "Proxy ownKeys trap returned a non-object value",
-        ));
-      };
-
-      return proxy_own_keys_result_to_property_keys(vm, &mut scope, host, hooks, array_like);
-    }
-  }
-
   /// ECMAScript `[[GetOwnProperty]]` internal method dispatch.
   ///
   /// This is Proxy-aware: Proxy objects observe the `getOwnPropertyDescriptor` trap and throw on
@@ -364,80 +292,6 @@ impl<'a> Scope<'a> {
       )?;
       let desc = property_descriptor_ops::complete_property_descriptor(desc);
       return Ok(Some(desc));
-    }
-  }
-
-  /// ECMAScript `[[GetPrototypeOf]]` internal method dispatch.
-  ///
-  /// This is Proxy-aware: Proxy objects observe the `getPrototypeOf` trap and throw on revoked
-  /// proxies.
-  pub(crate) fn get_prototype_of_with_host_and_hooks(
-    &mut self,
-    vm: &mut Vm,
-    host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    obj: GcObject,
-  ) -> Result<Option<GcObject>, VmError> {
-    let mut current = obj;
-    let mut steps = 0usize;
-    loop {
-      if steps != 0 && steps % 1024 == 0 {
-        vm.tick()?;
-      }
-      steps = steps.saturating_add(1);
-
-      let proxy = self.heap().get_proxy_data(current)?;
-      let Some(proxy) = proxy else {
-        return self.heap().object_prototype(current);
-      };
-
-      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
-        return Err(VmError::TypeError(
-          "Cannot perform 'getPrototypeOf' on a proxy that has been revoked",
-        ));
-      };
-
-      let mut scope = self.reborrow();
-      scope.push_roots(&[
-        Value::Object(current),
-        Value::Object(target),
-        Value::Object(handler),
-      ])?;
-
-      let get_proto_s = scope.alloc_string("getPrototypeOf")?;
-      scope.push_root(Value::String(get_proto_s))?;
-      let get_proto_key = PropertyKey::from_string(get_proto_s);
-
-      let trap = vm.get_method_with_host_and_hooks(
-        host,
-        &mut scope,
-        hooks,
-        Value::Object(handler),
-        get_proto_key,
-      )?;
-      let Some(trap) = trap else {
-        // No trap: forward to the target's `[[GetPrototypeOf]]`.
-        current = target;
-        continue;
-      };
-
-      let trap_result = vm.call_with_host_and_hooks(
-        host,
-        &mut scope,
-        hooks,
-        trap,
-        Value::Object(handler),
-        &[Value::Object(target)],
-      )?;
-      scope.push_root(trap_result)?;
-
-      return match trap_result {
-        Value::Null => Ok(None),
-        Value::Object(o) => Ok(Some(o)),
-        _ => Err(VmError::TypeError(
-          "Proxy getPrototypeOf trap returned a non-object value",
-        )),
-      };
     }
   }
 
@@ -929,6 +783,90 @@ impl<'a> Scope<'a> {
     self.ordinary_has_property_with_tick(obj, key, || Ok(()))
   }
 
+  /// ECMAScript `[[HasProperty]]` internal method dispatch.
+  ///
+  /// This dispatches to Proxy objects' `[[HasProperty]]` algorithm (invoking the `"has"` trap when
+  /// present).
+  pub fn has_property_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+  ) -> Result<bool, VmError> {
+    // Root inputs so Proxy traps can allocate freely.
+    let key_value = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    self.push_roots(&[Value::Object(obj), key_value])?;
+
+    // Fast path: ordinary object.
+    if !self.heap().is_proxy_object(obj) {
+      return self.ordinary_has_property_with_tick(obj, key, || vm.tick());
+    }
+
+    // Follow Proxy chains iteratively to avoid recursion.
+    let mut current = obj;
+    let mut steps = 0usize;
+    let mut has_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !self.heap().is_proxy_object(current) {
+        return self.ordinary_has_property_with_tick(current, key, || vm.tick());
+      }
+
+      let Some(target) = self.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
+      };
+      let Some(handler) = self.heap().proxy_handler(current)? else {
+        return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
+      };
+
+      // trap = ? GetMethod(handler, "has")
+      let trap_key = match has_trap_key {
+        Some(k) => k,
+        None => {
+          let s = self.alloc_string("has")?;
+          self.push_root(Value::String(s))?;
+          let k = PropertyKey::from_string(s);
+          has_trap_key = Some(k);
+          k
+        }
+      };
+      let trap =
+        vm.get_method_with_host_and_hooks(host, self, hooks, Value::Object(handler), trap_key)?;
+
+      // If the trap is undefined, forward to the target.
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+      self.push_root(trap)?;
+
+      let trap_args = [Value::Object(target), key_value];
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        self,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &trap_args,
+      )?;
+      return self.heap().to_boolean(trap_result);
+    }
+  }
+
   pub fn ordinary_has_property_with_tick(
     &self,
     obj: GcObject,
@@ -1159,6 +1097,587 @@ impl<'a> Scope<'a> {
       };
       let args = [Value::Object(target), key_value, receiver];
       return vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &args);
+    }
+  }
+
+  /// ECMAScript `[[Delete]]` internal method dispatch, using an explicit embedder host context and
+  /// host hook implementation.
+  ///
+  /// This dispatches to Proxy objects' `[[Delete]]` algorithm (invoking the `"deleteProperty"` trap
+  /// when present).
+  pub fn delete_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+  ) -> Result<bool, VmError> {
+    let key_value = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    self.push_roots(&[Value::Object(obj), key_value])?;
+
+    // Fast path: ordinary object.
+    if !self.heap().is_proxy_object(obj) {
+      return self.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, key);
+    }
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    let mut delete_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !self.heap().is_proxy_object(current) {
+        return self.ordinary_delete_with_host_and_hooks(vm, host, hooks, current, key);
+      }
+
+      let Some(target) = self.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'deleteProperty' on a revoked Proxy",
+        ));
+      };
+      let Some(handler) = self.heap().proxy_handler(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'deleteProperty' on a revoked Proxy",
+        ));
+      };
+
+      // trap = ? GetMethod(handler, "deleteProperty")
+      let trap_key = match delete_trap_key {
+        Some(k) => k,
+        None => {
+          let s = self.alloc_string("deleteProperty")?;
+          self.push_root(Value::String(s))?;
+          let k = PropertyKey::from_string(s);
+          delete_trap_key = Some(k);
+          k
+        }
+      };
+      let trap =
+        vm.get_method_with_host_and_hooks(host, self, hooks, Value::Object(handler), trap_key)?;
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+      self.push_root(trap)?;
+
+      let trap_args = [Value::Object(target), key_value];
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        self,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &trap_args,
+      )?;
+      return self.heap().to_boolean(trap_result);
+    }
+  }
+
+  /// ECMAScript `[[OwnPropertyKeys]]` internal method dispatch.
+  ///
+  /// This dispatches to Proxy objects' `[[OwnPropertyKeys]]` algorithm (invoking the `"ownKeys"`
+  /// trap when present).
+  pub fn own_property_keys_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+  ) -> Result<Vec<PropertyKey>, VmError> {
+    // Root `obj` for the duration of the operation. This is important when `obj` is a Proxy: the
+    // target/handler slots are not otherwise reachable.
+    self.push_root(Value::Object(obj))?;
+
+    // Fast path: ordinary object.
+    if !self.heap().is_proxy_object(obj) {
+      return self.ordinary_own_property_keys_with_tick(obj, || vm.tick());
+    }
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    let mut own_keys_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !self.heap().is_proxy_object(current) {
+        return self.ordinary_own_property_keys_with_tick(current, || vm.tick());
+      }
+
+      let Some(target) = self.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError("Cannot perform 'ownKeys' on a revoked Proxy"));
+      };
+      let Some(handler) = self.heap().proxy_handler(current)? else {
+        return Err(VmError::TypeError("Cannot perform 'ownKeys' on a revoked Proxy"));
+      };
+
+      // trap = ? GetMethod(handler, "ownKeys")
+      let trap_key = match own_keys_trap_key {
+        Some(k) => k,
+        None => {
+          let s = self.alloc_string("ownKeys")?;
+          self.push_root(Value::String(s))?;
+          let k = PropertyKey::from_string(s);
+          own_keys_trap_key = Some(k);
+          k
+        }
+      };
+      let trap =
+        vm.get_method_with_host_and_hooks(host, self, hooks, Value::Object(handler), trap_key)?;
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+      self.push_root(trap)?;
+
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        self,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &[Value::Object(target)],
+      )?;
+      let Value::Object(trap_result_obj) = trap_result else {
+        return Err(VmError::TypeError("Proxy ownKeys trap returned non-object"));
+      };
+
+      // Root the trap result so any string/symbol keys produced by `CreateListFromArrayLike` remain
+      // reachable across allocations in callers (e.g. `Reflect.ownKeys` building a result array).
+      self.push_root(Value::Object(trap_result_obj))?;
+
+      let values = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
+        vm,
+        self,
+        host,
+        hooks,
+        trap_result_obj,
+      )?;
+
+      let mut out: Vec<PropertyKey> = Vec::new();
+      out
+        .try_reserve_exact(values.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for (i, v) in values.into_iter().enumerate() {
+        if i != 0 && i % 1024 == 0 {
+          vm.tick()?;
+        }
+        match v {
+          Value::String(s) => out.push(PropertyKey::from_string(s)),
+          Value::Symbol(s) => out.push(PropertyKey::from_symbol(s)),
+          _ => {
+            return Err(VmError::TypeError(
+              "Proxy ownKeys trap returned a value that is not a string or symbol",
+            ))
+          }
+        }
+      }
+
+      return Ok(out);
+    }
+  }
+
+  /// ECMAScript `[[GetPrototypeOf]]` internal method dispatch.
+  ///
+  /// This dispatches to Proxy objects' `[[GetPrototypeOf]]` algorithm (invoking the
+  /// `"getPrototypeOf"` trap when present).
+  pub fn get_prototype_of_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+  ) -> Result<Option<GcObject>, VmError> {
+    self.push_root(Value::Object(obj))?;
+
+    if !self.heap().is_proxy_object(obj) {
+      return self.object_get_prototype(obj);
+    }
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    let mut get_proto_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !self.heap().is_proxy_object(current) {
+        return self.object_get_prototype(current);
+      }
+
+      let Some(target) = self.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'getPrototypeOf' on a revoked Proxy",
+        ));
+      };
+      let Some(handler) = self.heap().proxy_handler(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'getPrototypeOf' on a revoked Proxy",
+        ));
+      };
+
+      let trap_key = match get_proto_trap_key {
+        Some(k) => k,
+        None => {
+          let s = self.alloc_string("getPrototypeOf")?;
+          self.push_root(Value::String(s))?;
+          let k = PropertyKey::from_string(s);
+          get_proto_trap_key = Some(k);
+          k
+        }
+      };
+      let trap =
+        vm.get_method_with_host_and_hooks(host, self, hooks, Value::Object(handler), trap_key)?;
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+      self.push_root(trap)?;
+
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        self,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &[Value::Object(target)],
+      )?;
+      return match trap_result {
+        Value::Null => Ok(None),
+        Value::Object(o) => Ok(Some(o)),
+        _ => Err(VmError::TypeError(
+          "Proxy getPrototypeOf trap returned non-object",
+        )),
+      };
+    }
+  }
+
+  /// ECMAScript `[[IsExtensible]]` internal method dispatch.
+  ///
+  /// This dispatches to Proxy objects' `[[IsExtensible]]` algorithm (invoking the `"isExtensible"`
+  /// trap when present).
+  pub fn is_extensible_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+  ) -> Result<bool, VmError> {
+    self.push_root(Value::Object(obj))?;
+
+    if !self.heap().is_proxy_object(obj) {
+      return self.object_is_extensible(obj);
+    }
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    let mut is_ext_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !self.heap().is_proxy_object(current) {
+        return self.object_is_extensible(current);
+      }
+
+      let Some(target) = self.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'isExtensible' on a revoked Proxy",
+        ));
+      };
+      let Some(handler) = self.heap().proxy_handler(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'isExtensible' on a revoked Proxy",
+        ));
+      };
+
+      let trap_key = match is_ext_trap_key {
+        Some(k) => k,
+        None => {
+          let s = self.alloc_string("isExtensible")?;
+          self.push_root(Value::String(s))?;
+          let k = PropertyKey::from_string(s);
+          is_ext_trap_key = Some(k);
+          k
+        }
+      };
+      let trap =
+        vm.get_method_with_host_and_hooks(host, self, hooks, Value::Object(handler), trap_key)?;
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+      self.push_root(trap)?;
+
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        self,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &[Value::Object(target)],
+      )?;
+      let trap_bool = self.heap().to_boolean(trap_result)?;
+
+      // Proxy invariants: `isExtensible` must report the target's actual extensibility.
+      let target_bool = self.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+      if trap_bool != target_bool {
+        return Err(VmError::TypeError(
+          "Proxy isExtensible trap result does not reflect target extensibility",
+        ));
+      }
+      return Ok(trap_bool);
+    }
+  }
+
+  /// ECMAScript `[[PreventExtensions]]` internal method dispatch.
+  ///
+  /// This dispatches to Proxy objects' `[[PreventExtensions]]` algorithm (invoking the
+  /// `"preventExtensions"` trap when present).
+  pub fn prevent_extensions_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+  ) -> Result<bool, VmError> {
+    self.push_root(Value::Object(obj))?;
+
+    if !self.heap().is_proxy_object(obj) {
+      self.object_prevent_extensions(obj)?;
+      return Ok(true);
+    }
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    let mut prevent_ext_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !self.heap().is_proxy_object(current) {
+        self.object_prevent_extensions(current)?;
+        return Ok(true);
+      }
+
+      let Some(target) = self.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'preventExtensions' on a revoked Proxy",
+        ));
+      };
+      let Some(handler) = self.heap().proxy_handler(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'preventExtensions' on a revoked Proxy",
+        ));
+      };
+
+      let trap_key = match prevent_ext_trap_key {
+        Some(k) => k,
+        None => {
+          let s = self.alloc_string("preventExtensions")?;
+          self.push_root(Value::String(s))?;
+          let k = PropertyKey::from_string(s);
+          prevent_ext_trap_key = Some(k);
+          k
+        }
+      };
+      let trap =
+        vm.get_method_with_host_and_hooks(host, self, hooks, Value::Object(handler), trap_key)?;
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+      self.push_root(trap)?;
+
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        self,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &[Value::Object(target)],
+      )?;
+      let ok = self.heap().to_boolean(trap_result)?;
+      if !ok {
+        return Ok(false);
+      }
+
+      // Proxy invariants: a successful `preventExtensions` must make the target non-extensible.
+      if self.is_extensible_with_host_and_hooks(vm, host, hooks, target)? {
+        return Err(VmError::TypeError(
+          "Proxy preventExtensions trap returned true but target is still extensible",
+        ));
+      }
+      return Ok(true);
+    }
+  }
+
+  /// ECMAScript `[[DefineOwnProperty]]` internal method dispatch.
+  ///
+  /// This dispatches to Proxy objects' `[[DefineOwnProperty]]` algorithm (invoking the
+  /// `"defineProperty"` trap when present).
+  pub fn define_own_property_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptorPatch,
+  ) -> Result<bool, VmError> {
+    desc.validate()?;
+
+    let key_value = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+
+    // Root inputs and any descriptor values for the duration of the operation.
+    let mut roots = [Value::Undefined; 5];
+    let mut root_count = 0usize;
+    roots[root_count] = Value::Object(obj);
+    root_count += 1;
+    roots[root_count] = key_value;
+    root_count += 1;
+    if let Some(v) = desc.value {
+      roots[root_count] = v;
+      root_count += 1;
+    }
+    if let Some(v) = desc.get {
+      roots[root_count] = v;
+      root_count += 1;
+    }
+    if let Some(v) = desc.set {
+      roots[root_count] = v;
+      root_count += 1;
+    }
+    self.push_roots(&roots[..root_count])?;
+
+    if !self.heap().is_proxy_object(obj) {
+      return self.define_own_property_with_tick(obj, key, desc, || vm.tick());
+    }
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    let mut define_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !self.heap().is_proxy_object(current) {
+        return self.define_own_property_with_tick(current, key, desc, || vm.tick());
+      }
+
+      let Some(target) = self.heap().proxy_target(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'defineProperty' on a revoked Proxy",
+        ));
+      };
+      let Some(handler) = self.heap().proxy_handler(current)? else {
+        return Err(VmError::TypeError(
+          "Cannot perform 'defineProperty' on a revoked Proxy",
+        ));
+      };
+
+      let trap_key = match define_trap_key {
+        Some(k) => k,
+        None => {
+          let s = self.alloc_string("defineProperty")?;
+          self.push_root(Value::String(s))?;
+          let k = PropertyKey::from_string(s);
+          define_trap_key = Some(k);
+          k
+        }
+      };
+      let trap =
+        vm.get_method_with_host_and_hooks(host, self, hooks, Value::Object(handler), trap_key)?;
+      let Some(trap) = trap else {
+        current = target;
+        continue;
+      };
+      self.push_root(trap)?;
+
+      // Spec: `descObj = FromPropertyDescriptor(Desc)`.
+      let desc_obj = crate::property_descriptor_ops::from_property_descriptor_patch(self, desc)?;
+      self.push_root(Value::Object(desc_obj))?;
+
+      let trap_args = [Value::Object(target), key_value, Value::Object(desc_obj)];
+      let trap_result = vm.call_with_host_and_hooks(
+        host,
+        self,
+        hooks,
+        trap,
+        Value::Object(handler),
+        &trap_args,
+      )?;
+      let ok = self.heap().to_boolean(trap_result)?;
+      if !ok {
+        return Ok(false);
+      }
+
+      // Proxy invariants: if the trap reports success, the resulting definition must be compatible
+      // with the target.
+      let target_desc = self.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?;
+      let extensible = self.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+      if !crate::property_descriptor_ops::is_compatible_property_descriptor(
+        extensible,
+        desc,
+        target_desc,
+        self.heap(),
+      ) {
+        return Err(VmError::TypeError(
+          "Proxy defineProperty trap returned true for an incompatible property descriptor",
+        ));
+      }
+
+      return Ok(true);
     }
   }
 
