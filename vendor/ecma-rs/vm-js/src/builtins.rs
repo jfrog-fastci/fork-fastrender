@@ -17744,7 +17744,7 @@ pub fn error_prototype_to_string(
   let message_key = string_key(&mut scope, "message")?;
 
   // `Get(O, "name")`: must be Proxy-aware and invoke accessors.
-  let name_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, o, name_key)?;
+  let name_value = scope.get_with_host_and_hooks(vm, host, hooks, o, name_key, receiver)?;
   scope.push_root(name_value)?;
 
   let name = match name_value {
@@ -17754,7 +17754,7 @@ pub fn error_prototype_to_string(
   scope.push_root(Value::String(name))?;
 
   // `Get(O, "message")`: must be Proxy-aware and invoke accessors.
-  let message_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, o, message_key)?;
+  let message_value = scope.get_with_host_and_hooks(vm, host, hooks, o, message_key, receiver)?;
   scope.push_root(message_value)?;
 
   let message = match message_value {
