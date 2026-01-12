@@ -3788,26 +3788,6 @@ impl<'a> Checker<'a> {
     }
   }
 
-  fn check_super_call_expr(
-    &mut self,
-    call: &Node<parse_js::ast::expr::CallExpr>,
-    _contextual_return: Option<TypeId>,
-  ) -> TypeId {
-    // `super(...)` is only valid inside derived class constructors, where it invokes the base
-    // class constructor.
-    //
-    // This checker currently does not implement the full `super()` call typing rules (including
-    // definite assignment and ordering constraints for `this`), but we still:
-    // - type-check the argument expressions,
-    // - record a placeholder call signature (none),
-    // - return the current `this` type (JS semantics: `super()` produces the constructed instance).
-    for arg in call.stx.arguments.iter() {
-      let _ = self.check_expr(&arg.stx.value);
-    }
-    self.record_call_signature(call.loc, None);
-    self.current_this_ty
-  }
-
   fn check_call_expr(
     &mut self,
     call: &Node<parse_js::ast::expr::CallExpr>,
@@ -4320,17 +4300,15 @@ impl<'a> Checker<'a> {
     contextual_return: Option<TypeId>,
   ) -> TypeId {
     let prim = self.store.primitive_ids();
-
-    // Ensure we record the type of the `super` keyword itself (for consistency
-    // with normal `check_expr` bookkeeping), even though the call resolution
-    // uses the base constructor type.
-    let _ = self.check_expr(&call.stx.callee);
-
-    let callee_ty = self
-      .this_super_context
-      .super_value_ty
-      .unwrap_or(self.current_super_ctor_ty);
-    let callee_ty = self.expand_callable_type(callee_ty);
+    // For `super(...)` we need the base constructor type (not the base instance
+    // type used by `super.prop`), so record the callee as the constructor.
+    let super_ctor_ty = if self.store.canon(self.current_super_ctor_ty) != prim.unknown {
+      self.current_super_ctor_ty
+    } else {
+      self.this_super_context.super_value_ty.unwrap_or(prim.unknown)
+    };
+    self.record_expr_type(call.stx.callee.loc, super_ctor_ty);
+    let callee_ty = self.expand_callable_type(super_ctor_ty);
     let arg_exprs = call.stx.arguments.as_slice();
     let all_candidate_sigs =
       construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);

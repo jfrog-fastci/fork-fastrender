@@ -459,7 +459,10 @@ impl Program {
       state.rebuild_callable_overloads();
       state.merge_callable_overload_types();
       state.rebuild_interned_named_def_types();
-      let decl_types_fingerprint = db::decl_types_fingerprint(&*state.typecheck_db.lock());
+      let decl_types_fingerprint = {
+        let db = state.typecheck_db.lock();
+        db::decl_types_fingerprint(&*db)
+      };
       state.decl_types_fingerprint = Some(decl_types_fingerprint);
     }
     program
