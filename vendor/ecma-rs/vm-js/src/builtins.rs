@@ -8191,7 +8191,13 @@ pub fn object_prototype___proto___set(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Per spec, the setter is a no-op (returns `undefined`) for non-object receivers.
+  // Spec: https://tc39.es/ecma262/#sec-object.prototype.__proto__
+  //
+  // The setter uses `RequireObjectCoercible` (i.e. throws on `null` / `undefined`) but is otherwise
+  // a no-op for non-object receivers (primitives).
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError("Cannot convert undefined or null to object"));
+  }
   let Value::Object(obj) = this else {
     return Ok(Value::Undefined);
   };

@@ -38,6 +38,16 @@ fn object_prototype_proto_sanity() -> Result<(), VmError> {
       o.__proto__ = p;
       assert.sameValue(Object.getPrototypeOf(o), p);
       assert.sameValue((1).__proto__, Number.prototype);
+      const desc = Object.getOwnPropertyDescriptor(Object.prototype, "__proto__");
+      let threwNull = false;
+      try {{ desc.set.call(null, p); }} catch (e) {{ threwNull = e instanceof TypeError; }}
+      assert.sameValue(threwNull, true);
+      let threwUndef = false;
+      try {{ desc.set.call(undefined, p); }} catch (e) {{ threwUndef = e instanceof TypeError; }}
+      assert.sameValue(threwUndef, true);
+      let threwPrimitive = false;
+      try {{ desc.set.call(1, p); }} catch (e) {{ threwPrimitive = true; }}
+      assert.sameValue(threwPrimitive, false);
       true;
     "#
   );
