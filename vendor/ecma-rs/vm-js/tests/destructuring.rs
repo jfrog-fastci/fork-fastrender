@@ -467,6 +467,31 @@ fn array_destructuring_assignment_closes_iterator_on_lhs_abrupt() {
 }
 
 #[test]
+fn array_destructuring_assignment_rest_lhs_abrupt_closes_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var returnCount = 0;
+      var iterable = {};
+      iterable[Symbol.iterator] = function() {
+        return {
+          next() { return { done: false }; },
+          return() { returnCount++; return {}; },
+        };
+      };
+      function throwlhs() { throw "in lhs"; }
+      try {
+        0, [...{}[throwlhs()]] = iterable;
+      } catch (e) {}
+      returnCount === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_destructuring_does_not_close_iterator_when_next_throws() {
   let mut rt = new_runtime();
   let value = rt

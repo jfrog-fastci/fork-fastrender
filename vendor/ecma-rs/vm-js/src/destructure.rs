@@ -514,6 +514,64 @@ fn bind_array_pattern(
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
+  // Rest element assignment (e.g. `[...obj[prop]] = iterable`) must evaluate the LHS reference
+  // *before* consuming the remainder of the iterator. Otherwise, an infinite iterator could hang
+  // the runtime before the (abrupt) LHS evaluation occurs.
+  //
+  // This ordering is observable in test262 `staging/sm/destructuring/array-iterator-close.js`.
+  enum RestAssignmentTarget<'a> {
+    Id(&'a str),
+    Property { base: Value, key: PropertyKey },
+  }
+
+  let mut rest_assignment_target: Option<RestAssignmentTarget<'_>> = None;
+  if matches!(kind, BindingKind::Assignment) {
+    if let Pat::AssignTarget(target) = &*rest_pat.stx {
+      let target_ref = (|| -> Result<Option<RestAssignmentTarget<'_>>, VmError> {
+        match &*target.stx {
+          Expr::Id(id) => Ok(Some(RestAssignmentTarget::Id(&id.stx.name))),
+          Expr::IdPat(id) => Ok(Some(RestAssignmentTarget::Id(&id.stx.name))),
+          Expr::Member(member) => {
+            if member.stx.optional_chaining {
+              return Err(VmError::Unimplemented("optional chaining assignment target"));
+            }
+ 
+            let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.left)?;
+            let base = scope.push_root(base)?;
+ 
+            let key_s = scope.alloc_string(&member.stx.right)?;
+            scope.push_root(Value::String(key_s))?;
+            let key = PropertyKey::from_string(key_s);
+            Ok(Some(RestAssignmentTarget::Property { base, key }))
+          }
+          Expr::ComputedMember(member) => {
+            if member.stx.optional_chaining {
+              return Err(VmError::Unimplemented("optional chaining assignment target"));
+            }
+ 
+            let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.object)?;
+            let base = scope.push_root(base)?;
+            let key_value =
+              eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.member)?;
+            let key_value = scope.push_root(key_value)?;
+            let key = match scope.to_property_key(vm, host, hooks, key_value) {
+              Ok(key) => key,
+              Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, scope, msg)?),
+              Err(err) => return Err(err),
+            };
+            root_property_key(scope, key)?;
+            Ok(Some(RestAssignmentTarget::Property { base, key }))
+          }
+          _ => Ok(None),
+        }
+      })();
+      match target_ref {
+        Ok(v) => rest_assignment_target = v,
+        Err(err) => return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+      }
+    }
+  }
+
   // Rest element must produce a real Array exotic object.
   let rest_arr = match scope.alloc_array(0) {
     Ok(arr) => arr,
@@ -565,6 +623,29 @@ fn bind_array_pattern(
       return iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err);
     }
     rest_idx = rest_idx.saturating_add(1);
+  }
+
+  if let Some(target) = rest_assignment_target {
+    let res = match target {
+      RestAssignmentTarget::Id(name) => bind_identifier(
+        vm,
+        host,
+        hooks,
+        env,
+        scope,
+        name,
+        Value::Object(rest_arr),
+        BindingKind::Assignment,
+        strict,
+      ),
+      RestAssignmentTarget::Property { base, key } => {
+        assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_arr), strict)
+      }
+    };
+    return match res {
+      Ok(()) => Ok(()),
+      Err(err) => iterator_close_on_err(vm, host, hooks, scope, &iterator_record, err),
+    };
   }
 
   let bind_res = bind_pattern(
