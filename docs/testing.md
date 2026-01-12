@@ -33,42 +33,41 @@ FastRender's test suite is primarily Rust unit/integration tests plus a small se
 
 ## Test organization
 
-Tests are organized into **harness directories** to reduce compilation overhead.
-Each `tests/<category>/` directory is pulled into one of the small number of integration-test
-crates at the root of `tests/`. Most categories have a dedicated `tests/<category>_tests.rs`
-harness; some small directories are included by an existing harness (e.g. `tests/backdrop/` is
-compiled by `tests/paint_tests.rs`).
+FastRender uses the standard Rust split:
 
-**Never create new top-level `tests/*.rs` files for individual tests.** Add tests to the
-appropriate subdirectory:
+- **Unit tests** live in `src/` alongside the code they test (typically in `#[cfg(test)] mod tests { ... }`).
+  - Run: `bash scripts/cargo_agent.sh test -p fastrender --lib`
+- **Integration tests** live in `tests/` and exercise the public API / external fixtures.
+  - `tests/integration.rs` is the single “normal” integration-test binary, and it pulls in modules under `tests/` (directories and `mod.rs` files).
+  - Run: `bash scripts/cargo_agent.sh test -p fastrender --test integration`
+- **Special harness** (separate binary):
+  - `tests/allocation_failure.rs` — allocation-failure tests (custom `#[global_allocator]`)
+  - Run: `bash scripts/cargo_agent.sh test -p fastrender --test allocation_failure`
 
-- `tests/layout/` — layout algorithm tests
-- `tests/paint/` — painting and display list tests
-- `tests/backdrop/` — backdrop-filter / backdrop-root tests (split from `paint/`, compiled by
-  `paint_tests`)
-- `tests/style/` — CSS parsing and cascade tests
-- `tests/resource/` — HTTP/cache/fetcher/referrer-policy tests
-- `tests/dom_integration/` — DOM2 / Web API integration tests
-- `tests/browser_integration/` — browser-mode integration tests
-- `tests/animation/` — animation/timeline tests
-- `tests/accessibility/` — accessibility tree tests
-- `tests/font/` / `tests/text/` — shaping/font/text tests
-- `tests/regression/` — bug fix regressions
-- `tests/misc/` — tests that don't fit elsewhere
+Rules (post-cleanup):
 
-Special harnesses:
-
-- `tests/allocation_failure_tests.rs` + `tests/allocation_failure/` — allocation-failure tests
-  (requires a custom `#[global_allocator]`, so it must be its own test crate)
-- `tests/determinism_tests.rs` + `tests/determinism/` — determinism-focused integration tests
-
-See `AGENTS.md` for detailed test organization rules.
+- **Do not add new top-level `tests/*.rs` files.** Only the two harness entrypoints above are allowed; add new integration tests as modules under `tests/` and include them from `tests/integration.rs`.
+- **Do not use `#[path = ...]` shims.** Use normal Rust modules (`mod ...;`) and run subsets via test name filters (see below).
+- If a test needs access to internal/private implementation details, it is a **unit test** and belongs in `src/`, not `tests/`.
 
 ## Core tests
 
-- Run unit tests only (fast): `bash scripts/cargo_agent.sh test --quiet -p fastrender --lib`
-- Run all `fastrender` tests: `bash scripts/cargo_agent.sh test --quiet -p fastrender` (compiles ~40 test binaries)
-- Run a specific harness (recommended): `bash scripts/cargo_agent.sh test --quiet -p fastrender --test layout_tests`
+- Unit only (fast): `bash scripts/cargo_agent.sh test --quiet -p fastrender --lib`
+- Integration only: `bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration`
+- Allocation failure: `bash scripts/cargo_agent.sh test --quiet -p fastrender --test allocation_failure`
+
+To run a subset, pass a test-name filter:
+
+```bash
+# Unit tests:
+bash scripts/cargo_agent.sh test -p fastrender --lib <filter>
+
+# Integration tests:
+bash scripts/cargo_agent.sh test -p fastrender --test integration <filter>
+
+# Exact match (avoid accidental substring matches):
+bash scripts/cargo_agent.sh test -p fastrender --test integration my::test::name -- --exact
+```
 
 Note: `scripts/cargo_agent.sh test` caps `RUST_TEST_THREADS` on very large machines. Override with
 `FASTR_RUST_TEST_THREADS` / `RUST_TEST_THREADS` if you need a different setting.
@@ -86,19 +85,28 @@ deterministic across platforms. Set `FASTR_USE_BUNDLED_FONTS=1` locally to match
 - The public API exposes `FastRenderConfig::with_font_sources(FontConfig::...)` to pin renders
   to bundled fonts or add additional font directories when needed.
 
-## Style regression harness
+## Style regression tests
 
-- Run: `bash scripts/cargo_agent.sh test --quiet -p fastrender --test style_tests`
+Most style/cascade regressions are unit tests in `src/`. Run them with a filter:
 
-This harness covers targeted style/cascade/layout regressions.
+- Run style-related unit tests: `bash scripts/cargo_agent.sh test --quiet -p fastrender --lib style::`
+
+These tests cover targeted style/cascade/layout regressions.
 
 ## Fixture renders (goldens)
 
-`tests/fixtures_test.rs` renders HTML fixtures under `tests/fixtures/html/` and writes/reads golden PNGs under `tests/fixtures/golden/`.
+Fixture tests render HTML under `tests/fixtures/html/` and write/read golden PNGs under `tests/fixtures/golden/`. They are compiled into the main integration test binary.
 
-- Run fixtures: `bash scripts/cargo_agent.sh test -p fastrender --test fixtures_test`
-- (Re)generate goldens: `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test fixtures_test`
-- To refresh a single fixture (faster): `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test fixtures_test test_fixture_<name> -- --exact`
+- Run fixtures: `bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::`
+- (Re)generate goldens: `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::`
+- Refresh a single fixture (faster):
+  ```bash
+  # Find the exact test name:
+  bash scripts/cargo_agent.sh test -p fastrender --test integration -- --list | rg '^fixtures::'
+
+  # Then run just that one:
+  UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration fixtures::<name> -- --exact
+  ```
 
 Rendered output is compared pixel-by-pixel against the checked-in PNG goldens. Failures write artifacts under `target/fixtures_diffs/<fixture>_{actual,expected,diff}.png` for debugging.
 
@@ -380,8 +388,8 @@ When working on JavaScript parsing (via the vendored `vendor/ecma-rs`), the repo
 
 There is a self-contained WPT-style runner under `tests/wpt/` for local “render and compare” tests. It does not talk to upstream WPT and never fetches from the network.
 
-- Run: `bash scripts/cargo_agent.sh xtask test wpt` (or `bash scripts/cargo_agent.sh test --quiet -p fastrender --test wpt_test wpt_local_suite_passes -- --exact`)
-- Run a subset: `WPT_FILTER=layout/floats bash scripts/cargo_agent.sh test --quiet -p fastrender --test wpt_test wpt_local_suite_passes -- --exact`
+- Run: `bash scripts/cargo_agent.sh xtask test wpt` (or `bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes`)
+- Run a subset: `WPT_FILTER=layout/floats bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes`
 - Each rendered document is given a per-document `file://` base URL (the test HTML path for the test render, and the reference HTML path for the reference render) so relative resources like `support/*.css`, images, and fonts resolve reliably regardless of the current working directory.
 - `WptRunnerBuilder::build()` defaults to an offline renderer (`ResourcePolicy` with `http/https` disabled). Advanced callers can still inject a custom renderer via `.renderer(...)`.
 
