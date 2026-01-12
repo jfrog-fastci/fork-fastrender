@@ -762,14 +762,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
-<<<<<<< HEAD
     // pending deadline (worker ticks, viewport throttling, egui repaint scheduling).
     app.drive_periodic_tasks_and_update_control_flow(control_flow);
-=======
-    // tick deadline when needed.
-    app.drive_animation_tick();
-    app.update_control_flow_for_animation_ticks(control_flow);
->>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
   });
 }
 
@@ -1050,7 +1044,6 @@ fn run_headless_smoke_mode(
       "failed to save session to {}: {err}",
       session_path.display()
     );
-<<<<<<< HEAD
   }
 
   if let Err(err) = fastrender::ui::bookmarks_persistence::save_bookmarks_atomic(
@@ -1070,8 +1063,6 @@ fn run_headless_smoke_mode(
       "failed to save history to {}: {err}",
       history_path.display()
     );
-=======
->>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
   }
 
   let active_url = window
@@ -2622,31 +2613,12 @@ error: {err}",
     }
   }
 
-<<<<<<< HEAD
   fn send_viewport_changed_clamped_if_needed(
     &mut self,
     tab_id: fastrender::ui::TabId,
     viewport_css: (u32, u32),
     dpr: f32,
   ) {
-=======
-  fn send_viewport_changed_if_needed(&mut self, viewport_css: (u32, u32), dpr: f32) {
-    let Some(tab_id) = self.browser_state.active_tab_id() else {
-      return;
-    };
-
-    // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
-    let clamp = self
-      .browser_limits
-      .clamp_viewport_and_dpr(viewport_css, dpr);
-    let viewport_css = clamp.viewport_css;
-    let dpr = clamp.dpr;
-
-    if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-      tab.warning = clamp.warning_text(&self.browser_limits);
-    }
-
->>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
     if self.viewport_cache_tab == Some(tab_id)
       && self.viewport_cache_css == viewport_css
       && (self.viewport_cache_dpr - dpr).abs() < f32::EPSILON
@@ -2672,23 +2644,12 @@ error: {err}",
       return;
     };
 
-<<<<<<< HEAD
     // Keep the throttle state scoped to the active tab so tab switches don't inherit the previous
     // tab's rate-limit window.
     if self.viewport_throttle_tab != Some(tab_id) {
       self.viewport_throttle_tab = Some(tab_id);
       self.viewport_throttle.reset();
     }
-=======
-    let overlay_intercepts = self.last_cursor_pos_points.is_some_and(|pos| {
-      self
-        .open_select_dropdown_rect
-        .is_some_and(|rect| rect.contains(pos))
-        || self
-          .open_context_menu_rect
-          .is_some_and(|rect| rect.contains(pos))
-    });
->>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
 
     // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
     let clamp = self.browser_limits.clamp_viewport_and_dpr(viewport_css, dpr);
@@ -3864,12 +3825,9 @@ error: {err}",
         let had_pointer_capture = self.pointer_captured;
         let had_scrollbar_drag = self.scrollbar_drag.is_some();
         let had_cursor_in_page = self.cursor_in_page;
-<<<<<<< HEAD
         let had_cursor_near_scrollbars = self
           .last_cursor_pos_points
           .is_some_and(|pos| self.cursor_near_overlay_scrollbars(pos));
-=======
->>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
         let had_context_menu =
           self.open_context_menu.is_some() || self.pending_context_menu_request.is_some();
 
@@ -4358,12 +4316,6 @@ error: {err}",
             self.update_open_select_dropdown_selection_for_key(nav_key);
             self.window.request_redraw();
             return;
-<<<<<<< HEAD
-          } else {
-            self.cancel_select_dropdown();
-            self.window.request_redraw();
-          }
-=======
           }
 
           if matches!(key, VirtualKeyCode::PageUp) {
@@ -4434,7 +4386,6 @@ error: {err}",
           // (e.g. Tab focus navigation, browser shortcuts).
           self.cancel_select_dropdown();
           self.window.request_redraw();
->>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
         }
 
         // Centralised shortcut handling: interpret as a browser shortcut first, and only forward
@@ -5316,8 +5267,6 @@ error: {err}",
               &tab.scroll_state,
               metrics.bounds_css,
             );
-
-<<<<<<< HEAD
             // If a wheel scroll is happening this frame, register it before drawing so scrollbars
             // become visible immediately (even if this is a single-tick wheel scroll).
             if !wheel_events.is_empty() && !wheel_blocked_by_dropdown && response.hovered() {
@@ -5374,40 +5323,7 @@ error: {err}",
                   egui::pos2(rect.min_x(), rect.min_y()),
                   egui::pos2(rect.max_x(), rect.max_y()),
                 )
-=======
-            let painter = ui.painter();
-            let to_egui_rect = |rect: fastrender::Rect| {
-              egui::Rect::from_min_max(
-                egui::pos2(rect.min_x(), rect.min_y()),
-                egui::pos2(rect.max_x(), rect.max_y()),
-              )
-            };
-
-            let dark = ui.visuals().dark_mode;
-            let (r, g, b) = if dark { (255, 255, 255) } else { (0, 0, 0) };
-
-            let draw_scrollbar = |scrollbar: fastrender::ui::scrollbars::OverlayScrollbar,
-                                  dragging: bool| {
-              let thickness_points = match scrollbar.axis {
-                fastrender::ui::scrollbars::ScrollbarAxis::Vertical => {
-                  scrollbar.track_rect_points.width()
-                }
-                fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => {
-                  scrollbar.track_rect_points.height()
-                }
->>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
               };
-              let rounding = egui::Rounding::same((thickness_points * 0.5).max(0.0));
-              let track = to_egui_rect(scrollbar.track_rect_points);
-              let thumb = to_egui_rect(scrollbar.thumb_rect_points);
-
-              let track_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 32);
-              let thumb_alpha = if dragging { 196 } else { 128 };
-              let thumb_color = egui::Color32::from_rgba_unmultiplied(r, g, b, thumb_alpha);
-
-              painter.rect_filled(track, rounding, track_color);
-              painter.rect_filled(thumb, rounding, thumb_color);
-            };
 
               let shrink_rect = |rect: egui::Rect, dx: f32, dy: f32| {
                 let min = rect.min + egui::vec2(dx, dy);
