@@ -3133,6 +3133,149 @@ pub(crate) fn make_dom_exception(
   Ok(Value::Object(obj))
 }
 
+fn sanitize_scroll_coord(n: f64) -> f32 {
+  if n.is_nan() {
+    return 0.0;
+  }
+  if n == f64::INFINITY {
+    return f32::MAX;
+  }
+  if n == f64::NEG_INFINITY {
+    return f32::MIN;
+  }
+  let min = f32::MIN as f64;
+  let max = f32::MAX as f64;
+  n.clamp(min, max) as f32
+}
+
+fn parse_scroll_offsets_from_options_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  options_obj: GcObject,
+) -> Result<(f32, f32), VmError> {
+  // Root `options_obj` while allocating property keys: `alloc_key` can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(options_obj))?;
+
+  let left_key = alloc_key(&mut scope, "left")?;
+  let top_key = alloc_key(&mut scope, "top")?;
+
+  let left_value = vm.get(&mut scope, options_obj, left_key)?;
+  let top_value = vm.get(&mut scope, options_obj, top_key)?;
+
+  let left = sanitize_scroll_coord(scope.to_number(vm, host, hooks, left_value)?);
+  let top = sanitize_scroll_coord(scope.to_number(vm, host, hooks, top_value)?);
+
+  Ok((left, top))
+}
+
+fn parse_scroll_offsets_from_args(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  args: &[Value],
+) -> Result<(f32, f32), VmError> {
+  let first = args.get(0).copied().unwrap_or(Value::Undefined);
+  if let Value::Object(obj) = first {
+    return parse_scroll_offsets_from_options_object(vm, scope, host, hooks, obj);
+  }
+
+  let x = sanitize_scroll_coord(scope.to_number(vm, host, hooks, first)?);
+  let y_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let y = sanitize_scroll_coord(scope.to_number(vm, host, hooks, y_value)?);
+  Ok((x, y))
+}
+
+fn window_scroll_to_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  if !host.as_any().is::<BrowserDocumentDom2>() {
+    return Ok(Value::Undefined);
+  }
+  let (x, y) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
+
+  let document = host
+    .as_any_mut()
+    .downcast_mut::<BrowserDocumentDom2>()
+    .expect("VmHost type checked as BrowserDocumentDom2");
+
+  let desired = crate::geometry::Point::new(x, y);
+  let Ok(clamped) = document.clamp_viewport_scroll_offset(desired) else {
+    return Ok(Value::Undefined);
+  };
+  document.set_scroll(clamped.x, clamped.y);
+  Ok(Value::Undefined)
+}
+
+fn window_scroll_by_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  if !host.as_any().is::<BrowserDocumentDom2>() {
+    return Ok(Value::Undefined);
+  }
+  let (dx, dy) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
+
+  let document = host
+    .as_any_mut()
+    .downcast_mut::<BrowserDocumentDom2>()
+    .expect("VmHost type checked as BrowserDocumentDom2");
+  let current = document.viewport_scroll_offset();
+  let desired = crate::geometry::Point::new(
+    sanitize_scroll_coord(current.x as f64 + dx as f64),
+    sanitize_scroll_coord(current.y as f64 + dy as f64),
+  );
+  let Ok(clamped) = document.clamp_viewport_scroll_offset(desired) else {
+    return Ok(Value::Undefined);
+  };
+  document.set_scroll(clamped.x, clamped.y);
+  Ok(Value::Undefined)
+}
+
+fn window_scroll_x_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    return Ok(Value::Number(document.viewport_scroll_offset().x as f64));
+  }
+  Ok(Value::Number(0.0))
+}
+
+fn window_scroll_y_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    return Ok(Value::Number(document.viewport_scroll_offset().y as f64));
+  }
+  Ok(Value::Number(0.0))
+}
+
 fn serialized_origin_for_document_url(url: &str) -> String {
   let Ok(url) = Url::parse(url) else {
     return "null".to_string();
@@ -26004,7 +26147,116 @@ fn init_window_globals(
   scope.define_property(global, btoa_key, data_desc(Value::Object(btoa_func)))?;
 
   // structuredClone(value[, options])
-  crate::js::window_structured_clone::install_window_structured_clone(vm, &mut scope, realm, global)?;
+  crate::js::window_structured_clone::install_window_structured_clone(
+    vm,
+    &mut scope,
+    realm,
+    global,
+  )?;
+
+  // scrollTo(options|x, y)
+  let scroll_to_call_id = vm.register_native_call(window_scroll_to_native)?;
+  let scroll_to_name = scope.alloc_string("scrollTo")?;
+  scope.push_root(Value::String(scroll_to_name))?;
+  let scroll_to_func = scope.alloc_native_function(scroll_to_call_id, None, scroll_to_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(scroll_to_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(scroll_to_func))?;
+  let scroll_to_key = alloc_key(&mut scope, "scrollTo")?;
+  scope.define_property(global, scroll_to_key, data_desc(Value::Object(scroll_to_func)))?;
+  // scroll is an alias of scrollTo.
+  let scroll_key = alloc_key(&mut scope, "scroll")?;
+  scope.define_property(global, scroll_key, data_desc(Value::Object(scroll_to_func)))?;
+
+  // scrollBy(options|dx, dy)
+  let scroll_by_call_id = vm.register_native_call(window_scroll_by_native)?;
+  let scroll_by_name = scope.alloc_string("scrollBy")?;
+  scope.push_root(Value::String(scroll_by_name))?;
+  let scroll_by_func = scope.alloc_native_function(scroll_by_call_id, None, scroll_by_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(scroll_by_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(scroll_by_func))?;
+  let scroll_by_key = alloc_key(&mut scope, "scrollBy")?;
+  scope.define_property(global, scroll_by_key, data_desc(Value::Object(scroll_by_func)))?;
+
+  // scrollX / scrollY
+  let scroll_x_get_call_id = vm.register_native_call(window_scroll_x_get_native)?;
+  let scroll_x_get_name = scope.alloc_string("get scrollX")?;
+  scope.push_root(Value::String(scroll_x_get_name))?;
+  let scroll_x_get_func =
+    scope.alloc_native_function(scroll_x_get_call_id, None, scroll_x_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    scroll_x_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(scroll_x_get_func))?;
+  let scroll_x_key = alloc_key(&mut scope, "scrollX")?;
+  scope.define_property(
+    global,
+    scroll_x_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(scroll_x_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+  // pageXOffset is an alias of scrollX.
+  let page_x_offset_key = alloc_key(&mut scope, "pageXOffset")?;
+  scope.define_property(
+    global,
+    page_x_offset_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(scroll_x_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  let scroll_y_get_call_id = vm.register_native_call(window_scroll_y_get_native)?;
+  let scroll_y_get_name = scope.alloc_string("get scrollY")?;
+  scope.push_root(Value::String(scroll_y_get_name))?;
+  let scroll_y_get_func =
+    scope.alloc_native_function(scroll_y_get_call_id, None, scroll_y_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    scroll_y_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(scroll_y_get_func))?;
+  let scroll_y_key = alloc_key(&mut scope, "scrollY")?;
+  scope.define_property(
+    global,
+    scroll_y_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(scroll_y_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+  // pageYOffset is an alias of scrollY.
+  let page_y_offset_key = alloc_key(&mut scope, "pageYOffset")?;
+  scope.define_property(
+    global,
+    page_y_offset_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(scroll_y_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
 
   // getComputedStyle(element[, pseudoElt])
   let computed_style_get_property_value_call_id =
@@ -29904,6 +30156,62 @@ mod tests {
     let units = realm.heap().get_string(handle)?.as_code_units().to_vec();
     assert_eq!(units, vec![0u16, 1, 2, 3]);
 
+    Ok(())
+  }
+
+  #[test]
+  fn window_scroll_to_numeric_updates_scroll_y() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let html =
+      "<!doctype html><html><body style=\"margin:0\"><div style=\"height:2000px\"></div></body></html>";
+    let mut doc = BrowserDocumentDom2::from_html(html, RenderOptions::new().with_viewport(100, 100))
+      .expect("BrowserDocumentDom2");
+    doc.set_scroll(0.0, 0.0);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.invalid/"))?;
+
+    let value =
+      exec_script_with_dom_host(&mut realm, &mut doc, "window.scrollTo(0, 50); scrollY")?;
+    assert!(matches!(value, Value::Number(n) if n == 50.0));
+    Ok(())
+  }
+
+  #[test]
+  fn window_scroll_by_object_adds_to_scroll_y() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let html =
+      "<!doctype html><html><body style=\"margin:0\"><div style=\"height:2000px\"></div></body></html>";
+    let mut doc = BrowserDocumentDom2::from_html(html, RenderOptions::new().with_viewport(100, 100))
+      .expect("BrowserDocumentDom2");
+    doc.set_scroll(0.0, 0.0);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.invalid/"))?;
+
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut doc,
+      "window.scrollBy({ top: 10 }); scrollY",
+    )?;
+    assert!(matches!(value, Value::Number(n) if n == 10.0));
+    Ok(())
+  }
+
+  #[test]
+  fn window_scroll_to_clamps_to_viewport_scroll_range() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let html = "<!doctype html><html><body style=\"margin:0\"><div style=\"height:10px\"></div></body></html>";
+    let mut doc = BrowserDocumentDom2::from_html(html, RenderOptions::new().with_viewport(100, 100))
+      .expect("BrowserDocumentDom2");
+    doc.set_scroll(0.0, 0.0);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.invalid/"))?;
+
+    let value =
+      exec_script_with_dom_host(&mut realm, &mut doc, "window.scrollTo(0, 9999); scrollY")?;
+    assert!(matches!(value, Value::Number(n) if n == 0.0));
     Ok(())
   }
 

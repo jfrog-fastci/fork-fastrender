@@ -795,6 +795,35 @@ impl BrowserDocumentDom2 {
     )
   }
 
+  /// Returns the current viewport scroll offset (in CSS px).
+  pub fn viewport_scroll_offset(&self) -> Point {
+    Point::new(self.options.scroll_x, self.options.scroll_y)
+  }
+
+  /// Clamp a desired viewport scroll offset to the valid range for the current document layout.
+  ///
+  /// This ensures layout before computing the scroll bounds and is intended for JS/Web API
+  /// integrations like `window.scrollTo`.
+  pub fn clamp_viewport_scroll_offset(&mut self, desired: Point) -> Result<Point> {
+    let prepared = self.prepared_layout()?;
+    let viewport = prepared.layout_viewport();
+
+    let desired = Point::new(
+      if desired.x.is_finite() { desired.x } else { 0.0 },
+      if desired.y.is_finite() { desired.y } else { 0.0 },
+    );
+
+    let bounds = crate::scroll::scroll_bounds_for_fragment(
+      &prepared.fragment_tree().root,
+      Point::ZERO,
+      viewport,
+      viewport,
+      true,
+      false,
+    );
+    Ok(bounds.clamp(desired))
+  }
+
   /// Updates the animation/transition sampling timestamp in milliseconds since document load.
   ///
   /// When the value changes, this marks paint dirty (but does not invalidate style/layout).
@@ -1017,107 +1046,10 @@ impl BrowserDocumentDom2 {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
-    // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
-    if self.prepared.is_none() {
-      self.invalidate_all();
-    }
-
-    let needs_layout = self.style_dirty
-      || self.layout_dirty
-      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
-    if needs_layout {
-      // Layout without style changes can often avoid a full cascade by patching the existing box tree
-      // and rerunning only layout (e.g. text content changes).
-      let can_incremental_relayout = !self.style_dirty
-        && self.layout_dirty
-        && !self.dirty_text_nodes.is_empty()
-        && self.dirty_style_nodes.is_empty()
-        && self.dirty_structure_nodes.is_empty()
-        && self.prepared.is_some()
-        && self.last_dom_mapping.is_some();
-
-      let mut did_incremental_layout = false;
-      if can_incremental_relayout {
-        match self.prepared.take() {
-          Some(mut prepared) => match self.incremental_relayout_for_text_changes(&mut prepared) {
-            Ok(true) => {
-              self.invalidation_counters.incremental_relayouts = self
-                .invalidation_counters
-                .incremental_relayouts
-                .saturating_add(1);
-              // Incremental relayout produces fresh cached layout artifacts without taking a full
-              // renderer-DOM snapshot, so we still need to record that we've now "seen" the live DOM
-              // mutation generation. Without this, generation-based dirty detection would force an
-              // extra full pipeline run on the next `render_if_needed()` call.
-              self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
-              self.prepared = Some(prepared);
-              did_incremental_layout = true;
-            }
-            Ok(false) => {
-              // Could not safely apply incremental relayout; fall back to a full pipeline run.
-              self.prepared = Some(prepared);
-            }
-            Err(err) => {
-              // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
-              self.prepared = Some(prepared);
-              return Err(err);
-            }
-          },
-          None => {}
-        }
-      }
-
-      if !did_incremental_layout {
-        let prev_prepared = self.prepared.take();
-        let mut prepared = match self.prepare_dom_with_options() {
-          Ok(prepared) => prepared,
-          Err(err) => {
-            self.prepared = prev_prepared;
-            return Err(err);
-          }
-        };
-
-        self.invalidation_counters.full_restyles =
-          self.invalidation_counters.full_restyles.saturating_add(1);
-        self.invalidation_counters.full_relayouts =
-          self.invalidation_counters.full_relayouts.saturating_add(1);
-
-        let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
-        match now_ms {
-          None => {
-            prepared.fragment_tree.transition_state = None;
-          }
-          Some(now_ms) => {
-            let prev_state = prev_prepared
-              .as_ref()
-              .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
-            let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
-            let mut transition_state = TransitionState::update_for_style_change(
-              prev_state,
-              prev_box_tree,
-              prepared.box_tree(),
-              now_ms,
-            );
-            transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
-            prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
-          }
-        }
-
-        self.prepared = Some(prepared);
-      }
-
-      // We now have fresh style/layout artifacts stored in `self.prepared`, even if the subsequent
-      // paint step is cancelled or fails. Clear the layout dirtiness so callers can retry paint
-      // from cache without re-running cascade/layout.
-      self.style_dirty = false;
-      self.layout_dirty = false;
-      self.dirty_style_nodes.clear();
-      self.dirty_text_nodes.clear();
-      self.dirty_structure_nodes.clear();
-      // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
-      // can be retried.
-      self.paint_dirty = true;
-    }
+    // Rendering requires up-to-date layout caches. Reuse the same host-side layout flush used by
+    // DOM/layout query APIs (e.g. `getBoundingClientRect`) so JS-driven `scrollTo` can clamp against
+    // current scroll bounds without forcing a paint.
+    self.ensure_layout_for_dom_queries()?;
 
     let frame = self.paint_from_cache_frame_with_deadline(paint_deadline)?;
 
