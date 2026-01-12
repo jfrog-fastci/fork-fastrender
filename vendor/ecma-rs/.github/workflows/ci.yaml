@@ -452,7 +452,7 @@ jobs:
 
       - name: Install TypeScript (npm)
         working-directory: ./typecheck-ts-harness
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Show TypeScript version
         working-directory: ./typecheck-ts-harness

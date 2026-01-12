@@ -48,6 +48,9 @@ jobs:
       - name: Generate lockfile
         run: cargo generate-lockfile
 
+      - name: Check TypeScript version sync
+        run: ./scripts/check_typescript_version_sync.sh
+
       # Nightly runs the same correctness + hygiene gates as PR CI (fmt/clippy/check
       # + deps graph freshness) and then exercises the heavier nightly-only suites.
       - name: cargo fmt --all --check
@@ -134,7 +137,7 @@ jobs:
 
       - name: Install Node dependencies (pinned TypeScript)
         working-directory: typecheck-ts-harness
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: TypeScript conformance shard
         run: |
