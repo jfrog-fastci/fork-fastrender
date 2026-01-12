@@ -8576,6 +8576,10 @@ mod tests {
   fn fetch_does_not_override_global_readable_stream_when_window_streams_installed(
   ) -> Result<(), VmError> {
     let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+
+    // WindowRealm installs `window_streams` bindings by default. Fetch must not replace the global
+    // `ReadableStream` constructor with its own implementation.
+    window.exec_script("globalThis.__rs_ctor_before_fetch = ReadableStream")?;
     let fetch_bindings = {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       install_window_fetch_bindings_with_guard::<DummyHost>(
@@ -8586,17 +8590,18 @@ mod tests {
       )?
     };
 
-    let stream_env_id = window.exec_script("new ReadableStream().__fastrender_fetch_env_id")?;
+    let stream_ctor_is_unchanged =
+      window.exec_script("globalThis.__rs_ctor_before_fetch === ReadableStream")?;
     assert!(
-      matches!(stream_env_id, Value::Undefined),
-      "expected global ReadableStream to come from window_streams, got {stream_env_id:?}"
+      matches!(stream_ctor_is_unchanged, Value::Bool(true)),
+      "expected fetch to not override global ReadableStream, got {stream_ctor_is_unchanged:?}"
     );
 
-    let response_stream_env_id =
-      window.exec_script("new Response('x').body.__fastrender_fetch_env_id")?;
+    let response_body_is_global_readable_stream =
+      window.exec_script("new Response('x').body instanceof ReadableStream")?;
     assert!(
-      matches!(response_stream_env_id, Value::Number(_)),
-      "expected Response.body to be backed by fetch internal stream wrapper, got {response_stream_env_id:?}"
+      matches!(response_body_is_global_readable_stream, Value::Bool(true)),
+      "expected Response.body to use global ReadableStream brand, got {response_body_is_global_readable_stream:?}"
     );
 
     let has_get_reader = window.exec_script("typeof new Response('x').body.getReader === 'function'")?;
