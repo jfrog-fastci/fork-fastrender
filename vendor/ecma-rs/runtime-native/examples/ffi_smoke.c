@@ -83,6 +83,37 @@ static void handle_microtask_drop(GcPtr data) {
   handle_microtask_dropped = data;
 }
 
+static int timeout_with_drop_ran = 0;
+static int timeout_with_drop_drop_count = 0;
+static uint8_t timeout_with_drop_user = 0;
+
+static void timeout_check_with_drop(uint8_t* data) {
+  if (data != &timeout_with_drop_user) {
+    timeout_with_drop_ran = 2;
+    return;
+  }
+  if (timeout_with_drop_drop_count != 0) {
+    timeout_with_drop_ran = 3;
+    return;
+  }
+  timeout_with_drop_ran = 1;
+}
+
+static void timeout_with_drop_drop(uint8_t* data) {
+  if (data != &timeout_with_drop_user) {
+    timeout_with_drop_drop_count = -1;
+    return;
+  }
+  timeout_with_drop_drop_count += 1;
+}
+
+static int timeout_rooted_h_ran = 0;
+static GcPtr timeout_rooted_h_expected = NULL;
+
+static void timeout_check_rooted(uint8_t* data) {
+  timeout_rooted_h_ran = (data == timeout_rooted_h_expected) ? 1 : 2;
+}
+
 static IoWatcherId io_watcher = 0;
 static int io_watcher_ran = 0;
 static GcPtr io_watcher_expected = NULL;
@@ -291,6 +322,46 @@ int main(void) {
   rt_handle_store(h, obj1);
   if (check(rt_handle_load(h) == NULL)) { rc = 11; goto done; }
 
+  // `GcHandle` (pointer-to-slot) variants for moving-GC safety: the runtime reads the pointer value
+  // from the slot only after acquiring the handle-table lock, so the GC can update the slot if lock
+  // acquisition blocks.
+  GcPtr handle_slot = rt_alloc(16, shape);
+  if (check(handle_slot != NULL)) { rc = 75; goto done; }
+  rt_root_push(&handle_slot);
+  GcPtr handle_slot_before = handle_slot;
+  HandleId handle_slot_id = rt_handle_alloc_h(&handle_slot);
+  if (check(handle_slot_id != 0)) { rt_root_pop(&handle_slot); rc = 76; goto done; }
+  rt_gc_collect();
+  if (check(handle_slot != handle_slot_before)) { rt_root_pop(&handle_slot); rc = 77; goto done; }
+  if (check(rt_handle_load(handle_slot_id) == handle_slot)) { rt_root_pop(&handle_slot); rc = 78; goto done; }
+  rt_root_pop(&handle_slot);
+
+  GcPtr handle_slot2 = rt_alloc(16, shape);
+  if (check(handle_slot2 != NULL)) { rc = 79; goto done; }
+  rt_root_push(&handle_slot2);
+  GcPtr handle_slot2_before = handle_slot2;
+  rt_handle_store_h(handle_slot_id, &handle_slot2);
+  rt_gc_collect();
+  if (check(handle_slot2 != handle_slot2_before)) { rt_root_pop(&handle_slot2); rc = 80; goto done; }
+  if (check(rt_handle_load(handle_slot_id) == handle_slot2)) { rt_root_pop(&handle_slot2); rc = 81; goto done; }
+  rt_root_pop(&handle_slot2);
+
+  rt_handle_free(handle_slot_id);
+  if (check(rt_handle_load(handle_slot_id) == NULL)) { rc = 82; goto done; }
+
+  // Weak handles: should not keep objects alive. Once the last strong root is dropped, GC should
+  // clear the weak handle.
+  GcPtr weak_slot = rt_alloc(16, shape);
+  if (check(weak_slot != NULL)) { rc = 83; goto done; }
+  rt_root_push(&weak_slot);
+  uint64_t weak = rt_weak_add_h(&weak_slot);
+  if (check(rt_weak_get(weak) == weak_slot)) { rt_root_pop(&weak_slot); rc = 84; goto done; }
+  rt_root_pop(&weak_slot);
+  weak_slot = NULL;
+  rt_gc_collect();
+  if (check(rt_weak_get(weak) == NULL)) { rc = 85; goto done; }
+  rt_weak_remove(weak);
+
   // Native async ABI: allocate a CoroutineId handle and spawn a coroutine.
   //
   // This is stack-owned and must complete synchronously; the runtime should *not*
@@ -414,6 +485,23 @@ int main(void) {
   if (check(drop_ctx.dropped == 0)) { rc = 17; goto done; }
   if (check(rooted_microtask_ran == 1)) { rc = 19; goto done; }
 
+  // Like `rt_queue_microtask_rooted`, but pass the GC pointer as a `GcHandle` (pointer-to-slot) so
+  // the runtime can reload the pointer after potential safepoints.
+  GcPtr rooted_h_slot = rt_alloc(16, shape);
+  if (check(rooted_h_slot != NULL)) { rc = 86; goto done; }
+  rt_root_push(&rooted_h_slot);
+  GcPtr rooted_h_before = rooted_h_slot;
+  expected_root = NULL;
+  rooted_microtask_ran = 0;
+  rt_queue_microtask_rooted_h(microtask_check_root, &rooted_h_slot);
+  if (check(rooted_microtask_ran == 0)) { rt_root_pop(&rooted_h_slot); rc = 87; goto done; }
+  rt_gc_collect();
+  if (check(rooted_h_slot != rooted_h_before)) { rt_root_pop(&rooted_h_slot); rc = 88; goto done; }
+  expected_root = rooted_h_slot;
+  rt_root_pop(&rooted_h_slot);
+  rt_drain_microtasks();
+  if (check(rooted_microtask_ran == 1)) { rc = 89; goto done; }
+
   // Handle-based microtasks: the runtime consumes a `HandleId` and frees it when the work item is
   // torn down (after execution or cancellation).
   GcPtr handle_obj = rt_alloc_pinned(16, shape);
@@ -444,6 +532,43 @@ int main(void) {
   if (check(handle_microtask_drop_count == 1)) { rc = 48; goto done; }
   if (check(handle_microtask_dropped == handle_obj2)) { rc = 49; goto done; }
   if (check(rt_handle_load(handle_id2) == NULL)) { rc = 50; goto done; }
+
+  // Timers: timeouts should not run synchronously, and drop hooks must execute after the callback
+  // returns.
+  timeout_with_drop_ran = 0;
+  timeout_with_drop_drop_count = 0;
+  TimerId timeout_id = rt_set_timeout_with_drop(
+    timeout_check_with_drop,
+    &timeout_with_drop_user,
+    timeout_with_drop_drop,
+    0
+  );
+  if (check(timeout_id != 0)) { rc = 90; goto done; }
+  if (check(timeout_with_drop_ran == 0)) { rc = 91; goto done; }
+  if (check(timeout_with_drop_drop_count == 0)) { rc = 92; goto done; }
+  (void)rt_async_poll();
+  rt_drain_microtasks();
+  if (check(timeout_with_drop_ran == 1)) { rc = 93; goto done; }
+  if (check(timeout_with_drop_drop_count == 1)) { rc = 94; goto done; }
+
+  // Rooted-h timeout API: the runtime stores the userdata as a rooted handle so callbacks observe
+  // the relocated pointer after GC.
+  GcPtr timeout_slot = rt_alloc(16, shape);
+  if (check(timeout_slot != NULL)) { rc = 95; goto done; }
+  rt_root_push(&timeout_slot);
+  GcPtr timeout_before = timeout_slot;
+  timeout_rooted_h_ran = 0;
+  timeout_rooted_h_expected = NULL;
+  TimerId timeout_rooted_id = rt_set_timeout_rooted_h(timeout_check_rooted, &timeout_slot, 0);
+  if (check(timeout_rooted_id != 0)) { rt_root_pop(&timeout_slot); rc = 96; goto done; }
+  if (check(timeout_rooted_h_ran == 0)) { rt_root_pop(&timeout_slot); rc = 97; goto done; }
+  rt_gc_collect();
+  if (check(timeout_slot != timeout_before)) { rt_root_pop(&timeout_slot); rc = 98; goto done; }
+  timeout_rooted_h_expected = timeout_slot;
+  rt_root_pop(&timeout_slot);
+  (void)rt_async_poll();
+  rt_drain_microtasks();
+  if (check(timeout_rooted_h_ran == 1)) { rc = 99; goto done; }
 
   // I/O watcher rooted-h API: register a watcher that stores the callback userdata as a GC-rooted
   // persistent handle (created from a `GcHandle` / pointer-to-slot at registration time). After a
