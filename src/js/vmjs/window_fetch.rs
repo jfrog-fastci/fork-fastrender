@@ -2923,15 +2923,6 @@ fn request_clone_native(
     Value::Undefined => Value::Null,
     other => other,
   };
-  if request_body_stream_locked(env_id, request_id, scope.heap())? {
-    return Err(throw_type_error(
-      vm,
-      scope,
-      &mut *host,
-      host_hooks,
-      "Request body is locked",
-    ));
-  }
 
   if request_body_stream_locked(env_id, request_id, scope.heap())? {
     return Err(throw_type_error(
@@ -2954,6 +2945,7 @@ fn request_clone_native(
       Ok(Some(req.clone()))
     }
   })?;
+
   let Some(cloned) = cloned else {
     return Err(throw_type_error(
       vm,

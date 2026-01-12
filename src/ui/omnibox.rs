@@ -953,7 +953,7 @@ mod tests {
     let mut bookmarks = BookmarkStore::default();
     bookmarks
       .add("https://needle.example/".to_string(), None, None)
-      .unwrap();
+      .expect("add bookmark");
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,
       closed_tabs: &closed_tabs,
@@ -993,7 +993,7 @@ mod tests {
     let mut bookmarks = BookmarkStore::default();
     bookmarks
       .add("https://example.com/bookmark".to_string(), None, None)
-      .unwrap();
+      .expect("add bookmark");
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,
       closed_tabs: &closed_tabs,
@@ -1089,10 +1089,14 @@ mod tests {
     let mut bookmarks = BookmarkStore::default();
     bookmarks
       .add("https://www.rust-lang.org/learn".to_string(), None, None)
-      .unwrap();
+      .expect("add bookmark rust-lang");
     bookmarks
-      .add("https://example.com/only-one-token".to_string(), None, None)
-      .unwrap();
+      .add(
+        "https://example.com/only-one-token".to_string(),
+        None,
+        None,
+      )
+      .expect("add bookmark example");
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,
       closed_tabs: &closed_tabs,
@@ -1132,7 +1136,7 @@ mod tests {
     let mut bookmarks = BookmarkStore::default();
     bookmarks
       .add("https://example.com/".to_string(), None, None)
-      .unwrap();
+      .expect("add bookmark");
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,
       closed_tabs: &closed_tabs,

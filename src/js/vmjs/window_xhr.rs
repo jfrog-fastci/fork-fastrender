@@ -3130,19 +3130,17 @@ mod tests {
     let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
     let global = realm.global_object();
-
     let upload_type = get_prop(&mut scope, global, "__upload_type");
-    let upload_add = get_prop(&mut scope, global, "__upload_add");
-    let upload_onprogress = get_prop(&mut scope, global, "__upload_onprogress");
-
     assert_eq!(
       get_string(scope.heap(), upload_type),
       "object"
     );
+    let upload_add = get_prop(&mut scope, global, "__upload_add");
     assert_eq!(
       get_string(scope.heap(), upload_add),
       "function"
     );
+    let upload_onprogress = get_prop(&mut scope, global, "__upload_onprogress");
     assert_eq!(
       get_string(scope.heap(), upload_onprogress),
       "function"
