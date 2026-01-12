@@ -244,6 +244,32 @@ impl ProgramState {
         diag.primary,
       ))
     });
+
+    // `hir-js` emits `LOWER0003` warnings for export statements that are not at
+    // module top level. TypeScript, however, permits parsing `export { ... }` /
+    // `export * ...` inside internal namespaces/modules and reports TS1194
+    // instead. Once TS1194 is present, suppress redundant lowering warnings so
+    // callers see the tsc-aligned diagnostic set.
+    let ts1194_spans: Vec<Span> = diagnostics
+      .iter()
+      .filter(|diag| diag.code.as_str() == "TS1194")
+      .map(|diag| diag.primary)
+      .collect();
+    if !ts1194_spans.is_empty() {
+      diagnostics.retain(|diag| {
+        if diag.code.as_str() != "LOWER0003" {
+          return true;
+        }
+        !ts1194_spans.iter().any(|span| {
+          span.file == diag.primary.file
+            && ((span.range.start >= diag.primary.range.start
+              && span.range.end <= diag.primary.range.end)
+              || (diag.primary.range.start >= span.range.start
+                && diag.primary.range.end <= span.range.end))
+        })
+      });
+    }
+
     codes::normalize_diagnostics(&mut diagnostics);
     self.filter_skip_lib_check_diagnostics(&mut diagnostics);
     self.analysis_revision = Some({

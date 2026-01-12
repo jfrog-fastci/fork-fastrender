@@ -406,6 +406,42 @@ pub const PROPERTY_IN_TYPE_NOT_ASSIGNABLE_TO_BASE: Code = Code::new(
   &[],
 );
 
+/// TS1147: Import declarations in a namespace cannot reference a module.
+///
+/// TypeScript emits this diagnostic when an import declaration appears inside an
+/// internal `namespace`/`module` block but references an external module via a
+/// string specifier (either `from "..."` or `require("...")`).
+///
+/// - Primary span: the quoted module specifier string.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const IMPORT_IN_NAMESPACE_CANNOT_REFERENCE_MODULE: Code = Code::new(
+  "TS1147",
+  "import declarations in a namespace cannot reference a module",
+  "module specifier string inside the import declaration",
+  &["primary: module specifier span"],
+  &[],
+);
+
+/// TS1194: Export declarations are not permitted in a namespace.
+///
+/// TypeScript emits this diagnostic when an export declaration statement (for
+/// example `export { ... }` or `export * from "..."`) appears inside an internal
+/// `namespace`/`module` block.
+///
+/// - Primary span: if the export has a `from "..."` specifier, highlight the
+///   quoted module specifier string; otherwise highlight the full export
+///   declaration statement.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const EXPORT_DECLARATION_IN_NAMESPACE: Code = Code::new(
+  "TS1194",
+  "export declarations are not permitted in a namespace",
+  "module specifier string for re-export declarations; otherwise the export declaration statement span",
+  &["primary: module specifier span or export declaration statement span"],
+  &[],
+);
+
 /// TS1202: Import assignment cannot be used when targeting ECMAScript modules.
 ///
 /// - Primary span: the full `import x = require("...")` statement.

@@ -1036,6 +1036,162 @@ fn global_augmentation_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Dia
   Arc::from(diagnostics.into_boxed_slice())
 }
 
+#[salsa::tracked]
+fn namespace_context_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagnostic]> {
+  panic_if_cancelled(db);
+  let parsed = parse_for(db, file);
+  let Some(ast) = parsed.ast.as_deref() else {
+    return Arc::from([]);
+  };
+  let file_id = file.file_id(db);
+  let source = file_text_for(db, file);
+
+  use parse_js::ast::node::Node;
+  use parse_js::ast::stmt::Stmt;
+  use parse_js::ast::ts_stmt::{ImportEqualsRhs, ModuleName, NamespaceBody};
+  use parse_js::loc::Loc;
+
+  fn to_range(loc: Loc) -> TextRange {
+    TextRange::new(loc.start_u32(), loc.end_u32())
+  }
+
+  fn refine_span(source: &str, span: TextRange, value: &str) -> TextRange {
+    if (span.end as usize) <= source.len() {
+      if let Some(segment) = source.get(span.start as usize..span.end as usize) {
+        for quote in ['"', '\'', '`'] {
+          let needle = format!("{quote}{value}{quote}");
+          if let Some(idx) = segment.find(&needle) {
+            let start = span.start + idx as u32;
+            let end = start + needle.len() as u32;
+            return TextRange::new(start, end);
+          }
+        }
+      }
+    }
+    span
+  }
+
+  fn extend_to_semicolon(source: &str, span: TextRange) -> TextRange {
+    let mut cursor = span.end as usize;
+    if cursor >= source.len() {
+      return span;
+    }
+    // `parse-js` statement spans intentionally omit the trailing semicolon for
+    // export declarations (it is consumed separately to avoid producing empty
+    // statements). TypeScript diagnostics include the semicolon when it is
+    // present, so extend the span when possible.
+    while cursor < source.len() && matches!(source.as_bytes()[cursor], b' ' | b'\t' | b'\r') {
+      cursor += 1;
+    }
+    if cursor < source.len() && source.as_bytes()[cursor] == b';' {
+      return TextRange::new(span.start, (cursor + 1) as u32);
+    }
+    span
+  }
+
+  fn walk_namespace_body(
+    body: &NamespaceBody,
+    file_id: FileId,
+    source: &str,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    match body {
+      NamespaceBody::Block(stmts) => walk(stmts, true, file_id, source, diags),
+      NamespaceBody::Namespace(ns) => walk_namespace_body(&ns.stx.body, file_id, source, diags),
+    }
+  }
+
+  fn walk(
+    stmts: &[Node<Stmt>],
+    in_internal_namespace: bool,
+    file_id: FileId,
+    source: &str,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    for stmt in stmts {
+      if in_internal_namespace {
+        match stmt.stx.as_ref() {
+          Stmt::ExportList(export_list) => {
+            let stmt_range = to_range(stmt.loc);
+            let primary = export_list
+              .stx
+              .from
+              .as_deref()
+              .map(|spec| refine_span(source, stmt_range, spec))
+              .unwrap_or_else(|| extend_to_semicolon(source, stmt_range));
+            diags.push(codes::EXPORT_DECLARATION_IN_NAMESPACE.error(
+              "Export declarations are not permitted in a namespace.",
+              Span::new(file_id, primary),
+            ));
+          }
+          Stmt::ExportTypeDecl(export_type) => {
+            let stmt_range = to_range(stmt.loc);
+            let primary = export_type
+              .stx
+              .module
+              .as_deref()
+              .map(|spec| refine_span(source, stmt_range, spec))
+              .unwrap_or_else(|| extend_to_semicolon(source, stmt_range));
+            diags.push(codes::EXPORT_DECLARATION_IN_NAMESPACE.error(
+              "Export declarations are not permitted in a namespace.",
+              Span::new(file_id, primary),
+            ));
+          }
+          Stmt::Import(import) => {
+            let stmt_range = to_range(stmt.loc);
+            let primary = refine_span(source, stmt_range, import.stx.module.as_str());
+            diags.push(codes::IMPORT_IN_NAMESPACE_CANNOT_REFERENCE_MODULE.error(
+              "Import declarations in a namespace cannot reference a module.",
+              Span::new(file_id, primary),
+            ));
+          }
+          Stmt::ImportTypeDecl(import_type) => {
+            let stmt_range = to_range(stmt.loc);
+            let primary = refine_span(source, stmt_range, import_type.stx.module.as_str());
+            diags.push(codes::IMPORT_IN_NAMESPACE_CANNOT_REFERENCE_MODULE.error(
+              "Import declarations in a namespace cannot reference a module.",
+              Span::new(file_id, primary),
+            ));
+          }
+          Stmt::ImportEqualsDecl(import_equals) => {
+            if let ImportEqualsRhs::Require { module } = &import_equals.stx.rhs {
+              let stmt_range = to_range(stmt.loc);
+              let primary = refine_span(source, stmt_range, module.as_str());
+              diags.push(codes::IMPORT_IN_NAMESPACE_CANNOT_REFERENCE_MODULE.error(
+                "Import declarations in a namespace cannot reference a module.",
+                Span::new(file_id, primary),
+              ));
+            }
+          }
+          _ => {}
+        }
+      }
+
+      match stmt.stx.as_ref() {
+        Stmt::NamespaceDecl(ns) => walk_namespace_body(&ns.stx.body, file_id, source, diags),
+        Stmt::ModuleDecl(module) => match &module.stx.name {
+          ModuleName::Identifier(_) => {
+            if let Some(body) = module.stx.body.as_deref() {
+              walk(body, true, file_id, source, diags);
+            }
+          }
+          // Do not descend into ambient/external module declarations (`declare module "foo" {}`).
+          ModuleName::String(_) => {}
+        },
+        Stmt::GlobalDecl(global) => walk(&global.stx.body, in_internal_namespace, file_id, source, diags),
+        _ => {}
+      }
+    }
+  }
+
+  let mut diagnostics = Vec::new();
+  walk(&ast.stx.body, false, file_id, source.as_ref(), &mut diagnostics);
+
+  diagnostics.sort_by(::diagnostics::diagnostic_cmp);
+  diagnostics.dedup();
+  Arc::from(diagnostics.into_boxed_slice())
+}
+
 #[derive(Debug, Clone)]
 pub struct LowerResultWithDiagnostics {
   pub lowered: Option<Arc<LowerResult>>,
@@ -3576,6 +3732,13 @@ pub fn global_augmentation_diagnostics(db: &dyn Db, file: FileId) -> Arc<[Diagno
   global_augmentation_diagnostics_for(db, handle)
 }
 
+pub fn namespace_context_diagnostics(db: &dyn Db, file: FileId) -> Arc<[Diagnostic]> {
+  let handle = db
+    .file_input(file)
+    .expect("file must be seeded before querying namespace context diagnostics");
+  namespace_context_diagnostics_for(db, handle)
+}
+
 pub fn reachable_files(db: &dyn Db) -> Arc<Vec<FileId>> {
   all_files_for(db)
 }
@@ -4854,6 +5017,7 @@ fn program_diagnostics_for(db: &dyn Db) -> Arc<[Diagnostic]> {
   let mut lower_diags = Vec::new();
   let mut module_diags = Vec::new();
   let mut global_aug_diags = Vec::new();
+  let mut namespace_context_diags = Vec::new();
   for file in files.iter() {
     panic_if_cancelled(db);
     let parsed = parse(db, *file);
@@ -4863,6 +5027,33 @@ fn program_diagnostics_for(db: &dyn Db) -> Arc<[Diagnostic]> {
     lower_diags.extend(decl_types(db, *file).diagnostics.iter().cloned());
     module_diags.extend(unresolved_module_diagnostics(db, *file).iter().cloned());
     global_aug_diags.extend(global_augmentation_diagnostics(db, *file).iter().cloned());
+    namespace_context_diags.extend(namespace_context_diagnostics(db, *file).iter().cloned());
+  }
+
+  // `hir-js` emits `LOWER0003` warnings when it encounters export list statements
+  // in non-module contexts. In TypeScript, these `export { ... }` / `export * ...`
+  // statements inside internal namespaces/modules should instead be surfaced as
+  // TS1194 diagnostics.
+  //
+  // Once we've emitted TS1194 (with either the statement span or the refined
+  // module specifier span), drop the corresponding lowering warnings to match
+  // tsc's single-diagnostic behavior.
+  let ts1194_spans: Vec<(FileId, TextRange)> = namespace_context_diags
+    .iter()
+    .filter(|diag| diag.code.as_str() == codes::EXPORT_DECLARATION_IN_NAMESPACE.as_str())
+    .map(|diag| (diag.primary.file, diag.primary.range))
+    .collect();
+  if !ts1194_spans.is_empty() {
+    lower_diags.retain(|diag| {
+      if diag.code.as_str() != "LOWER0003" {
+        return true;
+      }
+      !ts1194_spans.iter().any(|(file, range)| {
+        *file == diag.primary.file
+          && ((range.start >= diag.primary.range.start && range.end <= diag.primary.range.end)
+            || (diag.primary.range.start >= range.start && diag.primary.range.end <= range.end))
+      })
+    });
   }
   let semantics = ts_semantics(db);
   let mut body_diags = Vec::new();
@@ -4880,10 +5071,24 @@ fn program_diagnostics_for(db: &dyn Db) -> Arc<[Diagnostic]> {
   let semantic_diags = semantics
     .diagnostics
     .iter()
-    .filter(|diag| diag.code.as_str() != "BIND1002")
+    .filter(|diag| {
+      let code = diag.code.as_str();
+      if code == "BIND1002" {
+        return false;
+      }
+      if code == "LOWER0003" {
+        return !ts1194_spans.iter().any(|(file, range)| {
+          *file == diag.primary.file
+            && ((range.start >= diag.primary.range.start && range.end <= diag.primary.range.end)
+              || (diag.primary.range.start >= range.start && diag.primary.range.end <= range.end))
+        });
+      }
+      true
+    })
     .cloned()
     .chain(module_diags.into_iter())
-    .chain(global_aug_diags.into_iter());
+    .chain(global_aug_diags.into_iter())
+    .chain(namespace_context_diags.into_iter());
   aggregate_program_diagnostics(parse_diags, lower_diags, semantic_diags, body_diags)
 }
 
