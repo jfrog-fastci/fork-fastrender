@@ -3030,6 +3030,7 @@ impl<'a> BodyBuilder<'a> {
         None => span,
       });
     };
+    include(self.span);
     for expr in &self.exprs {
       include(expr.span);
     }

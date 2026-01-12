@@ -71,3 +71,40 @@ fn span_map_stmt_at_offset_returns_innermost_statement() {
     "expected return statement"
   );
 }
+
+#[test]
+fn span_map_body_at_offset_includes_function_type_annotations() {
+  let source = "function f(x: number): string { return x as any; }";
+  let lowered = lower_from_source_with_kind(FileKind::Ts, source).expect("lower source");
+
+  let func = lowered
+    .defs
+    .iter()
+    .find(|def| def.path.kind == DefKind::Function && lowered.names.resolve(def.name) == Some("f"))
+    .expect("function f");
+  let func_body = func.body.expect("f body");
+
+  let number_offset = (source.find("number").expect("param type") + 1) as u32;
+  assert_eq!(lowered.hir.span_map.body_at_offset(number_offset), Some(func_body));
+
+  let return_offset = (source.find("string").expect("return type") + 1) as u32;
+  assert_eq!(lowered.hir.span_map.body_at_offset(return_offset), Some(func_body));
+}
+
+#[test]
+fn span_map_body_at_offset_includes_arrow_param_type_annotation() {
+  let source = "const g = (x: number) => x;";
+  let lowered = lower_from_source_with_kind(FileKind::Ts, source).expect("lower source");
+
+  let arrow = lowered
+    .defs
+    .iter()
+    .find(|def| {
+      def.path.kind == DefKind::Function && lowered.names.resolve(def.name) == Some("<arrow>")
+    })
+    .expect("arrow function");
+  let arrow_body = arrow.body.expect("arrow body");
+
+  let number_offset = (source.find("number").expect("param type") + 1) as u32;
+  assert_eq!(lowered.hir.span_map.body_at_offset(number_offset), Some(arrow_body));
+}
