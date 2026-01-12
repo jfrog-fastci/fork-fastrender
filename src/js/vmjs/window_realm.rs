@@ -12494,6 +12494,40 @@ fn parse_add_event_listener_options(
   }
 }
 
+fn parse_add_event_listener_options_without_host(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> Result<web_events::AddEventListenerOptions, VmError> {
+  let mut opts = web_events::AddEventListenerOptions::default();
+  match value {
+    Value::Object(obj) => {
+      // Root the object during key allocations: `alloc_key` can allocate and trigger GC.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(obj))?;
+
+      let capture_key = alloc_key(&mut scope, "capture")?;
+      let v = vm.get(&mut scope, obj, capture_key)?;
+      opts.capture = scope.heap().to_boolean(v)?;
+
+      let once_key = alloc_key(&mut scope, "once")?;
+      let v = vm.get(&mut scope, obj, once_key)?;
+      opts.once = scope.heap().to_boolean(v)?;
+
+      let passive_key = alloc_key(&mut scope, "passive")?;
+      let v = vm.get(&mut scope, obj, passive_key)?;
+      opts.passive = scope.heap().to_boolean(v)?;
+
+      Ok(opts)
+    }
+    Value::Undefined => Ok(opts),
+    other => {
+      opts.capture = scope.heap().to_boolean(other)?;
+      Ok(opts)
+    }
+  }
+}
+
 fn parse_event_listener_capture(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -12510,6 +12544,26 @@ fn parse_event_listener_capture(
 
       let capture_key = alloc_key(&mut scope, "capture")?;
       let v = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, capture_key)?;
+      scope.heap().to_boolean(v)
+    }
+    other => scope.heap().to_boolean(other),
+  }
+}
+
+fn parse_event_listener_capture_without_host(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> Result<bool, VmError> {
+  match value {
+    Value::Object(obj) => {
+      // Root the object during key allocation: `alloc_key` allocates a string which can trigger a
+      // GC cycle.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(obj))?;
+
+      let capture_key = alloc_key(&mut scope, "capture")?;
+      let v = vm.get(&mut scope, obj, capture_key)?;
       scope.heap().to_boolean(v)
     }
     other => scope.heap().to_boolean(other),
@@ -12882,7 +12936,13 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
         };
 
         let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
-        let options = parse_add_event_listener_options(scope, options_value)?;
+        let options = if let Some(options) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+          parse_add_event_listener_options(vm, scope, host, hooks, options_value)
+        })? {
+          options
+        } else {
+          parse_add_event_listener_options_without_host(vm, scope, options_value)?
+        };
         let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 
         // SAFETY: `dom_ptr` points at the realm-owned fallback document and remains valid for the
@@ -12932,7 +12992,13 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
         };
 
         let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
-        let capture = parse_event_listener_capture(scope, options_value)?;
+        let capture = if let Some(capture) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+          parse_event_listener_capture(vm, scope, host, hooks, options_value)
+        })? {
+          capture
+        } else {
+          parse_event_listener_capture_without_host(vm, scope, options_value)?
+        };
         let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 
         let listener_roots_owner = match resolved.target_id {

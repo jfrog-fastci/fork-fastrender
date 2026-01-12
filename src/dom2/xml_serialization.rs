@@ -200,6 +200,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             tag_name,
             namespace,
             attributes,
+            ..
           } => {
             let is_html = is_html_namespace(namespace);
             let ns_uri = namespace_uri_for_storage(namespace.as_str());
@@ -373,4 +374,3 @@ impl Document {
     serialize_node(self, node)
   }
 }
-

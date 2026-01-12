@@ -971,12 +971,16 @@ impl FloatContext {
       // Coalesce adjacent segments whose constraints are identical. This is common on float-heavy
       // pages that stack many equally-sized floats: the active set changes at each start/end, but
       // the most-constraining edges often remain constant.
-      if let Some(last) = cache.segments.last_mut()
-        && last.end_y == segment_start
-        && last.left_edge == left_edge
-        && last.right_edge == right_edge
-      {
-        last.end_y = segment_end;
+      let should_coalesce = cache
+        .segments
+        .last()
+        .is_some_and(|last| {
+          last.end_y == segment_start
+            && last.left_edge == left_edge
+            && last.right_edge == right_edge
+        });
+      if should_coalesce {
+        cache.segments.last_mut().unwrap().end_y = segment_end;
       } else {
         cache.segments.push(FloatRangeSegment {
           start_y: segment_start,
