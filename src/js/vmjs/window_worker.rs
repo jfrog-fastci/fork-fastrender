@@ -1115,6 +1115,10 @@ fn install_worker_global_scope(
     let self_key = alloc_key(&mut scope, "self")?;
     scope.define_property(global, self_key, data_desc(Value::Object(global)))?;
   }
+
+  // structuredClone(value[, options])
+  crate::js::window_structured_clone::install_window_structured_clone(vm, &mut scope, realm, global)?;
+
   // onmessage / onerror placeholders
   for name in ["onmessage", "onerror"] {
     let key = alloc_key(&mut scope, name)?;
@@ -1272,6 +1276,26 @@ mod tests {
     }
   }
 
+  fn get_global_string(host: &mut WindowHost, name: &str) -> Option<String> {
+    let window = host.host_mut().window_mut();
+    let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global)).unwrap();
+    let key_s = scope.alloc_string(name).unwrap();
+    scope.push_root(Value::String(key_s)).unwrap();
+    let key = PropertyKey::from_string(key_s);
+    match scope
+      .heap()
+      .object_get_own_data_property_value(global, &key)
+      .unwrap()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::String(s) => Some(scope.heap().get_string(s).unwrap().to_utf8_lossy()),
+      _ => None,
+    }
+  }
+
   fn get_global_len(host: &mut WindowHost, array_name: &str) -> Option<usize> {
     let window = host.host_mut().window_mut();
     let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
@@ -1359,6 +1383,55 @@ mod tests {
     })?;
 
     assert_eq!(get_global_len(&mut host, "__msgs"), Some(1));
+    Ok(())
+  }
+
+  #[test]
+  fn worker_can_access_structured_clone() -> FastResult<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__result = null;
+      const w = new Worker('data:text/javascript,postMessage(typeof structuredClone)');
+      w.onmessage = e => { globalThis.__result = e.data; };
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 50,
+      max_microtasks: 100,
+      max_wall_time: None,
+    })?;
+
+    assert_eq!(
+      get_global_string(&mut host, "__result").as_deref(),
+      Some("function")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn worker_structured_clone_deep_clones_object() -> FastResult<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__result = null;
+      const w = new Worker('data:text/javascript,postMessage(structuredClone({a:1}).a)');
+      w.onmessage = e => { globalThis.__result = e.data; };
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 50,
+      max_microtasks: 100,
+      max_wall_time: None,
+    })?;
+
+    assert_eq!(get_global_number(&mut host, "__result"), Some(1.0));
     Ok(())
   }
 }
