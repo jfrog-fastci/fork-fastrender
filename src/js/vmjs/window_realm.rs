@@ -28514,6 +28514,22 @@ mod tests {
   }
 
   #[test]
+  fn window_local_storage_is_ephemeral_for_about_blank() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    let mut realm_a = new_realm(WindowRealmConfig::new("about:blank"))?;
+    let origin = realm_a.exec_script("window.origin")?;
+    assert_eq!(get_string(realm_a.heap(), origin), "null");
+    realm_a.exec_script("localStorage.setItem('x', '1')")?;
+
+    let mut realm_b = new_realm(WindowRealmConfig::new("about:blank"))?;
+    assert_eq!(realm_b.exec_script("localStorage.getItem('x')")?, Value::Null);
+
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
   fn window_storage_set_item_enforces_quota() -> Result<(), VmError> {
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     let mut realm = new_realm(
