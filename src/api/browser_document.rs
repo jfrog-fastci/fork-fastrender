@@ -1276,6 +1276,7 @@ pub(super) fn prepare_dom_inner(
       LayoutDocumentOptions {
         page_stacking: super::PageStacking::Stacked { gap: 0.0 },
         animation_time: options.animation_time,
+        treat_custom_elements_as_defined: options.treat_custom_elements_as_defined,
       },
       &scroll_state,
       Some(&deadline),

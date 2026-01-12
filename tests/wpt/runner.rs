@@ -750,10 +750,27 @@ impl WptRunner {
   }
 
   fn apply_html_discovery(metadata: &mut TestMetadata) {
-    if let Some((reference, expectation)) = Self::discover_reference_from_html(&metadata.path) {
-      metadata.reference_path = Some(reference);
+    let Ok(content) = fs::read_to_string(&metadata.path) else {
+      return;
+    };
+
+    let mut bytes = content.as_bytes();
+    let Ok(dom) = parse_document(RcDom::default(), Default::default())
+      .from_utf8()
+      .read_from(&mut bytes)
+    else {
+      return;
+    };
+
+    if let Some((href, expectation)) = Self::find_reftest_link(dom.document.clone()) {
+      let base = metadata.path.parent().unwrap_or_else(|| Path::new("."));
+      metadata.reference_path = Some(base.join(href));
       metadata.reftest_expectation = expectation;
       metadata.test_type = TestType::Reftest;
+    }
+
+    if let Some(value) = Self::find_treat_custom_elements_as_defined_meta(dom.document) {
+      metadata.treat_custom_elements_as_defined = value;
     }
   }
 
@@ -952,22 +969,6 @@ impl WptRunner {
     }
   }
 
-  fn discover_reference_from_html(test_path: &Path) -> Option<(PathBuf, ReftestExpectation)> {
-    let Ok(content) = fs::read_to_string(test_path) else {
-      return None;
-    };
-
-    let mut bytes = content.as_bytes();
-    let dom = parse_document(RcDom::default(), Default::default())
-      .from_utf8()
-      .read_from(&mut bytes)
-      .ok()?;
-
-    let link = Self::find_reftest_link(dom.document)?;
-    let base = test_path.parent().unwrap_or_else(|| Path::new("."));
-    Some((base.join(link.0), link.1))
-  }
-
   fn find_reftest_link(handle: Handle) -> Option<(String, ReftestExpectation)> {
     if let NodeData::Element {
       ref name,
@@ -1001,6 +1002,47 @@ impl WptRunner {
 
     for child in handle.children.borrow().iter() {
       if let Some(found) = Self::find_reftest_link(child.clone()) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  fn find_treat_custom_elements_as_defined_meta(handle: Handle) -> Option<bool> {
+    const META_NAME: &str = "fastrender-treat-custom-elements-as-defined";
+
+    if let NodeData::Element {
+      ref name,
+      ref attrs,
+      ..
+    } = handle.data
+    {
+      if name.local.as_ref().eq_ignore_ascii_case("meta") {
+        let mut meta_name = None;
+        let mut content = None;
+        for attr in attrs.borrow().iter() {
+          if attr.name.local.as_ref().eq_ignore_ascii_case("name") {
+            meta_name = Some(attr.value.to_string());
+          } else if attr.name.local.as_ref().eq_ignore_ascii_case("content") {
+            content = Some(attr.value.to_string());
+          }
+        }
+
+        if meta_name
+          .as_deref()
+          .is_some_and(|value| value.eq_ignore_ascii_case(META_NAME))
+        {
+          if let Some(content) = content {
+            if let Some(parsed) = Self::parse_bool(&content) {
+              return Some(parsed);
+            }
+          }
+        }
+      }
+    }
+
+    for child in handle.children.borrow().iter() {
+      if let Some(found) = Self::find_treat_custom_elements_as_defined_meta(child.clone()) {
         return Some(found);
       }
     }
@@ -1326,11 +1368,15 @@ impl WptRunner {
   }
 
   fn render_options_for(metadata: &TestMetadata) -> fastrender::RenderOptions {
-    fastrender::RenderOptions::new()
+    let mut options = fastrender::RenderOptions::new()
       .with_viewport(metadata.viewport_width, metadata.viewport_height)
       .with_media_type(metadata.media_type)
       .with_fit_canvas_to_content(metadata.fit_canvas_to_content)
-      .with_timeout(Some(Duration::from_millis(metadata.timeout_ms)))
+      .with_timeout(Some(Duration::from_millis(metadata.timeout_ms)));
+    if !metadata.treat_custom_elements_as_defined {
+      options = options.with_treat_custom_elements_as_defined(false);
+    }
+    options
   }
 
   fn test_result_for_render_error(

@@ -203,6 +203,11 @@ pub struct TestMetadata {
   /// This is commonly needed for paged media tests where multiple pages are stacked in the
   /// fragment tree but the viewport size remains the single-page size.
   pub fit_canvas_to_content: bool,
+  /// When true, treat custom elements as always defined for `:defined` pseudo-class matching.
+  ///
+  /// FastRender defaults to this compatibility behavior. WPT conformance tests can opt into
+  /// spec-correct behavior (undefined until upgraded) by setting this to `false`.
+  pub treat_custom_elements_as_defined: bool,
 }
 
 impl TestMetadata {
@@ -242,6 +247,7 @@ impl TestMetadata {
       device_pixel_ratio: 1.0,
       media_type: MediaType::Screen,
       fit_canvas_to_content: false,
+      treat_custom_elements_as_defined: true,
     }
   }
 

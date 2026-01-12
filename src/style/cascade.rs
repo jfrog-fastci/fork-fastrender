@@ -11347,13 +11347,14 @@ pub struct CascadeOptions {
   /// fallback. This is a spec deviation: per Shadow DOM + CSS scoping rules, document author rules
   /// never apply within a shadow tree (regardless of whether the shadow root has stylesheets).
   pub fallback_document_rules_in_shadow_scopes: bool,
-  /// When `true`, treat custom elements as always `:defined`.
+  /// When true, treat custom elements as always defined for `:defined` pseudo-class matching.
   ///
-  /// Spec behavior is that custom elements are `:defined` only if they have been upgraded by the
-  /// custom element registry. FastRender does not run the registry, so this defaults to `true` as a
-  /// compatibility fallback.
+  /// The spec behavior is that elements with a valid custom element name are *not* `:defined`
+  /// unless they have been upgraded by the custom elements registry. FastRender does not run the
+  /// registry, but always treating custom elements as defined can improve real-world compatibility
+  /// (many pages hide content behind `:not(:defined)`).
   ///
-  /// Default: `true`.
+  /// Default: `true` (compatibility).
   pub treat_custom_elements_as_defined: bool,
 }
 
@@ -16049,6 +16050,7 @@ fn collect_matching_rules<'a>(
     false,
     scopes.treat_custom_elements_as_defined,
     scopes.quirks_mode,
+    scopes.treat_custom_elements_as_defined,
   )?;
 
   if let Some((base, allow_shadow_host)) = scope_rule_index_with_shadow_host(scopes, scope_host) {
@@ -16076,6 +16078,7 @@ fn collect_matching_rules<'a>(
       false,
       scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
+      scopes.treat_custom_elements_as_defined,
     )?);
   }
 
@@ -16105,6 +16108,7 @@ fn collect_matching_rules<'a>(
           false,
           scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
+          scopes.treat_custom_elements_as_defined,
         )?);
       }
     }
@@ -16133,6 +16137,7 @@ fn collect_matching_rules<'a>(
         true,
         scopes.treat_custom_elements_as_defined,
         scopes.quirks_mode,
+        scopes.treat_custom_elements_as_defined,
       )?);
     }
   }
@@ -16161,6 +16166,7 @@ fn collect_matching_rules<'a>(
           false,
           scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
+          scopes.treat_custom_elements_as_defined,
         )?);
       }
     }
@@ -16242,6 +16248,7 @@ fn collect_pseudo_matching_rules<'a>(
     false,
     scopes.treat_custom_elements_as_defined,
     scopes.quirks_mode,
+    scopes.treat_custom_elements_as_defined,
   );
 
   if let Some((base, allow_shadow_host)) = scope_rule_index_with_shadow_host(scopes, scope_host) {
@@ -16269,6 +16276,7 @@ fn collect_pseudo_matching_rules<'a>(
       false,
       scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
+      scopes.treat_custom_elements_as_defined,
     ));
   }
 
@@ -16299,6 +16307,7 @@ fn collect_pseudo_matching_rules<'a>(
           false,
           scopes.treat_custom_elements_as_defined,
           scopes.quirks_mode,
+          scopes.treat_custom_elements_as_defined,
         ));
       }
     }
@@ -16329,6 +16338,7 @@ fn collect_pseudo_matching_rules<'a>(
       true,
       scopes.treat_custom_elements_as_defined,
       scopes.quirks_mode,
+      scopes.treat_custom_elements_as_defined,
     ));
   }
 
@@ -21196,6 +21206,7 @@ mod tests {
           false,
           true,
           QuirksMode::NoQuirks,
+          true,
         )
         .unwrap_or_else(|err| {
           panic!(
@@ -33807,6 +33818,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       false,
       true,
       QuirksMode::NoQuirks,
+      true,
     );
     assert_eq!(
       marker_matches.len(),
@@ -35216,6 +35228,7 @@ fn find_matching_rules<'a>(
   featureless_subject: bool,
   treat_custom_elements_as_defined: bool,
   quirks_mode: QuirksMode,
+  treat_custom_elements_as_defined: bool,
 ) -> Result<Vec<MatchedRule<'a>>, RenderError> {
   if !node.is_element() {
     return Ok(Vec::new());
@@ -35964,6 +35977,7 @@ fn find_pseudo_element_rules<'a>(
   featureless_subject: bool,
   treat_custom_elements_as_defined: bool,
   quirks_mode: QuirksMode,
+  treat_custom_elements_as_defined: bool,
 ) -> Vec<MatchedRule<'a>> {
   if !node.is_element() {
     return Vec::new();

@@ -1069,6 +1069,12 @@ pub struct RenderOptions {
   pub diagnostics_level: DiagnosticsLevel,
   /// Media type used for evaluating media queries.
   pub media_type: MediaType,
+  /// Optional override for whether custom elements match the `:defined` pseudo-class.
+  ///
+  /// Spec behavior: elements with a valid custom element name are not `:defined` until upgraded.
+  /// FastRender does not run the custom elements registry, but defaults to treating custom elements
+  /// as defined for compatibility (many pages hide content behind `:not(:defined)`).
+  pub treat_custom_elements_as_defined: Option<bool>,
   /// Horizontal scroll offset applied before painting.
   pub scroll_x: f32,
   /// Vertical scroll offset applied before painting.
@@ -1140,6 +1146,7 @@ impl Default for RenderOptions {
       animation_time: None,
       diagnostics_level: DiagnosticsLevel::None,
       media_type: MediaType::Screen,
+      treat_custom_elements_as_defined: None,
       scroll_x: 0.0,
       scroll_y: 0.0,
       scroll_delta: Point::ZERO,
@@ -1172,6 +1179,10 @@ impl std::fmt::Debug for RenderOptions {
       .field("animation_time", &self.animation_time)
       .field("diagnostics_level", &self.diagnostics_level)
       .field("media_type", &self.media_type)
+      .field(
+        "treat_custom_elements_as_defined",
+        &self.treat_custom_elements_as_defined,
+      )
       .field("scroll_x", &self.scroll_x)
       .field("scroll_y", &self.scroll_y)
       .field("scroll_delta", &self.scroll_delta)
@@ -1232,6 +1243,12 @@ impl RenderOptions {
   /// Override the media type used for media queries.
   pub fn with_media_type(mut self, media_type: MediaType) -> Self {
     self.media_type = media_type;
+    self
+  }
+
+  /// Override whether custom elements match the `:defined` pseudo-class.
+  pub fn with_treat_custom_elements_as_defined(mut self, enabled: bool) -> Self {
+    self.treat_custom_elements_as_defined = Some(enabled);
     self
   }
 
@@ -5656,6 +5673,12 @@ pub struct LayoutDocumentOptions {
   /// `animation-fill-mode: forwards|both` animations sample their end values; other time-based
   /// animations fall back to their underlying style).
   pub animation_time: Option<f32>,
+  /// Optional override for whether custom elements match the `:defined` pseudo-class.
+  ///
+  /// Spec behavior: elements with a valid custom element name are not `:defined` until upgraded.
+  /// FastRender does not run the custom elements registry, but defaults to treating custom elements
+  /// as defined for compatibility (many pages hide content behind `:not(:defined)`).
+  pub treat_custom_elements_as_defined: Option<bool>,
 }
 
 impl Default for LayoutDocumentOptions {
@@ -5663,6 +5686,7 @@ impl Default for LayoutDocumentOptions {
     Self {
       page_stacking: PageStacking::Stacked { gap: 0.0 },
       animation_time: None,
+      treat_custom_elements_as_defined: None,
     }
   }
 }
@@ -5686,6 +5710,12 @@ impl LayoutDocumentOptions {
     } else {
       0.0
     });
+    self
+  }
+
+  /// Override whether custom elements match the `:defined` pseudo-class.
+  pub fn with_treat_custom_elements_as_defined(mut self, enabled: bool) -> Self {
+    self.treat_custom_elements_as_defined = Some(enabled);
     self
   }
 }
@@ -6294,6 +6324,7 @@ impl FastRender {
       options.scroll_delta,
       options.element_scroll_offsets.clone(),
       options.element_scroll_deltas.clone(),
+      options.treat_custom_elements_as_defined,
       options.animation_time,
       options.media_type,
       fit_canvas_to_content,
@@ -6632,6 +6663,7 @@ impl FastRender {
             LayoutDocumentOptions {
               page_stacking: PageStacking::Stacked { gap: 0.0 },
               animation_time: options.animation_time,
+              treat_custom_elements_as_defined: options.treat_custom_elements_as_defined,
             },
             &scroll_state,
             Some(&deadline),
@@ -6780,6 +6812,7 @@ impl FastRender {
     scroll_delta: Point,
     element_scroll_offsets: HashMap<usize, Point>,
     element_scroll_deltas: HashMap<usize, Point>,
+    treat_custom_elements_as_defined: Option<bool>,
     animation_time: Option<f32>,
     media_type: MediaType,
     fit_canvas_to_content: bool,
@@ -6929,6 +6962,7 @@ impl FastRender {
         LayoutDocumentOptions {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time,
+          treat_custom_elements_as_defined,
         },
         &scroll_state,
         deadline,
@@ -7724,6 +7758,7 @@ impl FastRender {
         LayoutDocumentOptions {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time: options.animation_time,
+          treat_custom_elements_as_defined: options.treat_custom_elements_as_defined,
         },
         &scroll_state,
         Some(&deadline),
@@ -8031,6 +8066,7 @@ impl FastRender {
         LayoutDocumentOptions {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time: options.animation_time,
+          treat_custom_elements_as_defined: options.treat_custom_elements_as_defined,
         },
         &scroll_state,
         Some(&deadline),
@@ -8332,6 +8368,7 @@ impl FastRender {
         LayoutDocumentOptions {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time: options.animation_time,
+          treat_custom_elements_as_defined: options.treat_custom_elements_as_defined,
         },
         &scroll_state,
         Some(&deadline),
@@ -10839,6 +10876,13 @@ impl FastRender {
       record_stage(StageHeartbeat::CssInline);
       let style_set =
         self.collect_document_style_set(dom_for_style, &media_ctx, &mut media_query_cache, None)?;
+      let cascade_options = {
+        let mut cascade_options = crate::style::cascade::CascadeOptions::default();
+        if let Some(enabled) = options.treat_custom_elements_as_defined {
+          cascade_options.treat_custom_elements_as_defined = enabled;
+        }
+        cascade_options
+      };
       // This work happens on a helper thread; propagate the render-control TLS so deadlines,
       // stage listeners, and allocation budgets keep working inside the worker.
       let deadline_stack = crate::render_control::deadline_stack_snapshot();
@@ -10875,7 +10919,7 @@ impl FastRender {
               Some(&mut local_media_query_cache),
               meta_color_scheme.clone(),
               false,
-              crate::style::cascade::CascadeOptions::default(),
+              cascade_options,
             ) {
               Ok(mut prepared) => prepared
                 .apply(
@@ -11801,6 +11845,13 @@ impl FastRender {
     let cascade_timer = stats.as_deref().and_then(|rec| rec.timer());
     let style_apply_start = timings_enabled.then(Instant::now);
     record_stage(StageHeartbeat::Cascade);
+    let cascade_options = {
+      let mut cascade_options = crate::style::cascade::CascadeOptions::default();
+      if let Some(enabled) = options.treat_custom_elements_as_defined {
+        cascade_options.treat_custom_elements_as_defined = enabled;
+      }
+      cascade_options
+    };
     let starting_tree = if has_starting_style_rules {
       (|| -> std::result::Result<StyledNode, RenderError> {
         let mut prepared = PreparedCascade::new_for_style_set(
@@ -11812,7 +11863,7 @@ impl FastRender {
           Some(&mut media_query_cache),
           meta_color_scheme.clone(),
           true,
-          crate::style::cascade::CascadeOptions::default(),
+          cascade_options,
         )?;
         prepared.apply(
           target_fragment.as_deref(),
@@ -11839,7 +11890,7 @@ impl FastRender {
         Some(&mut media_query_cache),
         meta_color_scheme.clone(),
         false,
-        crate::style::cascade::CascadeOptions::default(),
+        cascade_options,
       )?;
       let styled_tree = prepared.apply(
         target_fragment.as_deref(),
@@ -20518,6 +20569,7 @@ pub(crate) fn render_html_with_shared_resources(
       Point::ZERO,
       HashMap::new(),
       HashMap::new(),
+      None,
       None,
       MediaType::Screen,
       false,
