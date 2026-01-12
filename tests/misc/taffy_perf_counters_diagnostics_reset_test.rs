@@ -1,5 +1,6 @@
 use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use crate::common::StageListenerGuard;
+use fastrender::render_control::StageHeartbeat;
 use fastrender::{
   DiagnosticsLevel, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Point,
   Rect, RenderArtifactRequest, RenderOptions,
@@ -268,7 +269,7 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
     }
   });
   let render_thread = handle_a.thread().id();
-  let _stage_listener = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+  let _stage_listener = StageListenerGuard::new(Arc::new(move |stage| {
     if stage != StageHeartbeat::DomParse {
       return;
     }
