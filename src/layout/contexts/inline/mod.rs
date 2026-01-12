@@ -8271,19 +8271,15 @@ impl InlineFormattingContext {
     .unwrap_or(0.0);
 
     let mut positioned = Vec::new();
-    let min_items = match self.collect_inline_items_with_base(
-      box_node,
-      0.0,
-      None,
-      base_direction,
-      &mut positioned,
-    ) {
-      Ok(items) => items,
-      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-      Err(_) => return Ok((0.0, 0.0)),
-    };
-    positioned.clear();
-    let max_items = match self.collect_inline_items_with_base(
+    // Intrinsic sizing previously collected inline items twice (min probe at 0px width and max
+    // probe at ∞). The items themselves are sufficient to compute both min- and max-content sizes:
+    // - text shaping and break opportunity discovery are width-independent
+    // - atomic inline boxes store both intrinsic min/max widths
+    //
+    // Collect once using the max-content probe width so percentage-based replaced sizes retain their
+    // preferred intrinsic contribution, then derive the min-content size from the same item list
+    // (replaced elements with cyclic percentage sizing are handled in `min_content_width_for_replaced`).
+    let items = match self.collect_inline_items_with_base(
       box_node,
       f32::INFINITY,
       None,
@@ -8296,8 +8292,8 @@ impl InlineFormattingContext {
     };
 
     let allow_soft_wrap = allow_soft_wrap_for_style(style);
-    let min_width = self.min_content_width(&min_items, allow_soft_wrap);
-    let max_width = self.max_content_width(&max_items);
+    let min_width = self.min_content_width(&items, allow_soft_wrap);
+    let max_width = self.max_content_width(&items);
     Ok((min_width, max_width))
   }
 
@@ -8448,20 +8444,13 @@ impl InlineFormattingContext {
     .unwrap_or(0.0);
 
     let mut positioned = Vec::new();
-    let min_items = match self.collect_inline_items_for_children_with_base(
-      container_style,
-      children,
-      0.0,
-      None,
-      base_direction,
-      &mut positioned,
-    ) {
-      Ok(items) => items,
-      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-      Err(_) => return Ok((0.0, 0.0)),
-    };
-    positioned.clear();
-    let max_items = match self.collect_inline_items_for_children_with_base(
+    // Intrinsic sizing of inline runs is hot (block intrinsic sizing / flexbox / tables). Avoid
+    // collecting inline items twice: min/max-content widths can be derived from the same item list.
+    //
+    // Use the max-content probe width so percentage-sized replaced elements keep their preferred
+    // contribution for max-content; the min-content width path handles cyclic percentages
+    // independently (see `min_content_width_for_replaced`).
+    let items = match self.collect_inline_items_for_children_with_base(
       container_style,
       children,
       f32::INFINITY,
@@ -8475,8 +8464,8 @@ impl InlineFormattingContext {
     };
 
     let allow_soft_wrap = allow_soft_wrap_for_style(style);
-    let min_width = self.min_content_width(&min_items, allow_soft_wrap);
-    let max_width = self.max_content_width(&max_items);
+    let min_width = self.min_content_width(&items, allow_soft_wrap);
+    let max_width = self.max_content_width(&items);
     Ok((min_width, max_width))
   }
 
@@ -16519,6 +16508,192 @@ mod tests {
       (max - 200.0).abs() < 0.001,
       "expected max-content width 200, got {max}"
     );
+  }
+
+  #[test]
+  fn intrinsic_widths_for_children_overflow_wrap_break_word_matches_normal() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    let text = "supercalifragilisticexpialidocious";
+
+    let normal = BoxNode::new_text(default_style(), text.to_string());
+
+    let mut break_word_style = ComputedStyle::default();
+    break_word_style.display = Display::Inline;
+    break_word_style.font_size = 16.0;
+    break_word_style.white_space = WhiteSpace::Normal;
+    break_word_style.overflow_wrap = OverflowWrap::BreakWord;
+    let break_word = BoxNode::new_text(Arc::new(break_word_style), text.to_string());
+
+    let (min_normal, max_normal) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&normal])
+      .expect("normal intrinsic widths");
+    let (min_break_word, max_break_word) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&break_word])
+      .expect("break-word intrinsic widths");
+
+    assert!(
+      (min_break_word - min_normal).abs() < 0.1,
+      "overflow-wrap:break-word should not change min-content width (normal={min_normal:.2}, break-word={min_break_word:.2})"
+    );
+    assert!(
+      (max_break_word - max_normal).abs() < 0.1,
+      "overflow-wrap:break-word should not change max-content width (normal={max_normal:.2}, break-word={max_break_word:.2})"
+    );
+  }
+
+  #[test]
+  fn intrinsic_widths_for_children_word_break_break_all_reduces_min_only() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    let text = "supercalifragilisticexpialidocious";
+
+    let normal = BoxNode::new_text(default_style(), text.to_string());
+
+    let mut break_all_style = ComputedStyle::default();
+    break_all_style.display = Display::Inline;
+    break_all_style.font_size = 16.0;
+    break_all_style.white_space = WhiteSpace::Normal;
+    break_all_style.word_break = WordBreak::BreakAll;
+    let break_all = BoxNode::new_text(Arc::new(break_all_style), text.to_string());
+
+    let (min_normal, max_normal) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&normal])
+      .expect("normal intrinsic widths");
+    let (min_break_all, max_break_all) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&break_all])
+      .expect("break-all intrinsic widths");
+
+    assert!(
+      min_break_all < min_normal * 0.75,
+      "word-break:break-all should reduce min-content width (normal={min_normal:.2}, break-all={min_break_all:.2})"
+    );
+    assert!(
+      (max_break_all - max_normal).abs() < 0.1,
+      "word-break:break-all should not affect max-content width (normal={max_normal:.2}, break-all={max_break_all:.2})"
+    );
+    assert!(
+      min_break_all < max_break_all * 0.75,
+      "expected min-content < max-content for word-break:break-all (min={min_break_all:.2}, max={max_break_all:.2})"
+    );
+
+    // Ensure the combined `intrinsic_widths_for_children` path matches the single-probe API.
+    let min_expected = ifc
+      .intrinsic_width_for_children(&container_style, &[&break_all], IntrinsicSizingMode::MinContent)
+      .expect("min-content probe");
+    let max_expected = ifc
+      .intrinsic_width_for_children(&container_style, &[&break_all], IntrinsicSizingMode::MaxContent)
+      .expect("max-content probe");
+    assert!((min_break_all - min_expected).abs() < 0.01);
+    assert!((max_break_all - max_expected).abs() < 0.01);
+  }
+
+  #[test]
+  fn intrinsic_widths_for_children_line_break_anywhere_reduces_min_only() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    let text = "supercalifragilisticexpialidocious";
+
+    let normal = BoxNode::new_text(default_style(), text.to_string());
+
+    let mut anywhere_style = ComputedStyle::default();
+    anywhere_style.display = Display::Inline;
+    anywhere_style.font_size = 16.0;
+    anywhere_style.white_space = WhiteSpace::Normal;
+    anywhere_style.line_break = LineBreak::Anywhere;
+    let anywhere = BoxNode::new_text(Arc::new(anywhere_style), text.to_string());
+
+    let (min_normal, max_normal) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&normal])
+      .expect("normal intrinsic widths");
+    let (min_anywhere, max_anywhere) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&anywhere])
+      .expect("anywhere intrinsic widths");
+
+    assert!(
+      min_anywhere < min_normal * 0.75,
+      "line-break:anywhere should reduce min-content width (normal={min_normal:.2}, anywhere={min_anywhere:.2})"
+    );
+    assert!(
+      (max_anywhere - max_normal).abs() < 0.1,
+      "line-break:anywhere should not affect max-content width (normal={max_normal:.2}, anywhere={max_anywhere:.2})"
+    );
+    assert!(
+      min_anywhere < max_anywhere * 0.75,
+      "expected min-content < max-content for line-break:anywhere (min={min_anywhere:.2}, max={max_anywhere:.2})"
+    );
+
+    let min_expected = ifc
+      .intrinsic_width_for_children(
+        &container_style,
+        &[&anywhere],
+        IntrinsicSizingMode::MinContent,
+      )
+      .expect("min-content probe");
+    let max_expected = ifc
+      .intrinsic_width_for_children(
+        &container_style,
+        &[&anywhere],
+        IntrinsicSizingMode::MaxContent,
+      )
+      .expect("max-content probe");
+    assert!((min_anywhere - min_expected).abs() < 0.01);
+    assert!((max_anywhere - max_expected).abs() < 0.01);
+  }
+
+  #[test]
+  fn intrinsic_widths_for_children_mixed_text_and_inline_block_respects_min_max_differences() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    let mut breaking_style = ComputedStyle::default();
+    breaking_style.display = Display::Inline;
+    breaking_style.font_size = 16.0;
+    breaking_style.white_space = WhiteSpace::Normal;
+    breaking_style.word_break = WordBreak::BreakAll;
+    let breaking_text =
+      BoxNode::new_text(Arc::new(breaking_style), "supercalifragilisticexpialidocious".to_string());
+
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.font_size = 16.0;
+    inline_block_style.width = Some(Length::px(50.0));
+    inline_block_style.width_keyword = None;
+    let inline_block = BoxNode::new_inline_block(
+      Arc::new(inline_block_style),
+      FormattingContextType::Block,
+      vec![make_text_box("inline-block")],
+    );
+
+    let children = [&breaking_text, &inline_block];
+    let (min_combined, max_combined) = ifc
+      .intrinsic_widths_for_children(&container_style, &children)
+      .expect("intrinsic widths");
+    assert!(
+      max_combined > min_combined + 10.0,
+      "expected mixed content to have max-content > min-content (min={min_combined:.2}, max={max_combined:.2})"
+    );
+
+    // Validate combined min/max agree with the single-probe APIs.
+    let min_expected = ifc
+      .intrinsic_width_for_children(
+        &container_style,
+        &children,
+        IntrinsicSizingMode::MinContent,
+      )
+      .expect("min-content probe");
+    let max_expected = ifc
+      .intrinsic_width_for_children(
+        &container_style,
+        &children,
+        IntrinsicSizingMode::MaxContent,
+      )
+      .expect("max-content probe");
+    assert!((min_combined - min_expected).abs() < 0.01);
+    assert!((max_combined - max_expected).abs() < 0.01);
   }
 
   #[test]

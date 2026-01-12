@@ -100,6 +100,7 @@ fn bench_line_break_dense_paragraph(c: &mut Criterion) {
         Direction::Ltr,
         None,
         0.0,
+        0.0,
         None,
       );
       builder.add_item(InlineItem::Text(item.clone()));

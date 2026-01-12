@@ -320,6 +320,15 @@ fn bench_block_intrinsic_sizing(c: &mut Criterion) {
       black_box((min, max));
     })
   });
+  // Exercise the combined min/max intrinsic sizing API (single inline-item collection pass).
+  group.bench_function("min_and_max_combined_api", |b| {
+    b.iter(|| {
+      let widths = bfc
+        .compute_intrinsic_inline_sizes(black_box(node))
+        .expect("intrinsic sizing should succeed");
+      black_box(widths);
+    })
+  });
   group.finish();
 }
 
