@@ -56,8 +56,36 @@ impl ResolveFs for HarnessResolveFs {
     self.files.resolve_ref(&normalized).is_some()
   }
 
-  fn is_dir(&self, _path: &Path) -> bool {
-    // The resolver doesn't currently consult directories; keep this conservative.
+  fn is_dir(&self, path: &Path) -> bool {
+    // The resolver relies on `is_dir` to decide when to consult `package.json`
+    // or probe for `index.*` entrypoints. Our virtual filesystem only stores
+    // files, so approximate "directory exists" by checking for files that the
+    // resolver would read inside that directory.
+    //
+    // This is enough to support:
+    // - package root resolution (`node_modules/pkg` -> `package.json` / `index.*`)
+    // - `@types/*` packages used by `compilerOptions.types` / `/// <reference types>`
+    let normalized = normalize_ts_path(&path.to_string_lossy());
+    let mut prefix = normalized;
+    if !prefix.ends_with('/') {
+      prefix.push('/');
+    }
+    let base_len = prefix.len();
+
+    prefix.push_str("package.json");
+    if self.files.resolve_ref(&prefix).is_some() {
+      return true;
+    }
+
+    for ext in typecheck_ts::resolve::DEFAULT_EXTENSIONS {
+      prefix.truncate(base_len);
+      prefix.push_str("index.");
+      prefix.push_str(ext);
+      if self.files.resolve_ref(&prefix).is_some() {
+        return true;
+      }
+    }
+
     false
   }
 
@@ -127,8 +155,13 @@ pub(crate) fn resolve_module_specifier(
   // `typecheck-ts` owns the `@types/*` fallback mapping, but hosts still need to
   // resolve `@types/*` specifiers via node_modules. Enable that narrow case even
   // when running in Classic module resolution mode.
-  if !resolve_options.node_modules && specifier.starts_with("@types/") {
+  if specifier.starts_with("@types/") && resolve_options.module_resolution == ModuleResolutionMode::Classic {
     resolve_options.node_modules = true;
+    // Classic mode bypasses node_modules/package.json logic entirely, so forcing
+    // `node_modules=true` isn't enough. Switch to the legacy Node10 resolver for
+    // `@types/*` packages so `compilerOptions.types` / triple-slash type refs
+    // behave like `tsc`.
+    resolve_options.module_resolution = ModuleResolutionMode::Node10;
   }
   let resolver = Resolver::with_fs(fs, resolve_options);
   let from_path = Path::new(from.as_str());
