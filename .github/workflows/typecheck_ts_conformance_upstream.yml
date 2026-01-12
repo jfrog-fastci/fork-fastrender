@@ -291,7 +291,10 @@ jobs:
 
           report_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.json"
           stderr_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.stderr.log"
+          triage_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.json"
+          triage_stderr_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.stderr.log"
           rm -f "${report_path}" "${stderr_path}"
+          rm -f "${triage_path}" "${triage_stderr_path}"
 
           status=0
           timeout -k 10 600 bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
@@ -332,6 +335,17 @@ jobs:
             fi
           fi
 
+          # Generate a triage report from the JSON (captures top codes/outcomes/prefixes and suggested
+          # manifest entries). This should succeed even when the conformance run found uncovered
+          # mismatches; in that case we still want an artifact for debugging.
+          if [[ -x "target/release/typecheck-ts-harness" ]]; then
+            target/release/typecheck-ts-harness triage --input "${report_path}" --json \
+              > "${triage_path}" 2> "${triage_stderr_path}" || true
+          fi
+          if [[ ! -s "${triage_path}" ]]; then
+            echo "{\"error\":\"triage_failed\"}" > "${triage_path}"
+          fi
+
           echo "status=${status}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload conformance shard report
@@ -342,6 +356,8 @@ jobs:
           path: |
             typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.json
             typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.stderr.log
+            typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.json
+            typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.triage.stderr.log
           if-no-files-found: error
 
       - name: Shard summary (step summary)
