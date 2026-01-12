@@ -3533,6 +3533,17 @@ fn collect_stmt<'a>(
           kind: ModuleItemKind::Import(stmt_import),
         });
       }
+      if let Some(attributes) = &stmt_import.stx.attributes {
+        collect_expr(
+          attributes,
+          descriptors,
+          module_items,
+          names,
+          ambient,
+          in_global,
+          ctx,
+        );
+      }
       if let Some(default) = &stmt_import.stx.default {
         let pat_names = collect_pat_names(&default.stx.pat, names, ctx);
         for (id, span) in pat_names {
@@ -3595,6 +3606,17 @@ fn collect_stmt<'a>(
         ctx.warn_non_module_export(
           span,
           "export statements are only allowed at the module top level",
+        );
+      }
+      if let Some(attributes) = &export.stx.attributes {
+        collect_expr(
+          attributes,
+          descriptors,
+          module_items,
+          names,
+          ambient,
+          in_global,
+          ctx,
         );
       }
     }
@@ -3784,6 +3806,15 @@ fn collect_stmt<'a>(
       desc.parent = parent;
       desc.is_exported = true;
       descriptors.push(desc);
+      collect_expr(
+        &assign.stx.expression,
+        descriptors,
+        module_items,
+        names,
+        ambient,
+        in_global,
+        ctx,
+      );
       if record_module_item {
         module_items.push(ModuleItem {
           span,
@@ -4696,6 +4727,30 @@ fn walk_stmt_children<'a>(
           ctx,
         );
       }
+    }
+    AstStmt::Throw(th) => {
+      collect_expr(
+        &th.stx.value,
+        descriptors,
+        module_items,
+        names,
+        ambient,
+        in_global,
+        ctx,
+      );
+    }
+    AstStmt::Label(label) => {
+      collect_stmt(
+        &label.stx.statement,
+        descriptors,
+        module_items,
+        names,
+        false,
+        false,
+        ambient,
+        in_global,
+        ctx,
+      );
     }
     AstStmt::With(w) => {
       collect_expr(
