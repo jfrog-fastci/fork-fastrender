@@ -2529,6 +2529,144 @@ impl InteractionEngine {
     &self.state
   }
 
+  /// Debug/test helper: validate internal interaction invariants.
+  ///
+  /// This is intentionally a no-op in non-debug builds so it can be called liberally by fuzz-like
+  /// harnesses without impacting release binaries.
+  #[allow(unused_variables)]
+  pub fn assert_invariants(&self, dom: &mut DomNode, scroll: &ScrollState) {
+    #[cfg(any(debug_assertions, test))]
+    self.assert_invariants_debug(dom, scroll);
+  }
+
+  #[cfg(any(debug_assertions, test))]
+  fn assert_invariants_debug(&self, dom: &mut DomNode, scroll: &ScrollState) {
+    let index = DomIndexMut::new(dom);
+    let max_node_id = index.id_to_node.len().saturating_sub(1);
+
+    let check_node_id = |label: &str, node_id: usize| {
+      assert!(
+        node_id > 0 && node_id <= max_node_id,
+        "{label} node id {node_id} out of range (max={max_node_id})"
+      );
+      assert!(
+        index.node(node_id).is_some_and(DomNode::is_element),
+        "{label} node id {node_id} does not refer to a live element"
+      );
+    };
+
+    if let Some(focused) = self.state.focused {
+      check_node_id("focused", focused);
+    }
+
+    for &id in &self.state.focus_chain {
+      check_node_id("focus_chain", id);
+    }
+    for &id in &self.state.hover_chain {
+      check_node_id("hover_chain", id);
+    }
+    for &id in &self.state.active_chain {
+      check_node_id("active_chain", id);
+    }
+
+    if let Some(id) = self.pointer_down_target {
+      check_node_id("pointer_down_target", id);
+    }
+    if let Some(state) = self.range_drag {
+      check_node_id("range_drag", state.node_id);
+    }
+    if let Some(state) = self.text_drag {
+      check_node_id("text_drag", state.node_id);
+    }
+    if let Some(id) = self.last_click_target {
+      check_node_id("last_click_target", id);
+    }
+    if let Some(id) = self.last_form_submitter {
+      check_node_id("last_form_submitter", id);
+    }
+    if let Some(ime) = &self.state.ime_preedit {
+      check_node_id("ime_preedit", ime.node_id);
+    }
+
+    let text_control_len = |node_id: usize| -> usize {
+      let Some(node) = index.node(node_id) else {
+        return 0;
+      };
+      if is_textarea(node) {
+        textarea_value_for_editing(node).chars().count()
+      } else {
+        node
+          .get_attribute_ref("value")
+          .unwrap_or("")
+          .chars()
+          .count()
+      }
+    };
+
+    if let Some(edit) = &self.text_edit {
+      check_node_id("text_edit", edit.node_id);
+      assert_eq!(
+        self.state.focused,
+        Some(edit.node_id),
+        "text_edit must track the focused node"
+      );
+      let len = text_control_len(edit.node_id);
+      assert!(
+        edit.caret <= len,
+        "text_edit caret {} out of bounds for length {len}",
+        edit.caret
+      );
+      if let Some(anchor) = edit.selection_anchor {
+        assert!(
+          anchor <= len,
+          "text_edit selection anchor {anchor} out of bounds for length {len}"
+        );
+      }
+    }
+
+    if let Some(paint) = self.state.text_edit {
+      check_node_id("text_edit_paint_state", paint.node_id);
+      assert_eq!(
+        self.state.focused,
+        Some(paint.node_id),
+        "text_edit paint state must track the focused node"
+      );
+      let len = text_control_len(paint.node_id);
+      assert!(
+        paint.caret <= len,
+        "paint caret {} out of bounds for length {len}",
+        paint.caret
+      );
+      if let Some((start, end)) = paint.selection {
+        assert!(
+          start < end,
+          "paint selection must be normalized (start < end), got ({start}, {end})"
+        );
+        assert!(
+          end <= len,
+          "paint selection end {end} out of bounds for length {len}"
+        );
+      }
+    }
+
+    let check_point = |label: &str, p: Point| {
+      assert!(
+        p.x.is_finite() && p.y.is_finite(),
+        "{label} contains non-finite values ({}, {})",
+        p.x,
+        p.y
+      );
+    };
+    check_point("scroll.viewport", scroll.viewport);
+    check_point("scroll.viewport_delta", scroll.viewport_delta);
+    for (&box_id, &offset) in &scroll.elements {
+      check_point(&format!("scroll.elements[{box_id}]"), offset);
+    }
+    for (&box_id, &delta) in &scroll.elements_delta {
+      check_point(&format!("scroll.elements_delta[{box_id}]"), delta);
+    }
+  }
+
   fn mark_user_validity(&mut self, node_id: usize) -> bool {
     self.state.user_validity.insert(node_id)
   }
