@@ -360,12 +360,12 @@ fn realm_id_from_slot(value: Value) -> Option<RealmId> {
   Some(RealmId::from_raw(raw))
 }
 
-fn realm_id_for_binding_call(vm: &Vm, scope: &Scope<'_>, callee: GcObject) -> Result<RealmId, VmError> {
+fn realm_id_for_binding_call(vm: &Vm, heap: &Heap, callee: GcObject) -> Result<RealmId, VmError> {
   if let Some(realm_id) = vm.current_realm() {
     return Ok(realm_id);
   }
 
-  let slots = scope.heap().get_function_native_slots(callee)?;
+  let slots = heap.get_function_native_slots(callee)?;
   let realm_id = slots
     .get(STREAM_REALM_ID_SLOT)
     .copied()
@@ -382,8 +382,8 @@ fn with_realm_state_mut<R>(
   callee: GcObject,
   f: impl FnOnce(&mut StreamRealmState, &Heap) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
-  let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
   let heap = scope.heap();
+  let realm_id = realm_id_for_binding_call(vm, heap, callee)?;
 
   let mut registry = registry()
     .lock()

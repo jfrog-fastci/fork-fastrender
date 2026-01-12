@@ -388,6 +388,7 @@ impl Document {
   }
 
   // --- Form controls ----------------------------------------------------------
+
   pub fn input_disabled(&self, input: NodeId) -> bool {
     self.reflected_bool(input, "disabled")
   }
