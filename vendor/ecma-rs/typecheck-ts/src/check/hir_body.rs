@@ -1200,7 +1200,7 @@ struct Checker<'a> {
   jsx_intrinsic_class_attributes_def: Option<Option<DefId>>,
   jsx_element_attributes_prop_name: Option<JsxAttributesPropertyName>,
   jsx_library_managed_attributes_def: Option<Option<DefId>>,
-  jsx_children_prop_name: Option<TsNameId>,
+  jsx_children_prop_name: Option<Option<TsNameId>>,
   jsx_namespace_missing_reported: bool,
   expr_types: Vec<TypeId>,
   call_signatures: Vec<Option<SignatureId>>,
@@ -4377,29 +4377,33 @@ impl<'a> Checker<'a> {
       }
     }
 
-    let children_key_id = self.jsx_children_prop_key(loc);
-    let expected_children_prop_ty = expected
-      .filter(|ty| !matches!(self.store.type_kind(*ty), TypeKind::Any | TypeKind::Unknown))
-      .map(|props_ty| {
-        let children_prop = self.store.name(children_key_id);
-        self.member_type(props_ty, &children_prop)
-      });
+    let children_key = self.jsx_children_prop_key(loc);
+    if let Some(children_key_id) = children_key {
+      let expected_children_prop_ty = expected
+        .filter(|ty| !matches!(self.store.type_kind(*ty), TypeKind::Any | TypeKind::Unknown))
+        .map(|props_ty| {
+          let children_prop = self.store.name(children_key_id);
+          self.member_type(props_ty, &children_prop)
+        });
 
-    if let Some(children_ty) = self.jsx_children_prop_type(children, expected_children_prop_ty) {
-      props.insert(self.store.name(children_key_id));
-      let key = PropKey::String(children_key_id);
-      shape.properties.push(types_ts_interned::Property {
-        key,
-        data: PropData {
-          ty: children_ty,
-          optional: false,
-          readonly: false,
-          accessibility: None,
-          is_method: false,
-          origin: None,
-          declared_on: None,
-        },
-      });
+      if let Some(children_ty) = self.jsx_children_prop_type(children, expected_children_prop_ty) {
+        props.insert(self.store.name(children_key_id));
+        let key = PropKey::String(children_key_id);
+        shape.properties.push(types_ts_interned::Property {
+          key,
+          data: PropData {
+            ty: children_ty,
+            optional: false,
+            readonly: false,
+            accessibility: None,
+            is_method: false,
+            origin: None,
+            declared_on: None,
+          },
+        });
+      }
+    } else {
+      let _ = self.jsx_children_prop_type(children, None);
     }
 
     let shape_id = self.store.intern_shape(shape);
@@ -5334,18 +5338,21 @@ impl<'a> Checker<'a> {
     resolved
   }
 
-  fn jsx_children_prop_key(&mut self, loc: Loc) -> TsNameId {
-    if let Some(id) = self.jsx_children_prop_name {
-      return id;
+  fn jsx_children_prop_key(&mut self, loc: Loc) -> Option<TsNameId> {
+    if let Some(cached) = self.jsx_children_prop_name {
+      return cached;
     }
-    let fallback = self.store.intern_name_ref("children");
+
     if matches!(self.jsx_mode, Some(JsxMode::ReactJsx | JsxMode::ReactJsxdev)) {
-      self.jsx_children_prop_name = Some(fallback);
-      return fallback;
+      let children = self.store.intern_name_ref("children");
+      let selected = Some(children);
+      self.jsx_children_prop_name = Some(selected);
+      return selected;
     }
+
     let Some(children_attr_ty) = self.resolve_type_ref(&["JSX", "ElementChildrenAttribute"]) else {
-      self.jsx_children_prop_name = Some(fallback);
-      return fallback;
+      self.jsx_children_prop_name = Some(None);
+      return None;
     };
 
     let mut candidates = Vec::new();
@@ -5353,19 +5360,21 @@ impl<'a> Checker<'a> {
     self.jsx_collect_children_attribute_keys(children_attr_ty, &mut candidates, &mut seen);
     candidates.sort();
     candidates.dedup();
-      let selected = match candidates.as_slice() {
-        [] => fallback,
-        [only] => self.store.intern_name_ref(only),
-        _ => {
-          self.diagnostics.push(
-            codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
-              "The global type 'JSX.ElementChildrenAttribute' may not have more than one property.",
+ 
+    let selected = match candidates.len() {
+      0 => None,
+      1 => Some(self.store.intern_name_ref(&candidates[0])),
+      _ => {
+        self.diagnostics.push(
+          codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
+            "The global type 'JSX.ElementChildrenAttribute' may not have more than one property.",
             Span::new(self.file, loc_to_range(self.file, loc)),
           ),
         );
-        fallback
+        None
       }
     };
+
     self.jsx_children_prop_name = Some(selected);
     selected
   }

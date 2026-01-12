@@ -10,6 +10,7 @@ use typecheck_ts::{FileKey, Host, HostError, Program, TypeKindSummary};
 const JSX_LIB: &str = r#"
 declare namespace JSX {
   interface Element {}
+  interface ElementChildrenAttribute { children: any }
   interface IntrinsicElements {
     div: { id?: string; children?: string };
     span: { children?: string };
@@ -447,12 +448,13 @@ fn intrinsic_children_are_contextually_typed() {
     kind: FileKind::Dts,
     text: Arc::from(
       r#"
-declare namespace JSX {
-  interface Element {}
-  interface IntrinsicElements {
-    div: { children?: (ev: { x: number }) => void };
-  }
-}
+ declare namespace JSX {
+   interface Element {}
+   interface ElementChildrenAttribute { children: any }
+   interface IntrinsicElements {
+     div: { children?: (ev: { x: number }) => void };
+   }
+ }
 "#,
     ),
   };
@@ -603,9 +605,10 @@ fn component_attribute_values_are_contextually_typed() {
     kind: FileKind::Dts,
     text: Arc::from(
       r#"
-declare namespace JSX {
-  interface Element {}
-}
+ declare namespace JSX {
+   interface Element {}
+   interface ElementChildrenAttribute { children: any }
+ }
 "#,
     ),
   };
@@ -642,6 +645,7 @@ fn component_children_are_contextually_typed() {
       r#"
 declare namespace JSX {
   interface Element {}
+  interface ElementChildrenAttribute { children: any }
 }
 "#,
     ),
@@ -679,6 +683,7 @@ fn spread_attributes_are_contextually_typed() {
       r#"
 declare namespace JSX {
   interface Element {}
+  interface ElementChildrenAttribute { children: any }
 }
 "#,
     ),
@@ -859,12 +864,13 @@ fn spread_children_are_contextually_typed() {
     kind: FileKind::Dts,
     text: Arc::from(
       r#"
-declare namespace JSX {
-  interface Element {}
-  interface IntrinsicElements {
-    div: { children?: ((ev: { x: number }) => void)[] };
-  }
-}
+ declare namespace JSX {
+   interface Element {}
+   interface ElementChildrenAttribute { children: any }
+   interface IntrinsicElements {
+     div: { children?: ((ev: { x: number }) => void)[] };
+   }
+ }
 "#,
     ),
   };
@@ -1413,9 +1419,10 @@ fn component_attribute_object_literal_excess_props_are_reported() {
     kind: FileKind::Dts,
     text: Arc::from(
       r#"
-declare namespace JSX {
-  interface Element {}
-}
+ declare namespace JSX {
+   interface Element {}
+   interface ElementChildrenAttribute { children: any }
+ }
 "#,
     ),
   };
@@ -1458,6 +1465,7 @@ fn component_children_object_literal_excess_props_are_reported() {
       r#"
 declare namespace JSX {
   interface Element {}
+  interface ElementChildrenAttribute { children: any }
 }
 "#,
     ),
@@ -1634,6 +1642,43 @@ declare namespace JSX {
       d.code.as_str() == codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.as_str()
     }),
     "expected TS2608 for invalid ElementChildrenAttribute, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn empty_element_children_attribute_disables_children_prop_injection() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute {}
+  interface IntrinsicElements {
+    div: { children?: string };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = "const ok = <div>{123}</div>;";
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics for empty ElementChildrenAttribute, got {diagnostics:?}"
   );
 }
 
