@@ -161,8 +161,18 @@ fn workspace_uses_vendored_webidl_js_runtime_when_present() {
     .and_then(|workspace| workspace.get("dependencies"))
     .and_then(|value| value.as_table());
 
-  let root_dep = root_dependencies.and_then(|deps| deps.get("webidl-js-runtime"));
-  let workspace_dep = workspace_dependencies.and_then(|deps| deps.get("webidl-js-runtime"));
+  // The dependency key can either match the Cargo package name (`webidl-js-runtime`) or use an
+  // underscore alias (`webidl_js_runtime` + `package = "webidl-js-runtime"`).
+  let root_dep = root_dependencies.and_then(|deps| {
+    deps
+      .get("webidl_js_runtime")
+      .or_else(|| deps.get("webidl-js-runtime"))
+  });
+  let workspace_dep = workspace_dependencies.and_then(|deps| {
+    deps
+      .get("webidl_js_runtime")
+      .or_else(|| deps.get("webidl-js-runtime"))
+  });
 
   // The legacy heap-only runtime is optional; this guard only enforces that, if it is referenced,
   // it points at the vendored implementation (not a workspace-local copy).
@@ -178,12 +188,14 @@ fn workspace_uses_vendored_webidl_js_runtime_when_present() {
       || workspace_dep_path == Some(VENDORED_WEBIDL_JS_RUNTIME_PATH_FRAGMENT),
     "after consolidation, the workspace must depend on vendored `webidl-js-runtime` at {VENDORED_WEBIDL_JS_RUNTIME_PATH_FRAGMENT}.\n\
      Set either:\n\
+       - [workspace.dependencies].webidl_js_runtime.path = {VENDORED_WEBIDL_JS_RUNTIME_PATH_FRAGMENT:?} (with `package = \"webidl-js-runtime\"`)\n\
+       - [dependencies].webidl_js_runtime.path = {VENDORED_WEBIDL_JS_RUNTIME_PATH_FRAGMENT:?} (with `package = \"webidl-js-runtime\"`)\n\
        - [workspace.dependencies].webidl-js-runtime.path = {VENDORED_WEBIDL_JS_RUNTIME_PATH_FRAGMENT:?}\n\
        - [dependencies].webidl-js-runtime.path = {VENDORED_WEBIDL_JS_RUNTIME_PATH_FRAGMENT:?}\n\
      \n\
      Observed:\n\
-       - Cargo.toml [dependencies].webidl-js-runtime.path = {root_dep_path:?}\n\
-       - Cargo.toml [workspace.dependencies].webidl-js-runtime.path = {workspace_dep_path:?}"
+       - Cargo.toml [dependencies].(webidl_js_runtime|webidl-js-runtime).path = {root_dep_path:?}\n\
+       - Cargo.toml [workspace.dependencies].(webidl_js_runtime|webidl-js-runtime).path = {workspace_dep_path:?}"
   );
 }
 
