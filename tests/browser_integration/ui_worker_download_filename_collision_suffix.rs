@@ -1,37 +1,15 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
+use crate::common::ScopedEnv;
 use fastrender::ui::messages::{NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::tempdir;
 use url::Url;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
-
-struct EnvVarGuard {
-  key: &'static str,
-  prev: Option<OsString>,
-}
-
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &std::path::Path) -> Self {
-    let prev = std::env::var_os(key);
-    std::env::set_var(key, value);
-    Self { key, prev }
-  }
-}
-
-impl Drop for EnvVarGuard {
-  fn drop(&mut self) {
-    match self.prev.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
-  }
-}
 
 fn click_download_link(ui_tx: &std::sync::mpsc::Sender<UiToWorker>, tab_id: TabId) {
   ui_tx
@@ -80,7 +58,7 @@ fn ui_worker_download_filename_collision_suffix() {
 
   let site_dir = tempdir().expect("temp site dir");
   let download_dir = tempdir().expect("temp download dir");
-  let _download_guard = EnvVarGuard::set("FASTR_DOWNLOAD_DIR", download_dir.path());
+  let _env = ScopedEnv::new().set("FASTR_DOWNLOAD_DIR", download_dir.path());
 
   let payload_path = site_dir.path().join("hello.txt");
   let payload = b"hello world\n".to_vec();
@@ -162,4 +140,3 @@ fn ui_worker_download_filename_collision_suffix() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

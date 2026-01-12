@@ -1,36 +1,14 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
+use crate::common::ScopedEnv;
 use fastrender::ui::messages::{NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::ffi::OsString;
 use std::time::Duration;
 use tempfile::tempdir;
 use url::Url;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
-
-struct EnvVarGuard {
-  key: &'static str,
-  prev: Option<OsString>,
-}
-
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &std::path::Path) -> Self {
-    let prev = std::env::var_os(key);
-    std::env::set_var(key, value);
-    Self { key, prev }
-  }
-}
-
-impl Drop for EnvVarGuard {
-  fn drop(&mut self) {
-    match self.prev.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
-  }
-}
 
 #[test]
 fn ui_worker_download_cancel_cleans_up() {
@@ -38,7 +16,7 @@ fn ui_worker_download_cancel_cleans_up() {
 
   let site_dir = tempdir().expect("temp site dir");
   let download_dir = tempdir().expect("temp download dir");
-  let _download_guard = EnvVarGuard::set("FASTR_DOWNLOAD_DIR", download_dir.path());
+  let _env = ScopedEnv::new().set("FASTR_DOWNLOAD_DIR", download_dir.path());
 
   // Create a deterministic "large" payload so the test can observe progress before completion.
   let payload_path = site_dir.path().join("payload.bin");
@@ -160,4 +138,3 @@ fn ui_worker_download_cancel_cleans_up() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-
