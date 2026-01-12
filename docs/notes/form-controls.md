@@ -79,7 +79,9 @@ When `appearance:none` is computed, the control stops using the native form-cont
   - `src/tree/box_generation.rs::appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
   - `src/tree/box_generation.rs::webkit_appearance_none_disables_form_control_replacement`
   - `src/tree/box_generation.rs::moz_appearance_none_disables_form_control_replacement`
-  - `tests/tree/form_controls_appearance_none_fallback.rs`
+  - `src/tree/box_generation.rs::button_appearance_none_preserves_dom_children`
+  - `src/tree/box_generation.rs::range_appearance_none_generates_slider_track_and_thumb_boxes`
+  - `src/tree/box_generation.rs::file_input_appearance_none_generates_file_selector_button_box`
 - Paint integration tests:
   - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
   - `tests/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
