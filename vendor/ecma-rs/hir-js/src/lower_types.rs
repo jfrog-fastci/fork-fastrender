@@ -35,6 +35,7 @@ use crate::hir::TypeTemplateLiteralSpan as HirTypeTemplateLiteralSpan;
 use crate::hir::TypeTuple;
 use crate::hir::TypeTupleElement;
 use crate::hir::TypeVariance;
+use crate::ids::checked_u32_index;
 use crate::ids::DefId;
 use crate::ids::NameId;
 use crate::ids::TypeExprId;
@@ -305,21 +306,21 @@ impl<'a> TypeLowerer<'a> {
   }
 
   fn alloc_type_expr(&mut self, span: TextRange, kind: TypeExprKind) -> TypeExprId {
-    let id = TypeExprId(self.arenas.type_exprs.len() as u32);
+    let id = TypeExprId(checked_u32_index(self.arenas.type_exprs.len(), "TypeExprId"));
     self.arenas.type_exprs.push(HirTypeExpr { span, kind });
     self.span_map.add_type_expr(span, self.owner, id);
     id
   }
 
   fn alloc_type_member(&mut self, span: TextRange, kind: TypeMemberKind) -> TypeMemberId {
-    let id = TypeMemberId(self.arenas.type_members.len() as u32);
+    let id = TypeMemberId(checked_u32_index(self.arenas.type_members.len(), "TypeMemberId"));
     self.arenas.type_members.push(HirTypeMember { span, kind });
     self.span_map.add_type_member(span, self.owner, id);
     id
   }
 
   fn alloc_type_param(&mut self, param: TypeParam) -> TypeParamId {
-    let id = TypeParamId(self.arenas.type_params.len() as u32);
+    let id = TypeParamId(checked_u32_index(self.arenas.type_params.len(), "TypeParamId"));
     let span = param.span;
     self.arenas.type_params.push(param);
     self.span_map.add_type_param(span, self.owner, id);
@@ -1491,7 +1492,10 @@ impl<'a> TypeLowerer<'a> {
       .iter()
       .position(|param| param.name == Some(parameter))
     {
-      return TypePredicateParamKey::ParamIndex(index as u32);
+      return TypePredicateParamKey::ParamIndex(checked_u32_index(
+        index,
+        "TypePredicateParamKey::ParamIndex",
+      ));
     }
 
     TypePredicateParamKey::Name(self.name_id_to_string(parameter))

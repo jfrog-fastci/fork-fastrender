@@ -181,6 +181,29 @@ pub struct ExportId(pub u32);
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ExportSpecifierId(pub u32);
 
+/// Convert a `usize` index to a `u32` index without silent truncation.
+///
+/// `hir-js` IDs (`ExprId`, `TypeExprId`, etc.) store arena indices as `u32` for
+/// compactness. If a pathological input creates more than `u32::MAX` nodes in a
+/// single arena, we must not silently truncate the index since that would
+/// produce duplicate IDs and lead to confusing downstream failures.
+#[track_caller]
+#[inline]
+pub(crate) fn checked_u32_index(value: usize, context: &'static str) -> u32 {
+  let index = u32::try_from(value).unwrap_or_else(|_| {
+    panic!("hir-js: {context} overflow (index {value} does not fit in u32)")
+  });
+
+  #[cfg(test)]
+  if let Some(max) = test_u32_index_limit() {
+    if index > max {
+      panic!("hir-js: {context} overflow (index {index} exceeds test max {max})");
+    }
+  }
+
+  index
+}
+
 /// Content-addressed identifier for an interned name.
 ///
 /// Unlike sequential indices, this value is derived from the name text (see
@@ -334,6 +357,30 @@ thread_local! {
 #[cfg(test)]
 fn test_body_path_hash_override(body_path: &BodyPath) -> Option<u32> {
   TEST_BODY_PATH_HASH_OVERRIDE.with(|cell| cell.get().map(|hasher| hasher(body_path)))
+}
+
+#[cfg(test)]
+thread_local! {
+  static TEST_U32_INDEX_LIMIT: Cell<Option<u32>> = Cell::new(None);
+}
+
+#[cfg(test)]
+fn test_u32_index_limit() -> Option<u32> {
+  TEST_U32_INDEX_LIMIT.with(|cell| cell.get())
+}
+
+/// Run `f` with a test-only maximum for `checked_u32_index`.
+///
+/// This allows unit tests to exercise overflow behavior without allocating
+/// billions of nodes.
+#[cfg(test)]
+pub(crate) fn with_test_u32_index_limit<R>(limit: u32, f: impl FnOnce() -> R) -> R {
+  TEST_U32_INDEX_LIMIT.with(|cell| {
+    let prev = cell.replace(Some(limit));
+    let result = f();
+    cell.set(prev);
+    result
+  })
 }
 
 /// Run `f` with a test-only override for `BodyPath::stable_hash_u32`.

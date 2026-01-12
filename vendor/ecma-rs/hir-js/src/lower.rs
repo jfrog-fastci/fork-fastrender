@@ -16,8 +16,8 @@ use crate::hir::{
 #[cfg(feature = "semantic-ops")]
 use crate::hir::ArrayChainOp;
 use crate::ids::{
-  BodyId, BodyPath, DefId, DefKind, DefPath, ExportId, ExportSpecifierId, ExprId, ImportId,
-  ImportSpecifierId, NameId, PatId, StmtId, MISSING_BODY, MISSING_DEF,
+  checked_u32_index, BodyId, BodyPath, DefId, DefKind, DefPath, ExportId, ExportSpecifierId, ExprId,
+  ImportId, ImportSpecifierId, NameId, PatId, StmtId, MISSING_BODY, MISSING_DEF,
 };
 use crate::intern::NameInterner;
 use crate::lower_types::TypeLowerer;
@@ -3011,21 +3011,21 @@ impl<'a> BodyBuilder<'a> {
   }
 
   fn alloc_expr(&mut self, span: TextRange, kind: ExprKind) -> ExprId {
-    let id = ExprId(self.exprs.len() as u32);
+    let id = ExprId(checked_u32_index(self.exprs.len(), "ExprId"));
     self.exprs.push(Expr { span, kind });
     self.span_map.add_expr(span, self.body_id, id);
     id
   }
 
   fn alloc_pat(&mut self, span: TextRange, kind: PatKind) -> PatId {
-    let id = PatId(self.pats.len() as u32);
+    let id = PatId(checked_u32_index(self.pats.len(), "PatId"));
     self.pats.push(Pat { span, kind });
     self.span_map.add_pat(span, self.body_id, id);
     id
   }
 
   fn alloc_stmt(&mut self, span: TextRange, kind: StmtKind) -> StmtId {
-    let id = StmtId(self.stmts.len() as u32);
+    let id = StmtId(checked_u32_index(self.stmts.len(), "StmtId"));
     self.stmts.push(Stmt { span, kind });
     self.span_map.add_stmt(span, self.body_id, id);
     id
@@ -5619,18 +5619,18 @@ fn collect_pat_names_inner(
 fn push_named_export(
   exports: &mut Vec<Export>,
   span_map: &mut SpanMap,
-  next_export: &mut u32,
-  next_export_spec: &mut u32,
+  next_export: &mut usize,
+  next_export_spec: &mut usize,
   span: TextRange,
   name_id: NameId,
   local_def: Option<DefId>,
   is_type_only: bool,
 ) {
-  let spec_id = ExportSpecifierId(*next_export_spec);
+  let spec_id = ExportSpecifierId(checked_u32_index(*next_export_spec, "ExportSpecifierId"));
   *next_export_spec += 1;
   span_map.add_export_specifier(span, spec_id);
   exports.push(Export {
-    id: ExportId(*next_export),
+    id: ExportId(checked_u32_index(*next_export, "ExportId")),
     span,
     kind: ExportKind::Named(ExportNamed {
       source: None,
@@ -5717,10 +5717,10 @@ fn lower_module_items(
 ) -> (Vec<Import>, Vec<Export>) {
   let mut imports = Vec::new();
   let mut exports = Vec::new();
-  let mut next_import = 0u32;
-  let mut next_import_spec = 0u32;
-  let mut next_export = 0u32;
-  let mut next_export_spec = 0u32;
+  let mut next_import = 0usize;
+  let mut next_import_spec = 0usize;
+  let mut next_export = 0usize;
+  let mut next_export_spec = 0usize;
 
   for item in module_items {
     match item.kind {
@@ -5759,7 +5759,8 @@ fn lower_module_items(
                   .first()
                   .cloned()
                   .unwrap_or((imported, ctx.to_range(spec.loc)));
-                let spec_id = ImportSpecifierId(next_import_spec);
+                let spec_id =
+                  ImportSpecifierId(checked_u32_index(next_import_spec, "ImportSpecifierId"));
                 next_import_spec += 1;
                 span_map.add_import_specifier(span, spec_id);
                 named.push(ImportNamed {
@@ -5794,7 +5795,7 @@ fn lower_module_items(
           )
         });
         imports.push(Import {
-          id: ImportId(next_import),
+          id: ImportId(checked_u32_index(next_import, "ImportId")),
           span: item.span,
           kind: ImportKind::Es(ImportEs {
             specifier,
@@ -5817,7 +5818,8 @@ fn lower_module_items(
             .map(|l| names.intern(l))
             .unwrap_or(imported);
           let span = item.span;
-          let spec_id = ImportSpecifierId(next_import_spec);
+          let spec_id =
+            ImportSpecifierId(checked_u32_index(next_import_spec, "ImportSpecifierId"));
           next_import_spec += 1;
           span_map.add_import_specifier(span, spec_id);
           named.push(ImportNamed {
@@ -5834,7 +5836,7 @@ fn lower_module_items(
           span: item.span,
         };
         imports.push(Import {
-          id: ImportId(next_import),
+          id: ImportId(checked_u32_index(next_import, "ImportId")),
           span: item.span,
           kind: ImportKind::Es(ImportEs {
             specifier,
@@ -5860,7 +5862,7 @@ fn lower_module_items(
           }
         };
         imports.push(Import {
-          id: ImportId(next_import),
+          id: ImportId(checked_u32_index(next_import, "ImportId")),
           span: item.span,
           kind: ImportKind::ImportEquals(ImportEquals {
             local: ImportBinding {
@@ -5912,7 +5914,7 @@ fn lower_module_items(
               span: ctx.to_range(a.loc),
             });
             exports.push(Export {
-              id: ExportId(next_export),
+              id: ExportId(checked_u32_index(next_export, "ExportId")),
               span: item.span,
               kind: ExportKind::ExportAll(ExportAll {
                 source: source.unwrap_or(ModuleSpecifier {
@@ -5932,7 +5934,8 @@ fn lower_module_items(
               let exported = names.intern(export_name.stx.alias.stx.name.as_str());
               let local = names.intern(export_name.stx.exportable.as_str());
               let span = ctx.to_range(export_name.loc);
-              let spec_id = ExportSpecifierId(next_export_spec);
+              let spec_id =
+                ExportSpecifierId(checked_u32_index(next_export_spec, "ExportSpecifierId"));
               next_export_spec += 1;
               span_map.add_export_specifier(span, spec_id);
               specs.push(ExportSpecifier {
@@ -5945,7 +5948,7 @@ fn lower_module_items(
               });
             }
             exports.push(Export {
-              id: ExportId(next_export),
+              id: ExportId(checked_u32_index(next_export, "ExportId")),
               span: item.span,
               kind: ExportKind::Named(ExportNamed {
                 source,
@@ -5971,7 +5974,7 @@ fn lower_module_items(
             .as_ref()
             .map(|n| names.intern(n))
             .unwrap_or(local);
-          let spec_id = ExportSpecifierId(next_export_spec);
+          let spec_id = ExportSpecifierId(checked_u32_index(next_export_spec, "ExportSpecifierId"));
           next_export_spec += 1;
           span_map.add_export_specifier(item.span, spec_id);
           specs.push(ExportSpecifier {
@@ -5984,7 +5987,7 @@ fn lower_module_items(
           });
         }
         exports.push(Export {
-          id: ExportId(next_export),
+          id: ExportId(checked_u32_index(next_export, "ExportId")),
           span: item.span,
           kind: ExportKind::Named(ExportNamed {
             source,
@@ -5999,10 +6002,15 @@ fn lower_module_items(
         if let Some(def) = def_lookup.def_for_node(node) {
           if let Some(body_id) = def_lookup.body_for(def) {
             let expr_id = body_by_id(body_id, bodies, body_index)
-              .and_then(|b| b.exprs.len().checked_sub(1).map(|idx| ExprId(idx as u32)))
+              .and_then(|b| {
+                b.exprs
+                  .len()
+                  .checked_sub(1)
+                  .map(|idx| ExprId(checked_u32_index(idx, "ExprId")))
+              })
               .unwrap_or(ExprId(0));
             exports.push(Export {
-              id: ExportId(next_export),
+              id: ExportId(checked_u32_index(next_export, "ExportId")),
               span: item.span,
               kind: ExportKind::Default(ExportDefault {
                 value: ExportDefaultValue::Expr {
@@ -6019,10 +6027,15 @@ fn lower_module_items(
         if let Some(def) = def_lookup.def_for_node(assign) {
           if let Some(body_id) = def_lookup.body_for(def) {
             let expr = body_by_id(body_id, bodies, body_index)
-              .and_then(|b| b.exprs.len().checked_sub(1).map(|idx| ExprId(idx as u32)))
+              .and_then(|b| {
+                b.exprs
+                  .len()
+                  .checked_sub(1)
+                  .map(|idx| ExprId(checked_u32_index(idx, "ExprId")))
+              })
               .unwrap_or(ExprId(0));
             exports.push(Export {
-              id: ExportId(next_export),
+              id: ExportId(checked_u32_index(next_export, "ExportId")),
               span: item.span,
               kind: ExportKind::Assignment(ExportAssignment {
                 expr,
@@ -6036,7 +6049,7 @@ fn lower_module_items(
       ModuleItemKind::ExportAsNamespace(export_ns) => {
         let name_id = names.intern(&export_ns.stx.name);
         exports.push(Export {
-          id: ExportId(next_export),
+          id: ExportId(checked_u32_index(next_export, "ExportId")),
           span: item.span,
           kind: ExportKind::AsNamespace(ExportAsNamespace {
             name: name_id,
@@ -6054,7 +6067,7 @@ fn lower_module_items(
             let body = def_lookup.body_for(def).unwrap_or(MISSING_BODY);
             if decl.default {
               exports.push(Export {
-                id: ExportId(next_export),
+                id: ExportId(checked_u32_index(next_export, "ExportId")),
                 span: decl.span,
                 kind: ExportKind::Default(ExportDefault {
                   value: ExportDefaultValue::Function {
@@ -6095,7 +6108,7 @@ fn lower_module_items(
             let body = def_lookup.body_for(def).unwrap_or(MISSING_BODY);
             if decl.default {
               exports.push(Export {
-                id: ExportId(next_export),
+                id: ExportId(checked_u32_index(next_export, "ExportId")),
                 span: decl.span,
                 kind: ExportKind::Default(ExportDefault {
                   value: ExportDefaultValue::Class {
@@ -6136,7 +6149,8 @@ fn lower_module_items(
           let mut specifiers = Vec::new();
           for declarator in var_decl.stx.declarators.iter() {
             for (name_id, span) in collect_pat_names(&declarator.pattern.stx.pat, names, ctx) {
-              let spec_id = ExportSpecifierId(next_export_spec);
+              let spec_id =
+                ExportSpecifierId(checked_u32_index(next_export_spec, "ExportSpecifierId"));
               next_export_spec += 1;
               span_map.add_export_specifier(span, spec_id);
               specifiers.push(ExportSpecifier {
@@ -6151,7 +6165,7 @@ fn lower_module_items(
           }
           if !specifiers.is_empty() {
             exports.push(Export {
-              id: ExportId(next_export),
+              id: ExportId(checked_u32_index(next_export, "ExportId")),
               span: decl.span,
               kind: ExportKind::Named(ExportNamed {
                 source: None,
@@ -6316,13 +6330,46 @@ fn find_def(defs: &[DefData], kind: DefKind, span: TextRange) -> Option<&DefData
 
 #[cfg(test)]
 mod tests {
-  use crate::ids::{with_test_body_path_hasher, with_test_def_path_hasher};
+  use super::{BodyBuilder, DefLookup};
+  use crate::ids::{with_test_body_path_hasher, with_test_def_path_hasher, with_test_u32_index_limit};
+  use crate::intern::NameInterner;
+  use crate::span_map::SpanMap;
+  use crate::{BodyId, BodyKind, DefId, ExprKind, TypeArenasByDef};
   use crate::lower::lower_file_with_diagnostics;
   use crate::lower_from_source_with_kind;
   use crate::FileKind;
   use diagnostics::FileId;
+  use diagnostics::TextRange;
   use parse_js::parse_with_options;
   use std::collections::{BTreeMap, HashSet};
+
+  #[test]
+  #[should_panic(expected = "ExprId")]
+  fn expr_id_allocation_panics_instead_of_truncating() {
+    with_test_u32_index_limit(1, || {
+      let mut names = NameInterner::default();
+      let mut types = TypeArenasByDef::default();
+      let mut span_map = SpanMap::default();
+      let def_lookup = DefLookup::default();
+      let file = FileId(0);
+      let span = TextRange::new(0, 0);
+      let mut builder = BodyBuilder::new(
+        DefId::new(file, 0),
+        span,
+        BodyId::new(file, 0),
+        BodyKind::Unknown,
+        false,
+        &def_lookup,
+        &mut names,
+        &mut types,
+        &mut span_map,
+      );
+
+      builder.alloc_expr(span, ExprKind::Missing);
+      builder.alloc_expr(span, ExprKind::Missing);
+      builder.alloc_expr(span, ExprKind::Missing);
+    });
+  }
 
   #[test]
   fn def_ids_are_rehashed_on_collision() {
