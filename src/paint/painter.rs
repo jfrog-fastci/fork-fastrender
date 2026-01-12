@@ -14665,6 +14665,43 @@ impl Painter {
     };
     let metrics = metrics.scaled(self.scale);
 
+    // CSS Text Decoration Level 4: spelling/grammar error decorations are UA-defined, and the UA
+    // must disregard other `text-decoration-*` sub-properties and paint-affecting properties
+    // (text-decoration-color/style/thickness, underline-position/offset, skip-ink, etc).
+    const SPELLING_ERROR_COLOR: Rgba = Rgba::RED;
+    // CSS `green` is #008000; keep the grammar underline closer to typical browser output than
+    // `Rgba::GREEN` (which is #00FF00 / `lime`).
+    const GRAMMAR_ERROR_COLOR: Rgba = Rgba::rgb(0, 128, 0);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum UnderlineDecorationKind {
+      Underline,
+      SpellingError,
+      GrammarError,
+    }
+
+    impl UnderlineDecorationKind {
+      fn priority(self) -> u8 {
+        match self {
+          Self::Underline => 0,
+          Self::SpellingError => 1,
+          Self::GrammarError => 2,
+        }
+      }
+    }
+
+    #[derive(Debug, Clone)]
+    struct UnderlineDecoration {
+      kind: UnderlineDecorationKind,
+      style: TextDecorationStyle,
+      color: Rgba,
+      center: f32,
+      thickness: f32,
+      // `Some` for skip-ink segmented standard underlines; offsets are in device px and absolute
+      // inline coordinates (start/end), matching `build_underline_segments` output.
+      segments: Option<Vec<(f32, f32)>>,
+    }
+
     let draw_solid_line =
       |pixmap: &mut Pixmap, paint: &Paint, start: f32, len: f32, center: f32, thickness: f32| {
         if thickness <= 0.0 || len <= 0.0 {
@@ -14766,6 +14803,14 @@ impl Painter {
         }
       };
 
+    let stroke_half_extent = |style: TextDecorationStyle, thickness: f32| -> f32 {
+      match style {
+        TextDecorationStyle::Double => thickness * 2.5,
+        TextDecorationStyle::Wavy => thickness * 2.0,
+        _ => thickness * 0.5,
+      }
+    };
+
     let decorations = if !style.applied_text_decorations.is_empty() {
       Cow::Borrowed(style.applied_text_decorations.as_slice())
     } else {
@@ -14778,83 +14823,31 @@ impl Painter {
     };
 
     for deco in decorations.iter() {
-      let mut paint = Paint::default();
-      paint.anti_alias = true;
+      let lines = deco.decoration.lines;
+
       let decoration_color = deco.decoration.color.unwrap_or(style.color);
-      paint.set_color(color_to_skia(decoration_color));
+      let standard_visible = decoration_color.alpha_u8() != 0;
 
       let used_thickness =
         self.resolve_decoration_thickness_value(deco.decoration.thickness, style);
 
-      let painter_style = deco.decoration.style;
-      let render_line = |pixmap: &mut Pixmap, center: f32, thickness: f32| match painter_style {
-        TextDecorationStyle::Solid => {
-          draw_solid_line(pixmap, &paint, inline_start, inline_len, center, thickness);
-        }
-        TextDecorationStyle::Double => {
-          let line_thickness = (thickness * 0.7).max(0.5);
-          let gap = line_thickness.max(thickness * 0.6);
-          draw_solid_line(
-            pixmap,
-            &paint,
-            inline_start,
-            inline_len,
-            center - (gap * 0.5),
-            line_thickness,
-          );
-          draw_solid_line(
-            pixmap,
-            &paint,
-            inline_start,
-            inline_len,
-            center + (gap * 0.5),
-            line_thickness,
-          );
-        }
-        TextDecorationStyle::Dotted => {
-          draw_stroked_line(
-            pixmap,
-            &paint,
-            inline_start,
-            inline_len,
-            center,
-            thickness,
-            Some(vec![thickness, thickness]),
-            true,
-          );
-        }
-        TextDecorationStyle::Dashed => {
-          draw_stroked_line(
-            pixmap,
-            &paint,
-            inline_start,
-            inline_len,
-            center,
-            thickness,
-            Some(vec![3.0 * thickness, thickness]),
-            false,
-          );
-        }
-        TextDecorationStyle::Wavy => {
-          draw_wavy_line(pixmap, &paint, inline_start, inline_len, center, thickness);
-        }
-      };
-
-      let render_line_segment = |pixmap: &mut Pixmap,
-                                 start: f32,
-                                 len: f32,
-                                 center: f32,
-                                 thickness: f32| match painter_style
+      let render_line = |pixmap: &mut Pixmap,
+                         paint: &Paint,
+                         deco_style: TextDecorationStyle,
+                         start: f32,
+                         len: f32,
+                         center: f32,
+                         thickness: f32| match deco_style
       {
         TextDecorationStyle::Solid => {
-          draw_solid_line(pixmap, &paint, start, len, center, thickness);
+          draw_solid_line(pixmap, paint, start, len, center, thickness);
         }
         TextDecorationStyle::Double => {
           let line_thickness = (thickness * 0.7).max(0.5);
           let gap = line_thickness.max(thickness * 0.6);
           draw_solid_line(
             pixmap,
-            &paint,
+            paint,
             start,
             len,
             center - (gap * 0.5),
@@ -14862,7 +14855,7 @@ impl Painter {
           );
           draw_solid_line(
             pixmap,
-            &paint,
+            paint,
             start,
             len,
             center + (gap * 0.5),
@@ -14872,7 +14865,7 @@ impl Painter {
         TextDecorationStyle::Dotted => {
           draw_stroked_line(
             pixmap,
-            &paint,
+            paint,
             start,
             len,
             center,
@@ -14884,7 +14877,7 @@ impl Painter {
         TextDecorationStyle::Dashed => {
           draw_stroked_line(
             pixmap,
-            &paint,
+            paint,
             start,
             len,
             center,
@@ -14894,15 +14887,13 @@ impl Painter {
           );
         }
         TextDecorationStyle::Wavy => {
-          draw_wavy_line(pixmap, &paint, start, len, center, thickness);
+          draw_wavy_line(pixmap, paint, start, len, center, thickness);
         }
       };
 
-      if deco
-        .decoration
-        .lines
-        .contains(TextDecorationLine::UNDERLINE)
-      {
+      let mut underline_like: Vec<UnderlineDecoration> = Vec::new();
+
+      if standard_visible && lines.contains(TextDecorationLine::UNDERLINE) {
         let thickness = used_thickness.unwrap_or(metrics.underline_thickness);
         let center = self.underline_center(
           &metrics,
@@ -14913,13 +14904,13 @@ impl Painter {
           inline_vertical,
           style,
         );
-        if matches!(
+        let segments = if matches!(
           deco.skip_ink,
           crate::style::types::TextDecorationSkipInk::Auto
             | crate::style::types::TextDecorationSkipInk::All
         ) {
-          if let Some(runs) = runs {
-            let segments = self.build_underline_segments(
+          runs.map(|runs| {
+            self.build_underline_segments(
               runs,
               inline_start,
               inline_len,
@@ -14928,37 +14919,207 @@ impl Painter {
               block_baseline,
               inline_vertical,
               deco.skip_ink,
-            );
-            for (seg_start, seg_end) in segments {
+            )
+          })
+        } else {
+          None
+        };
+        underline_like.push(UnderlineDecoration {
+          kind: UnderlineDecorationKind::Underline,
+          style: deco.decoration.style,
+          color: decoration_color,
+          center,
+          thickness,
+          segments,
+        });
+      }
+
+      if lines.contains(TextDecorationLine::SPELLING_ERROR) {
+        let thickness = metrics.underline_thickness;
+        let center = self.underline_center(
+          &metrics,
+          crate::style::types::TextUnderlinePosition::Auto,
+          crate::style::types::TextUnderlineOffset::Auto,
+          thickness,
+          block_baseline,
+          inline_vertical,
+          style,
+        );
+        underline_like.push(UnderlineDecoration {
+          kind: UnderlineDecorationKind::SpellingError,
+          style: TextDecorationStyle::Wavy,
+          color: SPELLING_ERROR_COLOR,
+          center,
+          thickness,
+          segments: None,
+        });
+      }
+
+      if lines.contains(TextDecorationLine::GRAMMAR_ERROR) {
+        let thickness = metrics.underline_thickness;
+        let center = self.underline_center(
+          &metrics,
+          crate::style::types::TextUnderlinePosition::Auto,
+          crate::style::types::TextUnderlineOffset::Auto,
+          thickness,
+          block_baseline,
+          inline_vertical,
+          style,
+        );
+        underline_like.push(UnderlineDecoration {
+          kind: UnderlineDecorationKind::GrammarError,
+          style: TextDecorationStyle::Wavy,
+          color: GRAMMAR_ERROR_COLOR,
+          center,
+          thickness,
+          segments: None,
+        });
+      }
+
+      // If multiple underline-like decorations are present on the same text run (e.g.
+      // `underline spelling-error`), bump the later decorations outwards so all strokes remain
+      // visible.
+      if underline_like.len() > 1 {
+        let baseline = block_baseline;
+        let mut neg: Vec<usize> = Vec::new();
+        let mut pos: Vec<usize> = Vec::new();
+        for idx in 0..underline_like.len() {
+          let delta = underline_like[idx].center - baseline;
+          let sign = if delta.abs() <= 1e-3 { 1.0 } else { delta.signum() };
+          if sign < 0.0 {
+            neg.push(idx);
+          } else {
+            pos.push(idx);
+          }
+        }
+
+        let mut adjust_group = |indices: &mut Vec<usize>, sign: f32| {
+          if indices.len() <= 1 {
+            return;
+          }
+          indices.sort_by(|&a, &b| {
+            let da = (underline_like[a].center - baseline).abs();
+            let db = (underline_like[b].center - baseline).abs();
+            da.partial_cmp(&db)
+              .unwrap_or(std::cmp::Ordering::Equal)
+              .then_with(|| underline_like[a].kind.priority().cmp(&underline_like[b].kind.priority()))
+          });
+
+          let mut prev_pos: Option<f32> = None;
+          let mut prev_half: f32 = 0.0;
+          let mut prev_thickness: f32 = 0.0;
+          for &idx in indices.iter() {
+            let delta = underline_like[idx].center - baseline;
+            let pos = delta.abs();
+            let thickness = underline_like[idx].thickness;
+            let half_extent = stroke_half_extent(underline_like[idx].style, thickness);
+            let adjusted = match prev_pos {
+              Some(prev) => {
+                let gap = prev_thickness.max(thickness) * 0.5;
+                let min_pos = prev + prev_half + half_extent + gap;
+                pos.max(min_pos)
+              }
+              None => pos,
+            };
+            underline_like[idx].center = baseline + sign * adjusted;
+            prev_pos = Some(adjusted);
+            prev_half = half_extent;
+            prev_thickness = thickness;
+          }
+        };
+
+        adjust_group(&mut pos, 1.0);
+        adjust_group(&mut neg, -1.0);
+      }
+
+      // Paint standard decorations (respecting authored style/thickness/etc). Keep legacy ordering
+      // (underline -> overline -> line-through).
+      if standard_visible {
+        let mut paint = Paint::default();
+        paint.anti_alias = true;
+        paint.set_color(color_to_skia(decoration_color));
+
+        let painter_style = deco.decoration.style;
+
+        if let Some(underline) = underline_like
+          .iter()
+          .find(|u| u.kind == UnderlineDecorationKind::Underline)
+        {
+          if let Some(segments) = &underline.segments {
+            for &(seg_start, seg_end) in segments {
               let seg_width = seg_end - seg_start;
               if seg_width <= 0.0 {
                 continue;
               }
-              render_line_segment(&mut self.pixmap, seg_start, seg_width, center, thickness);
+              render_line(
+                &mut self.pixmap,
+                &paint,
+                painter_style,
+                seg_start,
+                seg_width,
+                underline.center,
+                underline.thickness,
+              );
             }
           } else {
-            render_line(&mut self.pixmap, center, thickness);
+            render_line(
+              &mut self.pixmap,
+              &paint,
+              painter_style,
+              inline_start,
+              inline_len,
+              underline.center,
+              underline.thickness,
+            );
           }
-        } else {
-          render_line(&mut self.pixmap, center, thickness);
+        }
+
+        if lines.contains(TextDecorationLine::OVERLINE) {
+          render_line(
+            &mut self.pixmap,
+            &paint,
+            painter_style,
+            inline_start,
+            inline_len,
+            block_baseline - metrics.ascent,
+            used_thickness.unwrap_or(metrics.underline_thickness),
+          );
+        }
+        if lines.contains(TextDecorationLine::LINE_THROUGH) {
+          render_line(
+            &mut self.pixmap,
+            &paint,
+            painter_style,
+            inline_start,
+            inline_len,
+            block_baseline - metrics.strike_pos,
+            used_thickness.unwrap_or(metrics.strike_thickness),
+          );
         }
       }
-      if deco.decoration.lines.contains(TextDecorationLine::OVERLINE) {
+
+      // Paint spelling/grammar error decorations as additional underline strokes. They must ignore
+      // authored text-decoration paint-affecting properties (color/style/thickness/skip-ink, etc),
+      // so treat them as separate paints.
+      for underline in &underline_like {
+        let kind = underline.kind;
+        if !matches!(
+          kind,
+          UnderlineDecorationKind::SpellingError | UnderlineDecorationKind::GrammarError
+        ) {
+          continue;
+        }
+        let mut paint = Paint::default();
+        paint.anti_alias = true;
+        paint.set_color(color_to_skia(underline.color));
         render_line(
           &mut self.pixmap,
-          block_baseline - metrics.ascent,
-          used_thickness.unwrap_or(metrics.underline_thickness),
-        );
-      }
-      if deco
-        .decoration
-        .lines
-        .contains(TextDecorationLine::LINE_THROUGH)
-      {
-        render_line(
-          &mut self.pixmap,
-          block_baseline - metrics.strike_pos,
-          used_thickness.unwrap_or(metrics.strike_thickness),
+          &paint,
+          underline.style,
+          inline_start,
+          inline_len,
+          underline.center,
+          underline.thickness,
         );
       }
     }
