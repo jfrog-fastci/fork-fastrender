@@ -994,7 +994,7 @@ impl Heap {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::Promise(_)))
   }
 
-  pub(crate) fn is_generator_object(&self, obj: GcObject) -> bool {
+  pub fn is_generator_object(&self, obj: GcObject) -> bool {
     if matches!(self.get_heap_object(obj.0), Ok(HeapObject::Generator(_))) {
       return true;
     }

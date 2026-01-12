@@ -859,6 +859,40 @@ fn serialize_object(
     ));
   }
 
+  // Reject exotic / internal-slot objects that HTML structured cloning does not serialize.
+  if scope.heap().is_proxy_object(obj) {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone Proxy",
+    ));
+  }
+  if scope.heap().is_weak_map_object(obj) {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone WeakMap",
+    ));
+  }
+  if scope.heap().is_weak_set_object(obj) {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone WeakSet",
+    ));
+  }
+  if scope.heap().is_generator_object(obj) {
+    return Err(throw_data_clone_error(
+      vm,
+      scope,
+      state.global,
+      "structuredClone: cannot clone Generator",
+    ));
+  }
+
   // ArrayBuffer.
   if scope.heap().is_array_buffer_object(obj) {
     if scope.heap().is_detached_array_buffer(obj).unwrap_or(false) {
@@ -1913,6 +1947,47 @@ mod tests {
        })()",
     )?;
     assert_eq!(get_string(&realm, name), "DataCloneError");
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_internal_slot_objects() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let proxy = realm.exec_script(
+      "(() => {\
+         try { structuredClone(new Proxy({}, {})); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, proxy), "DataCloneError");
+
+    let weak_map = realm.exec_script(
+      "(() => {\
+         try { structuredClone(new WeakMap()); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, weak_map), "DataCloneError");
+
+    let weak_set = realm.exec_script(
+      "(() => {\
+         try { structuredClone(new WeakSet()); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, weak_set), "DataCloneError");
+
+    let generator = realm.exec_script(
+      "(() => {\
+         function* g(){ yield 1; }\
+         const it = g();\
+         try { structuredClone(it); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, generator), "DataCloneError");
+
     Ok(())
   }
 
