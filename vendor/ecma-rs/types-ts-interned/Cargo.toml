@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Interned TypeScript type representation (imported from worker-10)"
 
 [features]
-default = []
+default = ["strict-determinism"]
 serde = ["dep:serde", "hir-js/serde", "ordered-float/serde", "num-bigint/serde"]
 # Enable JSON helpers such as `TypeStore::debug_json`. Implies `serde`.
 serde-json = ["serde", "dep:serde_json"]

@@ -164,12 +164,15 @@ pub struct PrimitiveIds {
 /// deterministic and thread-scheduling independent **assuming no hash
 /// collisions**.
 ///
-/// In the extremely unlikely event of a hash collision, the default
-/// configuration falls back to salt-based rehashing. This preserves the
-/// invariant that IDs must never change once returned, but it does not define a
-/// canonical, order-independent assignment under collisions (the first value
-/// inserted keeps the lower-salt ID). Enable the `strict-determinism` feature
-/// to treat collisions as an internal error instead.
+/// Hash collisions are astronomically unlikely, but if they do occur the
+/// default build (with the `strict-determinism` feature enabled) will panic.
+/// This makes collision handling schedule-independent: you either get
+/// deterministic output, or a deterministic fail-fast error.
+///
+/// To opt out of fail-fast collision handling, disable default features for
+/// this crate. In that mode, the store falls back to salt-based rehashing, which
+/// is deterministic for a fixed insertion sequence but can be
+/// thread-scheduling dependent under collisions.
 #[derive(Debug)]
 pub struct TypeStore {
   types: DashMap<TypeId, TypeKind, RandomState>,

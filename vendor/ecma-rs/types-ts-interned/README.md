@@ -4,10 +4,19 @@ Interned, deterministic TypeScript type representation + evaluator/relation engi
 
 ## Features
 
+- `strict-determinism` (enabled by default): panics on any stable-hash ID
+  collision. This makes collision handling schedule-independent: you either get
+  deterministic output, or a deterministic fail-fast error.
 - `serde`: enables `serde` support for the core interned data structures (IDs,
   `TypeKind`, snapshots, etc.).
 - `serde-json`: enables JSON helpers such as `TypeStore::debug_json`. Implies
   `serde`.
+
+To opt out of fail-fast collision handling, disable default features:
+
+```toml
+types-ts-interned = { workspace = true, default-features = false }
+```
 
 ## Runnable example
 

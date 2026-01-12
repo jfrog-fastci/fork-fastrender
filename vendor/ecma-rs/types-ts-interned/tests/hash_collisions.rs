@@ -53,3 +53,33 @@ fn collisions_panic_in_strict_mode() {
   let _ = store.intern_shape(shape_with_prop(&store, "a"));
   let _ = store.intern_shape(shape_with_prop(&store, "b"));
 }
+
+#[test]
+#[cfg(feature = "strict-determinism")]
+fn collisions_panic_deterministically_under_parallelism() {
+  use std::sync::{Arc, Barrier};
+  use std::thread;
+
+  let store = TypeStore::with_options_and_fingerprint(TypeOptions::default(), collide_shapes);
+
+  let threads = 4;
+  let barrier = Arc::new(Barrier::new(threads));
+  let handles: Vec<_> = (0..threads)
+    .map(|_| {
+      let store = Arc::clone(&store);
+      let barrier = Arc::clone(&barrier);
+      thread::spawn(move || {
+        barrier.wait();
+        let _ = store.intern_shape(shape_with_prop(&store, "a"));
+        let _ = store.intern_shape(shape_with_prop(&store, "b"));
+      })
+    })
+    .collect();
+
+  for handle in handles {
+    assert!(
+      handle.join().is_err(),
+      "expected all threads to panic on collision under strict-determinism"
+    );
+  }
+}

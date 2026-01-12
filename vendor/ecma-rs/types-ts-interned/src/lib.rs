@@ -10,15 +10,26 @@
 //! ## Hash collisions and determinism
 //!
 //! Hash collisions are astronomically unlikely with the default 128-bit
-//! fingerprints, but the store still has a salt-based rehashing fallback for
-//! robustness. This fallback is deterministic for a *fixed insertion sequence*,
-//! however it does **not** define a canonical, order-independent ID assignment
-//! under collisions: the first value inserted keeps the lowest-salt ID, because
-//! already-returned IDs must never change.
+//! fingerprints.
 //!
-//! Downstream code that wants strict schedule-independence even in the presence
-//! of collisions can enable the `strict-determinism` feature to treat collisions
-//! as an internal error.
+//! By default, this crate enables the `strict-determinism` feature: if an ID
+//! collision occurs (two distinct values hashing to the same ID), the store
+//! will panic. This makes collision handling schedule-independent: you either
+//! get deterministic output, or a deterministic fail-fast error.
+//!
+//! To opt out of fail-fast collision handling, disable default features:
+//!
+//! ```toml
+//! # In this workspace:
+//! types-ts-interned = { workspace = true, default-features = false }
+//!
+//! # Or from crates.io:
+//! # types-ts-interned = { version = "0.1.0", default-features = false }
+//! ```
+//!
+//! In that mode, the store falls back to salt-based rehashing on collision. This
+//! is deterministic for a *fixed insertion sequence*, but under parallelism the
+//! insertion order can vary, making collision resolution schedule-dependent.
 //!
 //! # Example
 //! ```
