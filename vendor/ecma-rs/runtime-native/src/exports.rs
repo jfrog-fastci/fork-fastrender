@@ -3847,8 +3847,14 @@ pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
       std::process::abort();
     }
 
-    // Payload promises created by `rt_parallel_spawn_promise` are implemented by the legacy promise
-    // runtime (`async_rt::promise`) and carry an out-of-line payload buffer.
+    // Promises that set `PROMISE_FLAG_HAS_PAYLOAD` carry an out-of-line payload buffer.
+    //
+    // Today this covers payload promises created by `rt_parallel_spawn_promise*` (GC-managed
+    // `payload_promise::PayloadPromise`). It also supports historical legacy payload promises that
+    // used the same `PromiseHeader + payload_ptr` prefix layout.
+    //
+    // `async_rt::promise::promise_payload_ptr` treats the `PromiseRef` as an opaque `PromiseHeader`
+    // prefix and reads the payload pointer from the shared payload-promise layout.
     let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
     if (flags & crate::async_abi::PROMISE_FLAG_HAS_PAYLOAD) != 0 {
       return async_rt::promise::promise_payload_ptr(p);
