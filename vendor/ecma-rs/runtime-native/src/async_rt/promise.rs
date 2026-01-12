@@ -694,6 +694,13 @@ pub(crate) fn cancel_all_pending_reactions() {
       std::process::abort();
     }
 
+    // If this promise was counted as "external pending" (e.g. a parallel task), clear the flag so
+    // a later settlement can't perturb `EXTERNAL_PENDING` after teardown.
+    //
+    // Do this *before* dropping reaction nodes so we don't touch `promise` after potentially freeing
+    // it (e.g. if some reaction node holds the last strong reference to the promise allocation).
+    maybe_clear_external_pending(promise);
+
     let reactions = unsafe { &(*promise).waiters };
     let head_val = reactions.swap(0, Ordering::AcqRel);
     let mut head = decode_waiters_ptr(head_val);
@@ -714,10 +721,6 @@ pub(crate) fn cancel_all_pending_reactions() {
 
       head = next;
     }
-
-    // If this promise was counted as "external pending" (e.g. a parallel task), clear the flag so
-    // a later settlement can't perturb `EXTERNAL_PENDING` after teardown.
-    maybe_clear_external_pending(promise);
   }
 }
 

@@ -190,6 +190,9 @@ unsafe impl<T: Send + Sync> Sync for Promise<T> {}
 
 impl<T> Drop for Promise<T> {
   fn drop(&mut self) {
+    // Ensure the global teardown tracking set (`rt_async_cancel_all`) doesn't retain a stale pointer.
+    crate::async_rt::promise::untrack_pending_reactions((&mut self.header) as *mut PromiseHeader);
+
     let state = self.header.state.load(Ordering::Acquire);
     if state == PromiseHeader::FULFILLED {
       unsafe {
@@ -531,6 +534,10 @@ where
       }
     }
 
+    // Track pending reactions so `rt_async_cancel_all` can drop them if this promise never settles.
+    let promise_ptr: PromiseRef = Arc::as_ptr(self).cast::<PromiseHeader>() as *mut PromiseHeader;
+    crate::async_rt::promise::track_pending_reactions(promise_ptr);
+
     // If already settled, schedule immediately.
     let state = self.header.state.load(Ordering::Acquire);
     if state == PromiseHeader::FULFILLED || state == PromiseHeader::REJECTED {
@@ -542,13 +549,17 @@ where
     let head_val = self.header.waiters.swap(0, Ordering::AcqRel);
     let mut head = decode_waiters_ptr(head_val);
     if head.is_null() {
+      let promise_ptr: PromiseRef = Arc::as_ptr(self).cast::<PromiseHeader>() as *mut PromiseHeader;
+      crate::async_rt::promise::untrack_pending_reactions(promise_ptr);
       return;
     }
+
+    let promise_ptr: PromiseRef = Arc::as_ptr(self).cast::<PromiseHeader>() as *mut PromiseHeader;
+    crate::async_rt::promise::untrack_pending_reactions(promise_ptr);
 
     // Reactions are pushed in LIFO order; reverse to preserve FIFO registration order.
     head = unsafe { reverse_list(head) };
 
-    let promise_ptr: PromiseRef = Arc::as_ptr(self).cast::<PromiseHeader>() as *mut PromiseHeader;
     while !head.is_null() {
       let next = unsafe { (*head).next };
       unsafe {

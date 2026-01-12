@@ -238,3 +238,42 @@ fn cancel_clears_block_on_waker_reactions_when_executor_enters_error_state() {
     drop(Box::from_raw(awaited_hdr));
   }
 }
+
+#[test]
+fn cancel_drops_pending_promise_api_reactions() {
+  let _rt = TestRuntimeGuard::new();
+
+  use runtime_native::promise_api::{Promise, PromiseExt};
+  use std::sync::Arc;
+
+  let ran = Arc::new(AtomicUsize::new(0));
+  let dropped = Arc::new(AtomicUsize::new(0));
+
+  struct DropToken(Arc<AtomicUsize>);
+
+  impl Drop for DropToken {
+    fn drop(&mut self) {
+      self.0.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+
+  let (p, _resolve, _reject) = Promise::<i32>::new();
+  let token = DropToken(dropped.clone());
+  let ran2 = ran.clone();
+
+  // Register a pending `then` reaction that never runs because `p` never settles. Teardown must
+  // drop the reaction node (and therefore drop `token`) without executing the closure body.
+  let _p2 = p.then_ok(move |_v| {
+    let _ = &token;
+    ran2.fetch_add(1, Ordering::SeqCst);
+    0
+  });
+
+  rt_async_cancel_all();
+  assert_eq!(ran.load(Ordering::SeqCst), 0);
+  assert_eq!(dropped.load(Ordering::SeqCst), 1);
+
+  // Idempotent.
+  rt_async_cancel_all();
+  assert_eq!(dropped.load(Ordering::SeqCst), 1);
+}
