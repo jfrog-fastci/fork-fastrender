@@ -4369,6 +4369,89 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Ok(mut response) => {
         // JS `Response.headers` for fetch() results is immutable in browsers.
         response.headers.set_guard(HeadersGuard::Immutable);
+        
+        // If the signal was aborted while the underlying fetch was running, reject instead of
+        // storing/settling with a `Response`.
+        if let Some(signal_root_id) = signal_root {
+          let window_realm = host.window_realm();
+          let aborted = (|| {
+            let heap = window_realm.heap_mut();
+            let signal_value = heap.get_root(signal_root_id)?;
+            let Value::Object(signal_obj) = signal_value else {
+              return None;
+            };
+            let mut scope = heap.scope();
+            let key = alloc_key(&mut scope, "aborted").ok()?;
+            let value = scope
+              .heap()
+              .object_get_own_data_property_value(signal_obj, &key)
+              .ok()
+              .flatten()
+              .unwrap_or(Value::Undefined);
+            scope.heap().to_boolean(value).ok()
+          })();
+
+          if aborted.unwrap_or(false) {
+            let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+              let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+              hooks.set_event_loop(event_loop);
+              let (vm_host, window_realm) = host.vm_host_and_window_realm();
+              window_realm.reset_interrupt();
+              let budget = window_realm.vm_budget_now();
+              let (vm, heap) = window_realm.vm_and_heap_mut();
+              let mut vm = vm.push_budget(budget);
+              let tick_result = vm.tick();
+              let call_result = tick_result.and_then(|_| {
+                let reject = heap
+                  .get_root(reject_root)
+                  .ok_or_else(|| VmError::invalid_handle())?;
+                let signal_value = heap
+                  .get_root(signal_root_id)
+                  .ok_or_else(|| VmError::invalid_handle())?;
+                let mut scope = heap.scope();
+                let reason = match signal_value {
+                  Value::Object(signal_obj) => {
+                    let key = alloc_key(&mut scope, "reason")?;
+                    vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, key)?
+                  }
+                  _ => Value::Undefined,
+                };
+                vm.call_with_host_and_hooks(
+                  vm_host,
+                  &mut scope,
+                  &mut hooks,
+                  reject,
+                  Value::Undefined,
+                  &[reason],
+                )?;
+                Ok(())
+              });
+
+              heap.remove_root(resolve_root);
+              heap.remove_root(reject_root);
+              heap.remove_root(promise_root);
+              heap.remove_root(signal_root_id);
+
+              if let Some(err) = hooks.finish(heap) {
+                return Err(err);
+              }
+              call_result
+                .map_err(|err| vm_error_to_event_loop_error(heap, err))
+                .map(|_| ())
+            });
+
+            if let Err(queue_err) = queue_result {
+              let window_realm = host.window_realm();
+              window_realm.heap_mut().remove_root(resolve_root);
+              window_realm.heap_mut().remove_root(reject_root);
+              window_realm.heap_mut().remove_root(promise_root);
+              window_realm.heap_mut().remove_root(signal_root_id);
+              return Err(queue_err);
+            }
+
+            return Ok(());
+          }
+        }
 
         let response_id = match with_env_state_mut(env_id, |state| {
           let id = state.alloc_id();
@@ -4450,7 +4533,45 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let resolve = heap
               .get_root(resolve_root)
               .ok_or_else(|| VmError::invalid_handle())?;
+            let reject = heap
+              .get_root(reject_root)
+              .ok_or_else(|| VmError::invalid_handle())?;
+            // `Scope` holds a mutable borrow of the heap, so extract any rooted values we need
+            // beforehand.
+            let signal_obj = signal_root
+              .and_then(|signal_root_id| heap.get_root(signal_root_id))
+              .and_then(|signal_value| match signal_value {
+                Value::Object(obj) => Some(obj),
+                _ => None,
+              });
             let mut scope = heap.scope();
+
+            // If the signal was aborted after the networking task ran but before this completion
+            // microtask settles the promise, reject instead of resolving.
+            if let Some(signal_obj) = signal_obj {
+              let aborted_key = alloc_key(&mut scope, "aborted")?;
+              let aborted_val =
+                vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, aborted_key)?;
+              if scope.heap().to_boolean(aborted_val)? {
+                // Ensure we don't leak the stored response backing state.
+                let _ = with_env_state_mut(env_id, |state| {
+                  state.responses.remove(&response_id);
+                  Ok(())
+                });
+
+                let reason_key = alloc_key(&mut scope, "reason")?;
+                let reason = vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, reason_key)?;
+                vm.call_with_host_and_hooks(
+                  vm_host,
+                  &mut scope,
+                  &mut hooks,
+                  reject,
+                  Value::Undefined,
+                  &[reason],
+                )?;
+                return Ok(());
+              }
+            }
 
             let resp_obj = make_response_wrapper(
               &mut scope,
@@ -5168,7 +5289,9 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
 mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
-  use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome};
+  use crate::js::event_loop::{
+    EventLoop, RunLimits, RunNextTaskLimitedOutcome, RunUntilIdleOutcome, RunUntilIdleStopReason,
+  };
   use crate::js::realm_module_loader::ModuleLoader;
   use crate::js::window_realm::WindowRealm;
   use crate::js::window_realm::WindowRealmConfig;
@@ -8461,6 +8584,140 @@ mod tests {
       captured.body.as_deref()
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_abort_between_network_task_and_settlement_microtask_rejects() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+    let env_id = bindings.env_id();
+
+    let promise = {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window.exec_script_with_host_and_hooks(
+        host_ctx,
+        &mut hooks,
+        r#"(function(){
+             const controller = new AbortController();
+             const p = fetch('https://example.invalid/ok', { signal: controller.signal });
+             // Ensure the eventual rejection doesn't trigger `unhandledrejection` tasks during the test.
+             p.catch(() => {});
+             globalThis.__fetch_abort_controller = controller;
+             return p;
+           })()"#,
+      )
+    }
+    .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+    let promise_root = host
+      .window
+      .heap_mut()
+      .add_root(promise)
+      .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+
+    // Run the networking task but intentionally stop before executing any microtasks (including the
+    // fetch completion microtask).
+    let mut run_state = event_loop.new_run_state(RunLimits {
+      max_tasks: 1,
+      max_microtasks: 0,
+      max_wall_time: None,
+    });
+    let outcome = event_loop.run_next_task_limited(&mut host, &mut run_state)?;
+    assert!(
+      matches!(
+        outcome,
+        RunNextTaskLimitedOutcome::Stopped(RunUntilIdleStopReason::MaxMicrotasks { .. })
+      ),
+      "expected to run networking task but skip microtasks, got {outcome:?}"
+    );
+
+    // The promise should still be pending because we skipped microtasks.
+    let promise_obj = {
+      let heap = host.window.heap();
+      let promise_value = heap.get_root(promise_root).unwrap_or(Value::Undefined);
+      let Value::Object(promise_obj) = promise_value else {
+        return Err(crate::error::Error::Other(
+          "expected fetch() to return a Promise object".to_string(),
+        ));
+      };
+      let state = heap
+        .promise_state(promise_obj)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+      assert_eq!(state, PromiseState::Pending);
+      promise_obj
+    };
+
+    // The networking task has already stored a backing response; it must be removed if we reject
+    // due to abort before settlement.
+    assert_eq!(
+      with_env_state(env_id, |state| Ok(state.responses.len()))
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?,
+      1
+    );
+
+    // Abort after the networking task has completed, but before the settlement microtask runs.
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          "globalThis.__fetch_abort_controller.abort('reason');",
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+    }
+
+    // Now run the microtask checkpoint; the completion microtask must observe the abort and reject.
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+
+    {
+      let heap = host.window.heap();
+      let state = heap
+        .promise_state(promise_obj)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+      assert_eq!(state, PromiseState::Rejected);
+
+      let Some(result) = heap
+        .promise_result(promise_obj)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+      else {
+        return Err(crate::error::Error::Other(
+          "expected rejected fetch promise to have a result".to_string(),
+        ));
+      };
+      let Value::String(reason_s) = result else {
+        return Err(crate::error::Error::Other(
+          "expected fetch rejection reason to be a string".to_string(),
+        ));
+      };
+      let reason = heap
+        .get_string(reason_s)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+        .to_utf8_lossy();
+      assert_eq!(reason, "reason");
+    }
+
+    assert_eq!(
+      with_env_state(env_id, |state| Ok(state.responses.len()))
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?,
+      0
+    );
+
+    host.window.heap_mut().remove_root(promise_root);
+    drop(bindings);
     Ok(())
   }
 
