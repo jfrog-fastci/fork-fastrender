@@ -8,35 +8,80 @@ use semantic_js::ts::{
   SymbolOrigin, SymbolTable, TsProgramSemantics,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Clone)]
 struct FixtureResolver {
   files: BTreeMap<String, FileId>,
+  names_by_id: Vec<String>,
 }
 
 impl FixtureResolver {
   fn new(files: BTreeMap<String, FileId>) -> Self {
-    Self { files }
+    let mut names_by_id: Vec<Option<String>> = Vec::new();
+    for (name, file_id) in files.iter() {
+      let idx = file_id.0 as usize;
+      if idx >= names_by_id.len() {
+        names_by_id.resize_with(idx + 1, || None);
+      }
+      if names_by_id[idx].is_none() {
+        names_by_id[idx] = Some(name.clone());
+      }
+    }
+    let names_by_id = names_by_id
+      .into_iter()
+      .map(|name| name.expect("missing file name for FileId"))
+      .collect();
+
+    Self { files, names_by_id }
+  }
+
+  fn normalize_virtual_path(path: &Path) -> String {
+    let mut is_absolute = false;
+    let mut parts: Vec<String> = Vec::new();
+
+    for comp in path.components() {
+      match comp {
+        Component::Prefix(prefix) => {
+          // Shouldn't happen in TS fixtures, but keep behavior deterministic.
+          parts.push(prefix.as_os_str().to_string_lossy().to_string());
+        }
+        Component::RootDir => {
+          is_absolute = true;
+          parts.clear();
+        }
+        Component::CurDir => {}
+        Component::ParentDir => {
+          parts.pop();
+        }
+        Component::Normal(part) => {
+          parts.push(part.to_string_lossy().to_string());
+        }
+      }
+    }
+
+    let mut out = if is_absolute { "/".to_string() } else { String::new() };
+    out.push_str(&parts.join("/"));
+    out
   }
 
   fn resolve_specifier(&self, specifier: &str) -> Option<FileId> {
     let mut candidates: Vec<String> = Vec::new();
-    let mut push = |candidate: String| {
+    let push = |candidates: &mut Vec<String>, candidate: String| {
       if !candidates.iter().any(|c| c == &candidate) {
         candidates.push(candidate);
       }
     };
 
-    push(specifier.to_string());
+    push(&mut candidates, specifier.to_string());
 
     if let Some(without_dot) = specifier.strip_prefix("./") {
-      push(without_dot.to_string());
+      push(&mut candidates, without_dot.to_string());
     }
 
     if let Some(without_slash) = specifier.strip_prefix('/') {
-      push(without_slash.to_string());
+      push(&mut candidates, without_slash.to_string());
     }
 
     let mut base = specifier;
@@ -48,17 +93,28 @@ impl FixtureResolver {
     }
 
     if base != specifier {
-      push(base.to_string());
+      push(&mut candidates, base.to_string());
     }
 
-    let has_extension = base.ends_with(".d.ts")
-      || base
-        .rsplit_once('/')
-        .map_or(base.contains('.'), |(_, tail)| tail.contains('.'));
+    let base_candidates = candidates.clone();
+    for candidate in base_candidates {
+      let mut check = candidate.as_str();
+      if let Some(stripped) = check.strip_prefix("./") {
+        check = stripped;
+      }
+      if let Some(stripped) = check.strip_prefix('/') {
+        check = stripped;
+      }
 
-    if !has_extension {
-      push(format!("{base}.ts"));
-      push(format!("{base}.d.ts"));
+      let has_extension = check.ends_with(".d.ts")
+        || check
+          .rsplit_once('/')
+          .map_or(check.contains('.'), |(_, tail)| tail.contains('.'));
+
+      if !has_extension {
+        push(&mut candidates, format!("{candidate}.ts"));
+        push(&mut candidates, format!("{candidate}.d.ts"));
+      }
     }
 
     for candidate in candidates {
@@ -71,8 +127,26 @@ impl FixtureResolver {
 }
 
 impl Resolver for FixtureResolver {
-  fn resolve(&self, _from: FileId, specifier: &str) -> Option<FileId> {
-    self.resolve_specifier(specifier)
+  fn resolve(&self, from: FileId, specifier: &str) -> Option<FileId> {
+    if let Some(resolved) = self.resolve_specifier(specifier) {
+      return Some(resolved);
+    }
+
+    // Some TS conformance fixtures use absolute virtual paths like `/a.ts`, while others
+    // use non-rooted names like `a.ts`. Implement basic relative path resolution so
+    // specifiers like `./b` resolve to `/b.ts` when importing from `/a.ts`.
+    if specifier.starts_with('.') {
+      let from_name = self.names_by_id.get(from.0 as usize)?;
+      let from_path = Path::new(from_name);
+      let from_dir = from_path.parent().unwrap_or_else(|| Path::new(""));
+      let joined = from_dir.join(specifier);
+      let normalized = Self::normalize_virtual_path(&joined);
+      if let Some(resolved) = self.resolve_specifier(&normalized) {
+        return Some(resolved);
+      }
+    }
+
+    None
   }
 }
 
@@ -118,7 +192,10 @@ fn split_multifile_fixture(source: &str) -> Vec<(String, String)> {
 
   for line in source.split_inclusive('\n') {
     let trimmed = line.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("// @filename:") {
+    if let Some(rest) = trimmed
+      .strip_prefix("// @filename:")
+      .or_else(|| trimmed.strip_prefix("// @Filename:"))
+    {
       if let Some(name) = current_name.take() {
         out.push((name, std::mem::take(&mut current_src)));
       }
@@ -313,10 +390,18 @@ fn ts_conformance_module_augmentation_imports_and_exports_2() {
   let ts2666 = diags.iter().filter(|d| d.code == "TS2666").count();
   let ts2667 = diags.iter().filter(|d| d.code == "TS2667").count();
 
-  if ts2666 > 0 || ts2667 > 0 {
-    assert_eq!(ts2666, 1, "expected TS2666 exactly once; got {diags:?}");
-    assert_eq!(ts2667, 1, "expected TS2667 exactly once; got {diags:?}");
-  }
+  assert_eq!(ts2666, 1, "expected TS2666 exactly once; got {diags:?}");
+  assert_eq!(ts2667, 1, "expected TS2667 exactly once; got {diags:?}");
+
+  let codes: BTreeSet<String> = diags.iter().map(|d| d.code.to_string()).collect();
+  let expected_codes: BTreeSet<String> = ["TS2666", "TS2667"]
+    .into_iter()
+    .map(|c| c.to_string())
+    .collect();
+  assert_eq!(
+    codes, expected_codes,
+    "expected only TS2666/TS2667 diagnostics; got {diags:?}"
+  );
 }
 
 #[test]
@@ -367,4 +452,57 @@ fn ts_conformance_module_augmentation_no_new_names() {
     }
     other => panic!("expected imported Observable symbol origin, got {other:?}"),
   }
+}
+
+#[test]
+fn ts_conformance_type_only_import_is_namespace_qualifier_circular4() {
+  let case = TsConformanceCase::load("conformance/externalModules/typeOnly/circular4.ts");
+  let (sem, diags) = case.bind_and_assert_deterministic();
+  assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+  let a = case.file_id("/a.ts");
+  let b = case.file_id("/b.ts");
+
+  let ns2 = sem
+    .resolve_in_module(a, "ns2", Namespace::NAMESPACE)
+    .expect("a.ts should import ns2 as a namespace qualifier");
+
+  let symbols = sem.symbols();
+  match &symbols.symbol(ns2).origin {
+    SymbolOrigin::Import {
+      from: ModuleRef::File(from),
+      imported,
+    } => {
+      assert_eq!(*from, b);
+      assert_eq!(imported, "ns2");
+    }
+    other => panic!("expected imported ns2 symbol origin, got {other:?}"),
+  }
+
+  assert!(
+    sem.resolve_in_module(a, "ns2", Namespace::VALUE).is_none(),
+    "ns2 should not be present in the value namespace for a type-only import"
+  );
+}
+
+#[test]
+fn ts_conformance_type_only_namespace_export_namespace2() {
+  let case = TsConformanceCase::load("conformance/externalModules/typeOnly/exportNamespace2.ts");
+  let (sem, diags) = case.bind_and_assert_deterministic();
+  assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+  let c = case.file_id("c.ts");
+
+  assert!(
+    sem.resolve_export(c, "a", Namespace::TYPE).is_some(),
+    "c.ts should export a in the type namespace"
+  );
+  assert!(
+    sem.resolve_export(c, "a", Namespace::NAMESPACE).is_some(),
+    "c.ts should export a in the namespace namespace"
+  );
+  assert!(
+    sem.resolve_export(c, "a", Namespace::VALUE).is_none(),
+    "c.ts should not export a in the value namespace (type-only import)"
+  );
 }
