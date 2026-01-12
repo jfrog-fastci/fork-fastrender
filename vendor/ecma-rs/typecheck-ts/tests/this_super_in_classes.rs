@@ -131,3 +131,44 @@ class C extends B {
   let ty = program.type_at(file_id, offset).expect("type at narrowed x inside arrow");
   assert_eq!(program.display_type(ty).to_string(), "string");
 }
+
+#[test]
+fn arrow_in_static_field_initializer_captures_super_for_flow_narrowing() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+  let file = FileKey::new("a.ts");
+  let src = r#"
+class B {
+  static isString(this: any, x: string | number): x is string {
+    return typeof x === "string";
+  }
+}
+
+class C extends B {
+  static f = (x: string | number) => {
+    if (super.isString(x)) {
+      return x;
+    }
+    return x;
+  };
+}
+"#;
+  host.insert(file.clone(), src);
+
+  let program = Program::new(host, vec![file.clone()]);
+  let diagnostics = program.check();
+  assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+
+  let file_id = program.file_id(&file).expect("file id");
+  let offset = src
+    .find("return x;")
+    .expect("return x offset") as u32
+    + "return ".len() as u32;
+  let ty = program
+    .type_at(file_id, offset)
+    .expect("type at narrowed x inside static arrow");
+  assert_eq!(program.display_type(ty).to_string(), "string");
+}

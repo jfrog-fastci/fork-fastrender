@@ -1994,6 +1994,7 @@ pub mod body_check {
             | hir_js::DefKind::Constructor
             | hir_js::DefKind::Getter
             | hir_js::DefKind::Setter
+            | hir_js::DefKind::Field
             | hir_js::DefKind::StaticBlock => {
               is_static = def.is_static;
             }
