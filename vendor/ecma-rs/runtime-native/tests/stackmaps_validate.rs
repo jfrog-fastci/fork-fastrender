@@ -164,6 +164,86 @@ fn validate_stackmaps_allows_sp_based_locations_with_unknown_stack_size() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
+fn validate_stackmaps_allows_fp_based_indirect_locations() {
+  use runtime_native::stackmaps::X86_64_DWARF_REG_RBP;
+  use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
+  use runtime_native::{validate_stackmaps, StackMaps};
+
+  // Minimal stackmap section containing one statepoint record with one GC (base, derived) pair
+  // described as an FP-relative spill slot: Indirect [RBP - 16].
+  //
+  // The runtime's stack scanner supports both SP-based and FP-based `Indirect` locations (but not
+  // register roots).
+  let mut bytes: Vec<u8> = Vec::new();
+
+  fn push_u8(out: &mut Vec<u8>, v: u8) {
+    out.push(v);
+  }
+  fn push_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn align_to_8(out: &mut Vec<u8>) {
+    while out.len() % 8 != 0 {
+      out.push(0);
+    }
+  }
+
+  // Header.
+  push_u8(&mut bytes, 3); // version
+  push_u8(&mut bytes, 0); // reserved0
+  push_u16(&mut bytes, 0); // reserved1
+  push_u32(&mut bytes, 1); // num_functions
+  push_u32(&mut bytes, 0); // num_constants
+  push_u32(&mut bytes, 1); // num_records
+
+  // Function record (stack_size is not relevant for FP-relative locations here).
+  push_u64(&mut bytes, 0x1000); // address
+  push_u64(&mut bytes, 32); // stack_size
+  push_u64(&mut bytes, 1); // record_count
+
+  // Record header.
+  push_u64(&mut bytes, LLVM_STATEPOINT_PATCHPOINT_ID);
+  push_u32(&mut bytes, 0); // instruction_offset
+  push_u16(&mut bytes, 0); // reserved
+  push_u16(&mut bytes, 5); // num_locations (3 header consts + 1 pair)
+
+  // Helper: StackMap location entry (12 bytes).
+  fn push_loc(out: &mut Vec<u8>, kind: u8, size: u16, dwarf_reg: u16, offset_or_const: i32) {
+    out.push(kind);
+    out.push(0); // reserved0
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&dwarf_reg.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved1
+    out.extend_from_slice(&offset_or_const.to_le_bytes());
+  }
+
+  // 3 constant header locations (callconv, flags, deopt_count=0).
+  push_loc(&mut bytes, 4, 8, 0, 0); // callconv
+  push_loc(&mut bytes, 4, 8, 0, 0); // flags
+  push_loc(&mut bytes, 4, 8, 0, 0); // deopt_count=0
+
+  // GC pair: base==derived at Indirect [RBP - 16].
+  push_loc(&mut bytes, 3, 8, X86_64_DWARF_REG_RBP, -16);
+  push_loc(&mut bytes, 3, 8, X86_64_DWARF_REG_RBP, -16);
+
+  // Live-out header.
+  align_to_8(&mut bytes);
+  push_u16(&mut bytes, 0); // padding
+  push_u16(&mut bytes, 0); // num_live_outs
+  align_to_8(&mut bytes);
+
+  let stackmaps = StackMaps::parse(&bytes).expect("parse StackMaps");
+  validate_stackmaps(&stackmaps).expect("validate_stackmaps must allow FP-based Indirect roots");
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
 fn validate_stackmaps_treats_invalid_statepoint_layout_as_non_statepoint() {
   use runtime_native::{validate_stackmaps, StackMaps};
   // Minimal stackmap section containing one record that:

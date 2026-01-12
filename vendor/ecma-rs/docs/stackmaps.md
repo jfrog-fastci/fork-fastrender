@@ -7,7 +7,8 @@ Our initial native runtime stack-walking strategy is intentionally simple:
 - **Walk frames via the frame-pointer chain** (frame pointers):
   - x86_64: `RBP`
   - AArch64: `X29`
-- **Compute each frame's callsite stack pointer (SP)** from the ABI + the known frame layout.
+- **Compute each frame's callsite stack pointer (SP)** from the ABI + the known frame layout (needed
+  for stackmap locations based on `SP`).
 - **Do not** use `libunwind`, `ucontext`, or DWARF register reconstruction.
 
 That strategy is only correct if every GC root referenced by a stackmap is stored in a **memory location**.
@@ -15,7 +16,8 @@ That strategy is only correct if every GC root referenced by a stackmap is store
 ## Stackmap `SP` base is the *callsite* SP (not callee-entry SP)
 
 LLVM StackMap `Indirect [SP + off]` locations use the **caller frame's SP at the stackmap record PC**
-(the instruction *after* the call).
+(the instruction *after* the call). (LLVM may also emit `Indirect [FP + off]` locations; those are
+evaluated from the frame pointer chain directly.)
 
 On **x86_64**, `call` pushes an 8-byte return address, so if a thread is stopped inside the safepoint
 callee, the callee-entry `RSP` points at the return address and is **8 bytes lower** than the stackmap

@@ -111,8 +111,8 @@ fn dynamic_alloca_function_reports_unknown_stack_size() {
       .arg(format!("-mcpu={cpu}"))
       // Ensure statepoint roots are spilled to stack slots, not callee-saved registers (CSR).
       //
-      // The runtime currently relies on SP-relative `Indirect` root locations for stack walking
-      // (no register roots).
+      // The runtime currently relies on addressable `Indirect` spill slots relative to SP/FP for
+      // stack walking (no register roots).
       .arg("--fixup-allow-gcptr-in-csr=false")
       .arg("--fixup-max-csr-statepoints=0")
       .arg("-frame-pointer=all")

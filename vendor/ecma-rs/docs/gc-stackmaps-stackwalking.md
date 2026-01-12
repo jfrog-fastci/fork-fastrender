@@ -9,17 +9,17 @@ Two details matter for the runtime:
     The "instruction offset" in a stackmap record refers to the address of the instruction *after*
     the safepoint call (i.e. the callsite return address).
 
-2. **Most stack locations are `Indirect [SP + off]`**  
-    When LLVM needs a GC ref to be in memory at a safepoint, stackmaps typically describe it as
-    an indirect address relative to `SP`.
+2. **Most stack locations are `Indirect [SP/FP + off]`**  
+    When LLVM needs a GC ref to be in memory at a safepoint, stackmaps describe it as an indirect
+    stack slot relative to either `SP` or `FP` (most commonly `SP`).
 
-    Critically, this `SP` is the **caller frame's stack pointer at the return address**, not the
-    callee's current `SP`.
+    Critically, when the base register is `SP`, that `SP` value is the **caller frame's stack pointer
+    at the return address**, not the callee's current `SP`.
 
-    **x86_64 note:** `call` pushes an 8-byte return address. If a thread is stopped *inside* the
-    safepoint callee, the callee-entry `RSP` points at that return address and is therefore **8 bytes
-    lower** than the stackmap `SP` base. `runtime-native` captures/publishes the **post-call** SP for
-    stackmap evaluation (`sp = sp_entry + 8`).
+    **x86_64 note (SP-based locations):** `call` pushes an 8-byte return address. If a thread is
+    stopped *inside* the safepoint callee, the callee-entry `RSP` points at that return address and is
+    therefore **8 bytes lower** than the stackmap `SP` base. `runtime-native` captures/publishes the
+    **post-call** SP for stackmap evaluation (`sp = sp_entry + 8`).
 
 ## Implication: a GC must unwind
 
@@ -28,7 +28,8 @@ Stop-the-world GC commonly stops threads *inside* the safepoint slow path (e.g. 
 managed callsite):
 
 - The stackmap record we need is keyed by the **return address back into the caller**.
-- The stack slots we must scan are relative to the **caller**'s `SP` at that return address.
+- The stack slots we must scan are described as `Indirect [SP/FP + off]` relative to the **caller**'s
+  `SP`/`FP` at that return address.
 
 Therefore the runtime needs a reliable way to unwind a thread's stack and compute, per frame:
 
@@ -46,14 +47,14 @@ This only works if **all code that can run on GC-managed threads keeps frame poi
 
 ### Stackmap `stack_size` caveat (`Indirect [SP + off]` locations)
 
-LLVM stackmaps for `gc.statepoint` usually describe stack roots as:
+LLVM stackmaps for `gc.statepoint` often describe stack roots as:
 
 ```
 Indirect [SP + off]
 ```
 
-In LLVM StackMaps, `SP` is the **caller**'s stack pointer value at the stackmap record PC (the
-callsite return address), not the callee's current `SP`.
+In LLVM StackMaps, when the base register is `SP`, it is the **caller**'s stack pointer value at the
+stackmap record PC (the callsite return address), not the callee's current `SP`.
 
 The stackmap function record also includes a fixed `stack_size`, which is sometimes used to
 normalize SP-relative slots into FP-relative offsets when inspecting stackmaps offline. However,
@@ -61,7 +62,7 @@ normalize SP-relative slots into FP-relative offsets when inspecting stackmaps o
 pushes), so it is not reliable for reconstructing the exact callsite `SP` in general.
 
 `runtime-native` avoids this by deriving the callsite `SP` directly from the callee frame pointer
-when walking frames:
+when walking frames (and for `Indirect [FP + off]` roots, it can use the frame pointer directly):
 
 ```
 caller_sp_callsite = callee_fp + 16
