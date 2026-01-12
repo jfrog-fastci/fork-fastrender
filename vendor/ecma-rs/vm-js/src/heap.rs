@@ -1250,8 +1250,27 @@ impl Heap {
     Ok(())
   }
 
-  pub(crate) fn typed_array_kind(&self, obj: GcObject) -> Result<TypedArrayKind, VmError> {
-    Ok(self.get_typed_array(obj)?.kind)
+  fn require_typed_array(&self, obj: GcObject) -> Result<&JsTypedArray, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::TypedArray(a) => Ok(a),
+      _ => Err(VmError::TypeError(
+        "Heap typed array operation called on incompatible receiver",
+      )),
+    }
+  }
+
+  /// Returns the [`TypedArrayKind`] for a typed array object.
+  ///
+  /// This reads the typed array's internal slots directly (it does not consult JS-visible
+  /// properties) and therefore remains reliable even if user code mutates the typed array's
+  /// prototype chain.
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a typed array object.
+  pub fn typed_array_kind(&self, obj: GcObject) -> Result<TypedArrayKind, VmError> {
+    Ok(self.require_typed_array(obj)?.kind)
   }
 
   /// Returns `true` if `obj` is an **integer** typed array (Int8/Uint8/Uint8Clamped/Int16/Uint16/Int32/Uint32).
@@ -1329,32 +1348,68 @@ impl Heap {
     Ok(end > buf_len)
   }
 
-  pub(crate) fn typed_array_length(&self, obj: GcObject) -> Result<usize, VmError> {
-    let view = self.get_typed_array(obj)?;
+  /// Returns the typed array `length` in elements.
+  ///
+  /// If the view is out of bounds for its backing buffer (including detachment), this reports `0`
+  /// (mirroring `%TypedArray%.prototype.length` semantics).
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a typed array object.
+  pub fn typed_array_length(&self, obj: GcObject) -> Result<usize, VmError> {
+    let view = self.require_typed_array(obj)?;
     if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(0);
     }
     Ok(view.length)
   }
 
-  pub(crate) fn typed_array_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
-    let view = self.get_typed_array(obj)?;
-    if self.get_array_buffer(view.viewed_array_buffer)?.data.is_none() {
+  /// Returns the typed array `byteLength`.
+  ///
+  /// If the view is out of bounds for its backing buffer (including detachment), this reports `0`
+  /// (mirroring `%TypedArray%.prototype.byteLength` semantics).
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a typed array object.
+  pub fn typed_array_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
+    let view = self.require_typed_array(obj)?;
+    if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(0);
     }
     view.byte_length()
   }
 
-  pub(crate) fn typed_array_byte_offset(&self, obj: GcObject) -> Result<usize, VmError> {
-    let view = self.get_typed_array(obj)?;
-    if self.get_array_buffer(view.viewed_array_buffer)?.data.is_none() {
+  /// Returns the typed array `byteOffset`.
+  ///
+  /// If the view is out of bounds for its backing buffer (including detachment), this reports `0`
+  /// (mirroring `%TypedArray%.prototype.byteOffset` semantics).
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a typed array object.
+  pub fn typed_array_byte_offset(&self, obj: GcObject) -> Result<usize, VmError> {
+    let view = self.require_typed_array(obj)?;
+    if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(0);
     }
     Ok(view.byte_offset)
   }
 
-  pub(crate) fn typed_array_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {
-    Ok(self.get_typed_array(obj)?.viewed_array_buffer)
+  /// Returns the typed array `buffer`.
+  ///
+  /// Unlike `length`/`byteLength`/`byteOffset`, the backing `ArrayBuffer` handle is returned even
+  /// if the buffer is detached or the view is out of bounds.
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a typed array object.
+  pub fn typed_array_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {
+    Ok(self.require_typed_array(obj)?.viewed_array_buffer)
   }
 
   pub(crate) fn typed_array_get_element_value(
@@ -1372,26 +1427,75 @@ impl Heap {
     Ok(Some(self.typed_array_get_value(view, index)?))
   }
 
-  pub(crate) fn data_view_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
-    let view = self.get_data_view(obj)?;
+  fn require_data_view(&self, obj: GcObject) -> Result<&JsDataView, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::DataView(v) => Ok(v),
+      _ => Err(VmError::TypeError(
+        "Heap DataView operation called on incompatible receiver",
+      )),
+    }
+  }
+
+  fn data_view_is_out_of_bounds(&self, view: &JsDataView) -> Result<bool, VmError> {
+    // Detached buffers count as out-of-bounds.
     let buf = self.get_array_buffer(view.viewed_array_buffer)?;
-    if buf.data.is_none() {
+    let Some(data) = buf.data.as_deref() else {
+      return Ok(true);
+    };
+    let buf_len = data.len();
+
+    let end = match view.byte_offset.checked_add(view.byte_length) {
+      Some(end) => end,
+      None => return Ok(true),
+    };
+    Ok(end > buf_len)
+  }
+
+  /// Returns the DataView `byteLength`.
+  ///
+  /// If the view is out of bounds for its backing buffer (including detachment), this reports `0`
+  /// (mirroring `DataView.prototype.byteLength` semantics).
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a DataView object.
+  pub fn data_view_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
+    let view = self.require_data_view(obj)?;
+    if self.data_view_is_out_of_bounds(view)? {
       return Ok(0);
     }
     Ok(view.byte_length)
   }
 
-  pub(crate) fn data_view_byte_offset(&self, obj: GcObject) -> Result<usize, VmError> {
-    let view = self.get_data_view(obj)?;
-    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
-    if buf.data.is_none() {
+  /// Returns the DataView `byteOffset`.
+  ///
+  /// If the view is out of bounds for its backing buffer (including detachment), this reports `0`
+  /// (mirroring `DataView.prototype.byteOffset` semantics).
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a DataView object.
+  pub fn data_view_byte_offset(&self, obj: GcObject) -> Result<usize, VmError> {
+    let view = self.require_data_view(obj)?;
+    if self.data_view_is_out_of_bounds(view)? {
       return Ok(0);
     }
     Ok(view.byte_offset)
   }
 
-  pub(crate) fn data_view_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {
-    Ok(self.get_data_view(obj)?.viewed_array_buffer)
+  /// Returns the DataView `buffer`.
+  ///
+  /// The backing `ArrayBuffer` handle is returned even if the buffer is detached or the view is
+  /// out of bounds.
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a DataView object.
+  pub fn data_view_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {
+    Ok(self.require_data_view(obj)?.viewed_array_buffer)
   }
 
   /// Returns `true` if the typed array's `[[ByteOffset]] + [[ByteLength]]` does not fit within its
@@ -2082,20 +2186,47 @@ impl Heap {
     }
   }
 
-  pub fn regexp_original_source(&self, obj: GcObject) -> Result<GcString, VmError> {
-    Ok(self.get_regexp(obj)?.original_source)
+  fn require_regexp(&self, obj: GcObject) -> Result<&JsRegExp, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::RegExp(r) => Ok(r),
+      _ => Err(VmError::TypeError(
+        "Heap RegExp operation called on incompatible receiver",
+      )),
+    }
   }
 
+  /// Returns the `[[OriginalSource]]` internal slot for a RegExp object.
+  ///
+  /// This reads the internal slot directly (it does not consult JS-visible properties) and
+  /// therefore remains reliable even if user code mutates the RegExp's prototype chain.
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a RegExp object.
+  pub fn regexp_original_source(&self, obj: GcObject) -> Result<GcString, VmError> {
+    Ok(self.require_regexp(obj)?.original_source)
+  }
+
+  /// Returns the `[[OriginalFlags]]` internal slot for a RegExp object.
+  ///
+  /// This reads the internal slot directly (it does not consult JS-visible properties) and
+  /// therefore remains reliable even if user code mutates the RegExp's prototype chain.
+  ///
+  /// # Errors
+  ///
+  /// - Returns [`VmError::InvalidHandle`] for stale handles.
+  /// - Returns a catchable [`VmError::TypeError`] if `obj` is not a RegExp object.
   pub fn regexp_original_flags(&self, obj: GcObject) -> Result<GcString, VmError> {
-    Ok(self.get_regexp(obj)?.original_flags)
+    Ok(self.require_regexp(obj)?.original_flags)
   }
 
   pub fn regexp_flags(&self, obj: GcObject) -> Result<RegExpFlags, VmError> {
-    Ok(self.get_regexp(obj)?.flags)
+    Ok(self.require_regexp(obj)?.flags)
   }
 
   pub fn regexp_program(&self, obj: GcObject) -> Result<&RegExpProgram, VmError> {
-    Ok(&self.get_regexp(obj)?.program)
+    Ok(&self.require_regexp(obj)?.program)
   }
   fn get_env(&self, env: GcEnv) -> Result<&EnvRecord, VmError> {
     match self.get_heap_object(env.0)? {
@@ -7269,7 +7400,7 @@ impl Trace for JsArrayBuffer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TypedArrayKind {
+pub enum TypedArrayKind {
   Int8,
   Uint8,
   Uint8Clamped,
@@ -7282,7 +7413,7 @@ pub(crate) enum TypedArrayKind {
 }
 
 impl TypedArrayKind {
-  pub(crate) fn bytes_per_element(self) -> usize {
+  pub fn bytes_per_element(self) -> usize {
     match self {
       TypedArrayKind::Int8 | TypedArrayKind::Uint8 | TypedArrayKind::Uint8Clamped => 1,
       TypedArrayKind::Int16 | TypedArrayKind::Uint16 => 2,

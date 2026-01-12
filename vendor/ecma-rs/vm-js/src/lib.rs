@@ -220,6 +220,7 @@ pub use crate::heap::HeapLimits;
 pub use crate::heap::HostSlots;
 pub use crate::heap::PersistentRoot;
 pub use crate::heap::Scope;
+pub use crate::heap::TypedArrayKind;
 pub use crate::conversion_ops::ToPrimitiveHint;
 pub use crate::heap::MAX_PROTOTYPE_CHAIN;
 pub use crate::import_meta::create_import_meta_object;
