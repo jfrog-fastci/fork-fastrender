@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "module": 199,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "main.ts",
+        "name": "value",
+        "type": "number"
+      },
+      {
+        "file": "node_modules/pkg/dist/index.d.ts",
+        "name": "Thing",
+        "type": "any"
+      },
+      {
+        "file": "node_modules/pkg/dist/index.d.ts",
+        "name": "foo",
+        "type": "Thing"
+      }
+    ]
+  }
+}

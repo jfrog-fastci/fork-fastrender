@@ -2218,7 +2218,7 @@ fn collect_files_recursively(dir: &Path) -> Result<Vec<VirtualFile>> {
     .filter(|entry| entry.file_type().is_file())
   {
     let path = entry.path();
-    if !is_source_file(path) {
+    if !(is_source_file(path) || is_package_json(path)) {
       continue;
     }
     let relative_path = path
@@ -2243,6 +2243,13 @@ fn is_source_file(path: &Path) -> bool {
     return false;
   };
   is_source_root(file_name)
+}
+
+fn is_package_json(path: &Path) -> bool {
+  path
+    .file_name()
+    .and_then(|n| n.to_str())
+    .is_some_and(|name| name.eq_ignore_ascii_case("package.json"))
 }
 
 fn test_name_from_path(path: &Path) -> Result<String> {

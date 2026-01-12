@@ -110,5 +110,12 @@ pub(crate) fn resolve_module_specifier(
   }
   let resolved = resolved?;
   let resolved = normalize_ts_path(&resolved.to_string_lossy());
+  if resolved.ends_with("/package.json") {
+    // `typecheck-ts` does not treat JSON files as source inputs, but package
+    // metadata still needs to be readable by the resolver. Filter out
+    // `package.json` from resolved module specifiers so the checker never tries
+    // to parse it as TS/JS.
+    return None;
+  }
   files.resolve(&resolved)
 }
