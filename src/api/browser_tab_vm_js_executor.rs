@@ -45,6 +45,7 @@ struct PendingModuleEvaluation {
   module: ModuleId,
   promise: GcObject,
   promise_root: RootId,
+  turns_waited: usize,
 }
 
 fn console_stderr_enabled() -> bool {
@@ -371,6 +372,40 @@ impl VmJsBrowserTabExecutor {
         Ok(true)
       }
     }
+  }
+
+  fn module_tla_turn_limit(&self) -> usize {
+    // Bound how many event-loop turns we are willing to wait for a module top-level await promise
+    // to settle.
+    //
+    // This uses the JS execution options rather than per-call `RunLimits` so step-wise callers
+    // (e.g. `BrowserTab::tick_frame`) can drive the event loop incrementally without instantly
+    // forcing module TLA to fail.
+    self.js_execution_options.event_loop_run_limits.max_tasks
+  }
+
+  fn is_event_loop_quiescent(
+    &self,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+  ) -> bool {
+    // Treat the loop as "idle" only when:
+    // - we are not currently inside a task/microtask turn,
+    // - no tasks or microtasks are queued,
+    // - no timers remain scheduled (even if due in the future),
+    // - and no requestAnimationFrame callbacks remain queued.
+    if event_loop.currently_running_task().is_some() {
+      return false;
+    }
+    if !event_loop.is_idle() {
+      return false;
+    }
+    if event_loop.next_timer_due_time().is_some() {
+      return false;
+    }
+    if event_loop.has_pending_animation_frame_callbacks() {
+      return false;
+    }
+    true
   }
 
   fn abort_pending_module_evaluation(&mut self) {
@@ -1047,6 +1082,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
               module: entry_module,
               promise: promise_obj,
               promise_root,
+              turns_waited: 0,
             }))
           }
           _ => {
@@ -1256,6 +1292,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     document: &mut BrowserDocumentDom2,
     event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
+    let turn_limit = self.module_tla_turn_limit();
+    let is_quiescent = self.is_event_loop_quiescent(event_loop);
+    // Avoid double-counting when `after_microtask_checkpoint` is invoked from within an active task
+    // (e.g. `BrowserTabHost::perform_microtask_checkpoint_and_notify_executor`).
+    let increment_turns = event_loop.currently_running_task().is_none();
+
     if self.pending_module_evaluations.is_empty() {
       return Ok(());
     }
@@ -1269,9 +1311,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // dispatch error events (dispatch can allocate/GC).
     let mut completed: Vec<(HtmlScriptId, RootId, ModuleScriptEvaluationOutcome, Option<Value>)> =
       Vec::new();
+    let mut aborted_due_to_quiescent = false;
     {
-      let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
-      for (script_id, pending) in &self.pending_module_evaluations {
+      let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      for (script_id, pending) in &mut self.pending_module_evaluations {
         let state = match heap.promise_state(pending.promise) {
           Ok(state) => state,
           Err(err) => {
@@ -1308,8 +1351,65 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
               Some(reason),
             ));
           }
-          PromiseState::Pending => {}
+          PromiseState::Pending => {
+            if increment_turns {
+              pending.turns_waited = pending.turns_waited.saturating_add(1);
+            }
+
+            if pending.turns_waited > turn_limit {
+              // No more budget: abort the async module evaluation state so vm-js can release roots.
+              if let Some(modules_ptr) = vm.module_graph_ptr() {
+                // SAFETY: `module_graph_ptr` points at the boxed module graph stored in realm user
+                // data when module loading is enabled.
+                let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+                module_graph.abort_tla_evaluation(vm, heap, pending.module);
+              }
+              if let Some(diag) = diagnostics.as_ref() {
+                diag.record_js_exception(
+                  format!(
+                    "module top-level await did not settle within the configured task budget (turns_waited={}, limit={turn_limit})",
+                    pending.turns_waited
+                  ),
+                  None,
+                );
+              }
+              completed.push((
+                *script_id,
+                pending.promise_root,
+                ModuleScriptEvaluationOutcome::Rejected,
+                None,
+              ));
+              continue;
+            }
+
+            if is_quiescent {
+              // No tasks/timers/microtasks remain that could settle this promise; abort so we do not
+              // hang indefinitely.
+              if let Some(modules_ptr) = vm.module_graph_ptr() {
+                // SAFETY: `module_graph_ptr` points at the boxed module graph stored in realm user
+                // data when module loading is enabled.
+                let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+                module_graph.abort_tla_evaluation(vm, heap, pending.module);
+              }
+              aborted_due_to_quiescent = true;
+              completed.push((
+                *script_id,
+                pending.promise_root,
+                ModuleScriptEvaluationOutcome::Rejected,
+                None,
+              ));
+            }
+          }
         }
+      }
+    }
+
+    if aborted_due_to_quiescent {
+      if let Some(diag) = diagnostics.as_ref() {
+        diag.record_js_exception(
+          "module top-level await did not settle before the event loop became idle".to_string(),
+          None,
+        );
       }
     }
 

@@ -3834,14 +3834,6 @@ fn reset_event_loop_for_navigation(
   event_loop.reset_for_navigation(trace, queue_limits);
 }
 
-fn browser_tab_microtask_checkpoint_hook(
-  host: &mut BrowserTabHost,
-  event_loop: &mut EventLoop<BrowserTabHost>,
-) -> Result<()> {
-  let (executor, document) = (&mut host.executor, &mut host.document);
-  executor.after_microtask_checkpoint(document.as_mut(), event_loop)
-}
-
 impl CurrentScriptHost for BrowserTabHost {
   fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.current_script
@@ -4134,7 +4126,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4365,7 +4357,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4486,7 +4478,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4568,7 +4560,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4680,7 +4672,7 @@ impl BrowserTab {
     host.external_script_sources = Arc::clone(&external_script_sources);
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -5642,7 +5634,13 @@ impl BrowserTab {
             span.arg_str("message", &message);
           }
         },
-        |host, event_loop| host.discover_dynamic_scripts(event_loop),
+        |host, event_loop| {
+          {
+            let (executor, document) = (&mut host.executor, &mut host.document);
+            executor.after_microtask_checkpoint(document.as_mut(), event_loop)?;
+          }
+          host.discover_dynamic_scripts(event_loop)
+        },
       )? {
         RunUntilIdleOutcome::Idle
         | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
@@ -5674,7 +5672,13 @@ impl BrowserTab {
             span.arg_str("message", &message);
           }
         },
-        |host, event_loop| host.discover_dynamic_scripts(event_loop),
+        |host, event_loop| {
+          {
+            let (executor, document) = (&mut host.executor, &mut host.document);
+            executor.after_microtask_checkpoint(document.as_mut(), event_loop)?;
+          }
+          host.discover_dynamic_scripts(event_loop)
+        },
       )? {
         RunUntilIdleOutcome::Idle
         | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
@@ -5984,13 +5988,12 @@ mod tests {
     fn execute_module_script(
       &mut self,
       _script_id: HtmlScriptId,
-      script_text: &str,
-      spec: &ScriptElementSpec,
-      current_script: Option<NodeId>,
-      document: &mut BrowserDocumentDom2,
-      event_loop: &mut EventLoop<BrowserTabHost>,
+      _script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<ModuleScriptExecutionStatus> {
-      self.execute_classic_script(script_text, spec, current_script, document, event_loop)?;
       Ok(ModuleScriptExecutionStatus::Completed)
     }
 
@@ -6151,7 +6154,7 @@ mod tests {
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     let mut event_loop = EventLoop::new();
-    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
     Ok((host, event_loop))
   }
 
@@ -6749,7 +6752,7 @@ mod tests {
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     let mut event_loop = EventLoop::new();
-    event_loop.set_microtask_checkpoint_hook(Some(browser_tab_microtask_checkpoint_hook));
+    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
     Ok((host, event_loop))
   }
 
@@ -9036,9 +9039,10 @@ mod tests {
         counter.fetch_add(1, Ordering::SeqCst);
       }
     });
-    // Preserve the BrowserTab default hook behavior so JS executors are still notified after each
-    // checkpoint while tests collect metrics.
-    browser_tab_microtask_checkpoint_hook(host, event_loop)
+    // BrowserTab's default microtask checkpoint hook already notifies the executor; this hook only
+    // records metrics.
+    let _ = (host, event_loop);
+    Ok(())
   }
 
   struct MicrotaskCheckpointTestCounterGuard {
@@ -13182,7 +13186,7 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
-  fn module_top_level_await_that_never_settles_remains_pending_without_unsupported_diagnostic() -> Result<()> {
+  fn module_top_level_await_that_never_settles_errors_deterministically() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;
 
@@ -13217,6 +13221,16 @@ html, body { margin: 0; padding: 0; }
       .expect("diagnostics should be enabled")
       .clone()
       .into_inner();
+    assert!(
+      diagnostics
+        .js_exceptions
+        .iter()
+        .any(|exc| exc
+          .message
+          .contains("module top-level await did not settle before the event loop became idle")),
+      "expected async module evaluation failure to be reported, got js_exceptions={:?}",
+      diagnostics.js_exceptions
+    );
     assert!(
       !diagnostics
         .js_exceptions
