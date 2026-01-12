@@ -150,6 +150,32 @@ impl SyncHostHooks {
   fn teardown_jobs(&mut self, rt: &mut JsRuntime) {
     self.microtasks.teardown(rt);
   }
+
+  fn perform_microtask_checkpoint(&mut self, rt: &mut JsRuntime) -> Result<(), VmError> {
+    if !self.microtasks.begin_checkpoint() {
+      return Ok(());
+    }
+
+    let mut errors = Vec::new();
+    while let Some((_realm, job)) = self.microtasks.pop_front() {
+      if let Err(err) = job.run(rt, self) {
+        let is_termination = matches!(err, VmError::Termination(_));
+        errors.push(err);
+        if is_termination {
+          // Termination is a hard stop; discard remaining queued jobs so we don't leak persistent
+          // roots.
+          self.microtasks.teardown(rt);
+          break;
+        }
+      }
+    }
+    self.microtasks.end_checkpoint();
+
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+    Ok(())
+  }
 }
 
 impl VmHostHooks for SyncHostHooks {
@@ -256,6 +282,9 @@ fn dynamic_import_resolves_to_module_namespace() -> Result<(), VmError> {
   // Complete the dependency load and drain again. This should fulfill the dynamic import promise
   // with the module namespace.
   host.complete_load_for(&mut rt, "./dep.js");
+  // `ContinueDynamicImport` uses `PerformPromiseThen` even when module evaluation completes
+  // synchronously, so the import() promise is fulfilled via a microtask.
+  host.perform_microtask_checkpoint(&mut rt)?;
 
   let promise_value = rt
     .heap
@@ -350,13 +379,29 @@ fn dynamic_import_sync_host_completion_fulfills_promise() -> Result<(), VmError>
   host.register_module("./m.js", m);
   host.register_module("./dep.js", dep);
 
-  // Synchronous host completion should fulfill the dynamic import promise before `import()`
-  // returns.
+  // Synchronous host completion should still produce a pending import() promise; fulfillment is
+  // driven by Promise microtasks (`PerformPromiseThen`).
   let promise_value = rt.exec_script_with_hooks(&mut host, "import('./m.js')")?;
   let promise_root = rt.heap.add_root(promise_value)?;
 
   let Value::Object(promise_obj) = promise_value else {
     panic!("import() should evaluate to a Promise object");
+  };
+
+  // Even when the host completes module loading synchronously, `ContinueDynamicImport` settles the
+  // import() promise via a microtask (per `PerformPromiseThen`).
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+  host.perform_microtask_checkpoint(&mut rt)?;
+
+  let promise_value = rt
+    .heap
+    .get_root(promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(promise_obj) = promise_value else {
+    return Err(VmError::InvariantViolation(
+      "promise root should reference an object",
+    ));
   };
   assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
 
@@ -380,6 +425,80 @@ fn dynamic_import_sync_host_completion_fulfills_promise() -> Result<(), VmError>
   let y_value =
     scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
   assert!(matches!(y_value, Value::Number(n) if n == 1.0));
+
+  drop(scope);
+  rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
+fn dynamic_import_waits_for_top_level_await() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // A module that uses top-level await should produce a pending evaluation promise, and dynamic
+  // import should wait for it before resolving the import() promise.
+  let tla = rt
+    .modules_mut()
+    .add_module(SourceTextModuleRecord::parse("await Promise.resolve(); export const x = 1;")?);
+
+  let mut host = TestHostHooks::new();
+  host.register_module("./tla.js", tla);
+
+  let promise_value = rt.exec_script_with_hooks(&mut host, "import('./tla.js')")?;
+  let promise_root = rt.heap.add_root(promise_value)?;
+
+  let Value::Object(promise_obj) = promise_value else {
+    panic!("import() should evaluate to a Promise object");
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Pending);
+  assert_eq!(host.pending_count(), 1);
+
+  host.complete_load_for(&mut rt, "./tla.js");
+
+  let promise_value = rt
+    .heap
+    .get_root(promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(promise_obj) = promise_value else {
+    return Err(VmError::InvariantViolation(
+      "promise root should reference an object",
+    ));
+  };
+  assert_eq!(
+    rt.heap.promise_state(promise_obj)?,
+    PromiseState::Pending,
+    "import() promise should stay pending while module evaluation is pending (TLA)"
+  );
+
+  host.perform_microtask_checkpoint(&mut rt)?;
+
+  let promise_value = rt
+    .heap
+    .get_root(promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(promise_obj) = promise_value else {
+    return Err(VmError::InvariantViolation(
+      "promise root should reference an object",
+    ));
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let ns_value = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  let Value::Object(ns_obj) = ns_value else {
+    return Err(VmError::InvariantViolation(
+      "dynamic import promise should fulfill to a namespace object",
+    ));
+  };
+
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let x_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
 
   drop(scope);
   rt.heap.remove_root(promise_root);
@@ -416,6 +535,7 @@ fn dynamic_import_from_function_body_works() -> Result<(), VmError> {
 
   host.complete_load_for(&mut rt, "./m.js");
   host.complete_load_for(&mut rt, "./dep.js");
+  host.perform_microtask_checkpoint(&mut rt)?;
 
   let promise_value = rt
     .heap

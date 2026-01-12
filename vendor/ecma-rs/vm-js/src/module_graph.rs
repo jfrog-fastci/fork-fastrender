@@ -1,5 +1,6 @@
 use crate::execution_context::ModuleId;
 use crate::exec::{instantiate_module_decls, run_module, run_module_until_await, ModuleTlaStepResult};
+use crate::module_loading::DynamicImportState;
 use crate::module_record::ModuleNamespaceCache;
 use crate::module_record::ModuleStatus;
 use crate::module_record::PromiseCapabilityRoots;
@@ -13,6 +14,7 @@ use crate::{
 use crate::{Heap, VmHost, VmHostHooks};
 use core::mem;
 use std::sync::Arc;
+use std::collections::HashMap;
 
 const MAX_REJECTION_STACK_FRAMES: usize = 32;
 const MAX_REJECTION_STACK_BYTES: usize = 16 * 1024;
@@ -129,6 +131,9 @@ pub struct ModuleGraph {
   host_resolve: Vec<(ModuleRequest, ModuleId)>,
   tla_states: Vec<Option<TlaEvaluationState>>,
   global_lexical_env: Option<GcEnv>,
+  pending_dynamic_import_evaluations: HashMap<u32, PendingDynamicImportEvaluation>,
+  pending_dynamic_import_prev_graph: Option<*mut ModuleGraph>,
+  next_pending_dynamic_import_evaluation_id: u32,
   torn_down: bool,
 }
 
@@ -139,10 +144,19 @@ impl Default for ModuleGraph {
       host_resolve: Vec::new(),
       tla_states: Vec::new(),
       global_lexical_env: None,
+      pending_dynamic_import_evaluations: HashMap::new(),
+      pending_dynamic_import_prev_graph: None,
+      next_pending_dynamic_import_evaluation_id: 0,
       // A freshly-created graph does not own any persistent roots yet, and can be dropped safely.
       torn_down: true,
     }
   }
+}
+
+#[derive(Debug)]
+struct PendingDynamicImportEvaluation {
+  state: DynamicImportState,
+  module: ModuleId,
 }
 
 impl ModuleGraph {
@@ -152,6 +166,67 @@ impl ModuleGraph {
 
   pub fn set_global_lexical_env(&mut self, env: GcEnv) {
     self.global_lexical_env = Some(env);
+  }
+
+  pub(crate) fn insert_pending_dynamic_import_evaluation(
+    &mut self,
+    vm: &mut Vm,
+    state: DynamicImportState,
+    module: ModuleId,
+  ) -> Result<u32, VmError> {
+    // Ensure capacity first: installing the module graph pointer can happen only if insertion is
+    // guaranteed not to OOM, otherwise we might leave the VM pointing at this graph even though no
+    // continuation was registered.
+    self
+      .pending_dynamic_import_evaluations
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    // Promise jobs use `vm.module_graph_ptr()` to recover the active module graph when resolving
+    // dynamic `import()` promises. If this is the first pending dynamic import evaluation, install
+    // a pointer to this graph so callbacks can run even when the embedding did not permanently
+    // attach a module graph.
+    if self.pending_dynamic_import_evaluations.is_empty() {
+      self.pending_dynamic_import_prev_graph = vm.module_graph_ptr();
+      vm.set_module_graph(self);
+    }
+
+    let id = self.next_pending_dynamic_import_evaluation_id;
+    self.next_pending_dynamic_import_evaluation_id =
+      self.next_pending_dynamic_import_evaluation_id.wrapping_add(1);
+
+    self
+      .pending_dynamic_import_evaluations
+      .insert(id, PendingDynamicImportEvaluation { state, module });
+    self.torn_down = false;
+
+    Ok(id)
+  }
+
+  pub(crate) fn take_pending_dynamic_import_evaluation(
+    &mut self,
+    vm: &mut Vm,
+    id: u32,
+  ) -> Option<(DynamicImportState, ModuleId)> {
+    let entry = self.pending_dynamic_import_evaluations.remove(&id)?;
+
+    if self.pending_dynamic_import_evaluations.is_empty() {
+      match self.pending_dynamic_import_prev_graph.take() {
+        Some(ptr) => {
+          let self_ptr: *mut ModuleGraph = self;
+          if ptr == self_ptr {
+            vm.set_module_graph(self);
+          } else {
+            unsafe {
+              vm.set_module_graph(&mut *ptr);
+            }
+          }
+        }
+        None => vm.clear_module_graph(),
+      }
+    }
+
+    Some((entry.state, entry.module))
   }
 
   pub fn add_module(&mut self, record: SourceTextModuleRecord) -> ModuleId {
@@ -234,6 +309,12 @@ impl ModuleGraph {
       }
     }
 
+    // Tear down any pending dynamic import evaluation continuations so their promise capability
+    // roots do not leak across heap reuse.
+    for (_id, entry) in self.pending_dynamic_import_evaluations.drain() {
+      entry.state.teardown_roots(heap);
+    }
+
     // Remove per-module persistent roots.
     for (idx, module) in self.modules.iter_mut().enumerate() {
       if let Some(ns) = module.namespace.take() {
@@ -255,8 +336,18 @@ impl ModuleGraph {
     }
 
     // Ensure the VM does not retain a raw pointer to this graph after teardown.
-    if vm.module_graph_ptr() == Some(self as *mut ModuleGraph) {
-      vm.clear_module_graph();
+    let self_ptr: *mut ModuleGraph = self;
+    if vm.module_graph_ptr() == Some(self_ptr) {
+      match self.pending_dynamic_import_prev_graph.take() {
+        Some(ptr) if ptr != self_ptr => unsafe {
+          vm.set_module_graph(&mut *ptr);
+        },
+        _ => vm.clear_module_graph(),
+      }
+    } else {
+      // If the module graph pointer already changed, drop any saved pointer to avoid retaining a
+      // stale raw pointer unnecessarily.
+      self.pending_dynamic_import_prev_graph = None;
     }
   }
 

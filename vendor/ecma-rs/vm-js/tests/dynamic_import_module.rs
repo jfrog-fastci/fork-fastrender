@@ -107,6 +107,80 @@ impl TestHostHooks {
     let mut ctx = Ctx { vm, heap };
     self.microtasks.teardown(&mut ctx);
   }
+
+  fn perform_microtask_checkpoint(&mut self, vm: &mut Vm, heap: &mut Heap) -> Result<(), VmError> {
+    if !self.microtasks.begin_checkpoint() {
+      return Ok(());
+    }
+
+    struct Ctx<'a> {
+      vm: &'a mut Vm,
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for Ctx<'_> {
+      fn call(
+        &mut self,
+        host: &mut dyn VmHostHooks,
+        callee: Value,
+        this: Value,
+        args: &[Value],
+      ) -> Result<Value, VmError> {
+        let mut scope = self.heap.scope();
+        self.vm.call_with_host(&mut scope, host, callee, this, args)
+      }
+
+      fn construct(
+        &mut self,
+        host: &mut dyn VmHostHooks,
+        callee: Value,
+        args: &[Value],
+        new_target: Value,
+      ) -> Result<Value, VmError> {
+        let mut scope = self.heap.scope();
+        self
+          .vm
+          .construct_with_host(&mut scope, host, callee, args, new_target)
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: vm_js::RootId) {
+        self.heap.remove_root(id)
+      }
+    }
+
+    let mut ctx = Ctx { vm, heap };
+
+    let mut first_err: Option<VmError> = None;
+    let mut termination_err: Option<VmError> = None;
+    while let Some((_realm, job)) = self.microtasks.pop_front() {
+      let job_result = job.run(&mut ctx, self);
+      match job_result {
+        Ok(()) => {}
+        Err(e @ VmError::Termination(_)) => {
+          termination_err = Some(e);
+          break;
+        }
+        Err(e) => {
+          if first_err.is_none() {
+            first_err = Some(e);
+          }
+        }
+      }
+    }
+
+    if termination_err.is_some() {
+      self.microtasks.teardown(&mut ctx);
+    }
+
+    self.microtasks.end_checkpoint();
+    match termination_err {
+      Some(e) => Err(e),
+      None => first_err.map_or(Ok(()), Err),
+    }
+  }
 }
 
 impl VmHostHooks for TestHostHooks {
@@ -198,6 +272,9 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
   // Complete the dynamic import module loads.
   host_hooks.complete_load_for(&mut vm, &mut heap, &mut modules, "./m.js")?;
   host_hooks.complete_load_for(&mut vm, &mut heap, &mut modules, "./dep.js")?;
+  // `ContinueDynamicImport` settles the import() promise via a Promise reaction job, so drain host
+  // microtasks before observing the final promise state.
+  host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
 
   // The promise stored in `p` should now be fulfilled to the imported module namespace.
   let mut scope = heap.scope();
