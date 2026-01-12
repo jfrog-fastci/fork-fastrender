@@ -3822,6 +3822,12 @@ pub struct PromiseHeader {
 #[repr(transparent)]
 pub struct PromiseRef(pub *mut PromiseHeader);
 
+#[repr(C)]
+pub struct PromiseLayout {
+  pub size: usize,
+  pub align: usize,
+}
+
 /// Thread kind enum used by `rt_thread_register`.
 #[repr(C)]
 #[allow(non_camel_case_types)]
@@ -3932,6 +3938,33 @@ pub fn rt_parallel_for(
 );
 // `rt_parallel_for` uses adaptive chunking; tune minimum iterations per task via
 // `RT_PAR_FOR_MIN_GRAIN` (default: 1024).
+
+// Rooted scheduling variants (data is a GC-managed object base pointer / handle).
+pub fn rt_parallel_spawn_rooted(task: extern "C" fn(*mut u8), data: GcPtr) -> TaskId;
+pub fn rt_parallel_spawn_rooted_h(task: extern "C" fn(*mut u8), data: GcHandle) -> TaskId;
+pub fn rt_parallel_for_rooted(
+  start: usize,
+  end: usize,
+  body: extern "C" fn(usize, *mut u8),
+  data: GcPtr,
+);
+
+// Detached parallel work returning a promise with an out-of-line payload buffer.
+pub fn rt_parallel_spawn_promise(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+  promise_layout: PromiseLayout,
+) -> PromiseRef;
+pub fn rt_parallel_spawn_promise_rooted(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: GcPtr,
+  promise_layout: PromiseLayout,
+) -> PromiseRef;
+pub fn rt_parallel_spawn_promise_rooted_h(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: GcHandle,
+  promise_layout: PromiseLayout,
+) -> PromiseRef;
 
 // Async
 // NOTE: GC is moving/compacting (Immix + opportunistic copying).
