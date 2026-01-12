@@ -28,13 +28,24 @@ use std::sync::{Mutex, OnceLock};
 use vm_js::{
   new_promise_capability_with_host_and_hooks, new_type_error_object,
   perform_promise_then_with_host_and_hooks, promise_resolve_with_host_and_hooks, GcObject, Heap,
-  Intrinsics, NativeConstructId, NativeFunctionId, PromiseCapability, PropertyDescriptor,
+  HostSlots, Intrinsics, NativeConstructId, NativeFunctionId, PromiseCapability, PropertyDescriptor,
   PropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
   WeakGcObject,
 };
 
 const STREAM_REALM_ID_SLOT: usize = 0;
 const READER_STREAM_REF_KEY: &str = "__fastrender_readable_stream_reader_stream_ref";
+
+// Brand stream wrappers as platform objects via HostSlots so structuredClone rejects them with
+// DataCloneError (streams are not structured-cloneable without special transfer support).
+const READABLE_STREAM_HOST_TAG: u64 = 0x5245_4144_5354_524D; // "READSTRM"
+const READABLE_STREAM_DEFAULT_READER_HOST_TAG: u64 = 0x5253_5245_4144_4552; // "RSREADER"
+const READABLE_STREAM_DEFAULT_CONTROLLER_HOST_TAG: u64 = 0x5253_434E_5452_4C52; // "RSCNTRLR"
+const WRITABLE_STREAM_HOST_TAG: u64 = 0x5752_4954_5354_524D; // "WRITSTRM"
+const WRITABLE_STREAM_DEFAULT_WRITER_HOST_TAG: u64 = 0x5753_5752_4954_4552; // "WSWRITER"
+const TRANSFORM_STREAM_HOST_TAG: u64 = 0x5452_4E53_5354_524D; // "TRNSSTRM"
+const TRANSFORM_STREAM_DEFAULT_CONTROLLER_HOST_TAG: u64 = 0x5453_434E_5452_4C52; // "TSCNTRLR"
+const TRANSFORM_STREAM_SINK_HOST_TAG: u64 = 0x5453_5349_4E4B_5F5F; // "TSSINK__"
 
 /// Maximum bytes returned by a single `reader.read()` call.
 ///
@@ -422,6 +433,13 @@ fn readable_stream_ctor_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: READABLE_STREAM_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   let underlying_source = args.get(0).copied().unwrap_or(Value::Undefined);
 
@@ -471,6 +489,13 @@ fn readable_stream_ctor_construct(
     scope
       .heap_mut()
       .object_set_prototype(controller_obj, Some(controller_proto))?;
+    scope.heap_mut().object_set_host_slots(
+      controller_obj,
+      HostSlots {
+        a: READABLE_STREAM_DEFAULT_CONTROLLER_HOST_TAG,
+        b: 0,
+      },
+    )?;
 
     set_data_prop(
       scope,
@@ -507,9 +532,12 @@ fn readable_stream_get_reader_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(stream_obj) = this else {
-    return Err(VmError::TypeError("ReadableStream.getReader: illegal invocation"));
-  };
+  let stream_obj = require_host_tag(
+    scope,
+    this,
+    READABLE_STREAM_HOST_TAG,
+    "ReadableStream.getReader: illegal invocation",
+  )?;
 
   let reader_proto = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
@@ -528,6 +556,13 @@ fn readable_stream_get_reader_native(
   scope
     .heap_mut()
     .object_set_prototype(reader_obj, Some(reader_proto))?;
+  scope.heap_mut().object_set_host_slots(
+    reader_obj,
+    HostSlots {
+      a: READABLE_STREAM_DEFAULT_READER_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Keep the stream alive as long as the reader is alive (the spec stores this as an internal
   // slot, which should be a strong reference).
@@ -561,9 +596,12 @@ fn readable_stream_cancel_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(stream_obj) = this else {
-    return Err(VmError::TypeError("ReadableStream.cancel: illegal invocation"));
-  };
+  let stream_obj = require_host_tag(
+    scope,
+    this,
+    READABLE_STREAM_HOST_TAG,
+    "ReadableStream.cancel: illegal invocation",
+  )?;
 
   // Always return a Promise (spec shape), even though we resolve synchronously.
   let cap: PromiseCapability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
@@ -623,9 +661,12 @@ fn readable_stream_locked_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(stream_obj) = this else {
-    return Err(VmError::TypeError("ReadableStream.locked: illegal invocation"));
-  };
+  let stream_obj = require_host_tag(
+    scope,
+    this,
+    READABLE_STREAM_HOST_TAG,
+    "ReadableStream.locked: illegal invocation",
+  )?;
 
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
@@ -1404,11 +1445,12 @@ fn reader_read_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(reader_obj) = this else {
-    return Err(VmError::TypeError(
-      "ReadableStreamDefaultReader.read: illegal invocation",
-    ));
-  };
+  let reader_obj = require_host_tag(
+    scope,
+    this,
+    READABLE_STREAM_DEFAULT_READER_HOST_TAG,
+    "ReadableStreamDefaultReader.read: illegal invocation",
+  )?;
 
   // Always return a Promise (spec shape), even though we resolve synchronously.
   let cap: PromiseCapability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
@@ -1571,11 +1613,12 @@ fn reader_release_lock_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(reader_obj) = this else {
-    return Err(VmError::TypeError(
-      "ReadableStreamDefaultReader.releaseLock: illegal invocation",
-    ));
-  };
+  let reader_obj = require_host_tag(
+    scope,
+    this,
+    READABLE_STREAM_DEFAULT_READER_HOST_TAG,
+    "ReadableStreamDefaultReader.releaseLock: illegal invocation",
+  )?;
 
   let pending = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
@@ -1627,11 +1670,12 @@ fn reader_cancel_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(reader_obj) = this else {
-    return Err(VmError::TypeError(
-      "ReadableStreamDefaultReader.cancel: illegal invocation",
-    ));
-  };
+  let reader_obj = require_host_tag(
+    scope,
+    this,
+    READABLE_STREAM_DEFAULT_READER_HOST_TAG,
+    "ReadableStreamDefaultReader.cancel: illegal invocation",
+  )?;
 
   let cap: PromiseCapability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
   let promise = scope.push_root(cap.promise)?;
@@ -1710,6 +1754,13 @@ fn create_readable_byte_stream_dynamic(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: READABLE_STREAM_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state
@@ -1898,6 +1949,13 @@ pub(crate) fn create_readable_byte_stream_from_bytes(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: READABLE_STREAM_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state
@@ -1921,6 +1979,13 @@ pub(crate) fn create_readable_byte_stream_lazy(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: READABLE_STREAM_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state.streams.insert(
@@ -1971,57 +2036,63 @@ pub(crate) fn is_readable_stream_object(vm: &Vm, heap: &Heap, obj: GcObject) -> 
   false
 }
 
-fn require_object(this: Value, err: &'static str) -> Result<GcObject, VmError> {
-  match this {
-    Value::Object(obj) => Ok(obj),
-    _ => Err(VmError::TypeError(err)),
+fn require_host_tag(
+  scope: &Scope<'_>,
+  this: Value,
+  tag: u64,
+  err: &'static str,
+) -> Result<GcObject, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(err));
+  };
+  let slots = scope
+    .heap()
+    .object_host_slots(obj)?
+    .ok_or(VmError::TypeError(err))?;
+  if slots.a != tag {
+    return Err(VmError::TypeError(err));
   }
+  Ok(obj)
 }
 
-fn require_readable_stream_controller(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
-  let obj = require_object(this, "ReadableStreamDefaultController: illegal invocation")?;
-  match get_data_prop(scope, obj, READABLE_STREAM_CONTROLLER_BRAND_KEY)? {
-    Value::Bool(true) => Ok(obj),
-    _ => Err(VmError::TypeError(
-      "ReadableStreamDefaultController: illegal invocation",
-    )),
-  }
+fn require_readable_stream_controller(scope: &Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  require_host_tag(
+    scope,
+    this,
+    READABLE_STREAM_DEFAULT_CONTROLLER_HOST_TAG,
+    "ReadableStreamDefaultController: illegal invocation",
+  )
 }
 
-fn require_writable_stream(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
-  let obj = require_object(this, "WritableStream: illegal invocation")?;
-  match get_data_prop(scope, obj, WRITABLE_STREAM_BRAND_KEY)? {
-    Value::Bool(true) => Ok(obj),
-    _ => Err(VmError::TypeError("WritableStream: illegal invocation")),
-  }
+fn require_writable_stream(scope: &Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  require_host_tag(scope, this, WRITABLE_STREAM_HOST_TAG, "WritableStream: illegal invocation")
 }
 
-fn require_writable_stream_writer(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
-  let obj = require_object(this, "WritableStreamDefaultWriter: illegal invocation")?;
-  match get_data_prop(scope, obj, WRITABLE_STREAM_WRITER_BRAND_KEY)? {
-    Value::Bool(true) => Ok(obj),
-    _ => Err(VmError::TypeError(
-      "WritableStreamDefaultWriter: illegal invocation",
-    )),
-  }
+fn require_writable_stream_writer(scope: &Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  require_host_tag(
+    scope,
+    this,
+    WRITABLE_STREAM_DEFAULT_WRITER_HOST_TAG,
+    "WritableStreamDefaultWriter: illegal invocation",
+  )
 }
 
-fn require_transform_controller(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
-  let obj = require_object(this, "TransformStreamDefaultController: illegal invocation")?;
-  match get_data_prop(scope, obj, TRANSFORM_CONTROLLER_BRAND_KEY)? {
-    Value::Bool(true) => Ok(obj),
-    _ => Err(VmError::TypeError(
-      "TransformStreamDefaultController: illegal invocation",
-    )),
-  }
+fn require_transform_controller(scope: &Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  require_host_tag(
+    scope,
+    this,
+    TRANSFORM_STREAM_DEFAULT_CONTROLLER_HOST_TAG,
+    "TransformStreamDefaultController: illegal invocation",
+  )
 }
 
-fn require_transform_sink(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
-  let obj = require_object(this, "TransformStream sink: illegal invocation")?;
-  match get_data_prop(scope, obj, TRANSFORM_SINK_BRAND_KEY)? {
-    Value::Bool(true) => Ok(obj),
-    _ => Err(VmError::TypeError("TransformStream sink: illegal invocation")),
-  }
+fn require_transform_sink(scope: &Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  require_host_tag(
+    scope,
+    this,
+    TRANSFORM_STREAM_SINK_HOST_TAG,
+    "TransformStream sink: illegal invocation",
+  )
 }
 
 fn vm_error_to_rejection_value(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> Result<Value, VmError> {
@@ -2066,6 +2137,13 @@ fn create_writable_stream_from_sink(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: WRITABLE_STREAM_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(scope, obj, WRITABLE_STREAM_BRAND_KEY, Value::Bool(true), false)?;
   set_data_prop(scope, obj, WRITABLE_STREAM_SINK_KEY, Value::Object(sink_obj), false)?;
@@ -2121,6 +2199,13 @@ fn writable_stream_ctor_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: WRITABLE_STREAM_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(scope, obj, WRITABLE_STREAM_BRAND_KEY, Value::Bool(true), false)?;
 
@@ -2199,6 +2284,13 @@ fn writable_stream_get_writer_native(
   scope
     .heap_mut()
     .object_set_prototype(writer_obj, Some(writer_proto))?;
+  scope.heap_mut().object_set_host_slots(
+    writer_obj,
+    HostSlots {
+      a: WRITABLE_STREAM_DEFAULT_WRITER_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(
     scope,
@@ -2711,6 +2803,13 @@ fn transform_stream_ctor_construct(
   let ts_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(ts_obj))?;
   scope.heap_mut().object_set_prototype(ts_obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    ts_obj,
+    HostSlots {
+      a: TRANSFORM_STREAM_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   // Allocate `readable` and the internal controller for enqueuing.
   let readable = create_readable_byte_stream_dynamic(vm, scope, callee)?;
@@ -2776,6 +2875,13 @@ fn transform_stream_ctor_construct(
   scope
     .heap_mut()
     .object_set_prototype(controller_obj, Some(controller_proto))?;
+  scope.heap_mut().object_set_host_slots(
+    controller_obj,
+    HostSlots {
+      a: TRANSFORM_STREAM_DEFAULT_CONTROLLER_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(
     scope,
@@ -2820,6 +2926,13 @@ fn transform_stream_ctor_construct(
   scope
     .heap_mut()
     .object_set_prototype(sink_obj, Some(intr.object_prototype()))?;
+  scope.heap_mut().object_set_host_slots(
+    sink_obj,
+    HostSlots {
+      a: TRANSFORM_STREAM_SINK_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(
     scope,

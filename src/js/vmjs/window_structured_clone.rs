@@ -2288,6 +2288,33 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_rejects_streams_and_readers() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let stream = realm.exec_script(
+      "try { structuredClone(new ReadableStream()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, stream), "DataCloneError");
+
+    let reader = realm.exec_script(
+      "try { structuredClone(new ReadableStream().getReader()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, reader), "DataCloneError");
+
+    let controller = realm.exec_script(
+      "(() => {\
+         let controller = null;\
+         new ReadableStream({ start(c) { controller = c; } });\
+         try { structuredClone(controller); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, controller), "DataCloneError");
+
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_rejects_window_realm_platform_objects() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
