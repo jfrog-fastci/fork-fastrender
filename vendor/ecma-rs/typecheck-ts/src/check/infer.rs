@@ -258,7 +258,29 @@ pub fn infer_type_arguments_from_contextual_signature(
     .collect();
 
   let mut ctx = InferenceContext::new(Arc::clone(store), relate, decls);
+  // TypeScript uses contextual signature instantiation in two "dual" cases:
+  //
+  // 1) The contextual type is generic and the actual function expression is not:
+  //      const f: <T>(x: T) => T = x => 1; // T inferred as number
+  //
+  // 2) The actual value is generic and the contextual type is not:
+  //      const id = <T>(x: T) => x;
+  //      const f: (x: number) => number = id; // T inferred as number
+  //
+  // `type_params` selects which type parameters we want to infer. We apply
+  // constraints in both directions; only occurrences of those type parameters
+  // contribute bounds.
   ctx.constrain_signature(contextual_sig, actual_sig, Variance::Covariant);
+
+  // Infer substitutions for type parameters declared on the *actual* signature
+  // such that it becomes assignable to the contextual signature.
+  //
+  // Assignability for function signatures is contravariant in parameter types
+  // and covariant in return types. `constrain_signature` flips the provided
+  // variance for parameters, so we pass `Contravariant` here to get covariant
+  // constraints for parameters (lower bounds) and contravariant constraints for
+  // returns (upper bounds).
+  ctx.constrain_signature(actual_sig, contextual_sig, Variance::Contravariant);
   let order: Vec<TypeParamId> = type_params.iter().map(|tp| tp.id).collect();
   ctx.solve(&order)
 }

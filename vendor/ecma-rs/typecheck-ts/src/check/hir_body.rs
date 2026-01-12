@@ -44,7 +44,7 @@ use super::flow_narrow::{
 
 use super::caches::BodyCaches;
 use super::expr::{resolve_call, resolve_construct};
-use super::infer::infer_type_arguments_for_call;
+use super::infer::{infer_type_arguments_for_call, infer_type_arguments_from_contextual_signature};
 use super::instantiate::{InstantiationCache, Substituter};
 use super::overload::{
   callable_signatures, callable_signatures_with_expander, construct_signatures_with_expander,
@@ -2154,10 +2154,7 @@ impl<'a> Checker<'a> {
 
   fn contextual_signature(&self) -> Option<Signature> {
     let ty = self.contextual_fn_ty?;
-    match self.store.type_kind(ty) {
-      TypeKind::Callable { overloads } => overloads.first().map(|sig| self.store.signature(*sig)),
-      _ => None,
-    }
+    self.first_callable_signature(ty)
   }
 
   fn check_stmt_list(&mut self, stmts: &[Node<Stmt>]) {
@@ -6603,11 +6600,56 @@ impl<'a> Checker<'a> {
       .as_ref()
       .map(|t| self.lowerer.lower_type_expr(t))
       .unwrap_or(self.store.primitive_ids().unknown);
-    let ret = if func.stx.async_ {
+    let mut ret = if func.stx.async_ {
       self.async_function_return_type(ret)
     } else {
       ret
     };
+
+    // When no explicit return type is provided, infer it from the function
+    // body. This is particularly important for generic arrow functions like:
+    //
+    //   const id = <T>(x: T) => x;
+    //
+    // where the return type should be `T`, not `unknown`.
+    if func.stx.return_type.is_none() && func.stx.body.is_some() {
+      let saved_expected = self.expected_return;
+      let saved_async = self.in_async_function;
+      let saved_returns = std::mem::take(&mut self.return_types);
+
+      let pushed_scope = Scope::default();
+      let pushed_type_param_scope = !type_params.is_empty();
+      if pushed_type_param_scope {
+        self.type_param_scopes.push(type_params.clone());
+      }
+
+      self.in_async_function = func.stx.async_;
+      self.expected_return = None;
+      self.scopes.push(pushed_scope);
+      self.bind_params(func, &type_params, None);
+      self.check_function_body(func);
+      self.scopes.pop();
+
+      let prim = self.store.primitive_ids();
+      let inferred_ret = if self.return_types.is_empty() {
+        prim.void
+      } else {
+        self.store.union(self.return_types.clone())
+      };
+
+      self.return_types = saved_returns;
+      self.expected_return = saved_expected;
+      self.in_async_function = saved_async;
+      if pushed_type_param_scope {
+        self.type_param_scopes.pop();
+      }
+
+      ret = if func.stx.async_ {
+        self.async_function_return_type(inferred_ret)
+      } else {
+        inferred_ret
+      };
+    }
     if pushed_type_params {
       self.lowerer.pop_type_param_scope();
     }
@@ -7049,6 +7091,61 @@ impl<'a> Checker<'a> {
     if self.relate.is_assignable(src, dst) && self.variance_allows_assignability(src, dst) {
       return;
     }
+
+    // `tsc` permits assigning a generic function value to a non-generic function
+    // type by contextually instantiating the generic signature from the
+    // destination signature:
+    //
+    //   const id = <T>(x: T) => x;
+    //   const f: (x: number) => number = id;
+    //
+    // The low-level relation engine rejects signatures with differing type
+    // parameter counts, so we opportunistically perform contextual
+    // instantiation here and retry the assignability check.
+    if let Some(contextual_sig) = self.first_callable_signature(dst) {
+      if contextual_sig.type_params.is_empty() {
+        let src = self.expand_callable_type(src);
+        let candidate_sigs =
+          callable_signatures_with_expander(self.store.as_ref(), src, self.ref_expander);
+        for sig_id in candidate_sigs {
+          let actual_sig = self.store.signature(sig_id);
+          if actual_sig.type_params.is_empty() {
+            continue;
+          }
+
+          let inference = infer_type_arguments_from_contextual_signature(
+            &self.store,
+            &self.relate,
+            &actual_sig.type_params,
+            &contextual_sig,
+            &actual_sig,
+          );
+          if !inference.diagnostics.is_empty() {
+            continue;
+          }
+
+          let instantiated_sig_id = self.instantiation_cache.instantiate_signature(
+            &self.store,
+            sig_id,
+            &actual_sig,
+            &inference.substitutions,
+          );
+          let mut instantiated_sig = self.store.signature(instantiated_sig_id);
+          instantiated_sig.type_params.clear();
+          let instantiated_sig_id = self.store.intern_signature(instantiated_sig);
+          let instantiated_callable = self.store.intern_type(TypeKind::Callable {
+            overloads: vec![instantiated_sig_id],
+          });
+
+          if self.relate.is_assignable(instantiated_callable, dst)
+            && self.variance_allows_assignability(instantiated_callable, dst)
+          {
+            return;
+          }
+        }
+      }
+    }
+
     if std::env::var("DEBUG_TYPE_MISMATCH").is_ok() {
       eprintln!(
         "DEBUG_TYPE_MISMATCH src={} {:?} dst={} {:?}",
