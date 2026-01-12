@@ -6277,9 +6277,16 @@ impl<'a> Checker<'a> {
           .store
           .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(num.stx.value.0))),
       ),
-      AstExpr::LitBigInt(bigint) => Some(self.store.intern_type(TypeKind::BigIntLiteral(
-        bigint.stx.value.clone(),
-      ))),
+      AstExpr::LitBigInt(bigint) => {
+        // `parse-js` stores bigint literals as canonical decimal strings (without the trailing `n`).
+        // `types-ts-interned` represents bigint literal types as `num_bigint::BigInt`.
+        let parsed = bigint
+          .stx
+          .value
+          .parse::<BigInt>()
+          .unwrap_or_else(|_| BigInt::from(0u8));
+        Some(self.store.intern_type(TypeKind::BigIntLiteral(parsed)))
+      }
       AstExpr::LitBool(b) => Some(self.store.intern_type(TypeKind::BooleanLiteral(b.stx.value))),
       AstExpr::LitNull(_) => Some(prim.null),
       AstExpr::TypeAssertion(assert) if assert.stx.const_assertion => {
