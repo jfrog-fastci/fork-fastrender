@@ -77,7 +77,13 @@ reason = "TODO(multi-document): implement Document.adoptNode (cross-document ado
 [[expectations]]
 id = "dom/cross-document-appendchild-adopts.window.js"
 status = "xfail"
-reason = "TODO(multi-document): implement cross-document insertion adoption (appendChild should adopt foreign nodes)."
+reason = "TODO(multi-document): implement DOMImplementation.createHTMLDocument so the test can construct a foreign document (vm-js insertion adoption is implemented)."
+
+[[expectations]]
+id = "dom/cross-document-insertadjacentelement-adopts.window.js"
+backend = "quickjs"
+status = "xfail"
+reason = "Element.insertAdjacentElement is not implemented in the QuickJS WebIDL runtime yet (vm-js shim supports it)."
 
 [[expectations]]
 id = "dom/range_basics.window.js"
