@@ -270,3 +270,60 @@ fn generator_do_while_yield_in_condition() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_yield_in_body() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(xs) {
+        for (var x of xs) { yield x; }
+        return 0;
+      }
+      var it = g([1, 2, 3]);
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      var r4 = it.next();
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.value === 3 && r3.done === false &&
+      r4.value === 0 && r4.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_labelled_continue_targets_outer_loop() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var x = 0;
+        outer: while (x < 2) {
+          x = x + 1;
+          var y = 0;
+          while (y < 2) {
+            y = y + 1;
+            yield x * 10 + y;
+            continue outer;
+          }
+        }
+        return x;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      r1.value === 11 && r1.done === false &&
+      r2.value === 21 && r2.done === false &&
+      r3.value === 2 && r3.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
