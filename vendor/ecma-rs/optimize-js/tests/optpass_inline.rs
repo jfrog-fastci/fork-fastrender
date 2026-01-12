@@ -336,6 +336,10 @@ fn inlines_recursive_callees_once() {
     matches!(callee, Arg::Fn(1)),
     "expected the remaining call to target the recursive callee, got {insts:?}"
   );
+  assert!(
+    calls.iter().all(|call| call.tgts.is_empty()),
+    "expected call result to become unused after inlining, got {insts:?}"
+  );
 }
 
 #[cfg(feature = "typed")]

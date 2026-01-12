@@ -1,44 +1,182 @@
+use crate::analysis::alias::{self, AbstractLoc};
+use crate::analysis::escape::{self, EscapeResult, EscapeState};
+use crate::analysis::ownership::{self, OwnershipResult};
 use crate::cfg::cfg::Cfg;
-use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, Purity};
+use crate::il::inst::{Arg, BinOp, Const, FieldRef, Inst, InstTyp, OwnershipState, Purity};
 use crate::opt::PassResult;
 use crate::FnId;
-use std::collections::{BTreeMap, BTreeSet};
+use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct FieldKey {
+  alloc: AbstractLoc,
+  prop: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FieldState {
+  /// Allocations that may be reachable from unknown code.
+  ///
+  /// When an allocation is in this set, any unknown call may mutate its fields even if the
+  /// allocation is not passed directly as an argument (e.g. via global/foreign storage).
+  escaped: BTreeSet<AbstractLoc>,
+  /// Known `alloc[prop] = FnId` facts at the current program point.
+  ///
+  /// We only track fields that have exactly one write (the initial definition). If the same
+  /// field is written again, we conservatively stop tracking it to avoid devirtualizing through
+  /// overwritten properties.
+  fields: BTreeMap<FieldKey, FnId>,
+  /// Fields that are known to have been overwritten (multiple writes or unknown write value).
+  overwritten: BTreeSet<FieldKey>,
+}
+
+impl FieldState {
+  fn new() -> Self {
+    Self::default()
+  }
+}
 
 #[derive(Clone, Debug)]
-enum VarDef {
+enum VarFnDef {
   Alias(u32),
   Fn(FnId),
   Phi(Vec<Arg>),
-  GetProp { obj: Arg, key: Arg },
-  /// Object literal allocation via the `__optimize_js_object` marker.
-  ObjectLit { fields: BTreeMap<String, Arg> },
   Unknown,
 }
 
-#[derive(Clone, Debug)]
-struct ObjectInfo {
-  fields: BTreeMap<String, Arg>,
-  overwritten_keys: BTreeSet<String>,
-  unsafe_: bool,
+fn escape_of(result: &EscapeResult, var: u32) -> EscapeState {
+  result.get(&var).copied().unwrap_or(EscapeState::NoEscape)
 }
 
-fn is_object_literal_alloc(inst: &Inst) -> bool {
-  if inst.t != InstTyp::Call {
-    return false;
-  }
-  let (tgt, callee, _this, _args, spreads) = inst.as_call();
-  if tgt.is_none() || !spreads.is_empty() {
-    return false;
-  }
-  matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object")
+fn ownership_of(result: &OwnershipResult, var: u32) -> OwnershipState {
+  result.get(&var).copied().unwrap_or(OwnershipState::Unknown)
 }
 
-fn parse_object_literal_fields(inst: &Inst) -> Option<BTreeMap<String, Arg>> {
-  if !is_object_literal_alloc(inst) {
+fn prop_key(arg: &Arg) -> Option<String> {
+  match arg {
+    Arg::Const(Const::Str(s)) => Some(s.clone()),
+    _ => None,
+  }
+}
+
+fn field_ref_key(field: &FieldRef) -> Option<String> {
+  match field {
+    FieldRef::Prop(s) => Some(s.clone()),
+    _ => None,
+  }
+}
+
+fn single_alloc_for_var(alias: &alias::AliasResult, var: u32) -> Option<AbstractLoc> {
+  let pts = alias.points_to.get(&var)?;
+  if pts.is_top() || pts.len() != 1 {
     return None;
   }
-  let (_tgt, _callee, _this, args, _spreads) = inst.as_call();
+  pts.iter().next().cloned()
+}
 
+fn var_is_safe_object(
+  alias: &alias::AliasResult,
+  escapes: &EscapeResult,
+  ownership: &OwnershipResult,
+  var: u32,
+) -> Option<AbstractLoc> {
+  let alloc = single_alloc_for_var(alias, var)?;
+  if !matches!(alloc, AbstractLoc::Alloc { .. }) {
+    return None;
+  }
+  // Objects reachable from a parameter are not locally trackable.
+  if matches!(escape_of(escapes, var), EscapeState::ArgEscape(_)) {
+    return None;
+  }
+  // For this pass we only need the allocation to be local and not "fully unknown" in the escape
+  // lattice; in particular, we do not require `NoEscape` because passing a fresh object as `this`
+  // for a method call still allows us to devirtualize the callee loaded from its fields.
+  if matches!(escape_of(escapes, var), EscapeState::Unknown) {
+    return None;
+  }
+  // Ownership is used as an additional "is this value local/trackable" signal. We accept `Shared`
+  // allocations here because field tracking is per-allocation and remains sound as long as the
+  // allocation does not escape.
+  if matches!(ownership_of(ownership, var), OwnershipState::Unknown) {
+    return None;
+  }
+  Some(alloc)
+}
+
+fn clear_fields_for_alloc(fields: &mut BTreeMap<FieldKey, FnId>, alloc: &AbstractLoc) {
+  fields.retain(|k, _| &k.alloc != alloc);
+}
+
+fn clear_overwritten_for_alloc(overwritten: &mut BTreeSet<FieldKey>, alloc: &AbstractLoc) {
+  overwritten.retain(|k| &k.alloc != alloc);
+}
+
+fn escape_alloc(state: &mut FieldState, alloc: AbstractLoc) {
+  state.escaped.insert(alloc.clone());
+  clear_fields_for_alloc(&mut state.fields, &alloc);
+  clear_overwritten_for_alloc(&mut state.overwritten, &alloc);
+}
+
+fn escape_var(
+  state: &mut FieldState,
+  var: u32,
+  alias: &alias::AliasResult,
+  defs: &HashMap<u32, VarFnDef>,
+  getprop_consts: &HashMap<u32, FnId>,
+) {
+  // Ignore known function values; functions are immutable and are not the heap objects whose fields
+  // we track here.
+  let mut memo = HashMap::<u32, Option<FnId>>::new();
+  if resolve_var_fn_id(var, defs, getprop_consts, &mut memo, &mut Vec::new()).is_some() {
+    return;
+  }
+
+  let Some(pts) = alias.points_to.get(&var) else {
+    // Unknown points-to => Top.
+    if !state.fields.is_empty() {
+      // Conservatively treat all tracked allocations as escaped.
+      let allocs: Vec<_> = state.fields.keys().map(|k| k.alloc.clone()).collect();
+      for alloc in allocs {
+        if matches!(alloc, AbstractLoc::Alloc { .. }) {
+          state.escaped.insert(alloc);
+        }
+      }
+      state.fields.clear();
+    }
+    return;
+  };
+  if pts.is_top() {
+    if !state.fields.is_empty() {
+      let allocs: Vec<_> = state.fields.keys().map(|k| k.alloc.clone()).collect();
+      for alloc in allocs {
+        if matches!(alloc, AbstractLoc::Alloc { .. }) {
+          state.escaped.insert(alloc);
+        }
+      }
+      state.fields.clear();
+    }
+    return;
+  }
+  for loc in pts.iter() {
+    if matches!(loc, AbstractLoc::Alloc { .. }) {
+      escape_alloc(state, loc.clone());
+    }
+  }
+}
+
+fn call_is_pure_alloc_marker(callee: &Arg) -> bool {
+  matches!(
+    callee,
+    Arg::Builtin(path)
+      if matches!(
+        path.as_str(),
+        "__optimize_js_object" | "__optimize_js_array" | "__optimize_js_regex" | "__optimize_js_template"
+      )
+  )
+}
+
+fn parse_object_literal_fields(args: &[Arg]) -> Option<BTreeMap<String, Arg>> {
   // `__optimize_js_object` encodes each property as a triple:
   //   marker, key, value
   // where marker is one of:
@@ -46,8 +184,8 @@ fn parse_object_literal_fields(inst: &Inst) -> Option<BTreeMap<String, Arg>> {
   //   - __optimize_js_object_prop_computed
   //   - __optimize_js_object_spread
   //
-  // For MVP devirtualization we only accept simple constant-key properties with the `*_prop`
-  // marker, and we reject computed keys/spreads to stay conservative.
+  // For devirtualization we only accept simple constant-key properties with the `*_prop` marker,
+  // and we reject computed keys/spreads/duplicates to stay conservative.
   let mut fields = BTreeMap::<String, Arg>::new();
   for chunk in args.chunks(3) {
     if chunk.len() != 3 {
@@ -76,274 +214,130 @@ fn parse_object_literal_fields(inst: &Inst) -> Option<BTreeMap<String, Arg>> {
   Some(fields)
 }
 
-fn collect_reachable_labels(cfg: &Cfg) -> Vec<u32> {
-  cfg.reverse_postorder()
+fn apply_object_literal_alloc(
+  state: &mut FieldState,
+  tgt: Option<u32>,
+  callee: &Arg,
+  args: &[Arg],
+  spreads: &[usize],
+  alias: &alias::AliasResult,
+  escapes: &EscapeResult,
+  ownership: &OwnershipResult,
+  defs: &HashMap<u32, VarFnDef>,
+  getprop_consts: &HashMap<u32, FnId>,
+) {
+  let Arg::Builtin(name) = callee else {
+    return;
+  };
+  if name != "__optimize_js_object" {
+    return;
+  }
+  let Some(tgt) = tgt else {
+    return;
+  };
+  if !spreads.is_empty() {
+    return;
+  }
+  let Some(alloc) = var_is_safe_object(alias, escapes, ownership, tgt) else {
+    return;
+  };
+  let Some(fields) = parse_object_literal_fields(args) else {
+    return;
+  };
+
+  for (prop, value) in fields {
+    let key = FieldKey {
+      alloc: alloc.clone(),
+      prop,
+    };
+    if state.overwritten.contains(&key) || state.fields.contains_key(&key) {
+      state.fields.remove(&key);
+      state.overwritten.insert(key);
+      continue;
+    }
+    let mut memo = HashMap::<u32, Option<FnId>>::new();
+    if let Some(fn_id) = resolve_fn_id(&value, defs, getprop_consts, &mut memo, &mut Vec::new()) {
+      state.fields.insert(key, fn_id);
+    } else {
+      // Unknown initializer value -> do not attempt to track it later.
+      state.overwritten.insert(key);
+    }
+  }
 }
 
-fn build_var_defs(cfg: &Cfg, labels: &[u32]) -> BTreeMap<u32, VarDef> {
-  let mut defs = BTreeMap::<u32, VarDef>::new();
-
-  for &label in labels {
+fn build_var_fn_defs(cfg: &Cfg) -> HashMap<u32, VarFnDef> {
+  let mut defs = HashMap::<u32, VarFnDef>::new();
+  for label in cfg.reverse_postorder() {
     let Some(block) = cfg.bblocks.maybe_get(label) else {
       continue;
     };
-    for inst in block {
+    for inst in block.iter() {
       let Some(&tgt) = inst.tgts.get(0) else {
         continue;
       };
-
       let def = match inst.t {
         InstTyp::VarAssign => match inst.args.get(0) {
-          Some(Arg::Var(src)) => VarDef::Alias(*src),
-          Some(Arg::Fn(id)) => VarDef::Fn(*id),
-          _ => VarDef::Unknown,
+          Some(Arg::Var(src)) => VarFnDef::Alias(*src),
+          Some(Arg::Fn(id)) => VarFnDef::Fn(*id),
+          _ => VarFnDef::Unknown,
         },
-        InstTyp::Phi => VarDef::Phi(inst.args.clone()),
-        InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
-          let (_tgt, obj, _op, key) = inst.as_bin();
-          VarDef::GetProp {
-            obj: obj.clone(),
-            key: key.clone(),
-          }
-        }
-        InstTyp::Call => parse_object_literal_fields(inst)
-          .map(|fields| VarDef::ObjectLit { fields })
-          .unwrap_or(VarDef::Unknown),
-        _ => VarDef::Unknown,
+        InstTyp::Phi => VarFnDef::Phi(inst.args.clone()),
+        _ => VarFnDef::Unknown,
       };
-
       defs
         .entry(tgt)
         .and_modify(|existing| {
-          // Non-SSA CFGs may assign the same temp multiple times. Only keep definitions when we can
-          // prove the value is constant.
-          if !matches!(existing, VarDef::Unknown) {
-            *existing = VarDef::Unknown;
+          if !matches!(*existing, VarFnDef::Unknown) {
+            *existing = VarFnDef::Unknown;
           }
         })
         .or_insert(def);
     }
   }
-
   defs
-}
-
-fn is_alias_arg(arg: &Arg, aliases: &BTreeSet<u32>) -> bool {
-  matches!(arg, Arg::Var(v) if aliases.contains(v))
-}
-
-fn build_object_infos(
-  cfg: &Cfg,
-  labels: &[u32],
-  defs: &BTreeMap<u32, VarDef>,
-) -> BTreeMap<u32, ObjectInfo> {
-  let mut infos = BTreeMap::<u32, ObjectInfo>::new();
-
-  // Collect object allocation sites.
-  let allocs: Vec<(u32, BTreeMap<String, Arg>)> = defs
-    .iter()
-    .filter_map(|(var, def)| match def {
-      VarDef::ObjectLit { fields } => Some((*var, fields.clone())),
-      _ => None,
-    })
-    .collect();
-
-  for (alloc_var, fields) in allocs {
-    // Find SSA aliases of the allocation (simple copy chains + phis that merge only aliases).
-    let mut aliases = BTreeSet::<u32>::new();
-    aliases.insert(alloc_var);
-    let mut changed = true;
-    while changed {
-      changed = false;
-      for (tgt, def) in defs.iter() {
-        if aliases.contains(tgt) {
-          continue;
-        }
-        match def {
-          VarDef::Alias(src) if aliases.contains(src) => {
-            aliases.insert(*tgt);
-            changed = true;
-          }
-          VarDef::Phi(args) => {
-            let all_alias = args.iter().all(|arg| matches!(arg, Arg::Var(v) if aliases.contains(v)));
-            if all_alias {
-              aliases.insert(*tgt);
-              changed = true;
-            }
-          }
-          _ => {}
-        }
-      }
-    }
-
-    // Scan uses of any alias. If we see an unknown/dynamic use, mark the whole allocation unsafe.
-    let mut overwritten_keys = BTreeSet::<String>::new();
-    let mut unsafe_ = false;
-
-    for &label in labels {
-      let Some(block) = cfg.bblocks.maybe_get(label) else {
-        continue;
-      };
-      for inst in block {
-        // Special-case phi nodes: if an alias flows into a phi that is *not* itself an alias, the
-        // object may flow into an unknown value, so stay conservative.
-        if inst.t == InstTyp::Phi {
-          let tgt_is_alias = inst.tgts.get(0).is_some_and(|t| aliases.contains(t));
-          if !tgt_is_alias && inst.args.iter().any(|arg| is_alias_arg(arg, &aliases)) {
-            unsafe_ = true;
-            break;
-          }
-          continue;
-        }
-
-        match inst.t {
-          InstTyp::VarAssign => {
-            // Alias copies are fine as long as the target is also tracked as an alias.
-            if is_alias_arg(&inst.args[0], &aliases) {
-              let tgt_is_alias = inst.tgts.get(0).is_some_and(|t| aliases.contains(t));
-              if !tgt_is_alias {
-                unsafe_ = true;
-                break;
-              }
-            }
-          }
-          InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
-            let (_tgt, obj, _op, key) = inst.as_bin();
-            if !is_alias_arg(obj, &aliases) {
-              // If the alias appears anywhere else in the instruction, reject.
-              if inst.args.iter().any(|arg| is_alias_arg(arg, &aliases)) {
-                unsafe_ = true;
-                break;
-              }
-              continue;
-            }
-            if !matches!(key, Arg::Const(Const::Str(s)) if s != "__proto__") {
-              unsafe_ = true;
-              break;
-            }
-          }
-          InstTyp::Bin => {
-            if inst.args.iter().any(|arg| is_alias_arg(arg, &aliases)) {
-              unsafe_ = true;
-              break;
-            }
-          }
-          InstTyp::PropAssign => {
-            let (obj, prop, val) = inst.as_prop_assign();
-            let obj_is_alias = is_alias_arg(obj, &aliases);
-            let prop_is_alias = is_alias_arg(prop, &aliases);
-            let val_is_alias = is_alias_arg(val, &aliases);
-
-            if prop_is_alias || val_is_alias {
-              // Storing the object as a property key/value escapes it.
-              unsafe_ = true;
-              break;
-            }
-
-            if obj_is_alias {
-              let Arg::Const(Const::Str(key)) = prop else {
-                // Dynamic write could overwrite any key.
-                unsafe_ = true;
-                break;
-              };
-              if key == "__proto__" {
-                unsafe_ = true;
-                break;
-              }
-              overwritten_keys.insert(key.clone());
-            }
-          }
-          InstTyp::Call => {
-            // The only allowed use in calls is passing the object as the explicit `this` value.
-            // Passing it as a callee or argument makes it escape to an unknown function.
-            let (_tgt, _callee, _this, call_args, _spreads) = inst.as_call();
-            let callee_arg = &inst.args[0];
-            let this_arg = &inst.args[1];
-            if is_alias_arg(callee_arg, &aliases) {
-              unsafe_ = true;
-              break;
-            }
-            if call_args.iter().any(|arg| is_alias_arg(arg, &aliases)) {
-              unsafe_ = true;
-              break;
-            }
-            // Allow `this` unconditionally (it preserves this semantics for method-style calls).
-            let _ = this_arg;
-          }
-          InstTyp::ForeignStore | InstTyp::UnknownStore | InstTyp::Return | InstTyp::Throw => {
-            if inst.args.iter().any(|arg| is_alias_arg(arg, &aliases)) {
-              unsafe_ = true;
-              break;
-            }
-          }
-          _ => {
-            if inst.args.iter().any(|arg| is_alias_arg(arg, &aliases)) {
-              unsafe_ = true;
-              break;
-            }
-          }
-        }
-      }
-      if unsafe_ {
-        break;
-      }
-    }
-
-    infos.insert(
-      alloc_var,
-      ObjectInfo {
-        fields,
-        overwritten_keys,
-        unsafe_,
-      },
-    );
-  }
-
-  infos
 }
 
 fn resolve_fn_id(
   arg: &Arg,
-  defs: &BTreeMap<u32, VarDef>,
-  objects: &BTreeMap<u32, ObjectInfo>,
+  defs: &HashMap<u32, VarFnDef>,
+  getprop_consts: &HashMap<u32, FnId>,
+  memo: &mut HashMap<u32, Option<FnId>>,
   visiting: &mut Vec<u32>,
 ) -> Option<FnId> {
   match arg {
     Arg::Fn(id) => Some(*id),
-    Arg::Var(v) => resolve_var_fn_id(*v, defs, objects, visiting),
+    Arg::Var(v) => resolve_var_fn_id(*v, defs, getprop_consts, memo, visiting),
     _ => None,
   }
 }
 
-fn resolve_object_alloc_id(
-  arg: &Arg,
-  defs: &BTreeMap<u32, VarDef>,
-  visiting: &mut Vec<u32>,
-) -> Option<u32> {
-  match arg {
-    Arg::Var(v) => resolve_var_object_alloc_id(*v, defs, visiting),
-    _ => None,
-  }
-}
-
-fn resolve_var_object_alloc_id(
+fn resolve_var_fn_id(
   var: u32,
-  defs: &BTreeMap<u32, VarDef>,
+  defs: &HashMap<u32, VarFnDef>,
+  getprop_consts: &HashMap<u32, FnId>,
+  memo: &mut HashMap<u32, Option<FnId>>,
   visiting: &mut Vec<u32>,
-) -> Option<u32> {
+) -> Option<FnId> {
+  if let Some(id) = getprop_consts.get(&var).copied() {
+    return Some(id);
+  }
+  if let Some(cached) = memo.get(&var).copied() {
+    return cached;
+  }
   if visiting.contains(&var) {
     return None;
   }
   visiting.push(var);
 
   let out = match defs.get(&var) {
-    Some(VarDef::ObjectLit { .. }) => Some(var),
-    Some(VarDef::Alias(src)) => resolve_var_object_alloc_id(*src, defs, visiting),
-    Some(VarDef::Phi(args)) => {
-      let mut merged: Option<u32> = None;
+    Some(VarFnDef::Fn(id)) => Some(*id),
+    Some(VarFnDef::Alias(src)) => resolve_var_fn_id(*src, defs, getprop_consts, memo, visiting),
+    Some(VarFnDef::Phi(args)) => {
+      let mut merged: Option<FnId> = None;
       for arg in args {
-        let Some(id) = resolve_object_alloc_id(arg, defs, visiting) else {
+        let Some(id) = resolve_fn_id(arg, defs, getprop_consts, memo, visiting) else {
           visiting.pop();
+          memo.insert(var, None);
           return None;
         };
         merged = match merged {
@@ -351,6 +345,7 @@ fn resolve_var_object_alloc_id(
           Some(prev) if prev == id => Some(prev),
           _ => {
             visiting.pop();
+            memo.insert(var, None);
             return None;
           }
         };
@@ -361,99 +356,606 @@ fn resolve_var_object_alloc_id(
   };
 
   visiting.pop();
+  memo.insert(var, out);
   out
 }
 
-fn resolve_var_fn_id(
-  var: u32,
-  defs: &BTreeMap<u32, VarDef>,
-  objects: &BTreeMap<u32, ObjectInfo>,
-  visiting: &mut Vec<u32>,
-) -> Option<FnId> {
-  if visiting.contains(&var) {
-    return None;
+fn join_field_states(cfg: &Cfg, label: u32, out_states: &BTreeMap<u32, FieldState>) -> FieldState {
+  if label == cfg.entry {
+    return FieldState::new();
   }
-  visiting.push(var);
+  let preds = cfg.graph.parents_sorted(label);
+  let mut iter = preds.into_iter().filter_map(|pred| out_states.get(&pred));
+  let Some(first) = iter.next() else {
+    return FieldState::new();
+  };
+  let mut joined = first.clone();
+  for pred in iter {
+    joined
+      .fields
+      .retain(|k, v| pred.fields.get(k) == Some(v));
+    joined.escaped.extend(pred.escaped.iter().cloned());
+    joined
+      .overwritten
+      .extend(pred.overwritten.iter().cloned());
+  }
+  if !joined.overwritten.is_empty() {
+    joined.fields.retain(|k, _| !joined.overwritten.contains(k));
+  }
+  joined
+}
 
-  let out = match defs.get(&var) {
-    Some(VarDef::Fn(id)) => Some(*id),
-    Some(VarDef::Alias(src)) => resolve_var_fn_id(*src, defs, objects, visiting),
-    Some(VarDef::Phi(args)) => {
-      let mut merged: Option<FnId> = None;
-      for arg in args {
-        let Some(id) = resolve_fn_id(arg, defs, objects, visiting) else {
-          merged = None;
-          break;
-        };
-        merged = match merged {
-          None => Some(id),
-          Some(prev) if prev == id => Some(prev),
-          _ => {
-            merged = None;
-            break;
-          }
-        };
-      }
-      merged
-    }
-    Some(VarDef::GetProp { obj, key }) => (|| {
-      let prop = match key {
-        Arg::Const(Const::Str(prop)) if prop != "__proto__" => prop,
-        _ => return None,
-      };
-
-      let mut obj_visiting = Vec::new();
-      let alloc = resolve_object_alloc_id(obj, defs, &mut obj_visiting)?;
-      let info = objects.get(&alloc)?;
-      if info.unsafe_ || info.overwritten_keys.contains(prop) {
-        return None;
-      }
-      let init = info.fields.get(prop)?;
-      resolve_fn_id(init, defs, objects, visiting)
-    })(),
-    _ => None,
+fn apply_prop_assign(
+  state: &mut FieldState,
+  obj: &Arg,
+  prop: &Arg,
+  val: &Arg,
+  alias: &alias::AliasResult,
+  escapes: &EscapeResult,
+  ownership: &OwnershipResult,
+  defs: &HashMap<u32, VarFnDef>,
+  getprop_consts: &HashMap<u32, FnId>,
+) {
+  let Arg::Var(obj_var) = obj else {
+    return;
+  };
+  let Some(alloc) = var_is_safe_object(alias, escapes, ownership, *obj_var) else {
+    return;
   };
 
-  visiting.pop();
+  let Some(prop) = prop_key(prop) else {
+    clear_fields_for_alloc(&mut state.fields, &alloc);
+    clear_overwritten_for_alloc(&mut state.overwritten, &alloc);
+    return;
+  };
+
+  let key = FieldKey { alloc, prop };
+  if state.overwritten.contains(&key) {
+    state.fields.remove(&key);
+    return;
+  }
+  // Conservatively disable tracking if the property is written more than once.
+  if state.fields.contains_key(&key) {
+    state.fields.remove(&key);
+    state.overwritten.insert(key);
+    return;
+  }
+  let mut memo = HashMap::<u32, Option<FnId>>::new();
+  let fn_id = resolve_fn_id(val, defs, getprop_consts, &mut memo, &mut Vec::new());
+  match fn_id {
+    Some(id) => {
+      state.fields.insert(key, id);
+    }
+    None => {
+      // First write is not a known function: don't track subsequent writes to this field.
+      state.overwritten.insert(key);
+    }
+  }
+}
+
+fn apply_field_store(
+  state: &mut FieldState,
+  obj: &Arg,
+  field: &FieldRef,
+  val: &Arg,
+  alias: &alias::AliasResult,
+  escapes: &EscapeResult,
+  ownership: &OwnershipResult,
+  defs: &HashMap<u32, VarFnDef>,
+  getprop_consts: &HashMap<u32, FnId>,
+) {
+  let Arg::Var(obj_var) = obj else {
+    return;
+  };
+  let Some(alloc) = var_is_safe_object(alias, escapes, ownership, *obj_var) else {
+    return;
+  };
+  let Some(prop) = field_ref_key(field) else {
+    return;
+  };
+  if prop == "__proto__" {
+    clear_fields_for_alloc(&mut state.fields, &alloc);
+    clear_overwritten_for_alloc(&mut state.overwritten, &alloc);
+    return;
+  }
+
+  let key = FieldKey { alloc, prop };
+  if state.overwritten.contains(&key) {
+    state.fields.remove(&key);
+    return;
+  }
+  if state.fields.contains_key(&key) {
+    state.fields.remove(&key);
+    state.overwritten.insert(key);
+    return;
+  }
+  let mut memo = HashMap::<u32, Option<FnId>>::new();
+  let fn_id = resolve_fn_id(val, defs, getprop_consts, &mut memo, &mut Vec::new());
+  match fn_id {
+    Some(id) => {
+      state.fields.insert(key, id);
+    }
+    None => {
+      state.overwritten.insert(key);
+    }
+  }
+}
+
+fn transfer_block(
+  block: &[Inst],
+  in_state: &FieldState,
+  alias: &alias::AliasResult,
+  escapes: &EscapeResult,
+  ownership: &OwnershipResult,
+  defs: &HashMap<u32, VarFnDef>,
+  getprop_consts: &HashMap<u32, FnId>,
+) -> FieldState {
+  let mut state = in_state.clone();
+  for inst in block {
+    match inst.t {
+      InstTyp::Call => {
+        let (tgt, callee, this, args, spreads) = inst.as_call();
+        if call_is_pure_alloc_marker(callee) {
+          apply_object_literal_alloc(
+            &mut state,
+            tgt,
+            callee,
+            args,
+            spreads,
+            alias,
+            escapes,
+            ownership,
+            defs,
+            getprop_consts,
+          );
+          continue;
+        }
+
+        // Any unknown call may mutate allocations that have already escaped.
+        let escaped = &state.escaped;
+        if !escaped.is_empty() {
+          state.fields.retain(|k, _| !escaped.contains(&k.alloc));
+        }
+
+        // Values passed into a call may escape from the current scope; once escaped, subsequent
+        // calls may mutate them even if they are not passed again.
+        if let Arg::Var(v) = this {
+          escape_var(&mut state, *v, alias, defs, getprop_consts);
+        }
+        for arg in args {
+          if let Arg::Var(v) = arg {
+            escape_var(&mut state, *v, alias, defs, getprop_consts);
+          }
+        }
+      }
+      InstTyp::PropAssign => {
+        let (obj, prop, val) = inst.as_prop_assign();
+        apply_prop_assign(
+          &mut state,
+          obj,
+          prop,
+          val,
+          alias,
+          escapes,
+          ownership,
+          defs,
+          getprop_consts,
+        );
+
+        // Storing a tracked allocation into an unknown receiver makes it reachable from unknown
+        // code (e.g. `global.x = obj`), so conservatively treat it as escaped.
+        let receiver_safe = match obj {
+          Arg::Var(v) => var_is_safe_object(alias, escapes, ownership, *v).is_some(),
+          _ => false,
+        };
+        if !receiver_safe {
+          if let Arg::Var(v) = val {
+            escape_var(&mut state, *v, alias, defs, getprop_consts);
+          }
+        }
+      }
+      InstTyp::FieldStore => {
+        let (obj, field, val) = inst.as_field_store();
+        apply_field_store(
+          &mut state,
+          obj,
+          field,
+          val,
+          alias,
+          escapes,
+          ownership,
+          defs,
+          getprop_consts,
+        );
+
+        let receiver_safe = match obj {
+          Arg::Var(v) => var_is_safe_object(alias, escapes, ownership, *v).is_some(),
+          _ => false,
+        };
+        if !receiver_safe {
+          if let Arg::Var(v) = val {
+            escape_var(&mut state, *v, alias, defs, getprop_consts);
+          }
+        }
+      }
+      InstTyp::ForeignStore | InstTyp::UnknownStore => {
+        if let Some(Arg::Var(v)) = inst.args.get(0) {
+          escape_var(&mut state, *v, alias, defs, getprop_consts);
+        }
+      }
+      InstTyp::Return => {
+        if let Some(Arg::Var(v)) = inst.args.get(0) {
+          escape_var(&mut state, *v, alias, defs, getprop_consts);
+        }
+      }
+      InstTyp::Throw => {
+        if let Some(Arg::Var(v)) = inst.args.get(0) {
+          escape_var(&mut state, *v, alias, defs, getprop_consts);
+        }
+      }
+      _ => {}
+    }
+  }
+  state
+}
+
+fn compute_field_states(
+  cfg: &Cfg,
+  alias: &alias::AliasResult,
+  escapes: &EscapeResult,
+  ownership: &OwnershipResult,
+  defs: &HashMap<u32, VarFnDef>,
+) -> BTreeMap<u32, FieldState> {
+  let labels = cfg.reverse_postorder();
+  let mut in_states = BTreeMap::<u32, FieldState>::new();
+  let mut out_states = BTreeMap::<u32, FieldState>::new();
+  for &label in &labels {
+    in_states.insert(label, FieldState::new());
+    out_states.insert(label, FieldState::new());
+  }
+
+  let getprop_consts = HashMap::<u32, FnId>::new();
+  let mut worklist: VecDeque<u32> = labels.iter().copied().collect();
+  while let Some(label) = worklist.pop_front() {
+    let in_state = join_field_states(cfg, label, &out_states);
+    let stored_in = in_states.get(&label).cloned().unwrap_or_default();
+    if stored_in != in_state {
+      in_states.insert(label, in_state.clone());
+    }
+
+    let Some(block) = cfg.bblocks.maybe_get(label) else {
+      continue;
+    };
+    let out_state = transfer_block(
+      block,
+      &in_state,
+      alias,
+      escapes,
+      ownership,
+      defs,
+      &getprop_consts,
+    );
+
+    let stored_out = out_states.get(&label).cloned().unwrap_or_default();
+    if stored_out != out_state {
+      out_states.insert(label, out_state);
+      for succ in cfg.graph.children_sorted(label) {
+        if in_states.contains_key(&succ) {
+          worklist.push_back(succ);
+        }
+      }
+    }
+  }
+
+  in_states
+}
+
+fn compute_getprop_consts(
+  cfg: &Cfg,
+  in_states: &BTreeMap<u32, FieldState>,
+  alias: &alias::AliasResult,
+  escapes: &EscapeResult,
+  ownership: &OwnershipResult,
+  defs: &HashMap<u32, VarFnDef>,
+) -> HashMap<u32, FnId> {
+  let mut out = HashMap::<u32, FnId>::new();
+  // No need for a fixed point here: `in_states` already represents the converged field map at
+  // each block entry, and `GetProp` results are SSA values.
+  for label in cfg.reverse_postorder() {
+    let Some(block) = cfg.bblocks.maybe_get(label) else {
+      continue;
+    };
+    let mut state = in_states.get(&label).cloned().unwrap_or_default();
+    for inst in block.iter() {
+      if inst.t == InstTyp::Bin && inst.bin_op == BinOp::GetProp {
+        let (tgt, obj, _, prop) = inst.as_bin();
+        if let (Arg::Var(obj_var), Some(prop)) = (obj, prop_key(prop)) {
+          if let Some(alloc) = var_is_safe_object(alias, escapes, ownership, *obj_var) {
+            let key = FieldKey { alloc, prop };
+            if let Some(fn_id) = state.fields.get(&key).copied() {
+              out.insert(tgt, fn_id);
+            }
+          }
+        }
+      }
+      if inst.t == InstTyp::FieldLoad {
+        let (tgt, obj, field) = inst.as_field_load();
+        if let (Arg::Var(obj_var), Some(prop)) = (obj, field_ref_key(field)) {
+          if let Some(alloc) = var_is_safe_object(alias, escapes, ownership, *obj_var) {
+            let key = FieldKey { alloc, prop };
+            if let Some(fn_id) = state.fields.get(&key).copied() {
+              out.insert(tgt, fn_id);
+            }
+          }
+        }
+      }
+
+      match inst.t {
+        InstTyp::Call => {
+          let (tgt, callee, this, args, spreads) = inst.as_call();
+          if call_is_pure_alloc_marker(callee) {
+            apply_object_literal_alloc(
+              &mut state,
+              tgt,
+              callee,
+              args,
+              spreads,
+              alias,
+              escapes,
+              ownership,
+              defs,
+              &out,
+            );
+            continue;
+          }
+
+          let escaped = &state.escaped;
+          if !escaped.is_empty() {
+            state.fields.retain(|k, _| !escaped.contains(&k.alloc));
+          }
+
+          if let Arg::Var(v) = this {
+            escape_var(&mut state, *v, alias, defs, &out);
+          }
+          for arg in args {
+            if let Arg::Var(v) = arg {
+              escape_var(&mut state, *v, alias, defs, &out);
+            }
+          }
+        }
+        InstTyp::PropAssign => {
+          let (obj, prop, val) = inst.as_prop_assign();
+          apply_prop_assign(
+            &mut state,
+            obj,
+            prop,
+            val,
+            alias,
+            escapes,
+            ownership,
+            defs,
+            &out,
+          );
+
+          let receiver_safe = match obj {
+            Arg::Var(v) => var_is_safe_object(alias, escapes, ownership, *v).is_some(),
+            _ => false,
+          };
+          if !receiver_safe {
+            if let Arg::Var(v) = val {
+              escape_var(&mut state, *v, alias, defs, &out);
+            }
+          }
+        }
+        InstTyp::FieldStore => {
+          let (obj, field, val) = inst.as_field_store();
+          apply_field_store(
+            &mut state,
+            obj,
+            field,
+            val,
+            alias,
+            escapes,
+            ownership,
+            defs,
+            &out,
+          );
+
+          let receiver_safe = match obj {
+            Arg::Var(v) => var_is_safe_object(alias, escapes, ownership, *v).is_some(),
+            _ => false,
+          };
+          if !receiver_safe {
+            if let Arg::Var(v) = val {
+              escape_var(&mut state, *v, alias, defs, &out);
+            }
+          }
+        }
+        InstTyp::ForeignStore | InstTyp::UnknownStore => {
+          if let Some(Arg::Var(v)) = inst.args.get(0) {
+            escape_var(&mut state, *v, alias, defs, &out);
+          }
+        }
+        InstTyp::Return | InstTyp::Throw => {
+          if let Some(Arg::Var(v)) = inst.args.get(0) {
+            escape_var(&mut state, *v, alias, defs, &out);
+          }
+        }
+        _ => {}
+      }
+    }
+  }
   out
 }
 
-/// Devirtualize indirect calls whose callee resolves to a unique `FnId`.
-///
-/// MVP:
-/// - Alias chains through `VarAssign`
-/// - Phi nodes that merge a single `FnId`
-/// - `GetProp(obj, "k")` when `obj` is a `__optimize_js_object` allocation with a constant-key
-///   initializer of a known function and the field is never overwritten/escaped.
 pub fn optpass_devirtualize(cfg: &mut Cfg) -> PassResult {
-  let labels = collect_reachable_labels(cfg);
-  let defs = build_var_defs(cfg, &labels);
-  let objects = build_object_infos(cfg, &labels, &defs);
+  let defs = build_var_fn_defs(cfg);
 
   let mut result = PassResult::default();
-
-  for label in labels {
-    let block = cfg.bblocks.get_mut(label);
-    for inst in block.iter_mut() {
+  let empty_getprop_consts = HashMap::<u32, FnId>::new();
+  let mut memo = HashMap::<u32, Option<FnId>>::new();
+  for label in cfg.reverse_postorder() {
+    let Some(block) = cfg.bblocks.maybe_get(label) else {
+      continue;
+    };
+    // We need a separate mutable borrow to rewrite, but also want to keep traversal deterministic.
+    let block_len = block.len();
+    let block_mut = cfg.bblocks.get_mut(label);
+    for inst_idx in 0..block_len {
+      let inst = &mut block_mut[inst_idx];
       if inst.t != InstTyp::Call {
         continue;
       }
-      let callee = inst.args.get(0).expect("Call args[0] callee").clone();
-      let mut visiting = Vec::new();
-      let Some(id) = resolve_fn_id(&callee, &defs, &objects, &mut visiting) else {
+      let Some(callee) = inst.args.get(0).cloned() else {
         continue;
       };
-      if matches!(callee, Arg::Fn(existing) if existing == id) {
+      if !matches!(callee, Arg::Var(_)) {
         continue;
       }
 
-      inst.args[0] = Arg::Fn(id);
-      // Purity/effect metadata may have been computed using the previous call target. Reset to the
-      // conservative defaults so later passes do not observe stale information.
-      inst.meta.callee_purity = Purity::Impure;
-      inst.meta.effects.mark_unknown();
+      let Some(fn_id) = resolve_fn_id(
+        &callee,
+        &defs,
+        &empty_getprop_consts,
+        &mut memo,
+        &mut Vec::new(),
+      ) else {
+        continue;
+      };
+      let new_callee = Arg::Fn(fn_id);
+      if inst.args[0] != new_callee {
+        inst.args[0] = new_callee;
+        // Purity/effect metadata may have been computed using the previous call target. Reset to
+        // conservative defaults so later passes do not observe stale information.
+        inst.meta.callee_purity = Purity::Impure;
+        inst.meta.effects.mark_unknown();
+        result.mark_changed();
+      }
+    }
+  }
 
-      result.mark_changed();
+  // Fast bailout: field tracking is only useful if we have both:
+  //   1. An indirect call whose callee originates from `GetProp` (method call lowering).
+  //   2. A field write that stores a known `Arg::Fn` value (either via `PropAssign` or an
+  //      `__optimize_js_object` literal initializer).
+  //
+  // This avoids running heavier alias/escape/ownership analyses for programs that only have
+  // ordinary indirect calls (handled above) or no relevant stores.
+  let mut getprop_defs = HashSet::<u32>::new();
+  let mut has_getprop_call = false;
+  let mut has_fn_field_write = false;
+  for label in cfg.reverse_postorder() {
+    let Some(block) = cfg.bblocks.maybe_get(label) else {
+      continue;
+    };
+    for inst in block.iter() {
+      if inst.t == InstTyp::Bin && inst.bin_op == BinOp::GetProp {
+        getprop_defs.insert(inst.tgts[0]);
+      }
+      if inst.t == InstTyp::FieldLoad {
+        getprop_defs.insert(inst.tgts[0]);
+      }
+    }
+  }
+  for label in cfg.reverse_postorder() {
+    let Some(block) = cfg.bblocks.maybe_get(label) else {
+      continue;
+    };
+    for inst in block.iter() {
+      match inst.t {
+        InstTyp::Call => {
+          let (_tgt, callee, _this, args, spreads) = inst.as_call();
+          if matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object") && spreads.is_empty() {
+            if let Some(fields) = parse_object_literal_fields(args) {
+              for value in fields.values() {
+                let mut local_memo = HashMap::<u32, Option<FnId>>::new();
+                if resolve_fn_id(value, &defs, &empty_getprop_consts, &mut local_memo, &mut Vec::new())
+                  .is_some()
+                {
+                  has_fn_field_write = true;
+                  break;
+                }
+              }
+            }
+          }
+          if let Some(Arg::Var(v)) = inst.args.get(0) {
+            if getprop_defs.contains(v) {
+              has_getprop_call = true;
+            }
+          }
+        }
+        InstTyp::PropAssign => {
+          let (_obj, prop, val) = inst.as_prop_assign();
+          if prop_key(prop).is_none() {
+            continue;
+          }
+          let mut local_memo = HashMap::<u32, Option<FnId>>::new();
+          if resolve_fn_id(val, &defs, &empty_getprop_consts, &mut local_memo, &mut Vec::new())
+            .is_some()
+          {
+            has_fn_field_write = true;
+          }
+        }
+        InstTyp::FieldStore => {
+          let (_obj, field, val) = inst.as_field_store();
+          let Some(_prop) = field_ref_key(field) else {
+            continue;
+          };
+          let mut local_memo = HashMap::<u32, Option<FnId>>::new();
+          if resolve_fn_id(val, &defs, &empty_getprop_consts, &mut local_memo, &mut Vec::new())
+            .is_some()
+          {
+            has_fn_field_write = true;
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+  if !has_getprop_call || !has_fn_field_write {
+    return result;
+  }
+
+  let alias = alias::calculate_alias(cfg);
+  let escapes = escape::analyze_cfg_escapes(cfg);
+  let ownership = ownership::analyze_cfg_ownership_with_escapes(cfg, &escapes);
+
+  let in_states = compute_field_states(cfg, &alias, &escapes, &ownership, &defs);
+  let getprop_consts = compute_getprop_consts(cfg, &in_states, &alias, &escapes, &ownership, &defs);
+  if getprop_consts.is_empty() {
+    return result;
+  }
+
+  memo.clear();
+  for label in cfg.reverse_postorder() {
+    let Some(block) = cfg.bblocks.maybe_get(label) else {
+      continue;
+    };
+    let block_len = block.len();
+    let block_mut = cfg.bblocks.get_mut(label);
+    for inst_idx in 0..block_len {
+      let inst = &mut block_mut[inst_idx];
+      if inst.t != InstTyp::Call {
+        continue;
+      }
+      let Some(callee) = inst.args.get(0).cloned() else {
+        continue;
+      };
+      if !matches!(callee, Arg::Var(_)) {
+        continue;
+      }
+
+      let Some(fn_id) = resolve_fn_id(&callee, &defs, &getprop_consts, &mut memo, &mut Vec::new())
+      else {
+        continue;
+      };
+      let new_callee = Arg::Fn(fn_id);
+      if inst.args[0] != new_callee {
+        inst.args[0] = new_callee;
+        inst.meta.callee_purity = Purity::Impure;
+        inst.meta.effects.mark_unknown();
+        result.mark_changed();
+      }
     }
   }
 
