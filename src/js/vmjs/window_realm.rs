@@ -23962,15 +23962,6 @@ fn node_text_content_set_native(
     }
   };
 
-  #[derive(Clone, Copy)]
-  enum TextContentTarget {
-    Text,
-    Comment,
-    ProcessingInstruction,
-    ReplaceChildren { preserve_shadow_roots: bool },
-    NoOp,
-  }
-
   let handle = dom_platform_mut(vm)
     .ok_or(VmError::TypeError(
       "Node.textContent must be called on a node object",
@@ -24011,126 +24002,40 @@ fn node_text_content_set_native(
     did_replace_children,
     maybe_script_children_changed,
   } = if is_host_document {
-    let result: Result<TextContentEffects, dom2::DomError> =
-      mutate_dom_for_vm_host(host, |dom| {
-        let target = match &dom.node(node_id).kind {
-          NodeKind::Text { .. } => TextContentTarget::Text,
-          NodeKind::Comment { .. } => TextContentTarget::Comment,
-          NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
-          NodeKind::Element { .. } | NodeKind::Slot { .. } => TextContentTarget::ReplaceChildren {
-            preserve_shadow_roots: true,
-          },
-          NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
-            preserve_shadow_roots: false,
-          },
-          NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
-        };
-
-        match target {
-          TextContentTarget::Text => match dom.replace_data(node_id, 0, usize::MAX, &value) {
-            Ok(changed) => {
-              let maybe_script = changed
-                .then(|| dom.node(node_id).parent)
-                .flatten()
-                .filter(|&parent| is_html_script_element(dom, parent));
-              (
-                Ok(TextContentEffects {
-                  did_replace_children: false,
-                  maybe_script_children_changed: maybe_script,
-                }),
-                changed,
-              )
+    let result: Result<TextContentEffects, dom2::DomError> = mutate_dom_for_vm_host(host, |dom| {
+      match crate::js::dom2_bindings::text_content_set_from_dom(dom, node_id, &value) {
+        Ok(result) => {
+          let maybe_script = if result.render_affecting {
+            // `textContent` updates should trigger script "children changed" steps when they affect
+            // either:
+            // - a `<script>` element's own children (ReplaceChildren), or
+            // - a text node that is a child of a `<script>` element.
+            if matches!(&dom.node(node_id).kind, NodeKind::Text { .. }) {
+              dom
+                .node(node_id)
+                .parent
+                .filter(|&parent| is_html_script_element(dom, parent))
+            } else {
+              is_html_script_element(dom, node_id).then_some(node_id)
             }
-            Err(err) => (Err(err), false),
-          },
-          TextContentTarget::Comment => match dom.set_comment_data(node_id, &value) {
-            Ok(_changed) => (
-              Ok(TextContentEffects {
-                did_replace_children: false,
-                maybe_script_children_changed: None,
-              }),
-              // Comments do not affect rendering.
-              false,
-            ),
-            Err(err) => (Err(err), false),
-          },
-          TextContentTarget::ProcessingInstruction => match dom.set_processing_instruction_data(node_id, &value) {
-            Ok(_changed) => (
-              Ok(TextContentEffects {
-                did_replace_children: false,
-                maybe_script_children_changed: None,
-              }),
-              // Processing instructions do not affect rendering.
-              false,
-            ),
-            Err(err) => (Err(err), false),
-          },
-          TextContentTarget::ReplaceChildren {
-            preserve_shadow_roots,
-          } => {
-            let mut changed = false;
-            let to_remove: Vec<NodeId> = {
-              let node = dom.node(node_id);
-              node
-                .children
-                .iter()
-                .copied()
-                .filter(|&child| {
-                  if child.index() >= dom.nodes_len() {
-                    return false;
-                  }
-                  if dom.node(child).parent != Some(node_id) {
-                    return false;
-                  }
-                  if preserve_shadow_roots
-                    && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
-                  {
-                    return false;
-                  }
-                  true
-                })
-                .collect()
-            };
+          } else {
+            None
+          };
 
-            for child in &to_remove {
-              match dom.remove_child(node_id, *child) {
-                Ok(removed) => {
-                  changed |= removed;
-                }
-                Err(err) => return (Err(err), false),
-              }
-            }
-            if !value.is_empty() {
-              let text_node = dom.create_text(&value);
-              match dom.append_child(node_id, text_node) {
-                Ok(appended) => {
-                  changed |= appended;
-                }
-                Err(err) => return (Err(err), false),
-              }
-            }
-
-            let maybe_script = (changed && is_html_script_element(dom, node_id)).then_some(node_id);
-            (
-              Ok(TextContentEffects {
-                did_replace_children: changed,
-                maybe_script_children_changed: maybe_script,
-              }),
-              changed,
-            )
-          }
-          TextContentTarget::NoOp => (
+          (
             Ok(TextContentEffects {
-              did_replace_children: false,
-              maybe_script_children_changed: None,
+              did_replace_children: result.did_replace_children,
+              maybe_script_children_changed: maybe_script,
             }),
-            false,
-          ),
+            result.render_affecting,
+          )
         }
-      })
-      .ok_or(VmError::TypeError(
-        "Node.textContent requires a DOM-backed document",
-      ))?;
+        Err(err) => (Err(err), false),
+      }
+    })
+    .ok_or(VmError::TypeError(
+      "Node.textContent requires a DOM-backed document",
+    ))?;
 
     match result {
       Ok(v) => v,
@@ -24139,101 +24044,13 @@ fn node_text_content_set_native(
   } else {
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-    let target = match &dom.node(node_id).kind {
-      NodeKind::Text { .. } => TextContentTarget::Text,
-      NodeKind::Comment { .. } => TextContentTarget::Comment,
-      NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
-      NodeKind::Element { .. } | NodeKind::Slot { .. } => TextContentTarget::ReplaceChildren {
-        preserve_shadow_roots: true,
-      },
-      NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
-        preserve_shadow_roots: false,
-      },
-      NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
-    };
-
-    match target {
-      TextContentTarget::Text => {
-        let changed = dom
-          .replace_data(node_id, 0, usize::MAX, &value)
-          .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
-        let maybe_script = changed
-          .then(|| dom.node(node_id).parent)
-          .flatten()
-          .filter(|&parent| is_html_script_element(dom, parent));
-        TextContentEffects {
-          did_replace_children: false,
-          maybe_script_children_changed: maybe_script,
-        }
-      }
-      TextContentTarget::Comment => {
-        dom
-          .set_comment_data(node_id, &value)
-          .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
-        TextContentEffects {
-          did_replace_children: false,
-          maybe_script_children_changed: None,
-        }
-      }
-      TextContentTarget::ProcessingInstruction => {
-        dom
-          .set_processing_instruction_data(node_id, &value)
-          .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
-        TextContentEffects {
-          did_replace_children: false,
-          maybe_script_children_changed: None,
-        }
-      }
-      TextContentTarget::ReplaceChildren {
-        preserve_shadow_roots,
-      } => {
-        let mut changed = false;
-        let to_remove: Vec<NodeId> = {
-          let node = dom.node(node_id);
-          node
-            .children
-            .iter()
-            .copied()
-            .filter(|&child| {
-              if child.index() >= dom.nodes_len() {
-                return false;
-              }
-              if dom.node(child).parent != Some(node_id) {
-                return false;
-              }
-              if preserve_shadow_roots && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
-                return false;
-              }
-              true
-            })
-            .collect()
-        };
-
-        for child in to_remove {
-          let removed = dom
-            .remove_child(node_id, child)
-            .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
-          changed |= removed;
-        }
-
-        if !value.is_empty() {
-          let text_node = dom.create_text(&value);
-          let appended = dom
-            .append_child(node_id, text_node)
-            .map_err(|err| VmError::Throw(make_dom_exception(scope, err.code(), "")?))?;
-          changed |= appended;
-        }
-
-        let maybe_script = (changed && is_html_script_element(dom, node_id)).then_some(node_id);
-        TextContentEffects {
-          did_replace_children: changed,
-          maybe_script_children_changed: maybe_script,
-        }
-      }
-      TextContentTarget::NoOp => TextContentEffects {
-        did_replace_children: false,
+    match crate::js::dom2_bindings::text_content_set_from_dom(dom, node_id, &value) {
+      Ok(result) => TextContentEffects {
+        did_replace_children: result.did_replace_children,
+        // Side effects (scripts, microtasks) are only driven for the host document.
         maybe_script_children_changed: None,
       },
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
     }
   };
 

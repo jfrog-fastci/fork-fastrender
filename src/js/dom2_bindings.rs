@@ -346,6 +346,106 @@ pub fn text_content_get<Host: DomHost + ?Sized>(host: &Host, node_id: NodeId) ->
   host.with_dom(|dom| text_content_get_from_dom(dom, node_id))
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TextContentSetResult {
+  pub changed: bool,
+  pub render_affecting: bool,
+  pub did_replace_children: bool,
+}
+
+pub(crate) fn text_content_set_from_dom(
+  dom: &mut crate::dom2::Document,
+  node_id: NodeId,
+  value: &str,
+) -> std::result::Result<TextContentSetResult, DomError> {
+  #[derive(Clone, Copy)]
+  enum TextContentTarget {
+    Text,
+    Comment,
+    ProcessingInstruction,
+    ReplaceChildren { preserve_shadow_roots: bool },
+    NoOp,
+  }
+
+  let target = {
+    let Some(node) = dom.nodes().get(node_id.index()) else {
+      return Err(DomError::NotFoundError);
+    };
+    match &node.kind {
+      NodeKind::Text { .. } => TextContentTarget::Text,
+      NodeKind::Comment { .. } => TextContentTarget::Comment,
+      NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => TextContentTarget::ReplaceChildren {
+        preserve_shadow_roots: true,
+      },
+      NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
+        preserve_shadow_roots: false,
+      },
+      NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
+    }
+  };
+
+  match target {
+    TextContentTarget::Text => dom.set_text_data(node_id, value).map(|changed| TextContentSetResult {
+      changed,
+      render_affecting: changed,
+      did_replace_children: false,
+    }),
+    TextContentTarget::Comment => dom.set_comment_data(node_id, value).map(|changed| TextContentSetResult {
+      changed,
+      // Comments do not affect rendering (they're ignored by renderer snapshots).
+      render_affecting: false,
+      did_replace_children: false,
+    }),
+    TextContentTarget::ProcessingInstruction => dom
+      .set_processing_instruction_data(node_id, value)
+      .map(|changed| TextContentSetResult {
+        changed,
+        // Processing instructions do not affect rendering.
+        render_affecting: false,
+        did_replace_children: false,
+      }),
+    TextContentTarget::ReplaceChildren {
+      preserve_shadow_roots,
+    } => {
+      let mut changed = false;
+
+      let children = dom.children(node_id)?.to_vec();
+      for child in children {
+        if child.index() >= dom.nodes_len() {
+          continue;
+        }
+        let Some(child_node) = dom.nodes().get(child.index()) else {
+          continue;
+        };
+        if child_node.parent != Some(node_id) {
+          continue;
+        }
+        if preserve_shadow_roots && matches!(&child_node.kind, NodeKind::ShadowRoot { .. }) {
+          continue;
+        }
+        changed |= dom.remove_child(node_id, child)?;
+      }
+
+      if !value.is_empty() {
+        let text_node = dom.create_text(value);
+        changed |= dom.append_child(node_id, text_node)?;
+      }
+
+      Ok(TextContentSetResult {
+        changed,
+        render_affecting: changed,
+        did_replace_children: changed,
+      })
+    }
+    TextContentTarget::NoOp => Ok(TextContentSetResult {
+      changed: false,
+      render_affecting: false,
+      did_replace_children: false,
+    }),
+  }
+}
+
 /// `Node.textContent` setter.
 ///
 /// Returns `Ok(true)` only when the DOM actually changes.
@@ -355,96 +455,9 @@ pub fn text_content_set<Host: DomHost + ?Sized>(
   value: &str,
 ) -> std::result::Result<bool, DomError> {
   host.mutate_dom(|dom| {
-    #[derive(Clone, Copy)]
-    enum TextContentTarget {
-      Text,
-      Comment,
-      ProcessingInstruction,
-      ReplaceChildren { preserve_shadow_roots: bool },
-      NoOp,
-    }
-
-    let target = {
-      let Some(node) = dom.nodes().get(node_id.index()) else {
-        return (Err(DomError::NotFoundError), false);
-      };
-      match &node.kind {
-        NodeKind::Text { .. } => TextContentTarget::Text,
-        NodeKind::Comment { .. } => TextContentTarget::Comment,
-        NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
-        NodeKind::Element { .. } | NodeKind::Slot { .. } => TextContentTarget::ReplaceChildren {
-          preserve_shadow_roots: true,
-        },
-        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
-          preserve_shadow_roots: false,
-        },
-        NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
-      }
-    };
-
-    match target {
-      TextContentTarget::Text => match dom.set_text_data(node_id, value) {
-        Ok(changed) => (Ok(changed), changed),
-        Err(err) => (Err(err), false),
-      },
-      TextContentTarget::Comment => match dom.set_comment_data(node_id, value) {
-        Ok(changed) => {
-          // Comments do not affect rendering (they're ignored by renderer snapshots).
-          (Ok(changed), false)
-        }
-        Err(err) => (Err(err), false),
-      },
-      TextContentTarget::ProcessingInstruction => match dom.set_processing_instruction_data(node_id, value) {
-        Ok(changed) => {
-          // Processing instructions do not affect rendering.
-          (Ok(changed), false)
-        }
-        Err(err) => (Err(err), false),
-      },
-      TextContentTarget::ReplaceChildren {
-        preserve_shadow_roots,
-      } => {
-        let mut changed = false;
-
-        let children = match dom.children(node_id) {
-          Ok(children) => children.to_vec(),
-          Err(err) => return (Err(err), false),
-        };
-
-        for child in children {
-          if child.index() >= dom.nodes_len() {
-            continue;
-          }
-          let Some(child_node) = dom.nodes().get(child.index()) else {
-            continue;
-          };
-          if child_node.parent != Some(node_id) {
-            continue;
-          }
-          if preserve_shadow_roots && matches!(&child_node.kind, NodeKind::ShadowRoot { .. }) {
-            continue;
-          }
-          match dom.remove_child(node_id, child) {
-            Ok(removed) => {
-              changed |= removed;
-            }
-            Err(err) => return (Err(err), false),
-          }
-        }
-
-        if !value.is_empty() {
-          let text_node = dom.create_text(value);
-          match dom.append_child(node_id, text_node) {
-            Ok(appended) => {
-              changed |= appended;
-            }
-            Err(err) => return (Err(err), false),
-          }
-        }
-
-        (Ok(changed), changed)
-      }
-      TextContentTarget::NoOp => (Ok(false), false),
+    match text_content_set_from_dom(dom, node_id, value) {
+      Ok(result) => (Ok(result.changed), result.render_affecting),
+      Err(err) => (Err(err), false),
     }
   })
 }
