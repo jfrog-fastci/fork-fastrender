@@ -8224,8 +8224,8 @@ impl<'a> BindingCollector<'a> {
           self.visit_expr(*expr);
         }
       }
-      ExprKind::Instantiation { expr, .. }
-      | ExprKind::TypeAssertion { expr, .. }
+      ExprKind::TypeAssertion { expr, .. }
+      | ExprKind::Instantiation { expr, .. }
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.visit_expr(*expr),
       ExprKind::ImportCall {
