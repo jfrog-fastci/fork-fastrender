@@ -1962,11 +1962,22 @@ impl PageProgress {
     previous: Option<PageProgress>,
     current_sha: Option<&str>,
   ) -> Self {
+    let previous_ref = previous.as_ref();
     if let Some(sha) = current_sha {
       self.update_commit_markers(previous.as_ref(), sha);
     }
     if self.status == ProgressStatus::Ok {
-      self.notes = String::new();
+      // Preserve curated manual notes for OK pages across reruns.
+      //
+      // `notes` is frequently used to record known remaining gaps even when a page renders
+      // successfully (status=ok). We still clear notes when a page transitions from failing -> ok
+      // because those notes are typically "blocker" explanations that are no longer relevant.
+      self.notes = match previous_ref {
+        Some(prev) if prev.status == ProgressStatus::Ok => {
+          manual_notes_from_previous(prev).unwrap_or_default()
+        }
+        _ => String::new(),
+      };
       let has_failures = self.failure_stage.is_some()
         || self
           .diagnostics
@@ -11887,6 +11898,28 @@ mod tests {
     let merged = new_progress.merge_preserving_manual(Some(previous), None);
     assert!(merged.notes.trim().is_empty());
     assert!(merged.auto_notes.trim().is_empty());
+  }
+
+  #[test]
+  fn ok_pages_preserve_manual_notes_across_ok_reruns() {
+    let url = "https://example.com".to_string();
+    let previous = PageProgress {
+      url: url.clone(),
+      status: ProgressStatus::Ok,
+      notes: "manual note".to_string(),
+      auto_notes: String::new(),
+      ..PageProgress::default()
+    };
+    let new_progress = PageProgress {
+      url,
+      status: ProgressStatus::Ok,
+      notes: String::new(),
+      auto_notes: String::new(),
+      ..PageProgress::default()
+    };
+
+    let merged = new_progress.merge_preserving_manual(Some(previous), None);
+    assert_eq!(merged.notes, "manual note");
   }
 
   #[test]
