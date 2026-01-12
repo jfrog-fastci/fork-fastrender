@@ -804,14 +804,37 @@ fn get_internal_data_property(
   obj: GcObject,
   marker: &str,
 ) -> Result<Option<Value>, VmError> {
-  // Root `obj` and the marker string while interning the marker symbol. This may allocate and GC.
+  // Root `obj` while ensuring the marker symbol. This may allocate and GC.
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(obj))?;
 
-  let marker_s = scope.alloc_string(marker)?;
-  scope.push_root(Value::String(marker_s))?;
-
-  let marker_sym = scope.heap_mut().symbol_for(marker_s)?;
+  let marker_sym = match marker {
+    "vm-js.internal.StringData" => match scope.heap().internal_string_data_symbol() {
+      Some(sym) => sym,
+      None => scope.heap_mut().ensure_internal_string_data_symbol()?,
+    },
+    "vm-js.internal.SymbolData" => match scope.heap().internal_symbol_data_symbol() {
+      Some(sym) => sym,
+      None => scope.heap_mut().ensure_internal_symbol_data_symbol()?,
+    },
+    "vm-js.internal.BooleanData" => match scope.heap().internal_boolean_data_symbol() {
+      Some(sym) => sym,
+      None => scope.heap_mut().ensure_internal_boolean_data_symbol()?,
+    },
+    "vm-js.internal.NumberData" => match scope.heap().internal_number_data_symbol() {
+      Some(sym) => sym,
+      None => scope.heap_mut().ensure_internal_number_data_symbol()?,
+    },
+    "vm-js.internal.BigIntData" => match scope.heap().internal_bigint_data_symbol() {
+      Some(sym) => sym,
+      None => scope.heap_mut().ensure_internal_bigint_data_symbol()?,
+    },
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "unknown internal data property marker",
+      ))
+    }
+  };
   let marker_key = PropertyKey::from_symbol(marker_sym);
 
   match scope.heap().object_get_own_data_property_value(obj, &marker_key) {

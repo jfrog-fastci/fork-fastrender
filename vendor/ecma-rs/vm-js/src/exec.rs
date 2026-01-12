@@ -27421,7 +27421,13 @@ fn gen_resume_from_frames(
           }
 
           let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
-          gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
+          gen_frames_push(
+            &mut out_frames,
+            GenFrame::YieldStar {
+              iterator_record,
+              returning,
+            },
+          )?;
           out_frames.append(&mut frames);
           return Ok(GenEval::Suspend(GenSuspend {
             yielded: GenYield::IteratorResult(iter_result),
@@ -27508,7 +27514,13 @@ fn gen_resume_from_frames(
           }
 
           let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
-          gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
+          gen_frames_push(
+            &mut out_frames,
+            GenFrame::YieldStar {
+              iterator_record,
+              returning,
+            },
+          )?;
           out_frames.append(&mut frames);
           return Ok(GenEval::Suspend(GenSuspend {
             yielded: GenYield::IteratorResult(iter_result),
