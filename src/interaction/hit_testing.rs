@@ -23,6 +23,18 @@ pub fn fragment_tree_with_scroll(
   tree
 }
 
+/// Clone the prepared document's fragment tree and apply scroll + sticky offsets.
+///
+/// This is a convenience wrapper around [`PreparedDocument::fragment_tree_for_geometry`]. Like
+/// [`fragment_tree_with_scroll`], viewport scroll is not applied; callers should translate points by
+/// `scroll.viewport` (or use [`hit_test_dom_viewport_point`]).
+pub fn fragment_tree_with_scroll_and_sticky(
+  prepared: &PreparedDocument,
+  scroll: &ScrollState,
+) -> FragmentTree {
+  prepared.fragment_tree_for_geometry(scroll)
+}
+
 pub fn hit_test_with_scroll(
   prepared: &PreparedDocument,
   scroll: &ScrollState,

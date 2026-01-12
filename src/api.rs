@@ -2587,6 +2587,60 @@ impl PreparedDocument {
     &self.fragment_tree
   }
 
+  /// Applies sticky offsets using an explicit scroll state that can include element scroll offsets.
+  ///
+  /// Layout produces fragment trees in a coordinate space that does not account for scroll-driven
+  /// `position: sticky` adjustments. The paint pipeline applies sticky positioning based on the
+  /// effective [`ScrollState`]; this helper mirrors that adjustment so callers can reason about
+  /// paint-time geometry without needing a [`FastRender`] instance.
+  ///
+  /// This mutates `fragment_tree` in-place and applies the adjustment to both the main root and any
+  /// `additional_fragments` roots.
+  pub fn apply_sticky_offsets_to_tree_with_scroll_state(
+    &self,
+    fragment_tree: &mut FragmentTree,
+    scroll_state: &ScrollState,
+  ) {
+    let viewport = fragment_tree.viewport_size();
+    let viewport_rect = Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height);
+    apply_sticky_offsets_to_root(
+      &self.font_context,
+      &mut fragment_tree.root,
+      viewport_rect,
+      scroll_state,
+      viewport,
+    );
+    for fragment in fragment_tree.additional_fragments.iter_mut() {
+      apply_sticky_offsets_to_root(
+        &self.font_context,
+        fragment,
+        viewport_rect,
+        scroll_state,
+        viewport,
+      );
+    }
+  }
+
+  /// Clone the prepared [`FragmentTree`] and translate it into paint-time geometry coordinates.
+  ///
+  /// Layout produces fragment trees in a coordinate space that does not include:
+  /// - element scroll offsets (`scrollLeft`/`scrollTop` for scroll containers), or
+  /// - scroll-driven `position: sticky` adjustments.
+  ///
+  /// This helper mirrors the transformations applied during painting so geometry queries
+  /// (IntersectionObserver/ResizeObserver, DOMRect APIs, etc.) can operate on the same coordinate
+  /// space that is ultimately painted.
+  ///
+  /// Note: viewport scroll is **not** applied. The returned tree remains in page coordinates;
+  /// callers should subtract `scroll_state.viewport` to convert page → viewport coordinates
+  /// (mirroring hit-testing conventions).
+  pub fn fragment_tree_for_geometry(&self, scroll_state: &ScrollState) -> FragmentTree {
+    let mut tree = self.fragment_tree.clone();
+    crate::scroll::apply_scroll_offsets(&mut tree, scroll_state);
+    self.apply_sticky_offsets_to_tree_with_scroll_state(&mut tree, scroll_state);
+    tree
+  }
+
   /// Returns the layout viewport size used during preparation.
   pub fn layout_viewport(&self) -> Size {
     self.layout_viewport
