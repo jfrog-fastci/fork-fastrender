@@ -75,6 +75,86 @@ fn native_strict_reports_any_in_unused_interface_member() {
 }
 
 #[test]
+fn native_strict_reports_any_hidden_in_dts_ref_object() {
+  let tmp = tempdir().expect("temp dir");
+  let types = tmp.path().join("types.d.ts");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &types,
+    r#"
+export interface Bad { x: any }
+export declare const bad: Bad;
+"#,
+  )
+  .expect("write types.d.ts");
+  fs::write(
+    &entry,
+    r#"
+import { bad } from "./types";
+const v = bad;
+"#,
+  )
+  .expect("write main.ts");
+
+  // `.d.ts` files are intentionally skipped by the file-level `any` scan, so this
+  // must be caught by walking the inferred type structure for `bad` / `v`.
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg(entry.as_os_str())
+    .assert()
+    .success();
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--native-strict")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains("TC4000"));
+}
+
+#[test]
+fn native_strict_reports_any_hidden_in_dts_ref_callable() {
+  let tmp = tempdir().expect("temp dir");
+  let types = tmp.path().join("types.d.ts");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &types,
+    r#"
+export type Fn = (x: any) => number;
+export declare const fn: Fn;
+"#,
+  )
+  .expect("write types.d.ts");
+  fs::write(
+    &entry,
+    r#"
+import { fn } from "./types";
+const f = fn;
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg(entry.as_os_str())
+    .assert()
+    .success();
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--native-strict")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains("TC4000"));
+}
+
+#[test]
 fn strict_native_json_includes_compiler_option() {
   let tmp = tempdir().expect("temp dir");
   let entry = tmp.path().join("main.ts");

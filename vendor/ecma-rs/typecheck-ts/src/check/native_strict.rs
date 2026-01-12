@@ -557,23 +557,31 @@ pub fn validate_native_strict_body(
     )
   }
 
-  fn is_effective_any(store: &TypeStore, relate: &RelateCtx, ty: TypeId) -> bool {
-    let ty = store.canon(ty);
-    match store.type_kind(ty) {
-      TypeKind::Any => true,
-      // `TypeKind::Ref` nodes may expand to `any` (e.g. type aliases). Use the
-      // relation engine (which has access to a reference expander) to detect
-      // those cases without needing a full evaluator here.
-      TypeKind::Ref { .. } => {
-        let prim = store.primitive_ids();
-        // `unknown` is only assignable to `unknown` and `any`. If `unknown` is
-        // assignable to `ty`, then `ty` is either `unknown` or `any` (after
-        // expansion). Distinguish `any` from `unknown` by checking assignability
-        // to a concrete type.
-        relate.is_assignable(prim.unknown, ty) && relate.is_assignable(ty, prim.number)
-      }
-      _ => false,
-    }
+  fn signature_contains_any(
+    store: &TypeStore,
+    relate: &RelateCtx,
+    sig_id: types_ts_interned::SignatureId,
+    cache: &mut HashMap<TypeId, bool>,
+    visiting: &mut HashSet<TypeId>,
+  ) -> bool {
+    let types_ts_interned::Signature {
+      params,
+      ret,
+      type_params,
+      this_param,
+    } = store.signature(sig_id);
+    type_contains_any(store, relate, ret, cache, visiting)
+      || this_param.is_some_and(|inner| type_contains_any(store, relate, inner, cache, visiting))
+      || params
+        .into_iter()
+        .any(|param| type_contains_any(store, relate, param.ty, cache, visiting))
+      || type_params.into_iter().any(|tp| {
+        tp.constraint
+          .is_some_and(|inner| type_contains_any(store, relate, inner, cache, visiting))
+          || tp
+            .default
+            .is_some_and(|inner| type_contains_any(store, relate, inner, cache, visiting))
+      })
   }
 
   fn type_contains_any(
@@ -583,6 +591,7 @@ pub fn validate_native_strict_body(
     cache: &mut HashMap<TypeId, bool>,
     visiting: &mut HashSet<TypeId>,
   ) -> bool {
+    let ty = store.canon(ty);
     if let Some(hit) = cache.get(&ty) {
       return *hit;
     }
@@ -592,58 +601,105 @@ pub fn validate_native_strict_body(
       return false;
     }
 
-    let result = if is_effective_any(store, relate, ty) {
-      true
-    } else {
-      match store.type_kind(ty) {
-        TypeKind::Infer { constraint, .. } => constraint
-          .is_some_and(|inner| type_contains_any(store, relate, inner, cache, visiting)),
-        TypeKind::Tuple(elems) => elems.into_iter().any(|elem| {
-          type_contains_any(store, relate, elem.ty, cache, visiting)
-        }),
-        TypeKind::Array { ty, .. } => type_contains_any(store, relate, ty, cache, visiting),
-        TypeKind::Union(members) | TypeKind::Intersection(members) => members
+    let result = match store.type_kind(ty) {
+      TypeKind::Any => true,
+      TypeKind::Infer { constraint, .. } => constraint
+        .is_some_and(|inner| type_contains_any(store, relate, inner, cache, visiting)),
+      TypeKind::Tuple(elems) => elems.into_iter().any(|elem| {
+        type_contains_any(store, relate, elem.ty, cache, visiting)
+      }),
+      TypeKind::Array { ty, .. } => type_contains_any(store, relate, ty, cache, visiting),
+      TypeKind::Union(members) | TypeKind::Intersection(members) => members
+        .into_iter()
+        .any(|member| type_contains_any(store, relate, member, cache, visiting)),
+      TypeKind::Object(obj) => {
+        let types_ts_interned::Shape {
+          properties,
+          call_signatures,
+          construct_signatures,
+          indexers,
+        } = store.shape(store.object(obj).shape);
+        properties
           .into_iter()
-          .any(|member| type_contains_any(store, relate, member, cache, visiting)),
-        TypeKind::Ref { args, .. } => args
-          .into_iter()
-          .any(|arg| type_contains_any(store, relate, arg, cache, visiting)),
-        TypeKind::Predicate { asserted, .. } => asserted
-          .is_some_and(|inner| type_contains_any(store, relate, inner, cache, visiting)),
-        TypeKind::Conditional {
-          check,
-          extends,
-          true_ty,
-          false_ty,
-          ..
-        } => {
-          type_contains_any(store, relate, check, cache, visiting)
-            || type_contains_any(store, relate, extends, cache, visiting)
-            || type_contains_any(store, relate, true_ty, cache, visiting)
-            || type_contains_any(store, relate, false_ty, cache, visiting)
-        }
-        TypeKind::Mapped(mapped) => {
-          type_contains_any(store, relate, mapped.source, cache, visiting)
-            || type_contains_any(store, relate, mapped.value, cache, visiting)
-            || mapped.name_type.is_some_and(|inner| {
-              type_contains_any(store, relate, inner, cache, visiting)
-            })
-            || mapped.as_type.is_some_and(|inner| {
-              type_contains_any(store, relate, inner, cache, visiting)
-            })
-        }
-        TypeKind::TemplateLiteral(tpl) => tpl
-          .spans
-          .into_iter()
-          .any(|chunk| type_contains_any(store, relate, chunk.ty, cache, visiting)),
-        TypeKind::Intrinsic { ty, .. } => type_contains_any(store, relate, ty, cache, visiting),
-        TypeKind::IndexedAccess { obj, index } => {
-          type_contains_any(store, relate, obj, cache, visiting)
-            || type_contains_any(store, relate, index, cache, visiting)
-        }
-        TypeKind::KeyOf(inner) => type_contains_any(store, relate, inner, cache, visiting),
-        _ => false,
+          .any(|prop| type_contains_any(store, relate, prop.data.ty, cache, visiting))
+          || indexers.into_iter().any(|indexer| {
+            type_contains_any(store, relate, indexer.key_type, cache, visiting)
+              || type_contains_any(store, relate, indexer.value_type, cache, visiting)
+          })
+          || call_signatures.into_iter().any(|sig_id| {
+            signature_contains_any(store, relate, sig_id, cache, visiting)
+          })
+          || construct_signatures
+            .into_iter()
+            .any(|sig_id| signature_contains_any(store, relate, sig_id, cache, visiting))
       }
+      TypeKind::Callable { overloads } => overloads.into_iter().any(|sig_id| {
+        signature_contains_any(store, relate, sig_id, cache, visiting)
+      }),
+      TypeKind::Ref { def, args } => {
+        if args
+          .iter()
+          .copied()
+          .any(|arg| type_contains_any(store, relate, arg, cache, visiting))
+        {
+          true
+        } else {
+          // Expand the reference and traverse its structure.
+          let expanded =
+            relate
+              .expander()
+              .and_then(|expander| expander.expand_ref(store, def, &args));
+          if let Some(expanded) = expanded {
+            type_contains_any(store, relate, expanded, cache, visiting)
+          } else {
+            // `TypeKind::Ref` nodes may expand to `any` (e.g. type aliases). Use the
+            // relation engine (which has access to a reference expander) to detect
+            // those cases without needing a full evaluator here when expansion isn't
+            // available.
+            let prim = store.primitive_ids();
+            // `unknown` is only assignable to `unknown` and `any`. If `unknown` is
+            // assignable to `ty`, then `ty` is either `unknown` or `any` (after
+            // expansion). Distinguish `any` from `unknown` by checking assignability
+            // to a concrete type.
+            relate.is_assignable(prim.unknown, ty) && relate.is_assignable(ty, prim.number)
+          }
+        }
+      }
+      TypeKind::Predicate { asserted, .. } => asserted
+        .is_some_and(|inner| type_contains_any(store, relate, inner, cache, visiting)),
+      TypeKind::Conditional {
+        check,
+        extends,
+        true_ty,
+        false_ty,
+        ..
+      } => {
+        type_contains_any(store, relate, check, cache, visiting)
+          || type_contains_any(store, relate, extends, cache, visiting)
+          || type_contains_any(store, relate, true_ty, cache, visiting)
+          || type_contains_any(store, relate, false_ty, cache, visiting)
+      }
+      TypeKind::Mapped(mapped) => {
+        type_contains_any(store, relate, mapped.source, cache, visiting)
+          || type_contains_any(store, relate, mapped.value, cache, visiting)
+          || mapped.name_type.is_some_and(|inner| {
+            type_contains_any(store, relate, inner, cache, visiting)
+          })
+          || mapped.as_type.is_some_and(|inner| {
+            type_contains_any(store, relate, inner, cache, visiting)
+          })
+      }
+      TypeKind::TemplateLiteral(tpl) => tpl
+        .spans
+        .into_iter()
+        .any(|chunk| type_contains_any(store, relate, chunk.ty, cache, visiting)),
+      TypeKind::Intrinsic { ty, .. } => type_contains_any(store, relate, ty, cache, visiting),
+      TypeKind::IndexedAccess { obj, index } => {
+        type_contains_any(store, relate, obj, cache, visiting)
+          || type_contains_any(store, relate, index, cache, visiting)
+      }
+      TypeKind::KeyOf(inner) => type_contains_any(store, relate, inner, cache, visiting),
+      _ => false,
     };
 
     visiting.remove(&ty);
