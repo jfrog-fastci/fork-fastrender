@@ -340,8 +340,13 @@ pub struct Vm {
   dynamic_import_eval_on_fulfilled_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_rejected_call: Option<NativeFunctionId>,
   module_namespace_getter_call: Option<NativeFunctionId>,
+  async_from_sync_iterator_next_call: Option<NativeFunctionId>,
+  async_from_sync_iterator_return_call: Option<NativeFunctionId>,
+  async_from_sync_iterator_throw_call: Option<NativeFunctionId>,
   async_from_sync_iterator_unwrap_call: Option<NativeFunctionId>,
   async_from_sync_iterator_close_call: Option<NativeFunctionId>,
+  async_iterator_close_on_fulfilled_call: Option<NativeFunctionId>,
+  async_iterator_close_on_rejected_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, AsyncContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
@@ -576,8 +581,13 @@ impl Vm {
       dynamic_import_eval_on_fulfilled_call: None,
       dynamic_import_eval_on_rejected_call: None,
       module_namespace_getter_call: None,
+      async_from_sync_iterator_next_call: None,
+      async_from_sync_iterator_return_call: None,
+      async_from_sync_iterator_throw_call: None,
       async_from_sync_iterator_unwrap_call: None,
       async_from_sync_iterator_close_call: None,
+      async_iterator_close_on_fulfilled_call: None,
+      async_iterator_close_on_rejected_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
       module_graph: None,
@@ -705,6 +715,33 @@ impl Vm {
     Ok(id)
   }
 
+  pub(crate) fn async_from_sync_iterator_next_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_from_sync_iterator_next_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::iterator::async_from_sync_iterator_next_call)?;
+    self.async_from_sync_iterator_next_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn async_from_sync_iterator_return_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_from_sync_iterator_return_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::iterator::async_from_sync_iterator_return_call)?;
+    self.async_from_sync_iterator_return_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn async_from_sync_iterator_throw_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_from_sync_iterator_throw_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::iterator::async_from_sync_iterator_throw_call)?;
+    self.async_from_sync_iterator_throw_call = Some(id);
+    Ok(id)
+  }
+
   pub(crate) fn async_from_sync_iterator_unwrap_call_id(
     &mut self,
   ) -> Result<NativeFunctionId, VmError> {
@@ -724,6 +761,24 @@ impl Vm {
     }
     let id = self.register_native_call(crate::iterator::async_from_sync_iterator_close_call)?;
     self.async_from_sync_iterator_close_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn async_iterator_close_on_fulfilled_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_iterator_close_on_fulfilled_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::iterator::async_iterator_close_on_fulfilled_call)?;
+    self.async_iterator_close_on_fulfilled_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn async_iterator_close_on_rejected_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_iterator_close_on_rejected_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::iterator::async_iterator_close_on_rejected_call)?;
+    self.async_iterator_close_on_rejected_call = Some(id);
     Ok(id)
   }
 
