@@ -564,6 +564,20 @@ impl SymbolTable {
     self.symbols.len() as u32
   }
 
+  /// Iterate over all symbols in deterministic order.
+  ///
+  /// Symbols are stored in a `BTreeMap`, so iteration is stable across runs.
+  pub fn symbols_iter(&self) -> impl Iterator<Item = &SymbolData> {
+    self.symbols.values()
+  }
+
+  /// Iterate over all declarations in deterministic order.
+  ///
+  /// Declarations are stored in a `BTreeMap`, so iteration is stable across runs.
+  pub fn decls_iter(&self) -> impl Iterator<Item = &DeclData> {
+    self.decls.values()
+  }
+
   pub fn new() -> Self {
     Self::default()
   }
