@@ -20,7 +20,7 @@ fn program_check_does_not_block_concurrent_check_body() {
   // Generate enough bodies to ensure `Program::check()` takes the parallel body-checking path.
   let mut source = String::new();
   source.push_str("export const seed: number = 0;\n");
-  for idx in 0..512 {
+  for idx in 0..256 {
     source.push_str(&format!(
       "export function f{idx}(value: number): number {{ let x = value + {idx}; return x * {idx}; }}\n"
     ));

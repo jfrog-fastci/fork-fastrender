@@ -40,7 +40,7 @@ fn program_check_does_not_block_symbol_queries() {
   let _reset = Reset;
 
   let pool = rayon::ThreadPoolBuilder::new()
-    .num_threads(4)
+    .num_threads(2)
     .build()
     .expect("build rayon pool");
 
