@@ -1,7 +1,11 @@
+use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
+use inkwell::values::AsValueRef as _;
 use inkwell::IntPredicate;
 use inkwell::OptimizationLevel;
+use llvm_sys::core::{LLVMSetFunctionCallConv, LLVMSetGlobalConstant};
+use llvm_sys::LLVMCallConv;
 use native_js::codegen::safepoint;
 use native_js::llvm::{gc, passes};
 use object::{Object, ObjectSection};
@@ -67,6 +71,23 @@ fn extract_ret_ssa(func_ir: &str) -> String {
   ret_line.split_whitespace().last().unwrap_or("").to_string()
 }
 
+fn host_target_machine() -> TargetMachine {
+  native_js::llvm::init_native_target().expect("failed to init native target");
+
+  let triple = TargetMachine::get_default_triple();
+  let target = Target::from_triple(&triple).expect("no target for default triple");
+  target
+    .create_target_machine(
+      &triple,
+      "generic",
+      "",
+      OptimizationLevel::None,
+      RelocMode::Default,
+      CodeModel::Default,
+    )
+    .expect("failed to create target machine")
+}
+
 #[test]
 #[should_panic(expected = "RT_GC_EPOCH must have type i64")]
 fn backedge_poll_panics_on_incompatible_rt_gc_epoch_type() {
@@ -88,9 +109,135 @@ fn backedge_poll_panics_on_incompatible_rt_gc_epoch_type() {
 }
 
 #[test]
-fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
-  native_js::llvm::init_native_target().expect("failed to init native target");
+fn rewrite_statepoints_rejects_constant_rt_gc_epoch() {
+  let context = Context::create();
+  let module = context.create_module("gc_backedge_poll_const_epoch");
+  let builder = context.create_builder();
 
+  // `RT_GC_EPOCH` must be mutable: declaring it `constant` lets LLVM treat safepoint polls as
+  // invariant and prevents the runtime from coordinating stop-the-world GC.
+  let epoch = module.add_global(context.i64_type(), None, "RT_GC_EPOCH");
+  epoch.set_initializer(&context.i64_type().const_zero());
+  unsafe {
+    LLVMSetGlobalConstant(epoch.as_value_ref(), 1);
+  }
+
+  let void_ty = context.void_type();
+  let fn_ty = void_ty.fn_type(&[], false);
+  let func = module.add_function("test", fn_ty, None);
+  gc::set_default_gc_strategy(&func).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(err, passes::PassError::SafepointEpochIsConstant { .. }),
+    "expected SafepointEpochIsConstant, got: {err}"
+  );
+}
+
+#[test]
+fn rewrite_statepoints_rejects_rt_gc_safepoint_slow_marked_gc_leaf_function() {
+  let context = Context::create();
+  let module = context.create_module("gc_backedge_poll_slow_leaf");
+  let builder = context.create_builder();
+
+  let void_ty = context.void_type();
+  let i64_ty = context.i64_type();
+
+  let slow_ty = void_ty.fn_type(&[i64_ty.into()], false);
+  let slow = module.add_function("rt_gc_safepoint_slow", slow_ty, None);
+  let leaf = context.create_string_attribute("gc-leaf-function", "");
+  slow.add_attribute(AttributeLoc::Function, leaf);
+
+  let fn_ty = void_ty.fn_type(&[], false);
+  let func = module.add_function("test", fn_ty, None);
+  gc::set_default_gc_strategy(&func).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(err, passes::PassError::SafepointSlowIsLeafFunction { .. }),
+    "expected SafepointSlowIsLeafFunction, got: {err}"
+  );
+}
+
+#[test]
+fn rewrite_statepoints_rejects_rt_gc_safepoint_slow_non_c_calling_convention() {
+  let context = Context::create();
+  let module = context.create_module("gc_backedge_poll_slow_bad_cc");
+  let builder = context.create_builder();
+
+  let void_ty = context.void_type();
+  let i64_ty = context.i64_type();
+
+  let slow_ty = void_ty.fn_type(&[i64_ty.into()], false);
+  let slow = module.add_function("rt_gc_safepoint_slow", slow_ty, None);
+  unsafe {
+    LLVMSetFunctionCallConv(slow.as_value_ref(), LLVMCallConv::LLVMFastCallConv as u32);
+  }
+
+  let fn_ty = void_ty.fn_type(&[], false);
+  let func = module.add_function("test", fn_ty, None);
+  gc::set_default_gc_strategy(&func).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(
+      err,
+      passes::PassError::IncompatibleSafepointSlowCallingConvention { .. }
+    ),
+    "expected IncompatibleSafepointSlowCallingConvention, got: {err}"
+  );
+}
+
+#[test]
+fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
   let context = Context::create();
   let module = context.create_module("gc_backedge_poll_test");
   let builder = context.create_builder();
@@ -157,20 +304,8 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
 
   // Run the statepoint rewrite pass so the slow-path call becomes a statepoint
   // with stack maps + gc.relocate.
-  let triple = TargetMachine::get_default_triple();
-  let target = Target::from_triple(&triple).expect("no target for default triple");
-  let tm = target
-    .create_target_machine(
-      &triple,
-      "generic",
-      "",
-      OptimizationLevel::None,
-      RelocMode::Default,
-      CodeModel::Default,
-    )
-    .expect("failed to create target machine");
-
-  module.set_triple(&triple);
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
   module.set_data_layout(&tm.get_target_data().get_data_layout());
 
   passes::rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");

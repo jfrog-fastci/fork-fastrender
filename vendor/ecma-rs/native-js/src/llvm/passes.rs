@@ -242,6 +242,8 @@ pub fn rewrite_statepoints_for_gc(
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
   reject_rs4gc_unsupported_calls_in_gc_functions(module)?;
+  validate_rt_gc_epoch_decl_if_present(module)?;
+  validate_rt_gc_safepoint_slow_decl_if_present(module)?;
   super::debug_lint_module_gc_pointer_discipline(module)?;
 
   let pipeline = if cfg!(debug_assertions) {
@@ -287,6 +289,8 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
   reject_rs4gc_unsupported_calls_in_gc_functions(module)?;
+  validate_rt_gc_epoch_decl_if_present(module)?;
+  validate_rt_gc_safepoint_slow_decl_if_present(module)?;
   super::debug_lint_module_gc_pointer_discipline(module)?;
 
   ensure_gc_safepoint_poll_decl(module)?;
@@ -338,17 +342,7 @@ fn ensure_rt_gc_epoch_decl(module: &Module<'_>) -> Result<LLVMValueRef, PassErro
   unsafe {
     let existing = LLVMGetNamedGlobal(module.as_mut_ptr(), name.as_ptr());
     if !existing.is_null() {
-      let ty = LLVMGlobalGetValueType(existing);
-      if LLVMGetTypeKind(ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(ty) != 64 {
-        return Err(PassError::IncompatibleSafepointEpochType {
-          name: "RT_GC_EPOCH".to_string(),
-        });
-      }
-      if LLVMIsGlobalConstant(existing) != 0 {
-        return Err(PassError::SafepointEpochIsConstant {
-          name: "RT_GC_EPOCH".to_string(),
-        });
-      }
+      validate_rt_gc_epoch_global(existing)?;
       return Ok(existing);
     }
 
@@ -364,39 +358,7 @@ fn ensure_rt_gc_safepoint_slow_decl(module: &Module<'_>) -> Result<LLVMValueRef,
   unsafe {
     let existing = LLVMGetNamedFunction(module.as_mut_ptr(), name.as_ptr());
     if !existing.is_null() {
-      // Ensure the signature matches `declare void @rt_gc_safepoint_slow(i64)`.
-      let fn_ty = LLVMGlobalGetValueType(existing);
-      let ret_ty = LLVMGetReturnType(fn_ty);
-      let param_count = LLVMCountParamTypes(fn_ty);
-      let varargs = LLVMIsFunctionVarArg(fn_ty) != 0;
-      if LLVMGetTypeKind(ret_ty) != LLVMTypeKind::LLVMVoidTypeKind || param_count != 1 || varargs {
-        return Err(PassError::IncompatibleSafepointSlowSignature {
-          name: "rt_gc_safepoint_slow".to_string(),
-        });
-      }
-
-      let mut params = [ptr::null_mut()];
-      LLVMGetParamTypes(fn_ty, params.as_mut_ptr());
-      let param_ty = params[0];
-      if LLVMGetTypeKind(param_ty) != LLVMTypeKind::LLVMIntegerTypeKind
-        || LLVMGetIntTypeWidth(param_ty) != 64
-      {
-        return Err(PassError::IncompatibleSafepointSlowSignature {
-          name: "rt_gc_safepoint_slow".to_string(),
-        });
-      }
-      let call_conv = LLVMGetFunctionCallConv(existing);
-      if call_conv != LLVMCallConv::LLVMCCallConv as u32 {
-        return Err(PassError::IncompatibleSafepointSlowCallingConvention {
-          name: "rt_gc_safepoint_slow".to_string(),
-          call_conv,
-        });
-      }
-      if is_gc_leaf_function(existing) {
-        return Err(PassError::SafepointSlowIsLeafFunction {
-          name: "rt_gc_safepoint_slow".to_string(),
-        });
-      }
+      validate_rt_gc_safepoint_slow_function(existing)?;
       return Ok(existing);
     }
 
@@ -406,6 +368,89 @@ fn ensure_rt_gc_safepoint_slow_decl(module: &Module<'_>) -> Result<LLVMValueRef,
     let mut params = [i64_ty];
     let fn_ty = LLVMFunctionType(void_ty, params.as_mut_ptr(), 1, 0);
     Ok(LLVMAddFunction(module.as_mut_ptr(), name.as_ptr(), fn_ty))
+  }
+}
+
+fn validate_rt_gc_epoch_global(existing: LLVMValueRef) -> Result<(), PassError> {
+  assert!(!existing.is_null(), "validate_rt_gc_epoch_global: existing must be non-null");
+  unsafe {
+    let ty = LLVMGlobalGetValueType(existing);
+    if LLVMGetTypeKind(ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(ty) != 64 {
+      return Err(PassError::IncompatibleSafepointEpochType {
+        name: "RT_GC_EPOCH".to_string(),
+      });
+    }
+    if LLVMIsGlobalConstant(existing) != 0 {
+      return Err(PassError::SafepointEpochIsConstant {
+        name: "RT_GC_EPOCH".to_string(),
+      });
+    }
+  }
+  Ok(())
+}
+
+fn validate_rt_gc_epoch_decl_if_present(module: &Module<'_>) -> Result<(), PassError> {
+  let name = CString::new("RT_GC_EPOCH").expect("RT_GC_EPOCH contains NUL");
+  unsafe {
+    let existing = LLVMGetNamedGlobal(module.as_mut_ptr(), name.as_ptr());
+    if existing.is_null() {
+      return Ok(());
+    }
+    validate_rt_gc_epoch_global(existing)
+  }
+}
+
+fn validate_rt_gc_safepoint_slow_function(existing: LLVMValueRef) -> Result<(), PassError> {
+  assert!(
+    !existing.is_null(),
+    "validate_rt_gc_safepoint_slow_function: existing must be non-null"
+  );
+  unsafe {
+    // Ensure the signature matches `declare void @rt_gc_safepoint_slow(i64)`.
+    let fn_ty = LLVMGlobalGetValueType(existing);
+    let ret_ty = LLVMGetReturnType(fn_ty);
+    let param_count = LLVMCountParamTypes(fn_ty);
+    let varargs = LLVMIsFunctionVarArg(fn_ty) != 0;
+    if LLVMGetTypeKind(ret_ty) != LLVMTypeKind::LLVMVoidTypeKind || param_count != 1 || varargs {
+      return Err(PassError::IncompatibleSafepointSlowSignature {
+        name: "rt_gc_safepoint_slow".to_string(),
+      });
+    }
+
+    let mut params = [ptr::null_mut()];
+    LLVMGetParamTypes(fn_ty, params.as_mut_ptr());
+    let param_ty = params[0];
+    if LLVMGetTypeKind(param_ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(param_ty) != 64 {
+      return Err(PassError::IncompatibleSafepointSlowSignature {
+        name: "rt_gc_safepoint_slow".to_string(),
+      });
+    }
+
+    let call_conv = LLVMGetFunctionCallConv(existing);
+    if call_conv != LLVMCallConv::LLVMCCallConv as u32 {
+      return Err(PassError::IncompatibleSafepointSlowCallingConvention {
+        name: "rt_gc_safepoint_slow".to_string(),
+        call_conv,
+      });
+    }
+
+    if is_gc_leaf_function(existing) {
+      return Err(PassError::SafepointSlowIsLeafFunction {
+        name: "rt_gc_safepoint_slow".to_string(),
+      });
+    }
+  }
+  Ok(())
+}
+
+fn validate_rt_gc_safepoint_slow_decl_if_present(module: &Module<'_>) -> Result<(), PassError> {
+  let name = CString::new("rt_gc_safepoint_slow").expect("rt_gc_safepoint_slow contains NUL");
+  unsafe {
+    let existing = LLVMGetNamedFunction(module.as_mut_ptr(), name.as_ptr());
+    if existing.is_null() {
+      return Ok(());
+    }
+    validate_rt_gc_safepoint_slow_function(existing)
   }
 }
 
