@@ -1,4 +1,3 @@
-#[path = "animation/mod.rs"]
 mod animation;
 
 use std::collections::HashMap;
