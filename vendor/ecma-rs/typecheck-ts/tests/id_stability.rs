@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use typecheck_ts::{BodyId, DefId, ExprId, FileId, FileKey, MemoryHost, PatId, Program, Span};
 
@@ -363,6 +364,37 @@ export default wrap(seed + 2);
   let snap_b = snapshot(&program_b, file_id_b);
 
   assert_eq!(snap_a, snap_b);
+}
+
+#[test]
+fn default_export_expr_def_id_is_stable_across_insertions() {
+  let file = FileKey::new("default_edit.ts");
+  let mut host = MemoryHost::default();
+  host.insert(file.clone(), "export default (1 + 2);\n");
+
+  let mut program = Program::new(host, vec![file.clone()]);
+  program.check();
+  let file_id = program.file_id(&file).expect("file id");
+
+  let export_before = program.exports_of(file_id);
+  let default_def_before = export_before
+    .get("default")
+    .and_then(|entry| entry.def)
+    .expect("default export def id");
+
+  program.set_file_text(file_id, Arc::from("const inserted = 123;\nexport default (1 + 2);\n"));
+  program.check();
+
+  let export_after = program.exports_of(file_id);
+  let default_def_after = export_after
+    .get("default")
+    .and_then(|entry| entry.def)
+    .expect("default export def id after edit");
+
+  assert_eq!(
+    default_def_before, default_def_after,
+    "default export expression DefId should remain stable across unrelated insertions",
+  );
 }
 
 #[test]

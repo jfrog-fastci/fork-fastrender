@@ -21,6 +21,7 @@ impl ProgramState {
     let mut bindings: HashMap<String, SymbolBinding> = HashMap::new();
     let mut reexports = Vec::new();
     let mut export_all = Vec::new();
+    let mut default_export_expr_ordinal: u32 = 0;
 
     for stmt in ast.stx.body.iter() {
       self.queue_type_imports_in_stmt(file, stmt, host, queue);
@@ -283,7 +284,26 @@ impl ProgramState {
         Stmt::ExportDefaultExpr(node) => {
           let span = loc_to_span(file, node.loc);
           let symbol = self.alloc_symbol();
-          let def_id = self.alloc_def();
+          // `export default <expr>` is not guaranteed to correspond to a stable
+          // `hir-js` definition (unlike declarations/imports). Use a deterministic
+          // synthetic `DefId` so callers can observe a stable ID across edits that
+          // insert unrelated declarations earlier in the file.
+          let mut taken_ids: HashSet<DefId> = self.def_data.keys().copied().collect();
+          if let Some(lowered) = self.hir_lowered.get(&file) {
+            taken_ids.extend(lowered.defs.iter().map(|def| def.id));
+          }
+          let def_id = alloc_synthetic_def_id(
+            file,
+            &mut taken_ids,
+            &(
+              "ts_default_export_expr",
+              file.0,
+              0u32, // kind: export default expr
+              default_export_expr_ordinal,
+            ),
+          );
+          default_export_expr_ordinal += 1;
+          self.next_def = self.next_def.max(def_id.0.saturating_add(1));
           self.def_data.insert(
             def_id,
             DefData {
