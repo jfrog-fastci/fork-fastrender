@@ -102,6 +102,17 @@ fn make_budget() -> Budget {
   }
 }
 
+fn drain_microtasks(agent: &mut Agent) {
+  // `Agent::run_script` only calls the host `microtask_checkpoint` hook when the script completed
+  // normally (success or JS `throw`). Termination/OOM paths can leave Promise jobs queued.
+  //
+  // Before dropping the Agent (which drops the VM-owned microtask queue), drain it so jobs can
+  // clean up their persistent roots via `Job::run`/`Job::discard`.
+  let prev_budget = agent.vm_mut().swap_budget_state(make_budget());
+  let _ = agent.perform_microtask_checkpoint();
+  agent.vm_mut().restore_budget_state(prev_budget);
+}
+
 fuzz_target!(|data: &[u8]| {
   let data = if data.len() > MAX_SOURCE_BYTES {
     &data[..MAX_SOURCE_BYTES]
@@ -140,6 +151,7 @@ fuzz_target!(|data: &[u8]| {
     interrupt_flag.store(true, Ordering::Relaxed);
   }
   let _ = agent.run_script("<fuzz>", source.as_ref(), make_budget(), Some(&mut hooks));
+  drain_microtasks(&mut agent);
 
   // Clear any interrupt requested above so subsequent runs can proceed.
   agent.vm_mut().reset_interrupt();
@@ -150,4 +162,5 @@ fuzz_target!(|data: &[u8]| {
   }
   let wrapper = wrapper_script(source.as_ref());
   let _ = agent.run_script("<fuzz-wrapper>", wrapper, make_budget(), Some(&mut hooks));
-});
+  drain_microtasks(&mut agent);
+}); 
