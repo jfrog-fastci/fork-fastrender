@@ -865,11 +865,11 @@ impl GcHeap {
 
       // Dead object: reclaim its per-object card table (if any).
       unsafe {
-        let header = &mut *(obj as *mut ObjHeader);
-        let card_table = header.card_table_ptr();
+        let header_ptr = obj as *mut ObjHeader;
+        let card_table = (*header_ptr).card_table_ptr();
         if !card_table.is_null() {
           let size = super::obj_size(obj);
-          header.set_card_table_ptr(ptr::null_mut());
+          (*header_ptr).set_card_table_ptr(ptr::null_mut());
           super::free_card_table(card_table, size);
         }
       }

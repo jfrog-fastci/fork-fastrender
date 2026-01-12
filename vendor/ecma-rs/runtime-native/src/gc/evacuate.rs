@@ -124,12 +124,12 @@ impl Evacuator<'_> {
 
     // SAFETY: `obj` is a valid GC object in the nursery.
     unsafe {
-      let header = &mut *super::header_from_obj(obj);
-      if header.is_forwarded() {
-        return Ok((header.forwarding_ptr(), false));
+      let header_ptr = super::header_from_obj(obj);
+      if (*header_ptr).is_forwarded() {
+        return Ok(((*header_ptr).forwarding_ptr(), false));
       }
 
-      let desc = header.type_desc();
+      let desc = (*header_ptr).type_desc();
       let size = super::obj_size(obj);
       let new_obj = self.heap.alloc_old_raw(size, desc.align)?;
 
@@ -141,7 +141,7 @@ impl Evacuator<'_> {
       self
         .heap
         .maybe_install_card_table_for_array(new_obj, size);
-      header.set_forwarding_ptr(new_obj);
+      (*header_ptr).set_forwarding_ptr(new_obj);
       #[cfg(any(debug_assertions, feature = "gc_debug"))]
       {
         // Minor GC must not allocate; validate evacuation on the fly instead of building a list.

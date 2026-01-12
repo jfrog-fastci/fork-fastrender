@@ -250,7 +250,7 @@ impl Marker<'_> {
 
     // SAFETY: `obj` points to an `ObjHeader`.
     unsafe {
-      let header = &mut *super::header_from_obj(obj);
+      let header = &*super::header_from_obj(obj);
       header.set_mark_epoch(self.epoch);
 
       let size = super::obj_size(obj);
@@ -329,19 +329,19 @@ impl Compactor<'_> {
 
     // SAFETY: `obj` is expected to be a valid heap object.
     unsafe {
-      let header = &mut *super::header_from_obj(obj);
-      if header.is_forwarded() {
-        return header.forwarding_ptr();
+      let header_ptr = super::header_from_obj(obj);
+      if (*header_ptr).is_forwarded() {
+        return (*header_ptr).forwarding_ptr();
       }
-      if header.is_pinned() {
+      if (*header_ptr).is_pinned() {
         return obj;
       }
 
-      let desc = header.type_desc();
+      let desc = (*header_ptr).type_desc();
       let size = super::obj_size(obj);
       let new_obj = self.alloc_to_space(size, desc.align);
       ptr::copy_nonoverlapping(obj, new_obj, size);
-      header.set_forwarding_ptr(new_obj);
+      (*header_ptr).set_forwarding_ptr(new_obj);
       new_obj
     }
   }
