@@ -22,6 +22,9 @@ pub enum BrowserIcon {
   WarningInsecure,
   Error,
   Spinner,
+  Info,
+  BookmarkOutline,
+  BookmarkFilled,
 }
 
 impl BrowserIcon {
@@ -39,6 +42,9 @@ impl BrowserIcon {
       Self::WarningInsecure => "warning_insecure",
       Self::Error => "error",
       Self::Spinner => "spinner",
+      Self::Info => "info",
+      Self::BookmarkOutline => "bookmark_outline",
+      Self::BookmarkFilled => "bookmark_filled",
     }
   }
 
@@ -60,6 +66,9 @@ impl BrowserIcon {
       Self::WarningInsecure => "Not secure",
       Self::Error => "Error",
       Self::Spinner => "Loading",
+      Self::Info => "Info",
+      Self::BookmarkOutline => "Bookmark",
+      Self::BookmarkFilled => "Bookmark",
     }
   }
 
@@ -77,6 +86,9 @@ impl BrowserIcon {
       Self::WarningInsecure => include_bytes!("../../assets/browser_icons/warning_insecure.svg"),
       Self::Error => include_bytes!("../../assets/browser_icons/error.svg"),
       Self::Spinner => include_bytes!("../../assets/browser_icons/spinner.svg"),
+      Self::Info => include_bytes!("../../assets/browser_icons/info.svg"),
+      Self::BookmarkOutline => include_bytes!("../../assets/browser_icons/bookmark_outline.svg"),
+      Self::BookmarkFilled => include_bytes!("../../assets/browser_icons/bookmark_filled.svg"),
     }
   }
 }
@@ -486,6 +498,9 @@ mod tests {
       BrowserIcon::WarningInsecure,
       BrowserIcon::Error,
       BrowserIcon::Spinner,
+      BrowserIcon::Info,
+      BrowserIcon::BookmarkOutline,
+      BrowserIcon::BookmarkFilled,
     ] {
       let label = icon.a11y_label();
       assert!(
@@ -577,6 +592,7 @@ mod tests {
       BrowserIcon::Back,
       BrowserIcon::Forward,
       BrowserIcon::Reload,
+      BrowserIcon::StopLoading,
       BrowserIcon::CloseTab,
       BrowserIcon::NewTab,
       BrowserIcon::ZoomIn,
@@ -585,6 +601,9 @@ mod tests {
       BrowserIcon::WarningInsecure,
       BrowserIcon::Error,
       BrowserIcon::Spinner,
+      BrowserIcon::Info,
+      BrowserIcon::BookmarkOutline,
+      BrowserIcon::BookmarkFilled,
     ];
 
     for icon in icons {

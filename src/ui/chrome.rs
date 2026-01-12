@@ -12,6 +12,7 @@ use crate::ui::omnibox::{
   build_omnibox_suggestions_default_limit, OmniboxAction, OmniboxContext, OmniboxSearchSource,
   OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
 };
+use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::url_display;
@@ -141,19 +142,30 @@ fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
   egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
-fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> &'static str {
+enum OmniboxSuggestionIcon {
+  Icon(BrowserIcon),
+  Text(&'static str),
+}
+
+fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> OmniboxSuggestionIcon {
   match suggestion.source {
     OmniboxSuggestionSource::Primary => match &suggestion.action {
-      OmniboxAction::NavigateToUrl(_) => "↵",
-      OmniboxAction::Search(_) => "S",
-      OmniboxAction::ActivateTab(_) => "T",
+      OmniboxAction::NavigateToUrl(_) => OmniboxSuggestionIcon::Text("↵"),
+      OmniboxAction::Search(_) => OmniboxSuggestionIcon::Text("S"),
+      OmniboxAction::ActivateTab(_) => OmniboxSuggestionIcon::Text("T"),
     },
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "T",
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => "ⓘ",
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => "★",
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => "↩",
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => "H",
-    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => "S",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => OmniboxSuggestionIcon::Text("T"),
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => {
+      OmniboxSuggestionIcon::Icon(BrowserIcon::Info)
+    }
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => {
+      OmniboxSuggestionIcon::Icon(BrowserIcon::BookmarkFilled)
+    }
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => OmniboxSuggestionIcon::Text("↩"),
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => OmniboxSuggestionIcon::Text("H"),
+    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => {
+      OmniboxSuggestionIcon::Text("S")
+    }
   }
 }
 
@@ -687,18 +699,29 @@ pub fn chrome_ui_with_bookmarks(
             } else {
               "Bookmark this page (Ctrl+D)"
             };
-            let icon = if is_bookmarked { "★" } else { "☆" };
+            let icon = if is_bookmarked {
+              BrowserIcon::BookmarkFilled
+            } else {
+              BrowserIcon::BookmarkOutline
+            };
             let color = if is_bookmarked {
               ui.visuals().selection.stroke.color
             } else {
               ui.visuals().weak_text_color()
             };
-            let response = ui
-              .add_enabled(
-                can_toggle,
-                egui::Button::new(egui::RichText::new(icon).color(color)).frame(false),
-              )
-              .on_hover_text(tooltip);
+            let (rect, mut response) = ui.allocate_exact_size(
+              egui::vec2(ui.spacing().interact_size.y, ui.spacing().interact_size.y),
+              if can_toggle {
+                egui::Sense::click()
+              } else {
+                egui::Sense::hover()
+              },
+            );
+            response = response.on_hover_text(tooltip);
+            response.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Bookmark this page")
+            });
+            paint_icon_in_rect(ui, rect, icon, ui.spacing().icon_width, color);
             if response.clicked() {
               actions.push(ChromeAction::ToggleBookmarkForActiveTab);
             }
@@ -827,9 +850,13 @@ pub fn chrome_ui_with_bookmarks(
               .on_hover_text(indicator.tooltip());
             }
             security_indicator::SecurityIndicator::Neutral => {
-              let _ = ui
-                .label(egui::RichText::new(indicator.icon()).color(ui.visuals().weak_text_color()))
-                .on_hover_text(indicator.tooltip());
+              let _ = icon_tinted(
+                ui,
+                BrowserIcon::Info,
+                ui.spacing().icon_width,
+                ui.visuals().weak_text_color(),
+              )
+              .on_hover_text(indicator.tooltip());
             }
           }
         });
@@ -1285,7 +1312,19 @@ pub fn chrome_ui_with_bookmarks(
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.horizontal(|ui| {
                   ui.add_space(6.0);
-                  ui.label(egui::RichText::new(omnibox_suggestion_icon(suggestion)).strong());
+                  match omnibox_suggestion_icon(suggestion) {
+                    OmniboxSuggestionIcon::Icon(icon) => {
+                      let _ = icon_tinted(
+                        ui,
+                        icon,
+                        ui.spacing().icon_width,
+                        ui.visuals().text_color(),
+                      );
+                    }
+                    OmniboxSuggestionIcon::Text(text) => {
+                      ui.label(egui::RichText::new(text).strong());
+                    }
+                  }
 
                   let title = suggestion
                     .title
