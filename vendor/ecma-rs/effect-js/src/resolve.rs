@@ -293,6 +293,25 @@ impl<'a> ApiCallResolver<'a> {
       }
     }
 
+    for ty in [
+      "URL",
+      "URLSearchParams",
+      "Headers",
+      "Request",
+      "Response",
+      "TextDecoder",
+      "TextEncoder",
+      "AbortController",
+      "AbortSignal",
+      "Buffer",
+    ] {
+      if types.expr_is_named_ref(body, member.object, ty) {
+        if let Some(api) = resolve_prototype_call(ty) {
+          return Some(api);
+        }
+      }
+    }
+
     None
   }
 }
@@ -745,26 +764,40 @@ pub fn resolve_member(
 
   let prop = static_object_key_name(lowered, body_ref, &member.property)?;
 
-  let api = match prop.as_str() {
-    "length" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
-      "Array.prototype.length"
-    }
-    "length" if receiver_is_string(types, body, member.object) => "String.prototype.length",
-    "size" if receiver_is_named_ref(types, body, member.object, "Map") => "Map.prototype.size",
-    "size" if receiver_is_named_ref(types, body, member.object, "Set") => "Set.prototype.size",
-    "href" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.href",
-    "pathname" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.pathname",
-    "origin" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.origin",
-    "protocol" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.protocol",
-    "host" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.host",
-    "hostname" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.hostname",
-    "port" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.port",
-    "search" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.search",
-    "hash" if receiver_is_named_ref(types, body, member.object, "URL") => "URL.prototype.hash",
-    _ => return None,
-  }
-  .to_string();
-  let api_id = kb.id_of(&api)?;
+  let resolve_prototype_get = |prefix: &str| -> Option<&knowledge_base::ApiSemantics> {
+    let candidate = format!("{prefix}.prototype.{prop}");
+    let api = kb.get(&candidate)?;
+    matches!(api.kind, knowledge_base::ApiKind::Getter).then_some(api)
+  };
+
+  let api = if receiver_is_array_method_receiver(lowered, body, member.object, types) {
+    resolve_prototype_get("Array")
+  } else if receiver_is_string(types, body, member.object) {
+    resolve_prototype_get("String")
+  } else if receiver_is_named_ref(types, body, member.object, "Map") {
+    resolve_prototype_get("Map")
+  } else if receiver_is_named_ref(types, body, member.object, "Set") {
+    resolve_prototype_get("Set")
+  } else if receiver_is_named_ref(types, body, member.object, "URL") {
+    resolve_prototype_get("URL")
+  } else if receiver_is_named_ref(types, body, member.object, "URLSearchParams") {
+    resolve_prototype_get("URLSearchParams")
+  } else if receiver_is_named_ref(types, body, member.object, "Headers") {
+    resolve_prototype_get("Headers")
+  } else if receiver_is_named_ref(types, body, member.object, "Request") {
+    resolve_prototype_get("Request")
+  } else if receiver_is_named_ref(types, body, member.object, "Response") {
+    resolve_prototype_get("Response")
+  } else if receiver_is_named_ref(types, body, member.object, "AbortController") {
+    resolve_prototype_get("AbortController")
+  } else if receiver_is_named_ref(types, body, member.object, "AbortSignal") {
+    resolve_prototype_get("AbortSignal")
+  } else {
+    None
+  }?;
+
+  let api_id = api.id;
+  let api = api.name.clone();
 
   Some(ResolvedMember {
     member: member_expr_id,
