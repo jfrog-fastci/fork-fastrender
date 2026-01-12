@@ -114,6 +114,78 @@ static void timeout_check_rooted(uint8_t* data) {
   timeout_rooted_h_ran = (data == timeout_rooted_h_expected) ? 1 : 2;
 }
 
+static TimerId interval_with_drop_id = 0;
+static int interval_with_drop_ran = 0;
+static int interval_with_drop_drop_count = 0;
+static uint8_t interval_with_drop_user = 0;
+
+static void interval_check_with_drop(uint8_t* data) {
+  if (data != &interval_with_drop_user) {
+    interval_with_drop_ran = 2;
+    return;
+  }
+  if (interval_with_drop_drop_count != 0) {
+    interval_with_drop_ran = 3;
+    return;
+  }
+  interval_with_drop_ran = 1;
+  rt_clear_timer(interval_with_drop_id);
+}
+
+static void interval_with_drop_drop(uint8_t* data) {
+  if (data != &interval_with_drop_user) {
+    interval_with_drop_drop_count = -1;
+    return;
+  }
+  interval_with_drop_drop_count += 1;
+}
+
+static int timeout_handle_ran = 0;
+static int timeout_handle_drop_count = 0;
+static GcPtr timeout_handle_expected = NULL;
+static GcPtr timeout_handle_dropped = NULL;
+
+static void timeout_handle_cb(GcPtr data) {
+  if (data != timeout_handle_expected) {
+    timeout_handle_ran = 2;
+    return;
+  }
+  if (timeout_handle_drop_count != 0) {
+    timeout_handle_ran = 3;
+    return;
+  }
+  timeout_handle_ran = 1;
+}
+
+static void timeout_handle_drop(GcPtr data) {
+  timeout_handle_drop_count += 1;
+  timeout_handle_dropped = data;
+}
+
+static TimerId interval_handle_timer = 0;
+static int interval_handle_ran = 0;
+static int interval_handle_drop_count = 0;
+static GcPtr interval_handle_expected = NULL;
+static GcPtr interval_handle_dropped = NULL;
+
+static void interval_handle_cb(GcPtr data) {
+  if (data != interval_handle_expected) {
+    interval_handle_ran = 2;
+    return;
+  }
+  if (interval_handle_drop_count != 0) {
+    interval_handle_ran = 3;
+    return;
+  }
+  interval_handle_ran = 1;
+  rt_clear_timer(interval_handle_timer);
+}
+
+static void interval_handle_drop(GcPtr data) {
+  interval_handle_drop_count += 1;
+  interval_handle_dropped = data;
+}
+
 static IoWatcherId io_watcher = 0;
 static int io_watcher_ran = 0;
 static GcPtr io_watcher_expected = NULL;
@@ -242,8 +314,8 @@ static const CoroutineVTable NATIVE_ASYNC_SMOKE_VTABLE = {
   .promise_size = 64,
   .promise_align = 16,
   // The native async ABI requires a valid shape id for the promise allocation.
-  // This smoke test uses a single opaque promise shape descriptor with no pointer
-  // fields (ptr_offsets_len=0).
+  // Shape tables are 1-indexed; 0 is reserved invalid. Register an opaque promise
+  // shape descriptor below.
   .promise_shape_id = 2,
   .abi_version = RT_ASYNC_ABI_VERSION,
   .reserved = {0, 0, 0, 0},
@@ -583,6 +655,95 @@ int main(void) {
   (void)rt_async_poll();
   rt_drain_microtasks();
   if (check(timeout_rooted_h_ran == 1)) { rc = 99; goto done; }
+
+  // Clearing a timeout before it runs should call its drop hook and prevent the callback from
+  // executing.
+  timeout_with_drop_ran = 0;
+  timeout_with_drop_drop_count = 0;
+  TimerId timeout_cancel_id = rt_set_timeout_with_drop(
+    timeout_check_with_drop,
+    &timeout_with_drop_user,
+    timeout_with_drop_drop,
+    1000
+  );
+  if (check(timeout_cancel_id != 0)) { rc = 100; goto done; }
+  rt_clear_timer(timeout_cancel_id);
+  if (check(timeout_with_drop_ran == 0)) { rc = 101; goto done; }
+  if (check(timeout_with_drop_drop_count == 1)) { rc = 102; goto done; }
+  (void)rt_async_poll();
+  rt_drain_microtasks();
+  if (check(timeout_with_drop_ran == 0)) { rc = 103; goto done; }
+
+  // Interval drop hook: clearing from within the interval callback must not drop callback state
+  // mid-callback, but must still run the drop hook exactly once after the callback returns.
+  interval_with_drop_ran = 0;
+  interval_with_drop_drop_count = 0;
+  interval_with_drop_id = rt_set_interval_with_drop(
+    interval_check_with_drop,
+    &interval_with_drop_user,
+    interval_with_drop_drop,
+    0
+  );
+  if (check(interval_with_drop_id != 0)) { rc = 104; goto done; }
+  if (check(interval_with_drop_ran == 0)) { rc = 105; goto done; }
+  if (check(interval_with_drop_drop_count == 0)) { rc = 106; goto done; }
+  for (int i = 0; i < 8 && interval_with_drop_ran == 0; i++) {
+    (void)rt_async_poll();
+    rt_drain_microtasks();
+  }
+  if (check(interval_with_drop_ran == 1)) { rc = 107; goto done; }
+  if (check(interval_with_drop_drop_count == 1)) { rc = 108; goto done; }
+
+  // Handle-based timeouts: the runtime consumes the `HandleId` and frees it after the timer fires.
+  GcPtr timeout_handle_obj = rt_alloc_pinned(16, shape);
+  if (check(timeout_handle_obj != NULL)) { rc = 109; goto done; }
+  HandleId timeout_handle = rt_handle_alloc(timeout_handle_obj);
+  timeout_handle_expected = timeout_handle_obj;
+  timeout_handle_ran = 0;
+  timeout_handle_drop_count = 0;
+  timeout_handle_dropped = NULL;
+  TimerId timeout_handle_timer = rt_set_timeout_handle_with_drop(
+    timeout_handle_cb,
+    timeout_handle,
+    timeout_handle_drop,
+    0
+  );
+  if (check(timeout_handle_timer != 0)) { rc = 110; goto done; }
+  if (check(timeout_handle_ran == 0)) { rc = 111; goto done; }
+  if (check(timeout_handle_drop_count == 0)) { rc = 112; goto done; }
+  (void)rt_async_poll();
+  rt_drain_microtasks();
+  if (check(timeout_handle_ran == 1)) { rc = 113; goto done; }
+  if (check(timeout_handle_drop_count == 1)) { rc = 114; goto done; }
+  if (check(timeout_handle_dropped == timeout_handle_obj)) { rc = 115; goto done; }
+  if (check(rt_handle_load(timeout_handle) == NULL)) { rc = 116; goto done; }
+
+  // Handle-based intervals: clearing from within the callback should drop callback state after the
+  // callback returns and free the consumed handle exactly once.
+  GcPtr interval_handle_obj = rt_alloc_pinned(16, shape);
+  if (check(interval_handle_obj != NULL)) { rc = 117; goto done; }
+  HandleId interval_handle = rt_handle_alloc(interval_handle_obj);
+  interval_handle_expected = interval_handle_obj;
+  interval_handle_ran = 0;
+  interval_handle_drop_count = 0;
+  interval_handle_dropped = NULL;
+  interval_handle_timer = rt_set_interval_handle_with_drop(
+    interval_handle_cb,
+    interval_handle,
+    interval_handle_drop,
+    0
+  );
+  if (check(interval_handle_timer != 0)) { rc = 118; goto done; }
+  if (check(interval_handle_ran == 0)) { rc = 119; goto done; }
+  if (check(interval_handle_drop_count == 0)) { rc = 120; goto done; }
+  for (int i = 0; i < 8 && interval_handle_ran == 0; i++) {
+    (void)rt_async_poll();
+    rt_drain_microtasks();
+  }
+  if (check(interval_handle_ran == 1)) { rc = 121; goto done; }
+  if (check(interval_handle_drop_count == 1)) { rc = 122; goto done; }
+  if (check(interval_handle_dropped == interval_handle_obj)) { rc = 123; goto done; }
+  if (check(rt_handle_load(interval_handle) == NULL)) { rc = 124; goto done; }
 
   // I/O watcher rooted-h API: register a watcher that stores the callback userdata as a GC-rooted
   // persistent handle (created from a `GcHandle` / pointer-to-slot at registration time). After a
