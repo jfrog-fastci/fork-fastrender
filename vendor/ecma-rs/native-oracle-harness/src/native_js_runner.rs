@@ -109,7 +109,7 @@ fn empty_span() -> Span {
 }
 
 fn native_error(message: impl Into<String>) -> Diagnostic {
-  Diagnostic::error("NATIVE0001", message, empty_span())
+  Diagnostic::error("ORACLE0001", message, empty_span())
 }
 
 fn strip_one_trailing_newline(s: &mut String) {
