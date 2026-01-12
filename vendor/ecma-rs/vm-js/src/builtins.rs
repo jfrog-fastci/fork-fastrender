@@ -8054,6 +8054,12 @@ pub fn function_prototype_bind(
   // Create the bound function object (ordinary function with bound internal slots).
   let name = scope.alloc_string("bound")?;
   let func = scope.alloc_bound_function(target, bound_this, bound_args, name, bound_len)?;
+  // Root the newly-created bound function before any further operations that can allocate and
+  // trigger GC (Proxy-observable `Get(target, ...)`, metadata coercions, etc).
+  //
+  // Without this, binding a Proxy can allocate/GC while `func` is still only held in a Rust local,
+  // allowing it to be collected and turning subsequent handle uses into invalid handles.
+  scope.push_root(Value::Object(func))?;
 
   // Bound functions are ordinary function objects: their `[[Prototype]]` is `%Function.prototype%`.
   scope

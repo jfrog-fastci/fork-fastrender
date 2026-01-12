@@ -5,7 +5,11 @@ use vm_js::{
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // `instanceof` on Proxies can allocate intermediate objects/functions (Proxy traps can synthesize
+  // fresh values) and performs prototype-chain walks that may temporarily root multiple objects.
+  // Keep the heap limit comfortably above the engine's intrinsic initialization footprint so these
+  // tests exercise semantics rather than OOM thresholds.
+  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -286,6 +290,40 @@ fn instanceof_bound_function_delegates_to_bound_target_has_instance() -> Result<
       var b = p.bind(null);
 
       ({} instanceof b) === true && seen === true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
+fn instanceof_bound_function_with_undefined_has_instance_delegates_to_bound_target() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var seen = false;
+      function f() {}
+
+      var p = new Proxy(f, {
+        get(target, prop, receiver) {
+          if (prop === Symbol.hasInstance) {
+            seen = true;
+            return function(v) { return true; };
+          }
+          return target[prop];
+        }
+      });
+
+      var b = p.bind(null);
+
+      // Shadow the inherited (non-writable) Function.prototype[@@hasInstance] with an own property
+      // so `GetMethod(b, @@hasInstance)` returns `None` and `instanceof` falls back to
+      // `OrdinaryHasInstance`, which must delegate to `InstanceofOperator(O, b.[[BoundTargetFunction]])`.
+      Object.defineProperty(b, Symbol.hasInstance, { value: undefined });
+
+      (1 instanceof b) === true && ({} instanceof b) === true && seen === true
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));

@@ -7904,9 +7904,9 @@ impl<'a> Evaluator<'a> {
     &mut self,
     scope: &mut Scope<'_>,
     object: Value,
-    constructor: Value,
+    mut constructor: Value,
   ) -> Result<bool, VmError> {
-    // Root inputs for the duration of the operation: `instanceof` may allocate when performing
+    // Root inputs for the duration of the operation: `instanceof` can allocate when performing
     // `GetMethod`/`Get`/`Call`.
     let mut scope = scope.reborrow();
     scope.push_roots(&[object, constructor])?;
@@ -7914,17 +7914,6 @@ impl<'a> Evaluator<'a> {
     // InstanceofOperator(O, C) (ECMA-262).
     //
     // Spec: https://tc39.es/ecma262/#sec-instanceofoperator
-    //
-    // 1. If Type(C) is not Object, throw a TypeError exception.
-    let Value::Object(constructor_obj) = constructor else {
-      return Err(throw_type_error(
-        self.vm,
-        &mut scope,
-        "Right-hand side of 'instanceof' is not an object",
-      )?);
-    };
-
-    // 2. GetMethod(C, @@hasInstance).
     let has_instance_sym = self
       .vm
       .intrinsics()
@@ -7932,43 +7921,88 @@ impl<'a> Evaluator<'a> {
       .well_known_symbols()
       .has_instance;
     let has_instance_key = PropertyKey::from_symbol(has_instance_sym);
-    let method = match crate::spec_ops::get_method_with_host_and_hooks(
-      self.vm,
-      &mut scope,
-      &mut *self.host,
-      &mut *self.hooks,
-      Value::Object(constructor_obj),
-      has_instance_key,
-    ) {
-      Ok(m) => m,
-      Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
-      Err(err) => return Err(err),
-    };
 
-    if let Some(method) = method {
-      // Root `method` across the call. When `C` is a Proxy, `GetMethod(C, @@hasInstance)` can
-      // return a function that is not reachable from any rooted object (it can be synthesized by
-      // the Proxy's `get` trap), and we must keep it alive until the call begins.
-      scope.push_root(method)?;
-      let result = self.call(
-        &mut scope,
-        method,
-        Value::Object(constructor_obj),
-        &[object],
-      )?;
-      return Ok(to_boolean(scope.heap(), result)?);
-    }
+    // Bound functions (`C.[[BoundTargetFunction]]`) delegate to `InstanceofOperator(O, BC)` as part
+    // of `OrdinaryHasInstance`. Implement that delegation here (iteratively) so `instanceof` never
+    // recurses through a deep `.bind()` chain and so the bound target's `@@hasInstance` is consulted
+    // per spec.
+    let mut bound_steps = 0usize;
 
-    // 3. If IsCallable(C) is false, throw a TypeError exception.
-    if !scope.heap().is_callable(constructor)? {
-      return Err(throw_type_error(
+    loop {
+      // Root inputs for the duration of this iteration: `instanceof` can allocate when performing
+      // `GetMethod`/`Get`/`Call`.
+      let mut iter_scope = scope.reborrow();
+      // Root the *current* constructor value (which can change when delegating bound functions).
+      iter_scope.push_root(constructor)?;
+
+      // 1. If Type(C) is not Object, throw a TypeError exception.
+      let Value::Object(constructor_obj) = constructor else {
+        return Err(throw_type_error(
+          self.vm,
+          &mut iter_scope,
+          "Right-hand side of 'instanceof' is not an object",
+        )?);
+      };
+
+      // 2. GetMethod(C, @@hasInstance).
+      let method = match crate::spec_ops::get_method_with_host_and_hooks(
         self.vm,
-        &mut scope,
-        "Right-hand side of 'instanceof' is not callable",
-      )?);
-    }
+        &mut iter_scope,
+        &mut *self.host,
+        &mut *self.hooks,
+        Value::Object(constructor_obj),
+        has_instance_key,
+      ) {
+        Ok(m) => m,
+        Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut iter_scope, msg)?),
+        Err(err) => return Err(err),
+      };
 
-    self.ordinary_has_instance(&mut scope, constructor_obj, object)
+      if let Some(method) = method {
+        // Root `method` across the call. When `C` is a Proxy, `GetMethod(C, @@hasInstance)` can
+        // return a function that is not reachable from any rooted object (it can be synthesized by
+        // the Proxy's `get` trap), and we must keep it alive until the call begins.
+        iter_scope.push_root(method)?;
+        let result = self.call(
+          &mut iter_scope,
+          method,
+          Value::Object(constructor_obj),
+          &[object],
+        )?;
+        return Ok(to_boolean(iter_scope.heap(), result)?);
+      }
+
+      // 3. If IsCallable(C) is false, throw a TypeError exception.
+      if !iter_scope.heap().is_callable(constructor)? {
+        return Err(throw_type_error(
+          self.vm,
+          &mut iter_scope,
+          "Right-hand side of 'instanceof' is not callable",
+        )?);
+      }
+
+      // `OrdinaryHasInstance` step 2 (bound function delegation):
+      //
+      // If `C` has `[[BoundTargetFunction]]`, delegate to `InstanceofOperator(O, BC)` which will
+      // consult `BC[@@hasInstance]` (including Proxy `get` traps).
+      if let Ok(func) = iter_scope.heap().get_function(constructor_obj) {
+        if let Some(bound_target) = func.bound_target {
+          // Budget extremely deep bound chains and prevent hangs if an invariant is violated.
+          const TICK_EVERY: usize = 32;
+          if bound_steps != 0 && bound_steps % TICK_EVERY == 0 {
+            self.tick()?;
+          }
+          if bound_steps >= crate::MAX_PROTOTYPE_CHAIN {
+            return Err(VmError::PrototypeChainTooDeep);
+          }
+          bound_steps += 1;
+          constructor = Value::Object(bound_target);
+          continue;
+        }
+      }
+
+      return self.ordinary_has_instance(&mut iter_scope, constructor_obj, object);
+    }
   }
 
   fn ordinary_has_instance(
@@ -7977,27 +8011,6 @@ impl<'a> Evaluator<'a> {
     constructor: GcObject,
     object: Value,
   ) -> Result<bool, VmError> {
-    // Bound functions delegate `instanceof` checks to their target.
-    //
-    // Important: this is `OrdinaryHasInstance` (not `InstanceofOperator`), so we must *not* consult
-    // the target function's `@@hasInstance` method here.
-    //
-    // Spec: https://tc39.es/ecma262/#sec-ordinaryhasinstance
-    let mut constructor = constructor;
-    loop {
-      match scope.heap().get_function(constructor) {
-        Ok(func) => {
-          if let Some(bound_target) = func.bound_target {
-            constructor = bound_target;
-            continue;
-          }
-        }
-        // Non-function objects can't be bound functions.
-        Err(_) => {}
-      }
-      break;
-    }
-
     // If the LHS is not an object, `instanceof` is `false` without further observable actions.
     let Value::Object(object) = object else {
       return Ok(false);
