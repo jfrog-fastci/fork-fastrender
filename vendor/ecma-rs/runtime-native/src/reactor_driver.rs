@@ -172,6 +172,9 @@ impl ReactorDriver {
   /// The provided fd **must already be set to `O_NONBLOCK`** and must remain `O_NONBLOCK` for the
   /// lifetime of the registration.
   ///
+  /// `interest` must include [`Interest::READABLE`] and/or [`Interest::WRITABLE`] (it must not be
+  /// empty). To stop watching, call [`ReactorDriver::deregister_fd`].
+  ///
   /// The underlying reactor is **edge-triggered**, so consumers must drain reads/writes until they
   /// return `EAGAIN`/`WouldBlock` after being woken.
   pub fn register_fd(&self, fd: BorrowedFd<'_>, interest: Interest, waker: Waker) -> io::Result<Token> {
