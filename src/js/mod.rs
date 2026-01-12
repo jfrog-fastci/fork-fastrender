@@ -248,6 +248,173 @@ pub enum ScriptType {
   Unknown,
 }
 
+// ---------------------------------------------------------------------------
+// Test shims
+// ---------------------------------------------------------------------------
+//
+// `src/js/vmjs/*` is the canonical location for the vm-js embedding implementation, but the public
+// module layout historically flattened those modules under `crate::js::*`.
+//
+// Some integration guidance (and agent tasks) refer to vm-js tests under a `js::vmjs::*` module
+// path. Provide a small `cfg(test)` shim so `cargo test --lib js::vmjs::window` matches at least
+// the core vm-js window tests.
+#[cfg(test)]
+mod vmjs {
+  pub mod window {
+    use crate::dom2;
+    use crate::error::Result;
+    use crate::js::window::WindowHost;
+    use selectors::context::QuirksMode;
+    use vm_js::{PropertyKey, Value};
+
+    fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
+      let window = host.host_mut().window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .expect("push root global");
+      let key_s = scope.alloc_string(name).expect("alloc prop name");
+      scope
+        .push_root(Value::String(key_s))
+        .expect("push root prop name");
+      let key = PropertyKey::from_string(key_s);
+      scope
+        .heap()
+        .object_get_own_data_property_value(global, &key)
+        .expect("get prop")
+        .unwrap_or(Value::Undefined)
+    }
+
+    fn get_global_prop_utf8(host: &mut WindowHost, name: &str) -> Option<String> {
+      let value = get_global_prop(host, name);
+      let window = host.host_mut().window_mut();
+      match value {
+        Value::String(s) => Some(
+          window
+            .heap()
+            .get_string(s)
+            .expect("get string")
+            .to_utf8_lossy(),
+        ),
+        _ => None,
+      }
+    }
+
+    #[test]
+    fn window_onload_runs_via_event_handler_attribute() -> Result<()> {
+      let dom = dom2::Document::new(QuirksMode::NoQuirks);
+      let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+      host.exec_script(
+        "globalThis.__called = false;\n\
+         globalThis.onload = function (e) {\n\
+           globalThis.__called = (\n\
+             this === globalThis &&\n\
+             e && e.type === 'load' &&\n\
+             e.target === globalThis &&\n\
+             e.currentTarget === globalThis &&\n\
+             e.eventPhase === 2\n\
+           );\n\
+         };\n\
+         globalThis.dispatchEvent(new Event('load'));\n",
+      )?;
+
+      assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
+      Ok(())
+    }
+
+    #[test]
+    fn document_onvisibilitychange_runs_via_event_handler_attribute() -> Result<()> {
+      let dom = dom2::Document::new(QuirksMode::NoQuirks);
+      let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+      host.exec_script(
+        "globalThis.__called = false;\n\
+         document.onvisibilitychange = function (e) {\n\
+           globalThis.__called = (\n\
+             this === document &&\n\
+             e && e.type === 'visibilitychange' &&\n\
+             e.target === document &&\n\
+             e.currentTarget === document &&\n\
+             e.eventPhase === 2\n\
+           );\n\
+         };\n\
+         document.dispatchEvent(new Event('visibilitychange'));\n",
+      )?;
+
+      assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
+      Ok(())
+    }
+
+    #[test]
+    fn window_onerror_uses_special_signature_and_return_true_cancels() -> Result<()> {
+      let dom = dom2::Document::new(QuirksMode::NoQuirks);
+      let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+      host.exec_script(
+        "globalThis.__argc = 0;\n\
+         globalThis.__a0 = '';\n\
+         globalThis.__a1 = '';\n\
+         globalThis.__a2 = 0;\n\
+         globalThis.__a3 = 0;\n\
+         globalThis.__a4_code = 0;\n\
+         globalThis.__dispatch_result = null;\n\
+         globalThis.__default_prevented = false;\n\
+         globalThis.onerror = function (message, filename, lineno, colno, error) {\n\
+           globalThis.__argc = arguments.length;\n\
+           globalThis.__a0 = String(message);\n\
+           globalThis.__a1 = String(filename);\n\
+           globalThis.__a2 = lineno;\n\
+           globalThis.__a3 = colno;\n\
+           globalThis.__a4_code = error && error.code;\n\
+           return true;\n\
+         };\n\
+         var e = new Event('error', { cancelable: true });\n\
+         e.message = 'boom';\n\
+         e.filename = 'file.js';\n\
+         e.lineno = 10;\n\
+         e.colno = 20;\n\
+         e.error = { code: 42 };\n\
+         globalThis.__dispatch_result = globalThis.dispatchEvent(e);\n\
+         globalThis.__default_prevented = e.defaultPrevented;\n",
+      )?;
+
+      assert!(matches!(
+        get_global_prop(&mut host, "__argc"),
+        Value::Number(n) if n == 5.0
+      ));
+      assert_eq!(get_global_prop_utf8(&mut host, "__a0").as_deref(), Some("boom"));
+      assert_eq!(
+        get_global_prop_utf8(&mut host, "__a1").as_deref(),
+        Some("file.js")
+      );
+      assert!(matches!(
+        get_global_prop(&mut host, "__a2"),
+        Value::Number(n) if n == 10.0
+      ));
+      assert!(matches!(
+        get_global_prop(&mut host, "__a3"),
+        Value::Number(n) if n == 20.0
+      ));
+      assert!(matches!(
+        get_global_prop(&mut host, "__a4_code"),
+        Value::Number(n) if n == 42.0
+      ));
+      assert!(matches!(
+        get_global_prop(&mut host, "__dispatch_result"),
+        Value::Bool(false)
+      ));
+      assert!(matches!(
+        get_global_prop(&mut host, "__default_prevented"),
+        Value::Bool(true)
+      ));
+      Ok(())
+    }
+  }
+}
+
 // HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
 // Notably, ASCII whitespace does *not* include U+000B VT (vertical tab).
 // Avoid `str::trim()` because it removes additional Unicode whitespace like NBSP (U+00A0), which

@@ -9063,67 +9063,190 @@ fn event_target_dispatch_event_native(
   )
   .map_err(|_err| VmError::TypeError("EventTarget.dispatchEvent failed"))?;
 
-  // Window promise rejection event handlers (`onunhandledrejection` / `onrejectionhandled`).
-  //
-  // These are special-cased until we have a more complete IDL-driven EventHandler attribute
-  // implementation.
-  if matches!(resolved.target_id, web_events::EventTargetId::Window) {
-    let handler_name = match rust_event.type_.as_str() {
-      "unhandledrejection" => Some("onunhandledrejection"),
-      "rejectionhandled" => Some("onrejectionhandled"),
-      _ => None,
-    };
-    if let Some(handler_name) = handler_name {
-      let handler_key = alloc_key(scope, handler_name)?;
-      if let Some(handler) = scope
-        .heap()
-        .object_get_own_data_property_value(resolved.window_obj, &handler_key)?
-      {
-        if scope.heap().is_callable(handler).unwrap_or(false) {
-          // Expose `currentTarget`/`eventPhase` while the handler runs.
-          rust_event.current_target = Some(web_events::EventTargetId::Window);
-          rust_event.event_phase = web_events::EventPhase::AtTarget;
-          invoker.sync_event_object(&rust_event)?;
+  enum EventHandlerCancelOnReturn {
+    True,
+    False,
+  }
 
-          // Install the active Rust `Event` pointer so Event.prototype methods can mutate it.
-          let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
-          let _active_guard = push_active_event_for_host(vm_host, event_id, &mut rust_event);
+  fn invoke_event_handler(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    vm_host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    invoker: &mut VmJsDomEventInvoker<'_, '_>,
+    event_obj: GcObject,
+    rust_event: &mut web_events::Event,
+    current_target: web_events::EventTargetId,
+    handler: Value,
+    this: Value,
+    args: &[Value],
+    cancel_on: EventHandlerCancelOnReturn,
+  ) -> Result<(), VmError> {
+    if !scope.heap().is_callable(handler).unwrap_or(false) {
+      return Ok(());
+    }
 
-          let event_id_key = alloc_key(scope, EVENT_ID_KEY)?;
-          scope.define_property(
-            event_obj,
-            event_id_key,
-            data_desc(Value::Number(event_id as f64)),
-          )?;
+    // Expose `currentTarget`/`eventPhase` while the handler runs.
+    rust_event.current_target = Some(current_target);
+    rust_event.event_phase = web_events::EventPhase::AtTarget;
+    invoker.sync_event_object(rust_event)?;
 
-          let call_result = vm.call_with_host_and_hooks(
-            vm_host,
-            scope,
-            hooks,
-            handler,
-            Value::Object(resolved.window_obj),
-            &[event_value],
-          );
+    // Install the active Rust `Event` pointer so Event.prototype methods can mutate it.
+    let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+    let _active_guard = push_active_event_for_host(vm_host, event_id, rust_event);
 
-          match call_result {
-            Ok(ret) => {
-              // HTML EventHandler semantics: returning `false` cancels the event.
-              if matches!(ret, Value::Bool(false)) {
-                rust_event.prevent_default();
-              }
-            }
-            Err(err) => {
-              // Per web platform behavior, exceptions from event handlers should not abort
-              // `dispatchEvent`.
-              invoker.report_listener_exception(err);
-            }
-          }
+    let event_id_key = alloc_key(scope, EVENT_ID_KEY)?;
+    scope.define_property(event_obj, event_id_key, data_desc(Value::Number(event_id as f64)))?;
 
-          // Restore final state.
-          rust_event.event_phase = web_events::EventPhase::None;
-          rust_event.current_target = None;
-          result = !rust_event.default_prevented;
+    let call_result = vm.call_with_host_and_hooks(vm_host, scope, hooks, handler, this, args);
+
+    match call_result {
+      Ok(ret) => {
+        // HTML EventHandler semantics:
+        // - returning `false` cancels most events
+        // - `window.onerror` returning `true` cancels the error.
+        let should_cancel = match cancel_on {
+          EventHandlerCancelOnReturn::False => matches!(ret, Value::Bool(false)),
+          EventHandlerCancelOnReturn::True => matches!(ret, Value::Bool(true)),
+        };
+        if should_cancel {
+          rust_event.prevent_default();
         }
+      }
+      Err(err) => {
+        // Per web platform behavior, exceptions from event handlers should not abort `dispatchEvent`.
+        invoker.report_listener_exception(err);
+      }
+    }
+
+    // Ensure cancellation/propagation flags set via the JS `Event` instance are reflected onto the
+    // shared Rust `Event` so callers observe them even when no host-side `ActiveEventStack` is
+    // installed.
+    sync_rust_event_from_js_event_object(scope, event_obj, rust_event)?;
+
+    // Restore final state.
+    rust_event.event_phase = web_events::EventPhase::None;
+    rust_event.current_target = None;
+    Ok(())
+  }
+
+  // Window + Document EventHandler properties (`onload`, `onvisibilitychange`, ...).
+  //
+  // This is a minimal approximation of the web platform's EventHandler IDL attributes: after the
+  // normal DOM event dispatch completes, invoke `target["on" + type]` if it is callable.
+  if matches!(
+    resolved.target_id,
+    web_events::EventTargetId::Window | web_events::EventTargetId::Document
+  ) {
+    let (handler_target_obj, handler_target_id) = match resolved.target_id {
+      web_events::EventTargetId::Window => (resolved.window_obj, web_events::EventTargetId::Window),
+      web_events::EventTargetId::Document => (resolved.document_obj, web_events::EventTargetId::Document),
+      _ => unreachable!(),
+    };
+
+    let handler_name = format!("on{}", rust_event.type_);
+    let handler_key = alloc_key(scope, &handler_name)?;
+    let handler = scope
+      .heap()
+      .object_get_own_data_property_value(handler_target_obj, &handler_key)?;
+
+    if let Some(handler) = handler {
+      if !scope.heap().is_callable(handler).unwrap_or(false) {
+        // `EventHandler` attributes only fire for callable values.
+        result = !rust_event.default_prevented;
+      } else if handler_target_id == web_events::EventTargetId::Window && rust_event.type_ == "error" {
+        // `window.onerror`: OnErrorEventHandler signature:
+        //   (message, filename, lineno, colno, error) -> boolean
+        //
+        // Best-effort extract fields from the dispatched ErrorEvent instance (if it looks like
+        // one), otherwise fall back to empty/zero values.
+        let message_key = alloc_key(scope, "message")?;
+        let filename_key = alloc_key(scope, "filename")?;
+        let lineno_key = alloc_key(scope, "lineno")?;
+        let colno_key = alloc_key(scope, "colno")?;
+        let error_key = alloc_key(scope, "error")?;
+
+        let message_v =
+          vm.get_with_host_and_hooks(vm_host, scope, hooks, event_obj, message_key).unwrap_or(Value::Undefined);
+        let filename_v =
+          vm.get_with_host_and_hooks(vm_host, scope, hooks, event_obj, filename_key).unwrap_or(Value::Undefined);
+        let lineno_v =
+          vm.get_with_host_and_hooks(vm_host, scope, hooks, event_obj, lineno_key).unwrap_or(Value::Undefined);
+        let colno_v =
+          vm.get_with_host_and_hooks(vm_host, scope, hooks, event_obj, colno_key).unwrap_or(Value::Undefined);
+        let error_v =
+          vm.get_with_host_and_hooks(vm_host, scope, hooks, event_obj, error_key).unwrap_or(Value::Undefined);
+
+        let message_s = match message_v {
+          Value::Undefined | Value::Null => scope.alloc_string("")?,
+          Value::String(s) => s,
+          other => match scope.heap_mut().to_string(other) {
+            Ok(s) => s,
+            Err(_) => scope.alloc_string("")?,
+          },
+        };
+        scope.push_root(Value::String(message_s))?;
+        let filename_s = match filename_v {
+          Value::Undefined | Value::Null => scope.alloc_string("")?,
+          Value::String(s) => s,
+          other => match scope.heap_mut().to_string(other) {
+            Ok(s) => s,
+            Err(_) => scope.alloc_string("")?,
+          },
+        };
+        scope.push_root(Value::String(filename_s))?;
+
+        let lineno = scope
+          .heap_mut()
+          .to_number(lineno_v)
+          .map(|n| if n.is_finite() { n } else { 0.0 })
+          .unwrap_or(0.0);
+        let colno = scope
+          .heap_mut()
+          .to_number(colno_v)
+          .map(|n| if n.is_finite() { n } else { 0.0 })
+          .unwrap_or(0.0);
+
+        let onerror_args = [
+          Value::String(message_s),
+          Value::String(filename_s),
+          Value::Number(lineno),
+          Value::Number(colno),
+          error_v,
+        ];
+
+        invoke_event_handler(
+          vm,
+          scope,
+          vm_host,
+          hooks,
+          &mut invoker,
+          event_obj,
+          &mut rust_event,
+          handler_target_id,
+          handler,
+          Value::Object(handler_target_obj),
+          &onerror_args,
+          EventHandlerCancelOnReturn::True,
+        )?;
+        result = !rust_event.default_prevented;
+      } else {
+        let handler_args = [event_value];
+        invoke_event_handler(
+          vm,
+          scope,
+          vm_host,
+          hooks,
+          &mut invoker,
+          event_obj,
+          &mut rust_event,
+          handler_target_id,
+          handler,
+          Value::Object(handler_target_obj),
+          &handler_args,
+          EventHandlerCancelOnReturn::False,
+        )?;
+        result = !rust_event.default_prevented;
       }
     }
   }

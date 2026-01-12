@@ -3447,6 +3447,117 @@ mod tests {
   }
 
   #[test]
+  fn window_onload_handler_runs_on_load_event_dispatch() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      "globalThis.__called = false;\n\
+       globalThis.onload = function (e) {\n\
+         globalThis.__called = (\n\
+           this === globalThis &&\n\
+           e && e.type === 'load' &&\n\
+           e.target === globalThis &&\n\
+           e.currentTarget === globalThis &&\n\
+           e.eventPhase === 2\n\
+         );\n\
+       };\n\
+       globalThis.dispatchEvent(new Event('load'));\n",
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn document_onvisibilitychange_handler_runs_on_visibilitychange_event_dispatch() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      "globalThis.__called = false;\n\
+       document.onvisibilitychange = function (e) {\n\
+         globalThis.__called = (\n\
+           this === document &&\n\
+           e && e.type === 'visibilitychange' &&\n\
+           e.target === document &&\n\
+           e.currentTarget === document &&\n\
+           e.eventPhase === 2\n\
+         );\n\
+       };\n\
+       document.dispatchEvent(new Event('visibilitychange'));\n",
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn window_onerror_handler_uses_special_signature_and_return_true_cancels() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      "globalThis.__argc = 0;\n\
+       globalThis.__a0 = '';\n\
+       globalThis.__a1 = '';\n\
+       globalThis.__a2 = 0;\n\
+       globalThis.__a3 = 0;\n\
+       globalThis.__a4_code = 0;\n\
+       globalThis.__dispatch_result = null;\n\
+       globalThis.__default_prevented = false;\n\
+       globalThis.onerror = function (message, filename, lineno, colno, error) {\n\
+         globalThis.__argc = arguments.length;\n\
+         globalThis.__a0 = String(message);\n\
+         globalThis.__a1 = String(filename);\n\
+         globalThis.__a2 = lineno;\n\
+         globalThis.__a3 = colno;\n\
+         globalThis.__a4_code = error && error.code;\n\
+         return true;\n\
+       };\n\
+       var e = new Event('error', { cancelable: true });\n\
+       e.message = 'boom';\n\
+       e.filename = 'file.js';\n\
+       e.lineno = 10;\n\
+       e.colno = 20;\n\
+       e.error = { code: 42 };\n\
+       globalThis.__dispatch_result = globalThis.dispatchEvent(e);\n\
+       globalThis.__default_prevented = e.defaultPrevented;\n",
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__argc"),
+      Value::Number(n) if n == 5.0
+    ));
+    assert_eq!(get_global_prop_utf8(&mut host, "__a0").as_deref(), Some("boom"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__a1").as_deref(),
+      Some("file.js")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__a2"),
+      Value::Number(n) if n == 10.0
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__a3"),
+      Value::Number(n) if n == 20.0
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__a4_code"),
+      Value::Number(n) if n == 42.0
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__dispatch_result"),
+      Value::Bool(false)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__default_prevented"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn unhandled_promise_rejection_dispatches_unhandledrejection_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
