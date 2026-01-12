@@ -541,6 +541,7 @@ fn execute_module(
   let (harness_src, module_src) = split_module_source(source);
 
   let mut hooks = Test262ModuleHooks::new(&case.path);
+  let result: ExecResult = (|| {
 
   // 1) Run the harness prelude as a classic script to populate the global object.
   if !harness_src.trim().is_empty() {
@@ -760,6 +761,16 @@ fn execute_module(
 
   runtime.heap.remove_root(eval_promise_root);
   eval_outcome
+  })();
+
+  if result.is_err() {
+    // Dropping `Job` values with live persistent roots would trip debug assertions (and leak roots
+    // in release builds). Clean up any queued work before returning early.
+    drain_microtasks_into_hooks(runtime, &mut hooks);
+    hooks.microtasks.teardown(runtime);
+  }
+
+  result
 }
 
 fn split_module_source(source: &str) -> (&str, &str) {
@@ -1410,5 +1421,55 @@ var assert = {
     let exec = VmJsExecutor::default();
     let cancel = Arc::new(AtomicBool::new(false));
     exec.execute(&case, source, &cancel).unwrap();
+  }
+
+  #[test]
+  fn module_variant_harness_error_teardowns_pending_microtasks() {
+    let test262 = tempdir().unwrap();
+    fs::create_dir_all(test262.path().join("harness")).unwrap();
+    // Schedule a Promise job (which holds persistent roots) and then throw, ensuring the executor
+    // tears down queued jobs before returning the error.
+    fs::write(
+      test262.path().join("harness/assert.js"),
+      r#"
+Promise.resolve().then(() => {});
+throw new Error("boom");
+"#,
+    )
+    .unwrap();
+    fs::write(test262.path().join("harness/sta.js"), "").unwrap();
+    fs::create_dir_all(test262.path().join("test")).unwrap();
+
+    let test_dir = test262.path().join("test");
+    let main_path = test_dir.join("harness_throw.js");
+    fs::write(&main_path, "/* placeholder */").unwrap();
+
+    let case = TestCase {
+      id: "harness_throw.js".to_string(),
+      path: main_path,
+      variant: Variant::Module,
+      expected: ExpectedOutcome::Pass,
+      metadata: Frontmatter::default(),
+      body: "export const x = 1;\n".to_string(),
+    };
+
+    let source = assemble_source(
+      test262.path(),
+      &case.metadata,
+      case.variant,
+      &case.body,
+      HarnessMode::Test262,
+    )
+    .unwrap();
+
+    let exec = VmJsExecutor::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let err = exec.execute(&case, &source, &cancel).unwrap_err();
+    let ExecError::Js(js) = err else {
+      panic!("expected JS error, got {err:?}");
+    };
+    assert_eq!(js.phase, ExecPhase::Runtime);
+    assert_eq!(js.typ.as_deref(), Some("Error"));
+    assert_eq!(js.message, "boom");
   }
 }
