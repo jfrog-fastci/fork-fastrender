@@ -84,13 +84,13 @@ package_json.write_text(updated, encoding="utf-8")
 resolver_rs = Path("typecheck-ts/src/resolve/ts_node.rs")
 text = resolver_rs.read_text(encoding="utf-8")
 updated, count = re.subn(
-    r"TypeScriptVersion::new\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)",
-    f"TypeScriptVersion::new({major}, {minor}, {patch})",
+    r"(impl\s+Default\s+for\s+TypeScriptVersion\s*\{[\s\S]*?fn\s+default\(\)\s*->\s*Self\s*\{[\s\S]*?)TypeScriptVersion::new\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)",
+    rf"\g<1>TypeScriptVersion::new({major}, {minor}, {patch})",
     text,
 )
 if count != 1:
   raise SystemExit(
-      f"error: expected exactly 1 TypeScriptVersion::new(M,m,p) in {resolver_rs}, found {count}"
+      f"error: expected exactly 1 TypeScriptVersion::new(M,m,p) inside TypeScriptVersion::default() in {resolver_rs}, found {count}"
   )
 resolver_rs.write_text(updated, encoding="utf-8")
 PY
