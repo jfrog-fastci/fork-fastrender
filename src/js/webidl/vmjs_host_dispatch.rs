@@ -3782,6 +3782,9 @@ mod element_dispatch_tests {
 
     let mut scope = heap.scope();
     let platform = DomPlatform::new(&mut scope, &realm)?;
+    let document_obj = scope.alloc_object()?;
+    let document_key = WeakGcObject::from(document_obj);
+    let _document_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
     vm
       .user_data_mut::<WindowRealmUserData>()
       .expect("user data")

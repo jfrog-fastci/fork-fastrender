@@ -290,7 +290,6 @@ impl Document {
       .borrow_mut()
       .remap_node_ids(mapping);
   }
-
   /// Move mutation observer registrations stored on `old` to `new`.
   ///
   /// This is intended for clone+mapping style operations (e.g. adoption/import approximations) that

@@ -9205,10 +9205,21 @@ fn document_doctype_get_native(
     return Ok(Value::Null);
   };
 
-  let Some(dom) = dom_from_vm_host(host) else {
+  let handle = match dom_platform_mut(vm) {
+    Some(platform) => match platform.require_document_handle(scope.heap(), Value::Object(document_obj)) {
+      Ok(handle) => handle,
+      Err(_) => return Ok(Value::Null),
+    },
+    None => return Ok(Value::Null),
+  };
+
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
     return Ok(Value::Null);
   };
-  let Some(node_id) = dom.doctype() else {
+  // SAFETY: `dom_ptr` points at either the host document or a realm-owned document stored in VM
+  // user data. Both outlive this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(node_id) = dom.doctype_for(handle.node_id) else {
     return Ok(Value::Null);
   };
 
@@ -9228,9 +9239,20 @@ fn document_scrolling_element_get_native(
     return Ok(Value::Null);
   };
 
-  let Some(dom) = dom_from_vm_host(host) else {
+  let handle = match dom_platform_mut(vm) {
+    Some(platform) => match platform.require_document_handle(scope.heap(), Value::Object(document_obj)) {
+      Ok(handle) => handle,
+      Err(_) => return Ok(Value::Null),
+    },
+    None => return Ok(Value::Null),
+  };
+
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
     return Ok(Value::Null);
   };
+  // SAFETY: `dom_ptr` points at either the host document or a realm-owned document stored in VM
+  // user data. Both outlive this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let quirks_mode = match &dom.node(dom.root()).kind {
     NodeKind::Document { quirks_mode } => *quirks_mode,
@@ -9238,12 +9260,12 @@ fn document_scrolling_element_get_native(
   };
 
   if quirks_mode == QuirksMode::Quirks {
-    if let Some(node_id) = dom.body() {
+    if let Some(node_id) = dom.body_for(handle.node_id) {
       return get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id);
     }
   }
 
-  let Some(node_id) = dom.document_element() else {
+  let Some(node_id) = dom.document_element_for(handle.node_id) else {
     return Ok(Value::Null);
   };
 
@@ -9474,11 +9496,15 @@ fn document_get_element_by_id_native(
 
   // Brand check: `Document.prototype.getElementById` must only be callable on real Document
   // wrappers, not arbitrary DOM-backed nodes (e.g. Elements) that happen to have a source id.
-  let document_id = {
+  let handle = {
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    platform.require_document_id(scope.heap(), Value::Object(document_obj))?
+    platform.require_document_handle(scope.heap(), Value::Object(document_obj))?
   };
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` points at either the host document or a realm-owned document stored in VM
+  // user data. Both outlive this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let query_value = scope.heap_mut().to_string(query_value)?;
@@ -9488,7 +9514,7 @@ fn document_get_element_by_id_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let Some(node_id) = dom.get_element_by_id_from(document_id, &query) else {
+  let Some(node_id) = dom.get_element_by_id_from(handle.node_id, &query) else {
     return Ok(Value::Null);
   };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
@@ -9507,11 +9533,15 @@ fn document_fragment_get_element_by_id_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let fragment_id = {
+  let fragment_handle = {
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    platform.require_document_fragment_id(scope.heap(), Value::Object(wrapper_obj))?
+    platform.require_document_fragment_handle(scope.heap(), Value::Object(wrapper_obj))?
   };
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, fragment_handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` points at either the host document or a realm-owned document stored in VM
+  // user data. Both outlive this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let query_value = scope.heap_mut().to_string(query_value)?;
@@ -9521,11 +9551,11 @@ fn document_fragment_get_element_by_id_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let Some(found) = dom.get_element_by_id_from(fragment_id, &query) else {
+  let Some(found) = dom.get_element_by_id_from(fragment_handle.node_id, &query) else {
     return Ok(Value::Null);
   };
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, fragment_id)?;
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, fragment_handle.node_id)?;
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found)
 }
 
@@ -9542,9 +9572,9 @@ fn document_query_selector_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let document_id = {
+  let handle = {
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    platform.require_document_id(scope.heap(), Value::Object(document_obj))?
+    platform.require_document_handle(scope.heap(), Value::Object(document_obj))?
   };
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -9555,14 +9585,28 @@ fn document_query_selector_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let result = mutate_dom_for_vm_host(host, |dom| {
-    (dom.query_selector(&selector, Some(document_id)), false)
-  })
-  .ok_or(VmError::TypeError("Illegal invocation"))?;
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let result = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| (dom.query_selector(&selector, Some(handle.node_id)), false))
+      .ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: `dom_ptr` points at a realm-owned document stored in VM user data. We have exclusive
+    // access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    dom.query_selector(&selector, Some(handle.node_id))
+  };
 
   match result {
-    Ok(Some(node_id)) => get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id),
+    Ok(Some(node_id)) => {
+      let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+        .ok_or(VmError::TypeError("Illegal invocation"))?;
+      // SAFETY: `dom_ptr` points at either the host document or a realm-owned document stored in VM
+      // user data. Both outlive this native call.
+      let dom = unsafe { dom_ptr.as_ref() };
+      get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+    }
     Ok(None) => Ok(Value::Null),
     Err(err) => {
       let (name, message) = match err {
@@ -9595,9 +9639,9 @@ fn document_query_selector_all_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let document_id = {
+  let handle = {
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    platform.require_document_id(scope.heap(), Value::Object(document_obj))?
+    platform.require_document_handle(scope.heap(), Value::Object(document_obj))?
   };
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -9608,30 +9652,46 @@ fn document_query_selector_all_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let matches = match mutate_dom_for_vm_host(host, |dom| {
-    (dom.query_selector_all(&selector, Some(document_id)), false)
-  })
-  .ok_or(VmError::TypeError("Illegal invocation"))?
-  {
-    Ok(nodes) => nodes,
-    Err(err) => {
-      let (name, message) = match err {
-        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
-        crate::web::dom::DomException::NoModificationAllowedError { message } => {
-          ("NoModificationAllowedError", message)
-        }
-        crate::web::dom::DomException::NotSupportedError { message } => {
-          ("NotSupportedError", message)
-        }
-        crate::web::dom::DomException::InvalidStateError { message } => {
-          ("InvalidStateError", message)
-        }
+  let matches = {
+    let result = if is_host_document_id(vm, handle.document_id) {
+      mutate_dom_for_vm_host(host, |dom| {
+        (dom.query_selector_all(&selector, Some(handle.node_id)), false)
+      })
+      .ok_or(VmError::TypeError("Illegal invocation"))?
+    } else {
+      let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+        return Err(VmError::TypeError("Illegal invocation"));
       };
-      return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
+      // SAFETY: `dom_ptr` points at a realm-owned document stored in VM user data. We have exclusive
+      // access for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_mut() };
+      dom.query_selector_all(&selector, Some(handle.node_id))
+    };
+    match result {
+      Ok(nodes) => nodes,
+      Err(err) => {
+        let (name, message) = match err {
+          crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+          crate::web::dom::DomException::NoModificationAllowedError { message } => {
+            ("NoModificationAllowedError", message)
+          }
+          crate::web::dom::DomException::NotSupportedError { message } => {
+            ("NotSupportedError", message)
+          }
+          crate::web::dom::DomException::InvalidStateError { message } => {
+            ("InvalidStateError", message)
+          }
+        };
+        return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
+      }
     }
   };
 
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` points at either the host document or a realm-owned document stored in VM
+  // user data. Both outlive this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let array = scope.alloc_array(0)?;
   scope.push_root(Value::Object(array))?;
@@ -11194,8 +11254,11 @@ fn dom_parser_parse_from_string_native(
     ));
   }
 
-  let dom = dom2::parse_html(&html)
-    .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?;
+  let dom = dom2::parse_html_with_options(
+    &html,
+    crate::dom::DomParseOptions::with_scripting_enabled(false),
+  )
+  .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?;
 
   // Construct a detached Document wrapper.
   let document_obj = scope.alloc_object_with_prototype(Some(host_document_obj))?;
@@ -11288,23 +11351,6 @@ fn dom_parser_parse_from_string_native(
       configurable: false,
       kind: PropertyKind::Data {
         value: Value::Object(document_obj),
-        writable: false,
-      },
-    },
-  )?;
-
-  // Ensure node wrappers created from this detached document use the host document key for wrapper
-  // identity / DOM selection.
-  scope.push_root(Value::Object(host_document_obj))?;
-  let platform_document_key = alloc_key(scope, PLATFORM_DOCUMENT_KEY)?;
-  scope.define_property(
-    document_obj,
-    platform_document_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Object(host_document_obj),
         writable: false,
       },
     },
@@ -32208,7 +32254,6 @@ fn init_window_globals(
     dom_parser_key,
     data_desc(Value::Object(dom_parser_ctor_func)),
   )?;
-
   let event_ctor_call_id = vm.register_native_call(event_constructor_native)?;
   let event_ctor_construct_id = vm.register_native_construct(event_constructor_construct_native)?;
   let event_ctor_name = scope.alloc_string("Event")?;
@@ -46068,11 +46113,11 @@ mod tests {
           b: 0,
         },
       )?;
-      let doc2_key = vm_js::WeakGcObject::from(doc2_obj);
+      let doc2_wrapper_key = vm_js::WeakGcObject::from(doc2_obj);
       platform.register_wrapper(
         scope.heap(),
         doc2_obj,
-        doc2_key,
+        doc2_wrapper_key,
         doc2_root,
         DomInterface::Document,
       );
