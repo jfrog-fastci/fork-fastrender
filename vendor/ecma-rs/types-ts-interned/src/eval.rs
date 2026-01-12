@@ -709,6 +709,14 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     depth: usize,
   ) -> crate::SignatureId {
     let mut sig = self.store.signature(sig);
+    sig.type_params.iter_mut().for_each(|tp| {
+      tp.constraint = tp
+        .constraint
+        .map(|c| self.evaluate_with_subst(c, subst, depth + 1));
+      tp.default = tp
+        .default
+        .map(|d| self.evaluate_with_subst(d, subst, depth + 1));
+    });
     sig.params.iter_mut().for_each(|param| {
       param.ty = self.evaluate_with_subst(param.ty, subst, depth + 1);
     });

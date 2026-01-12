@@ -6,7 +6,7 @@ use types_ts_interned::{
   Accessibility, DefId, EvaluatorLimits, ExpandedType, Indexer, MappedModifier, MappedType,
   ObjectType, Param, PredicateParam, PropData, PropKey, Property, Shape, Signature, TemplateChunk,
   TemplateLiteralType, TupleElem, TypeEvaluator, TypeExpander, TypeId, TypeKind, TypeOptions,
-  TypeParamId, TypeStore,
+  TypeParamDecl, TypeParamId, TypeStore,
 };
 
 #[derive(Default)]
@@ -182,6 +182,50 @@ fn conditional_distributes_over_union_with_substitution() {
   assert!(members.contains(&primitives.number));
   assert!(members.contains(&primitives.boolean));
   assert_eq!(members.len(), 2);
+}
+
+#[test]
+fn signature_type_param_constraint_and_default_are_substituted() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t_param = TypeParamId(0);
+  let t_ty = store.intern_type(TypeKind::TypeParam(t_param));
+
+  let u_param = TypeParamId(1);
+  let u_ty = store.intern_type(TypeKind::TypeParam(u_param));
+
+  let mut u_decl = TypeParamDecl::new(u_param);
+  u_decl.constraint = Some(t_ty);
+  u_decl.default = Some(t_ty);
+
+  let mut sig = Signature::new(
+    vec![Param {
+      name: None,
+      ty: u_ty,
+      optional: false,
+      rest: false,
+    }],
+    u_ty,
+  );
+  sig.type_params = vec![u_decl];
+
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![store.intern_signature(sig)],
+  });
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(callable, vec![(t_param, primitives.number)]);
+
+  let TypeKind::Callable { overloads } = store.type_kind(result) else {
+    panic!("expected callable, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(overloads.len(), 1);
+  let sig = store.signature(overloads[0]);
+  assert_eq!(sig.type_params.len(), 1);
+  assert_eq!(sig.type_params[0].constraint, Some(primitives.number));
+  assert_eq!(sig.type_params[0].default, Some(primitives.number));
 }
 
 #[test]
