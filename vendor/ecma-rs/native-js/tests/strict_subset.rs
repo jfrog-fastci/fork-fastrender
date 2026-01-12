@@ -2,10 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use diagnostics::Diagnostic;
-use native_js::builtins::CHECKED_BUILTINS_D_TS;
+use native_js::builtins::checked_builtins_lib;
 use native_js::validate::validate_strict_subset;
-use typecheck_ts::lib_support::FileKind;
-use typecheck_ts::lib_support::LibFile;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, FileKind, LibFile, LibName};
 use typecheck_ts::{FileKey, Host, HostError, Program};
 
 #[derive(Clone, Default)]
@@ -34,23 +33,30 @@ impl Host for TestHost {
     None
   }
 
+  fn compiler_options(&self) -> TsCompilerOptions {
+    // Mirror the `native-js` checked pipeline defaults: load only the target ES lib, not the DOM
+    // lib bundle (which also defines a global `print()` overload).
+    TsCompilerOptions {
+      libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+      ..Default::default()
+    }
+  }
+
   fn lib_files(&self) -> Vec<LibFile> {
-    // Match the `native-js` checked pipeline: start from the canonical intrinsic declarations and
-    // layer on any extra test-only ambient declarations.
-    let mut text = String::new();
-    text.push_str(CHECKED_BUILTINS_D_TS);
-    vec![LibFile {
-      key: FileKey::new("native-js:test-builtins.d.ts"),
-      name: Arc::from("native-js test builtins"),
-      kind: FileKind::Dts,
-      // `arguments` is a magic per-function binding in JS; we only declare it so `typecheck-ts`
-      // accepts samples that reference it and the strict-subset validator can produce the intended
-      // `NJS0009` diagnostic.
-      text: Arc::from({
-        text.push_str("declare const arguments: number;\n");
-        text
-      }),
-    }]
+    // Match the `native-js` checked pipeline: use the canonical intrinsic `.d.ts` lib key and
+    // layer any extra test-only ambient declarations on top.
+    vec![
+      checked_builtins_lib(),
+      LibFile {
+        key: FileKey::new("native-js:test-builtins.d.ts"),
+        name: Arc::from("native-js test builtins"),
+        kind: FileKind::Dts,
+        // `arguments` is a magic per-function binding in JS; we only declare it so `typecheck-ts`
+        // accepts samples that reference it and the strict-subset validator can produce the intended
+        // `NJS0009` diagnostic.
+        text: Arc::from("declare const arguments: number;\n"),
+      },
+    ]
   }
 
   fn file_kind(&self, file: &FileKey) -> FileKind {
@@ -298,6 +304,25 @@ fn rejects_print_used_as_expression() {
   )
   .unwrap_err();
   assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn accepts_user_defined_print_in_expression_position() {
+  let ok = validate(
+    r#"
+      function print(x: number): number {
+        return x + 1;
+      }
+
+      function run(): number {
+        return print(41);
+      }
+
+      export {};
+    "#,
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
 }
 
 #[test]

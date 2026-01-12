@@ -1090,15 +1090,25 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     Ok(true)
   }
 
-  fn callee_global_intrinsic(&self, expr: ExprId) -> Option<NativeJsIntrinsic> {
-    let expr = self.expr_data(expr).ok()?;
+  fn callee_global_intrinsic(&self, expr_id: ExprId) -> Option<NativeJsIntrinsic> {
+    let expr = self.expr_data(expr_id).ok()?;
     let ExprKind::Ident(ident) = expr.kind else {
       return None;
     };
     let resolved = self.names.resolve(ident)?;
     let intrinsic = crate::builtins::intrinsic_by_name(resolved)?;
-    // Don't treat a shadowed local binding as an intrinsic.
-    self.env.resolve(ident).is_none().then_some(intrinsic)
+
+    // `typecheck-ts` currently only indexes symbol occurrences for file-local bindings; global
+    // names coming from injected `.d.ts` libs (like native-js intrinsics) generally resolve to
+    // `None` here. This matches the strict-subset validator logic: treat the intrinsic as active
+    // only when it is not shadowed by a file-local binding named `print`.
+    self
+      .cg
+      .resolver
+      .for_file(self.file)
+      .resolve_expr_ident(self.body, expr_id)
+      .is_none()
+      .then_some(intrinsic)
   }
 
   fn emit_print_i32(&self, value: IntValue<'ctx>) {

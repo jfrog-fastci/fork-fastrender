@@ -18,9 +18,8 @@ use crate::resolve::{BindingId, Resolver};
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
   AssignOp, BinaryOp, Body, BodyId, BodyKind, ExprId, ExprKind, FileKind, ForInit, FunctionBody, Literal, NameId,
-  PatId, PatKind, StmtId, StmtKind, UnaryOp, VarDecl, VarDeclKind,
+  PatKind, StmtId, StmtKind, UnaryOp, VarDecl, VarDeclKind,
 };
-use std::collections::HashSet;
 use typecheck_ts::{Program, TypeKindSummary};
 
 /// Validate that all files reachable from `program`'s roots use only the strict
@@ -43,7 +42,14 @@ pub fn validate_strict_subset(program: &Program) -> Result<(), Vec<Diagnostic>> 
     }
 
     for body in program.bodies_in_file(file) {
-      validate_body(program, &resolver, file, body, &lowered, &mut diagnostics);
+      validate_body(
+        program,
+        &resolver,
+        file,
+        body,
+        &lowered,
+        &mut diagnostics,
+      );
     }
   }
 
@@ -67,8 +73,29 @@ fn validate_body(
     return;
   };
 
-  let syntax = validate_body_syntax(program, file, body_data, lowered, resolver, out);
-  validate_body_types(program, file, body, body_data, lowered, resolver, &syntax, out);
+  // Ensure the body is checked before running syntax validation. Some program queries (like
+  // `debug_symbol_occurrences`) are populated lazily by `check_body`, and the strict-subset syntax
+  // rules consult identifier resolution (for intrinsic detection and direct-call validation).
+  let checked = program.check_body(body);
+
+  let syntax = validate_body_syntax(
+    program,
+    file,
+    body_data,
+    lowered,
+    resolver,
+    out,
+  );
+  validate_body_types(
+    program,
+    file,
+    checked.as_ref(),
+    body_data,
+    lowered,
+    resolver,
+    &syntax,
+    out,
+  );
 }
 
 #[derive(Debug)]
@@ -162,11 +189,12 @@ fn validate_body_syntax(
     Some(FunctionBody::Expr(_)) => Vec::new(),
     None => body.root_stmts.clone(),
   };
-  let mut state = SyntaxState::new(file, body, lowered, out, &mut info);
+  let mut state = SyntaxState::new(file, body, lowered, file_resolver, out, &mut info);
   for stmt in root_stmts {
     state.validate_stmt(stmt);
   }
 
+  let file_resolver = resolver.for_file(file);
   for (expr_idx, expr) in body.exprs.iter().enumerate() {
     match &expr.kind {
       ExprKind::Super => {
@@ -249,14 +277,8 @@ fn validate_body_syntax(
 
         // `print(...)` is a codegen intrinsic, but only in statement position.
         let is_global_print_intrinsic =
-          matches!(
-            callee_native_js_intrinsic(body, lowered, call.callee),
-            Some(crate::builtins::NativeJsIntrinsic::Print)
-          )
-          && matches!(
-            file_resolver.resolve_expr_ident(body, call.callee),
-            Some(BindingId::Def(_))
-          );
+          callee_checked_intrinsic(&file_resolver, body, lowered, call.callee)
+            == Some(crate::builtins::NativeJsIntrinsic::Print);
         if is_global_print_intrinsic {
           push_unsupported_syntax(
             out,
@@ -494,14 +516,13 @@ fn validate_body_syntax(
 fn validate_body_types(
   program: &Program,
   file: typecheck_ts::FileId,
-  body: BodyId,
+  result: &typecheck_ts::BodyCheckResult,
   hir: &Body,
   lowered: &hir_js::LowerResult,
   resolver: &Resolver<'_>,
   syntax: &BodySyntaxInfo,
   out: &mut Vec<Diagnostic>,
 ) {
-  let result = program.check_body(body);
   let file_resolver = resolver.for_file(file);
 
   // The strict subset validator generally rejects callable/reference types. However, direct calls such as `foo(1)`
@@ -541,10 +562,10 @@ fn validate_body_types(
     }
 
     // Don't treat the `print` intrinsic as a normal callable; it's only supported in statement position.
-    if matches!(
-      callee_native_js_intrinsic(hir, lowered, call.callee),
-      Some(crate::builtins::NativeJsIntrinsic::Print)
-    ) {
+    let is_builtin_print_intrinsic =
+      callee_checked_intrinsic(&file_resolver, hir, lowered, call.callee)
+        == Some(crate::builtins::NativeJsIntrinsic::Print);
+    if is_builtin_print_intrinsic {
       continue;
     }
 
@@ -741,66 +762,33 @@ fn numeric_literal_is_i32(raw: &str) -> bool {
   i32::try_from(value).is_ok()
 }
 
-struct SyntaxState<'a, 'b> {
+struct SyntaxState<'a, 'b, 'p> {
   file: typecheck_ts::FileId,
   body: &'a Body,
   lowered: &'a hir_js::LowerResult,
+  file_resolver: crate::resolve::FileResolver<'a, 'p>,
   out: &'b mut Vec<Diagnostic>,
   info: &'b mut BodySyntaxInfo,
-  scopes: Vec<HashSet<NameId>>,
   loop_stack: Vec<Option<NameId>>,
 }
 
-impl<'a, 'b> SyntaxState<'a, 'b> {
+impl<'a, 'b, 'p> SyntaxState<'a, 'b, 'p> {
   fn new(
     file: typecheck_ts::FileId,
     body: &'a Body,
     lowered: &'a hir_js::LowerResult,
+    file_resolver: crate::resolve::FileResolver<'a, 'p>,
     out: &'b mut Vec<Diagnostic>,
     info: &'b mut BodySyntaxInfo,
   ) -> Self {
-    let mut state = Self {
+    Self {
       file,
       body,
       lowered,
+      file_resolver,
       out,
       info,
-      scopes: vec![HashSet::new()],
       loop_stack: Vec::new(),
-    };
-    if let Some(func) = &state.body.function {
-      for param in func.params.iter() {
-        state.declare_pat(param.pat);
-      }
-    }
-    state
-  }
-
-  fn push_scope(&mut self) {
-    self.scopes.push(HashSet::new());
-  }
-
-  fn pop_scope(&mut self) {
-    self.scopes.pop();
-    if self.scopes.is_empty() {
-      // Internal invariant: there is always a root scope.
-      self.scopes.push(HashSet::new());
-    }
-  }
-
-  fn is_shadowed(&self, name: NameId) -> bool {
-    self.scopes.iter().rev().any(|scope| scope.contains(&name))
-  }
-
-  fn declare_pat(&mut self, pat: PatId) {
-    let Some(pat) = self.body.pats.get(pat.0 as usize) else {
-      return;
-    };
-    let PatKind::Ident(name) = &pat.kind else {
-      return;
-    };
-    if let Some(scope) = self.scopes.last_mut() {
-      scope.insert(*name);
     }
   }
 
@@ -815,11 +803,9 @@ impl<'a, 'b> SyntaxState<'a, 'b> {
       }
       StmtKind::Return(_) => {}
       StmtKind::Block(stmts) => {
-        self.push_scope();
         for &s in stmts {
           self.validate_stmt(s);
         }
-        self.pop_scope();
       }
       StmtKind::If {
         consequent,
@@ -891,17 +877,6 @@ impl<'a, 'b> SyntaxState<'a, 'b> {
   }
 
   fn validate_for_loop(&mut self, label: Option<NameId>, init: Option<&ForInit>, body: StmtId, span: TextRange) {
-    // Keep loop scoping in sync with `native_js::codegen::FnCodegen::codegen_for`.
-    //
-    // `for (let/const ...)` introduces a lexical scope that does not leak outside the loop. `var` does *not* introduce a
-    // new scope in this subset.
-    let needs_loop_scope = matches!(
-      init,
-      Some(ForInit::Var(decl)) if matches!(decl.kind, VarDeclKind::Let | VarDeclKind::Const)
-    );
-    if needs_loop_scope {
-      self.push_scope();
-    }
     if let Some(init) = init {
       if let ForInit::Var(decl) = init {
         self.validate_var_decl(decl, span);
@@ -910,9 +885,6 @@ impl<'a, 'b> SyntaxState<'a, 'b> {
     self.loop_stack.push(label);
     self.validate_stmt(body);
     self.loop_stack.pop();
-    if needs_loop_scope {
-      self.pop_scope();
-    }
   }
 
   fn validate_break_continue(&mut self, keyword: &str, label: Option<NameId>, span: TextRange) {
@@ -965,14 +937,6 @@ impl<'a, 'b> SyntaxState<'a, 'b> {
       }
     }
 
-    // Track shadowing for intrinsics like `print`.
-    //
-    // Match codegen's behaviour: `LocalEnv` only contains locals. Module-level
-    // `let`/`const`/`var` (defs without a function-like ancestor) are stored in
-    // globals and do not shadow intrinsics.
-    let shadows_intrinsics = self.body.function.is_some()
-      || (self.scopes.len() > 1 && matches!(decl.kind, VarDeclKind::Let | VarDeclKind::Const));
-
     for declarator in decl.declarators.iter() {
       if declarator.init.is_none() {
         let pat_span = self
@@ -986,9 +950,6 @@ impl<'a, 'b> SyntaxState<'a, 'b> {
           Span::new(self.file, pat_span),
           "variable declarations must have an initializer in native-js strict subset",
         );
-      }
-      if shadows_intrinsics {
-        self.declare_pat(declarator.pat);
       }
     }
   }
@@ -1012,20 +973,13 @@ impl<'a, 'b> SyntaxState<'a, 'b> {
     if arg.spread {
       return;
     }
-
-    let Some(callee_expr) = self.body.exprs.get(call.callee.0 as usize) else {
-      return;
-    };
-    let ExprKind::Ident(name) = &callee_expr.kind else {
-      return;
-    };
-    let Some(resolved) = self.lowered.names.resolve(*name) else {
-      return;
-    };
-    if crate::builtins::intrinsic_by_name(resolved) != Some(crate::builtins::NativeJsIntrinsic::Print) {
-      return;
-    }
-    if self.is_shadowed(*name) {
+    if callee_checked_intrinsic(
+      &self.file_resolver,
+      self.body,
+      self.lowered,
+      call.callee,
+    ) != Some(crate::builtins::NativeJsIntrinsic::Print)
+    {
       return;
     }
 
@@ -1038,4 +992,20 @@ impl<'a, 'b> SyntaxState<'a, 'b> {
       *slot = true;
     }
   }
+}
+
+fn callee_checked_intrinsic(
+  file_resolver: &crate::resolve::FileResolver<'_, '_>,
+  body: &Body,
+  lowered: &hir_js::LowerResult,
+  expr: hir_js::ExprId,
+) -> Option<crate::builtins::NativeJsIntrinsic> {
+  let intrinsic = callee_native_js_intrinsic(body, lowered, expr)?;
+  // `typecheck-ts` only records symbol occurrences for file-local (declared) bindings. Global
+  // names coming from injected `.d.ts` libs (like native-js intrinsics) generally resolve to
+  // `None` here.
+  file_resolver
+    .resolve_expr_ident(body, expr)
+    .is_none()
+    .then_some(intrinsic)
 }

@@ -16,6 +16,7 @@ use crate::codes;
 use crate::emit::TargetConfig;
 use crate::llvm::expr::{FunctionCodegen, FunctionSymbol};
 use crate::llvm::{LlvmBackend, ValueKind};
+use crate::resolve::Resolver;
 use crate::{
   compile_typescript_to_llvm_ir, emit, link, Artifact, CompileOptions, CompilerOptions, EmitKind,
   NativeJsError, OptLevel,
@@ -691,6 +692,8 @@ impl<'a> Compiler<'a> {
       return Ok(());
     }
 
+    let resolver = Resolver::new(self.program);
+
     let mut diagnostics = Vec::new();
     for file in self.program.reachable_files() {
       let Some(lowered) = self.program.hir_lowered(file) else {
@@ -699,6 +702,7 @@ impl<'a> Compiler<'a> {
       if matches!(lowered.hir.file_kind, FileKind::Dts) {
         continue;
       }
+      let file_resolver = resolver.for_file(file);
 
       for body_id in self.program.bodies_in_file(file) {
         let Some(body) = lowered.body(body_id) else {
@@ -708,10 +712,10 @@ impl<'a> Compiler<'a> {
           let ExprKind::Call(call) = &expr.kind else {
             continue;
           };
-          let Some(callee) = body.exprs.get(call.callee.0 as usize) else {
+          let Some(callee_expr) = body.exprs.get(call.callee.0 as usize) else {
             continue;
           };
-          let ExprKind::Ident(ident) = &callee.kind else {
+          let ExprKind::Ident(ident) = &callee_expr.kind else {
             continue;
           };
           let Some(name) = lowered.names.resolve(*ident) else {
@@ -720,6 +724,13 @@ impl<'a> Compiler<'a> {
           let Some(intrinsic) = crate::builtins::intrinsic_by_name(name) else {
             continue;
           };
+          // `typecheck-ts` symbol occurrences only cover file-local bindings; global names (coming
+          // from injected `.d.ts` libs) resolve to `None` here. If the identifier resolves to any
+          // file-local binding, treat it as a user-defined function and do not consider it an
+          // intrinsic.
+          if file_resolver.resolve_expr_ident(body, call.callee).is_some() {
+            continue;
+          }
 
           diagnostics.push(
             codes::BUILTINS_DISABLED
