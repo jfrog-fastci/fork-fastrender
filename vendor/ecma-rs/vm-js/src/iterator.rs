@@ -15,8 +15,7 @@ fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
   Ok(PropertyKey::from_string(key_s))
 }
 
-/// `GetIterator` (ECMA-262).
-pub fn get_iterator(
+fn get_iterator_via_protocol(
   vm: &mut Vm,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
@@ -41,6 +40,31 @@ pub fn get_iterator(
     return Err(VmError::TypeError("GetIterator: value is not iterable"));
   };
   get_iterator_from_method(vm, host, hooks, scope, iterable, method)
+}
+
+/// `GetIterator` (ECMA-262).
+pub fn get_iterator(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  iterable: Value,
+) -> Result<IteratorRecord, VmError> {
+  get_iterator_via_protocol(vm, host, hooks, scope, iterable)
+}
+
+/// `GetIterator` (ECMA-262) via iterator protocol only (no internal fast paths).
+///
+/// This exists for spec-shaped callers (notably `yield*` delegation) that must receive an iterator
+/// record with a callable `next_method`.
+pub fn get_iterator_protocol(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  iterable: Value,
+) -> Result<IteratorRecord, VmError> {
+  get_iterator_via_protocol(vm, host, hooks, scope, iterable)
 }
 
 /// `GetIteratorFromMethod` (ECMA-262).
