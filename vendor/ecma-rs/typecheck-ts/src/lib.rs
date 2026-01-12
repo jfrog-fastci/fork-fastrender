@@ -129,7 +129,30 @@
 //!
 //! ```bash
 //! bash scripts/cargo_agent.sh run -p typecheck-ts --example memory_host_basic
-//! bash scripts/cargo_agent.sh run -p typecheck-ts --example json_snapshot
+//! bash scripts/cargo_agent.sh run -p typecheck-ts --features serde --example json_snapshot
+//! ```
+//!
+//! # Cancellation and profiling
+//!
+//! `Program` supports cooperative cancellation (useful for harnesses/IDEs) and
+//! exposes lightweight query profiling via [`Program::query_stats`].
+//!
+//! ```rust
+//! use typecheck_ts::{FileKey, MemoryHost, Program};
+//!
+//! let mut host = MemoryHost::new();
+//! let entry = FileKey::new("index.ts");
+//! host.insert(entry.clone(), "export const x = 1;");
+//!
+//! let program = Program::new(host, vec![entry]);
+//! let _ = program.check();
+//! let _stats = program.query_stats();
+//!
+//! program.cancel();
+//! let cancelled = program.check();
+//! assert_eq!(cancelled.len(), 1);
+//! assert_eq!(cancelled[0].code.as_str(), typecheck_ts::codes::CANCELLED.as_str());
+//! program.clear_cancellation();
 //! ```
 //!
 //! # Features
@@ -141,6 +164,11 @@
 //!
 //! - `serde`: enables serialization for identifiers, diagnostics, snapshots, and
 //!   [`TypeDisplay`] (which renders to a string for JSON outputs).
+//!
+//! - `resolve`: enables Node/TypeScript-style module resolution helpers
+//!   (`typecheck_ts::resolve`). This is intended for disk-based hosts; if you
+//!   already have a build-system module graph, prefer implementing
+//!   [`Host::resolve`] directly without pulling in the resolver.
 //!
 //! The public API intentionally hides internal storage (arenas, caches, ASTs).
 //! [`Program`] returns opaque IDs and `Arc` handles so downstream consumers can
