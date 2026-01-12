@@ -688,7 +688,8 @@ At minimum:
 - [ ] Every TS→TS call lowered via `gc.statepoint`
 - [ ] Poll safepoints exist for long-running loops (backedges and/or prologues)
 - [ ] `.llvm_stackmaps` present in final binary and not stripped
-- [ ] Stack map GC root locations are pointer-sized `Indirect` spill slots relative to SP/FP (no Register/Direct roots)
+- [ ] Stack map GC root locations are **addressable**: pointer-sized `Indirect` spill slots relative
+      to SP/FP, or supported pointer-sized `Register` roots (no `Direct` roots)
 - [ ] Derived pointers: base pointers are also present in GC-live sets
 
 ### 7.3 Common failure modes
@@ -706,11 +707,13 @@ At minimum:
    - cause: `frame-pointer=all` not set for all TS code (or LTO merged in code
      built without it).
 
-4. **Register roots or unsupported stackmap location kinds**
-   - symptom: runtime cannot interpret locations; either aborts (by design) or
-     misses roots if incorrectly handled.
-   - cause: codegen/runtime mismatch; need either runtime support or stricter
-     codegen constraints (e.g. keep GC roots in addressable spill slots).
+4. **Unsupported stackmap location kinds / invalid register roots**
+   - symptom: runtime cannot interpret locations; stack scanning errors out or
+     stops early to avoid unsafe memory access.
+   - cause: codegen/runtime mismatch:
+     - `Direct` roots are not currently supported.
+     - `Register` roots are supported, but must be pointer-sized, `offset=0`, and
+       must not use SP/FP/IP DWARF regs.
 
 5. **`.llvm_stackmaps` missing in release builds**
    - symptom: lookup table empty; GC cannot scan.

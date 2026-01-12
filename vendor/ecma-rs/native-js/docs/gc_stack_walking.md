@@ -73,18 +73,19 @@ Codegen policy: **avoid dynamic `alloca` / stack realignment in functions that p
 statepoints/safepoints**. Prefer heap allocation or fixed-size stack slots. FP-relative root
 locations may still work in practice, but are not guaranteed across LLVM versions/opts.
 
-## GC root locations: must be spilled stack slots
+## GC root locations: stack slots preferred, register roots supported
 
 LLVM stackmaps can describe live values as either:
 
 - addressable stack slots (`Indirect [SP/FP + off]`), or
 - registers (`Register R#N`, encoded as DWARF register numbers).
 
-For our current `runtime-native` stack-walking implementation, **GC roots at statepoints must not be
-encoded as `Register` locations**: we require addressable `Indirect` spill slots relative to SP/FP
-so the GC can update pointers in-place by walking frames.
+`runtime-native` prefers `Indirect` spill slots (they are easier to inspect/debug and do not depend
+on register preservation), but it also supports `Register` GC roots by capturing a full register
+file at safepoints and treating each register slot in that saved `RegContext` as a mutable lvalue
+during stack scanning/relocation.
 
-To enforce this:
+To reduce register roots in practice:
 
 - `native-js` configures LLVM codegen globally via `LLVMParseCommandLineOptions` (see
   `native-js/src/llvm/mod.rs`) using:
@@ -94,13 +95,8 @@ To enforce this:
   backend flags:
   - `llc-18 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0`
   - `clang-18 -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0`
-- `runtime-native` has a verifier (`runtime-native/src/statepoint_verify.rs`) that rejects any
-  statepoint record whose GC roots are not pointer-sized `Indirect` spill slots relative to SP or FP
-  (no `Register`/`Direct` roots).
+- `runtime-native` has a verifier (`runtime-native/src/statepoint_verify.rs`) that validates root
+  location kinds and catches obviously-invalid root encodings (e.g. SP/FP/IP register roots).
 
-See `vendor/ecma-rs/docs/stackmaps.md` for the full contract and the regression tests that assert
-no `Register` roots appear in `.llvm_stackmaps`.
-
-If we later relax this policy to allow register roots for performance, the runtime must be upgraded
-to support register-root relocation for *all* scanned frames (which likely requires unwind-based
-stack walking / register reconstruction, or signal-context capture for suspended threads).
+See `vendor/ecma-rs/docs/stackmaps.md` for the full contract and regression tests around
+register-root avoidance.

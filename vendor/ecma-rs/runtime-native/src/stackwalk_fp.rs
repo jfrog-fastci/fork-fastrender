@@ -343,10 +343,12 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
 /// - In practice, LLVM statepoints *often* spill GC roots into addressable stack slots
 ///   (`Indirect [SP/FP + off]`).
 ///
-///   LLVM StackMaps can also describe roots in registers (`Register R#N`), but `runtime-native`
-///   currently **rejects** register roots at statepoints: we require addressable spill slots so the
-///   GC can update pointers in-place by walking frames (see `docs/stackmaps.md` and
-///   `runtime-native/src/statepoint_verify.rs`).
+///   LLVM StackMaps can also describe roots in registers (`Register R#N`).
+///   - When a saved `RegContext` is available (stop-the-world safepoint scanning), `runtime-native`
+///     treats register roots as mutable lvalues inside that saved register file so a moving GC can
+///     rewrite them in-place.
+///   - When walking from a raw frame pointer without a register context (`walk_gc_roots_from_fp`),
+///     register roots are not currently supported and will return an error.
 /// - Derived pointers (statepoint `(base, derived)` pairs where `base != derived`) are supported.
 ///   The walker visits only the **base** root slots (derived slots are not traced as independent
 ///   roots). If the callback relocates a base slot in-place, the walker updates any derived slots

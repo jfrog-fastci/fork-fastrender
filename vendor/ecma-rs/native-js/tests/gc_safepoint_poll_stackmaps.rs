@@ -204,7 +204,7 @@ fn call_free_loop_has_safepoint_polls_with_stackmaps_and_relocation() {
   // Parse `.llvm_stackmaps` and ensure:
   // - there are callsite records (entry + backedge poll),
   // - runtime-native's verifier accepts them,
-  // - each callsite has at least one GC root slot.
+  // - each callsite has at least one GC root.
   let file = object::File::parse(&*obj_bytes).expect("parse object file");
   let section = file
     .section_by_name(".llvm_stackmaps")
@@ -217,7 +217,7 @@ fn call_free_loop_has_safepoint_polls_with_stackmaps_and_relocation() {
     "expected at least 2 stackmap callsites (entry + backedge poll), got {}",
     stackmaps.callsites().len()
   );
- 
+  
   for (pc, callsite) in stackmaps.iter() {
     let pairs: Vec<_> = callsite.reloc_pairs().collect();
     assert!(

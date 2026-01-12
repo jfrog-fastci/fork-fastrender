@@ -11,7 +11,9 @@ Our initial native runtime stack-walking strategy is intentionally simple:
   for stackmap locations based on `SP`).
 - **Do not** use `libunwind`, `ucontext`, or DWARF register reconstruction.
 
-That strategy is only correct if every GC root referenced by a stackmap is stored in a **memory location**.
+That strategy is only correct if every GC root referenced by a stackmap is **addressable** while the
+thread is stopped at a safepoint (either in a spilled stack slot, or in a register that the runtime
+can read and rewrite via a saved register context).
 
 ## Stackmap `SP` base is the *callsite* SP (not callee-entry SP)
 
@@ -57,28 +59,45 @@ Runtime-native provides helpers that handle both cases:
 - `runtime_native::stackmaps::StackMap::parse(bytes)` parses a **single** StackMap v3 blob and
   will fail fast if it looks like the input contains multiple concatenated blobs.
 
-## Contract: no `Register` GC roots
+## Contract: GC root locations must be addressable (`Indirect` or `Register`)
 
 At every statepoint, LLVM emits a stackmap record with a list of live GC pointer locations.
 
-We require:
+`runtime-native` supports two location kinds for GC roots:
 
-- All GC pointer locations in `.llvm_stackmaps` are **addressable stack slots**
-  (LLVM StackMaps `Indirect` locations).
-  - In particular, GC roots must **not** be `Register` locations.
+- **Spilled stack slots** (`Indirect [SP/FP + off]`) (preferred)
+  - The runtime computes the slot address from the caller-frame SP/FP at the statepoint callsite.
+- **Register roots** (`Register R#N`, DWARF register numbers)
+  - The runtime captures a full register file (`RegContext`) at the safepoint and treats each
+    register as a **mutable lvalue** inside that saved register file.
+  - This allows a moving GC to relocate pointers by rewriting the saved register slots, then
+    restoring registers when the thread resumes.
 
-Rationale:
+Register-root constraints:
 
-- Without an unwind-based register context, we cannot read or update register-held roots for non-top frames.
-- A moving/compacting GC must be able to update *all* roots, not just the topmost frame.
+- Location must be pointer-sized.
+- `offset` must be `0` (the StackMap v3 `offset` field is semantically unused for `Register`).
+- SP/FP/IP DWARF registers are rejected (they are not GC roots under our frame-pointer policy).
+- The DWARF register number must be supported by the runtime's saved `RegContext` for the target.
 
-## Required codegen options (LLVM 18, x86_64 + AArch64)
+### Correctness note: register roots in older frames
+
+Stack scanning for older frames uses the **current** register file saved at the safepoint.
+A stackmap `Register` root is therefore only meaningful for registers whose values are preserved
+across the call stack at the safepoint (typically callee-saved registers, or registers explicitly
+spilled/preserved by statepoint lowering).
+
+LLVM's StackMap / statepoint semantics guarantee that any value described as a `Register` GC root is
+live and recoverable at the safepoint; `runtime-native` simply reads and (for relocation) updates
+the corresponding slot in the saved `RegContext`.
+
+## Recommended codegen options (LLVM 18, x86_64 + AArch64)
 
 LLVM *can* place statepoint GC roots in callee-saved registers under some settings.
-The runtime has a verifier (`runtime-native/src/statepoint_verify.rs`) that rejects such stackmaps in
-debug builds (and optionally in release builds via the `verify-statepoints` feature).
+The runtime supports register roots, but keeping roots in stack slots tends to make stackmaps easier
+to debug and reduces reliance on register-file capture.
 
-To force spills, ensure codegen uses:
+To encourage spills, prefer:
 
 - `llc-18 --fixup-allow-gcptr-in-csr=false` (preferred), and/or
 - `llc-18 --fixup-max-csr-statepoints=0` (fallback / defense-in-depth)
@@ -106,10 +125,12 @@ If you see a stackmap entry like:
 #4: Register R#12, size: 8
 ```
 
-then one of the following is true:
+then LLVM kept a GC value in a register at that statepoint callsite.
+
+This is supported by `runtime-native`, but it may indicate one of the following:
 
 1. Codegen did not pass `--fixup-max-csr-statepoints=0`, or
-   (and/or did not set `--fixup-allow-gcptr-in-csr=false`), or
+    (and/or did not set `--fixup-allow-gcptr-in-csr=false`), or
 2. LLVM changed behavior / we upgraded LLVM and need to re-evaluate defaults.
 
 Run the regression suite:

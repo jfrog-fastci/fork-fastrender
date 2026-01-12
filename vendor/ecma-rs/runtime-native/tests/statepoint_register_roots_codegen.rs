@@ -27,8 +27,10 @@ const AARCH64_TRIPLE: &str = "aarch64-unknown-linux-gnu";
 const MATRIX_MAX_ROOTS: usize = 32;
 const MATRIX_PRESSURE_INTS: usize = 32;
 
-// Mitigation: do not allow statepoint GC roots to remain in callee-saved registers.
-// Required for frame-pointer-only stack walking without libunwind/ucontext.
+// Mitigation (recommended): discourage statepoint GC roots from remaining in registers.
+//
+// `runtime-native` can scan and relocate register roots, but spilled stack slots are still easier
+// to inspect/debug and avoid relying on register preservation across deep call stacks.
 const LCC_FIXUP_ALLOW_GCPTR_IN_CSR_FALSE: &str = "--fixup-allow-gcptr-in-csr=false";
 const LCC_FIXUP_MAX_CSR_STATEPOINTS_0: &str = "--fixup-max-csr-statepoints=0";
 
@@ -307,13 +309,19 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
       let obj = path_in(tmp, &format!("matrix_{}_{}.o", target.name, cfg_idx));
       llc_to_obj(tmp, &rewritten_ll, &obj, &llc_flags);
 
-      let section = read_section(&obj, ".llvm_stackmaps");
-      let stackmap = StackMap::parse(&section).expect("parse stackmaps section");
+       let section = read_section(&obj, ".llvm_stackmaps");
+       let stackmap = StackMap::parse(&section).expect("parse stackmaps section");
 
-      // Hard correctness check: verify the spill-to-stack convention holds.
-      verify_statepoint_stackmap(
-        &stackmap,
-        VerifyStatepointOptions {
+       assert!(
+         !has_register_roots(&stackmap),
+         "matrix target={} cfg {cfg_idx} llc_flags={llc_flags:?}: expected no Register roots under spill-mitigation flags",
+         target.name
+       );
+
+       // Hard correctness check: verify the spill-to-stack convention holds.
+       verify_statepoint_stackmap(
+         &stackmap,
+         VerifyStatepointOptions {
           arch: target.arch,
           mode: VerifyMode::StatepointsOnly,
         },
@@ -381,17 +389,6 @@ fn fixup_max_csr_statepoints_0_forces_spills() {
     has_register_roots(&dangerous_sm),
     "expected dangerous flags={dangerous_flags:?} to produce at least one Register root"
   );
-  assert!(
-    verify_statepoint_stackmap(
-      &dangerous_sm,
-      VerifyStatepointOptions {
-        arch: DwarfArch::X86_64,
-        mode: VerifyMode::StatepointsOnly,
-      },
-    )
-    .is_err(),
-    "expected verifier to reject register roots under dangerous flags"
-  );
 
   // Mitigated flags: force spills back to stack slots.
   let mitigated_flags = &[
@@ -456,16 +453,57 @@ fn verifier_does_not_skip_custom_statepoint_ids() {
     has_register_roots_for_patchpoint_id(&sm, 42),
     "expected dangerous flags={dangerous_flags:?} to produce at least one Register root for patchpoint_id=42"
   );
+
+  // Ensure the verifier still detects statepoints by layout (not by patchpoint_id) by mutating a
+  // register root into a forbidden SP register root and expecting a failure for patchpoint_id=42.
+  let mut register_loc: Option<(usize, usize)> = None;
+  for (rec_idx, rec) in sm.records.iter().enumerate() {
+    if rec.patchpoint_id != 42 {
+      continue;
+    }
+    let Ok(sp) = StatepointRecord::new(rec) else {
+      continue;
+    };
+    let start = sp.gc_pairs_start();
+    for (pair_idx, pair) in sp.gc_pairs().iter().enumerate() {
+      let base_idx = start + pair_idx * 2;
+      if matches!(pair.base, Location::Register { .. }) {
+        register_loc = Some((rec_idx, base_idx));
+        break;
+      }
+      if matches!(pair.derived, Location::Register { .. }) {
+        register_loc = Some((rec_idx, base_idx + 1));
+        break;
+      }
+    }
+    if register_loc.is_some() {
+      break;
+    }
+  }
+
+  let (rec_idx, loc_idx) =
+    register_loc.expect("expected at least one Register root location for patchpoint_id=42");
+  let mut sm_bad = sm.clone();
+  match &mut sm_bad.records[rec_idx].locations[loc_idx] {
+    Location::Register { dwarf_reg, offset, .. } => {
+      *dwarf_reg = DwarfArch::X86_64.stack_pointer_dwarf_reg();
+      *offset = 0;
+    }
+    other => panic!("expected Register location at location[{loc_idx}], got {other:?}"),
+  };
+
+  let err = verify_statepoint_stackmap(
+    &sm_bad,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .expect_err("expected verifier to reject forbidden SP register root");
+  assert_eq!(err.patchpoint_id, 42);
   assert!(
-    verify_statepoint_stackmap(
-      &sm,
-      VerifyStatepointOptions {
-        arch: DwarfArch::X86_64,
-        mode: VerifyMode::StatepointsOnly,
-      },
-    )
-    .is_err(),
-    "expected verifier to reject register roots even when statepoint-id is customized"
+    err.message.contains("forbidden"),
+    "unexpected verifier error: {err}"
   );
 }
 
@@ -504,17 +542,6 @@ fn fixup_allow_gcptr_in_csr_false_forces_spills() {
   assert!(
     has_register_roots(&dangerous_sm),
     "expected dangerous flags={dangerous_flags:?} to produce at least one Register root"
-  );
-  assert!(
-    verify_statepoint_stackmap(
-      &dangerous_sm,
-      VerifyStatepointOptions {
-        arch: DwarfArch::X86_64,
-        mode: VerifyMode::StatepointsOnly,
-      },
-    )
-    .is_err(),
-    "expected verifier to reject register roots under dangerous flags"
   );
 
   // Mitigated flags: explicitly force CSR root passing off.

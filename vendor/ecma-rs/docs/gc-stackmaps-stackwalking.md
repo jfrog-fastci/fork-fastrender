@@ -73,9 +73,14 @@ callsite `SP`.
 
 - **Generated LLVM code** must be compiled with frame pointers:
   - `llc -frame-pointer=all` (or equivalent target options/attributes).
-- **Generated LLVM code** must also keep statepoint GC roots in *addressable stack slots* (not registers):
-  - `llc -fixup-allow-gcptr-in-csr=false` (preferred) and/or `llc -fixup-max-csr-statepoints=0`
-  - See `docs/stackmaps.md` for the full “no Register roots” contract and regression tests.
+- **Generated LLVM code** should preferably keep statepoint GC roots in *addressable stack slots*
+  (`Indirect [SP/FP + off]`):
+  - This keeps stackmaps easier to inspect/debug and avoids relying on register-root preservation.
+  - `runtime-native` supports `Register` roots by saving a full register file at safepoints and
+    treating registers as mutable lvalues, but spills are still preferred.
+  - To encourage spills, use `llc -fixup-allow-gcptr-in-csr=false` (preferred) and/or
+    `llc -fixup-max-csr-statepoints=0`.
+  - See `docs/stackmaps.md` for supported location kinds and constraints.
 - **Rust runtime code** must be compiled with frame pointers:
   - `RUSTFLAGS="-C force-frame-pointers=yes"`  
     The repo's LLVM wrapper script (`scripts/cargo_llvm.sh`) sets this automatically.
