@@ -662,9 +662,52 @@ fn resolve_overload_set(
   // still resolves to the first overload (`number`) and reports TS2322 at the
   // assignment site. (The contextual type can still participate in generic
   // inference via `infer_type_arguments_for_call` above.)
-  applicable.sort_by_key(|candidate| fallback_rank_key(candidate, false));
+  let contextual_applied = false;
+  applicable.sort_by_key(|candidate| fallback_rank_key(candidate, contextual_applied));
 
   let best = applicable[0];
+  let best_key = rank_key_no_id(best, contextual_applied);
+  let mut tied: Vec<&CandidateOutcome> = Vec::new();
+  for candidate in applicable.iter().copied() {
+    if rank_key_no_id(candidate, contextual_applied) == best_key {
+      tied.push(candidate);
+    } else {
+      break;
+    }
+  }
+
+  if tied.len() > 1 {
+    let mut diag = codes::AMBIGUOUS_OVERLOAD.error("call is ambiguous", span);
+    let shown = tied.len().min(MAX_NOTES);
+    for (idx, outcome) in tied.iter().take(shown).enumerate() {
+      let display_ty =
+        store.intern_type(TypeKind::Callable { overloads: vec![outcome.instantiated_id] });
+      let sig = TypeDisplay::new(store.as_ref(), display_ty);
+      diag.push_note(format!(
+        "candidate {}: {}{}",
+        idx + 1,
+        if matches!(kind, OverloadKind::Construct) {
+          "new "
+        } else {
+          ""
+        },
+        sig
+      ));
+    }
+    let hidden = tied.len().saturating_sub(shown);
+    if hidden > 0 {
+      diag.push_note(format!("~ {hidden} overload(s) not shown"));
+    }
+
+    let return_type = store.union(tied.iter().map(|c| c.instantiated_sig.ret).collect());
+    return CallResolution {
+      return_type,
+      signature: None,
+      contextual_signature: Some(best.instantiated_id),
+      diagnostics: vec![diag],
+    };
+  }
+
   CallResolution {
     return_type: best.instantiated_sig.ret,
     signature: Some(best.instantiated_id),
