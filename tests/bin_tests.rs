@@ -4,4 +4,3 @@
 
 mod common;
 mod bin;
-mod test_support;

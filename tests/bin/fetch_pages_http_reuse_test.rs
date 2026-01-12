@@ -1,4 +1,4 @@
-use crate::test_support::net::try_bind_localhost;
+use crate::common::net::try_bind_localhost;
 use fastrender::pageset::{cache_html_path, pageset_stem};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

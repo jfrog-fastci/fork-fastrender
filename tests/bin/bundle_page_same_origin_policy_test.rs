@@ -1,4 +1,4 @@
-use crate::test_support::net::try_bind_localhost;
+use crate::common::net::try_bind_localhost;
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};

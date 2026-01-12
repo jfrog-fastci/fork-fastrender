@@ -1,11 +1,10 @@
-use crate::test_support;
+use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::render_control::{with_deadline, RenderDeadline};
 use fastrender::resource::HttpFetcher;
 use fastrender::ResourceFetcher;
 use std::io::{Read, Write};
 use std::thread;
 use std::time::Duration;
-use test_support::net::{net_test_lock, try_bind_localhost};
 
 #[test]
 fn http_fetch_uses_root_deadline_under_nested_deadline() {

@@ -1,4 +1,4 @@
-use crate::test_support;
+use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::resource::{HttpFetcher, HttpRetryPolicy};
 use fastrender::ResourceFetcher;
 use std::io;
@@ -6,7 +6,6 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 use std::time::{Duration, Instant};
-use test_support::net::{net_test_lock, try_bind_localhost};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {

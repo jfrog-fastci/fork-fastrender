@@ -8,8 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::test_support;
-use test_support::net::{net_test_lock, try_bind_localhost};
+use crate::common::net::{net_test_lock, try_bind_localhost};
 
 #[derive(Clone)]
 struct TestResponse {

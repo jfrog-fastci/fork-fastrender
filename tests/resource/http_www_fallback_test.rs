@@ -1,4 +1,4 @@
-use crate::test_support;
+use crate::common::net::net_test_lock;
 use fastrender::resource::{FetchContextKind, HttpFetcher, HttpRetryPolicy};
 use fastrender::ResourceFetcher;
 use std::io;
@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use test_support::net::net_test_lock;
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 

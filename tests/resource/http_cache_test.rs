@@ -1,4 +1,4 @@
-use crate::test_support;
+use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::render_control::{with_deadline, RenderDeadline};
 use fastrender::resource::{CachingFetcher, CachingFetcherConfig, HttpFetcher, ResourcePolicy};
 use fastrender::ResourceFetcher;
@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
-use test_support::net::{net_test_lock, try_bind_localhost};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 fn spawn_server<F>(

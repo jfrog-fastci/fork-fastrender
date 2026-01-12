@@ -1,4 +1,4 @@
-use crate::test_support;
+use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::resource::web_fetch::RequestRedirect;
 use fastrender::resource::{FetchDestination, FetchRequest, HttpFetcher, HttpRequest};
 use fastrender::ResourceFetcher;
@@ -7,7 +7,6 @@ use std::io::{self, Read, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use test_support::net::{net_test_lock, try_bind_localhost};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 

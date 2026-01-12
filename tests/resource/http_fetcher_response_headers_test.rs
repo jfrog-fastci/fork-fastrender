@@ -1,4 +1,4 @@
-use crate::test_support;
+use crate::common::net::try_bind_localhost;
 use fastrender::resource::HttpFetcher;
 use fastrender::ResourceFetcher;
 
@@ -9,7 +9,6 @@ use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use test_support::net::try_bind_localhost;
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 

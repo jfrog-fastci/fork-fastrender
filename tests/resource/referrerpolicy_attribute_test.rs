@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::test_support;
-use test_support::net::try_bind_localhost;
+use crate::common::net::try_bind_localhost;
 
 #[derive(Debug, Clone)]
 struct CapturedRequest {

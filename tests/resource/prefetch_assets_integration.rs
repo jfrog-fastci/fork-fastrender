@@ -1,6 +1,6 @@
 #![cfg(feature = "disk_cache")]
 
-use crate::test_support;
+use crate::common::net::try_bind_localhost;
 use fastrender::pageset::pageset_stem;
 use fastrender::resource::{
   normalize_user_agent_for_log, CachingFetcherConfig, DiskCacheConfig, DiskCachingFetcher,
@@ -19,7 +19,6 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use tempfile::TempDir;
-use test_support::net::try_bind_localhost;
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 

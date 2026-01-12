@@ -1,4 +1,4 @@
-use crate::test_support::net::{net_test_lock, try_bind_localhost};
+use crate::common::net::{net_test_lock, try_bind_localhost};
 
 use fastrender::api::{
   BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions,
