@@ -1,6 +1,7 @@
 use vm_js::{
   GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
   Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  JsRuntime,
 };
 
 struct TestRealm {
@@ -22,6 +23,21 @@ impl Drop for TestRealm {
   fn drop(&mut self) {
     self.realm.teardown(&mut self.heap);
   }
+}
+
+fn new_runtime() -> Result<JsRuntime, VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // `JsRuntime::exec_script` needs enough heap headroom for parsing/compiling the test script
+  // itself in addition to the objects it creates at runtime.
+  let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+  JsRuntime::new(vm, heap)
+}
+
+fn as_utf8_lossy(rt: &JsRuntime, value: Value) -> String {
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  rt.heap().get_string(s).unwrap().to_utf8_lossy()
 }
 
 fn get_own_data_property(
@@ -196,6 +212,68 @@ fn require_closed_flag(scope: &mut Scope<'_>, iterator: GcObject, expected: bool
     get_own_data_property(scope, iterator, "closed")?,
     Some(Value::Bool(expected))
   );
+  Ok(())
+}
+
+#[test]
+fn object_from_entries_evaluation_order() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let value = rt.exec_script(
+    r#"
+      (function () {
+        var effects = [];
+
+        function makeEntry(label) {
+          return {
+            get '0'() {
+              effects.push('access property "0" of ' + label + ' entry');
+              return {
+                toString: function() {
+                  effects.push('toString of ' + label + ' key');
+                  return label + ' key';
+                },
+              };
+            },
+            get '1'() {
+              effects.push('access property "1" of ' + label + ' entry');
+              return label + ' value';
+            },
+          };
+        }
+
+        var iterable = {
+          [Symbol.iterator]: function() {
+            effects.push('get Symbol.iterator');
+            var count = 0;
+            return {
+              next: function() {
+                effects.push('next ' + count);
+                if (count === 0) {
+                  ++count;
+                  return { done: false, value: makeEntry('first') };
+                } else if (count === 1) {
+                  ++count;
+                  return { done: false, value: makeEntry('second') };
+                } else {
+                  return { done: true };
+                }
+              },
+            };
+          },
+        };
+
+        var result = Object.fromEntries(iterable);
+        return effects.join('|') + ';' + result['first key'] + ';' + result['second key'];
+      })()
+    "#,
+  )?;
+
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "get Symbol.iterator|next 0|access property \"0\" of first entry|access property \"1\" of first entry|toString of first key|next 1|access property \"0\" of second entry|access property \"1\" of second entry|toString of second key|next 2;first value;second value"
+  );
+
   Ok(())
 }
 
