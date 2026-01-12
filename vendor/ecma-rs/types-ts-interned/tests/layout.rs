@@ -21,7 +21,9 @@ fn collect_layout_graph(store: &TypeStore, root: LayoutId) -> BTreeMap<LayoutId,
       Layout::Ptr { to } => match to {
         types_ts_interned::PtrKind::GcObject { layout }
         | types_ts_interned::PtrKind::GcArray { elem: layout } => queue.push(*layout),
-        types_ts_interned::PtrKind::GcString | types_ts_interned::PtrKind::Opaque => {}
+        types_ts_interned::PtrKind::GcString
+        | types_ts_interned::PtrKind::GcAny
+        | types_ts_interned::PtrKind::Opaque => {}
       },
       Layout::Struct { fields, .. } => {
         for field in fields {
@@ -236,3 +238,82 @@ fn object_shape_field_ordering_is_stable() {
   assert_eq!(fields[1].key, FieldKey::Prop(PropKey::String(name_b)));
 }
 
+#[test]
+fn callable_types_lower_to_traceable_closure_objects() {
+  use types_ts_interned::{Param, Signature};
+
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let sig = store.intern_signature(Signature::new(
+    vec![Param {
+      name: None,
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+    }],
+    primitives.boolean,
+  ));
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig],
+  });
+
+  let layout_id = store.layout_of(callable);
+  let Layout::Ptr { to } = store.layout(layout_id) else {
+    panic!("expected callable to lower to Ptr layout");
+  };
+  let types_ts_interned::PtrKind::GcObject { layout: payload } = to else {
+    panic!("expected callable to lower to PtrKind::GcObject");
+  };
+
+  let Layout::Struct { fields, size, align } = store.layout(payload) else {
+    panic!("expected closure payload layout to be Struct");
+  };
+
+  assert_eq!(size, 16);
+  assert_eq!(align, 8);
+  assert_eq!(fields.len(), 2);
+  assert_eq!(fields[0].key, FieldKey::Internal("fn_ptr".to_string()));
+  assert_eq!(fields[0].offset, 0);
+  assert_eq!(fields[1].key, FieldKey::Internal("env".to_string()));
+  assert_eq!(fields[1].offset, 8);
+
+  assert!(
+    matches!(store.layout(fields[0].layout), Layout::Ptr { to: types_ts_interned::PtrKind::Opaque }),
+    "expected fn_ptr field to be an opaque pointer"
+  );
+  assert!(
+    matches!(store.layout(fields[1].layout), Layout::Ptr { to: types_ts_interned::PtrKind::GcAny }),
+    "expected env field to be a GC-managed pointer with unknown pointee layout"
+  );
+
+  // GcAny must be considered a GC pointer for trace planning.
+  assert_eq!(store.gc_ptr_offsets(payload), vec![8]);
+}
+
+#[test]
+fn closure_layout_ids_are_deterministic_across_stores() {
+  use types_ts_interned::Signature;
+
+  fn build() -> (std::sync::Arc<TypeStore>, types_ts_interned::TypeId) {
+    let store = TypeStore::new();
+    let primitives = store.primitive_ids();
+    let sig = store.intern_signature(Signature::new(Vec::new(), primitives.number));
+    let callable = store.intern_type(TypeKind::Callable {
+      overloads: vec![sig],
+    });
+    (store, callable)
+  }
+
+  let (store_a, ty_a) = build();
+  let (store_b, ty_b) = build();
+  assert_eq!(ty_a, ty_b);
+
+  let root_a = store_a.layout_of(ty_a);
+  let root_b = store_b.layout_of(ty_b);
+  assert_eq!(root_a, root_b);
+
+  let graph_a = collect_layout_graph(store_a.as_ref(), root_a);
+  let graph_b = collect_layout_graph(store_b.as_ref(), root_b);
+  assert_eq!(graph_a, graph_b);
+}

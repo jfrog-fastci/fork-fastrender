@@ -1,7 +1,7 @@
 use crate::display::TypeDisplay;
 use crate::ids::{NameId, ObjectId, ShapeId, SignatureId, TypeId};
 use crate::kind::{CompositeKind, TypeKind};
-use crate::layout::{Layout, LayoutId, LayoutStore};
+use crate::layout::{GcTraceStep, Layout, LayoutId, LayoutStore};
 use crate::options::TypeOptions;
 use crate::shape::{Indexer, ObjectType, Property, Shape};
 use crate::signature::{Param, Signature, TypeParamDecl};
@@ -589,6 +589,24 @@ impl TypeStore {
   /// store instance.
   pub fn layout(&self, id: LayoutId) -> Layout {
     self.layouts.layout(id)
+  }
+
+  /// Compute a GC tracing plan for values of the given native layout.
+  ///
+  /// The returned trace steps describe where GC-managed pointers live inside the
+  /// value, including any nested tagged unions that require consulting runtime
+  /// discriminants.
+  pub fn gc_trace(&self, layout: LayoutId) -> Vec<GcTraceStep> {
+    self.layouts.gc_trace(layout)
+  }
+
+  /// Extract unconditional GC pointer byte offsets for a layout.
+  ///
+  /// This is a convenience wrapper around [`TypeStore::gc_trace`] that returns
+  /// only direct pointer offsets, ignoring any pointers that are only present in
+  /// specific tagged-union variants.
+  pub fn gc_ptr_offsets(&self, layout: LayoutId) -> Vec<u32> {
+    self.layouts.gc_ptr_offsets(layout)
   }
 
   pub fn intern_shape(&self, mut shape: Shape) -> ShapeId {

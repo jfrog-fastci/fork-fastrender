@@ -81,6 +81,8 @@ pub use kind::TypeKind;
 pub use layout::AbiScalar;
 pub use layout::FieldKey;
 pub use layout::FieldLayout;
+pub use layout::GcTraceStep;
+pub use layout::GcTraceVariant;
 pub use layout::Layout;
 pub use layout::LayoutComputer;
 pub use layout::LayoutId;

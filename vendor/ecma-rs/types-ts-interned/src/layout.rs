@@ -98,6 +98,11 @@ pub enum PtrKind {
   GcArray { elem: LayoutId },
   /// Heap-managed string.
   GcString,
+  /// Heap-managed pointer whose pointee layout is not known at compile time.
+  ///
+  /// This is still a GC-managed pointer (i.e. a precise GC root slot) but does
+  /// not encode a layout identity.
+  GcAny,
   /// Opaque pointer-like value.
   Opaque,
 }
@@ -167,6 +172,23 @@ pub enum Layout {
     size: u32,
     align: u32,
   },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GcTraceVariant {
+  pub discriminant: u32,
+  pub trace: Vec<GcTraceStep>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GcTraceStep {
+  /// A GC-managed pointer at the given byte offset (relative to the value base).
+  Ptr { offset: u32 },
+  /// A tagged union that requires inspecting its tag before tracing the active
+  /// payload variant.
+  TaggedUnion { tag: TagLayout, variants: Vec<GcTraceVariant> },
 }
 
 impl Layout {
@@ -271,6 +293,12 @@ impl LayoutStore {
           to: PtrKind::GcObject { layout: payload },
         }
       }
+      TypeKind::Callable { .. } => {
+        let payload = self.canonical_closure_payload_layout();
+        Layout::Ptr {
+          to: PtrKind::GcObject { layout: payload },
+        }
+      }
       // Placeholder until native backend decides on a canonical JSValue ABI.
       _ => Layout::Ptr { to: PtrKind::Opaque },
     };
@@ -278,6 +306,125 @@ impl LayoutStore {
     let id = self.intern_layout(layout);
     self.by_type.insert(ty, id);
     id
+  }
+
+  pub(crate) fn gc_trace(&self, layout: LayoutId) -> Vec<GcTraceStep> {
+    fn is_gc_ptr_kind(kind: &PtrKind) -> bool {
+      matches!(
+        kind,
+        PtrKind::GcObject { .. } | PtrKind::GcArray { .. } | PtrKind::GcString | PtrKind::GcAny
+      )
+    }
+
+    fn shift(trace: &[GcTraceStep], delta: u32) -> Vec<GcTraceStep> {
+      trace
+        .iter()
+        .cloned()
+        .map(|step| match step {
+          GcTraceStep::Ptr { offset } => GcTraceStep::Ptr {
+            offset: offset.saturating_add(delta),
+          },
+          GcTraceStep::TaggedUnion { tag, variants } => GcTraceStep::TaggedUnion {
+            tag: TagLayout {
+              abi: tag.abi,
+              offset: tag.offset.saturating_add(delta),
+            },
+            variants: variants
+              .into_iter()
+              .map(|variant| GcTraceVariant {
+                discriminant: variant.discriminant,
+                trace: shift(&variant.trace, delta),
+              })
+              .collect(),
+          },
+        })
+        .collect()
+    }
+
+    fn trace_layout(store: &LayoutStore, layout: LayoutId) -> Vec<GcTraceStep> {
+      match store.layout(layout) {
+        Layout::Scalar { .. } => Vec::new(),
+        Layout::Ptr { to } => {
+          if is_gc_ptr_kind(&to) {
+            vec![GcTraceStep::Ptr { offset: 0 }]
+          } else {
+            Vec::new()
+          }
+        }
+        Layout::Struct { fields, .. } => {
+          let mut out = Vec::new();
+          for field in fields {
+            let nested = trace_layout(store, field.layout);
+            out.extend(shift(&nested, field.offset));
+          }
+          out
+        }
+        Layout::TaggedUnion {
+          tag,
+          payload_offset,
+          variants,
+          ..
+        } => {
+          let variants = variants
+            .into_iter()
+            .map(|variant| GcTraceVariant {
+              discriminant: variant.discriminant,
+              trace: shift(&trace_layout(store, variant.layout), payload_offset),
+            })
+            .collect();
+          vec![GcTraceStep::TaggedUnion { tag, variants }]
+        }
+      }
+    }
+
+    trace_layout(self, layout)
+  }
+
+  pub(crate) fn gc_ptr_offsets(&self, layout: LayoutId) -> Vec<u32> {
+    fn collect(trace: &[GcTraceStep], out: &mut Vec<u32>) {
+      for step in trace {
+        match step {
+          GcTraceStep::Ptr { offset } => out.push(*offset),
+          GcTraceStep::TaggedUnion { .. } => {
+            // This helper intentionally only extracts unconditional pointer
+            // offsets. Callers that need to trace tagged unions should use
+            // `gc_trace` instead.
+          }
+        }
+      }
+    }
+
+    let trace = self.gc_trace(layout);
+    let mut out = Vec::new();
+    collect(&trace, &mut out);
+    out.sort();
+    out.dedup();
+    out
+  }
+
+  fn canonical_closure_payload_layout(&self) -> LayoutId {
+    let fn_ptr = self.intern_layout(Layout::Ptr { to: PtrKind::Opaque });
+    let env = self.intern_layout(Layout::Ptr { to: PtrKind::GcAny });
+
+    let fields = vec![
+      FieldLayout {
+        key: FieldKey::Internal("fn_ptr".to_string()),
+        offset: 0,
+        size: PTR_SIZE,
+        align: PTR_ALIGN,
+        layout: fn_ptr,
+      },
+      FieldLayout {
+        key: FieldKey::Internal("env".to_string()),
+        offset: PTR_SIZE,
+        size: PTR_SIZE,
+        align: PTR_ALIGN,
+        layout: env,
+      },
+    ];
+    let size = PTR_SIZE * 2;
+    let align = PTR_ALIGN;
+    self.intern_layout(Layout::Struct { fields, size, align })
   }
 
   fn layout_tuple(&self, store: &TypeStore, elems: &[TupleElem]) -> Layout {
