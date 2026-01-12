@@ -1,6 +1,6 @@
 use crate::animation::TransitionState;
 use crate::error::{Error, RenderError, RenderStage, Result};
-use crate::geometry::Point;
+use crate::geometry::{Point, Rect};
 use crate::js::clock::{Clock, RealClock};
 use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use crate::js::CurrentScriptStateHandle;
@@ -405,6 +405,347 @@ impl BrowserDocumentDom2 {
       || self.style_dirty
       || self.layout_dirty
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
+  }
+
+  /// Ensures style/layout caches are up-to-date for DOM/layout queries without painting.
+  ///
+  /// This mirrors the "layout" portion of [`BrowserDocumentDom2::render_frame_with_deadlines`] while
+  /// intentionally skipping paint/pixmap allocation. It is the host-side foundation for CSSOM View
+  /// APIs such as `getComputedStyle` and `getBoundingClientRect`.
+  ///
+  /// On success:
+  /// - `self.prepared` and `self.last_dom_mapping` reflect the latest layout,
+  /// - style/layout dirty flags and per-node dirty sets are cleared, and
+  /// - `paint_dirty` remains (or becomes) true so a subsequent `render_if_needed()` will repaint.
+  pub fn ensure_layout_for_dom_queries(&mut self) -> Result<()> {
+    // Layout queries should not force a re-layout when we already have an up-to-date prepared cache.
+    if self.prepared.is_some() && !self.needs_layout() {
+      return Ok(());
+    }
+
+    // Match `render_frame_with_deadlines`: if we haven't prepared before, force a full pipeline run
+    // even if dirty flags were cleared out-of-band.
+    if self.prepared.is_none() {
+      self.invalidate_all();
+    }
+
+    let needs_layout = self.style_dirty
+      || self.layout_dirty
+      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
+    if !needs_layout {
+      return Ok(());
+    }
+
+    // Layout without style changes can often avoid a full cascade by patching the existing box tree
+    // and rerunning only layout (e.g. text content changes).
+    let can_incremental_relayout = !self.style_dirty
+      && self.layout_dirty
+      && !self.dirty_text_nodes.is_empty()
+      && self.dirty_style_nodes.is_empty()
+      && self.dirty_structure_nodes.is_empty()
+      && self.prepared.is_some()
+      && self.last_dom_mapping.is_some();
+
+    let mut did_incremental_layout = false;
+    if can_incremental_relayout {
+      let mut prepared = self
+        .prepared
+        .take()
+        .expect("prepared exists when can_incremental_relayout=true");
+      match self.incremental_relayout_for_text_changes(&mut prepared) {
+        Ok(true) => {
+          self.invalidation_counters.incremental_relayouts = self
+            .invalidation_counters
+            .incremental_relayouts
+            .saturating_add(1);
+          // Incremental relayout does not take a new renderer DOM snapshot, but it does satisfy the
+          // outstanding layout invalidation for the current DOM generation.
+          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+          self.prepared = Some(prepared);
+          did_incremental_layout = true;
+        }
+        Ok(false) => {
+          // Could not safely apply incremental relayout; fall back to a full pipeline run.
+          self.prepared = Some(prepared);
+        }
+        Err(err) => {
+          // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
+          self.prepared = Some(prepared);
+          return Err(err);
+        }
+      }
+    }
+
+    if !did_incremental_layout {
+      let prev_prepared = self.prepared.take();
+      let mut prepared = match self.prepare_dom_with_options() {
+        Ok(prepared) => prepared,
+        Err(err) => {
+          self.prepared = prev_prepared;
+          return Err(err);
+        }
+      };
+
+      self.invalidation_counters.full_restyles =
+        self.invalidation_counters.full_restyles.saturating_add(1);
+      self.invalidation_counters.full_relayouts =
+        self.invalidation_counters.full_relayouts.saturating_add(1);
+
+      let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
+      match now_ms {
+        None => {
+          prepared.fragment_tree.transition_state = None;
+        }
+        Some(now_ms) => {
+          let prev_state = prev_prepared
+            .as_ref()
+            .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
+          let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
+          let mut transition_state = TransitionState::update_for_style_change(
+            prev_state,
+            prev_box_tree,
+            prepared.box_tree(),
+            now_ms,
+          );
+          transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
+          prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
+        }
+      }
+
+      self.prepared = Some(prepared);
+    }
+
+    // Style/layout are now satisfied, but we intentionally do not paint here.
+    self.style_dirty = false;
+    self.layout_dirty = false;
+    self.dirty_style_nodes.clear();
+    self.dirty_text_nodes.clear();
+    self.dirty_structure_nodes.clear();
+    self.paint_dirty = true;
+    Ok(())
+  }
+
+  /// Returns the most recently prepared layout artifacts, ensuring layout is up-to-date first.
+  pub fn prepared_layout(&mut self) -> Result<&PreparedDocument> {
+    self.ensure_layout_for_dom_queries()?;
+    self.prepared.as_ref().ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocumentDom2 has no prepared layout after ensure_layout_for_dom_queries()"
+          .to_string(),
+      })
+    })
+  }
+
+  /// Returns the principal box id for a given DOM node, when one exists.
+  ///
+  /// Elements like `display: contents` do not generate a principal box, in which case this returns
+  /// `Ok(None)`.
+  pub fn principal_box_id_for_node(&mut self, node: crate::dom2::NodeId) -> Result<Option<usize>> {
+    self.ensure_layout_for_dom_queries()?;
+    let prepared = self.prepared.as_ref().ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocumentDom2 has no prepared layout after ensure_layout_for_dom_queries()"
+          .to_string(),
+      })
+    })?;
+    let mapping = self.last_dom_mapping.as_ref().ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocumentDom2 is missing dom2↔renderer mapping after layout".to_string(),
+      })
+    })?;
+
+    let Some(preorder_id) = mapping.preorder_for_node_id(node) else {
+      // Detached or otherwise not in the current renderer snapshot.
+      return Ok(None);
+    };
+
+    // Traverse box tree in pre-order and return the first non-pseudo box for this styled node id.
+    let mut stack: Vec<&BoxNode> = vec![&prepared.box_tree().root];
+    while let Some(node) = stack.pop() {
+      if node.generated_pseudo.is_none() && node.styled_node_id == Some(preorder_id) {
+        return Ok(Some(node.id));
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+
+    Ok(None)
+  }
+
+  /// Returns the element's border-box rect in *page* coordinates.
+  ///
+  /// Element scroll offsets are applied; viewport scroll is not.
+  pub fn border_box_rect_page(&mut self, node: crate::dom2::NodeId) -> Result<Option<Rect>> {
+    let Some(box_id) = self.principal_box_id_for_node(node)? else {
+      return Ok(None);
+    };
+    let prepared = self.prepared.as_ref().ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocumentDom2 has no prepared layout after ensure_layout_for_dom_queries()"
+          .to_string(),
+      })
+    })?;
+    let scroll_state = ScrollState::from_parts_with_deltas(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
+    );
+    let fragment_tree = crate::interaction::hit_testing::fragment_tree_with_scroll(
+      prepared.fragment_tree(),
+      &scroll_state,
+    );
+    Ok(crate::interaction::fragment_geometry::absolute_bounds_for_box_id(&fragment_tree, box_id))
+  }
+
+  /// Returns the element's border-box rect in *viewport* coordinates.
+  ///
+  /// Element scroll offsets are applied and viewport scroll is subtracted.
+  pub fn border_box_rect_viewport(&mut self, node: crate::dom2::NodeId) -> Result<Option<Rect>> {
+    let Some(page_rect) = self.border_box_rect_page(node)? else {
+      return Ok(None);
+    };
+    let scroll_state = ScrollState::from_parts_with_deltas(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
+    );
+    Ok(Some(page_rect.translate(Point::new(
+      -scroll_state.viewport.x,
+      -scroll_state.viewport.y,
+    ))))
+  }
+
+  /// Returns the stored scroll offset for an element scroll container by box id.
+  pub fn element_scroll_offset(&self, box_id: usize) -> Point {
+    self
+      .options
+      .element_scroll_offsets
+      .get(&box_id)
+      .copied()
+      .unwrap_or(Point::ZERO)
+  }
+
+  /// Updates the stored scroll offset for an element scroll container by box id.
+  pub fn set_element_scroll_offset(&mut self, box_id: usize, new: Point) {
+    let old = self.element_scroll_offset(box_id);
+    self.options.element_scroll_offsets.insert(box_id, new);
+    self
+      .options
+      .element_scroll_deltas
+      .insert(box_id, Point::new(new.x - old.x, new.y - old.y));
+    self.paint_dirty = true;
+  }
+
+  /// Clamps an element scroll offset based on the current prepared layout (when possible).
+  ///
+  /// If the element cannot be found in the current fragment tree, this returns `desired`
+  /// (sanitized for non-finite values).
+  pub fn clamp_element_scroll_offset(&mut self, box_id: usize, desired: Point) -> Result<Point> {
+    let prepared = self.prepared_layout()?;
+    let viewport_size = prepared.layout_viewport();
+    let fragment_tree = prepared.fragment_tree();
+
+    struct Frame<'a> {
+      node: &'a crate::tree::fragment_tree::FragmentNode,
+      has_fixed_cb_ancestor: bool,
+    }
+
+    let mut stack: Vec<Frame<'_>> = Vec::new();
+    for root in fragment_tree.additional_fragments.iter().rev() {
+      stack.push(Frame {
+        node: root,
+        has_fixed_cb_ancestor: false,
+      });
+    }
+    stack.push(Frame {
+      node: &fragment_tree.root,
+      has_fixed_cb_ancestor: false,
+    });
+
+    let mut found: Option<(&crate::tree::fragment_tree::FragmentNode, bool)> = None;
+    while let Some(frame) = stack.pop() {
+      if frame.node.box_id() == Some(box_id) {
+        found = Some((frame.node, frame.has_fixed_cb_ancestor));
+        break;
+      }
+      let establishes_fixed_cb = frame
+        .node
+        .style
+        .as_deref()
+        .is_some_and(|style| style.establishes_fixed_containing_block());
+      let has_fixed_cb_ancestor_for_children = frame.has_fixed_cb_ancestor || establishes_fixed_cb;
+      for child in frame.node.children.iter().rev() {
+        stack.push(Frame {
+          node: child,
+          has_fixed_cb_ancestor: has_fixed_cb_ancestor_for_children,
+        });
+      }
+    }
+
+    let desired = Point::new(
+      if desired.x.is_finite() {
+        desired.x
+      } else {
+        0.0
+      },
+      if desired.y.is_finite() {
+        desired.y
+      } else {
+        0.0
+      },
+    );
+
+    let Some((node, has_fixed_cb_ancestor)) = found else {
+      return Ok(desired);
+    };
+
+    let mut bounds = crate::scroll::scroll_bounds_for_fragment(
+      node,
+      Point::ZERO,
+      node.bounds.size,
+      viewport_size,
+      false,
+      has_fixed_cb_ancestor,
+    );
+
+    // Mirror the paint pipeline's listbox <select> approximation for scroll bounds.
+    if let Some(style) = node.style.as_deref() {
+      if let crate::tree::fragment_tree::FragmentContent::Replaced { replaced_type, .. } =
+        &node.content
+      {
+        if let crate::tree::box_tree::ReplacedType::FormControl(control) = replaced_type {
+          if let crate::tree::box_tree::FormControlKind::Select(select) = &control.control {
+            if select.multiple || select.size > 1 {
+              let row_height =
+                crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport(
+                  style,
+                  None,
+                  Some(viewport_size),
+                  None,
+                );
+              if row_height.is_finite() && row_height > 0.0 {
+                let content_height = row_height * select.items.len() as f32;
+                if content_height.is_finite() {
+                  let viewport_height = node.bounds.height();
+                  if viewport_height.is_finite() {
+                    bounds.min_y = 0.0;
+                    bounds.max_y = (content_height - viewport_height).max(0.0);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    Ok(bounds.clamp(desired))
   }
 
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
@@ -1537,6 +1878,101 @@ mod tests {
     let ptr2 = doc.dom_ptr().as_ptr();
     assert_ne!(ptr1, ptr2);
 
+    Ok(())
+  }
+
+  #[test]
+  fn ensure_layout_for_dom_queries_populates_prepared_and_mapping() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div id=target style=\"width: 10px; height: 15px;\"></div></body></html>",
+      RenderOptions::new().with_viewport(64, 64),
+    )?;
+
+    doc.ensure_layout_for_dom_queries()?;
+    assert!(doc.prepared.is_some(), "expected prepared layout artifacts");
+    assert!(
+      doc.last_dom_mapping.is_some(),
+      "expected dom2↔renderer mapping"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn layout_query_helpers_expose_box_geometry() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #target { width: 10px; height: 15px; }
+          </style>
+        </head>
+        <body>
+          <div id="target"></div>
+        </body>
+      </html>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(64, 64))?;
+
+    let target = doc.dom().get_element_by_id("target").expect("#target");
+
+    let box_id = doc
+      .principal_box_id_for_node(target)?
+      .expect("principal box id for #target");
+    assert!(box_id > 0);
+
+    let rect = doc
+      .border_box_rect_viewport(target)?
+      .expect("border box rect");
+    assert!(
+      (rect.width() - 10.0).abs() <= 0.01,
+      "expected width≈10, got {}",
+      rect.width()
+    );
+    assert!(
+      (rect.height() - 15.0).abs() <= 0.01,
+      "expected height≈15, got {}",
+      rect.height()
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn clamp_element_scroll_offset_clamps_to_bounds() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #scroller { width: 50px; height: 50px; overflow: scroll; }
+            #content { height: 200px; }
+          </style>
+        </head>
+        <body>
+          <div id="scroller"><div id="content"></div></div>
+        </body>
+      </html>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(128, 128))?;
+    let scroller = doc.dom().get_element_by_id("scroller").expect("#scroller");
+    let box_id = doc
+      .principal_box_id_for_node(scroller)?
+      .expect("principal box id for #scroller");
+
+    let clamped = doc.clamp_element_scroll_offset(box_id, Point::new(0.0, 1000.0))?;
+    assert!(
+      (clamped.y - 150.0).abs() <= 0.01,
+      "expected max scroll y≈150, got {}",
+      clamped.y
+    );
     Ok(())
   }
 }
