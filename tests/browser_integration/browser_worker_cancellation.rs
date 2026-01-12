@@ -256,8 +256,12 @@ fn rapid_scroll_cancels_stale_paint() {
   // Scroll repaints intentionally do not forward `WorkerToUi::Stage` messages (stage forwarding is
   // scoped to navigation jobs). Install a process-global stage listener so the test can observe when
   // the first scroll paint enters the paint pipeline.
+  let worker_thread = worker.join.thread().id();
   let (paint_stage_tx, paint_stage_rx) = std::sync::mpsc::channel::<StageHeartbeat>();
   let _global_stage_guard = GlobalStageListenerGuard::new(std::sync::Arc::new(move |stage| {
+    if std::thread::current().id() != worker_thread {
+      return;
+    }
     if matches!(
       stage,
       StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
