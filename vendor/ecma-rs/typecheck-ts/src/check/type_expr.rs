@@ -231,7 +231,7 @@ impl TypeLowerer {
       TypeExpr::TypeReference(reference) => self.lower_type_reference(expr.loc, reference),
       TypeExpr::LiteralType(lit) => match lit.stx.as_ref() {
         TypeLiteral::String(value) => {
-          let name = self.store.intern_name(value.clone());
+          let name = self.store.intern_name_ref(value);
           self.store.intern_type(TypeKind::StringLiteral(name))
         }
         TypeLiteral::Number(value) => {
@@ -359,7 +359,7 @@ impl TypeLowerer {
           .stx
           .name
           .as_ref()
-          .map(|n| self.store.intern_name(n.clone())),
+          .map(|n| self.store.intern_name_ref(n)),
         ty: self.lower_type_expr(&p.stx.type_expr),
         optional: p.stx.optional,
         rest: p.stx.rest,
@@ -404,7 +404,7 @@ impl TypeLowerer {
     if name == "this" {
       return Some(PredicateParam::This);
     }
-    let name_id = self.store.intern_name(name.to_string());
+    let name_id = self.store.intern_name_ref(name);
     params
       .iter()
       .position(|param| param.name == Some(name_id))
@@ -527,7 +527,7 @@ impl TypeLowerer {
   fn lower_type_member_key(&self, key: &TypePropertyKey) -> Option<PropKey> {
     match key {
       TypePropertyKey::Identifier(id) | TypePropertyKey::String(id) => {
-        Some(PropKey::String(self.store.intern_name(id.clone())))
+        Some(PropKey::String(self.store.intern_name_ref(id)))
       }
       TypePropertyKey::Number(num) => {
         let parsed = num.parse::<i64>().ok()?;

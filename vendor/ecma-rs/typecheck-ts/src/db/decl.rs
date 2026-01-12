@@ -339,7 +339,7 @@ pub fn build_namespace_object_type(
     })
     .unwrap_or_else(tti::Shape::new);
   for name in members.iter() {
-    let key = PropKey::String(store.intern_name(name.clone()));
+    let key = PropKey::String(store.intern_name_ref(name));
     shape.properties.push(Property {
       key,
       data: PropData {

@@ -573,7 +573,7 @@ fn sample_types() -> (Arc<TypeStore>, SampleTypes) {
   let wide_union = store.union(numbers.clone());
   let narrow_union = store.union(numbers.iter().take(3).copied().collect());
 
-  let string_tag = store.intern_type(TypeKind::StringLiteral(store.intern_name("tag")));
+  let string_tag = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("tag")));
   let literal_zero = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(0.0)));
   let optional_number = store.union(vec![primitives.number, literal_zero]);
 
@@ -582,7 +582,7 @@ fn sample_types() -> (Arc<TypeStore>, SampleTypes) {
     Shape {
       properties: vec![
         Property {
-          key: PropKey::String(store.intern_name("kind")),
+          key: PropKey::String(store.intern_name_ref("kind")),
           data: PropData {
             ty: string_tag,
             optional: false,
@@ -594,7 +594,7 @@ fn sample_types() -> (Arc<TypeStore>, SampleTypes) {
           },
         },
         Property {
-          key: PropKey::String(store.intern_name("value")),
+          key: PropKey::String(store.intern_name_ref("value")),
           data: PropData {
             ty: wide_union,
             optional: false,
@@ -617,7 +617,7 @@ fn sample_types() -> (Arc<TypeStore>, SampleTypes) {
     Shape {
       properties: vec![
         Property {
-          key: PropKey::String(store.intern_name("kind")),
+          key: PropKey::String(store.intern_name_ref("kind")),
           data: PropData {
             ty: string_tag,
             optional: false,
@@ -629,7 +629,7 @@ fn sample_types() -> (Arc<TypeStore>, SampleTypes) {
           },
         },
         Property {
-          key: PropKey::String(store.intern_name("value")),
+          key: PropKey::String(store.intern_name_ref("value")),
           data: PropData {
             ty: optional_number,
             optional: true,
@@ -654,7 +654,7 @@ fn sample_types() -> (Arc<TypeStore>, SampleTypes) {
   let fn_covariant = callable(
     &store,
     vec![Param {
-      name: Some(store.intern_name("arg")),
+      name: Some(store.intern_name_ref("arg")),
       ty: narrow_union,
       optional: false,
       rest: false,
@@ -665,7 +665,7 @@ fn sample_types() -> (Arc<TypeStore>, SampleTypes) {
   let fn_contravariant = callable(
     &store,
     vec![Param {
-      name: Some(store.intern_name("arg")),
+      name: Some(store.intern_name_ref("arg")),
       ty: wide_union,
       optional: false,
       rest: false,

@@ -453,7 +453,7 @@ fn lower_runtime_members(
             if param.stx.accessibility.is_some() {
               if let parse_js::ast::expr::pat::Pat::Id(id) = param.stx.pattern.stx.pat.stx.as_ref()
               {
-                let key = PropKey::String(store.intern_name(id.stx.name.clone()));
+                let key = PropKey::String(store.intern_name_ref(&id.stx.name));
                 let ty = param
                   .stx
                   .type_annotation
@@ -592,15 +592,15 @@ fn lower_params_from_decl(
       .map(|ann| lowerer.lower_type_expr(ann))
       .unwrap_or_else(|| store.primitive_ids().unknown);
     let name = match param.stx.pattern.stx.pat.stx.as_ref() {
-      parse_js::ast::expr::pat::Pat::Id(id) => Some(id.stx.name.clone()),
+      parse_js::ast::expr::pat::Pat::Id(id) => Some(id.stx.name.as_str()),
       _ => None,
     };
-    if matches!(name.as_deref(), Some("this")) && this_param.is_none() {
+    if matches!(name, Some("this")) && this_param.is_none() {
       this_param = Some(ty);
       continue;
     }
     lowered.push(SigParam {
-      name: name.map(|n| store.intern_name(n)),
+      name: name.map(|n| store.intern_name_ref(n)),
       ty,
       optional: param.stx.optional,
       rest: param.stx.rest,
@@ -615,7 +615,7 @@ fn class_member_key(store: &Arc<TypeStore>, key: &ClassOrObjKey) -> Option<PropK
       if let Ok(num) = direct.stx.key.parse::<i64>() {
         Some(PropKey::Number(num))
       } else {
-        Some(PropKey::String(store.intern_name(direct.stx.key.clone())))
+        Some(PropKey::String(store.intern_name_ref(&direct.stx.key)))
       }
     }
     ClassOrObjKey::Computed(_) => None,

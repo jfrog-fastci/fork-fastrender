@@ -42,7 +42,7 @@ pub(in super::super) fn lookup_interned_property_type(
       let probe_key = if name.parse::<f64>().is_ok() {
         PropKey::Number(0)
       } else {
-        PropKey::String(store.intern_name(String::new()))
+        PropKey::String(store.intern_name_ref(""))
       };
       for indexer in shape.indexers.iter() {
         if crate::type_queries::indexer_accepts_key(&probe_key, indexer.key_type, store) {

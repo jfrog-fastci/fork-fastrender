@@ -2529,7 +2529,7 @@ impl<'a> Checker<'a> {
           .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(value)))
       }
       AstExpr::LitStr(str_lit) => {
-        let name = self.store.intern_name(str_lit.stx.value.clone());
+        let name = self.store.intern_name_ref(&str_lit.stx.value);
         self.store.intern_type(TypeKind::StringLiteral(name))
       }
       AstExpr::LitTemplate(tpl) => {
@@ -4118,7 +4118,7 @@ impl<'a> Checker<'a> {
             name.stx.name.clone()
           };
           props.insert(key_string.clone());
-          let key = PropKey::String(self.store.intern_name(key_string.clone()));
+          let key = PropKey::String(self.store.intern_name_ref(&key_string));
           let value_ty = match value {
             None => self.store.intern_type(TypeKind::BooleanLiteral(true)),
             Some(JsxAttrVal::Text(text)) => self.jsx_attr_text_type(text),
@@ -4356,7 +4356,7 @@ impl<'a> Checker<'a> {
   }
 
   fn jsx_attr_text_type(&mut self, text: &Node<JsxText>) -> TypeId {
-    let name = self.store.intern_name(text.stx.value.clone());
+    let name = self.store.intern_name_ref(&text.stx.value);
     self.store.intern_type(TypeKind::StringLiteral(name))
   }
 
@@ -4365,7 +4365,7 @@ impl<'a> Checker<'a> {
     if trimmed.is_empty() {
       return None;
     }
-    let name = self.store.intern_name(trimmed.to_string());
+    let name = self.store.intern_name_ref(trimmed);
     Some(self.store.intern_type(TypeKind::StringLiteral(name)))
   }
 
@@ -4814,7 +4814,7 @@ impl<'a> Checker<'a> {
     if let Some(id) = self.jsx_children_prop_name {
       return id;
     }
-    let fallback = self.store.intern_name("children".to_string());
+    let fallback = self.store.intern_name_ref("children");
     if matches!(
       self.jsx_mode,
       Some(JsxMode::ReactJsx | JsxMode::ReactJsxdev)
@@ -4822,7 +4822,6 @@ impl<'a> Checker<'a> {
       self.jsx_children_prop_name = Some(fallback);
       return fallback;
     }
-
     let Some(children_attr_ty) = self.resolve_type_ref(&["JSX", "ElementChildrenAttribute"]) else {
       self.jsx_children_prop_name = Some(fallback);
       return fallback;
@@ -4897,7 +4896,7 @@ impl<'a> Checker<'a> {
         .store
         .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(num.stx.value.0))),
       AstExpr::LitStr(str_lit) => {
-        let name = self.store.intern_name(str_lit.stx.value.clone());
+        let name = self.store.intern_name_ref(&str_lit.stx.value);
         self.store.intern_type(TypeKind::StringLiteral(name))
       }
       AstExpr::LitBool(b) => self
@@ -4950,7 +4949,7 @@ impl<'a> Checker<'a> {
             ObjMemberType::Valued { key, val } => {
               if let ClassOrObjKey::Direct(direct) = key {
                 if let ClassOrObjVal::Prop(Some(value)) = val {
-                  let prop_key = PropKey::String(self.store.intern_name(direct.stx.key.clone()));
+                  let prop_key = PropKey::String(self.store.intern_name_ref(&direct.stx.key));
                   let value_ty = self.const_inference_type(value);
                   shape.properties.push(types_ts_interned::Property {
                     key: prop_key,
@@ -4968,7 +4967,7 @@ impl<'a> Checker<'a> {
               }
             }
             ObjMemberType::Shorthand { id } => {
-              let key = PropKey::String(self.store.intern_name(id.stx.name.clone()));
+              let key = PropKey::String(self.store.intern_name_ref(&id.stx.name));
               let ty = self
                 .lookup(&id.stx.name)
                 .map(|b| b.ty)
@@ -5015,7 +5014,7 @@ impl<'a> Checker<'a> {
         .store
         .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(num.stx.value.0))),
       AstExpr::LitStr(str_lit) => {
-        let name = self.store.intern_name(str_lit.stx.value.clone());
+        let name = self.store.intern_name_ref(&str_lit.stx.value);
         self.store.intern_type(TypeKind::StringLiteral(name))
       }
       AstExpr::LitBool(b) => self
@@ -5068,7 +5067,7 @@ impl<'a> Checker<'a> {
             ObjMemberType::Valued { key, val } => {
               if let ClassOrObjKey::Direct(direct) = key {
                 if let ClassOrObjVal::Prop(Some(value)) = val {
-                  let prop_key = PropKey::String(self.store.intern_name(direct.stx.key.clone()));
+                  let prop_key = PropKey::String(self.store.intern_name_ref(&direct.stx.key));
                   let value_ty = self.const_assertion_type(value);
                   shape.properties.push(types_ts_interned::Property {
                     key: prop_key,
@@ -5088,7 +5087,7 @@ impl<'a> Checker<'a> {
               }
             }
             ObjMemberType::Shorthand { id } => {
-              let key = PropKey::String(self.store.intern_name(id.stx.name.clone()));
+              let key = PropKey::String(self.store.intern_name_ref(&id.stx.name));
               let ty = self
                 .lookup(&id.stx.name)
                 .map(|b| b.ty)
@@ -5180,7 +5179,7 @@ impl<'a> Checker<'a> {
         let key = if let Some(idx) = parse_canonical_index_str(prop) {
           PropKey::Number(idx)
         } else {
-          PropKey::String(self.store.intern_name(prop))
+          PropKey::String(self.store.intern_name_ref(prop))
         };
         let mut matches = Vec::new();
         for idxer in shape.indexers.iter() {
@@ -5392,7 +5391,7 @@ impl<'a> Checker<'a> {
     let prim = self.store.primitive_ids();
     let key_ty = self.store.canon(key_ty);
 
-    let dummy_name = self.store.intern_name("<index>");
+    let dummy_name = self.store.intern_name_ref("<index>");
     let mut candidates = Vec::new();
 
     match self.store.type_kind(key_ty) {
@@ -5750,11 +5749,11 @@ impl<'a> Checker<'a> {
     }
     let mut shape = Shape::new();
     for member in obj.stx.members.iter() {
-      match &member.stx.typ {
+          match &member.stx.typ {
         ObjMemberType::Valued { key, val } => {
           let prop_key = match key {
             ClassOrObjKey::Direct(direct) => {
-              PropKey::String(self.store.intern_name(direct.stx.key.clone()))
+              PropKey::String(self.store.intern_name_ref(&direct.stx.key))
             }
             ClassOrObjKey::Computed(_) => continue,
           };
@@ -5802,7 +5801,7 @@ impl<'a> Checker<'a> {
           }
         }
         ObjMemberType::Shorthand { id } => {
-          let key = PropKey::String(self.store.intern_name(id.stx.name.clone()));
+          let key = PropKey::String(self.store.intern_name_ref(&id.stx.name));
           let ty = self
             .lookup(&id.stx.name)
             .map(|b| b.ty)
@@ -5844,7 +5843,7 @@ impl<'a> Checker<'a> {
             ClassOrObjKey::Direct(direct) => direct.stx.key.clone(),
             ClassOrObjKey::Computed(_) => continue,
           };
-          let prop_key = PropKey::String(self.store.intern_name(name.clone()));
+          let prop_key = PropKey::String(self.store.intern_name_ref(&name));
           let expected_prop = self.member_type(expected, &name);
           match val {
             ClassOrObjVal::Prop(Some(expr)) => {
@@ -5925,7 +5924,7 @@ impl<'a> Checker<'a> {
         }
         ObjMemberType::Shorthand { id } => {
           let name = id.stx.name.clone();
-          let key = PropKey::String(self.store.intern_name(name.clone()));
+          let key = PropKey::String(self.store.intern_name_ref(&name));
           let value = self.lookup(&name).map(|b| b.ty).unwrap_or(prim.unknown);
           let expected_prop = self.member_type(expected, &name);
           let ty = if expected_prop != prim.unknown {
@@ -6609,7 +6608,7 @@ impl<'a> Checker<'a> {
       .iter()
       .map(|p| {
         let name = match p.stx.pattern.stx.pat.stx.as_ref() {
-          AstPat::Id(id) => Some(self.store.intern_name(id.stx.name.clone())),
+          AstPat::Id(id) => Some(self.store.intern_name_ref(&id.stx.name)),
           _ => None,
         };
         SigParam {
@@ -7624,7 +7623,7 @@ fn awaited_type(
     }
   }
 
-  let then_name = store.intern_name("then");
+  let then_name = store.intern_name_ref("then");
   let mut calc = AwaitedTypeCalc {
     store,
     ref_expander,
@@ -9093,7 +9092,7 @@ impl<'a> FlowBodyChecker<'a> {
           num.parse::<f64>().unwrap_or(0.0).into(),
         )),
         hir_js::Literal::String(s) => self.store.intern_type(TypeKind::StringLiteral(
-          self.store.intern_name(s.lossy.clone()),
+          self.store.intern_name_ref(&s.lossy),
         )),
         hir_js::Literal::Boolean(b) => self.store.intern_type(TypeKind::BooleanLiteral(*b)),
         hir_js::Literal::Null => prim.null,
@@ -11389,7 +11388,7 @@ impl<'a> FlowBodyChecker<'a> {
         ObjectProperty::KeyValue { key, value, .. } => {
           let prop_key = match key {
             ObjectKey::Ident(id) => PropKey::String(self.store.intern_name(self.hir_name(*id))),
-            ObjectKey::String(s) => PropKey::String(self.store.intern_name(s.clone())),
+            ObjectKey::String(s) => PropKey::String(self.store.intern_name_ref(s)),
             ObjectKey::Number(n) => PropKey::Number(n.parse::<i64>().unwrap_or(0)),
             ObjectKey::Computed(_) => continue,
           };
@@ -11415,7 +11414,7 @@ impl<'a> FlowBodyChecker<'a> {
         ObjectProperty::Getter { key, .. } | ObjectProperty::Setter { key, .. } => {
           let prop_key = match key {
             ObjectKey::Ident(id) => PropKey::String(self.store.intern_name(self.hir_name(*id))),
-            ObjectKey::String(s) => PropKey::String(self.store.intern_name(s.clone())),
+            ObjectKey::String(s) => PropKey::String(self.store.intern_name_ref(s)),
             ObjectKey::Number(n) => PropKey::Number(n.parse::<i64>().unwrap_or(0)),
             ObjectKey::Computed(_) => continue,
           };
@@ -11674,7 +11673,7 @@ impl<'a> FlowBodyChecker<'a> {
     // For computed member access, model key matching in terms of those key kinds
     // rather than generic type assignability (which can be overly permissive for
     // intersection key types).
-    let dummy_name = self.store.intern_name("<index>");
+    let dummy_name = self.store.intern_name_ref("<index>");
 
     let mut candidates = Vec::new();
     match self.store.type_kind(key_ty) {
@@ -11769,7 +11768,7 @@ impl<'a> FlowBodyChecker<'a> {
         let key_prop = if let Some(idx) = parse_canonical_index_str(key) {
           PropKey::Number(idx)
         } else {
-          PropKey::String(self.store.intern_name(key))
+          PropKey::String(self.store.intern_name_ref(key))
         };
         let mut matches = Vec::new();
         for idxer in shape.indexers.iter() {

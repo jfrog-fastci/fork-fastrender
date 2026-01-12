@@ -15,7 +15,7 @@ use types_ts_interned::{
 
 fn param(name: &str, ty: TypeId, store: &Arc<TypeStore>) -> Param {
   Param {
-    name: Some(store.intern_name(name)),
+    name: Some(store.intern_name_ref(name)),
     ty,
     optional: false,
     rest: false,

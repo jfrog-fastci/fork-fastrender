@@ -37,7 +37,7 @@ impl ProgramState {
       } else {
         prim.unknown
       };
-      let key = PropKey::String(store.intern_name(name.clone()));
+      let key = PropKey::String(store.intern_name_ref(name));
       shape.properties.push(Property {
         key,
         data: PropData {
@@ -127,7 +127,7 @@ impl ProgramState {
         } else {
           prim.unknown
         };
-        let key = PropKey::String(store.intern_name(name.clone()));
+        let key = PropKey::String(store.intern_name(name));
         shape.properties.push(Property {
           key,
           data: PropData {

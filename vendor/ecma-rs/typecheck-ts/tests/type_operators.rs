@@ -113,7 +113,7 @@ fn eval_indexed_access_with_union_key() {
 #[test]
 fn indexed_access_over_union_distributes() {
   let store = TypeStore::new();
-  let name_a = store.intern_name("a");
+  let name_a = store.intern_name_ref("a");
 
   let left_shape = store.intern_shape(Shape {
     properties: vec![Property {
@@ -364,11 +364,11 @@ fn resolves_import_type_with_qualifier() {
 fn eval_distributive_conditional() {
   let store = TypeStore::new();
   let string_union = store.union(vec![
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("x"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x"))),
     store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0))),
   ]);
-  let yes = store.intern_type(TypeKind::StringLiteral(store.intern_name("yes")));
-  let no = store.intern_type(TypeKind::StringLiteral(store.intern_name("no")));
+  let yes = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("yes")));
+  let no = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("no")));
   let cond = store.intern_type(TypeKind::Conditional {
     check: string_union,
     extends: store.primitive_ids().string,
@@ -384,7 +384,7 @@ fn eval_distributive_conditional() {
 fn eval_mapped_type_over_keyof() {
   let store = TypeStore::new();
   let mut shape = Shape::new();
-  let key = store.intern_name("value");
+  let key = store.intern_name_ref("value");
   shape.properties.push(Property {
     key: PropKey::String(key),
     data: PropData {
@@ -508,8 +508,8 @@ fn hir_decl_lowering_preserves_mapped_as_clause() {
 fn eval_template_literal_distribution() {
   let store = TypeStore::new();
   let span_ty = store.union(vec![
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("x"))),
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("y"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("y"))),
   ]);
   let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
     head: "id-".to_string(),
@@ -532,7 +532,7 @@ fn mapped_type_from_lib_snippet_instantiates() {
   let t_param = lowerer.type_param_id("T").unwrap();
 
   let mut shape = Shape::new();
-  let key = store.intern_name("value");
+  let key = store.intern_name_ref("value");
   shape.properties.push(Property {
     key: PropKey::String(key),
     data: PropData {

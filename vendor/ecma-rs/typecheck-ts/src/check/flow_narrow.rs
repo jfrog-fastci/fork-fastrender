@@ -311,7 +311,7 @@ pub fn narrow_by_literal(ty: TypeId, lit: &LiteralValue, store: &TypeStore) -> (
     },
     TypeKind::String => match lit {
       LiteralValue::String(target) => (
-        store.intern_type(TypeKind::StringLiteral(store.intern_name(target))),
+        store.intern_type(TypeKind::StringLiteral(store.intern_name_ref(target))),
         ty,
       ),
       _ => (primitives.never, ty),
@@ -637,9 +637,9 @@ fn matches_discriminant_path(
             Some(prop.data.ty)
           }
           _ => None,
-        });
+      });
       let prop_ty = prop_ty.or_else(|| {
-        let empty_name = store.intern_name(String::new());
+        let empty_name = store.intern_name_ref("");
         let probe_key = match first {
           PathSegment::String(_) => types_ts_interned::PropKey::String(empty_name),
           PathSegment::Number(_) => types_ts_interned::PropKey::Number(0),
@@ -759,7 +759,7 @@ fn narrow_by_in_check_inner(
     }
     TypeKind::Object(obj) => {
       let shape = store.shape(store.object(obj).shape);
-      let empty_name = store.intern_name(String::new());
+      let empty_name = store.intern_name_ref("");
       let probe_key = if prop.parse::<f64>().is_ok() {
         types_ts_interned::PropKey::Number(0)
       } else {

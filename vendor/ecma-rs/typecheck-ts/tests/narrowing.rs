@@ -31,7 +31,7 @@ fn obj_type(store: &Arc<TypeStore>, props: &[(&str, TypeId)]) -> TypeId {
   let mut shape = Shape::new();
   for (name, ty) in props {
     shape.properties.push(Property {
-      key: PropKey::String(store.intern_name(*name)),
+      key: PropKey::String(store.intern_name_ref(*name)),
       data: PropData {
         ty: *ty,
         optional: false,
@@ -147,8 +147,8 @@ function optionalBigint(x?: bigint) { if (x) { return x; } else { return x; } }
   let lowered = lower_from_source(src).expect("lower");
   let store = TypeStore::new();
   let prim = store.primitive_ids();
-  let empty = store.intern_type(TypeKind::StringLiteral(store.intern_name("")));
-  let a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let empty = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("")));
+  let a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
   let zero = store.intern_type(TypeKind::NumberLiteral(0.0.into()));
   let one = store.intern_type(TypeKind::NumberLiteral(1.0.into()));
   let zero_n = store.intern_type(TypeKind::BigIntLiteral(0.into()));
@@ -412,8 +412,8 @@ fn narrows_discriminants() {
   let (body_id, body) = body_of(&lowered, &lowered.names, "g");
   let store = TypeStore::new();
   let mut initial = HashMap::new();
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
   let foo_obj = obj_type(
     &store,
     &[("kind", foo), ("value", store.primitive_ids().string)],
@@ -458,8 +458,8 @@ function f(x) {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
 
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
 
   let meta_foo = obj_type(&store, &[("kind", foo), ("value", prim.string)]);
   let meta_bar = obj_type(&store, &[("kind", bar), ("value", prim.number)]);
@@ -504,8 +504,8 @@ function pick(val) {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
 
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
   let foo_obj = obj_type(&store, &[("kind", foo), ("value", prim.string)]);
   let bar_obj = obj_type(&store, &[("kind", bar), ("value", prim.number)]);
   let foo_def = DefId(0);
@@ -645,8 +645,8 @@ function f(x: {kind:"a"}|{kind:"b"}|null) {
   let (body_id, body) = body_of(&lowered, &lowered.names, "f");
   let store = TypeStore::new();
   let prim = store.primitive_ids();
-  let kind_a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
-  let kind_b = store.intern_type(TypeKind::StringLiteral(store.intern_name("b")));
+  let kind_a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
+  let kind_b = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("b")));
   let a_obj = obj_type(&store, &[("kind", kind_a)]);
   let b_obj = obj_type(&store, &[("kind", kind_b)]);
   let mut initial = HashMap::new();
@@ -724,8 +724,8 @@ function f(x) {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
 
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
 
   let meta_foo = obj_type(&store, &[("kind", foo), ("value", prim.string)]);
   let meta_bar = obj_type(&store, &[("kind", bar), ("value", prim.number)]);
@@ -771,8 +771,8 @@ function f(x) {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
 
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
   let meta_foo = obj_type(&store, &[("kind", foo), ("value", prim.string)]);
   let meta_bar = obj_type(&store, &[("kind", bar), ("value", prim.number)]);
   let meta_foo_opt = store.union(vec![meta_foo, prim.undefined]);
@@ -1394,8 +1394,8 @@ function f(
   let store = TypeStore::new();
   let prim = store.primitive_ids();
 
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
   let foo_obj = obj_type(&store, &[("kind", foo), ("value", prim.string)]);
   let bar_obj = obj_type(&store, &[("kind", bar), ("value", prim.number)]);
 
@@ -1528,7 +1528,7 @@ function area(shape: { kind: "square", size: number } | { kind: "circle", radius
     &[
       (
         "kind",
-        store.intern_type(TypeKind::StringLiteral(store.intern_name("square"))),
+        store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("square"))),
       ),
       ("size", prim.number),
     ],
@@ -1538,7 +1538,7 @@ function area(shape: { kind: "square", size: number } | { kind: "circle", radius
     &[
       (
         "kind",
-        store.intern_type(TypeKind::StringLiteral(store.intern_name("circle"))),
+        store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("circle"))),
       ),
       ("radius", prim.number),
     ],
@@ -1580,8 +1580,8 @@ function pick(x) {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
 
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
   let meta_foo = obj_type(&store, &[("kind", foo), ("value", prim.string)]);
   let meta_bar = obj_type(&store, &[("kind", bar), ("value", prim.number)]);
   let foo_obj = obj_type(&store, &[("meta", meta_foo)]);
@@ -1695,9 +1695,9 @@ function pick(x: "a" | "b" | "c") {
   let (body_id, body) = body_of(&lowered, &lowered.names, "pick");
   let store = TypeStore::new();
   let mut initial = HashMap::new();
-  let a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
-  let b = store.intern_type(TypeKind::StringLiteral(store.intern_name("b")));
-  let c = store.intern_type(TypeKind::StringLiteral(store.intern_name("c")));
+  let a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
+  let b = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("b")));
+  let c = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("c")));
   initial.insert(
     name_id(lowered.names.as_ref(), "x"),
     store.union(vec![a, b, c]),
@@ -1735,8 +1735,8 @@ function fall(x: "a" | "b") {
   let lowered = lower_from_source(src).expect("lower");
   let (body_id, body) = body_of(&lowered, &lowered.names, "fall");
   let store = TypeStore::new();
-  let a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
-  let b = store.intern_type(TypeKind::StringLiteral(store.intern_name("b")));
+  let a = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("a")));
+  let b = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("b")));
   let mut initial = HashMap::new();
   initial.insert(
     name_id(lowered.names.as_ref(), "x"),
@@ -2014,11 +2014,11 @@ function pick(val: string | number) {
   let prim = store.primitive_ids();
   let mut initial = HashMap::new();
   let val_ty = store.union(vec![prim.string, prim.number]);
-  let candidate = store.intern_name("candidate");
+  let candidate = store.intern_name_ref("candidate");
   let guard = predicate_callable_with_params(
     &store,
     &[
-      (Some(store.intern_name("flag")), prim.number),
+      (Some(store.intern_name_ref("flag")), prim.number),
       (Some(candidate), val_ty),
     ],
     prim.string,
@@ -2060,7 +2060,7 @@ function test(val) {
   let prim = store.primitive_ids();
   let mut shape = Shape::new();
   shape.properties.push(Property {
-    key: PropKey::String(store.intern_name("opt")),
+    key: PropKey::String(store.intern_name_ref("opt")),
     data: PropData {
       ty: prim.string,
       optional: true,
@@ -2134,7 +2134,7 @@ function check(val, Foo) {
   let prim = store.primitive_ids();
   let mut instance_shape = Shape::new();
   instance_shape.properties.push(Property {
-    key: PropKey::String(store.intern_name("tag")),
+    key: PropKey::String(store.intern_name_ref("tag")),
     data: PropData {
       ty: prim.string,
       optional: false,
@@ -2472,7 +2472,7 @@ function f(x: string | number) {
   let x_ty = store.union(vec![prim.string, prim.number]);
   initial.insert(name_id(lowered.names.as_ref(), "x"), x_ty);
 
-  let param_name = store.intern_name("x");
+  let param_name = store.intern_name_ref("x");
   let sig_string = store.intern_signature(Signature {
     params: vec![Param {
       name: Some(param_name),
@@ -2556,11 +2556,11 @@ function useIt(val: string | number) {
   let val_ty = store.union(vec![prim.string, prim.number]);
   initial.insert(name_id(lowered.names.as_ref(), "val"), val_ty);
 
-  let candidate = store.intern_name("candidate");
+  let candidate = store.intern_name_ref("candidate");
   let guard = predicate_callable_with_params(
     &store,
     &[
-      (Some(store.intern_name("flag")), prim.number),
+      (Some(store.intern_name_ref("flag")), prim.number),
       (Some(candidate), val_ty),
     ],
     prim.string,
@@ -2806,8 +2806,8 @@ function pick(x: { ["kind"]: "foo", value: string } | { ["kind"]: "bar", value: 
   let (body_id, body) = body_of(&lowered, &lowered.names, "pick");
   let store = TypeStore::new();
   let mut initial = HashMap::new();
-  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
-  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("foo")));
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("bar")));
   let foo_obj = obj_type(
     &store,
     &[("kind", foo), ("value", store.primitive_ids().string)],

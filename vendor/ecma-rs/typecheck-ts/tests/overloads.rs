@@ -15,7 +15,7 @@ fn span() -> Span {
 
 fn param(name: &str, ty: TypeId, store: &Arc<TypeStore>) -> Param {
   Param {
-    name: Some(store.intern_name(name)),
+    name: Some(store.intern_name_ref(name)),
     ty,
     optional: false,
     rest: false,
@@ -29,9 +29,9 @@ fn selects_literal_overload() {
   let relate = RelateCtx::new(store.clone(), TypeOptions::default());
   let instantiation = InstantiationCache::default();
 
-  let click = store.intern_type(TypeKind::StringLiteral(store.intern_name("click")));
-  let dom_ret = store.intern_type(TypeKind::StringLiteral(store.intern_name("dom")));
-  let fallback_ret = store.intern_type(TypeKind::StringLiteral(store.intern_name("fallback")));
+  let click = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("click")));
+  let dom_ret = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("dom")));
+  let fallback_ret = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("fallback")));
 
   let handler_sig = Signature {
     params: vec![param("ev", primitives.number, &store)],
@@ -290,7 +290,7 @@ fn union_callables_drop_trailing_optional_parameters() {
     params: vec![
       param("value", primitives.number, &store),
       Param {
-        name: Some(store.intern_name("flag")),
+        name: Some(store.intern_name_ref("flag")),
         ty: primitives.boolean,
         optional: true,
         rest: false,
@@ -340,7 +340,7 @@ fn union_callables_require_parameter_when_any_member_requires_it() {
 
   let sig_optional = Signature {
     params: vec![Param {
-      name: Some(store.intern_name("value")),
+      name: Some(store.intern_name_ref("value")),
       ty: primitives.number,
       optional: true,
       rest: false,
@@ -662,7 +662,7 @@ fn prefers_fixed_arity_over_rest() {
     params: vec![
       param("first", primitives.string, &store),
       Param {
-        name: Some(store.intern_name("rest")),
+        name: Some(store.intern_name_ref("rest")),
         ty: primitives.string,
         optional: false,
         rest: true,

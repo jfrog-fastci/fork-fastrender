@@ -282,7 +282,7 @@ impl ClassEnv {
         overloads: vec![ctor_sig_id],
       });
       let prop = Property {
-        key: PropKey::String(self.store.intern_name("constructor")),
+        key: PropKey::String(self.store.intern_name_ref("constructor")),
         data: PropData {
           ty: ctor,
           optional: false,

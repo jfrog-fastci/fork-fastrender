@@ -73,7 +73,7 @@ fn object_properties_include_modifiers() {
   let shape = Shape {
     properties: vec![
       Property {
-        key: PropKey::String(store.intern_name("a")),
+        key: PropKey::String(store.intern_name_ref("a")),
         data: PropData {
           ty: prim.number,
           optional: false,
@@ -85,7 +85,7 @@ fn object_properties_include_modifiers() {
         },
       },
       Property {
-        key: PropKey::String(store.intern_name("maybe")),
+        key: PropKey::String(store.intern_name_ref("maybe")),
         data: PropData {
           ty: prim.string,
           optional: true,
@@ -142,7 +142,7 @@ fn property_lookup_through_unions_and_intersections() {
     &store,
     Shape {
       properties: vec![Property {
-        key: PropKey::String(store.intern_name("value")),
+        key: PropKey::String(store.intern_name_ref("value")),
         data: PropData {
           ty: prim.number,
           optional: false,
@@ -162,7 +162,7 @@ fn property_lookup_through_unions_and_intersections() {
     &store,
     Shape {
       properties: vec![Property {
-        key: PropKey::String(store.intern_name("value")),
+        key: PropKey::String(store.intern_name_ref("value")),
         data: PropData {
           ty: prim.number,
           optional: true,
@@ -314,7 +314,7 @@ fn reference_types_expand_before_querying() {
 
   let shape = Shape {
     properties: vec![Property {
-      key: PropKey::String(store.intern_name("value")),
+      key: PropKey::String(store.intern_name_ref("value")),
       data: PropData {
         ty: prim.number,
         optional: false,

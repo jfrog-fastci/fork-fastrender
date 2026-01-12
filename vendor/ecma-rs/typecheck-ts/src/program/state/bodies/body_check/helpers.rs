@@ -99,7 +99,7 @@ pub(super) fn prop_type(store: &tti::TypeStore, ty: TypeId, name: &str) -> Optio
       let probe_key = if name.parse::<f64>().is_ok() {
         tti::PropKey::Number(0)
       } else {
-        tti::PropKey::String(store.intern_name(String::new()))
+        tti::PropKey::String(store.intern_name_ref(""))
       };
       for indexer in shape.indexers.iter() {
         if crate::type_queries::indexer_accepts_key(&probe_key, indexer.key_type, store) {

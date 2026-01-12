@@ -12,7 +12,7 @@ fn widen_literal_to_primitives() {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
   let num = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0)));
-  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name("lit")));
+  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("lit")));
   let bool_lit = store.intern_type(TypeKind::BooleanLiteral(true));
   let big_lit = store.intern_type(TypeKind::BigIntLiteral(BigInt::from(5u8)));
 
@@ -28,7 +28,7 @@ fn widen_union_and_arrays() {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
   let num = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(2.0)));
-  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name("x")));
+  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x")));
   let union = store.union(vec![num, str_lit]);
 
   let widened_union = widen_union_literals(&store, union);
@@ -66,12 +66,12 @@ fn widen_object_properties_and_indexers() {
   let store = TypeStore::new();
   let prim = store.primitive_ids();
   let num = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(3.0)));
-  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name("value")));
+  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("value")));
   let bool_lit = store.intern_type(TypeKind::BooleanLiteral(false));
 
   let mut shape = Shape::new();
   shape.properties.push(Property {
-    key: PropKey::String(store.intern_name("mutable")),
+    key: PropKey::String(store.intern_name_ref("mutable")),
     data: PropData {
       ty: num,
       optional: false,
@@ -83,7 +83,7 @@ fn widen_object_properties_and_indexers() {
     },
   });
   shape.properties.push(Property {
-    key: PropKey::String(store.intern_name("readonly")),
+    key: PropKey::String(store.intern_name_ref("readonly")),
     data: PropData {
       ty: str_lit,
       optional: false,

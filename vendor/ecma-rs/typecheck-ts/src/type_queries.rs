@@ -302,7 +302,7 @@ impl<'a, E: TypeExpander> QueryCtx<'a, E> {
         }
       }
       TypeKind::Array { ty, readonly } => {
-        let length_key = PropKey::String(self.store.intern_name("length".to_string()));
+        let length_key = PropKey::String(self.store.intern_name_ref("length"));
         let prim = self.store.primitive_ids();
         let mut props = vec![PropertyEntry {
           key: length_key,
@@ -465,9 +465,9 @@ fn summarize_kind(store: &TypeStore, ty: TypeId) -> TypeKindSummary {
 
 fn property_key_to_internal(key: &PropertyKey, store: &TypeStore) -> PropKey {
   match key {
-    PropertyKey::String(s) => PropKey::String(store.intern_name(s.clone())),
+    PropertyKey::String(s) => PropKey::String(store.intern_name_ref(s)),
     PropertyKey::Number(num) => PropKey::Number(*num),
-    PropertyKey::Symbol(s) => PropKey::Symbol(store.intern_name(s.clone())),
+    PropertyKey::Symbol(s) => PropKey::Symbol(store.intern_name_ref(s)),
   }
 }
 
@@ -816,7 +816,7 @@ mod tests {
     let union_key = store.union(vec![primitives.string, primitives.symbol]);
     let intersection_key = store.intersection(vec![union_key, primitives.string]);
 
-    let sym_name = store.intern_name("sym");
+    let sym_name = store.intern_name_ref("sym");
     let key_symbol = PropKey::Symbol(sym_name);
 
     // Union is OR: (string | symbol) accepts symbol keys.

@@ -127,7 +127,7 @@ fn build_type(desc: &SimpleType, store: &Arc<TypeStore>) -> TypeId {
       store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(*value as f64)))
     }
     SimpleType::StringLiteral(value) => {
-      let name = store.intern_name(value);
+      let name = store.intern_name_ref(value);
       store.intern_type(TypeKind::StringLiteral(name))
     }
     SimpleType::Array(inner) => store.intern_type(TypeKind::Array {
@@ -158,7 +158,7 @@ fn build_type(desc: &SimpleType, store: &Arc<TypeStore>) -> TypeId {
       let mut shape = Shape::new();
       for (name, ty) in props.iter() {
         shape.properties.push(Property {
-          key: PropKey::String(store.intern_name(name)),
+          key: PropKey::String(store.intern_name_ref(name)),
           data: PropData {
             ty: build_type(ty, store),
             optional: false,

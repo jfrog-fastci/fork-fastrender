@@ -485,7 +485,7 @@ impl ProgramState {
 
       let mut shape = tti::Shape::new();
       for (name, prop_ty) in props.into_iter() {
-        let key = PropKey::String(store.intern_name(name.clone()));
+        let key = PropKey::String(store.intern_name(name));
         shape.properties.push(Property {
           key,
           data: PropData {
@@ -642,7 +642,7 @@ impl ProgramState {
             unknown
           };
 
-          let key = PropKey::String(store.intern_name(name.clone()));
+          let key = PropKey::String(store.intern_name_ref(name));
           shape.properties.push(Property {
             key,
             data: PropData {
@@ -678,7 +678,7 @@ impl ProgramState {
             .and_then(|def| def_types.get(&def).copied())
             .or_else(|| entry.type_id.map(|ty| store.canon(ty)))
             .unwrap_or(unknown);
-          let key = PropKey::String(store.intern_name(name.clone()));
+          let key = PropKey::String(store.intern_name_ref(name));
           shape.properties.push(Property {
             key,
             data: PropData {

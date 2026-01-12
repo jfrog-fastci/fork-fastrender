@@ -328,7 +328,7 @@ fn optional_chain_call_records_signature() {
   let obj_ty = {
     let mut shape = Shape::new();
     shape.properties.push(Property {
-      key: PropKey::String(store.intern_name("method")),
+      key: PropKey::String(store.intern_name_ref("method")),
       data: PropData {
         ty: method_ty,
         optional: false,

@@ -253,7 +253,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       let Some(name) = names.resolve(member.name) else {
         continue;
       };
-      let key = PropKey::String(self.store.intern_name(name.to_string()));
+      let key = PropKey::String(self.store.intern_name_ref(name));
       let ty = match member.value {
         hir_js::EnumMemberValue::Number => prim.number,
         hir_js::EnumMemberValue::String => prim.string,
@@ -509,17 +509,17 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
     match name {
       hir_js::PropertyName::Ident(id) => {
         let name = names.resolve(*id)?;
-        let interned = self.store.intern_name(name.to_string());
+        let interned = self.store.intern_name_ref(name);
         if name.starts_with("Symbol.") {
           Some(PropKey::Symbol(interned))
         } else {
           Some(PropKey::String(interned))
         }
       }
-      hir_js::PropertyName::String(s) => Some(PropKey::String(self.store.intern_name(s.clone()))),
+      hir_js::PropertyName::String(s) => Some(PropKey::String(self.store.intern_name_ref(s))),
       hir_js::PropertyName::Number(n) => Some(PropKey::Number(n.parse::<i64>().ok()?)),
       hir_js::PropertyName::Symbol(id) => Some(PropKey::Symbol(
-        self.store.intern_name(names.resolve(*id)?.to_string()),
+        self.store.intern_name_ref(names.resolve(*id)?),
       )),
       hir_js::PropertyName::Computed => None,
     }
@@ -577,7 +577,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
             .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(parsed)))
         }
         hir_js::TypeLiteral::String(s) => {
-          let name = self.store.intern_name(s.clone());
+          let name = self.store.intern_name(s);
           self.store.intern_type(TypeKind::StringLiteral(name))
         }
         hir_js::TypeLiteral::BigInt(n) => {
@@ -846,7 +846,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       if name == "this" {
         return Some(PredicateParam::This);
       }
-      let name_id = self.store.intern_name(name.to_string());
+      let name_id = self.store.intern_name_ref(name);
       params
         .iter()
         .position(|param| param.name == Some(name_id))
@@ -1211,7 +1211,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       name: param
         .name
         .and_then(|n| names.resolve(n))
-        .map(|n| self.store.intern_name(n.to_string())),
+        .map(|n| self.store.intern_name_ref(n)),
       ty: self.lower_type_expr(param.ty, names),
       optional: param.optional,
       rest: param.rest,
