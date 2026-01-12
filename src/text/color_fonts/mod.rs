@@ -28,6 +28,7 @@ pub use bitmap::MAX_SBIX_GLYPH_BYTES;
 pub use cpal::{parse_cpal_palette, select_cpal_palette, ParsedPalette};
 pub use svg::render_svg_glyph;
 pub use svg::sanitize_svg_glyph_for_tests;
+pub use svg::sanitize_preprocess_parse_svg_glyph_for_fuzzing;
 pub use svg::MAX_SVG_GLYPH_BYTES;
 
 /// Rasterized color glyph image with positioning relative to the glyph origin.

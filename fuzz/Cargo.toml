@@ -94,3 +94,10 @@ path = "fuzz_targets/accessibility_tree.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "svg_glyph_sanitizer"
+path = "fuzz_targets/svg_glyph_sanitizer.rs"
+test = false
+doc = false
+bench = false
