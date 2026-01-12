@@ -228,9 +228,15 @@ pub(crate) fn external_pending_inc() {
 }
 
 pub(crate) fn external_pending_dec() {
-  let prev = EXTERNAL_PENDING.fetch_sub(1, Ordering::AcqRel);
-  if prev == 0 {
-    // Defensive: mismatched decrements are bugs; don't underflow into "huge pending".
+  // Decrement without wrapping underflow (which could transiently make the counter appear huge).
+  //
+  // `external_pending_inc`/`external_pending_dec` may be called from multiple threads (e.g. parallel
+  // worker completion). Treat mismatched decrements as a bug, but keep the runtime alive by
+  // saturating at 0.
+  if EXTERNAL_PENDING
+    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_sub(1))
+    .is_err()
+  {
     EXTERNAL_PENDING.store(0, Ordering::Release);
   }
   // Wake the event loop so it can re-check `has_external_pending` and avoid sleeping forever when
