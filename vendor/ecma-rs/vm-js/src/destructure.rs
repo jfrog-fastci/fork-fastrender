@@ -278,7 +278,12 @@ fn maybe_set_anonymous_function_name(
     return Ok(());
   };
 
-  let current_name = scope.heap().get_function_name(func_obj)?;
+  // Callable Proxies are callable, but they are not function objects, so `SetFunctionName` does not
+  // apply (and `Heap::get_function_name` would fail with `InvalidHandle`).
+  let current_name = match scope.heap().get_function_name(func_obj) {
+    Ok(name) => name,
+    Err(_) => return Ok(()),
+  };
   if !scope
     .heap()
     .get_string(current_name)?
