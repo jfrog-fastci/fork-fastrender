@@ -119,7 +119,7 @@ migrations.
 | `tests/dom_integration/` | DOM parsing/query integration tests | `src/dom/**` + `src/dom2/**` | Unit tests. |
 | `tests/fixtures/` | HTML + golden-image fixtures | `tests/integration.rs::fixtures` | Stays in `tests/` (data-driven integration). |
 | `tests/guards/` | repo invariants / consolidation guards | `tests/integration.rs::guards` | Integration-style checks for repo structure. |
-| `tests/image_integration/` | image loading/output integration tests | `tests/integration.rs::image_integration` | Network/CORS/streaming output; stays integration. |
+| `tests/` `image_integration/` | image loading/output integration tests | `tests/integration.rs::image_integration` | Network/CORS/streaming output; stays integration. |
 | `tests/interaction/` | interaction engine tests | `src/interaction/**` | Harness removed; suite is pulled into `tests/integration.rs::interaction` for now, but should eventually migrate to unit tests in `src/interaction/**`. |
 | `tests/js/` | JS subsystem integration tests | `tests/integration.rs::js` | Consolidated into the shared integration binary. |
 | `tests/layout/` | layout regressions, paging, flex/grid/table, etc | `src/layout/**` | Unit tests (bulk of migration). |
