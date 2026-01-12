@@ -1821,7 +1821,10 @@ thread_local! {
 
 #[inline]
 fn rt_io_set_last_error(code: u32) {
-  RT_IO_LAST_ERROR.with(|c| c.set(code));
+  // This debug-only TLS key can be accessed from other TLS destructors during thread teardown. If
+  // the key has already been destroyed, `LocalKey::with` would panic with `AccessError` and abort
+  // the process (`abort_on_dtor_unwind`). Treat it as best-effort and ignore `AccessError`.
+  let _ = RT_IO_LAST_ERROR.try_with(|c| c.set(code));
 }
 
 /// Test/debug helper: return and clear the last `rt_io_*` failure code for the
@@ -1832,11 +1835,13 @@ fn rt_io_set_last_error(code: u32) {
 #[doc(hidden)]
 pub extern "C" fn rt_io_debug_take_last_error() -> u32 {
   abort_on_panic(|| {
-    RT_IO_LAST_ERROR.with(|c| {
-      let code = c.get();
-      c.set(rt_io_debug::OK);
-      code
-    })
+    RT_IO_LAST_ERROR
+      .try_with(|c| {
+        let code = c.get();
+        c.set(rt_io_debug::OK);
+        code
+      })
+      .unwrap_or(rt_io_debug::OK)
   })
 }
 
