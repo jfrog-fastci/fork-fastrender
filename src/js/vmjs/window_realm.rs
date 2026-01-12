@@ -5335,7 +5335,7 @@ fn decimal_str_for_usize(mut value: usize, buf: &mut [u8; 20]) -> &str {
   unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
 }
 
-fn dom_from_vm_host(host: &mut dyn VmHost) -> Option<&dom2::Document> {
+pub(crate) fn dom_from_vm_host(host: &mut dyn VmHost) -> Option<&dom2::Document> {
   use std::any::TypeId;
 
   let any = host.as_any_mut();
@@ -27530,6 +27530,7 @@ fn init_window_globals(
   crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;
   crate::js::window_file::install_window_file_bindings(vm, realm, heap)?;
   crate::js::window_form_data::install_window_form_data_bindings(vm, realm, heap)?;
+  crate::js::window_xml_serializer::install_window_xml_serializer_bindings(vm, realm, heap)?;
   crate::js::window_broadcast_channel::install_window_broadcast_channel_bindings(vm, realm, heap)?;
   crate::js::window_worker::install_window_worker_bindings(vm, realm, heap)?;
   crate::js::window_streams::install_window_streams_bindings(vm, realm, heap)?;
@@ -32862,6 +32863,55 @@ mod tests {
       .expect("expected pending navigation request");
     assert_eq!(req.url, "https://example.com/");
     assert_eq!(req.replace, true);
+    Ok(())
+  }
+
+  #[test]
+  fn xml_serializer_serializes_namespaces_and_throws_invalid_state() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host_ctx = DocumentHostState::from_renderer_dom(&renderer_dom);
+
+    let ty = exec_script_with_dom_host(&mut realm, &mut host_ctx, "typeof XMLSerializer")?;
+    assert_eq!(get_string(realm.heap(), ty), "function");
+
+    let div = exec_script_with_dom_host(
+      &mut realm,
+      &mut host_ctx,
+      "new XMLSerializer().serializeToString(document.createElement('div'))",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), div),
+      "<div xmlns=\"http://www.w3.org/1999/xhtml\"/>"
+    );
+
+    let svg = exec_script_with_dom_host(
+      &mut realm,
+      &mut host_ctx,
+      "document.body.innerHTML = '<svg><foreignObject><div></div></foreignObject></svg>';\n\
+       new XMLSerializer().serializeToString(document.body.firstChild)",
+    )?;
+    let svg = get_string(realm.heap(), svg);
+    assert!(
+      svg.contains("xmlns=\"http://www.w3.org/2000/svg\""),
+      "expected SVG namespace declaration, got: {svg}"
+    );
+    assert!(
+      svg.contains("xmlns=\"http://www.w3.org/1999/xhtml\""),
+      "expected XHTML namespace declaration for foreignObject children, got: {svg}"
+    );
+
+    let err_name = exec_script_with_dom_host(
+      &mut realm,
+      &mut host_ctx,
+      "let name = 'OK';\n\
+       try { new XMLSerializer().serializeToString(document.createComment('--')); }\n\
+       catch (e) { name = e.name; }\n\
+       name",
+    )?;
+    assert_eq!(get_string(realm.heap(), err_name), "InvalidStateError");
+
+    realm.teardown();
     Ok(())
   }
 }

@@ -39,6 +39,7 @@ mod mutation;
 mod mutation_observer;
 mod scripting_parser;
 mod serialization;
+mod xml_serialization;
 mod shadow_dom;
 mod style_attr;
 mod traversal;
