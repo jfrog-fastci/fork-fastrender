@@ -149,6 +149,20 @@ impl DomIndex {
   }
 }
 
+impl super::effective_disabled::DomIdLookup for DomIndex {
+  fn len(&self) -> usize {
+    self.id_to_ptr.len().saturating_sub(1)
+  }
+
+  fn node(&self, node_id: usize) -> Option<&DomNode> {
+    self.node(node_id)
+  }
+
+  fn parent_id(&self, node_id: usize) -> usize {
+    self.parent_id(node_id).unwrap_or(0)
+  }
+}
+
 fn tree_root_boundary_id(dom_index: &DomIndex, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = dom_index.node(node_id)?;
@@ -163,17 +177,8 @@ fn tree_root_boundary_id(dom_index: &DomIndex, mut node_id: usize) -> Option<usi
   None
 }
 
-fn node_or_ancestor_is_template(dom_index: &DomIndex, mut node_id: usize) -> bool {
-  while node_id != 0 {
-    let Some(node) = dom_index.node(node_id) else {
-      return false;
-    };
-    if node.template_contents_are_inert() {
-      return true;
-    }
-    node_id = dom_index.parent_id(node_id).unwrap_or(0);
-  }
-  false
+fn node_or_ancestor_is_template(dom_index: &DomIndex, node_id: usize) -> bool {
+  super::effective_disabled::is_in_template_contents(node_id, dom_index)
 }
 
 fn find_element_by_id_attr_in_tree(
@@ -210,12 +215,7 @@ fn box_is_interactive(box_node: &BoxNode) -> bool {
 }
 
 fn node_is_inert_like(node: &DomNode) -> bool {
-  if node.get_attribute_ref("inert").is_some() {
-    return true;
-  }
-  node
-    .get_attribute_ref("data-fastr-inert")
-    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+  super::effective_disabled::node_self_is_inert(node)
 }
 
 fn node_is_link(node: &DomNode) -> Option<String> {

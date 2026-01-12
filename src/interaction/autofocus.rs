@@ -1,6 +1,6 @@
 use crate::dom::DomNode;
-use crate::dom::ElementRef;
 use crate::interaction::InteractionState;
+use std::ptr;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
   // HTML attribute processing (e.g. tabindex) trims ASCII whitespace only.
@@ -38,37 +38,8 @@ fn input_type(node: &DomNode) -> &str {
     .unwrap_or("text")
 }
 
-fn node_self_is_inert_like(node: &DomNode) -> bool {
-  // Template contents are always inert.
-  if node.template_contents_are_inert() {
-    return true;
-  }
-  // `hidden` is render- and interaction-suppressing.
-  if node.get_attribute_ref("hidden").is_some() {
-    return true;
-  }
-  // Native inert subtree handling.
-  if node.get_attribute_ref("inert").is_some() {
-    return true;
-  }
-  // Internal inert propagation for dialogs/popovers.
-  if node
-    .get_attribute_ref("data-fastr-inert")
-    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-  {
-    return true;
-  }
-  false
-}
-
-fn is_focusable_element_for_autofocus(node: &DomNode, disabled: bool) -> bool {
+fn is_potentially_focusable_element_for_autofocus(node: &DomNode) -> bool {
   if !node.is_element() {
-    return false;
-  }
-  if disabled {
-    return false;
-  }
-  if node.get_attribute_ref("hidden").is_some() {
     return false;
   }
 
@@ -98,8 +69,101 @@ fn is_focusable_element_for_autofocus(node: &DomNode, disabled: bool) -> bool {
   })
 }
 
-fn node_is_disabled(node: &DomNode, ancestors: &[&DomNode]) -> bool {
-  ElementRef::with_ancestors(node, ancestors).accessibility_disabled()
+struct DomIndex {
+  id_to_ptr: Vec<*const DomNode>,
+  parent: Vec<usize>,
+  is_element: Vec<bool>,
+  inert_or_hidden: Vec<bool>,
+}
+
+impl DomIndex {
+  fn build(root: &DomNode) -> Self {
+    let mut id_to_ptr: Vec<*const DomNode> = vec![ptr::null()];
+    let mut parent: Vec<usize> = vec![0];
+    let mut is_element: Vec<bool> = vec![false];
+    let mut inert_or_hidden: Vec<bool> = vec![false];
+
+    // Pre-order traversal, matching `crate::dom::enumerate_dom_ids`.
+    // (node, parent_id, inherited_inert_or_hidden)
+    let mut stack: Vec<(&DomNode, usize, bool)> = vec![(root, 0, false)];
+    while let Some((node, parent_id, inherited_inert_or_hidden)) = stack.pop() {
+      let id = id_to_ptr.len();
+      id_to_ptr.push(node as *const DomNode);
+      parent.push(parent_id);
+
+      let self_is_element = node.is_element();
+      is_element.push(self_is_element);
+
+      let self_inert_or_hidden = inherited_inert_or_hidden
+        || super::effective_disabled::node_self_is_inert(node)
+        || super::effective_disabled::node_self_is_hidden(node);
+      inert_or_hidden.push(self_inert_or_hidden);
+
+      for child in node.children.iter().rev() {
+        stack.push((child, id, self_inert_or_hidden));
+      }
+    }
+
+    Self {
+      id_to_ptr,
+      parent,
+      is_element,
+      inert_or_hidden,
+    }
+  }
+
+  fn len(&self) -> usize {
+    self.id_to_ptr.len().saturating_sub(1)
+  }
+
+  fn node(&self, node_id: usize) -> Option<&DomNode> {
+    let ptr = *self.id_to_ptr.get(node_id)?;
+    if ptr.is_null() {
+      return None;
+    }
+    // SAFETY: pointers originate from the DOM tree borrowed for the duration of the caller.
+    Some(unsafe { &*ptr })
+  }
+}
+
+impl super::effective_disabled::DomIdLookup for DomIndex {
+  fn len(&self) -> usize {
+    DomIndex::len(self)
+  }
+
+  fn node(&self, node_id: usize) -> Option<&DomNode> {
+    DomIndex::node(self, node_id)
+  }
+
+  fn parent_id(&self, node_id: usize) -> usize {
+    self.parent.get(node_id).copied().unwrap_or(0)
+  }
+}
+
+fn autofocus_target_in_index(index: &DomIndex) -> Option<usize> {
+  let node_len = index.len();
+  for node_id in 1..=node_len {
+    if index.inert_or_hidden.get(node_id).copied().unwrap_or(true) {
+      continue;
+    }
+    if !index.is_element.get(node_id).copied().unwrap_or(false) {
+      continue;
+    }
+    let Some(node) = index.node(node_id) else {
+      continue;
+    };
+    if node.get_attribute_ref("autofocus").is_none() {
+      continue;
+    }
+    if !is_potentially_focusable_element_for_autofocus(node) {
+      continue;
+    }
+    if super::effective_disabled::is_effectively_disabled(node_id, index) {
+      continue;
+    }
+    return Some(node_id);
+  }
+  None
 }
 
 /// Build an [`InteractionState`] reflecting initial autofocus selection, if any.
@@ -110,86 +174,16 @@ fn node_is_disabled(node: &DomNode, ancestors: &[&DomNode]) -> bool {
 ///
 /// Returns `None` when no eligible autofocus element is present.
 pub fn interaction_state_for_autofocus(dom: &DomNode) -> Option<InteractionState> {
-  #[derive(Clone, Copy)]
-  enum TraversalState {
-    Enter,
-    Exit,
-  }
-  struct Frame<'a> {
-    node: &'a DomNode,
-    parent_id: usize,
-    inert: bool,
-    state: TraversalState,
-  }
-
-  // We need stable pre-order ids matching `crate::dom::enumerate_dom_ids`. Keep a lightweight
-  // (parent, is_element) table so we can later produce the `focus_chain` expected by selector
-  // matching.
-  let mut parent: Vec<usize> = vec![0];
-  let mut is_element: Vec<bool> = vec![false];
-
-  let mut focused_id: Option<usize> = None;
-  let mut next_id = 1usize;
-  let mut stack = vec![Frame {
-    node: dom,
-    parent_id: 0,
-    inert: false,
-    state: TraversalState::Enter,
-  }];
-  let mut ancestors: Vec<&DomNode> = Vec::new();
-  while let Some(frame) = stack.pop() {
-    match frame.state {
-      TraversalState::Enter => {
-        let id = next_id;
-        next_id = next_id.saturating_add(1);
-        parent.push(frame.parent_id);
-        let self_is_element = frame.node.is_element();
-        is_element.push(self_is_element);
-
-        let self_inert = frame.inert || node_self_is_inert_like(frame.node);
-
-        if focused_id.is_none()
-          && self_is_element
-          && !self_inert
-          && frame.node.get_attribute_ref("autofocus").is_some()
-        {
-          let disabled = node_is_disabled(frame.node, &ancestors);
-          if is_focusable_element_for_autofocus(frame.node, disabled) {
-            focused_id = Some(id);
-          }
-        }
-
-        stack.push(Frame {
-          node: frame.node,
-          parent_id: 0,
-          inert: false,
-          state: TraversalState::Exit,
-        });
-        for child in frame.node.children.iter().rev() {
-          stack.push(Frame {
-            node: child,
-            parent_id: id,
-            inert: self_inert,
-            state: TraversalState::Enter,
-          });
-        }
-        ancestors.push(frame.node);
-      }
-      TraversalState::Exit => {
-        ancestors.pop();
-      }
-    }
-  }
-
-  let focused_id = focused_id?;
+  let index = DomIndex::build(dom);
+  let focused_id = autofocus_target_in_index(&index)?;
 
   let mut focus_chain = Vec::new();
   let mut current = focused_id;
   while current != 0 {
-    if is_element.get(current).copied().unwrap_or(false) {
+    if index.is_element.get(current).copied().unwrap_or(false) {
       focus_chain.push(current);
     }
-    current = parent.get(current).copied().unwrap_or(0);
+    current = index.parent.get(current).copied().unwrap_or(0);
   }
 
   Some(InteractionState {
@@ -209,61 +203,8 @@ pub fn interaction_state_for_autofocus(dom: &DomNode) -> Option<InteractionState
 /// their own [`crate::interaction::InteractionEngine`] state but still want spec-ish autofocus
 /// target selection.
 pub fn autofocus_target_node_id(dom: &DomNode) -> Option<usize> {
-  #[derive(Clone, Copy)]
-  enum TraversalState {
-    Enter,
-    Exit,
-  }
-  struct Frame<'a> {
-    node: &'a DomNode,
-    inert: bool,
-    state: TraversalState,
-  }
-  let mut next_id = 1usize;
-  let mut stack = vec![Frame {
-    node: dom,
-    inert: false,
-    state: TraversalState::Enter,
-  }];
-  let mut ancestors: Vec<&DomNode> = Vec::new();
-  while let Some(frame) = stack.pop() {
-    match frame.state {
-      TraversalState::Enter => {
-        let id = next_id;
-        next_id = next_id.saturating_add(1);
-        let self_inert = frame.inert || node_self_is_inert_like(frame.node);
-
-        if frame.node.is_element()
-          && !self_inert
-          && frame.node.get_attribute_ref("autofocus").is_some()
-        {
-          let disabled = node_is_disabled(frame.node, &ancestors);
-          if is_focusable_element_for_autofocus(frame.node, disabled) {
-            return Some(id);
-          }
-        }
-
-        stack.push(Frame {
-          node: frame.node,
-          inert: false,
-          state: TraversalState::Exit,
-        });
-        for child in frame.node.children.iter().rev() {
-          stack.push(Frame {
-            node: child,
-            inert: self_inert,
-            state: TraversalState::Enter,
-          });
-        }
-        ancestors.push(frame.node);
-      }
-      TraversalState::Exit => {
-        ancestors.pop();
-      }
-    }
-  }
-
-  None
+  let index = DomIndex::build(dom);
+  autofocus_target_in_index(&index)
 }
 
 #[cfg(test)]
@@ -332,3 +273,4 @@ mod tests {
     assert!(interaction_state_for_autofocus(&dom).is_none());
   }
 }
+

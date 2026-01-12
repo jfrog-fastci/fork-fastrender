@@ -321,6 +321,20 @@ impl DomIndexMut {
   }
 }
 
+impl super::effective_disabled::DomIdLookup for DomIndexMut {
+  fn len(&self) -> usize {
+    self.id_to_node.len().saturating_sub(1)
+  }
+
+  fn node(&self, node_id: usize) -> Option<&DomNode> {
+    self.node(node_id)
+  }
+
+  fn parent_id(&self, node_id: usize) -> usize {
+    self.parent.get(node_id).copied().unwrap_or(0)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1775,34 +1789,17 @@ fn is_ancestor_or_self(index: &DomIndexMut, ancestor: usize, mut node: usize) ->
 }
 
 fn node_is_inert_like(node: &DomNode) -> bool {
-  // Template contents are always inert and should never be interactable.
-  if node.template_contents_are_inert() {
-    return true;
-  }
-  if node.get_attribute_ref("inert").is_some() {
-    return true;
-  }
-  node
-    .get_attribute_ref("data-fastr-inert")
-    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+  super::effective_disabled::node_self_is_inert(node)
 }
 
-fn node_or_ancestor_is_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
-  while node_id != 0 {
-    let Some(node) = index.node(node_id) else {
-      return false;
-    };
-    if node.is_element() && node_is_inert_like(node) {
-      return true;
-    }
-    node_id = *index.parent.get(node_id).unwrap_or(&0);
-  }
-  false
+fn node_or_ancestor_is_inert(index: &DomIndexMut, node_id: usize) -> bool {
+  super::effective_disabled::is_effectively_inert_or_hidden(node_id, index)
 }
 
 fn node_self_is_tab_inert(node: &DomNode) -> bool {
   // `<template>` contents are inert and should not be reachable via Tab.
-  node_is_inert_like(node) || node.get_attribute_ref("hidden").is_some()
+  node_is_inert_like(node)
+    || super::effective_disabled::node_self_is_hidden(node)
 }
 
 fn parse_tabindex(node: &DomNode) -> Option<i32> {
@@ -1843,7 +1840,7 @@ fn tab_stop_tabindex(index: &DomIndexMut, inert: &[bool], node_id: usize) -> Opt
   if !node.is_element() {
     return None;
   }
-  if node.get_attribute_ref("hidden").is_some() {
+  if super::effective_disabled::node_self_is_hidden(node) {
     return None;
   }
   if is_input(node) && input_type(node).eq_ignore_ascii_case("hidden") {
@@ -1932,42 +1929,7 @@ fn prev_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize>
 }
 
 fn node_is_disabled(index: &DomIndexMut, node_id: usize) -> bool {
-  let Some(node) = index.node(node_id) else {
-    return false;
-  };
-
-  if !matches!(
-    node.namespace(),
-    Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
-  ) {
-    return false;
-  }
-  let Some(tag) = node.tag_name() else {
-    return false;
-  };
-  if !(tag.eq_ignore_ascii_case("button")
-    || tag.eq_ignore_ascii_case("input")
-    || tag.eq_ignore_ascii_case("select")
-    || tag.eq_ignore_ascii_case("textarea")
-    || tag.eq_ignore_ascii_case("option")
-    || tag.eq_ignore_ascii_case("optgroup")
-    || tag.eq_ignore_ascii_case("fieldset"))
-  {
-    return false;
-  }
-
-  let mut ancestors_rev: Vec<&DomNode> = Vec::new();
-  let mut current = *index.parent.get(node_id).unwrap_or(&0);
-  while current != 0 {
-    let Some(ancestor) = index.node(current) else {
-      break;
-    };
-    ancestors_rev.push(ancestor);
-    current = *index.parent.get(current).unwrap_or(&0);
-  }
-  ancestors_rev.reverse();
-
-  crate::dom::ElementRef::with_ancestors(node, &ancestors_rev).accessibility_disabled()
+  super::effective_disabled::is_effectively_disabled(node_id, index)
 }
 
 fn node_is_readonly(index: &DomIndexMut, node_id: usize) -> bool {

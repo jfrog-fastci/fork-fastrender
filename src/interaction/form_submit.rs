@@ -1,4 +1,4 @@
-use crate::dom::{DomNode, DomNodeType, ElementRef, HTML_NAMESPACE, SVG_NAMESPACE};
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE, SVG_NAMESPACE};
 use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 
 use url::Url;
@@ -120,6 +120,20 @@ impl<'a> DomIndex<'a> {
   }
 }
 
+impl super::effective_disabled::DomIdLookup for DomIndex<'_> {
+  fn len(&self) -> usize {
+    self.len()
+  }
+
+  fn node(&self, node_id: usize) -> Option<&DomNode> {
+    self.node(node_id)
+  }
+
+  fn parent_id(&self, node_id: usize) -> usize {
+    self.parent.get(node_id).copied().unwrap_or(0)
+  }
+}
+
 fn is_form(node: &DomNode) -> bool {
   node
     .tag_name()
@@ -172,74 +186,9 @@ fn is_submit_control(node: &DomNode) -> bool {
     || (is_button(node) && button_type(node).eq_ignore_ascii_case("submit"))
 }
 
-fn node_is_inert_like(node: &DomNode) -> bool {
-  if node.template_contents_are_inert() {
-    return true;
-  }
-  if node.get_attribute_ref("inert").is_some() {
-    return true;
-  }
-  node
-    .get_attribute_ref("data-fastr-inert")
-    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-}
-
-fn node_or_ancestor_is_inert(index: &DomIndex<'_>, mut node_id: usize) -> bool {
-  while node_id != 0 {
-    let Some(node) = index.node(node_id) else {
-      return false;
-    };
-    if node.is_element() && node_is_inert_like(node) {
-      return true;
-    }
-
-    node_id = *index.parent.get(node_id).unwrap_or(&0);
-  }
-
-  false
-}
-
-fn node_is_disabled(index: &DomIndex<'_>, node_id: usize) -> bool {
-  let Some(node) = index.node(node_id) else {
-    return false;
-  };
-
-  if !matches!(
-    node.namespace(),
-    Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE
-  ) {
-    return false;
-  }
-  let Some(tag) = node.tag_name() else {
-    return false;
-  };
-  if !(tag.eq_ignore_ascii_case("button")
-    || tag.eq_ignore_ascii_case("input")
-    || tag.eq_ignore_ascii_case("select")
-    || tag.eq_ignore_ascii_case("textarea")
-    || tag.eq_ignore_ascii_case("option")
-    || tag.eq_ignore_ascii_case("optgroup")
-    || tag.eq_ignore_ascii_case("fieldset"))
-  {
-    return false;
-  }
-
-  let mut ancestors_rev: Vec<&DomNode> = Vec::new();
-  let mut current = *index.parent.get(node_id).unwrap_or(&0);
-  while current != 0 {
-    let Some(ancestor) = index.node(current) else {
-      break;
-    };
-    ancestors_rev.push(ancestor);
-    current = *index.parent.get(current).unwrap_or(&0);
-  }
-  ancestors_rev.reverse();
-
-  ElementRef::with_ancestors(node, &ancestors_rev).accessibility_disabled()
-}
-
 fn is_disabled_or_inert(index: &DomIndex<'_>, node_id: usize) -> bool {
-  node_or_ancestor_is_inert(index, node_id) || node_is_disabled(index, node_id)
+  super::effective_disabled::is_effectively_disabled(node_id, index)
+    || super::effective_disabled::is_effectively_inert(node_id, index)
 }
 
 fn find_ancestor_form(index: &DomIndex<'_>, mut node_id: usize) -> Option<usize> {
@@ -275,17 +224,8 @@ fn tree_root_boundary_id(index: &DomIndex<'_>, mut node_id: usize) -> Option<usi
   None
 }
 
-fn node_or_ancestor_is_template(index: &DomIndex<'_>, mut node_id: usize) -> bool {
-  while node_id != 0 {
-    let Some(node) = index.node(node_id) else {
-      return false;
-    };
-    if node.is_template_element() {
-      return true;
-    }
-    node_id = *index.parent.get(node_id).unwrap_or(&0);
-  }
-  false
+fn node_or_ancestor_is_template(index: &DomIndex<'_>, node_id: usize) -> bool {
+  super::effective_disabled::is_in_template_contents(node_id, index)
 }
 
 fn find_element_by_id_attr_in_tree(

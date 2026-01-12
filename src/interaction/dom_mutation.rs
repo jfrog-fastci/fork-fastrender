@@ -43,13 +43,7 @@ fn is_disabled_or_inert(node: &DomNode) -> bool {
   if node.get_attribute_ref("disabled").is_some() {
     return true;
   }
-  if node.get_attribute_ref("inert").is_some() {
-    return true;
-  }
-  node
-    .get_attribute_ref("data-fastr-inert")
-    .map(|v| v.eq_ignore_ascii_case("true"))
-    .unwrap_or(false)
+  super::effective_disabled::node_self_is_inert(node)
 }
 
 fn is_input_of_type(node: &DomNode, ty: &str) -> bool {
@@ -619,11 +613,14 @@ pub fn activate_radio(root: &mut DomNode, radio_node_id: usize) -> bool {
     None
   }
 
+  if super::effective_disabled::is_effectively_inert(radio_node_id, &index)
+    || super::effective_disabled::is_effectively_disabled(radio_node_id, &index)
+  {
+    return false;
+  }
+
   let Some((ok, group_name)) = index.with_node_mut(radio_node_id, |node| {
     if !is_input_of_type(node, "radio") {
-      return (false, String::new());
-    }
-    if is_disabled_or_inert(node) {
       return (false, String::new());
     }
     let name = node.get_attribute_ref("name").unwrap_or("").to_string();
@@ -809,14 +806,17 @@ pub fn activate_select_option(
 ) -> bool {
   let mut index = DomIndex::build(root);
 
+  if super::effective_disabled::is_effectively_inert(select_node_id, &index)
+    || super::effective_disabled::is_effectively_disabled(select_node_id, &index)
+  {
+    return false;
+  }
+
   let Some((select_ok, select_multiple)) = index.with_node_mut(select_node_id, |node| {
     let is_select = node
       .tag_name()
       .is_some_and(|t| t.eq_ignore_ascii_case("select") && is_html_element(node));
     if !is_select {
-      return (false, false);
-    }
-    if is_disabled_or_inert(node) {
       return (false, false);
     }
     (true, node.get_attribute_ref("multiple").is_some())
