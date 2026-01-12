@@ -1,9 +1,8 @@
 use crate::error::{Error, ParseError, Result};
 use crate::xml::{markup_for_roxmltree_with_doctypes, ExtractedDoctype};
 use roxmltree::Document as RoDocument;
-use selectors::context::QuirksMode;
 
-use super::{Document, NodeId, NodeKind};
+use super::{Document, NodeId, NodeKind, NULL_NAMESPACE};
 
 #[derive(Clone, Copy)]
 enum TopLevel<'a, 'input> {
@@ -170,7 +169,8 @@ pub fn parse_xml(xml: &str) -> Result<Document> {
     }
   };
 
-  let mut doc = Document::new(QuirksMode::NoQuirks);
+  // DOMParser XML flavors return an XML document with scripting disabled.
+  let mut doc = Document::new_xml();
   let doc_root = doc.root();
 
   // Collect top-level nodes.

@@ -9613,7 +9613,10 @@ fn document_create_element_native(
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
     "document.createElement requires a DOM-backed document",
   ))?;
-  let node_id = dom.create_element(&tag_name, "");
+  // DOM: createElement() uses the HTML namespace only for HTML documents; XML documents default to
+  // the null namespace.
+  let namespace = if dom.is_html_document() { "" } else { dom2::NULL_NAMESPACE };
+  let node_id = dom.create_element(&tag_name, namespace);
 
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
@@ -9672,7 +9675,7 @@ fn document_create_element_ns_native(
     };
 
   // DOM: HTML namespace elements have an ASCII-lowercased localName in HTML documents.
-  if namespace.as_deref() == Some(crate::dom::HTML_NAMESPACE) {
+  if dom.is_html_document() && namespace.as_deref() == Some(crate::dom::HTML_NAMESPACE) {
     local_name = local_name.to_ascii_lowercase();
   }
 
@@ -9688,7 +9691,7 @@ fn document_create_element_ns_native(
 fn document_create_attribute_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -9706,8 +9709,14 @@ fn document_create_attribute_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  let is_html_document = dom_from_vm_host_mut(host)
+    .map(|dom| dom.is_html_document())
+    .unwrap_or(true);
+
   // HTML documents lowercase attribute local names.
-  local_name = local_name.to_ascii_lowercase();
+  if is_html_document {
+    local_name = local_name.to_ascii_lowercase();
+  }
 
   let attr_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(attr_obj))?;
@@ -9748,7 +9757,7 @@ fn document_create_attribute_native(
 fn document_create_attribute_ns_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -9779,7 +9788,10 @@ fn document_create_attribute_ns_native(
     };
 
   // HTML documents lowercase attribute local names when the namespace is null.
-  if namespace.is_none() {
+  let is_html_document = dom_from_vm_host_mut(host)
+    .map(|dom| dom.is_html_document())
+    .unwrap_or(true);
+  if is_html_document && namespace.is_none() {
     local_name = local_name.to_ascii_lowercase();
   }
 

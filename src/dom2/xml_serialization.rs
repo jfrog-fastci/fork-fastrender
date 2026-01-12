@@ -1,14 +1,16 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::web::dom::DomException;
 
-use super::{Document, NodeId, NodeKind};
+use super::{Document, NodeId, NodeKind, NULL_NAMESPACE};
 
 /// Returns the namespace URI for a stored namespace string.
 ///
 /// `dom2` normalizes HTML namespace elements to store `namespace=""`; for XML serialization we need
 /// to treat that as the XHTML namespace.
 fn namespace_uri_for_storage(namespace: &str) -> &str {
-  if namespace.is_empty() {
+  if namespace == NULL_NAMESPACE {
+    ""
+  } else if namespace.is_empty() {
     HTML_NAMESPACE
   } else {
     namespace

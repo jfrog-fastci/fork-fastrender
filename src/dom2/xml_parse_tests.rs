@@ -1,4 +1,24 @@
 use crate::dom2::{parse_xml, NodeKind};
+use crate::dom::{DomNodeType};
+use selectors::context::QuirksMode;
+
+#[test]
+fn parse_xml_returns_xml_document_with_scripting_disabled() {
+  let doc = parse_xml(r#"<root/>"#).unwrap();
+  assert!(!doc.is_html_document());
+
+  let snapshot = doc.to_renderer_dom();
+  match snapshot.node_type {
+    DomNodeType::Document {
+      quirks_mode,
+      scripting_enabled,
+    } => {
+      assert_eq!(quirks_mode, QuirksMode::NoQuirks);
+      assert!(!scripting_enabled);
+    }
+    other => panic!("expected document root, got {other:?}"),
+  }
+}
 
 fn find_first_doctype(doc: &crate::dom2::Document) -> Option<crate::dom2::NodeId> {
   let root = doc.root();
@@ -79,4 +99,3 @@ fn xml_doctype_public_preserved() {
     "expected doctype before documentElement (doctype_pos={doctype_pos}, root_pos={root_pos})"
   );
 }
-
