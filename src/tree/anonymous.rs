@@ -1134,6 +1134,7 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
   style.caption_side = parent.caption_side;
   style.empty_cells = parent.empty_cells;
   style.hyphens = parent.hyphens;
+  style.hyphenate_character = parent.hyphenate_character.clone();
   style.word_break = parent.word_break;
   style.overflow_wrap = parent.overflow_wrap;
   style.language = parent.language.clone();

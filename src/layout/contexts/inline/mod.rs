@@ -415,9 +415,15 @@ impl InlineFormattingContext {
   }
 
   fn hyphen_advance(&self, style: &ComputedStyle) -> f32 {
-    const INSERTED_HYPHEN: &str = "\u{2010}";
+    let inserted = style
+      .hyphenate_character
+      .as_deref()
+      .unwrap_or("\u{2010}");
+    if inserted.is_empty() {
+      return 0.0;
+    }
     match self.pipeline.shape_with_direction(
-      INSERTED_HYPHEN,
+      inserted,
       style,
       &self.font_context,
       pipeline_direction(style.direction),
@@ -425,7 +431,7 @@ impl InlineFormattingContext {
       Ok(mut runs) => {
         TextItem::apply_spacing_to_runs(
           &mut runs,
-          INSERTED_HYPHEN,
+          inserted,
           style.letter_spacing,
           style.word_spacing,
         );
@@ -16136,12 +16142,23 @@ fn paragraph_short_last_penalty(lines: &[Line]) -> f32 {
 
 fn inline_item_ends_with_hyphen(item: &InlineItem) -> bool {
   match item {
-    InlineItem::Text(t) => t
-      .text
-      .chars()
-      .rev()
-      .find(|c| !is_ascii_whitespace_char(*c))
-      .map_or(false, |c| c == '\u{2010}' || c == '\u{00AD}' || c == '-'),
+    InlineItem::Text(t) => {
+      let trimmed = t.text.trim_end_matches(is_ascii_whitespace_char);
+      if trimmed.is_empty() {
+        return false;
+      }
+
+      if let Some(hyphenate) = t.style.hyphenate_character.as_deref() {
+        if !hyphenate.is_empty() && trimmed.ends_with(hyphenate) {
+          return true;
+        }
+      }
+
+      trimmed
+        .chars()
+        .last()
+        .is_some_and(|c| c == '\u{2010}' || c == '\u{00AD}' || c == '-')
+    }
     InlineItem::SoftBreak => false,
     InlineItem::InlineBox(b) => b
       .children
@@ -28633,6 +28650,65 @@ mod tests {
       "expected no inserted hyphen on first line when it would overflow: {:?}",
       texts[0]
     );
+  }
+
+  #[test]
+  fn hyphenate_character_customizes_inserted_hyphen() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    style.hyphens = HyphensMode::Manual;
+    style.hyphenate_character = Some("*".into());
+    let text = "hy\u{00AD}phen";
+
+    let node = BoxNode::new_text(Arc::new(style.clone()), text.to_string());
+    let item = ifc.create_text_item(&node, text).unwrap();
+    let hyphen_break = item
+      .break_opportunities
+      .iter()
+      .find(|b| b.adds_hyphen)
+      .copied()
+      .expect("expected hyphen break");
+
+    let before = item.advance_at_offset(hyphen_break.byte_offset);
+    let hyphen_width = ifc.hyphen_advance(&item.style);
+    assert!(
+      item.advance > before + hyphen_width,
+      "expected full text to be wider than pre-hyphen plus inserted hyphen (before={before}, hyphen={hyphen_width}, advance={})",
+      item.advance
+    );
+    let available_width = (before + hyphen_width + item.advance) / 2.0;
+
+    assert!(
+      before + hyphen_width <= available_width && available_width < item.advance,
+      "test width should fit pre-hyphen plus inserted hyphen but overflow full text (before={before}, hyphen={hyphen_width}, advance={}, w={available_width})",
+      item.advance
+    );
+
+    let strut = ifc.compute_strut_metrics(&style);
+    let lines = ifc
+      .layout_segment_lines(
+        vec![InlineItem::Text(item)],
+        true,
+        available_width,
+        available_width,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
+
+    assert_eq!(line_texts(&lines), vec!["hy*", "phen"]);
   }
 
   #[test]

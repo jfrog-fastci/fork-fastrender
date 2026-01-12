@@ -810,6 +810,7 @@ struct ReshapeCacheKey {
 struct HyphenAdvanceCacheKey {
   style_hash: u64,
   font_generation: u64,
+  hyphen_hash: u64,
   base_direction_rtl: bool,
   explicit_bidi: Option<(u8, bool)>,
   letter_spacing_bits: u32,
@@ -1143,7 +1144,6 @@ impl TextItem {
     font_context: &FontContext,
     reshape_cache: &mut ReshapeCache,
   ) -> Option<(TextItem, TextItem)> {
-    const INSERTED_HYPHEN: char = '\u{2010}'; // CSS hyphenation hyphen
     let text_len = self.text.len();
     if byte_offset == 0 || byte_offset >= text_len {
       return None;
@@ -1186,37 +1186,44 @@ impl TextItem {
       })?;
 
     let before_text_owned: Option<String> = if insert_hyphen {
-      let mut hyphen_buf = [0u8; 3];
-      let hyphen_text = INSERTED_HYPHEN.encode_utf8(&mut hyphen_buf);
-      let offset = before_text.len();
-      let mut hyphen_runs = shaper
-        .shape_with_context(
+      let hyphen_text = self
+        .style
+        .hyphenate_character
+        .as_deref()
+        .unwrap_or("\u{2010}");
+      if hyphen_text.is_empty() {
+        None
+      } else {
+        let offset = before_text.len();
+        let mut hyphen_runs = shaper
+          .shape_with_context(
+            hyphen_text,
+            &self.style,
+            font_context,
+            pipeline_dir_from_style(self.base_direction),
+            self.explicit_bidi,
+          )
+          .ok()?;
+        TextItem::apply_spacing_to_runs(
+          &mut hyphen_runs,
           hyphen_text,
-          &self.style,
-          font_context,
-          pipeline_dir_from_style(self.base_direction),
-          self.explicit_bidi,
-        )
-        .ok()?;
-      TextItem::apply_spacing_to_runs(
-        &mut hyphen_runs,
-        hyphen_text,
-        self.style.letter_spacing,
-        self.style.word_spacing,
-      );
+          self.style.letter_spacing,
+          self.style.word_spacing,
+        );
 
-      for run in &mut hyphen_runs {
-        run.start += offset;
-        run.end += offset;
-        for glyph in &mut run.glyphs {
-          glyph.cluster = glyph.cluster.saturating_add(offset as u32);
+        for run in &mut hyphen_runs {
+          run.start += offset;
+          run.end += offset;
+          for glyph in &mut run.glyphs {
+            glyph.cluster = glyph.cluster.saturating_add(offset as u32);
+          }
         }
-      }
 
-      before_runs.extend(hyphen_runs);
-      let mut owned = before_text.to_string();
-      owned.push_str(hyphen_text);
-      Some(owned)
+        before_runs.extend(hyphen_runs);
+        let mut owned = before_text.to_string();
+        owned.push_str(hyphen_text);
+        Some(owned)
+      }
     } else {
       None
     };
@@ -3343,10 +3350,22 @@ impl<'a> LineBuilder<'a> {
     base_direction: Direction,
     explicit_bidi: Option<ExplicitBidiContext>,
   ) -> f32 {
-    const INSERTED_HYPHEN: &str = "\u{2010}";
+    let inserted = style
+      .hyphenate_character
+      .as_deref()
+      .unwrap_or("\u{2010}");
+    if inserted.is_empty() {
+      return 0.0;
+    }
+    let hyphen_hash = {
+      let mut hasher = FxHasher::default();
+      inserted.hash(&mut hasher);
+      hasher.finish()
+    };
     let key = HyphenAdvanceCacheKey {
       style_hash: shaping_style_hash(style),
       font_generation: self.font_context.font_generation(),
+      hyphen_hash,
       base_direction_rtl: matches!(base_direction, Direction::Rtl),
       explicit_bidi: explicit_bidi.map(|ctx| (ctx.level.number(), ctx.override_all)),
       letter_spacing_bits: f32_to_canonical_bits(style.letter_spacing),
@@ -3358,7 +3377,7 @@ impl<'a> LineBuilder<'a> {
     }
 
     let advance = match self.shaper.shape_with_context(
-      INSERTED_HYPHEN,
+      inserted,
       style,
       &self.font_context,
       pipeline_dir_from_style(base_direction),
@@ -3367,7 +3386,7 @@ impl<'a> LineBuilder<'a> {
       Ok(mut runs) => {
         TextItem::apply_spacing_to_runs(
           &mut runs,
-          INSERTED_HYPHEN,
+          inserted,
           style.letter_spacing,
           style.word_spacing,
         );

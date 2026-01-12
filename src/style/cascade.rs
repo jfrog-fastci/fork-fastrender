@@ -18798,6 +18798,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.caption_side = parent.caption_side;
   styles.empty_cells = parent.empty_cells;
   styles.hyphens = parent.hyphens;
+  styles.hyphenate_character = parent.hyphenate_character.clone();
   styles.word_break = parent.word_break;
   styles.overflow_wrap = parent.overflow_wrap;
   styles.language = parent.language.clone();

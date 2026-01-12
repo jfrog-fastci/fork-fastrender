@@ -5010,6 +5010,7 @@ fn is_inherited_property(name: &str) -> bool {
       | "orphans"
       | "tab-size"
       | "hyphens"
+      | "hyphenate-character"
       | "word-break"
       | "overflow-anchor"
       | "overflow-wrap"
@@ -7227,6 +7228,7 @@ pub(crate) fn apply_property_from_source(
     "orphans" => styles.orphans = source.orphans,
     "tab-size" => styles.tab_size = source.tab_size.clone(),
     "hyphens" => styles.hyphens = source.hyphens,
+    "hyphenate-character" => styles.hyphenate_character = source.hyphenate_character.clone(),
     "word-break" => styles.word_break = source.word_break,
     "unicode-bidi" => styles.unicode_bidi = source.unicode_bidi,
     "writing-mode" => styles.writing_mode = source.writing_mode,
@@ -14547,6 +14549,15 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
     }
+    "hyphenate-character" => match resolved_value {
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => {
+        styles.hyphenate_character = None;
+      }
+      PropertyValue::String(s) => {
+        styles.hyphenate_character = Some(Arc::from(s.as_str()));
+      }
+      _ => {}
+    },
     "word-break" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
@@ -16297,7 +16308,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.mask_border.mode = mode;
       }
     }
-    "mask-image" | "-webkit-mask-image" => {
+    "mask-image" => {
       if let Some(mut images) = parse_background_image_list(resolved_value) {
         for image in images.iter_mut().filter_map(|v| v.as_mut()) {
           resolve_light_dark_in_background_image(image, is_dark_color_scheme);
@@ -16306,19 +16317,19 @@ fn apply_declaration_with_base_internal_with_order(
         styles.rebuild_mask_layers();
       }
     }
-    "mask-position" | "-webkit-mask-position" => {
+    "mask-position" => {
       if let Some(positions) = parse_layer_list(resolved_value, parse_background_position) {
         styles.mask_positions = positions.into();
         styles.rebuild_mask_layers();
       }
     }
-    "mask-size" | "-webkit-mask-size" => {
+    "mask-size" => {
       if let Some(sizes) = parse_layer_list(resolved_value, parse_background_size) {
         styles.mask_sizes = sizes.into();
         styles.rebuild_mask_layers();
       }
     }
-    "mask-repeat" | "-webkit-mask-repeat" => {
+    "mask-repeat" => {
       let writing_mode = styles.writing_mode;
       if let Some(repeats) =
         parse_layer_list(resolved_value, |value| parse_background_repeat(value, writing_mode))
@@ -16327,31 +16338,31 @@ fn apply_declaration_with_base_internal_with_order(
         styles.rebuild_mask_layers();
       }
     }
-    "mask-mode" | "-webkit-mask-mode" => {
+    "mask-mode" => {
       if let Some(modes) = parse_layer_list(resolved_value, parse_mask_mode) {
         styles.mask_modes = modes.into();
         styles.rebuild_mask_layers();
       }
     }
-    "mask-origin" | "-webkit-mask-origin" => {
+    "mask-origin" => {
       if let Some(origins) = parse_layer_list(resolved_value, parse_mask_origin) {
         styles.mask_origins = origins.into();
         styles.rebuild_mask_layers();
       }
     }
-    "mask-clip" | "-webkit-mask-clip" => {
+    "mask-clip" => {
       if let Some(clips) = parse_layer_list(resolved_value, parse_mask_clip) {
         styles.mask_clips = clips.into();
         styles.rebuild_mask_layers();
       }
     }
-    "mask-composite" | "-webkit-mask-composite" => {
+    "mask-composite" => {
       if let Some(ops) = parse_layer_list(resolved_value, parse_mask_composite) {
         styles.mask_composites = ops.into();
         styles.rebuild_mask_layers();
       }
     }
-    "mask" | "-webkit-mask" => {
+    "mask" => {
       let tokens: Vec<PropertyValue> = match resolved_value {
         PropertyValue::Multiple(parts) => parts.clone(),
         _ => vec![resolved_value.to_owned()],

@@ -65,6 +65,7 @@ mod grid_track_list_single_token_test;
 mod justify_content_normal_test;
 mod has_selector_quirks_bloom_test;
 mod has_selector_test;
+mod hyphenate_character_test;
 mod isolation_case_insensitive_test;
 mod import_layer_supports_test;
 mod layer_important_test;

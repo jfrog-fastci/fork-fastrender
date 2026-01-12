@@ -1227,6 +1227,8 @@ pub struct ComputedStyle {
   pub line_break: LineBreak,
   pub tab_size: TabSize,
   pub hyphens: HyphensMode,
+  /// None means `auto`.
+  pub hyphenate_character: Option<Arc<str>>,
   pub word_break: WordBreak,
   pub overflow_wrap: OverflowWrap,
   pub vertical_align: VerticalAlign,
@@ -1672,6 +1674,7 @@ impl Default for ComputedStyle {
       line_break: LineBreak::Auto,
       tab_size: TabSize::default(),
       hyphens: HyphensMode::Manual,
+      hyphenate_character: None,
       word_break: WordBreak::Normal,
       overflow_wrap: OverflowWrap::Normal,
       vertical_align: VerticalAlign::Baseline,
