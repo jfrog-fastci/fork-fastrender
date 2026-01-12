@@ -1057,7 +1057,7 @@ impl<'a> Scope<'a> {
         &mut trap_scope,
         host,
         hooks,
-        trap_result_obj,
+        Value::Object(trap_result_obj),
       )?;
  
       let mut out: Vec<PropertyKey> = Vec::new();

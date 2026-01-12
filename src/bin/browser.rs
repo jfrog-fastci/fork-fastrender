@@ -5504,7 +5504,7 @@ impl App {
 
           ui.separator();
 
-          if self.history.entries.is_empty() {
+          if self.browser_state.history.entries.is_empty() {
             ui.label("No history.");
             return;
           }
@@ -5512,7 +5512,7 @@ impl App {
           egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-              for entry in self.history.entries.iter().rev().take(200) {
+              for entry in self.browser_state.history.entries.iter().rev().take(200) {
                 let label = entry
                   .title
                   .as_deref()
