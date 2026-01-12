@@ -917,15 +917,15 @@ pub const INVALID_NON_NULL_ASSERTION: Code = NATIVE_STRICT_NONNULL_ASSERTION;
 /// into the props object. When the container resolves to more than one property,
 /// `tsc` reports TS2608.
 ///
-/// - Primary span: the JSX element span that triggered resolution of the
-///   offending container type.
+/// - Primary span: the declaration span of the offending JSX container type
+///   (typically inside a `.d.ts` file).
 /// - Labels: primary only.
 /// - Notes: none.
 pub const JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY: Code = Code::new(
   "TS2608",
   "JSX global type may not have more than one property",
-  "JSX element span that triggered resolution of the offending JSX container type",
-  &["primary: JSX element span"],
+  "declaration span of the offending JSX container type",
+  &["primary: JSX container type declaration"],
   &[],
 );
 
