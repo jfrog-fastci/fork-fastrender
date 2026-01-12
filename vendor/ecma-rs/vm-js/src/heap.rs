@@ -1250,6 +1250,96 @@ impl Heap {
     Ok(())
   }
 
+  /// Copies `len` bytes from `src[src_offset..]` into `dst[dst_offset..]`, ticking periodically.
+  ///
+  /// This is intended for spec algorithms like typed array cloning/copying that need to preserve
+  /// underlying byte patterns (e.g. Float32 NaN payloads) while still respecting VM execution
+  /// budgets.
+  ///
+  /// # Errors
+  ///
+  /// Returns a `TypeError` if either buffer is detached or if the copy range is out of bounds.
+  pub(crate) fn array_buffer_copy_with_tick<F>(
+    &mut self,
+    src: GcObject,
+    src_offset: usize,
+    dst: GcObject,
+    dst_offset: usize,
+    len: usize,
+    tick_every_bytes: usize,
+    mut tick: F,
+  ) -> Result<(), VmError>
+  where
+    F: FnMut() -> Result<(), VmError>,
+  {
+    if len == 0 {
+      return Ok(());
+    }
+
+    // Validate and bounds-check before taking any raw pointers.
+    let (src_ptr, src_len) = {
+      let buf = self.get_array_buffer(src)?;
+      let data = buf
+        .data
+        .as_deref()
+        .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+      (data.as_ptr(), data.len())
+    };
+    let (_dst_ptr, dst_len) = {
+      let buf = self.get_array_buffer(dst)?;
+      let data = buf
+        .data
+        .as_deref()
+        .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+      (data.as_ptr(), data.len())
+    };
+
+    let src_end = src_offset.checked_add(len).ok_or(VmError::OutOfMemory)?;
+    if src_end > src_len {
+      return Err(VmError::TypeError("ArrayBuffer read out of bounds"));
+    }
+    let dst_end = dst_offset.checked_add(len).ok_or(VmError::OutOfMemory)?;
+    if dst_end > dst_len {
+      return Err(VmError::TypeError("ArrayBuffer write out of bounds"));
+    }
+
+    // Now take a mutable pointer for the destination. We must take this after validation and
+    // after any immutable borrows of `self` are dropped.
+    let dst_mut_ptr = {
+      let buf = self.get_array_buffer_mut(dst)?;
+      let data = buf
+        .data
+        .as_deref_mut()
+        .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+      data.as_mut_ptr()
+    };
+
+    // Copy in chunks so hostile inputs cannot perform long stretches of uninterruptible work.
+    let tick_every_bytes = tick_every_bytes.max(1);
+    let mut copied = 0usize;
+    while copied < len {
+      if copied % tick_every_bytes == 0 {
+        tick()?;
+      }
+
+      let remaining = len - copied;
+      let chunk_len = remaining.min(tick_every_bytes);
+
+      // Safety: bounds were checked above; the backing buffers are stable (boxed slices) and the
+      // heap is non-moving. Copying between potentially overlapping regions is permitted by
+      // `ptr::copy`.
+      unsafe {
+        let src_chunk = src_ptr.add(src_offset + copied);
+        let dst_chunk = dst_mut_ptr.add(dst_offset + copied);
+        std::ptr::copy(src_chunk, dst_chunk, chunk_len);
+      }
+
+      copied = copied.saturating_add(chunk_len);
+    }
+
+    Ok(())
+  }
+
   fn require_typed_array(&self, obj: GcObject) -> Result<&JsTypedArray, VmError> {
     match self.get_heap_object(obj.0)? {
       HeapObject::TypedArray(a) => Ok(a),
@@ -3412,16 +3502,28 @@ impl Heap {
     index: usize,
     value: Value,
   ) -> Result<bool, VmError> {
+    // Convert via ToNumber; supports string/boolean/null/undefined, throws on Symbol.
+    //
+    // Spec: `TypedArraySetElement` performs value conversion before checking `IsValidIntegerIndex`.
+    let n = self.to_number(value)?;
+    self.typed_array_set_element_number(view_obj, index, n)
+  }
+
+  /// Writes a numeric value into a typed array element.
+  ///
+  /// This is a helper for cases where the caller has already performed `ToNumber` (or is copying
+  /// between numeric sources) and wants to reuse the typed array integer wrapping / clamping logic.
+  pub(crate) fn typed_array_set_element_number(
+    &mut self,
+    view_obj: GcObject,
+    index: usize,
+    n: f64,
+  ) -> Result<bool, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length, kind) = {
       let view = self.get_typed_array(view_obj)?;
       (view.viewed_array_buffer, view.byte_offset, view.length, view.kind)
     };
-
-    // Convert via ToNumber; supports string/boolean/null/undefined, throws on Symbol.
-    //
-    // Spec: `TypedArraySetElement` performs value conversion before checking `IsValidIntegerIndex`.
-    let n = self.to_number(value)?;
 
     // If the backing buffer is detached or the view is out-of-bounds, writes are a silent no-op.
     //

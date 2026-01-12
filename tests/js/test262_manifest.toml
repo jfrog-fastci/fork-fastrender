@@ -34,6 +34,51 @@ id = "built-ins/Array/prototype/join/resizable-buffer.js"
 status = "skip"
 reason = "vm-js does not yet implement resizable ArrayBuffer / full TypedArray constructors"
 
+# --- TypedArray constructors (incremental enablement) ---
+#
+# The curated suites do not yet include the full TypedArray corpus, but we keep explicit
+# expectations here so TypedArray tests can be added gradually without destabilizing CI.
+[[expectations]]
+glob = "built-ins/TypedArrayConstructors/**"
+status = "xfail"
+reason = "vm-js: TypedArray constructors/species/subclassing are still incomplete"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Uint8Array/constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Int8Array/constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Uint8ClampedArray/constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Int16Array/constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Uint16Array/constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Int32Array/constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Uint32Array/constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Float32Array/constructor.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/TypedArrayConstructors/Float64Array/constructor.js"
+status = "pass"
+
 # --- Expression operator coverage (newly green) ---
 [[expectations]]
 glob = "language/expressions/bitwise-and/**"

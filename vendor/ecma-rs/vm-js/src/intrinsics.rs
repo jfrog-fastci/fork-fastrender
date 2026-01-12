@@ -4105,11 +4105,11 @@ impl Intrinsics {
 
     // --- TypedArray constructors ---
     //
-    // These currently support only:
+    // These implement the common `%TypedArray%` constructor overloads:
     // - `new X(length)`
     // - `new X(arrayBuffer, byteOffset?, length?)`
-    //
-    // TODO: Add iterable/typed-array sources.
+    // - `new X(typedArray)` (copies elements)
+    // - `new X(arrayLikeOrIterable)` (iterator protocol when present; else array-like)
 
     // `%Int8Array%`
     let int8_array_call = vm.register_native_call(builtins::int8_array_constructor_call)?;

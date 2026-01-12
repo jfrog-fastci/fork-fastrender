@@ -7,9 +7,9 @@ use crate::regexp::{
 use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
 use crate::{
   heap::TypedArrayKind,
-  GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction, PromiseReactionType,
-  PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
-  VmHostHooks, SourceText,
+  ExternalMemoryToken, GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction,
+  PromiseReactionType, PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope, SourceText, Value,
+  Vm, VmError, VmHost, VmHostHooks,
 };
 use parse_js::ast::expr::Expr;
 use parse_js::ast::func::FuncBody;
@@ -2770,91 +2770,16 @@ pub fn uint8_array_constructor_construct(
   _new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
-
-  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-
-  // `new Uint8Array(length)`
-  if !matches!(arg0, Value::Object(_)) {
-    let length_num = if matches!(arg0, Value::Undefined) {
-      0.0
-    } else {
-      scope.to_number(vm, host, hooks, arg0)?
-    };
-    if !length_num.is_finite() || length_num < 0.0 || length_num.fract() != 0.0 {
-      return Err(VmError::TypeError("Uint8Array length must be a non-negative integer"));
-    }
-    let length = length_num as usize;
-
-    let ab = scope.alloc_array_buffer(length)?;
-    scope.push_root(Value::Object(ab))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-
-    let view = scope.alloc_uint8_array(ab, 0, length)?;
-    scope
-      .heap_mut()
-      .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
-    return Ok(Value::Object(view));
-  }
-
-  // `new Uint8Array(buffer, byteOffset?, length?)`
-  let Value::Object(buffer) = arg0 else {
-    return Err(VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"));
-  };
-  // Brand check first (buffer must be an ArrayBuffer). Note: per ECMA-262
-  // `InitializeTypedArrayFromArrayBuffer`, the `byteOffset`/`length` arguments are converted
-  // before checking for a detached buffer.
-  if !scope.heap().is_array_buffer_object(buffer) {
-    return Err(VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"));
-  }
-
-  let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
-  let byte_offset = if matches!(byte_offset_val, Value::Undefined) {
-    0usize
-  } else {
-    let n = scope.to_number(vm, host, hooks, byte_offset_val)?;
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-      return Err(VmError::TypeError("Uint8Array byteOffset must be a non-negative integer"));
-    }
-    n as usize
-  };
-
-  let length_val = args.get(2).copied().unwrap_or(Value::Undefined);
-  let length = if matches!(length_val, Value::Undefined) {
-    None
-  } else {
-    let n = scope.to_number(vm, host, hooks, length_val)?;
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-      return Err(VmError::TypeError("Uint8Array length must be a non-negative integer"));
-    }
-    Some(n as usize)
-  };
-
-  if scope
-    .heap()
-    .is_detached_array_buffer(buffer)
-    .map_err(|_| VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"))?
-  {
-    return Err(VmError::TypeError(
-      "Uint8Array constructor cannot use a detached ArrayBuffer",
-    ));
-  }
-  let buf_len = scope
-    .heap()
-    .array_buffer_byte_length(buffer)
-    .map_err(|_| VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"))?;
-
-  let length = match length {
-    None => buf_len.saturating_sub(byte_offset),
-    Some(length) => length,
-  };
-
-  let view = scope.alloc_uint8_array(buffer, byte_offset, length)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
-  Ok(Value::Object(view))
+  typed_array_constructor_construct_impl(
+    vm,
+    scope,
+    host,
+    hooks,
+    intr,
+    TypedArrayKind::Uint8,
+    intr.uint8_array_prototype(),
+    args,
+  )
 }
 
 fn typed_array_prototype_for_kind(intr: &crate::Intrinsics, kind: TypedArrayKind) -> GcObject {
@@ -2872,31 +2797,65 @@ fn typed_array_prototype_for_kind(intr: &crate::Intrinsics, kind: TypedArrayKind
 }
 
 fn typed_array_constructor_construct_impl(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   intr: crate::Intrinsics,
   kind: TypedArrayKind,
   prototype: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
   let bytes_per_element = kind.bytes_per_element();
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
 
-  // `new TypedArray(length)`
-  if !matches!(arg0, Value::Object(_)) {
-    let length_num = if matches!(arg0, Value::Undefined) {
-      0.0
-    } else {
-      scope.heap_mut().to_number(arg0)?
-    };
-    if !length_num.is_finite() || length_num < 0.0 || length_num.fract() != 0.0 {
-      return Err(VmError::TypeError(
-        "TypedArray length must be a non-negative integer",
-      ));
+  fn to_index_like(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+    default: usize,
+    error_message: &'static str,
+  ) -> Result<usize, VmError> {
+    if matches!(value, Value::Undefined) {
+      return Ok(default);
     }
-    let length = length_num as usize;
+    let num = scope.to_number(vm, host, hooks, value)?;
+    // `ToIntegerOrInfinity`, but with the common `NaN -> +0` behaviour of `ToIndex`.
+    let integer = if num.is_nan() {
+      0.0
+    } else if num.is_infinite() {
+      num
+    } else {
+      num.trunc()
+    };
+
+    if !integer.is_finite() || integer < 0.0 {
+      return Err(VmError::TypeError(error_message));
+    }
+
+    // Clamp to MAX_SAFE_INTEGER to avoid silent precision loss when converting to u64/usize.
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // 2^53 - 1
+    if integer > MAX_SAFE_INTEGER {
+      return Err(VmError::TypeError(error_message));
+    }
+
+    // `integer` is integral and non-negative.
+    let integer_u64 = integer as u64;
+    usize::try_from(integer_u64).map_err(|_| VmError::OutOfMemory)
+  }
+
+  fn alloc_typed_array_with_length(
+    scope: &mut Scope<'_>,
+    intr: crate::Intrinsics,
+    kind: TypedArrayKind,
+    prototype: GcObject,
+    length: usize,
+  ) -> Result<(GcObject, GcObject), VmError> {
     let byte_length = length
-      .checked_mul(bytes_per_element)
+      .checked_mul(kind.bytes_per_element())
       .ok_or(VmError::OutOfMemory)?;
 
     let ab = scope.alloc_array_buffer(byte_length)?;
@@ -2909,68 +2868,291 @@ fn typed_array_constructor_construct_impl(
     scope
       .heap_mut()
       .object_set_prototype(view, Some(prototype))?;
+
+    Ok((ab, view))
+  }
+
+  // 1) `new TypedArray(length)`
+  if matches!(arg0, Value::Undefined | Value::Number(_)) {
+    let length = to_index_like(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      arg0,
+      0,
+      "TypedArray length must be a non-negative integer",
+    )?;
+
+    let (_, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, length)?;
     return Ok(Value::Object(view));
   }
 
-  // `new TypedArray(buffer, byteOffset?, length?)`
-  let Value::Object(buffer) = arg0 else {
-    return Err(VmError::TypeError("TypedArray constructor expects an ArrayBuffer"));
-  };
-  let buf_len = scope
-    .heap()
-    .array_buffer_byte_length(buffer)
-    .map_err(|_| VmError::TypeError("TypedArray constructor expects an ArrayBuffer"))?;
-
-  let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
-  let byte_offset = if matches!(byte_offset_val, Value::Undefined) {
-    0usize
-  } else {
-    let n = scope.heap_mut().to_number(byte_offset_val)?;
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-      return Err(VmError::TypeError(
+  // 2) `new TypedArray(arrayBuffer, byteOffset?, length?)`
+  if let Value::Object(buffer) = arg0 {
+    if scope.heap().is_array_buffer_object(buffer) {
+      // Per spec, convert `byteOffset`/`length` before checking for a detached buffer.
+      let byte_offset = to_index_like(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        args.get(1).copied().unwrap_or(Value::Undefined),
+        0,
         "TypedArray byteOffset must be a non-negative integer",
+      )?;
+
+      let length_val = args.get(2).copied().unwrap_or(Value::Undefined);
+      let length_opt = if matches!(length_val, Value::Undefined) {
+        None
+      } else {
+        Some(to_index_like(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          length_val,
+          0,
+          "TypedArray length must be a non-negative integer",
+        )?)
+      };
+
+      if scope
+        .heap()
+        .is_detached_array_buffer(buffer)
+        .map_err(|_| VmError::TypeError("TypedArray constructor expects an ArrayBuffer"))?
+      {
+        return Err(VmError::TypeError(
+          "TypedArray constructor cannot use a detached ArrayBuffer",
+        ));
+      }
+
+      let buf_len = scope
+        .heap()
+        .array_buffer_byte_length(buffer)
+        .map_err(|_| VmError::TypeError("TypedArray constructor expects an ArrayBuffer"))?;
+
+      let length = match length_opt {
+        Some(n) => n,
+        None => {
+          let remaining = buf_len
+            .checked_sub(byte_offset)
+            .ok_or(VmError::TypeError("TypedArray view out of bounds"))?;
+          if remaining % bytes_per_element != 0 {
+            return Err(VmError::TypeError("TypedArray view out of bounds"));
+          }
+          remaining / bytes_per_element
+        }
+      };
+
+      let view = scope.alloc_typed_array(kind, buffer, byte_offset, length)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(view, Some(prototype))?;
+      return Ok(Value::Object(view));
+    }
+
+    // 3) `new TypedArray(typedArray)` (copy elements)
+    if scope.heap().is_typed_array_object(buffer) {
+      // Root the source view across allocation/GC while creating the destination.
+      scope.push_root(Value::Object(buffer))?;
+
+      let src_kind = scope
+        .heap()
+        .typed_array_kind(buffer)
+        .map_err(|_| VmError::TypeError("TypedArray constructor expects a typed array"))?;
+      let (src_buf, src_byte_offset, src_byte_length) = scope.heap().typed_array_view_bytes(buffer)?;
+      let src_len = src_byte_length / src_kind.bytes_per_element();
+
+      let (dst_buf, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, src_len)?;
+
+      if src_kind == kind {
+        let tick_every_bytes = 1024usize.saturating_mul(bytes_per_element);
+        scope.heap_mut().array_buffer_copy_with_tick(
+          src_buf,
+          src_byte_offset,
+          dst_buf,
+          0,
+          src_byte_length,
+          tick_every_bytes,
+          || vm.tick(),
+        )?;
+        return Ok(Value::Object(view));
+      }
+
+      // Different element types: copy via numeric conversion.
+      scope.push_root(Value::Object(view))?;
+      for i in 0..src_len {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+        let Some(value) = scope.heap().typed_array_get_element_value(buffer, i)? else {
+          return Err(VmError::TypeError("TypedArray source view out of bounds"));
+        };
+        let Value::Number(n) = value else {
+          return Err(VmError::InvariantViolation(
+            "typed array element read returned non-number",
+          ));
+        };
+        let ok = scope.heap_mut().typed_array_set_element_number(view, i, n)?;
+        if !ok {
+          return Err(VmError::InvariantViolation(
+            "typed array write failed for in-bounds destination view",
+          ));
+        }
+      }
+
+      return Ok(Value::Object(view));
+    }
+  }
+
+  // 4) `new TypedArray(arrayLikeOrIterable)`
+  //
+  // Prefer the iterator protocol when an iterator method exists; otherwise fall back to the
+  // array-like `LengthOfArrayLike + Get` path.
+  let iterator_sym = intr.well_known_symbols().iterator;
+  let iterator_method = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    arg0,
+    PropertyKey::from_symbol(iterator_sym),
+  )?;
+
+  if iterator_method.is_some() {
+    // Iterable path.
+    let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, arg0)?;
+    scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+    let mut values: Vec<f64> = Vec::new();
+    let mut charges: Vec<ExternalMemoryToken> = Vec::new();
+
+    fn push_f64_with_charge(
+      scope: &mut Scope<'_>,
+      values: &mut Vec<f64>,
+      charges: &mut Vec<ExternalMemoryToken>,
+      value: f64,
+    ) -> Result<(), VmError> {
+      if values.len() == values.capacity() {
+        let old_cap = values.capacity();
+        let new_cap = old_cap
+          .max(1)
+          .checked_mul(2)
+          .unwrap_or(usize::MAX);
+        let additional = new_cap.saturating_sub(old_cap).max(1);
+
+        let additional_bytes = additional
+          .checked_mul(std::mem::size_of::<f64>())
+          .ok_or(VmError::OutOfMemory)?;
+        let token = scope.heap_mut().charge_external(additional_bytes)?;
+
+        values
+          .try_reserve_exact(additional)
+          .map_err(|_| VmError::OutOfMemory)?;
+        charges
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        charges.push(token);
+      }
+
+      values.push(value);
+      Ok(())
+    }
+
+    let mut i = 0usize;
+    loop {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => break,
+        Err(err) => return Err(err),
+      };
+
+      let entry_result: Result<(), VmError> = (|| {
+        let n = scope.to_number(vm, host, hooks, next_value)?;
+        push_f64_with_charge(&mut scope, &mut values, &mut charges, n)?;
+        Ok(())
+      })();
+
+      if let Err(entry_err) = entry_result {
+        if !iterator_record.done {
+          // Mirror `IteratorClose` error precedence rules used by other iterator-consuming builtins
+          // (e.g. `Object.fromEntries`): fatal VM errors must never be suppressed.
+          let original_is_throw = entry_err.is_throw_completion();
+          let pending_root = entry_err
+            .thrown_value()
+            .map(|v| scope.heap_mut().add_root(v))
+            .transpose()?;
+          let close_res = crate::iterator::iterator_close(
+            vm,
+            host,
+            hooks,
+            &mut scope,
+            &iterator_record,
+            crate::iterator::CloseCompletionKind::Throw,
+          );
+          if let Some(root) = pending_root {
+            scope.heap_mut().remove_root(root);
+          }
+          if let Err(close_err) = close_res {
+            if original_is_throw && !close_err.is_throw_completion() {
+              return Err(close_err);
+            }
+          }
+        }
+        return Err(entry_err);
+      }
+
+      i = i.saturating_add(1);
+    }
+
+    let (_, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, values.len())?;
+    scope.push_root(Value::Object(view))?;
+
+    for (j, &n) in values.iter().enumerate() {
+      if j % 1024 == 0 {
+        vm.tick()?;
+      }
+      let ok = scope.heap_mut().typed_array_set_element_number(view, j, n)?;
+      if !ok {
+        return Err(VmError::InvariantViolation(
+          "typed array write failed for in-bounds destination view",
+        ));
+      }
+    }
+
+    return Ok(Value::Object(view));
+  }
+
+  // Array-like path.
+  let obj = scope.to_object(vm, host, hooks, arg0)?;
+  scope.push_root(Value::Object(obj))?;
+  let len = crate::spec_ops::length_of_array_like_with_host_and_hooks(vm, &mut scope, host, hooks, obj)?;
+
+  let (_, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, len)?;
+  scope.push_root(Value::Object(view))?;
+
+  for i in 0..len {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let idx_s = alloc_string_from_usize(&mut scope, i)?;
+    let key = PropertyKey::from_string(idx_s);
+    let value = scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let n = scope.to_number(vm, host, hooks, value)?;
+    let ok = scope.heap_mut().typed_array_set_element_number(view, i, n)?;
+    if !ok {
+      return Err(VmError::InvariantViolation(
+        "typed array write failed for in-bounds destination view",
       ));
     }
-    n as usize
-  };
-  if byte_offset % bytes_per_element != 0 {
-    return Err(VmError::TypeError("TypedArray byteOffset must be aligned"));
-  }
-  if byte_offset > buf_len {
-    return Err(VmError::TypeError("TypedArray view out of bounds"));
   }
 
-  let length_val = args.get(2).copied().unwrap_or(Value::Undefined);
-  let length = if matches!(length_val, Value::Undefined) {
-    let remaining = buf_len - byte_offset;
-    if remaining % bytes_per_element != 0 {
-      return Err(VmError::TypeError("TypedArray view out of bounds"));
-    }
-    remaining / bytes_per_element
-  } else {
-    let n = scope.heap_mut().to_number(length_val)?;
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-      return Err(VmError::TypeError(
-        "TypedArray length must be a non-negative integer",
-      ));
-    }
-    n as usize
-  };
-
-  let byte_length = length
-    .checked_mul(bytes_per_element)
-    .ok_or(VmError::OutOfMemory)?;
-  let end = byte_offset
-    .checked_add(byte_length)
-    .ok_or(VmError::OutOfMemory)?;
-  if end > buf_len {
-    return Err(VmError::TypeError("TypedArray view out of bounds"));
-  }
-
-  let view = scope.alloc_typed_array(kind, buffer, byte_offset, length)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(view, Some(prototype))?;
   Ok(Value::Object(view))
 }
 
@@ -2991,14 +3173,14 @@ macro_rules! typed_array_ctor {
     pub fn $construct(
       vm: &mut Vm,
       scope: &mut Scope<'_>,
-      _host: &mut dyn VmHost,
-      _hooks: &mut dyn VmHostHooks,
+      host: &mut dyn VmHost,
+      hooks: &mut dyn VmHostHooks,
       _callee: GcObject,
       args: &[Value],
       _new_target: Value,
     ) -> Result<Value, VmError> {
       let intr = require_intrinsics(vm)?;
-      typed_array_constructor_construct_impl(vm, scope, intr, $kind, intr.$proto(), args)
+      typed_array_constructor_construct_impl(vm, scope, host, hooks, intr, $kind, intr.$proto(), args)
     }
   };
 }
