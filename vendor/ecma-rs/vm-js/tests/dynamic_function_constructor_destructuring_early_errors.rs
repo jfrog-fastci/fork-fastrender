@@ -194,3 +194,79 @@ fn dynamic_function_constructors_reject_lexical_var_collisions() {
     .unwrap();
   assert_value_is_utf8(&rt, value, "SyntaxError");
 }
+
+#[test]
+fn dynamic_function_constructors_reject_duplicate_class_constructors() {
+  let mut rt = new_runtime();
+
+  // %Function%
+  let value = rt
+    .exec_script(
+      r#"
+        try {
+          Function("class A { constructor() {} constructor() {} }");
+          "no";
+        } catch (e) {
+          e.name;
+        }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+
+  // %GeneratorFunction%
+  let value = rt
+    .exec_script(
+      r#"
+        (function () {
+          const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+          try {
+            GeneratorFunction("class A { constructor() {} constructor() {} }");
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+}
+
+#[test]
+fn dynamic_function_constructors_reject_generator_class_constructors() {
+  let mut rt = new_runtime();
+
+  // %Function%
+  let value = rt
+    .exec_script(
+      r#"
+        try {
+          Function("class A { *constructor() {} }");
+          "no";
+        } catch (e) {
+          e.name;
+        }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+
+  // %GeneratorFunction%
+  let value = rt
+    .exec_script(
+      r#"
+        (function () {
+          const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+          try {
+            GeneratorFunction("class A { *constructor() {} }");
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+}

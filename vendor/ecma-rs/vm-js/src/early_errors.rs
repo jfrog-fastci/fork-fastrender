@@ -950,6 +950,40 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     // `super()` is only valid within derived constructor bodies.
     ctx.super_call_allowed = false;
 
+    // Class constructor early errors:
+    // - A class may only have one `constructor` method.
+    // - Class constructors may not be generators.
+    //
+    // These must be caught during `validate_top_level` so `eval(...)` and dynamic function
+    // constructors throw catchable `SyntaxError` exceptions at parse time (rather than surfacing as
+    // a non-catchable `VmError::Syntax` when the class is evaluated).
+    let mut seen_ctor = false;
+    for member in members {
+      self.step()?;
+      if member.stx.static_ {
+        continue;
+      }
+      let is_ctor = matches!(
+        &member.stx.key,
+        ClassOrObjKey::Direct(key)
+          if key.stx.key == "constructor" && key.stx.tt == TT::KeywordConstructor
+      );
+      let ClassOrObjVal::Method(method) = &member.stx.val else {
+        continue;
+      };
+      if !is_ctor {
+        continue;
+      }
+      if seen_ctor {
+        self.push_error(member.loc, "A class may only have one constructor")?;
+      } else {
+        seen_ctor = true;
+      }
+      if method.stx.func.stx.generator {
+        self.push_error(member.loc, "Class constructor may not be a generator")?;
+      }
+    }
+
     // Collect declared private names in this class body so `AllPrivateNamesValid` can validate
     // private-name MemberExpressions and private identifiers.
     let mut declared_private_names: HashSet<String> = HashSet::new();
