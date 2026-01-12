@@ -7103,6 +7103,10 @@ impl BlockFormattingContext {
     physical_dy: f32,
     logical_dy: f32,
   ) {
+    // Fragment bounds are stored in the local coordinate system of their parent fragment. When
+    // positioning a laid-out subtree within a parent, only the *root* bounds should be translated;
+    // translating descendants would effectively apply the offset multiple times as absolute
+    // positions are computed by accumulating parent + child offsets.
     fragment.bounds = Rect::from_xywh(
       fragment.bounds.x() + dx,
       fragment.bounds.y() + physical_dy,
@@ -7117,8 +7121,16 @@ impl BlockFormattingContext {
         logical.height(),
       ));
     }
-    for child in fragment.children_mut() {
-      Self::translate_with_logical(child, dx, physical_dy, logical_dy);
+
+    // Mirror `FragmentNode::translate_root_in_place` semantics: moving a running/footnote anchor
+    // must move its stored snapshot subtree as well.
+    fragment.starting_style = None;
+    match &mut fragment.content {
+      FragmentContent::RunningAnchor { snapshot, .. }
+      | FragmentContent::FootnoteAnchor { snapshot } => {
+        Arc::make_mut(snapshot).translate_root_in_place(Point::new(dx, physical_dy));
+      }
+      _ => {}
     }
   }
 
@@ -7139,6 +7151,7 @@ impl BlockFormattingContext {
     if children.is_empty() {
       return Ok((Vec::new(), 0.0, Vec::new(), 0.0));
     }
+
     let writing_mode = parent.style.writing_mode;
     let direction = parent.style.direction;
     let inline_is_horizontal = inline_axis_is_horizontal(writing_mode);
@@ -7506,28 +7519,35 @@ impl BlockFormattingContext {
     } else {
       column_height
     };
-    let total_extent = flow_extent.max(min_total_extent).max(required_total_extent);
+    // When paginating a multi-column container we still need the segment's final height to reach
+    // at least one full fragmentainer (page/column-set) so subsequent siblings start on the next
+    // page boundary. However, the *column slicing* should stop at the end of actual content (plus
+    // any extra space required by non-advancing forced breaks). Otherwise the boundary generator
+    // will treat trailing empty space as an additional column, which inflates the computed column
+    // count and can create spurious extra column-sets before `column-span: all` spanners.
+    let boundaries_extent = flow_extent.max(required_total_extent);
+    let total_extent = boundaries_extent.max(min_total_extent);
     let mut boundaries = if fragmented_context {
       let mut boundaries = vec![0.0];
       let mut start = 0.0f32;
       let mut column_index = 0usize;
-      while start < total_extent - PAGE_OFFSET_EPSILON {
+      while start < boundaries_extent - PAGE_OFFSET_EPSILON {
         let fragmentainer_size = fragmentainer_size_for_column(column_index);
-        let next = analyzer.next_boundary(start, fragmentainer_size, total_extent)?;
+        let next = analyzer.next_boundary(start, fragmentainer_size, boundaries_extent)?;
         debug_assert!(
           next + PAGE_OFFSET_EPSILON >= start,
           "fragmentation boundary must not move backwards"
         );
         if (next - start).abs() < PAGE_OFFSET_EPSILON {
-          boundaries.push(total_extent);
+          boundaries.push(boundaries_extent);
           break;
         }
         boundaries.push(next);
         start = next;
         column_index = column_index.saturating_add(1);
       }
-      if total_extent - *boundaries.last().unwrap_or(&0.0) > PAGE_OFFSET_EPSILON {
-        boundaries.push(total_extent);
+      if boundaries_extent - *boundaries.last().unwrap_or(&0.0) > PAGE_OFFSET_EPSILON {
+        boundaries.push(boundaries_extent);
       }
       boundaries
     } else {
@@ -7557,6 +7577,19 @@ impl BlockFormattingContext {
     let mut promoted_set_start_slices: Vec<(usize, Option<PageSide>)> = Vec::new();
     if fragmented_context && !forced_pagination_boundaries.is_empty() && column_count > 0 {
       const EPSILON: f32 = 0.01;
+      // `flow_extent` reflects the analyzer's content extent, which can include synthetic trailing
+      // space (e.g. when the uncolumnized flow root is enlarged by a fragmentainer size hint).
+      // When deciding whether a forced page/side break occurs at the *end of real content* (so we
+      // should avoid padding extra empty columns/sets), use the geometric extent of the actual
+      // descendants instead.
+      let content_end = physical_flow_root
+        .children
+        .iter()
+        .map(|child| {
+          let bbox = child.logical_bounding_box();
+          axes.abs_block_end(&bbox, 0.0, root_block_size)
+        })
+        .fold(0.0f32, f32::max);
       for forced in &forced_pagination_boundaries {
         let p = forced.position;
         if !p.is_finite() {
@@ -7573,7 +7606,7 @@ impl BlockFormattingContext {
           continue;
         }
 
-        let has_segment_content_after = p + EPSILON < flow_extent;
+        let has_segment_content_after = p + EPSILON < content_end;
         if has_segment_content_after {
           // Pad after the forced break so the slice index containing content after `p` becomes a
           // multiple of `column_count` (start of the next column set).
@@ -7837,7 +7870,8 @@ impl BlockFormattingContext {
     }
 
     let mut promoted_break_iter = promoted_set_start_slices.iter().peekable();
-    let push_promoted_marker = |fragments: &mut Vec<FragmentNode>, slice_idx: usize, side: Option<PageSide>| {
+    let push_promoted_marker =
+      |fragments: &mut Vec<FragmentNode>, slice_idx: usize, side: Option<PageSide>| {
       let set_index = slice_idx / column_count;
       let offset = axes.block_offset(set_offset(set_index));
       let bounds = Rect::from_xywh(offset.x, offset.y, 0.0, 0.0);
@@ -7845,6 +7879,9 @@ impl BlockFormattingContext {
       marker_style.display = Display::Block;
       marker_style.writing_mode = writing_mode;
       marker_style.direction = direction;
+      // The marker represents a forced column-set boundary. Use `break-after` so the forced break
+      // is anchored to the marker's own position rather than the end edge of the preceding column,
+      // which may be shorter than the fragmentainer height in paged multi-column layout.
       marker_style.break_after = match side {
         Some(PageSide::Left) => crate::style::types::BreakBetween::Left,
         Some(PageSide::Right) => crate::style::types::BreakBetween::Right,
@@ -8252,7 +8289,7 @@ impl BlockFormattingContext {
                 base_offset + logical_offset,
               )
             });
-        let (mut seg_fragments, seg_height, mut seg_positioned, seg_flow_height) = self
+        let (mut seg_fragments, seg_height, mut seg_positioned, _seg_flow_height) = self
           .layout_column_segment(
             parent,
             &parent.children[idx..end],
@@ -8276,7 +8313,11 @@ impl BlockFormattingContext {
         fragments.extend(seg_fragments);
         positioned_children.extend(seg_positioned);
         physical_offset += seg_height;
-        logical_offset += seg_flow_height;
+        // In paged contexts, multi-column segments consume whole fragmentainers (column sets) even
+        // when their actual content is shorter. Use the *physical* segment height when advancing
+        // the fragmentation flow cursor so subsequent spanners/siblings start at the correct page
+        // boundary and the paginator doesn't treat trailing blank space as overlapping content.
+        logical_offset += seg_height;
       }
 
       if let Some(span_idx) = next_span {
