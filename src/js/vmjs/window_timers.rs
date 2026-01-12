@@ -4011,7 +4011,7 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
 
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
