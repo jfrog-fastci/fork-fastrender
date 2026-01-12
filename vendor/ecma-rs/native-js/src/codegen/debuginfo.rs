@@ -8,9 +8,9 @@ use inkwell::debug_info::{
 use inkwell::module::Module;
 use inkwell::values::{AsValueRef, BasicValueEnum, GlobalValue, PointerValue};
 use llvm_sys::core::{
-  LLVMAddFunction, LLVMBuildCall2, LLVMFunctionType, LLVMGetModuleContext, LLVMGetNamedFunction,
-  LLVMMetadataAsValue, LLVMMetadataTypeInContext, LLVMSetCurrentDebugLocation2, LLVMValueAsMetadata,
-  LLVMVoidTypeInContext,
+  LLVMAddFunction, LLVMBuildCall2, LLVMFunctionType, LLVMGetCurrentDebugLocation2, LLVMGetModuleContext,
+  LLVMGetNamedFunction, LLVMMetadataAsValue, LLVMMetadataTypeInContext, LLVMSetCurrentDebugLocation2,
+  LLVMValueAsMetadata, LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{LLVMMetadataRef, LLVMTypeRef, LLVMValueRef};
 use std::ffi::CString;
@@ -254,7 +254,7 @@ impl<'ctx> CodegenDebug<'ctx> {
       .create_subroutine_type(di_file, return_ty, &params, 0);
 
     let sp = self.builder.create_function(
-      di_file.as_debug_info_scope(),
+      self.compile_unit.as_debug_info_scope(),
       name,
       linkage_name,
       di_file,
@@ -445,6 +445,8 @@ impl<'ctx> CodegenDebug<'ctx> {
           LLVMMetadataAsValue(llvm_ctx, expr_md),
         ];
 
+        // Preserve any existing debug location set by the higher-level statement emitter.
+        let prev_loc = LLVMGetCurrentDebugLocation2(builder.as_mut_ptr());
         LLVMSetCurrentDebugLocation2(builder.as_mut_ptr(), loc_md);
         LLVMBuildCall2(
           builder.as_mut_ptr(),
@@ -454,6 +456,7 @@ impl<'ctx> CodegenDebug<'ctx> {
           args.len() as c_uint,
           b"\0".as_ptr().cast(),
         );
+        LLVMSetCurrentDebugLocation2(builder.as_mut_ptr(), prev_loc);
       }
 
       // Ensure the builder stays positioned in the current block; `LLVMSetCurrentDebugLocation2`

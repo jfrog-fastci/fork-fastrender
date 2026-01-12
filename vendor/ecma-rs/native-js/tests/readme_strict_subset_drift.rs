@@ -43,3 +43,34 @@ fn strict_subset_readme_does_not_claim_supported_ops_are_rejected() {
   );
 }
 
+#[test]
+fn strict_subset_readme_matches_current_checked_backend_and_validator() {
+  let readme = readme_text();
+  let strict_subset = section(&readme, "## Strict compilation subset (`native_js::validate`)");
+
+  // Catch obviously outdated claims that have regressed in the past.
+  let forbidden_phrases = [
+    "i32-only",
+    "numeric literals that are not 32-bit signed integers",
+  ];
+  for phrase in forbidden_phrases {
+    assert!(
+      !strict_subset.contains(phrase),
+      "native-js README strict-subset section contains outdated phrase {phrase:?}"
+    );
+  }
+
+  // Keep documentation in sync with strict-subset soundness diagnostics around TS-only wrappers (`as`, `!`).
+  for code in ["NJS0013", "NJS0014"] {
+    assert!(
+      strict_subset.contains(code),
+      "native-js README strict-subset section must mention {code} (validator emits this diagnostic)"
+    );
+  }
+
+  // `number` is currently lowered as `double` (`f64`) by the checked/HIR backend.
+  assert!(
+    strict_subset.contains("double") || strict_subset.contains("f64"),
+    "native-js README strict-subset section must document `number` lowering as `double`/`f64`"
+  );
+}

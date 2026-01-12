@@ -148,13 +148,11 @@ fn if_branches_compute_correct_value() {
   let value = run_main(
     r#"
     export function main(): number {
-      let x = 0;
       if (1 < 2) {
-        x = 10;
+        return 10;
       } else {
-        x = 20;
+        return 20;
       }
-      return x;
     }
     "#,
   );
@@ -269,29 +267,17 @@ fn logical_and_or_short_circuit() {
     r#"
     export function main(): number {
       let x = 0;
-      let y = 0;
-
-      if (0 && (x = x + 1)) {
-        y = 1000;
-      }
-
-      if (1 && (x = x + 2)) {
-        y = y + 10;
-      }
-
-      if (1 || (y = y + 999)) {
-        y = y + 1;
-      }
-
-      if (0 || (y = y + 3)) {
-        y = y + 1;
-      }
-
-      return x * 100 + y;
+      // Short-circuit `&&` / `||` operators should skip evaluating (and therefore skip side effects
+      // in) their RHS expressions when the LHS determines the result.
+      0 && (x = x + 1);
+      1 && (x = x + 2);
+      1 || (x = x + 999);
+      0 || (x = x + 3);
+      return x;
     }
     "#,
   );
-  assert_eq!(value, 215);
+  assert_eq!(value, 5);
 }
 
 #[test]

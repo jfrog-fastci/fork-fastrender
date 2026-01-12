@@ -586,8 +586,19 @@ impl<'a> Compiler<'a> {
       }
       EmitKind::Object => {
         let path = self.output_path(".o")?;
-        let bytes = emit::emit_object_with_statepoints(module, target_config_from_opts(self.opts))
-          .map_err(|e| NativeJsError::Llvm(e.to_string()))?;
+        // LLVM 18 can segfault when combining statepoint stackmaps + DWARF debug info across
+        // multi-module programs (see `native-js` debug info tests). Until upstream LLVM is fixed (or
+        // we implement a different safepointing scheme for debug builds), skip the statepoint pass
+        // pipeline when `CompilerOptions.debug` is enabled.
+        //
+        // Note: This only affects artifact emission; IR output (`EmitKind::LlvmIr`) always prints
+        // the pre-pass module.
+        let bytes = if self.opts.debug {
+          emit::emit_object(module, target_config_from_opts(self.opts))
+        } else {
+          emit::emit_object_with_statepoints(module, target_config_from_opts(self.opts))
+            .map_err(|e| NativeJsError::Llvm(e.to_string()))?
+        };
         write_file(&path, bytes)?;
         Ok(Artifact {
           kind: self.opts.emit,
@@ -597,8 +608,12 @@ impl<'a> Compiler<'a> {
       }
       EmitKind::Assembly => {
         let path = self.output_path(".s")?;
-        let bytes = emit::emit_asm_with_statepoints(module, target_config_from_opts(self.opts))
-          .map_err(|e| NativeJsError::Llvm(e.to_string()))?;
+        let bytes = if self.opts.debug {
+          emit::emit_asm(module, target_config_from_opts(self.opts))
+        } else {
+          emit::emit_asm_with_statepoints(module, target_config_from_opts(self.opts))
+            .map_err(|e| NativeJsError::Llvm(e.to_string()))?
+        };
         write_file(&path, bytes)?;
         Ok(Artifact {
           kind: self.opts.emit,
@@ -620,9 +635,13 @@ impl<'a> Compiler<'a> {
         let _ = std::fs::remove_file(&exe_path);
 
         let obj =
-          emit::emit_object_with_statepoints(module, target_config_from_opts(self.opts)).map_err(|e| {
-            NativeJsError::Llvm(e.to_string())
-          })?;
+          if self.opts.debug {
+            emit::emit_object(module, target_config_from_opts(self.opts))
+          } else {
+            emit::emit_object_with_statepoints(module, target_config_from_opts(self.opts)).map_err(|e| {
+              NativeJsError::Llvm(e.to_string())
+            })?
+          };
 
         let mut tmp_obj: Option<TempDir> = None;
         let keep_obj = self.opts.debug;

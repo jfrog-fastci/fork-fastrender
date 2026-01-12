@@ -247,6 +247,10 @@ pub fn rewrite_statepoints_for_gc(
   module: &Module<'_>,
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
+  // LLVM 18's `rewrite-statepoints-for-gc` can segfault when GC-managed functions contain
+  // `llvm.dbg.*` intrinsics. These are debug-only no-op calls, so stripping them is sound and keeps
+  // DWARF line tables (driven by instruction `!dbg` locations) working.
+  strip_llvm_dbg_intrinsics(module);
   reject_rs4gc_unsupported_calls_in_gc_functions(module)?;
   validate_rt_gc_epoch_decl_if_present(module)?;
   validate_rt_gc_safepoint_slow_decl_if_present(module)?;
@@ -294,6 +298,8 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   module: &Module<'_>,
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
+  // See `rewrite_statepoints_for_gc` for why we strip debug intrinsics.
+  strip_llvm_dbg_intrinsics(module);
   reject_rs4gc_unsupported_calls_in_gc_functions(module)?;
   validate_rt_gc_epoch_decl_if_present(module)?;
   validate_rt_gc_safepoint_slow_decl_if_present(module)?;
@@ -355,6 +361,46 @@ fn module_has_dwarf_debug_info(module: &Module<'_>) -> bool {
   // `DebugInfoBuilder` materializes compile units as `!llvm.dbg.cu`.
   let name = CString::new("llvm.dbg.cu").expect("llvm.dbg.cu contains NUL");
   unsafe { LLVMGetNamedMetadataNumOperands(module.as_mut_ptr(), name.as_ptr()) > 0 }
+}
+
+fn strip_llvm_dbg_intrinsics(module: &Module<'_>) {
+  unsafe {
+    let mut func = LLVMGetFirstFunction(module.as_mut_ptr());
+    while !func.is_null() {
+      // Skip declarations.
+      if LLVMCountBasicBlocks(func) == 0 {
+        func = LLVMGetNextFunction(func);
+        continue;
+      }
+
+      let mut bb = LLVMGetFirstBasicBlock(func);
+      while !bb.is_null() {
+        let mut inst = LLVMGetFirstInstruction(bb);
+        while !inst.is_null() {
+          let next = LLVMGetNextInstruction(inst);
+
+          if LLVMGetInstructionOpcode(inst) == LLVMOpcode::LLVMCall {
+            // Calls emitted by LLVM (including intrinsics) may appear behind constant-expression
+            // casts; strip them before checking the callee name.
+            let callee = strip_callee_pointer_casts(get_call_callee_operand(inst));
+
+            let name = value_name(callee);
+            // Fall back to printing for non-function callees (should be rare in practice).
+            let is_dbg = name.starts_with("llvm.dbg.") || value_to_string(callee).contains("@llvm.dbg.");
+
+            if is_dbg {
+              LLVMInstructionEraseFromParent(inst);
+            }
+          }
+
+          inst = next;
+        }
+        bb = LLVMGetNextBasicBlock(bb);
+      }
+
+      func = LLVMGetNextFunction(func);
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------

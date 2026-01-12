@@ -557,9 +557,27 @@ It emits stable `NJS####` codes:
 
 - `NJS0009`: unsupported syntax in the native-js strict subset
 - `NJS0010`: unsupported type in the native-js strict subset
+- `NJS0013`: unsafe type assertion in the native-js strict subset
+- `NJS0014`: unsafe non-null assertion in the native-js strict subset
 
 This validator is intentionally conservative and is expected to be relaxed
 incrementally as more language features are lowered safely.
+
+### Type lowering (checked/HIR backend; current)
+
+The strict subset is built around the current checked/HIR backend’s native value
+representation:
+
+- `number` is lowered to LLVM `double` (`f64`). Numeric literals follow normal
+  JavaScript/TypeScript syntax (including floats and exponent notation like
+  `1e3`).
+- `boolean` is lowered to LLVM `i1`.
+- `string` values are lowered to an interned string ID (`InternedId`, a `u32`),
+  backed by `runtime-native` (string literals are interned and pinned during
+  module initialization).
+- `void` / `undefined` / `never` are treated as `void` (no runtime value).
+- Array and tuple values are lowered as GC-managed pointers (`ptr addrspace(1)`)
+  to runtime-native arrays.
 
 ### Rejected constructs (enforced today)
 
@@ -567,15 +585,15 @@ The strict subset validator currently rejects (non-exhaustive, but directly
 matching the validator’s checks):
 
 - Unsupported syntax (`NJS0009`), including:
-  - `null` and `undefined` (the current checked backend does not represent these values yet)
+  - `null` and `undefined` values (the current checked backend does not represent these values yet)
   - string concatenation (`+`/`+=`) and string truthiness (`if (s)`, `!s`, `s && t`) are not supported yet
   - `this`
   - classes / class expressions
   - `async` / generator functions, `await`, `yield`
-  - object literals and destructuring patterns
-  - array literals with holes/spreads (`[1, , 2]`, `[...xs]`)
-  - most property access (`obj.prop`, `obj["prop"]`)
-    - array/tuple indexing (`arr[i]`) and `.length` are supported
+  - object literals
+  - array literals with spreads or holes (`[1, , 2]`, `[...xs]`)
+  - destructuring patterns (object/array destructuring)
+  - property access is only supported for array/tuple indexing (`arr[i]`) and `.length`
   - conditional expressions (`cond ? a : b`)
   - function/arrow expressions
   - some operators are not supported yet (non-exhaustive):
@@ -599,10 +617,12 @@ matching the validator’s checks):
   - `eval()` and `Function()` / `new Function()`
   - use of the `arguments` identifier/object
 - Unsupported types (`NJS0010`):
-  - anything other than the primitive types `number`/`boolean`/`string` plus
-    `null`/`undefined`/`void`/`never`, arrays, tuples, and their literal types
+  - anything other than:
+    - `number`/`boolean`/`string` and `void`/`undefined`/`never` (plus literal
+      types like numeric literals, boolean literals, and string literals)
+    - arrays and tuples whose element types are supported by the current ABI
   - e.g. unions/intersections, object types, function types, nominal/reference
-    types, `bigint`, `symbol`, template-literal types, etc.
+    types, `null`, `bigint`, `symbol`, template-literal types, etc.
   - builtin intrinsics may provide exceptions:
     - the checked pipeline injects a small `.d.ts` builtin library that declares
       `print(value: number | string): void` (see `native-js/src/builtins.rs`)
@@ -622,6 +642,14 @@ errors, including:
 > Note: TypeScript-only, runtime-inert expression wrappers such as `satisfies`,
 > type assertions (`as`), and non-null assertions (`!`) are allowed by this
 > validator, but the wrapped runtime expressions are still validated.
+>
+> Since `as` / `!` are erased by codegen, the validator also enforces additional
+> soundness rules:
+>
+> - `NJS0013`: unsafe type assertion that changes the expression’s runtime type
+>   category (e.g. `number` → `boolean`)
+> - `NJS0014`: unsafe non-null assertion on a value that may be `null` or
+>   `undefined`
 
 Even if the strict subset validator passes, note that the current HIR-based
 backend is still minimal; some programs may still fail later during codegen.
