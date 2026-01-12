@@ -367,7 +367,7 @@ Parallel scheduling APIs take an opaque `data` pointer that is passed through to
 - The **rooted** forms keep a GC-managed object alive while it is queued/executing and pass the
   relocated pointers to callbacks:
   - `rt_parallel_spawn_rooted` / `rt_parallel_spawn_rooted_h`
-  - `rt_parallel_for_rooted`
+  - `rt_parallel_for_rooted` / `rt_parallel_for_rooted_h`
   - `rt_parallel_spawn_promise_rooted` / `rt_parallel_spawn_promise_rooted_h`
 
 Rooted contract:

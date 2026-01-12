@@ -254,6 +254,23 @@ impl ParallelRuntime {
     self.parallel_for_rooted_with_chunking(start, end, body, data, Chunking::Auto);
   }
 
+  /// Like [`ParallelRuntime::parallel_for_rooted`], but takes the GC-managed `data` pointer as a
+  /// `GcHandle` (pointer-to-slot).
+  ///
+  /// # Safety
+  /// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+  /// object base pointer.
+  pub(crate) unsafe fn parallel_for_rooted_h(
+    &self,
+    start: usize,
+    end: usize,
+    body: extern "C" fn(usize, *mut u8),
+    data: crate::roots::GcHandle,
+  ) {
+    // Safety: caller contract.
+    unsafe { self.parallel_for_rooted_h_with_chunking(start, end, body, data, Chunking::Auto) }
+  }
+
   pub(crate) fn parallel_for_with_chunking(
     &self,
     start: usize,
@@ -274,6 +291,24 @@ impl ParallelRuntime {
     chunking: Chunking,
   ) {
     parallel_for_impl::parallel_for_rooted(self, start, end, body, data, chunking);
+  }
+
+  /// Like [`ParallelRuntime::parallel_for_rooted_with_chunking`], but takes the GC-managed `data`
+  /// pointer as a `GcHandle` (pointer-to-slot).
+  ///
+  /// # Safety
+  /// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+  /// object base pointer.
+  pub(crate) unsafe fn parallel_for_rooted_h_with_chunking(
+    &self,
+    start: usize,
+    end: usize,
+    body: extern "C" fn(usize, *mut u8),
+    data: crate::roots::GcHandle,
+    chunking: Chunking,
+  ) {
+    // Safety: caller contract.
+    unsafe { parallel_for_impl::parallel_for_rooted_h(self, start, end, body, data, chunking) }
   }
 
   pub(crate) fn worker_count(&self) -> usize {

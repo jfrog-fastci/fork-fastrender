@@ -1399,6 +1399,26 @@ pub extern "C" fn rt_parallel_for_rooted(
   })
 }
 
+/// Like [`rt_parallel_for_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_parallel_for_rooted_h(
+  start: usize,
+  end: usize,
+  body: extern "C" fn(usize, *mut u8),
+  data: crate::roots::GcHandle,
+) {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    // Safety: caller contract.
+    unsafe { crate::rt_parallel().parallel_for_rooted_h(start, end, body, data) }
+  })
+}
+
 /// Spawn CPU-bound work on the work-stealing pool, returning a promise that can be awaited by the
 /// async runtime.
 ///

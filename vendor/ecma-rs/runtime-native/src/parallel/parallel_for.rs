@@ -73,6 +73,77 @@ extern "C" fn par_for_task_rooted(data: *mut u8) {
   }
 }
 
+fn parallel_for_rooted_handle(
+  rt: &ParallelRuntime,
+  start: usize,
+  end: usize,
+  body: ParForBody,
+  handle: HandleId,
+  chunking: Chunking,
+) {
+  // Root the userdata for the duration of the parallel_for call. This keeps it
+  // alive while worker tasks are queued in Rust-owned scheduler state and
+  // provides a stable indirection that the moving GC can update during
+  // relocation.
+  struct HandleGuard(HandleId);
+  impl Drop for HandleGuard {
+    fn drop(&mut self) {
+      let _ = crate::roots::global_persistent_handle_table().free(self.0);
+    }
+  }
+  let _handle_guard = HandleGuard(handle);
+
+  let len = end - start;
+  let min_grain = min_grain();
+
+  let estimate = WorkEstimate {
+    items: len,
+    cost: len as u64,
+  };
+  if !super::should_parallelize(estimate) || rt.worker_count() <= 1 {
+    for i in start..end {
+      call_body_rooted(body, i, handle);
+    }
+    return;
+  }
+
+  let chunk_size = match chunking {
+    Chunking::Fixed(size) => size.max(1),
+    Chunking::Auto => {
+      let target_chunks = rt.worker_count().saturating_mul(4).max(1);
+      let mut chunk_size = len.div_ceil(target_chunks).max(min_grain);
+      if chunk_size == 0 {
+        chunk_size = 1;
+      }
+      chunk_size
+    }
+  };
+
+  if chunk_size >= len {
+    for i in start..end {
+      call_body_rooted(body, i, handle);
+    }
+    return;
+  }
+
+  let mut tasks: Vec<TaskId> = Vec::new();
+  let mut chunk_start = start;
+  while chunk_start < end {
+    let chunk_end = end.min(chunk_start.saturating_add(chunk_size));
+    let chunk = Box::new(ParForChunkRooted {
+      start: chunk_start,
+      end: chunk_end,
+      body,
+      data: handle,
+    });
+    let id = rt.spawn(par_for_task_rooted, Box::into_raw(chunk) as *mut u8);
+    tasks.push(id);
+    chunk_start = chunk_end;
+  }
+
+  rt.join(tasks.as_ptr(), tasks.len());
+}
+
 pub(crate) fn parallel_for(
   rt: &ParallelRuntime,
   start: usize,
@@ -157,66 +228,35 @@ pub(crate) fn parallel_for_rooted(
     return;
   }
 
-  // Root the userdata for the duration of the parallel_for call. This keeps it
-  // alive while worker tasks are queued in Rust-owned scheduler state and
-  // provides a stable indirection that the moving GC can update during
-  // relocation.
   let handle = crate::roots::global_persistent_handle_table().alloc(data);
-  struct HandleGuard(HandleId);
-  impl Drop for HandleGuard {
-    fn drop(&mut self) {
-      let _ = crate::roots::global_persistent_handle_table().free(self.0);
-    }
-  }
-  let _handle_guard = HandleGuard(handle);
+  parallel_for_rooted_handle(rt, start, end, body, handle, chunking);
+}
 
-  let len = end - start;
-  let min_grain = min_grain();
+/// Like [`parallel_for_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+pub(crate) unsafe fn parallel_for_rooted_h(
+  rt: &ParallelRuntime,
+  start: usize,
+  end: usize,
+  body: ParForBody,
+  data: crate::roots::GcHandle,
+  chunking: Chunking,
+) {
+  // Ensure the caller is registered for safepoint coordination even if we fall
+  // back to sequential execution.
+  threading::register_current_thread(ThreadKind::External);
 
-  let estimate = WorkEstimate {
-    items: len,
-    cost: len as u64,
-  };
-  if !super::should_parallelize(estimate) || rt.worker_count() <= 1 {
-    for i in start..end {
-      call_body_rooted(body, i, handle);
-    }
+  if end <= start {
     return;
   }
 
-  let chunk_size = match chunking {
-    Chunking::Fixed(size) => size.max(1),
-    Chunking::Auto => {
-      let target_chunks = rt.worker_count().saturating_mul(4).max(1);
-      let mut chunk_size = len.div_ceil(target_chunks).max(min_grain);
-      if chunk_size == 0 {
-        chunk_size = 1;
-      }
-      chunk_size
-    }
-  };
-
-  if chunk_size >= len {
-    for i in start..end {
-      call_body_rooted(body, i, handle);
-    }
-    return;
-  }
-
-  let mut tasks: Vec<TaskId> = Vec::new();
-  let mut chunk_start = start;
-  while chunk_start < end {
-    let chunk_end = end.min(chunk_start.saturating_add(chunk_size));
-    let chunk = Box::new(ParForChunkRooted {
-      start: chunk_start,
-      end: chunk_end,
-      body,
-      data: handle,
-    });
-    let id = rt.spawn(par_for_task_rooted, Box::into_raw(chunk) as *mut u8);
-    tasks.push(id);
-    chunk_start = chunk_end;
-  }
-
-  rt.join(tasks.as_ptr(), tasks.len());
+  // Root the userdata for the duration of the parallel_for call. Read the pointer value from the
+  // caller-provided slot *after* acquiring the persistent handle table lock, so a moving GC can
+  // update the slot if lock acquisition blocks (see `PersistentHandleTable::alloc_from_slot`).
+  let handle = unsafe { crate::roots::global_persistent_handle_table().alloc_from_slot(data) };
+  parallel_for_rooted_handle(rt, start, end, body, handle, chunking);
 }

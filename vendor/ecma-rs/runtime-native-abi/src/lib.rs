@@ -630,6 +630,7 @@ extern "C" {
   pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
   pub fn rt_parallel_for(start: usize, end: usize, body: RtParallelForBodyFn, data: *mut u8);
   pub fn rt_parallel_for_rooted(start: usize, end: usize, body: RtParallelForBodyFn, data: GcPtr);
+  pub fn rt_parallel_for_rooted_h(start: usize, end: usize, body: RtParallelForBodyFn, data: GcHandle);
   pub fn rt_parallel_spawn_promise(
     task: RtParallelPromiseTaskFn,
     data: *mut u8,
@@ -1177,6 +1178,7 @@ mod tests {
       "rt_parallel_join(",
       "rt_parallel_for(",
       "rt_parallel_for_rooted(",
+      "rt_parallel_for_rooted_h(",
       "rt_parallel_spawn_promise(",
       "rt_parallel_spawn_promise_rooted(",
       "rt_parallel_spawn_promise_rooted_h(",
