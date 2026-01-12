@@ -157,6 +157,11 @@ include = [
   "built-ins/Math/**/*.js",
   "built-ins/Function/prototype/apply/**/*.js",
   "staging/sm/Function/15.3.4.3-01.js",
+
+  # Promise (targeted iterator-close / [[Done]] semantics)
+  "built-ins/Promise/all/iter-step-err-no-close.js",
+  "built-ins/Promise/all/invoke-resolve-error-close.js",
+  "built-ins/Promise/all/invoke-then-get-error-close.js",
 ]
 
 exclude = [
