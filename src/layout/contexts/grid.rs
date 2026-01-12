@@ -130,6 +130,7 @@ use taffy::tree::DetailedLayoutInfo;
 use taffy::tree::Layout as TaffyLayout;
 use taffy::tree::NodeId as TaffyNodeId;
 use taffy::tree::TaffyTree;
+use taffy::tree::TraversePartialTree;
 use taffy::DetailedGridTracksInfo;
 
 const MAX_MEASURED_KEYS_PER_NODE: usize = 32;
@@ -3247,19 +3248,15 @@ impl GridFormattingContext {
       let root_matches = taffy
         .get_node_context(root_id)
         .is_some_and(|ctx| *ctx == (box_node as *const BoxNode));
-      let existing_children = taffy
-        .children(root_id)
-        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      let existing_count = taffy.child_count(root_id);
       let structure_matches = root_matches
-        && existing_children.len() == root_children.len()
-        && existing_children
-          .iter()
-          .zip(root_children.iter())
-          .all(|(node_id, child)| {
-            taffy
-              .get_node_context(*node_id)
-              .is_some_and(|ctx| *ctx == (*child as *const BoxNode))
-          });
+        && existing_count == root_children.len()
+        && (0..existing_count).all(|idx| {
+          let node_id = taffy.get_child_id(root_id, idx);
+          taffy
+            .get_node_context(node_id)
+            .is_some_and(|ctx| *ctx == (root_children[idx] as *const BoxNode))
+        });
 
       if structure_matches {
         let mut deadline_counter = 0usize;
@@ -3330,23 +3327,24 @@ impl GridFormattingContext {
             template
           };
 
-          for ((child_style, child), node_id) in template
-            .child_styles
-            .iter()
-            .zip(root_children.iter())
-            .zip(existing_children.iter())
-          {
+          for (idx, child) in root_children.iter().enumerate() {
             check_layout_deadline(&mut deadline_counter)?;
             let child = *child;
+            let node_id = taffy.get_child_id(root_id, idx);
+            let child_style = template.child_styles.get(idx).ok_or_else(|| {
+              LayoutError::MissingContext(
+                "Cached grid Taffy template missing child style for in-flow child".to_string(),
+              )
+            })?;
             let mut resolved_style = child_style.0.clone();
             self.apply_grid_intrinsic_size_keywords(child, false, &mut resolved_style)?;
-            let needs_update = match taffy.style(*node_id) {
+            let needs_update = match taffy.style(node_id) {
               Ok(existing) => existing != &resolved_style,
               Err(_) => true,
             };
             if needs_update {
               taffy
-                .set_style(*node_id, resolved_style)
+                .set_style(node_id, resolved_style)
                 .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
             }
           }
@@ -6050,8 +6048,9 @@ impl GridFormattingContext {
         return None;
       };
       let parent_layout = taffy.layout(parent_id).ok()?;
-      let child_ids = taffy.children(parent_id).ok()?;
-      let idx = child_ids.iter().position(|id| *id == node_id)?;
+      let child_count = taffy.child_count(parent_id);
+      let idx = (0..child_count)
+        .find(|&idx| taffy.get_child_id(parent_id, idx) == node_id)?;
       let item = info.items.get(idx)?;
 
       let col_offsets = compute_track_offsets(
@@ -6190,31 +6189,21 @@ impl GridFormattingContext {
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
     measured_node_keys: &FxHashMap<TaffyNodeId, Vec<MeasureKey>>,
   ) -> Option<Result<FragmentNode, LayoutError>> {
-    let child_ids = match taffy.children(root_id) {
-      Ok(children) => children,
-      Err(e) => {
-        return Some(Err(LayoutError::MissingContext(format!(
-          "Taffy children error: {:?}",
-          e
-        ))));
-      }
-    };
-    if child_ids.is_empty()
-      || child_ids.len() != in_flow_children.len()
-      || !self.parallelism.should_parallelize(child_ids.len())
+    let child_count = taffy.child_count(root_id);
+    if child_count == 0
+      || child_count != in_flow_children.len()
+      || !self.parallelism.should_parallelize(child_count)
     {
       return None;
     }
 
     let mut deadline_counter = 0usize;
-    for child_id in child_ids.iter().copied() {
+    for idx in 0..child_count {
       if let Err(err) = check_layout_deadline(&mut deadline_counter) {
         return Some(Err(err));
       }
-      let Ok(grandchildren) = taffy.children(child_id) else {
-        return None;
-      };
-      if !grandchildren.is_empty() {
+      let child_id = taffy.get_child_id(root_id, idx);
+      if taffy.child_count(child_id) != 0 {
         return None;
       }
     }
@@ -6264,14 +6253,15 @@ impl GridFormattingContext {
       PhysicalAxis::Y => mirror_y,
     };
 
-    let mut child_bounds: Vec<Rect> = Vec::with_capacity(child_ids.len());
-    let mut reused_fragments: Vec<Option<FragmentNode>> = vec![None; child_ids.len()];
-    let mut child_skipped: Vec<bool> = vec![false; child_ids.len()];
-    let mut child_continuation_available: Vec<Option<f32>> = vec![None; child_ids.len()];
-    for (idx, child_id) in child_ids.iter().copied().enumerate() {
+    let mut child_bounds: Vec<Rect> = Vec::with_capacity(child_count);
+    let mut reused_fragments: Vec<Option<FragmentNode>> = vec![None; child_count];
+    let mut child_skipped: Vec<bool> = vec![false; child_count];
+    let mut child_continuation_available: Vec<Option<f32>> = vec![None; child_count];
+    for idx in 0..child_count {
       if let Err(err) = check_layout_deadline(&mut deadline_counter) {
         return Some(Err(err));
       }
+      let child_id = taffy.get_child_id(root_id, idx);
       let layout = match taffy.layout(child_id) {
         Ok(layout) => layout,
         Err(e) => {
@@ -6344,7 +6334,7 @@ impl GridFormattingContext {
         let axis_style = GridAxisStyle::from_style(&box_node.style);
         let area_bounds: Option<Vec<Rect>> = container_style.and_then(|container_style| {
           if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
-            if info.items.len() != child_ids.len() {
+            if info.items.len() != child_count {
               return None;
             }
             let row_offsets = compute_track_offsets(
@@ -6370,7 +6360,7 @@ impl GridFormattingContext {
                 .unwrap_or(TaffyAlignContent::Stretch),
             );
 
-            let mut out = Vec::with_capacity(child_ids.len());
+            let mut out = Vec::with_capacity(child_count);
             for placement in info.items.iter() {
               let (x_start, x_end) =
                 grid_area_for_item(&col_offsets, placement.column_start, placement.column_end)?;
@@ -6388,8 +6378,8 @@ impl GridFormattingContext {
           None
         });
 
-        let mut dummy_children = Vec::with_capacity(child_ids.len());
-        for idx in 0..child_ids.len() {
+        let mut dummy_children = Vec::with_capacity(child_count);
+        for idx in 0..child_count {
           let bounds = area_bounds
             .as_ref()
             .and_then(|bounds| bounds.get(idx))
@@ -6415,7 +6405,7 @@ impl GridFormattingContext {
           return Some(Err(err));
         }
 
-        for idx in 0..child_ids.len() {
+        for idx in 0..child_count {
           child_continuation_available[idx] = self.grid_item_continuation_available_block_size(
             dummy_root.children[idx].bounds,
             constraints,
@@ -6423,7 +6413,7 @@ impl GridFormattingContext {
           );
         }
       } else {
-        for idx in 0..child_ids.len() {
+        for idx in 0..child_count {
           child_continuation_available[idx] = self.grid_item_continuation_available_block_size(
             child_bounds[idx],
             constraints,
@@ -6433,10 +6423,11 @@ impl GridFormattingContext {
       }
     }
 
-    for (idx, child_id) in child_ids.iter().copied().enumerate() {
+    for idx in 0..child_count {
       if let Err(err) = check_layout_deadline(&mut deadline_counter) {
         return Some(Err(err));
       }
+      let child_id = taffy.get_child_id(root_id, idx);
       if reused_fragments[idx].is_some() || child_continuation_available[idx].is_some() {
         // Continuation fragments need to re-run layout under a reduced fragmentainer size; skip any
         // cached subtree captured during Taffy measurement.
@@ -6893,10 +6884,10 @@ impl GridFormattingContext {
       child_results.sort_unstable_by_key(|(idx, _)| *idx);
     }
 
-    let mut child_fragments = Vec::with_capacity(child_ids.len());
+    let mut child_fragments = Vec::with_capacity(child_count);
     let mut child_results = child_results.into_iter();
     let mut next_child = child_results.next();
-    for idx in 0..child_ids.len() {
+    for idx in 0..child_count {
       if let Err(err) = check_layout_deadline(&mut deadline_counter) {
         return Some(Err(err));
       }
@@ -6951,7 +6942,7 @@ impl GridFormattingContext {
         taffy,
         root_id,
         root_layout,
-        &child_ids,
+        child_count,
         &mut fragment,
         &mut deadline_counter,
       ) {
@@ -7077,9 +7068,7 @@ impl GridFormattingContext {
       .layout(node_id)
       .map_err(|e| LayoutError::MissingContext(format!("Taffy layout error: {:?}", e)))?;
 
-    let children = taffy
-      .children(node_id)
-      .map_err(|e| LayoutError::MissingContext(format!("Taffy children error: {:?}", e)))?;
+    let child_count = taffy.child_count(node_id);
 
     let node_taffy_style = taffy.style(node_id).ok();
     let is_grid_style = matches!(
@@ -7104,7 +7093,7 @@ impl GridFormattingContext {
     let child_grid_areas: Option<Vec<Rect>> = if is_grid_style {
       node_taffy_style.and_then(|container_style| {
         if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
-          if info.items.len() != children.len() {
+          if info.items.len() != child_count {
             return None;
           }
           let row_offsets = compute_track_offsets(
@@ -7130,7 +7119,7 @@ impl GridFormattingContext {
               .unwrap_or(TaffyAlignContent::Stretch),
           );
 
-          let mut out = Vec::with_capacity(children.len());
+          let mut out = Vec::with_capacity(child_count);
           for placement in info.items.iter() {
             let (x_start, x_end) =
               grid_area_for_item(&col_offsets, placement.column_start, placement.column_end)?;
@@ -7170,7 +7159,7 @@ impl GridFormattingContext {
       if let Some(axis_style) = node_axis_style {
         let area_bounds: Option<Vec<Rect>> = node_taffy_style.and_then(|container_style| {
           if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
-            if info.items.len() != children.len() {
+            if info.items.len() != child_count {
               return None;
             }
             let row_offsets = compute_track_offsets(
@@ -7196,7 +7185,7 @@ impl GridFormattingContext {
                 .unwrap_or(TaffyAlignContent::Stretch),
             );
 
-            let mut out = Vec::with_capacity(children.len());
+            let mut out = Vec::with_capacity(child_count);
             for placement in info.items.iter() {
               let (x_start, x_end) =
                 grid_area_for_item(&col_offsets, placement.column_start, placement.column_end)?;
@@ -7214,8 +7203,9 @@ impl GridFormattingContext {
           None
         });
 
-        let mut dummy_children = Vec::with_capacity(children.len());
-        for (idx, &child_id) in children.iter().enumerate() {
+        let mut dummy_children = Vec::with_capacity(child_count);
+        for idx in 0..child_count {
+          let child_id = taffy.get_child_id(node_id, idx);
           let child_bounds = area_bounds
             .as_ref()
             .and_then(|bounds| bounds.get(idx))
@@ -7253,7 +7243,8 @@ impl GridFormattingContext {
         )?;
 
         let mut map: FxHashMap<TaffyNodeId, f32> = FxHashMap::default();
-        for (idx, &child_id) in children.iter().enumerate() {
+        for idx in 0..child_count {
+          let child_id = taffy.get_child_id(node_id, idx);
           if let Some(available) = self.grid_item_continuation_available_block_size(
             dummy_root.children[idx].bounds,
             constraints,
@@ -7271,9 +7262,10 @@ impl GridFormattingContext {
     };
 
     // Convert children recursively, propagating the effective grid axes to descendants.
-    let mut child_fragments = Vec::with_capacity(children.len());
-    for (idx, &child_id) in children.iter().enumerate() {
+    let mut child_fragments = Vec::with_capacity(child_count);
+    for idx in 0..child_count {
       check_layout_deadline(deadline_counter)?;
+      let child_id = taffy.get_child_id(node_id, idx);
       let child_area = child_grid_areas
         .as_ref()
         .and_then(|areas| areas.get(idx))
@@ -7408,7 +7400,7 @@ impl GridFormattingContext {
             taffy,
             node_id,
             layout,
-            &children,
+            child_count,
             &mut fragment,
             deadline_counter,
           )?;
@@ -7435,10 +7427,11 @@ impl GridFormattingContext {
           }
 
           if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
-            if info.items.len() == children.len() {
+            if info.items.len() == child_count {
               let mut items = Vec::with_capacity(info.items.len());
               for (idx, placement) in info.items.iter().enumerate() {
-                let Some(&child_ptr) = taffy.get_node_context(children[idx]) else {
+                let child_id = taffy.get_child_id(node_id, idx);
+                let Some(&child_ptr) = taffy.get_node_context(child_id) else {
                   break;
                 };
                 let child_node = unsafe { &*child_ptr };
@@ -7450,7 +7443,7 @@ impl GridFormattingContext {
                   column_end: placement.column_end,
                 });
               }
-              if items.len() == children.len() {
+              if items.len() == child_count {
                 fragment.grid_fragmentation = Some(Arc::new(GridFragmentationInfo { items }));
               }
             }
@@ -7489,8 +7482,11 @@ impl GridFormattingContext {
             block_base,
           )
           .with_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction);
-          for (&child_id, child_fragment) in children.iter().zip(fragment.children_mut().iter_mut())
-          {
+          let fragment_children = fragment.children_mut();
+          let child_len = child_count.min(fragment_children.len());
+          for idx in 0..child_len {
+            let child_id = taffy.get_child_id(node_id, idx);
+            let child_fragment = &mut fragment_children[idx];
             let Some(&child_ptr) = taffy.get_node_context(child_id) else {
               continue;
             };
@@ -7628,11 +7624,12 @@ impl GridFormattingContext {
         let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(parent_id) else {
           return None;
         };
-        let parent_children = taffy.children(parent_id).ok()?;
-        if info.items.len() != parent_children.len() {
+        let parent_child_count = taffy.child_count(parent_id);
+        if info.items.len() != parent_child_count {
           return None;
         }
-        let idx = parent_children.iter().position(|&id| id == node_id)?;
+        let idx = (0..parent_child_count)
+          .find(|&idx| taffy.get_child_id(parent_id, idx) == node_id)?;
         let placement = info.items.get(idx)?;
         let parent_layout = taffy.layout(parent_id).ok()?;
         let row_offsets = compute_track_offsets(
@@ -9176,7 +9173,7 @@ impl GridFormattingContext {
     taffy: &TaffyTree<*const BoxNode>,
     node_id: TaffyNodeId,
     layout: &TaffyLayout,
-    child_ids: &[TaffyNodeId],
+    child_count: usize,
     fragment: &mut FragmentNode,
     deadline_counter: &mut usize,
   ) -> Result<(), LayoutError> {
@@ -9187,13 +9184,13 @@ impl GridFormattingContext {
     if fragment.children.is_empty() {
       return Ok(());
     }
-    if child_ids.len() != fragment.children.len() {
+    if child_count != fragment.children.len() {
       return Ok(());
     }
-    if detailed.items.len() < child_ids.len() {
+    if detailed.items.len() < child_count {
       return Ok(());
     }
-    let item_infos = &detailed.items[..child_ids.len()];
+    let item_infos = &detailed.items[..child_count];
 
     let container_style = match taffy.style(node_id) {
       Ok(style) => style,
@@ -9239,14 +9236,12 @@ impl GridFormattingContext {
     let mut row_groups: FxHashMap<u16, Vec<BaselineItem>> = FxHashMap::default();
     let mut col_groups: FxHashMap<u16, Vec<BaselineItem>> = FxHashMap::default();
 
-    for (idx, ((child_id, item_info), child_fragment)) in child_ids
-      .iter()
-      .zip(item_infos.iter())
-      .zip(fragment.children.iter())
-      .enumerate()
-    {
+    for idx in 0..child_count {
       check_layout_deadline(deadline_counter)?;
-      let child_style = match taffy.style(*child_id) {
+      let child_id = taffy.get_child_id(node_id, idx);
+      let item_info = &item_infos[idx];
+      let child_fragment = &fragment.children[idx];
+      let child_style = match taffy.style(child_id) {
         Ok(style) => style,
         Err(_) => continue,
       };
@@ -9373,6 +9368,7 @@ impl GridFormattingContext {
       Ok(style) => style,
       Err(_) => return Ok(()),
     };
+    let taffy_child_count = taffy.child_count(node_id);
 
     let compute_region = |axis: Axis, children: &[FragmentNode]| -> Option<(f32, f32)> {
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
@@ -9460,11 +9456,6 @@ impl GridFormattingContext {
 
     let mut rtl_mirrored_x = false;
     if mirror_x && inline_is_horizontal && !axis_style.inline_positive() {
-      let child_ids = match taffy.children(node_id) {
-        Ok(children) => children,
-        Err(_) => Vec::new(),
-      };
-
       let apply_translation = |area_start: f32,
                                area_end: f32,
                                span_start: f32,
@@ -9521,7 +9512,7 @@ impl GridFormattingContext {
       // Prefer using detailed track/item info from Taffy when available.
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
         if info.items.len() == fragment.children.len()
-          && child_ids.len() == fragment.children.len()
+          && taffy_child_count == fragment.children.len()
           && !info.columns.sizes.is_empty()
         {
           let col_offsets = compute_track_offsets(
@@ -9555,12 +9546,13 @@ impl GridFormattingContext {
               if let Some((area_start, area_end)) =
                 grid_area_for_item(&col_offsets, item.column_start, item.column_end)
               {
+                let child_id = taffy.get_child_id(node_id, idx);
                 apply_translation(
                   area_start,
                   area_end,
                   span_start,
                   span_end,
-                  child_ids[idx],
+                  child_id,
                   &mut children[idx],
                   deadline_counter,
                 )?;
@@ -9670,7 +9662,11 @@ impl GridFormattingContext {
                   let children = fragment.children_mut();
                   for idx in 0..children.len() {
                     check_layout_deadline(deadline_counter)?;
-                    let child_id = child_ids.get(idx).copied().unwrap_or(node_id);
+                    let child_id = if idx < taffy_child_count {
+                      taffy.get_child_id(node_id, idx)
+                    } else {
+                      node_id
+                    };
                     let mut translated = false;
                     if let Some(&child_ptr) = taffy.get_node_context(child_id) {
                       let child_node = unsafe { &*child_ptr };
@@ -9731,11 +9727,6 @@ impl GridFormattingContext {
       //
       // This mirrors the RTL-specific handling above, but applies when the block axis is the one
       // running right-to-left.
-      let child_ids = match taffy.children(node_id) {
-        Ok(children) => children,
-        Err(_) => Vec::new(),
-      };
-
       let apply_translation = |area_start: f32,
                                area_end: f32,
                                span_start: f32,
@@ -9791,7 +9782,7 @@ impl GridFormattingContext {
 
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
         if info.items.len() == fragment.children.len()
-          && child_ids.len() == fragment.children.len()
+          && taffy_child_count == fragment.children.len()
           && !info.columns.sizes.is_empty()
         {
           let col_offsets = compute_track_offsets(
@@ -9816,12 +9807,13 @@ impl GridFormattingContext {
               if let Some((area_start, area_end)) =
                 grid_area_for_item(&col_offsets, item.column_start, item.column_end)
               {
+                let child_id = taffy.get_child_id(node_id, idx);
                 apply_translation(
                   area_start,
                   area_end,
                   span_start,
                   span_end,
-                  child_ids[idx],
+                  child_id,
                   &mut children[idx],
                   deadline_counter,
                 )?;
@@ -9846,11 +9838,6 @@ impl GridFormattingContext {
 
     let mut rtl_mirrored_y = false;
     if mirror_y && !inline_is_horizontal && !axis_style.inline_positive() {
-      let child_ids = match taffy.children(node_id) {
-        Ok(children) => children,
-        Err(_) => Vec::new(),
-      };
-
       let apply_translation = |area_start: f32,
                                area_end: f32,
                                span_start: f32,
@@ -9907,7 +9894,7 @@ impl GridFormattingContext {
       // Prefer using detailed track/item info from Taffy when available.
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
         if info.items.len() == fragment.children.len()
-          && child_ids.len() == fragment.children.len()
+          && taffy_child_count == fragment.children.len()
           && !info.rows.sizes.is_empty()
         {
           let row_offsets = compute_track_offsets(
@@ -9932,12 +9919,13 @@ impl GridFormattingContext {
               if let Some((area_start, area_end)) =
                 grid_area_for_item(&row_offsets, item.row_start, item.row_end)
               {
+                let child_id = taffy.get_child_id(node_id, idx);
                 apply_translation(
                   area_start,
                   area_end,
                   span_start,
                   span_end,
-                  child_ids[idx],
+                  child_id,
                   &mut children[idx],
                   deadline_counter,
                 )?;
@@ -10047,7 +10035,11 @@ impl GridFormattingContext {
                   let children = fragment.children_mut();
                   for idx in 0..children.len() {
                     check_layout_deadline(deadline_counter)?;
-                    let child_id = child_ids.get(idx).copied().unwrap_or(node_id);
+                    let child_id = if idx < taffy_child_count {
+                      taffy.get_child_id(node_id, idx)
+                    } else {
+                      node_id
+                    };
                     let mut translated = false;
                     if let Some(&child_ptr) = taffy.get_node_context(child_id) {
                       let child_node = unsafe { &*child_ptr };
@@ -10167,10 +10159,9 @@ impl GridFormattingContext {
       max.x = max.x.max(bounds.max_x());
       max.y = max.y.max(bounds.max_y());
 
-      let children = taffy
-        .children(node_id)
-        .map_err(|e| LayoutError::MissingContext(format!("Taffy children error: {:?}", e)))?;
-      for &child_id in children.iter() {
+      let child_count = taffy.child_count(node_id);
+      for idx in 0..child_count {
+        let child_id = taffy.get_child_id(node_id, idx);
         stack.push((child_id, origin));
       }
     }
@@ -13026,8 +13017,8 @@ fn resolved_grid_item_range_from_parent_layout(
     return None;
   };
 
-  let children = taffy.children(parent_id).ok()?;
-  let idx = children.iter().position(|&child| child == node_id)?;
+  let child_count = taffy.child_count(parent_id);
+  let idx = (0..child_count).find(|&idx| taffy.get_child_id(parent_id, idx) == node_id)?;
   let item = info.items.get(idx)?;
 
   let (start_line, end_line) = match (axis, axes_swapped) {
@@ -14374,10 +14365,8 @@ impl FormattingContext for GridFormattingContext {
         let mut stack = vec![root_id];
         while let Some(node_id) = stack.pop() {
           check_layout_deadline(&mut auto_deadline_counter)?;
-          let children = taffy
-            .children(node_id)
-            .map_err(|e| LayoutError::MissingContext(format!("Taffy children error: {:?}", e)))?;
-          if children.is_empty() && node_id != root_id {
+          let child_count = taffy.child_count(node_id);
+          if child_count == 0 && node_id != root_id {
             if let Some(ptr) = taffy.get_node_context(node_id).copied() {
               let node = unsafe { &*ptr };
               if matches!(
@@ -14389,7 +14378,9 @@ impl FormattingContext for GridFormattingContext {
               }
             }
           } else {
-            stack.extend(children.iter().copied());
+            for idx in 0..child_count {
+              stack.push(taffy.get_child_id(node_id, idx));
+            }
           }
         }
       }

@@ -6843,14 +6843,13 @@ impl FlexFormattingContext {
     node_map: &mut FxHashMap<*const BoxNode, NodeId>,
   ) -> Result<NodeId, LayoutError> {
     if let Some(root_id) = taffy_tree.cached_root() {
-      let existing_children = taffy_tree
-        .children(root_id)
-        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
-      let structure_matches = existing_children.len() == root_children.len()
-        && existing_children.iter().zip(root_children.iter()).all(|(node_id, child)| {
+      let existing_count = taffy_tree.child_count(root_id);
+      let structure_matches = existing_count == root_children.len()
+        && (0..existing_count).all(|idx| {
+          let child_node_id = taffy_tree.get_child_id(root_id, idx);
           taffy_tree
-            .get_node_context(*node_id)
-            .is_some_and(|ctx| *ctx == (*child as *const BoxNode))
+            .get_node_context(child_node_id)
+            .is_some_and(|ctx| *ctx == (root_children[idx] as *const BoxNode))
         });
 
       if structure_matches {
@@ -6868,8 +6867,9 @@ impl FlexFormattingContext {
 
         if fingerprints_match {
           node_map.insert(box_node as *const BoxNode, root_id);
-          for (node_id, child) in existing_children.iter().zip(root_children.iter()) {
-            node_map.insert(*child as *const BoxNode, *node_id);
+          for (idx, child) in root_children.iter().enumerate() {
+            let child_node_id = taffy_tree.get_child_id(root_id, idx);
+            node_map.insert(*child as *const BoxNode, child_node_id);
           }
           taffy_tree.set_root(root_id);
           return Ok(root_id);
@@ -6934,14 +6934,15 @@ impl FlexFormattingContext {
           .or_else(|| constraints.width())
           .filter(|b| b.is_finite());
 
-        for ((child_style, child), node_id) in template
-          .child_styles
-          .iter()
-          .zip(root_children.iter())
-          .zip(existing_children.iter())
-        {
+        for (idx, child) in root_children.iter().enumerate() {
           check_layout_deadline(&mut deadline_counter)?;
           let child = *child;
+          let node_id = taffy_tree.get_child_id(root_id, idx);
+          let child_style = template.child_styles.get(idx).ok_or_else(|| {
+            LayoutError::MissingContext(
+              "Cached flex Taffy template missing child style for in-flow child".to_string(),
+            )
+          })?;
           let mut resolved_style = child_style.0.clone();
           self.apply_flex_intrinsic_size_keywords(
             child,
@@ -7000,16 +7001,16 @@ impl FlexFormattingContext {
             resolved_style.size.height = Dimension::auto();
           }
 
-          let needs_update = match taffy_tree.style(*node_id) {
+          let needs_update = match taffy_tree.style(node_id) {
             Ok(existing) => existing != &resolved_style,
             Err(_) => true,
           };
           if needs_update {
             taffy_tree
-              .set_style(*node_id, resolved_style)
+              .set_style(node_id, resolved_style)
               .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
           }
-          node_map.insert(child as *const BoxNode, *node_id);
+          node_map.insert(child as *const BoxNode, node_id);
         }
 
         let mut root_taffy_style = template.root_style.0.clone();
