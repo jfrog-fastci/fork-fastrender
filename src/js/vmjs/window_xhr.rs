@@ -1479,8 +1479,6 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       if xhr.request_seq != request_seq || xhr.aborted {
         return Ok(false);
       }
-      xhr.send_in_progress = false;
-      xhr.ready_state = XHR_DONE;
       if is_timeout || is_error {
         xhr.status = 0;
         xhr.status_text.clear();
@@ -1528,6 +1526,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
             .xhrs
             .get_mut(&xhr_id)
             .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+          xhr.send_in_progress = false;
+          xhr.ready_state = XHR_DONE;
           Ok(xhr.root.take())
         })
         .ok()
@@ -1558,6 +1558,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
             .xhrs
             .get_mut(&xhr_id)
             .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+          xhr.send_in_progress = false;
+          xhr.ready_state = XHR_DONE;
           Ok(xhr.root.take())
         })
         .ok()
@@ -1588,6 +1590,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
             .xhrs
             .get_mut(&xhr_id)
             .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+          xhr.send_in_progress = false;
+          xhr.ready_state = XHR_DONE;
           Ok(xhr.root.take())
         })
         .ok()
@@ -1629,6 +1633,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
           .xhrs
           .get_mut(&xhr_id)
           .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+        xhr.send_in_progress = false;
+        xhr.ready_state = XHR_DONE;
         Ok(xhr.root.take())
       })
       .ok()
@@ -2080,6 +2086,9 @@ fn dispatch_xhr_events<Host: WindowRealmHost + 'static>(
       }
       if let Some(ready_state) = ready_state {
         xhr.ready_state = ready_state;
+      }
+      if finalize {
+        xhr.send_in_progress = false;
       }
       let root_id = xhr.root;
       let root_to_remove = if finalize { xhr.root.take() } else { None };
