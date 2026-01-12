@@ -3,6 +3,7 @@
 //! This module contains small helpers that mirror ECMA-262 abstract operations closely. These are
 //! intended to be used by built-ins so their algorithms remain spec-shaped.
 
+use crate::heap::MAX_PROTOTYPE_CHAIN;
 use crate::{GcObject, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::mem;
 
@@ -231,27 +232,25 @@ pub fn create_list_from_array_like_with_host_and_hooks(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  obj: GcObject,
+  value: Value,
 ) -> Result<Vec<Value>, VmError> {
-  // Root `obj` across all allocations during list construction.
+  // Spec: `CreateListFromArrayLike` is usually called by `Function.prototype.apply`. The spec
+  // handles `null`/`undefined` by producing an empty list.
+  if matches!(value, Value::Undefined | Value::Null) {
+    return Ok(Vec::new());
+  }
+
   let mut scope = scope.reborrow();
+
+  // Root `value` across boxing (`ToObject`) and subsequent property lookups.
+  scope.push_root(value)?;
+
+  // `O = ToObject(value)`
+  let obj = scope.to_object(vm, host, hooks, value)?;
   scope.push_root(Value::Object(obj))?;
 
-  let length_key_s = scope.alloc_string("length")?;
-  scope.push_root(Value::String(length_key_s))?;
-  let length_key = PropertyKey::from_string(length_key_s);
-
-  // `LengthOfArrayLike(obj)`
-  let length_value = scope.ordinary_get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    obj,
-    length_key,
-    Value::Object(obj),
-  )?;
-  let length_number = scope.to_number(vm, host, hooks, length_value)?;
-  let len = to_length(length_number);
+  // `len = LengthOfArrayLike(O)`
+  let len = length_of_array_like_with_host_and_hooks(vm, &mut scope, host, hooks, obj)?;
 
   let mut out: Vec<Value> = Vec::new();
   out.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
@@ -261,20 +260,108 @@ pub fn create_list_from_array_like_with_host_and_hooks(
       vm.tick()?;
     }
 
-    // `Get(obj, ToString(idx))`
-    let idx_s = scope.alloc_string(&idx.to_string())?;
-    let key = PropertyKey::from_string(idx_s);
-    let value =
-      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    // `Get(O, ToString(idx))`
+    let value = {
+      // Use a nested scope so per-element key roots do not accumulate.
+      let mut iter_scope = scope.reborrow();
+      let idx_s = iter_scope.alloc_string(&idx.to_string())?;
+      iter_scope.push_root(Value::String(idx_s))?;
+      let key = PropertyKey::from_string(idx_s);
+      get_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key, Value::Object(obj))?
+    };
 
-    // Root each element so accessors that return newly-allocated objects are kept alive across
-    // subsequent allocations and potential GC.
+    // Root each element so values are kept alive across subsequent allocations and potential GC.
     scope.push_root(value)?;
-
     out.push(value);
   }
 
   Ok(out)
+}
+
+/// `LengthOfArrayLike(obj)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-lengthofarraylike>
+fn length_of_array_like_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+) -> Result<usize, VmError> {
+  // `len = ToLength(Get(obj, "length"))`
+  let length_key_s = scope.alloc_string("length")?;
+  scope.push_root(Value::String(length_key_s))?;
+  let length_key = PropertyKey::from_string(length_key_s);
+
+  let length_value =
+    get_with_host_and_hooks(vm, scope, host, hooks, obj, length_key, Value::Object(obj))?;
+  let length_number = scope.to_number(vm, host, hooks, length_value)?;
+  Ok(to_length(length_number))
+}
+
+/// ECMAScript `Get(O, P)` with minimal Proxy support.
+///
+/// This currently dispatches between:
+/// - ordinary objects (including accessors via `ordinary_get_with_host_and_hooks`)
+/// - Proxy objects (supports the `"get"` trap; forwards to target when missing).
+///
+/// Note: this does **not** yet implement Proxy invariants (non-configurable properties etc).
+fn get_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+  receiver: Value,
+) -> Result<Value, VmError> {
+  let key_value = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(obj), key_value, receiver])?;
+
+  let mut current = obj;
+  for _ in 0..MAX_PROTOTYPE_CHAIN {
+    let proxy = scope.heap().get_proxy_data(current)?;
+    let Some(proxy) = proxy else {
+      // Ordinary objects: `Get` uses `receiver` as `this` for accessors.
+      return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
+    };
+
+    let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
+      return Err(VmError::TypeError(
+        "Cannot perform 'get' on a proxy that has been revoked",
+      ));
+    };
+
+    let get_key_s = scope.alloc_string("get")?;
+    scope.push_root(Value::String(get_key_s))?;
+    let get_key = PropertyKey::from_string(get_key_s);
+
+    let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), get_key)?;
+    match trap {
+      None => {
+        current = target;
+        continue;
+      }
+      Some(trap) => {
+        let trap_args = [Value::Object(target), key_value, receiver];
+        return vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          trap,
+          Value::Object(handler),
+          &trap_args,
+        );
+      }
+    }
+  }
+
+  Err(VmError::TypeError("Proxy chain too deep"))
 }
 
 /// `GetPrototypeFromConstructor(constructor, intrinsicDefaultProto)` (ECMA-262).

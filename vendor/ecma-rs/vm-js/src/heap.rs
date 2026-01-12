@@ -4609,26 +4609,31 @@ impl<'a> Scope<'a> {
     target: Option<GcObject>,
     handler: Option<GcObject>,
   ) -> Result<GcObject, VmError> {
-    let mut scope = self.reborrow();
+    // Validate handles up-front.
+    if let Some(target) = target {
+      if !self.heap.is_valid_object(target) {
+        return Err(VmError::invalid_handle());
+      }
+    }
+    if let Some(handler) = handler {
+      if !self.heap.is_valid_object(handler) {
+        return Err(VmError::invalid_handle());
+      }
+    }
 
     // Root inputs during allocation in case root-stack growth, `ensure_can_allocate`, or slot-table
     // growth triggers GC.
     //
     // NOTE: Root both `target` and `handler` together so a GC triggered while pushing roots for
     // `target` cannot collect `handler` before it is pushed.
+    let mut scope = self.reborrow();
     let mut roots = [Value::Undefined; 2];
     let mut root_count: usize = 0;
     if let Some(target) = target {
-      if !scope.heap.is_valid_object(target) {
-        return Err(VmError::invalid_handle());
-      }
       roots[root_count] = Value::Object(target);
       root_count += 1;
     }
     if let Some(handler) = handler {
-      if !scope.heap.is_valid_object(handler) {
-        return Err(VmError::invalid_handle());
-      }
       roots[root_count] = Value::Object(handler);
       root_count += 1;
     }

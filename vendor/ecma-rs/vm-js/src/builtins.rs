@@ -182,62 +182,6 @@ fn slice_range_from_args(
   Ok((start, finish))
 }
 
-fn get_array_like_args(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result<Vec<Value>, VmError> {
-  // Treat `obj` as array-like:
-  // - read `length` as a Number
-  // - read indices 0..length-1 as data properties
-  let length_key_s = scope.alloc_string("length")?;
-  let length_key = PropertyKey::from_string(length_key_s);
-  let length_desc = scope
-    .heap()
-    .get_property_with_tick(obj, &length_key, || vm.tick())?;
-  let length_val = match length_desc.map(|d| d.kind) {
-    Some(PropertyKind::Data { value, .. }) => value,
-    Some(PropertyKind::Accessor { .. }) => {
-      return Err(VmError::Unimplemented(
-        "Function.prototype.apply: accessor length",
-      ));
-    }
-    None => Value::Number(0.0),
-  };
-
-  let length = match length_val {
-    Value::Number(n) if n.is_finite() && n >= 0.0 => n as usize,
-    Value::Number(_) => 0usize,
-    _ => {
-      return Err(VmError::Unimplemented(
-        "Function.prototype.apply: non-numeric length",
-      ))
-    }
-  };
-
-  let mut out: Vec<Value> = Vec::new();
-  out
-    .try_reserve_exact(length)
-    .map_err(|_| VmError::OutOfMemory)?;
-
-  for idx in 0..length {
-    if idx % 1024 == 0 {
-      vm.tick()?;
-    }
-    let idx_s = scope.alloc_string(&idx.to_string())?;
-    let key = PropertyKey::from_string(idx_s);
-    let desc = scope.heap().get_property_with_tick(obj, &key, || vm.tick())?;
-    let value = match desc.map(|d| d.kind) {
-      Some(PropertyKind::Data { value, .. }) => value,
-      Some(PropertyKind::Accessor { .. }) => {
-        return Err(VmError::Unimplemented(
-          "Function.prototype.apply: accessor indexed element",
-        ));
-      }
-      None => Value::Undefined,
-    };
-    out.push(value);
-  }
-
-  Ok(out)
-}
-
 fn set_function_job_realm_to_current(
   vm: &Vm,
   scope: &mut Scope<'_>,
@@ -1031,7 +975,7 @@ pub fn reflect_apply(
     scope,
     host,
     hooks,
-    arguments_obj,
+    Value::Object(arguments_obj),
   )?;
 
   vm.call_with_host_and_hooks(host, scope, hooks, target, this_argument, &list)
@@ -1069,7 +1013,7 @@ pub fn reflect_construct(
     scope,
     host,
     hooks,
-    arguments_obj,
+    Value::Object(arguments_obj),
   )?;
 
   vm.construct_with_host_and_hooks(host, scope, hooks, target, &list, new_target)
@@ -6168,21 +6112,15 @@ pub fn function_prototype_apply(
   let this_arg = args.first().copied().unwrap_or(Value::Undefined);
   let arg_array = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  match arg_array {
-    Value::Undefined | Value::Null => {
-      vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(target), this_arg, &[])
-    }
-    Value::Object(obj) => {
-      // Root `obj` while building the argument list, since we may allocate strings for property
-      // keys and trigger a GC.
-      scope.push_root(Value::Object(obj))?;
-      let list = get_array_like_args(vm, scope, obj)?;
-      vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(target), this_arg, &list)
-    }
-    _ => Err(VmError::Unimplemented(
-      "Function.prototype.apply: argArray must be an object or null/undefined",
-    )),
-  }
+  let list = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    arg_array,
+  )?;
+
+  vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(target), this_arg, &list)
 }
 
 /// `Function.prototype.bind` (minimal, using `JsFunction` bound internal slots).
