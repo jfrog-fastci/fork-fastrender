@@ -129,17 +129,23 @@ cd typecheck-ts-harness && npm ci
 
 (Or `just node-deps` to install npm dependencies; `just setup` does everything.)
 
-Then run a shard of conformance tests (this is similar to `.github/workflows/nightly.yaml`):
+Then run a shard of conformance tests (this matches the upstream conformance CI jobs):
 
 ```bash
 bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release --locked -- \
   conformance \
   --root parse-js/tests/TypeScript/tests/cases/conformance \
+  --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
   --shard 0/16 \
+  --shard-strategy hash \
   --compare tsc \
   --timeout-secs 20 \
+  --fail-on new \
   --json > conformance-0.json
 ```
+
+To collect a JSON report without failing the process (useful while iterating on
+the manifest), pass `--fail-on none`.
 
 For differential testing (`difftsc`), you can either:
 
