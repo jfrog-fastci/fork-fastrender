@@ -303,8 +303,8 @@ enum Node {
   },
   ArrayBuffer {
     source: GcObject,
-    /// If `transferred` is true, the data is moved from `source` after validation and stored in the
-    /// `transfer_data` map during detachment.
+    /// If `transferred` is true, the backing store of `source` is moved into a fresh ArrayBuffer
+    /// via `Heap::transfer_array_buffer(..)` after serialization succeeds.
     transferred: bool,
     /// Present only when `transferred == false`.
     bytes: Option<Vec<u8>>,
@@ -405,7 +405,11 @@ struct DeserializeState {
 
   nodes: Vec<Node>,
   clones: HashMap<NodeId, GcObject>,
-  transfer_data: HashMap<GcObject, Box<[u8]>>,
+  /// Maps transferred ArrayBuffer source objects to their destination ArrayBuffer objects.
+  ///
+  /// The destination buffers are pre-created (and rooted) after serialization succeeds to preserve
+  /// `vm-js` external-memory accounting and to avoid holding backing-store bytes outside the heap.
+  transfer_data: HashMap<GcObject, GcObject>,
 }
 
 fn structured_clone_native(
@@ -469,8 +473,8 @@ fn structured_clone_native(
   );
   let root = serialize_value(vm, &mut scope, host, hooks, &mut state, value, 0)?;
 
-  // --- Detach transfer list buffers (must not run on DataCloneError paths) ---
-  let transfer_data = detach_transfer_list(vm, &mut scope, global, &transfer_list)?;
+  // --- Transfer/detach transfer list buffers (must not run on DataCloneError paths) ---
+  let transfer_data = prepare_transfer_list_buffers(vm, &mut scope, global, &transfer_list, &state.nodes)?;
 
   // --- Deserialize into fresh JS objects ---
   let mut deser = DeserializeState {
@@ -1223,15 +1227,37 @@ fn serialize_object(
   Ok(EncodedValue::Object(placeholder_id))
 }
 
-fn detach_transfer_list(
+fn prepare_transfer_list_buffers(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   global: GcObject,
   transfer_list: &[GcObject],
-) -> Result<HashMap<GcObject, Box<[u8]>>, VmError> {
-  let mut out: HashMap<GcObject, Box<[u8]>> = HashMap::new();
+  nodes: &[Node],
+) -> Result<HashMap<GcObject, GcObject>, VmError> {
+  // Only transfer buffers that are actually referenced by the serialized node graph. Per HTML
+  // semantics, *all* transfer list items must be detached, even if they don't appear in `value`.
+  let mut referenced: HashSet<GcObject> = HashSet::new();
+  referenced
+    .try_reserve(transfer_list.len().min(nodes.len()))
+    .map_err(|_| VmError::OutOfMemory)?;
+  for (i, node) in nodes.iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let Node::ArrayBuffer {
+      source,
+      transferred: true,
+      ..
+    } = node
+    else {
+      continue;
+    };
+    referenced.insert(*source);
+  }
+
+  let mut out: HashMap<GcObject, GcObject> = HashMap::new();
   out
-    .try_reserve(transfer_list.len())
+    .try_reserve(referenced.len())
     .map_err(|_| VmError::OutOfMemory)?;
 
   // Validate detachment preconditions for the whole list first so DataCloneError doesn't leave
@@ -1254,26 +1280,49 @@ fn detach_transfer_list(
     if i % 1024 == 0 {
       vm.tick()?;
     }
-    let data = match scope.heap_mut().detach_array_buffer_take_data(buf) {
-      Ok(Some(data)) => data,
-      Ok(None) => {
-        return Err(throw_data_clone_error(
-          vm,
-          scope,
-          global,
-          "structuredClone: transfer list contains detached ArrayBuffer",
-        ));
+
+    if referenced.contains(&buf) {
+      let dst = match scope.heap_mut().transfer_array_buffer(buf) {
+        Ok(dst) => dst,
+        Err(VmError::OutOfMemory) => return Err(VmError::OutOfMemory),
+        Err(_) => {
+          return Err(throw_data_clone_error(
+            vm,
+            scope,
+            global,
+            "structuredClone: failed to transfer ArrayBuffer",
+          ));
+        }
+      };
+      // Root the destination buffer until it is attached into the cloned object graph.
+      scope.push_root(Value::Object(dst))?;
+      out.insert(buf, dst);
+    } else {
+      // Unreferenced transfer list items must still be detached (postMessage semantics).
+      //
+      // We detach-and-drop the backing store immediately to avoid holding bytes outside the heap
+      // (and outside `external_bytes` accounting) during the remainder of the clone.
+      match scope.heap_mut().detach_array_buffer_take_data(buf) {
+        Ok(Some(_data)) => {}
+        Ok(None) => {
+          return Err(throw_data_clone_error(
+            vm,
+            scope,
+            global,
+            "structuredClone: transfer list contains detached ArrayBuffer",
+          ));
+        }
+        Err(VmError::OutOfMemory) => return Err(VmError::OutOfMemory),
+        Err(_) => {
+          return Err(throw_data_clone_error(
+            vm,
+            scope,
+            global,
+            "structuredClone: failed to detach ArrayBuffer",
+          ));
+        }
       }
-      Err(_) => {
-        return Err(throw_data_clone_error(
-          vm,
-          scope,
-          global,
-          "structuredClone: failed to detach ArrayBuffer",
-        ));
-      }
-    };
-    out.insert(buf, data);
+    }
   }
 
   Ok(out)
@@ -1416,25 +1465,30 @@ fn deserialize_node(
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
 
-      let data_vec = if transferred {
-        let data = state
+      if transferred {
+        let dst = state
           .transfer_data
           .remove(&source)
           .ok_or(VmError::InvariantViolation(
-            "structuredClone missing transferred ArrayBuffer data",
+            "structuredClone missing transferred ArrayBuffer destination",
           ))?;
-        data.into_vec()
+        scope
+          .heap_mut()
+          .object_set_prototype(dst, Some(intr.array_buffer_prototype()))?;
+        state.clones.insert(id, dst);
+        dst
       } else {
-        bytes.ok_or(VmError::InvariantViolation("structuredClone missing ArrayBuffer bytes"))?
-      };
+        let data_vec =
+          bytes.ok_or(VmError::InvariantViolation("structuredClone missing ArrayBuffer bytes"))?;
 
-      let ab = scope.alloc_array_buffer_from_u8_vec(data_vec)?;
-      scope.push_root(Value::Object(ab))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-      state.clones.insert(id, ab);
-      ab
+        let ab = scope.alloc_array_buffer_from_u8_vec(data_vec)?;
+        scope.push_root(Value::Object(ab))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+        state.clones.insert(id, ab);
+        ab
+      }
     }
     4 => {
       // Uint8Array.
@@ -1905,6 +1959,7 @@ mod tests {
          v[0] = 1; v[1] = 2;\
          const c = structuredClone(ab);\
          if (c === ab) return false;\
+         if (Object.getPrototypeOf(c) !== ArrayBuffer.prototype) return false;\
          if (c.byteLength !== 2) return false;\
          const v2 = new Uint8Array(c);\
          return v2[0] === 1 && v2[1] === 2;\
@@ -1920,12 +1975,50 @@ mod tests {
          const c = structuredClone(ab, { transfer: [ab] });\
          if (ab.byteLength !== 0) return false;\
          if (view.length !== 0) return false;\
+         if (Object.prototype.toString.call(c) !== '[object ArrayBuffer]') return false;\
+         if (Object.getPrototypeOf(c) !== ArrayBuffer.prototype) return false;\
          if (c.byteLength !== 2) return false;\
          return new Uint8Array(c)[0] === 7;\
        })()",
     )?;
     assert_eq!(transfer_ok, Value::Bool(true));
 
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_transfer_list_detach_even_if_unreferenced() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\
+         const ab = new ArrayBuffer(1);\
+         const view = new Uint8Array(ab);\
+         view[0] = 42;\
+         const v = structuredClone(1, { transfer: [ab] });\
+         if (v !== 1) return false;\
+         if (ab.byteLength !== 0) return false;\
+         if (view.length !== 0) return false;\
+         return true;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_does_not_detach_on_data_clone_error() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\
+         const ab = new ArrayBuffer(1);\
+         try { structuredClone(Symbol('x'), { transfer: [ab] }); return false; }\
+         catch (e) {\
+           if (e.name !== 'DataCloneError') return false;\
+           return ab.byteLength === 1;\
+         }\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
