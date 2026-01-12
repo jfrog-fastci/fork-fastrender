@@ -23,11 +23,11 @@ fn ownership_of_var(ownership: &OwnershipResult, var: u32) -> OwnershipState {
     .copied()
     .unwrap_or(OwnershipState::Unknown)
 }
- 
+  
 fn should_consume_var(var: u32, live_out: bool, ownership: &OwnershipResult) -> bool {
   ownership_of_var(ownership, var) == OwnershipState::Owned && !live_out
 }
-  
+   
 pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
   let live_outs = calculate_live_outs_bits(cfg, &HashMap::default(), &HashSet::default());
 

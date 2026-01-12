@@ -389,7 +389,7 @@ fn infer_ownership_with_params_and_summaries(
   let borrowed_defs = collect_borrowed_defs(cfg, call_summaries);
   let alias_facts = collect_alias_facts(cfg, &live_outs, call_summaries);
   let phi_edges = collect_phi_edges(cfg);
- 
+
   // 1) Compute per-variable ownership using a monotone fixpoint.
   let mut states: HashMap<u32, OwnershipState> = HashMap::default();
   for v in all_vars.iter().copied() {
@@ -464,7 +464,6 @@ fn infer_ownership_with_params_and_summaries(
     };
     for (inst_idx, inst) in block.iter().enumerate() {
       let mut modes = vec![UseMode::Borrow; inst.args.len()];
-  
       for (arg_idx, arg) in inst.args.iter().enumerate() {
         let Arg::Var(v) = arg else {
           continue;

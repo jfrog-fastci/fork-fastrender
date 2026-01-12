@@ -4,7 +4,7 @@ use crate::il::inst::{Arg, Inst};
 use ahash::{HashMap, HashSet};
 
 #[derive(Clone, PartialEq, Eq)]
-struct BitSet {
+pub(crate) struct BitSet {
   bits: Vec<u64>,
 }
 
@@ -15,14 +15,6 @@ impl BitSet {
     }
   }
 
-  fn contains(&self, idx: usize) -> bool {
-    let (word, bit) = Self::word_bit(idx);
-    self
-      .bits
-      .get(word)
-      .is_some_and(|word| (word & (1u64 << bit)) != 0)
-  }
-
   fn insert(&mut self, idx: usize) {
     let (word, bit) = Self::word_bit(idx);
     self.bits[word] |= 1u64 << bit;
@@ -31,6 +23,14 @@ impl BitSet {
   fn remove(&mut self, idx: usize) {
     let (word, bit) = Self::word_bit(idx);
     self.bits[word] &= !(1u64 << bit);
+  }
+
+  fn contains(&self, idx: usize) -> bool {
+    let (word, bit) = Self::word_bit(idx);
+    self
+      .bits
+      .get(word)
+      .is_some_and(|word| (*word & (1u64 << bit)) != 0)
   }
 
   fn union_with(&mut self, other: &Self) {
