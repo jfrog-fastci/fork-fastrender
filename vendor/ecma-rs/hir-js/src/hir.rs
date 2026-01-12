@@ -822,6 +822,14 @@ pub enum ExprKind {
     expr: Option<ExprId>,
     delegate: bool,
   },
+  /// TypeScript instantiation expression (`expr<T1, T2>`).
+  ///
+  /// This is erased at runtime but preserved in HIR so the type checker can
+  /// interpret explicit type arguments.
+  Instantiation {
+    expr: ExprId,
+    type_args: Vec<TypeExprId>,
+  },
   TypeAssertion {
     expr: ExprId,
     const_assertion: bool,

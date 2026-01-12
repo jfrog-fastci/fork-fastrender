@@ -2003,13 +2003,6 @@ fn lower_expr(
 ) -> ExprId {
   use parse_js::operator::OperatorName;
 
-  // TypeScript instantiation expressions (`expr<T>`) are erased at runtime. For
-  // now, lower them as their inner expression so downstream consumers (e.g.
-  // flow checking) still see the actual callee/member structure.
-  if let AstExpr::Instantiation(inst) = expr.stx.as_ref() {
-    return lower_expr(&inst.stx.expression, builder, ctx);
-  }
-
   let span = ctx.to_range(expr.loc);
   #[allow(unreachable_patterns)]
   let kind = match &*expr.stx {
@@ -2226,6 +2219,19 @@ fn lower_expr(
     AstExpr::LitTemplate(tmpl) => {
       ExprKind::Template(lower_template_literal(&tmpl.stx.parts, builder, ctx))
     }
+    AstExpr::Instantiation(inst) => {
+      let inner = lower_expr(&inst.stx.expression, builder, ctx);
+      let type_args = inst
+        .stx
+        .type_arguments
+        .iter()
+        .map(|arg| builder.lower_type_expr(arg, ctx))
+        .collect();
+      ExprKind::Instantiation {
+        expr: inner,
+        type_args,
+      }
+    }
     AstExpr::TypeAssertion(assert) => {
       let expr = lower_expr(&assert.stx.expression, builder, ctx);
       let type_annotation = if assert.stx.const_assertion {
@@ -2339,10 +2345,23 @@ fn lower_call_expr(
     }
 
     if !is_new && !call.stx.optional_chaining {
+      // TypeScript instantiation expressions (`callee<T>`) are erased at runtime.
+      // Treat them as transparent wrappers for semantic-ops pattern matching while
+      // keeping the original callee expression in the lowered HIR.
+      let semantic_callee = {
+        let mut current = callee;
+        loop {
+          match &builder.exprs[current.0 as usize].kind {
+            ExprKind::Instantiation { expr, .. } => current = *expr,
+            _ => break current,
+          }
+        }
+      };
+
       if !builder.semantic_ops_promise_shadowed {
         // Lower Promise.{all,race}([..]) calls into semantic nodes when the input is an array
         // literal without holes/spreads.
-        if let ExprKind::Member(member) = &builder.exprs[callee.0 as usize].kind {
+        if let ExprKind::Member(member) = &builder.exprs[semantic_callee.0 as usize].kind {
           if !member.optional {
             if let Some(prop) = semantic_ops_member_property_name(builder, &member.property) {
               if prop == "all" || prop == "race" {
@@ -2381,7 +2400,7 @@ fn lower_call_expr(
 
       // Lower common array pipeline operations (map/filter/reduce/find/every/some). Optional
       // chaining is intentionally excluded to avoid changing short-circuit behaviour.
-      if let ExprKind::Member(member) = &builder.exprs[callee.0 as usize].kind {
+      if let ExprKind::Member(member) = &builder.exprs[semantic_callee.0 as usize].kind {
         if !member.optional {
           if let Some(prop) = semantic_ops_member_property_name(builder, &member.property) {
             let args_ok = args.iter().all(|arg| !arg.spread);

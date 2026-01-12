@@ -243,3 +243,17 @@ fn semantic_ops_lowering_supports_computed_property_keys() {
     "expected computed-member array chain to lower as a semantic op"
   );
 }
+
+#[test]
+fn semantic_ops_lowering_unwraps_instantiation_callee() {
+  let lowered = lower_from_source_with_kind(FileKind::Ts, "Promise.all<string>([p]);").unwrap();
+  let (body, expr) = first_stmt_expr(&lowered);
+  let body_ref = lowered.body(body).expect("body");
+  assert!(
+    matches!(
+      &body_ref.exprs[expr.0 as usize].kind,
+      ExprKind::PromiseAll { promises } if promises.len() == 1
+    ),
+    "expected Promise.all<T>(...) to lower as a semantic op"
+  );
+}
