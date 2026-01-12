@@ -708,3 +708,45 @@ fn logical_short_circuit_skips_await_rhs() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, value), "ok");
   Ok(())
 }
+
+#[test]
+fn await_in_with_body() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() { with ({ x: "ok" }) { return await Promise.resolve(x); } }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_with_object_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() { with (await Promise.resolve({ x: "ok" })) { return x; } }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}

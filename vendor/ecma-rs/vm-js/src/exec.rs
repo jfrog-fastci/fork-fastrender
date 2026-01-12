@@ -7625,6 +7625,13 @@ enum AsyncFrame {
     alternate: Option<*const Node<Stmt>>,
   },
 
+  /// Continue a `with` statement after evaluating its object expression.
+  WithAfterObject {
+    stmt: *const WithStmt,
+    label_set: Vec<String>,
+    outer: GcEnv,
+  },
+
   /// Continue a `while` loop after evaluating the test expression.
   WhileAfterTest {
     stmt: *const WhileStmt,
@@ -7982,6 +7989,7 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
         heap.remove_root(id);
       }
     }
+    AsyncFrame::WithAfterObject { .. } => {}
     _ => {}
   }
 }
@@ -8423,6 +8431,9 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
           .as_ref()
           .is_some_and(|f| f.stx.body.iter().any(stmt_contains_await))
     }
+    Stmt::With(with_stmt) => {
+      expr_contains_await(&with_stmt.stx.object) || stmt_contains_await(&with_stmt.stx.body)
+    }
     Stmt::While(while_stmt) => {
       expr_contains_await(&while_stmt.stx.condition) || stmt_contains_await(&while_stmt.stx.body)
     }
@@ -8665,6 +8676,96 @@ fn async_eval_try(
   }
 }
 
+fn async_eval_with(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &WithStmt,
+  label_set: &[String],
+) -> Result<AsyncEval<Completion>, VmError> {
+  match async_eval_expr(evaluator, scope, &stmt.object)? {
+    AsyncEval::Complete(object_value) => {
+      let outer = evaluator.env.lexical_env;
+      async_with_after_object(evaluator, scope, stmt, label_set, outer, object_value)
+    }
+    AsyncEval::Suspend(mut suspend) => {
+      let outer = evaluator.env.lexical_env;
+
+      let mut label_vec: Vec<String> = Vec::new();
+      label_vec
+        .try_reserve_exact(label_set.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      label_vec.extend_from_slice(label_set);
+
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::WithAfterObject {
+          stmt: stmt as *const WithStmt,
+          label_set: label_vec,
+          outer,
+        },
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+  }
+}
+
+fn async_with_after_object(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &WithStmt,
+  label_set: &[String],
+  outer: GcEnv,
+  object_value: Value,
+) -> Result<AsyncEval<Completion>, VmError> {
+  // Minimal ECMA-262 `WithStatement` evaluation (mirroring `Evaluator::eval_with`):
+  //
+  // - Evaluate the object expression, then `ToObject` it.
+  // - Create an ObjectEnvironmentRecord with `with_environment = true`.
+  // - Evaluate the body with that env record as the current lexical environment.
+  //
+  // This helper assumes the object expression has already been evaluated (possibly after an `await`
+  // resumption) and handles the remaining environment setup + body evaluation.
+  {
+    // Root the object value across `ToObject` and env allocation in case they trigger GC.
+    let mut with_scope = scope.reborrow();
+    with_scope.push_root(object_value)?;
+
+    let binding_object = with_scope
+      .to_object(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        object_value,
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut with_scope, err))?;
+    with_scope.push_root(Value::Object(binding_object))?;
+
+    let with_env = with_scope.alloc_object_env_record(binding_object, Some(outer), true)?;
+    evaluator.env.set_lexical_env(with_scope.heap_mut(), with_env);
+  }
+
+  let body_res = async_eval_stmt_labelled(evaluator, scope, &stmt.body, label_set);
+  match body_res {
+    Ok(AsyncEval::Complete(c)) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(AsyncEval::Complete(c))
+    }
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      // Ensure we restore the outer lexical environment after the body completes (even if it
+      // suspends at an `await` point).
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer }) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        return Err(err);
+      }
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Err(err)
+    }
+  }
+}
+
 fn async_try_after_wrapped(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -8820,6 +8921,7 @@ fn async_eval_stmt_labelled(
         Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
       }
     }
+    Stmt::With(with_stmt) => async_eval_with(evaluator, scope, &with_stmt.stx, label_set),
     Stmt::Try(try_stmt) => async_eval_try(evaluator, scope, &try_stmt.stx),
     Stmt::While(while_stmt) => async_eval_while(evaluator, scope, &while_stmt.stx, label_set),
     Stmt::DoWhile(do_while) => async_eval_do_while(evaluator, scope, &do_while.stx, label_set),
@@ -12066,6 +12168,38 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "if test frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::WithAfterObject {
+        stmt,
+        label_set,
+        outer,
+      } => match state {
+        AsyncState::Expr(object_res) => match object_res {
+          Ok(object_value) => {
+            let stmt = unsafe { &*stmt };
+            match async_with_after_object(evaluator, scope, stmt, &label_set, outer, object_value) {
+              Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "with frame received completion state",
           ))
         }
       },
