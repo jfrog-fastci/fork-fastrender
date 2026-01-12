@@ -1,6 +1,6 @@
 #![cfg(feature = "native-js-runner")]
 
-use native_oracle_harness::{NativeJsRunner, NativeRunner};
+use native_oracle_harness::{NativeJsRunner, NativeRunner, NativeRunner2, RunOutcome};
 use std::process::{Command, Stdio};
 
 fn cmd_works(cmd: &str) -> bool {
@@ -38,9 +38,12 @@ fn native_js_runner_smoke() {
     .expect("compile_and_run arithmetic");
   assert_eq!(out, "7");
 
-  let out = runner
-    .compile_and_run("console.log(true);")
-    .expect("compile_and_run boolean");
-  assert_eq!(out, "true");
+  let out = NativeRunner2::compile_and_run(&runner, "console.log(true);");
+  match out {
+    RunOutcome::Ok { value, stdout, .. } => {
+      assert_eq!(value, "undefined");
+      assert_eq!(stdout, "true");
+    }
+    other => panic!("expected Ok outcome, got {other:?}"),
+  }
 }
-

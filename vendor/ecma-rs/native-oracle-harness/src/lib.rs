@@ -1734,6 +1734,132 @@ impl NativeRunner for NativeJsRunner {
   }
 }
 
+#[cfg(feature = "native-js-runner")]
+impl NativeRunner2 for NativeJsRunner {
+  fn compile_and_run(&self, ts: &str) -> RunOutcome {
+    use std::io::Read;
+    use std::process::Command;
+    use std::process::Stdio;
+    use wait_timeout::ChildExt;
+
+    let ts = Self::wrap_script_as_module(ts);
+
+    let mut opts = native_js::CompileOptions::default();
+    opts.emit = native_js::EmitKind::Executable;
+    opts.builtins = true;
+    opts.opt_level = self.opt_level;
+    opts.debug = self.debug;
+
+    let output = match native_js::compiler::compile_typescript_to_artifact(&ts, opts, None) {
+      Ok(output) => output,
+      Err(err) => {
+        let diagnostic = match err {
+          native_js::NativeJsError::Parse(parse_err) => parse_err.to_diagnostic(FileId(0)),
+          other => {
+            if let Some(diags) = other.diagnostics() {
+              diagnostics_to_one(diags.to_vec())
+            } else {
+              harness_error(format!("native-js compilation failed: {other}"))
+            }
+          }
+        };
+        return RunOutcome::CompileError { diagnostic };
+      }
+    };
+
+    let exe_path = output.path;
+
+    let mut child = match Command::new(&exe_path)
+      .stdin(Stdio::null())
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped())
+      .spawn()
+    {
+      Ok(child) => child,
+      Err(err) => {
+        return RunOutcome::Terminated {
+          message: format!("failed to spawn native executable: {err}"),
+          stdout: String::new(),
+          stderr: String::new(),
+        }
+      }
+    };
+
+    let status = match child.wait_timeout(self.timeout) {
+      Ok(Some(status)) => status,
+      Ok(None) => {
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        if let Some(mut out) = child.stdout.take() {
+          let _ = out.read_to_end(&mut stdout);
+        }
+        if let Some(mut err) = child.stderr.take() {
+          let _ = err.read_to_end(&mut stderr);
+        }
+
+        return RunOutcome::Terminated {
+          // Avoid including the temporary executable path so the message is stable for comparisons.
+          message: format!("native executable timed out after {:?}", self.timeout),
+          stdout: String::from_utf8_lossy(&stdout).trim_end().to_string(),
+          stderr: String::from_utf8_lossy(&stderr).trim_end().to_string(),
+        };
+      }
+      Err(err) => {
+        return RunOutcome::Terminated {
+          message: format!("failed to wait for native executable: {err}"),
+          stdout: String::new(),
+          stderr: String::new(),
+        }
+      }
+    };
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+      if out.read_to_end(&mut stdout).is_err() {
+        if let Some(mut err) = child.stderr.take() {
+          let _ = err.read_to_end(&mut stderr);
+        }
+        return RunOutcome::Terminated {
+          message: "failed to read native stdout".to_string(),
+          stdout: String::from_utf8_lossy(&stdout).trim_end().to_string(),
+          stderr: String::from_utf8_lossy(&stderr).trim_end().to_string(),
+        };
+      }
+    }
+    if let Some(mut err) = child.stderr.take() {
+      if err.read_to_end(&mut stderr).is_err() {
+        return RunOutcome::Terminated {
+          message: "failed to read native stderr".to_string(),
+          stdout: String::from_utf8_lossy(&stdout).trim_end().to_string(),
+          stderr: String::from_utf8_lossy(&stderr).trim_end().to_string(),
+        };
+      }
+    }
+
+    let stdout = String::from_utf8_lossy(&stdout).trim_end().to_string();
+    let stderr = String::from_utf8_lossy(&stderr).trim_end().to_string();
+
+    if !status.success() {
+      return RunOutcome::Terminated {
+        message: format!("native executable exited with status {status}"),
+        stdout,
+        stderr,
+      };
+    }
+
+    RunOutcome::Ok {
+      // NativeJsRunner currently only exposes stdout; there is no JS completion value protocol.
+      value: "undefined".to_string(),
+      stdout,
+      stderr,
+    }
+  }
+}
+
 /// Run a TypeScript fixture and return the deterministic observation string.
 ///
 /// Protocol:
