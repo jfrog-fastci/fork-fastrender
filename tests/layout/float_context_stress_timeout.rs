@@ -88,3 +88,61 @@ fn float_context_range_queries_complete_before_deadline() {
     Err(err) => panic!("unexpected deadline error: {err:?}"),
   }
 }
+
+#[test]
+fn float_context_many_range_queries_complete_before_deadline() {
+  let _delay_guard = TestRenderDelayGuard::set(Some(0));
+
+  // This targets `edges_in_range_min_width_with_state` / `FloatRangeCache` usage patterns from
+  // float-heavy pages: many consecutive line boxes querying float constraints.
+  let deadline = RenderDeadline::new(Some(Duration::from_millis(1500)), None);
+
+  const CONTAINING_WIDTH: f32 = 200.0;
+  const FLOAT_WIDTH: f32 = 80.0;
+  const FLOAT_HEIGHT: f32 = 1.0;
+  const FLOAT_COUNT: usize = 10_000;
+
+  let mut ctx = FloatContext::new(CONTAINING_WIDTH);
+  for i in 0..FLOAT_COUNT {
+    let y = i as f32;
+    if i % 2 == 0 {
+      ctx.add_float_at(
+        fastrender::layout::float_context::FloatSide::Left,
+        0.0,
+        y,
+        FLOAT_WIDTH,
+        FLOAT_HEIGHT,
+      );
+    } else {
+      ctx.add_float_at(
+        fastrender::layout::float_context::FloatSide::Right,
+        CONTAINING_WIDTH - FLOAT_WIDTH,
+        y,
+        FLOAT_WIDTH,
+        FLOAT_HEIGHT,
+      );
+    }
+  }
+
+  let result = with_deadline(Some(&deadline), || {
+    let mut acc = 0.0f32;
+    for i in 0..FLOAT_COUNT {
+      let y = i as f32;
+      let (left, width) = ctx.available_width_in_range(y, y + 20.0);
+      acc += left + width;
+    }
+    let timeout = ctx.take_timeout_error();
+    (acc, timeout)
+  });
+
+  match result {
+    Ok((acc, None)) => {
+      std::hint::black_box(acc);
+    }
+    Ok((_acc, Some(LayoutError::Timeout { elapsed }))) => panic!(
+      "expected float range queries to finish under deadline, timed out after {elapsed:?}"
+    ),
+    Ok((_acc, Some(other))) => panic!("unexpected layout error: {other:?}"),
+    Err(err) => panic!("unexpected deadline error: {err:?}"),
+  }
+}
