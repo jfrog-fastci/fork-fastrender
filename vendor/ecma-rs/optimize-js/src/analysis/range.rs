@@ -1129,6 +1129,16 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
           self.set_var(state, tgt, IntRange::Unknown);
         }
       }
+      InstTyp::ArrayLen => {
+        let (tgt, _array, _elem_layout) = inst.as_array_len();
+        // Array lengths are non-negative integers. Model them as uint32 to keep
+        // range facts useful for bounds-check elimination.
+        self.set_var(state, tgt, Self::uint32_range());
+      }
+      InstTyp::ArrayLoad => {
+        let (tgt, _array, _index, _elem_layout, _checked) = inst.as_array_load();
+        self.set_var(state, tgt, IntRange::Unknown);
+      }
       #[cfg(feature = "semantic-ops")]
       InstTyp::KnownApiCall { .. } => {
         let (tgt, _api, _args) = inst.as_known_api_call();
@@ -1174,6 +1184,7 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       // Non-defining instructions.
       InstTyp::PropAssign
       | InstTyp::FieldStore
+      | InstTyp::ArrayStore
       | InstTyp::Assume
       | InstTyp::CondGoto
       | InstTyp::Return

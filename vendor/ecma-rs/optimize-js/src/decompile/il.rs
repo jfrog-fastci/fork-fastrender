@@ -228,6 +228,31 @@ pub fn lower_field_access<V: VarNamer, F: FnEmitter>(
   lower_get_prop(var_namer, fn_emitter, object, &prop)
 }
 
+fn lower_array_len<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  array: &Arg,
+) -> Node<Expr> {
+  node(Expr::Member(node(MemberExpr {
+    optional_chaining: false,
+    left: lower_arg(var_namer, fn_emitter, array),
+    right: "length".to_string(),
+  })))
+}
+
+fn lower_array_load<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  array: &Arg,
+  index: &Arg,
+) -> Node<Expr> {
+  node(Expr::ComputedMember(node(ComputedMemberExpr {
+    optional_chaining: false,
+    object: lower_arg(var_namer, fn_emitter, array),
+    member: lower_arg(var_namer, fn_emitter, index),
+  })))
+}
+
 pub fn lower_bin_expr<V: VarNamer, F: FnEmitter>(
   var_namer: &V,
   fn_emitter: &F,
@@ -251,6 +276,14 @@ pub fn lower_value_inst<V: VarNamer, F: FnEmitter>(
   inst: &Inst,
 ) -> Option<Node<Expr>> {
   match inst.t {
+    InstTyp::ArrayLen => {
+      let (_tgt, array, _elem_layout) = inst.as_array_len();
+      Some(lower_array_len(var_namer, fn_emitter, array))
+    }
+    InstTyp::ArrayLoad => {
+      let (_tgt, array, index, _elem_layout, _checked) = inst.as_array_load();
+      Some(lower_array_load(var_namer, fn_emitter, array, index))
+    }
     InstTyp::Bin => {
       let (_, left, op, right) = inst.as_bin();
       Some(lower_bin_expr(var_namer, fn_emitter, op, left, right))
@@ -376,6 +409,36 @@ pub fn lower_prop_assign<V: VarNamer, F: FnEmitter>(
       right: lower_arg(var_namer, fn_emitter, value),
     }))),
   })))
+}
+
+pub fn lower_array_store<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  array: &Arg,
+  index: &Arg,
+  value: &Arg,
+) -> Node<Stmt> {
+  node(Stmt::Expr(node(ExprStmt {
+    expr: node(Expr::Binary(node(BinaryExpr {
+      operator: OperatorName::Assignment,
+      left: lower_array_load(var_namer, fn_emitter, array, index),
+      right: lower_arg(var_namer, fn_emitter, value),
+    }))),
+  })))
+}
+
+pub fn lower_array_store_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+) -> Option<Node<Stmt>> {
+  if inst.t != InstTyp::ArrayStore {
+    return None;
+  }
+  let (array, index, value, _elem_layout, _checked) = inst.as_array_store();
+  Some(lower_array_store(
+    var_namer, fn_emitter, array, index, value,
+  ))
 }
 
 pub fn lower_prop_assign_inst<V: VarNamer, F: FnEmitter>(
@@ -1060,6 +1123,7 @@ pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
 ) -> Option<Node<Stmt>> {
   match inst.t {
     InstTyp::VarAssign => lower_var_assign_inst(var_namer, fn_emitter, inst, init),
+    InstTyp::ArrayStore => lower_array_store_inst(var_namer, fn_emitter, inst),
     InstTyp::PropAssign => lower_prop_assign_inst(var_namer, fn_emitter, inst),
     InstTyp::FieldStore => lower_field_store_inst(var_namer, fn_emitter, inst),
     InstTyp::ForeignStore => lower_foreign_store_inst(var_namer, fn_emitter, inst),
@@ -1473,6 +1537,40 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             env.insert(tgt, VarValue { expr, origin });
           }
         }
+        InstTyp::ArrayLen => {
+          let (tgt, array, _elem_layout) = inst.as_array_len();
+          let object_expr = expr_from_arg(array, &env);
+          let expr = FlatExpr::Member {
+            object: Box::new(object_expr),
+            property: "length".to_string(),
+          };
+          env.insert(
+            tgt,
+            VarValue {
+              expr,
+              origin: ValueOrigin::Other,
+            },
+          );
+        }
+        InstTyp::ArrayLoad => {
+          let (tgt, array, index, _elem_layout, _checked) = inst.as_array_load();
+          let object_expr = expr_from_arg(array, &env);
+          let index_expr = expr_from_arg(index, &env);
+          let expr = FlatExpr::ComputedMember {
+            object: Box::new(object_expr),
+            property: Box::new(index_expr),
+          };
+          env.insert(
+            tgt,
+            VarValue {
+              expr,
+              origin: ValueOrigin::GetProp {
+                object: array.clone(),
+                prop: index.clone(),
+              },
+            },
+          );
+        }
         InstTyp::Bin => {
           let (tgt, left, op, right) = inst.as_bin();
           if op == BinOp::GetProp {
@@ -1678,6 +1776,17 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             "exception-aware control flow not supported".to_string(),
           ));
         }
+        InstTyp::ArrayStore => {
+          let (array, index, value, _elem_layout, _checked) = inst.as_array_store();
+          let object_expr = expr_from_arg(array, &env);
+          let index_expr = expr_from_arg(index, &env);
+          let left = FlatExpr::ComputedMember {
+            object: Box::new(object_expr),
+            property: Box::new(index_expr),
+          };
+          let right = expr_from_arg(value, &env);
+          stmts.push(assignment_stmt(left, right));
+        }
         InstTyp::PropAssign => {
           let (obj, prop, value) = inst.as_prop_assign();
           let object_expr = expr_from_arg(obj, &env);
@@ -1784,6 +1893,25 @@ pub enum LoweredArg {
 pub enum LoweredInst {
   Assume {
     cond: LoweredArg,
+  },
+  ArrayLen {
+    tgt: u32,
+    array: LoweredArg,
+    elem_layout: crate::il::inst::ArrayElemLayoutId,
+  },
+  ArrayLoad {
+    tgt: u32,
+    array: LoweredArg,
+    index: LoweredArg,
+    elem_layout: crate::il::inst::ArrayElemLayoutId,
+    checked: bool,
+  },
+  ArrayStore {
+    array: LoweredArg,
+    index: LoweredArg,
+    value: LoweredArg,
+    elem_layout: crate::il::inst::ArrayElemLayoutId,
+    checked: bool,
   },
   Bin {
     tgt: u32,
@@ -1924,6 +2052,34 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
     InstTyp::Assume => LoweredInst::Assume {
       cond: lowered_arg(&inst.args[0]),
     },
+    InstTyp::ArrayLen => {
+      let (tgt, array, elem_layout) = inst.as_array_len();
+      LoweredInst::ArrayLen {
+        tgt,
+        array: lowered_arg(array),
+        elem_layout,
+      }
+    }
+    InstTyp::ArrayLoad => {
+      let (tgt, array, index, elem_layout, checked) = inst.as_array_load();
+      LoweredInst::ArrayLoad {
+        tgt,
+        array: lowered_arg(array),
+        index: lowered_arg(index),
+        elem_layout,
+        checked,
+      }
+    }
+    InstTyp::ArrayStore => {
+      let (array, index, value, elem_layout, checked) = inst.as_array_store();
+      LoweredInst::ArrayStore {
+        array: lowered_arg(array),
+        index: lowered_arg(index),
+        value: lowered_arg(value),
+        elem_layout,
+        checked,
+      }
+    }
     InstTyp::Bin => LoweredInst::Bin {
       tgt: inst.tgts[0],
       left: lowered_arg(&inst.args[0]),

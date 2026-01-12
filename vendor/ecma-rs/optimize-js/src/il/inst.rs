@@ -14,6 +14,16 @@ pub use crate::il::meta::{
 };
 pub use crate::types::ValueTypeSummary;
 
+/// Layout identifier used by native array operations.
+///
+/// In typed builds this is the real `types_ts_interned::LayoutId`. In untyped
+/// builds we keep the field as a dummy `u128` so the core IL types continue to
+/// compile without the optional `types-ts-interned` dependency.
+#[cfg(feature = "typed")]
+pub type ArrayElemLayoutId = types_ts_interned::LayoutId;
+#[cfg(not(feature = "typed"))]
+pub type ArrayElemLayoutId = u128;
+
 // PartialOrd and Ord are for some arbitrary canonical order, even if semantics of ordering is opaque.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -245,6 +255,18 @@ pub enum InstTyp {
   FieldLoad,  // tgts[0] = load_field(args[0], field)
   FieldStore, // store_field(args[0], field, args[1])
   PropAssign, // args[0][args[1]] = args[2]
+  /// Length read from a native array header.
+  ///
+  /// Convention: `tgts[0] = args[0].length`.
+  ArrayLen,
+  /// Element load from a native array.
+  ///
+  /// Convention: `tgts[0] = args[0][args[1]]`.
+  ArrayLoad,
+  /// Element store into a native array.
+  ///
+  /// Convention: `args[0][args[1]] = args[2]`.
+  ArrayStore,
   /// Branch-local assertion/assumption used for analysis-driven optimizations.
   ///
   /// This instruction has no runtime semantics and is expected to be inserted
@@ -350,6 +372,16 @@ fn dummy_symbol() -> SymbolId {
   SymbolId(u32::MAX as u64)
 }
 
+#[cfg(feature = "typed")]
+fn dummy_layout_id() -> types_ts_interned::LayoutId {
+  types_ts_interned::LayoutId(u128::MAX)
+}
+
+#[cfg(not(feature = "typed"))]
+fn dummy_layout_id() -> u128 {
+  u128::MAX
+}
+
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Inst {
@@ -361,6 +393,28 @@ pub struct Inst {
   #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
   #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
   pub array_chain: Vec<ArrayChainOp>,
+  /// Native array element layout for `ArrayLen`/`ArrayLoad`/`ArrayStore`.
+  ///
+  /// Garbage value when not applicable.
+  #[cfg_attr(
+    feature = "serde",
+    serde(
+      default = "dummy_layout_id",
+      skip_serializing_if = "is_dummy_layout_id",
+      serialize_with = "serialize_array_elem_layout_id"
+    )
+  )]
+  pub elem_layout: ArrayElemLayoutId,
+  /// Whether this access performs a runtime bounds check.
+  ///
+  /// When `false`, native backends may emit unchecked memory accesses.
+  ///
+  /// Garbage value when not applicable.
+  #[cfg_attr(
+    feature = "serde",
+    serde(default = "default_checked", skip_serializing_if = "is_true")
+  )]
+  pub checked: bool,
   #[cfg_attr(feature = "serde", serde(skip))]
   pub value_type: ValueTypeSummary,
   #[cfg_attr(feature = "serde", serde(skip))]
@@ -396,6 +450,50 @@ pub struct Inst {
   pub field: FieldRef,
 }
 
+#[cfg(feature = "serde")]
+#[allow(dead_code)]
+fn is_dummy_layout_id(layout: &ArrayElemLayoutId) -> bool {
+  #[cfg(feature = "typed")]
+  {
+    layout.0 == u128::MAX
+  }
+  #[cfg(not(feature = "typed"))]
+  {
+    *layout == u128::MAX
+  }
+}
+
+#[cfg(feature = "serde")]
+#[allow(dead_code)]
+fn serialize_array_elem_layout_id<S>(
+  layout: &ArrayElemLayoutId,
+  serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+  S: serde::Serializer,
+{
+  #[cfg(feature = "typed")]
+  {
+    serializer.serialize_str(&format!("0x{:032x}", layout.0))
+  }
+  #[cfg(not(feature = "typed"))]
+  {
+    serializer.serialize_str(&format!("0x{:032x}", *layout))
+  }
+}
+
+#[cfg(feature = "serde")]
+#[allow(dead_code)]
+fn default_checked() -> bool {
+  true
+}
+
+#[cfg(feature = "serde")]
+#[allow(dead_code)]
+fn is_true(v: &bool) -> bool {
+  *v
+}
+
 impl PartialEq for Inst {
   fn eq(&self, other: &Self) -> bool {
     self.t == other.t
@@ -413,6 +511,8 @@ impl PartialEq for Inst {
           true
         }
       }
+      && self.elem_layout == other.elem_layout
+      && self.checked == other.checked
       && self.bin_op == other.bin_op
       && self.un_op == other.un_op
       && self.foreign == other.foreign
@@ -437,6 +537,13 @@ impl Debug for Inst {
       if self.t == InstTyp::ArrayChain {
         s.field("array_chain", &self.array_chain);
       }
+    }
+    if matches!(
+      self.t,
+      InstTyp::ArrayLen | InstTyp::ArrayLoad | InstTyp::ArrayStore
+    ) {
+      s.field("elem_layout", &self.elem_layout)
+        .field("checked", &self.checked);
     }
     s.field("bin_op", &self.bin_op)
       .field("un_op", &self.un_op)
@@ -481,6 +588,8 @@ impl Default for Inst {
       labels: Default::default(),
       #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
       array_chain: Default::default(),
+      elem_layout: dummy_layout_id(),
+      checked: true,
       value_type: ValueTypeSummary::UNKNOWN,
       meta: Default::default(),
       bin_op: BinOp::_Dummy,
@@ -590,6 +699,51 @@ impl Inst {
     Self {
       t: InstTyp::PropAssign,
       args: vec![obj, prop, val],
+      ..Default::default()
+    }
+  }
+
+  pub fn array_len(tgt: u32, array: Arg, elem_layout: ArrayElemLayoutId) -> Self {
+    Self {
+      t: InstTyp::ArrayLen,
+      tgts: vec![tgt],
+      args: vec![array],
+      value_type: ValueTypeSummary::NUMBER,
+      elem_layout,
+      checked: true,
+      ..Default::default()
+    }
+  }
+
+  pub fn array_load(
+    tgt: u32,
+    array: Arg,
+    index: Arg,
+    elem_layout: ArrayElemLayoutId,
+    checked: bool,
+  ) -> Self {
+    Self {
+      t: InstTyp::ArrayLoad,
+      tgts: vec![tgt],
+      args: vec![array, index],
+      elem_layout,
+      checked,
+      ..Default::default()
+    }
+  }
+
+  pub fn array_store(
+    array: Arg,
+    index: Arg,
+    value: Arg,
+    elem_layout: ArrayElemLayoutId,
+    checked: bool,
+  ) -> Self {
+    Self {
+      t: InstTyp::ArrayStore,
+      args: vec![array, index, value],
+      elem_layout,
+      checked,
       ..Default::default()
     }
   }
@@ -887,6 +1041,33 @@ impl Inst {
   pub fn as_prop_assign(&self) -> (&Arg, &Arg, &Arg) {
     assert_eq!(self.t, InstTyp::PropAssign);
     (&self.args[0], &self.args[1], &self.args[2])
+  }
+
+  pub fn as_array_len(&self) -> (u32, &Arg, ArrayElemLayoutId) {
+    assert_eq!(self.t, InstTyp::ArrayLen);
+    (self.tgts[0], &self.args[0], self.elem_layout)
+  }
+
+  pub fn as_array_load(&self) -> (u32, &Arg, &Arg, ArrayElemLayoutId, bool) {
+    assert_eq!(self.t, InstTyp::ArrayLoad);
+    (
+      self.tgts[0],
+      &self.args[0],
+      &self.args[1],
+      self.elem_layout,
+      self.checked,
+    )
+  }
+
+  pub fn as_array_store(&self) -> (&Arg, &Arg, &Arg, ArrayElemLayoutId, bool) {
+    assert_eq!(self.t, InstTyp::ArrayStore);
+    (
+      &self.args[0],
+      &self.args[1],
+      &self.args[2],
+      self.elem_layout,
+      self.checked,
+    )
   }
 
   pub fn as_assume(&self) -> &Arg {

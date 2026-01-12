@@ -38,8 +38,8 @@ pub use structurer::{structure_cfg, BreakTarget, ControlTree, LoopLabel};
 pub use top_level::{build_top_level, foreign_var_decl, prepend_foreign_decls};
 
 use self::il::{
-  lower_arg, lower_bin_expr, lower_call_inst, lower_prop_assign_inst, node, FnEmitter, VarInit,
-  VarNamer,
+  lower_arg, lower_array_store_inst, lower_bin_expr, lower_call_inst, lower_prop_assign_inst, node,
+  FnEmitter, VarInit, VarNamer,
 };
 #[cfg(feature = "semantic-ops")]
 use self::il::lower_known_api_call_inst;
@@ -584,7 +584,9 @@ impl<'a> FunctionDecompiler<'a> {
         let init = self.target_init_for(tgt);
         Ok(Some(self.binding_stmt(tgt, expr, init)))
       }
-      InstTyp::Un
+      InstTyp::ArrayLen
+      | InstTyp::ArrayLoad
+      | InstTyp::Un
       | InstTyp::ForeignLoad
       | InstTyp::UnknownLoad
       | InstTyp::StringConcat
@@ -685,6 +687,10 @@ impl<'a> FunctionDecompiler<'a> {
       InstTyp::Invoke | InstTyp::Catch => Err(il::DecompileError::Unsupported(
         "exception-aware control flow not supported in decompiler output".into(),
       )),
+      InstTyp::ArrayStore => {
+        self.ensure_supported_args(inst.args.iter())?;
+        Ok(lower_array_store_inst(self, self, inst))
+      }
       InstTyp::PropAssign => {
         self.ensure_supported_args(inst.args.iter())?;
         Ok(lower_prop_assign_inst(self, self, inst))

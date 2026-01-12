@@ -6,7 +6,7 @@ mod common;
 use common::compile_source_typed;
 use optimize_js::analysis::annotate_program;
 use optimize_js::cfg::cfg::Cfg;
-use optimize_js::il::inst::{ArrayElemRepr, BinOp, Inst, InstTyp};
+use optimize_js::il::inst::{ArrayElemRepr, Inst, InstTyp};
 use optimize_js::TopLevelMode;
 
 fn collect_insts(cfg: &Cfg) -> Vec<Inst> {
@@ -39,10 +39,9 @@ fn array_repr_object_is_ptr() {
   let insts = collect_insts(program.top_level.analyzed_cfg());
   let load = insts
     .iter()
-    .find(|inst| inst.t == InstTyp::Bin && inst.bin_op == BinOp::GetProp)
+    .find(|inst| inst.t == InstTyp::ArrayLoad)
     .filter(|inst| inst.meta.array_elem_repr.is_some())
     .expect("expected at least one array element load to be annotated");
 
   assert_eq!(load.meta.array_elem_repr, Some(ArrayElemRepr::Ptr));
 }
-

@@ -247,6 +247,24 @@ pub fn analyze_array_repr(
             }
           }
         }
+        InstTyp::ArrayLoad => {
+          let (tgt, obj, _index, _elem_layout, _checked) = inst.as_array_load();
+          let Some(obj_var) = obj.maybe_var() else {
+            continue;
+          };
+          let Some(locs) = array_allocs_for_definitely_array_var(alias, obj_var, &arrays) else {
+            continue;
+          };
+          let summary = types.var(tgt).unwrap_or(ValueTypeSummary::UNKNOWN);
+          let Some(evidence) = elem_repr_from_summary(summary, false) else {
+            continue;
+          };
+          for loc in locs {
+            if let Some(info) = arrays.get_mut(&loc) {
+              join_elem_evidence(&mut info.elem, evidence);
+            }
+          }
+        }
         InstTyp::PropAssign => {
           let (obj, prop, val) = inst.as_prop_assign();
           let Some(obj_var) = obj.maybe_var() else {
@@ -255,6 +273,23 @@ pub fn analyze_array_repr(
           if !is_index_prop(&types, prop) {
             continue;
           }
+          let Some(locs) = array_allocs_for_definitely_array_var(alias, obj_var, &arrays) else {
+            continue;
+          };
+          let Some(evidence) = elem_repr_from_value(&types, val, true) else {
+            continue;
+          };
+          for loc in locs {
+            if let Some(info) = arrays.get_mut(&loc) {
+              join_elem_evidence(&mut info.elem, evidence);
+            }
+          }
+        }
+        InstTyp::ArrayStore => {
+          let (obj, _index, val, _elem_layout, _checked) = inst.as_array_store();
+          let Some(obj_var) = obj.maybe_var() else {
+            continue;
+          };
           let Some(locs) = array_allocs_for_definitely_array_var(alias, obj_var, &arrays) else {
             continue;
           };
@@ -366,6 +401,26 @@ pub fn annotate_cfg_array_elem_repr(cfg: &mut Cfg, arrays: &ArrayReprResult) {
             inst.meta.array_elem_repr = Some(elem_repr);
           }
         }
+        InstTyp::ArrayLen => {
+          let (_tgt, obj, _elem_layout) = inst.as_array_len();
+          let Some(obj_var) = obj.maybe_var() else {
+            continue;
+          };
+          let Some(elem_repr) = arrays.elem_repr_of_var(obj_var) else {
+            continue;
+          };
+          inst.meta.array_elem_repr = Some(elem_repr);
+        }
+        InstTyp::ArrayLoad => {
+          let (_tgt, obj, _idx, _elem_layout, _checked) = inst.as_array_load();
+          let Some(obj_var) = obj.maybe_var() else {
+            continue;
+          };
+          let Some(elem_repr) = arrays.elem_repr_of_var(obj_var) else {
+            continue;
+          };
+          inst.meta.array_elem_repr = Some(elem_repr);
+        }
         InstTyp::PropAssign => {
           let (obj, prop, _val) = inst.as_prop_assign();
           let Some(obj_var) = obj.maybe_var() else {
@@ -377,6 +432,16 @@ pub fn annotate_cfg_array_elem_repr(cfg: &mut Cfg, arrays: &ArrayReprResult) {
           if is_index_prop(&types, prop) {
             inst.meta.array_elem_repr = Some(elem_repr);
           }
+        }
+        InstTyp::ArrayStore => {
+          let (obj, _idx, _val, _elem_layout, _checked) = inst.as_array_store();
+          let Some(obj_var) = obj.maybe_var() else {
+            continue;
+          };
+          let Some(elem_repr) = arrays.elem_repr_of_var(obj_var) else {
+            continue;
+          };
+          inst.meta.array_elem_repr = Some(elem_repr);
         }
         _ => {}
       }
@@ -538,7 +603,7 @@ fn loop_vectorize_hint(
             reason: VectorizeNoReason::HasSideEffects,
           };
         }
-        InstTyp::PropAssign => {
+        InstTyp::PropAssign | InstTyp::ArrayStore => {
           return VectorizeHint::No {
             reason: VectorizeNoReason::HasSideEffects,
           };
@@ -556,6 +621,29 @@ fn loop_vectorize_hint(
           }
           // Only consider element loads.
           if !is_index_prop(types, prop) {
+            continue;
+          }
+          let Some(elem_repr) = arrays.elem_repr_of_var(obj_var) else {
+            continue;
+          };
+          if !elem_repr.is_numeric() {
+            return VectorizeHint::No {
+              reason: VectorizeNoReason::NonNumericElems,
+            };
+          }
+          indexed_arrays.push(obj_var);
+        }
+        InstTyp::ArrayLoad => {
+          let (_tgt, obj, index, _elem_layout, _checked) = inst.as_array_load();
+          let Some(obj_var) = obj.maybe_var() else {
+            continue;
+          };
+          let Some(mut idx_var) = index.maybe_var() else {
+            continue;
+          };
+          // Chase through simple var assignments inside the block.
+          idx_var = resolve_var_through_var_assigns(block, idx_var);
+          if idx_var != index_var {
             continue;
           }
           let Some(elem_repr) = arrays.elem_repr_of_var(obj_var) else {

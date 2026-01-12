@@ -273,6 +273,12 @@ pub struct InstDump {
   pub foreign_str: Option<String>,
   #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
   pub unknown: Option<String>,
+  /// For `InstTyp::{ArrayLen, ArrayLoad, ArrayStore}`.
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub elem_layout: Option<String>,
+  /// For `InstTyp::{ArrayLoad, ArrayStore}`.
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub checked: Option<bool>,
   pub meta: InstMetaDump,
 }
 
@@ -510,6 +516,29 @@ fn dump_inst(
     _ => None,
   };
 
+  fn format_array_elem_layout_id(layout: crate::il::inst::ArrayElemLayoutId) -> String {
+    #[cfg(feature = "typed")]
+    {
+      format!("0x{:032x}", layout.0)
+    }
+    #[cfg(not(feature = "typed"))]
+    {
+      format!("0x{:032x}", layout)
+    }
+  }
+
+  let elem_layout = match inst.t {
+    InstTyp::ArrayLen | InstTyp::ArrayLoad | InstTyp::ArrayStore => {
+      Some(format_array_elem_layout_id(inst.elem_layout))
+    }
+    _ => None,
+  };
+
+  let checked = match inst.t {
+    InstTyp::ArrayLoad | InstTyp::ArrayStore => Some(inst.checked),
+    _ => None,
+  };
+
   let arg_use_modes = (0..inst.args.len())
     .map(|idx| inst.meta.arg_use_mode(idx))
     .collect::<Vec<_>>();
@@ -573,6 +602,8 @@ fn dump_inst(
     foreign,
     foreign_str,
     unknown,
+    elem_layout,
+    checked,
     meta: InstMetaDump {
       effects: inst.meta.effects.clone(),
       purity: Purity::from_effects(&inst.meta.effects),

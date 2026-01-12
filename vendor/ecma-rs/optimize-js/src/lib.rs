@@ -86,6 +86,7 @@ use opt::optpass_exception_prune::optpass_exception_prune;
 use opt::optpass_impossible_branches::optpass_impossible_branches;
 use opt::optpass_inline::optpass_inline;
 use opt::optpass_licm::optpass_licm;
+use opt::optpass_bounds_check_elim::optpass_bounds_check_elim;
 use opt::optpass_loop_opts::optpass_loop_opts;
 use opt::optpass_nullcheck_elim::optpass_nullcheck_elim;
 use opt::optpass_redundant_assigns::optpass_redundant_assigns;
@@ -173,6 +174,14 @@ pub struct CompileCfgOptions {
   /// This is disabled by default because the transformations are intentionally conservative and
   /// still evolving; enabling it is primarily intended for native AOT consumers.
   pub enable_loop_opts: bool,
+  /// Enable bounds-check elimination (BCE) for native array element accesses.
+  ///
+  /// When enabled, the optimizer will attempt to prove `0 <= idx < arr.length`
+  /// for `InstTyp::ArrayLoad` / `InstTyp::ArrayStore` and mark the access as
+  /// unchecked for downstream native codegen.
+  ///
+  /// Default off.
+  pub enable_bce: bool,
 }
 
 /// Options controlling the SSA inliner (`optpass_inline`).
@@ -209,6 +218,7 @@ impl Default for CompileCfgOptions {
       enable_licm: false,
       enable_devirtualize: false,
       enable_loop_opts: false,
+      enable_bce: false,
     }
   }
 }
@@ -750,12 +760,13 @@ pub(crate) fn build_program_function_with_options(
         let licm_result = optpass_licm(&mut cfg, dom);
         // LICM may insert loop preheaders and rewrite CFG edges.
         dom_cache.maybe_invalidate(&licm_result);
+        let licm_cfg_changed = licm_result.cfg_changed;
         iteration_result.merge(licm_result);
         dbg_checkpoint(&format!("opt{}_licm", i), &cfg);
 
         // `optpass_licm` may create new CFG blocks with fresh labels. SSA deconstruction allocates
         // more labels using `c_label`, so keep the counter in sync to avoid collisions.
-        if licm_result.cfg_changed {
+        if licm_cfg_changed {
           let licm_after = cfg.graph.labels().max().unwrap_or(cfg.entry);
           // Only advance when LICM actually created new labels.
           if licm_after > licm_before {
@@ -768,6 +779,10 @@ pub(crate) fn build_program_function_with_options(
       }
       iteration_result.merge(optpass_trivial_dce(&mut cfg));
       dbg_checkpoint(&format!("opt{}_dce", i), &cfg);
+      if options.enable_bce {
+        iteration_result.merge(optpass_bounds_check_elim(&mut cfg));
+        dbg_checkpoint(&format!("opt{}_bce", i), &cfg);
+      }
       // TODO Isn't this really const/copy propagation to child Phi insts?
       iteration_result.merge(optpass_redundant_assigns(&mut cfg));
       dbg_checkpoint(&format!("opt{}_redundant_assigns", i), &cfg);

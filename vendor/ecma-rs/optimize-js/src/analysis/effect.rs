@@ -703,6 +703,16 @@ fn inst_local_effect_with_value_types(
         effects.summary.throws = ThrowBehavior::Maybe;
       }
     }
+    InstTyp::ArrayLen | InstTyp::ArrayLoad => {
+      effects.reads.insert(EffectLocation::Heap);
+      // Conservatively treat array ops like property accesses: they may throw on
+      // nullish receivers and `checked` element ops may throw on OOB.
+      if inst.t == InstTyp::ArrayLoad && !inst.checked {
+        // Proven in-bounds by BCE; treat as non-throwing.
+      } else {
+        effects.summary.throws = ThrowBehavior::Maybe;
+      }
+    }
     InstTyp::StringConcat => {
       // String concatenation is treated as a pure allocation (same as the
       // internal `__optimize_js_template` marker call it replaces in typed
@@ -723,6 +733,12 @@ fn inst_local_effect_with_value_types(
     InstTyp::FieldStore => {
       effects.writes.insert(EffectLocation::Heap);
       effects.summary.throws = ThrowBehavior::Maybe;
+    }
+    InstTyp::ArrayStore => {
+      effects.writes.insert(EffectLocation::Heap);
+      if inst.checked {
+        effects.summary.throws = ThrowBehavior::Maybe;
+      }
     }
     InstTyp::ForeignLoad => {
       effects.reads.insert(EffectLocation::Foreign(inst.foreign));
@@ -864,6 +880,22 @@ fn inst_local_effect_with_value_types_typed(
           effects.writes.remove(&EffectLocation::Heap);
           effects.writes.extend(locs);
         }
+      }
+    }
+    InstTyp::ArrayLen | InstTyp::ArrayLoad => {
+      if ctx.strict_native {
+        effects.reads.remove(&EffectLocation::Heap);
+        effects
+          .reads
+          .insert(EffectLocation::ArrayElements { elem: inst.elem_layout });
+      }
+    }
+    InstTyp::ArrayStore => {
+      if ctx.strict_native {
+        effects.writes.remove(&EffectLocation::Heap);
+        effects
+          .writes
+          .insert(EffectLocation::ArrayElements { elem: inst.elem_layout });
       }
     }
     _ => {}

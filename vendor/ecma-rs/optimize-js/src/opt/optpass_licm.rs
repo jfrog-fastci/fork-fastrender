@@ -236,10 +236,13 @@ fn is_hoist_candidate(inst: &Inst) -> bool {
     // Observable reads/writes or control flow / SSA.
     InstTyp::NullCheck
     | InstTyp::ForeignLoad
+    | InstTyp::ArrayLen
+    | InstTyp::ArrayLoad
     | InstTyp::UnknownLoad
     | InstTyp::ForeignStore
     | InstTyp::UnknownStore
     | InstTyp::PropAssign
+    | InstTyp::ArrayStore
     | InstTyp::Phi
     | InstTyp::CondGoto
     | InstTyp::Return

@@ -6,7 +6,7 @@ mod common;
 use common::compile_source_typed;
 use optimize_js::analysis::annotate_program;
 use optimize_js::cfg::cfg::Cfg;
-use optimize_js::il::inst::{ArrayElemRepr, BinOp, Const, Inst, InstTyp};
+use optimize_js::il::inst::{ArrayElemRepr, Inst, InstTyp};
 use optimize_js::TopLevelMode;
 
 fn collect_insts(cfg: &Cfg) -> Vec<Inst> {
@@ -37,16 +37,9 @@ fn array_repr_number_is_f64() {
   let load = insts
     .iter()
     .find(|inst| {
-      inst.t == InstTyp::Bin
-        && inst.bin_op == BinOp::GetProp
-        && inst.meta.array_elem_repr == Some(ArrayElemRepr::F64)
-        && !matches!(
-          inst.args.get(1),
-          Some(optimize_js::il::inst::Arg::Const(Const::Str(s))) if s == "length"
-        )
+      inst.t == InstTyp::ArrayLoad && inst.meta.array_elem_repr == Some(ArrayElemRepr::F64)
     })
     .expect("expected at least one array element load annotated as F64");
 
   assert_eq!(load.meta.array_elem_repr, Some(ArrayElemRepr::F64));
 }
-

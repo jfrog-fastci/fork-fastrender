@@ -295,6 +295,65 @@ impl<'p> HirSourceToInst<'p> {
     })
   }
 
+  #[cfg(feature = "typed")]
+  fn native_array_elem_layout_for_expr(&mut self, expr: ExprId) -> Option<types_ts_interned::LayoutId> {
+    let layout = self.program.types.expr_layout_id(self.body_id, expr)?;
+    let program = self.program.types.program.as_ref()?;
+    let store = program.interned_type_store();
+    match store.layout(layout) {
+      types_ts_interned::Layout::Ptr {
+        to: types_ts_interned::PtrKind::GcArray { elem },
+      } => Some(elem),
+      _ => None,
+    }
+  }
+
+  #[cfg(feature = "typed")]
+  fn array_index_arg_from_key(&self, key: &hir_js::ObjectKey, key_arg: &Arg) -> Option<Arg> {
+    use parse_js::num::JsNumber;
+
+    fn parse_array_index_str(s: &str) -> Option<u32> {
+      let Ok(idx) = s.parse::<u32>() else {
+        return None;
+      };
+      // Array indices are canonical uint32 strings excluding 2^32-1.
+      if idx == u32::MAX || idx.to_string() != s {
+        return None;
+      }
+      Some(idx)
+    }
+
+    match key_arg {
+      Arg::Const(Const::Num(n)) => {
+        let value = n.0;
+        if value.is_finite()
+          && value.fract() == 0.0
+          && value >= 0.0
+          && value < (u32::MAX as f64)
+        {
+          Some(Arg::Const(Const::Num(*n)))
+        } else {
+          None
+        }
+      }
+      Arg::Const(Const::Str(s)) => {
+        let idx = parse_array_index_str(s)?;
+        Some(Arg::Const(Const::Num(JsNumber(idx as f64))))
+      }
+      Arg::Var(_) => match key {
+        hir_js::ObjectKey::Computed(expr) => {
+          let summary = self
+            .program
+            .types
+            .expr_value_type_summary(self.body_id, *expr);
+          summary.is_definitely_number().then(|| key_arg.clone())
+        }
+        _ => None,
+      },
+      _ => None,
+    }
+  }
+
   pub fn compile_assignment(
     &mut self,
     assign_expr_id: ExprId,
@@ -497,6 +556,11 @@ impl<'p> HirSourceToInst<'p> {
         #[derive(Clone)]
         enum AssignTargetStore {
           Prop { obj: Arg, prop: Arg },
+          Array {
+            array: Arg,
+            index: Arg,
+            elem_layout: crate::il::inst::ArrayElemLayoutId,
+          },
           Field {
             obj: Arg,
             field: FieldRef,
@@ -522,7 +586,26 @@ impl<'p> HirSourceToInst<'p> {
               AssignTargetStore::Field { obj, field, meta }
             } else {
               let prop = key_arg(self, &member.property)?;
-              AssignTargetStore::Prop { obj, prop }
+              #[cfg(feature = "typed")]
+              {
+                if let Some(elem_layout) = self.native_array_elem_layout_for_expr(member.object) {
+                  if let Some(index_arg) = self.array_index_arg_from_key(&member.property, &prop) {
+                    AssignTargetStore::Array {
+                      array: obj,
+                      index: index_arg,
+                      elem_layout,
+                    }
+                  } else {
+                    AssignTargetStore::Prop { obj, prop }
+                  }
+                } else {
+                  AssignTargetStore::Prop { obj, prop }
+                }
+              }
+              #[cfg(not(feature = "typed"))]
+              {
+                AssignTargetStore::Prop { obj, prop }
+              }
             }
           }
           _ => {
@@ -538,6 +621,17 @@ impl<'p> HirSourceToInst<'p> {
           AssignTargetStore::Prop { obj, prop } => {
             Inst::prop_assign(obj.clone(), prop.clone(), dummy_val.clone())
           }
+          AssignTargetStore::Array {
+            array,
+            index,
+            elem_layout,
+          } => Inst::array_store(
+            array.clone(),
+            index.clone(),
+            dummy_val.clone(),
+            *elem_layout,
+            true,
+          ),
           AssignTargetStore::Field { obj, field, meta } => {
             let mut inst = Inst::field_store(obj.clone(), field.clone(), dummy_val.clone());
             inst.meta.field_access = Some(meta.clone());
@@ -566,6 +660,19 @@ impl<'p> HirSourceToInst<'p> {
                   obj.clone(),
                   BinOp::GetProp,
                   prop.clone(),
+                ));
+              }
+              AssignTargetStore::Array {
+                array,
+                index,
+                elem_layout,
+              } => {
+                self.out.push(Inst::array_load(
+                  left_tmp_var,
+                  array.clone(),
+                  index.clone(),
+                  *elem_layout,
+                  true,
                 ));
               }
               AssignTargetStore::Field { obj, field, meta } => {
@@ -652,6 +759,19 @@ impl<'p> HirSourceToInst<'p> {
                   obj.clone(),
                   BinOp::GetProp,
                   prop.clone(),
+                ));
+              }
+              AssignTargetStore::Array {
+                array,
+                index,
+                elem_layout,
+              } => {
+                self.out.push(Inst::array_load(
+                  left_tmp_var,
+                  array.clone(),
+                  index.clone(),
+                  *elem_layout,
+                  true,
                 ));
               }
               AssignTargetStore::Field { obj, field, meta } => {
@@ -1882,6 +2002,8 @@ impl<'p> HirSourceToInst<'p> {
       }
     }
     let res_tmp_var = self.c_temp.bump();
+    let right_arg = key_arg(self, &member.property)?;
+
     #[cfg(feature = "typed")]
     let field_access = self.try_resolve_field_access(member.object, &member.property);
     #[cfg(not(feature = "typed"))]
@@ -1891,11 +2013,36 @@ impl<'p> HirSourceToInst<'p> {
       inst.meta.field_access = Some(meta);
       self.push_value_inst(expr_id, inst);
     } else {
-      let right_arg = key_arg(self, &member.property)?;
-      self.push_value_inst(
-        expr_id,
-        Inst::bin(res_tmp_var, left_arg.clone(), BinOp::GetProp, right_arg),
-      );
+      #[cfg(feature = "typed")]
+      let lowered_array = (|| {
+        let elem_layout = self.native_array_elem_layout_for_expr(member.object)?;
+
+        // `arr.length` / `arr["length"]`
+        if matches!(&right_arg, Arg::Const(Const::Str(s)) if s == "length") {
+          self.push_value_inst(
+            expr_id,
+            Inst::array_len(res_tmp_var, left_arg.clone(), elem_layout),
+          );
+          return Some(());
+        }
+
+        // `arr[i]`
+        let index_arg = self.array_index_arg_from_key(&member.property, &right_arg)?;
+        self.push_value_inst(
+          expr_id,
+          Inst::array_load(res_tmp_var, left_arg.clone(), index_arg, elem_layout, true),
+        );
+        Some(())
+      })();
+      #[cfg(not(feature = "typed"))]
+      let lowered_array: Option<()> = None;
+
+      if lowered_array.is_none() {
+        self.push_value_inst(
+          expr_id,
+          Inst::bin(res_tmp_var, left_arg.clone(), BinOp::GetProp, right_arg),
+        );
+      }
     }
     self.complete_chain_setup(expr_id, did_chain_setup, res_tmp_var, chain);
     Ok(CompiledMemberExpr {

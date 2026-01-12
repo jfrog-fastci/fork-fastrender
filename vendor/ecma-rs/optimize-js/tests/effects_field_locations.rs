@@ -382,43 +382,32 @@ fn same_allocation_same_field_conflicts() {
 }
 
 #[test]
-fn dynamic_key_falls_back_to_heap_effects_even_in_strict_native() {
-  let (mut program, type_program) = compile_with_typecheck(
+fn strict_native_rejects_computed_member_with_non_const_key() {
+  let mut host = MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![
+      LibName::parse("es5").expect("LibName::parse(es5)"),
+      LibName::parse("es2015").expect("LibName::parse(es2015)"),
+    ],
+    native_strict: true,
+    ..Default::default()
+  });
+  let file_key = FileKey::new("input.ts");
+  host.insert(
+    file_key.clone(),
     r#"
-      const arr = [0, 1, 2];
-      let i = 0;
-      arr[i] = 1;
+      interface Obj {
+        [key: string]: number;
+      }
+      const obj: Obj = { x: 0 };
+      let k = "x";
+      obj[k] = 1;
     "#,
-    true,
   );
-
-  annotate_top_level_effects(&mut program, &type_program);
-
-  let cfg = program
-    .top_level
-    .ssa_body
-    .as_ref()
-    .unwrap_or(&program.top_level.body);
-  let insts = collect_insts(cfg);
-
-  let assign = insts
-    .iter()
-    .find(|inst| inst.t == InstTyp::PropAssign && matches!(inst.args.get(1), Some(Arg::Var(_))))
-    .expect("expected PropAssign with a dynamic key");
+  let type_program = Arc::new(typecheck_ts::Program::new(host, vec![file_key.clone()]));
+  let diagnostics = type_program.check();
   assert!(
-    assign.meta.effects.writes.contains(&EffectLocation::Heap),
-    "expected Heap write for dynamic key but got {:?}",
-    assign.meta.effects.writes
-  );
-  assert!(
-    !assign
-      .meta
-      .effects
-      .writes
-      .iter()
-      .any(|loc| matches!(loc, EffectLocation::Field { .. })),
-    "expected no Field locations for dynamic key but got {:?}",
-    assign.meta.effects.writes
+    diagnostics.iter().any(|d| d.code == "TC4007"),
+    "expected strict native to reject computed property access with non-constant key (TC4007) but got: {diagnostics:?}"
   );
 }
 
@@ -426,11 +415,7 @@ fn dynamic_key_falls_back_to_heap_effects_even_in_strict_native() {
 fn strict_native_array_index_and_length_use_array_elements_location() {
   let (mut program, type_program) = compile_with_typecheck(
     r#"
-      interface Arr {
-        [idx: number]: number;
-        length: number;
-      }
-      const arr: Arr = { length: 3, 0: 0, 1: 1, 2: 2 };
+      const arr = [0, 1, 2];
       arr[0] = 42;
       const x = arr[0];
       const len = arr.length;
@@ -453,24 +438,19 @@ fn strict_native_array_index_and_length_use_array_elements_location() {
 
   let write = insts
     .iter()
-    .find(|inst| inst.t == InstTyp::PropAssign)
-    .expect("expected PropAssign to arr[0]");
+    .find(|inst| inst.t == InstTyp::ArrayStore)
+    .expect("expected ArrayStore to arr[0]");
   let read_index = insts
     .iter()
     .find(|inst| {
-      inst.t == InstTyp::Bin
-        && inst.bin_op == BinOp::GetProp
+      inst.t == InstTyp::ArrayLoad
         && matches!(inst.args.get(1), Some(Arg::Const(Const::Num(n))) if n.0 == 0.0)
     })
-    .expect("expected GetProp for arr[0]");
+    .expect("expected ArrayLoad for arr[0]");
   let read_len = insts
     .iter()
-    .find(|inst| {
-      inst.t == InstTyp::Bin
-        && inst.bin_op == BinOp::GetProp
-        && matches!(inst.args.get(1), Some(Arg::Const(Const::Str(s))) if s == "length")
-    })
-    .expect("expected GetProp for arr.length");
+    .find(|inst| inst.t == InstTyp::ArrayLen)
+    .expect("expected ArrayLen for arr.length");
 
   // Ensure we refined away the coarse heap effects.
   assert!(
@@ -489,48 +469,36 @@ fn strict_native_array_index_and_length_use_array_elements_location() {
     read_len.meta.effects.reads
   );
 
-  let write_loc = write
-    .meta
-    .effects
-    .writes
-    .iter()
-    .next()
-    .expect("expected write location");
-  match write_loc {
-    EffectLocation::ArrayElements { elem } => assert_eq!(
-      *elem, expected_elem,
-      "expected array element layout to match number layout"
-    ),
-    other => panic!("expected ArrayElements location but got {other:?}"),
-  }
+  assert!(
+    write
+      .meta
+      .effects
+      .writes
+      .contains(&EffectLocation::ArrayElements { elem: expected_elem }),
+    "expected array write to use ArrayElements {{ elem: {expected_elem:?} }} but got {:?}",
+    write.meta.effects.writes
+  );
+  assert!(
+    read_index
+      .meta
+      .effects
+      .reads
+      .contains(&EffectLocation::ArrayElements { elem: expected_elem }),
+    "expected array read to use ArrayElements {{ elem: {expected_elem:?} }} but got {:?}",
+    read_index.meta.effects.reads
+  );
+  assert!(
+    read_len
+      .meta
+      .effects
+      .reads
+      .contains(&EffectLocation::ArrayElements { elem: expected_elem }),
+    "expected length read to use ArrayElements {{ elem: {expected_elem:?} }} but got {:?}",
+    read_len.meta.effects.reads
+  );
 
-  let read_loc = read_index
-    .meta
-    .effects
-    .reads
-    .iter()
-    .next()
-    .expect("expected read location");
-  match read_loc {
-    EffectLocation::ArrayElements { elem } => assert_eq!(
-      *elem, expected_elem,
-      "expected array read element layout to match number layout"
-    ),
-    other => panic!("expected ArrayElements location but got {other:?}"),
-  }
-
-  let len_loc = read_len
-    .meta
-    .effects
-    .reads
-    .iter()
-    .next()
-    .expect("expected length read location");
-  match len_loc {
-    EffectLocation::ArrayElements { elem } => assert_eq!(
-      *elem, expected_elem,
-      "expected length read to share the array elements location"
-    ),
-    other => panic!("expected ArrayElements location but got {other:?}"),
-  }
+  // The ops should also carry deterministic element layout metadata for native lowering.
+  assert_eq!(write.elem_layout, expected_elem);
+  assert_eq!(read_index.elem_layout, expected_elem);
+  assert_eq!(read_len.elem_layout, expected_elem);
 }
