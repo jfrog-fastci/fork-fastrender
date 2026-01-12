@@ -6,6 +6,7 @@
 mod common;
 mod api;
 mod accessibility;
+mod interaction;
 mod fixtures;
 mod browser_integration;
 mod guards;
