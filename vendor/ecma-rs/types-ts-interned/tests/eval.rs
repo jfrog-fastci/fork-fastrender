@@ -4464,6 +4464,21 @@ fn intersection_of_empty_object_union_with_empty_object_is_empty_object() {
 }
 
 #[test]
+fn intersection_with_empty_object_elides_reintroduced_empty_object() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let union = store.union(vec![empty_object, primitives.string]);
+  // After applying `{}` constraints, the union reduces to `{}`, which should be
+  // redundant in the presence of the other `string` member.
+  let intersection =
+    store.intern_type(TypeKind::Intersection(vec![union, primitives.string, empty_object]));
+
+  assert_eq!(store.evaluate(intersection), primitives.string);
+}
+
+#[test]
 fn intersection_distribution_with_empty_object_filters_nullish_branches() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();

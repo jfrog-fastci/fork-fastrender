@@ -974,6 +974,15 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         .into_iter()
         .map(|member| self.intersect_with_empty_object(member, depth + 1))
         .collect();
+
+      // Some members (e.g. `unknown`) reduce to `{}` when intersected with `{}`.
+      // If the intersection still has other members, `{}` is redundant because
+      // all other members have already been constrained to be non-nullish.
+      let has_empty_object_member = base_members.iter().any(|m| *m == empty_object);
+      let has_other_member = base_members.iter().any(|m| *m != empty_object);
+      if has_empty_object_member && has_other_member {
+        base_members.retain(|m| *m != empty_object);
+      }
     }
 
     let mut result = if base_members.is_empty() {
