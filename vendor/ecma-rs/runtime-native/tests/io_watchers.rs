@@ -122,7 +122,7 @@ mod linux {
     let _rt = TestRuntimeGuard::new();
     let (rfd, wfd) = pipe();
     assert_eq!(
-      rt_io_register(rfd, 0, noop_cb, std::ptr::null_mut()),
+      rt_io_register(rfd, 0, noop_cb, std::ptr::null_mut()).0,
       0,
       "expected empty-interest registration to fail"
     );
@@ -160,12 +160,12 @@ mod linux {
     let wfd = fds[1];
 
     let id = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-    assert_eq!(id, 0, "expected blocking fd registration to fail");
+    assert_eq!(id.0, 0, "expected blocking fd registration to fail");
 
     // Ensure the failure didn't leak a registration by setting O_NONBLOCK and re-registering.
     set_nonblocking(rfd);
     let id2 = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-    assert_ne!(id2, 0, "expected registration to succeed after setting O_NONBLOCK");
+    assert_ne!(id2.0, 0, "expected registration to succeed after setting O_NONBLOCK");
     rt_io_unregister(id2);
 
     close(rfd);
@@ -184,7 +184,7 @@ mod linux {
     let state_ptr = state.as_ref() as *const CallbackState as *mut u8;
 
     let id = rt_io_register(rfd, RT_IO_READABLE, record_events, state_ptr);
-    assert_ne!(id, 0);
+    assert_ne!(id.0, 0);
 
     let t = std::thread::spawn(move || {
       write_byte(wfd);
@@ -220,7 +220,7 @@ mod linux {
     let state_ptr = state.as_ref() as *const CallbackState as *mut u8;
 
     let id = rt_io_register(wfd, RT_IO_WRITABLE, record_events, state_ptr);
-    assert_ne!(id, 0);
+    assert_ne!(id.0, 0);
 
     let mut ok = false;
     for _ in 0..16 {
@@ -251,7 +251,7 @@ mod linux {
     let state_ptr = state.as_ref() as *const CallbackState as *mut u8;
 
     let id = rt_io_register(rfd, RT_IO_READABLE, record_events, state_ptr);
-    assert_ne!(id, 0);
+    assert_ne!(id.0, 0);
     rt_io_unregister(id);
 
     write_byte(wfd);
@@ -292,7 +292,7 @@ mod linux {
 
     // Start by registering READABLE only, then update to WRITABLE.
     let id = rt_io_register(a, RT_IO_READABLE, record_events, state_ptr);
-    assert_ne!(id, 0);
+    assert_ne!(id.0, 0);
     rt_io_update(id, RT_IO_WRITABLE);
 
     // Drain `b` to free space in `a`'s send buffer, producing a WRITABLE edge on `a`.
@@ -352,7 +352,7 @@ mod linux {
     let state_ptr = state.as_ref() as *const State as *mut u8;
 
     let id = rt_io_register(a, RT_IO_WRITABLE, record_events, state_ptr);
-    assert_ne!(id, 0);
+    assert_ne!(id.0, 0);
 
     // Drain `b` to free space in `a`'s send buffer, producing a WRITABLE edge on `a`.
     drain_read(b);
@@ -394,7 +394,7 @@ mod linux {
     // ready.
     let (block_rfd, block_wfd) = pipe();
     let block_id = rt_io_register(block_rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-    assert_ne!(block_id, 0);
+    assert_ne!(block_id.0, 0);
 
     let (tx, rx) = mpsc::channel();
     let poll_thread = std::thread::spawn(move || {
@@ -424,7 +424,7 @@ mod linux {
       // wake the event loop thread.
       let (rfd, wfd) = pipe();
       let id = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-      assert_ne!(id, 0);
+      assert_ne!(id.0, 0);
       rt_io_unregister(id);
       close(rfd);
       close(wfd);
@@ -557,12 +557,12 @@ mod kqueue {
     let wfd = fds[1];
 
     let id = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-    assert_eq!(id, 0, "expected blocking fd registration to fail");
+    assert_eq!(id.0, 0, "expected blocking fd registration to fail");
 
     // Ensure the failure didn't leak a registration by setting O_NONBLOCK and re-registering.
     set_nonblocking(rfd);
     let id2 = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-    assert_ne!(id2, 0, "expected registration to succeed after setting O_NONBLOCK");
+    assert_ne!(id2.0, 0, "expected registration to succeed after setting O_NONBLOCK");
     rt_io_unregister(id2);
 
     close(rfd);
@@ -574,7 +574,7 @@ mod kqueue {
     let _rt = TestRuntimeGuard::new();
     let (rfd, wfd) = pipe();
     assert_eq!(
-      rt_io_register(rfd, 0, noop_cb, std::ptr::null_mut()),
+      rt_io_register(rfd, 0, noop_cb, std::ptr::null_mut()).0,
       0,
       "expected empty-interest registration to fail"
     );
@@ -608,7 +608,7 @@ mod kqueue {
     // ready.
     let (block_rfd, block_wfd) = pipe();
     let block_id = rt_io_register(block_rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-    assert_ne!(block_id, 0);
+    assert_ne!(block_id.0, 0);
 
     let (tx, rx) = mpsc::channel();
     let poll_thread = std::thread::spawn(move || {
@@ -634,7 +634,7 @@ mod kqueue {
       // wake the event loop thread.
       let (rfd, wfd) = pipe();
       let id = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-      assert_ne!(id, 0);
+      assert_ne!(id.0, 0);
       rt_io_unregister(id);
       close(rfd);
       close(wfd);
@@ -680,7 +680,7 @@ mod kqueue {
 
     // Start by registering READABLE only, then update to WRITABLE.
     let id = rt_io_register(a, RT_IO_READABLE, record_events, state_ptr);
-    assert_ne!(id, 0);
+    assert_ne!(id.0, 0);
     rt_io_update(id, RT_IO_WRITABLE);
 
     // Drain `b` to free space in `a`'s send buffer, producing a WRITABLE edge on `a`.
@@ -743,7 +743,7 @@ mod kqueue {
     let state_ptr = state.as_ref() as *const State as *mut u8;
 
     let id = rt_io_register(a, RT_IO_WRITABLE, record_events, state_ptr);
-    assert_ne!(id, 0);
+    assert_ne!(id.0, 0);
 
     // Drain `b` to free space in `a`'s send buffer, producing a WRITABLE edge on `a`.
     drain_read(b);

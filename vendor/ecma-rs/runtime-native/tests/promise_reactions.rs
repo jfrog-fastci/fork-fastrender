@@ -1,9 +1,11 @@
 use runtime_native::abi::{
-  LegacyPromiseRef, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+  LegacyPromiseRef, PromiseRef as AbiPromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
 };
 use runtime_native::async_abi::{
-  Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
+  Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef as AsyncPromiseRef, CORO_FLAG_RUNTIME_OWNS_FRAME,
+  RT_ASYNC_ABI_VERSION,
 };
+use runtime_native::promise_reactions::{PromiseReactionNode, PromiseReactionVTable};
 use runtime_native::CoroutineId;
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
@@ -51,8 +53,78 @@ unsafe fn alloc_pinned<T>(shape: RtShapeId) -> *mut GcBox<T> {
   runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<T>>(), shape).cast::<GcBox<T>>()
 }
 
-fn promise_then_legacy_sendable(promise: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
-  runtime_native::rt_promise_then_legacy(promise.0.cast(), on_settle, data);
+// -----------------------------------------------------------------------------
+// Native async-ABI promise reaction helper (tests)
+// -----------------------------------------------------------------------------
+
+#[repr(C)]
+struct CallbackReaction {
+  header: PromiseReactionNode,
+  cb: extern "C" fn(*mut u8),
+  data: *mut u8,
+}
+
+extern "C" fn callback_reaction_run(node: *mut PromiseReactionNode, _promise: AsyncPromiseRef) {
+  let node = unsafe { &*(node as *const CallbackReaction) };
+  (node.cb)(node.data);
+}
+
+extern "C" fn callback_reaction_drop(node: *mut PromiseReactionNode) {
+  unsafe {
+    drop(Box::from_raw(node as *mut CallbackReaction));
+  }
+}
+
+static CALLBACK_REACTION_VTABLE: PromiseReactionVTable = PromiseReactionVTable {
+  run: callback_reaction_run,
+  drop: callback_reaction_drop,
+};
+
+fn push_native_reaction(promise: AbiPromiseRef, node: *mut PromiseReactionNode) {
+  if promise.is_null() || node.is_null() {
+    return;
+  }
+
+  // `AbiPromiseRef` is a stable ABI handle; the concrete promise layout begins with a `PromiseHeader`
+  // at offset 0.
+  let header = promise.0 as *mut PromiseHeader;
+  if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+
+  let waiters = unsafe { &(*header).waiters };
+  loop {
+    let head_val = waiters.load(Ordering::Acquire);
+    let head = if head_val == 0 {
+      core::ptr::null_mut()
+    } else {
+      if head_val % core::mem::align_of::<PromiseReactionNode>() != 0 {
+        std::process::abort();
+      }
+      head_val as *mut PromiseReactionNode
+    };
+    unsafe {
+      (*node).next = head;
+    }
+    if waiters
+      .compare_exchange(head_val, node as usize, Ordering::AcqRel, Ordering::Acquire)
+      .is_ok()
+    {
+      break;
+    }
+  }
+}
+
+fn native_promise_then(promise: AbiPromiseRef, cb: extern "C" fn(*mut u8), data: *mut u8) {
+  let node = Box::new(CallbackReaction {
+    header: PromiseReactionNode {
+      next: core::ptr::null_mut(),
+      vtable: &CALLBACK_REACTION_VTABLE,
+    },
+    cb,
+    data,
+  });
+  push_native_reaction(promise, Box::into_raw(node) as *mut PromiseReactionNode);
 }
 
 #[repr(C)]
@@ -72,13 +144,13 @@ extern "C" fn log_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     match (*coro).header.state {
       0 => {
         runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         let log = &*(*coro).log;
         log.lock().unwrap().push((*coro).id);
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -107,7 +179,7 @@ fn await_and_then_share_single_reaction_list_with_fifo_ordering() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: log_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -135,7 +207,6 @@ fn concurrent_registrations_do_not_lose_reactions() {
   let _rt = TestRuntimeGuard::new();
 
   let promise = runtime_native::rt_promise_new_legacy();
-  let promise_send = PromiseRef(promise.cast());
   let fired: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
 
   extern "C" fn inc(data: *mut u8) {
@@ -155,10 +226,11 @@ fn concurrent_registrations_do_not_lose_reactions() {
     let b = barrier.clone();
     let half_ready = half_ready.clone();
     let settled = settled.clone();
+    let promise = promise;
     joins.push(std::thread::spawn(move || {
       b.wait();
       for i in 0..PER_THREAD {
-        promise_then_legacy_sendable(promise_send, inc, fired as *const AtomicUsize as *mut u8);
+        runtime_native::rt_promise_then_legacy(promise, inc, fired as *const AtomicUsize as *mut u8);
         if i + 1 == HALF {
           half_ready.fetch_add(1, Ordering::SeqCst);
           while !settled.load(Ordering::SeqCst) {
@@ -242,7 +314,7 @@ fn promise_fulfill_abi_drains_then_reactions() {
   promise.header.state.store(123, Ordering::Release);
   promise.header.waiters.store(456, Ordering::Release);
   promise.header.flags.store(7, Ordering::Release);
-  let promise = PromiseRef(Box::into_raw(promise).cast());
+  let promise = AbiPromiseRef(Box::into_raw(promise).cast());
 
   unsafe {
     runtime_native::rt_promise_init(promise);
@@ -254,7 +326,7 @@ fn promise_fulfill_abi_drains_then_reactions() {
     flag.store(true, Ordering::SeqCst);
   }
 
-  runtime_native::rt_promise_then_legacy(promise.0.cast(), set_fired, fired as *const AtomicBool as *mut u8);
+  native_promise_then(promise, set_fired, fired as *const AtomicBool as *mut u8);
   unsafe {
     runtime_native::rt_promise_fulfill(promise);
   }
@@ -295,7 +367,7 @@ unsafe extern "C" fn abi_coro_resume(coro: *mut Coroutine) -> CoroutineStep {
       let completed = unsafe { &*(*coro).completed };
       completed.store(true, Ordering::SeqCst);
       unsafe {
-        runtime_native::rt_promise_fulfill(PromiseRef((*coro).header.promise.cast()));
+        runtime_native::rt_promise_fulfill(AbiPromiseRef((*coro).header.promise.cast()));
       }
       unsafe {
         (*coro).state = 2;
@@ -331,7 +403,7 @@ fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
   ensure_shape_table();
 
   let awaited = runtime_native::rt_promise_new_legacy();
-  let awaited_header = awaited.cast::<PromiseHeader>();
+  let awaited_header = awaited.0.cast::<PromiseHeader>();
 
   let completed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let then_ran: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
@@ -356,11 +428,7 @@ fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
     let flag = unsafe { &*(data as *const AtomicBool) };
     flag.store(true, Ordering::SeqCst);
   }
-  runtime_native::rt_promise_then_legacy(
-    result_promise.0.cast(),
-    set_then,
-    then_ran as *const AtomicBool as *mut u8,
-  );
+  native_promise_then(result_promise, set_then, then_ran as *const AtomicBool as *mut u8);
 
   runtime_native::rt_promise_resolve_legacy(awaited, core::ptr::null_mut());
   while runtime_native::rt_async_poll() {}

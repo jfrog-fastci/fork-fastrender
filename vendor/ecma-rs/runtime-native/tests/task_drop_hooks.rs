@@ -141,7 +141,7 @@ fn interval_with_drop_can_clear_itself_without_dropping_while_running() {
   let drops = Arc::new(AtomicUsize::new(0));
 
   let ctx = Box::new(IntervalCtx {
-    id: 0,
+    id: runtime_native::abi::TimerId(0),
     fired: fired.clone(),
     drops: drops.clone(),
   });

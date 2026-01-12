@@ -73,13 +73,13 @@ extern "C" fn await_value_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     match (*coro).header.state {
       0 => {
         runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         assert_eq!((*coro).header.await_is_error, 0);
         (*coro).observed = (*coro).header.await_value.cast();
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -102,7 +102,7 @@ fn legacy_promise_value_is_rooted_and_relocated_by_minor_gc() {
   let mut coro = Box::new(AwaitValueCoro {
     header: RtCoroutineHeader {
       resume: await_value_resume,
-      promise: core::ptr::null_mut(),
+      promise: LegacyPromiseRef::null(),
       state: 0,
       await_is_error: 0,
       await_value: core::ptr::null_mut(),

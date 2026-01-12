@@ -112,7 +112,7 @@ fn io_watcher_rooted_keeps_gc_object_alive_and_relocates_pointer() {
     record_magic_io,
     obj,
   );
-  assert_ne!(watcher, 0);
+  assert_ne!(watcher.0, 0);
 
   // Move/collect while the watcher is registered but before any readiness is delivered.
   collect_major(&mut heap);
@@ -190,7 +190,7 @@ fn io_watcher_rooted_can_be_unregistered_before_first_event_and_releases_root() 
     mark_fired,
     obj,
   );
-  assert_ne!(watcher, 0);
+  assert_ne!(watcher.0, 0);
 
   // Move/collect while the watcher is registered but before any readiness is delivered.
   collect_major(&mut heap);

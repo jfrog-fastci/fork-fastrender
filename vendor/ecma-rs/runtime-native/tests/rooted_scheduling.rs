@@ -162,7 +162,7 @@ fn timeout_rooted_releases_gc_object_when_cleared_before_fire() {
 
   // Use a long delay so the timer will still be pending when we clear it.
   let id = runtime_native::rt_set_timeout_rooted(record_magic, obj, 60_000);
-  assert_ne!(id, 0);
+  assert_ne!(id.0, 0);
 
   // Move/collect while the timer is still pending.
   collect_major(&mut heap);
@@ -205,7 +205,7 @@ fn interval_rooted_keeps_gc_object_alive_until_cleared() {
 
   // Use a 0ms interval so the callback is due immediately once the event loop is polled.
   let id = runtime_native::rt_set_interval_rooted(interval_record_magic, obj, 0);
-  assert_ne!(id, 0);
+  assert_ne!(id.0, 0);
 
   // Move/collect while the interval is still pending.
   collect_major(&mut heap);
@@ -463,7 +463,7 @@ fn io_register_rooted_keeps_gc_object_alive_until_unregistered() {
     io_record_magic,
     obj,
   );
-  assert_ne!(watcher, 0);
+  assert_ne!(watcher.0, 0);
 
   // Move/collect while the watcher is still registered (before any readiness event).
   collect_major(&mut heap);

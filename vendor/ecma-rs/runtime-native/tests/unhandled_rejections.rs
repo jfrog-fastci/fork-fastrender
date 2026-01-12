@@ -63,12 +63,12 @@ extern "C" fn propagating_await_resume(coro: *mut RtCoroutineHeader) -> RtCoroSt
     match (*coro).header.state {
       0 => {
         runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         assert_eq!((*coro).header.await_is_error, 1);
         runtime_native::rt_promise_reject_legacy((*coro).header.promise, (*coro).header.await_error);
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -87,7 +87,7 @@ fn awaited_rejection_is_not_reported_as_unhandled() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: propagating_await_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -120,7 +120,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   assert_eq!(
     runtime_native::test_util::drain_promise_rejection_events(),
     vec![PromiseRejectionEvent::UnhandledRejection {
-      promise: PromiseRef(p.cast())
+      promise: PromiseRef(p.0.cast())
     }]
   );
 
@@ -128,7 +128,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: propagating_await_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -144,7 +144,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   assert_eq!(
     runtime_native::test_util::drain_promise_rejection_events(),
     vec![PromiseRejectionEvent::RejectionHandled {
-      promise: PromiseRef(p.cast())
+      promise: PromiseRef(p.0.cast())
     }]
   );
 }

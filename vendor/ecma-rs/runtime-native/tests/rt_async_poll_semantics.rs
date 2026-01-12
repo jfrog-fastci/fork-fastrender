@@ -251,7 +251,7 @@ mod linux {
       on_readable,
       ctx_ptr.cast::<u8>(),
     );
-    assert_ne!(watcher, 0, "rt_io_register returned 0");
+    assert_ne!(watcher.0, 0, "rt_io_register returned 0");
 
     // Make the fd readable.
     let byte: u8 = 1;

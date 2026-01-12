@@ -1,5 +1,5 @@
-use crate::abi::Microtask;
 use crate::abi::LegacyPromiseRef;
+use crate::abi::Microtask;
 use crate::abi::PromiseRef;
 use crate::abi::PromiseResolveInput;
 use crate::abi::RtCoroutineHeader;
@@ -101,11 +101,6 @@ fn promise_is_pending(p: PromiseRef) -> bool {
   // internal transient settling states. Treat any non-(FULFILLED|REJECTED) state as pending.
   let state = unsafe { &(*header).state }.load(Ordering::Acquire);
   state != PromiseHeader::FULFILLED && state != PromiseHeader::REJECTED
-}
-
-#[inline]
-fn promise_ref_from_legacy(p: LegacyPromiseRef) -> PromiseRef {
-  PromiseRef(p.cast())
 }
 
 #[repr(C)]
@@ -1636,7 +1631,6 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
     let _ = async_rt::global();
 
     let promise = async_rt::promise::promise_new();
-    let promise_legacy: LegacyPromiseRef = promise.0.cast();
     if !promise.is_null() {
       let header = promise.0.cast::<PromiseHeader>();
       if header.is_null() {
@@ -1670,10 +1664,10 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
     let work = Box::new(WorkItem {
       task,
       data,
-      promise: promise_legacy,
+      promise,
     });
     crate::rt_parallel().spawn_detached(run_work_item, Box::into_raw(work) as *mut u8);
-    promise_legacy
+    promise
   })
 }
 
@@ -2310,20 +2304,19 @@ fn rt_async_sleep_impl(delay_ms: u64, entry_fp: u64) -> PromiseRef {
 }
 
 #[inline]
-fn rt_async_sleep_legacy_impl(delay_ms: u64) -> PromiseRef {
+fn rt_async_sleep_legacy_impl(delay_ms: u64) -> LegacyPromiseRef {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
 
-  extern "C" fn resolve_sleep(data: *mut u8) {
-    let promise = PromiseRef(data.cast());
-    async_rt::promise::promise_resolve(promise, core::ptr::null_mut());
+  let promise = async_rt::promise::promise_new();
+
+  extern "C" fn fulfill_sleep_legacy(data: *mut u8) {
+    let promise = LegacyPromiseRef(data.cast());
+    async_rt::promise::promise_resolve(PromiseRef(promise.0.cast()), core::ptr::null_mut());
   }
 
-  let promise = async_rt::promise::promise_new();
-  let _timer_id = async_rt::global().schedule_timer_in(
-    Duration::from_millis(delay_ms),
-    async_rt::Task::new(resolve_sleep, promise.0 as *mut u8),
-  );
+  let task = async_rt::Task::new(fulfill_sleep_legacy, promise.0.cast());
+  let _timer_id = async_rt::global().schedule_timer_in(Duration::from_millis(delay_ms), task);
   promise
 }
 
@@ -2343,7 +2336,7 @@ pub extern "C" fn rt_async_sleep(delay_ms: u64) -> PromiseRef {
 
 #[no_mangle]
 pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> LegacyPromiseRef {
-  abort_on_panic(|| rt_async_sleep_legacy_impl(delay_ms).0.cast())
+  abort_on_panic(|| rt_async_sleep_legacy_impl(delay_ms))
 }
 
 // -----------------------------------------------------------------------------
@@ -2494,12 +2487,12 @@ pub extern "C" fn rt_io_register(
           "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
         ),
       );
-      return 0;
+      return IoWatcherId(0);
     }
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
     match async_rt::global().register_io(fd, interests, cb, data) {
-      Ok(id) => id.as_raw(),
+      Ok(id) => IoWatcherId(id.as_raw()),
       Err(err) => {
         let is_nonblocking_contract_violation =
           err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
@@ -2525,7 +2518,7 @@ pub extern "C" fn rt_io_register(
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
-        0
+        IoWatcherId(0)
       }
     }
   })
@@ -2565,12 +2558,12 @@ pub extern "C" fn rt_io_register_with_drop(
       );
       ensure_current_thread_registered();
       crate::ffi::invoke_cb1(drop_data, data);
-      return 0;
+      return IoWatcherId(0);
     }
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
     match async_rt::global().register_io_with_drop(fd, interests, cb, data, drop_data) {
-      Ok(id) => id.as_raw(),
+      Ok(id) => IoWatcherId(id.as_raw()),
       Err(err) => {
         let is_nonblocking_contract_violation =
           err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
@@ -2597,7 +2590,7 @@ pub extern "C" fn rt_io_register_with_drop(
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
-        0
+        IoWatcherId(0)
       }
     }
   })
@@ -2632,7 +2625,7 @@ pub extern "C" fn rt_io_register_rooted(
           "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
         ),
       );
-      return 0;
+      return IoWatcherId(0);
     }
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
@@ -2651,7 +2644,7 @@ pub extern "C" fn rt_io_register_rooted(
       ctx_ptr,
       drop_rooted_io_watcher_data,
     ) {
-      Ok(id) => id.as_raw(),
+      Ok(id) => IoWatcherId(id.as_raw()),
       Err(err) => {
         let is_nonblocking_contract_violation =
           err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
@@ -2679,7 +2672,7 @@ pub extern "C" fn rt_io_register_rooted(
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
-        0
+        IoWatcherId(0)
       }
     }
   })
@@ -2715,7 +2708,7 @@ pub unsafe extern "C" fn rt_io_register_rooted_h(
           "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
         ),
       );
-      return 0;
+      return IoWatcherId(0);
     }
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
@@ -2734,7 +2727,7 @@ pub unsafe extern "C" fn rt_io_register_rooted_h(
       ctx_ptr,
       drop_rooted_io_watcher_data,
     ) {
-      Ok(id) => id.as_raw(),
+      Ok(id) => IoWatcherId(id.as_raw()),
       Err(err) => {
         let is_nonblocking_contract_violation =
           err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
@@ -2762,7 +2755,7 @@ pub unsafe extern "C" fn rt_io_register_rooted_h(
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
-        0
+        IoWatcherId(0)
       }
     }
   })
@@ -2802,7 +2795,7 @@ pub extern "C" fn rt_io_register_handle(
       );
       ensure_current_thread_registered();
       rt_handle_free(data);
-      return 0;
+      return IoWatcherId(0);
     }
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
@@ -2821,7 +2814,7 @@ pub extern "C" fn rt_io_register_handle(
       ctx_ptr,
       drop_handle_io_watcher_data,
     ) {
-      Ok(id) => id.as_raw(),
+      Ok(id) => IoWatcherId(id.as_raw()),
       Err(err) => {
         let is_nonblocking_contract_violation =
           err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
@@ -2848,7 +2841,7 @@ pub extern "C" fn rt_io_register_handle(
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
-        0
+        IoWatcherId(0)
       }
     }
   })
@@ -2889,7 +2882,7 @@ pub extern "C" fn rt_io_register_handle_with_drop(
         crate::ffi::invoke_cb1(drop_data, ptr);
       }
       rt_handle_free(data);
-      return 0;
+      return IoWatcherId(0);
     }
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
@@ -2908,7 +2901,7 @@ pub extern "C" fn rt_io_register_handle_with_drop(
       ctx_ptr,
       drop_handle_io_watcher_data,
     ) {
-      Ok(id) => id.as_raw(),
+      Ok(id) => IoWatcherId(id.as_raw()),
       Err(err) => {
         let is_nonblocking_contract_violation =
           err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
@@ -2935,7 +2928,7 @@ pub extern "C" fn rt_io_register_handle_with_drop(
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
-        0
+        IoWatcherId(0)
       }
     }
   })
@@ -2967,19 +2960,21 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
       maybe_log_rt_io_failure(
         "rt_io_update",
         format_args!(
-          "id={id} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE; use rt_io_unregister to stop watching)"
+          "id={} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE; use rt_io_unregister to stop watching)",
+          id.0
         ),
       );
       return;
     }
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
-    if !async_rt::global().update_io(WatcherId::from_raw(id), interests) {
+    if !async_rt::global().update_io(WatcherId::from_raw(id.0), interests) {
       rt_io_set_last_error(rt_io_debug::ERR_UPDATE_FAILED);
       maybe_log_rt_io_failure(
         "rt_io_update",
         format_args!(
-          "id={id} interests=0x{interests:x}: update failed (invalid id or fd no longer nonblocking)"
+          "id={} interests=0x{interests:x}: update failed (invalid id or fd no longer nonblocking)",
+          id.0
         ),
       );
     }
@@ -3005,11 +3000,11 @@ pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
     rt_io_set_last_error(rt_io_debug::OK);
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
-    if !async_rt::global().deregister_fd(WatcherId::from_raw(id)) {
+    if !async_rt::global().deregister_fd(WatcherId::from_raw(id.0)) {
       rt_io_set_last_error(rt_io_debug::ERR_UNREGISTER_FAILED);
       maybe_log_rt_io_failure(
         "rt_io_unregister",
-        format_args!("id={id}: unregister failed (invalid id)"),
+        format_args!("id={}: unregister failed (invalid id)", id.0),
       );
     }
   })
@@ -3091,17 +3086,17 @@ fn alloc_web_timer_id() -> TimerId {
   loop {
     let id = NEXT_WEB_TIMER_ID.fetch_add(1, Ordering::Relaxed);
     if id != 0 {
-      return id;
+      return TimerId(id);
     }
   }
 }
 
 fn timer_id_to_ptr(id: TimerId) -> *mut u8 {
-  id as usize as *mut u8
+  id.0 as usize as *mut u8
 }
 
 fn timer_id_from_ptr(data: *mut u8) -> TimerId {
-  data as usize as TimerId
+  TimerId(data as usize as u64)
 }
 
 extern "C" fn web_timer_fire(data: *mut u8) {
@@ -3914,7 +3909,7 @@ pub extern "C" fn rt_coro_await(
 pub extern "C" fn rt_promise_new_legacy() -> LegacyPromiseRef {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_new().0.cast()
+    async_rt::promise::promise_new()
   })
 }
 
@@ -3936,44 +3931,7 @@ pub extern "C" fn rt_promise_new_legacy() -> LegacyPromiseRef {
 pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    if p.is_null() {
-      return core::ptr::null_mut();
-    }
-
-    // `PromiseRef` is an opaque pointer in the stable ABI, but by contract it must point to a
-    // `PromiseHeader` at offset 0 of the allocation.
-    let header = p.0.cast::<PromiseHeader>();
-    if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
-      std::process::abort();
-    }
-
-    // Promises that set `PROMISE_FLAG_HAS_PAYLOAD` carry an out-of-line payload buffer.
-    //
-    // Today this covers payload promises created by `rt_parallel_spawn_promise*` or
-    // `rt_spawn_blocking_promise*` (GC-managed `payload_promise::PayloadPromise`). It also supports
-    // historical legacy payload promises that used the same `PromiseHeader + payload_ptr` prefix
-    // layout.
-    //
-    // `async_rt::promise::promise_payload_ptr` treats the `PromiseRef` as an opaque `PromiseHeader`
-    // prefix and reads the payload pointer from the shared payload-promise layout.
-    let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
-    if (flags & crate::async_abi::PROMISE_FLAG_HAS_PAYLOAD) != 0 {
-      return async_rt::promise::promise_payload_ptr(p);
-    }
-
-    // GC-managed native async ABI promises (`rt_alloc` + `rt_promise_init`) store their payload
-    // inline immediately after the `PromiseHeader` prefix. We can detect them by the presence of a
-    // non-null type descriptor in the GC header.
-    //
-    // Promises with an inert GC header (`type_desc == null`) include:
-    // - legacy `async_rt::promise::RtPromise` promises (including old payload promises), and
-    // - Rust `promise_api::Promise<T>` values allocated via `Arc`.
-    let type_desc = unsafe { (*header).obj.type_desc };
-    if type_desc.is_null() {
-      return core::ptr::null_mut();
-    }
-
-    unsafe { (header as *mut u8).add(core::mem::size_of::<PromiseHeader>()) }
+    async_rt::promise::promise_payload_ptr(p)
   })
 }
 
@@ -3981,7 +3939,7 @@ pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
 pub extern "C" fn rt_promise_resolve_legacy(p: LegacyPromiseRef, value: ValueRef) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_resolve(promise_ref_from_legacy(p), value)
+    async_rt::promise::promise_resolve(PromiseRef(p.0.cast()), value)
   })
 }
 
@@ -3989,7 +3947,7 @@ pub extern "C" fn rt_promise_resolve_legacy(p: LegacyPromiseRef, value: ValueRef
 pub extern "C" fn rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_reject(promise_ref_from_legacy(p), err)
+    async_rt::promise::promise_reject(PromiseRef(p.0.cast()), err)
   })
 }
 
@@ -3997,7 +3955,7 @@ pub extern "C" fn rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef) {
 pub extern "C" fn rt_promise_resolve_into_legacy(p: LegacyPromiseRef, value: PromiseResolveInput) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
-    async_rt::promise::promise_resolve_into(promise_ref_from_legacy(p), value)
+    async_rt::promise::promise_resolve_into(PromiseRef(p.0.cast()), value)
   })
 }
 
@@ -4005,10 +3963,7 @@ pub extern "C" fn rt_promise_resolve_into_legacy(p: LegacyPromiseRef, value: Pro
 pub extern "C" fn rt_promise_resolve_promise_legacy(p: LegacyPromiseRef, other: LegacyPromiseRef) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
-    async_rt::promise::promise_resolve_promise(
-      promise_ref_from_legacy(p),
-      promise_ref_from_legacy(other),
-    )
+    async_rt::promise::promise_resolve_promise(PromiseRef(p.0.cast()), PromiseRef(other.0.cast()))
   })
 }
 
@@ -4020,7 +3975,7 @@ pub extern "C" fn rt_promise_resolve_promise_legacy(p: LegacyPromiseRef, other: 
 pub extern "C" fn rt_promise_drop_legacy(p: LegacyPromiseRef) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_drop(promise_ref_from_legacy(p));
+    async_rt::promise::promise_drop(PromiseRef(p.0.cast()));
   })
 }
 
@@ -4040,7 +3995,7 @@ pub fn rt_debug_promise_outcome(p: PromiseRef) -> (u8, ValueRef) {
 pub extern "C" fn rt_promise_resolve_thenable_legacy(p: LegacyPromiseRef, thenable: ThenableRef) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
-    async_rt::promise::promise_resolve_thenable(promise_ref_from_legacy(p), thenable)
+    async_rt::promise::promise_resolve_thenable(PromiseRef(p.0.cast()), thenable)
   })
 }
 
@@ -4052,7 +4007,7 @@ pub extern "C" fn rt_promise_then_legacy(
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then(promise_ref_from_legacy(p), on_settle, data)
+    async_rt::promise::promise_then(PromiseRef(p.0.cast()), on_settle, data)
   })
 }
 
@@ -4064,7 +4019,7 @@ pub extern "C" fn rt_promise_then_rooted_legacy(
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then_rooted(promise_ref_from_legacy(p), on_settle, data)
+    async_rt::promise::promise_then_rooted(PromiseRef(p.0.cast()), on_settle, data)
   })
 }
 
@@ -4077,7 +4032,7 @@ pub unsafe extern "C" fn rt_promise_then_rooted_h_legacy(
   abort_on_panic(|| {
     ensure_current_thread_registered();
     // Safety: caller contract.
-    unsafe { async_rt::promise::promise_then_rooted_h(promise_ref_from_legacy(p), on_settle, data) }
+    unsafe { async_rt::promise::promise_then_rooted_h(PromiseRef(p.0.cast()), on_settle, data) }
   })
 }
 
@@ -4090,7 +4045,7 @@ pub extern "C" fn rt_promise_then_with_drop_legacy(
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then_with_drop(promise_ref_from_legacy(p), on_settle, data, drop_data)
+    async_rt::promise::promise_then_with_drop(PromiseRef(p.0.cast()), on_settle, data, drop_data)
   })
 }
 

@@ -102,10 +102,24 @@ typedef uint8_t** GcHandle;
 // Native async/await ABI (Promise/Coroutine)
 // -----------------------------------------------------------------------------
 // Native codegen represents `async` functions as coroutines that produce a
-// GC-allocated `Promise<T>` objects and coroutine frames.
+// (usually) GC-allocated `Promise<T>` objects and coroutine frames.
 //
-// Promise objects and coroutine frames are normal GC objects: the pointer passed around in the ABI
-// is the **object base pointer** (start of the runtime GC header / ObjHeader).
+// `PromiseRef` is the stable handle type used by the native async ABI. By contract it always points
+// at a `PromiseHeader` prefix at offset 0.
+//
+// In practice a `PromiseRef` may refer to:
+//
+// - a GC-managed native `Promise<T>` allocation with an **inline** payload immediately after the
+//   `PromiseHeader` prefix (the normal case for `async` lowering), or
+// - a GC-managed **payload promise** returned by `rt_parallel_spawn_promise*` /
+//   `rt_spawn_blocking_promise*`:
+//   - the promise object itself is allocated in the GC heap (collectible + relocatable), but
+//   - its typed payload storage is **out-of-line** in a separate non-GC buffer described by
+//     `PromiseLayout` and accessed via `rt_promise_payload_ptr`.
+//
+// Legacy `RtPromise` values are represented as `LegacyPromiseRef`, but `RtPromise` embeds
+// `PromiseHeader` at offset 0, so a `LegacyPromiseRef` may be cast to `PromiseRef` when bridging to
+// native awaiters.
 //
 // Each `Promise<T>` begins with a `PromiseHeader` prefix at offset 0 (and that prefix itself begins
 // with the GC header). The promise payload begins immediately after `PromiseHeader` (layout chosen
@@ -116,13 +130,24 @@ typedef uint8_t** GcHandle;
 typedef struct PromiseHeader PromiseHeader;
 typedef PromiseHeader* PromiseRef;
 
-// Legacy promise placeholder (used by older runtime-native tests/utilities).
+// Legacy promise handle (deprecated; will be removed once codegen no longer depends on legacy
+// promises/coroutines).
+//
+// `RtPromise` embeds `PromiseHeader` at offset 0, so a `LegacyPromiseRef` can be cast to `PromiseRef`
+// when bridging to the native `PromiseHeader` waiter ABI.
 typedef struct RtPromise RtPromise;
 typedef RtPromise* LegacyPromiseRef;
 
 // -----------------------------------------------------------------------------
-// Promise resolution ABI (PromiseResolve / thenable assimilation)
+// Legacy promise resolution ABI (PromiseResolve / thenable assimilation)
 // -----------------------------------------------------------------------------
+//
+// This portion of the ABI is used only by legacy promises/coroutines:
+// - `rt_promise_resolve_into_legacy`
+// - `rt_coro_await_value_legacy`
+//
+// Native async/await codegen does not use `PromiseResolveInput`; native `Promise<T>` payloads are
+// written directly by generated code before settling the promise.
 
 // Tag for PromiseResolveInput.
 typedef uint8_t PromiseResolveKind;
@@ -162,14 +187,22 @@ struct PromiseResolveInput {
   PromiseResolveKind kind;
   PromiseResolvePayload payload;
 };
-// Payload layout for promises returned from `rt_parallel_spawn_promise`.
+// Payload layout for **payload promises** returned from:
+// - `rt_parallel_spawn_promise{,_rooted,_rooted_h}`, and
+// - `rt_spawn_blocking_promise{,_rooted,_rooted_h}`.
 //
-// The runtime allocates a payload buffer described by this struct. The worker
-// task writes the result into `rt_promise_payload_ptr(promise)` and then calls
-// `rt_promise_fulfill` (or `rt_promise_reject`).
+// These promises are exposed as `PromiseRef` (they have a `PromiseHeader` prefix at offset 0) and
+// are GC-managed objects, but their typed payload storage is **out-of-line**: the runtime allocates
+// a separate non-GC payload buffer described by this struct.
 //
 // Note: this payload buffer is treated as raw bytes and is **not traced by the GC**. If the payload
-// contains GC pointers, use `rt_parallel_spawn_promise_with_shape` instead.
+// contains GC pointers, use `rt_parallel_spawn_promise_with_shape*` instead.
+//
+// The payload buffer is freed automatically when the promise becomes unreachable (GC finalizer).
+//
+// Producers write the result into `rt_promise_payload_ptr(promise)` (respecting `{size,align}`), then
+// settle the promise (either directly via `rt_promise_fulfill`/`rt_promise_reject`, or indirectly via
+// an API-specific mechanism like `rt_spawn_blocking_promise*`).
 typedef struct PromiseLayout {
   size_t size;
   size_t align;
@@ -781,6 +814,9 @@ TaskId rt_parallel_spawn_rooted_h(void (*task)(uint8_t*), GcHandle data);
 //
 // The task is responsible for resolving/rejecting the promise via `rt_promise_resolve_legacy` /
 // `rt_promise_reject_legacy`.
+//
+// Deprecated: legacy promise surface; will be removed once codegen no longer depends on
+// `LegacyPromiseRef`.
 LegacyPromiseRef rt_parallel_spawn_promise_legacy(void (*task)(uint8_t* data, LegacyPromiseRef promise), uint8_t* data);
 void rt_parallel_join(const TaskId* tasks, size_t count);
 // Parallel-for convenience API.
@@ -805,12 +841,19 @@ void rt_parallel_for_rooted(size_t start, size_t end, void (*body)(size_t, uint8
 // Like `rt_parallel_for_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
 void rt_parallel_for_rooted_h(size_t start, size_t end, void (*body)(size_t, uint8_t*), GcHandle data);
 
-// Spawn CPU-bound work on the parallel worker pool and return a promise that can
-// be awaited by the async runtime.
+// Spawn CPU-bound work on the parallel worker pool and return a **payload promise** that can be
+// awaited by the async runtime.
 //
 // While the worker task is outstanding, the runtime will treat the promise as "external pending"
 // work: `rt_async_poll` / `rt_async_poll_legacy` will continue to report pending work (and may
 // block) until the promise settles.
+//
+// The returned promise is a GC-managed **payload promise**: the promise object is allocated in the
+// GC heap (collectible + relocatable) but its typed payload storage is out-of-line in a separate
+// non-GC buffer described by `PromiseLayout` (accessed via `rt_promise_payload_ptr`).
+//
+// The payload buffer is treated as raw bytes and is not traced by the GC. If the payload contains
+// GC pointers, use `rt_parallel_spawn_promise_with_shape*` instead.
 PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);
 // Like `rt_parallel_spawn_promise`, but `data` is a GC-managed object that the runtime will keep
 // alive until the worker task finishes executing.
@@ -869,9 +912,11 @@ PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(
 // -----------------------------------------------------------------------------
 // Blocking thread pool
 // -----------------------------------------------------------------------------
-// Run `task(data, promise)` on the runtime's dedicated blocking thread pool (for I/O, crypto,
-// etc.). The task must resolve/reject `promise` via `rt_promise_resolve_legacy` /
-// `rt_promise_reject_legacy`.
+// Run `task(data, promise)` on the runtime's dedicated blocking thread pool (for I/O, crypto, etc).
+//
+// These APIs return legacy promises (`LegacyPromiseRef`). `RtPromise` embeds `PromiseHeader` at
+// offset 0, so the returned promise can be treated as a `PromiseRef` when bridging to native
+// awaiters.
 //
 // Contract:
 // - `data` must remain valid until `task` runs.
@@ -883,8 +928,8 @@ PromiseRef rt_parallel_spawn_promise_with_shape_rooted_h(
 //   before spawning the task (or arrange for a GC-unsafe continuation to run on the event-loop
 //   thread).
 //
-// Blocking tasks execute in a GC-safe ("NativeSafe") region: they must not touch the GC heap (no
-// GC allocations, no write barriers, and no dereferencing GC-managed pointers).
+// Blocking tasks execute in a GC-safe ("NativeSafe") region: they must not touch the GC heap (no GC
+// allocations, no write barriers, and no dereferencing GC-managed pointers).
 //
 // Pool size:
 // - default: min(available_parallelism, 4)
@@ -935,6 +980,13 @@ PromiseRef rt_spawn_blocking_promise_rooted_h(
 // -----------------------------------------------------------------------------
 // Native promise ABI (PromiseHeader prefix)
 // -----------------------------------------------------------------------------
+// `PromiseRef` points at a `PromiseHeader` prefix at offset 0.
+//
+// IMPORTANT:
+// - `rt_promise_init` is only for newly-allocated **native GC-managed `Promise<T>`** allocations.
+// - Do not call `rt_promise_init` on runtime-created payload promises (returned by
+//   `rt_parallel_spawn_promise*`) or on legacy promises (`LegacyPromiseRef`), as it may clobber
+//   runtime-managed state/flags.
 void rt_promise_init(PromiseRef p);
 void rt_promise_fulfill(PromiseRef p);
 bool rt_promise_try_fulfill(PromiseRef p);
@@ -949,8 +1001,8 @@ void rt_promise_mark_handled(PromiseRef p);
 // - For GC-managed native async-ABI promises (allocated via `rt_alloc`, including promises created
 //   by `rt_parallel_spawn_promise_with_shape*`), this returns a pointer to the **inline** payload
 //   immediately after the `PromiseHeader` prefix.
-//
-// For non-payload non-GC-managed promises, this returns NULL.
+// - For legacy `RtPromise` allocations (i.e. a `LegacyPromiseRef` cast to `PromiseRef`), this
+//   returns NULL.
 //
 // GC-safety / lifetime:
 // If this returns a pointer into the GC heap (inline payload), it is only valid until the next
@@ -1035,6 +1087,9 @@ enum {
 };
 
 // Spawn an async coroutine and return its result promise.
+//
+// The returned promise is a native GC-managed `Promise<T>` allocation (inline payload immediately
+// after `PromiseHeader`).
 //
 // Contract:
 // - `coro` is a stable handle to a coroutine frame whose prefix matches `struct Coroutine`.
@@ -1175,6 +1230,8 @@ void rt_async_free_c_string(char* s);
 // -----------------------------------------------------------------------------
 
 // Resolve a promise after `delay_ms` milliseconds.
+//
+// The returned promise is a native GC-managed promise compatible with the native async/await ABI.
 PromiseRef rt_async_sleep(uint64_t delay_ms);
 // Enqueue a microtask to run during the next microtask checkpoint (end of the current macrotask,
 // or during `rt_async_poll`/`rt_async_poll_legacy` when the event loop is otherwise idle).

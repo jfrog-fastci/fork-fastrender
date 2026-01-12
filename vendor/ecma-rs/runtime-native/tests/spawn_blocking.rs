@@ -7,11 +7,8 @@ use runtime_native::{
   rt_promise_then_legacy as rt_promise_then,
   rt_spawn_blocking,
 };
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 extern "C" fn task_set_flag(data: *mut u8, promise: LegacyPromiseRef) {
   let flag = unsafe { &*(data as *const AtomicBool) };

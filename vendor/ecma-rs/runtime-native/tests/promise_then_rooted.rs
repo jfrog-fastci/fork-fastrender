@@ -1,4 +1,4 @@
-use runtime_native::abi::{PromiseRef, RtShapeDescriptor, RtShapeId};
+use runtime_native::abi::{LegacyPromiseRef, RtShapeDescriptor, RtShapeId, TimerId};
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -32,11 +32,11 @@ fn ensure_shape_table() {
 }
 
 unsafe fn promise_then_rooted_h_legacy_sendable(
-  promise: PromiseRef,
+  promise: LegacyPromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: runtime_native::roots::GcHandle,
 ) {
-  runtime_native::rt_promise_then_rooted_h_legacy(promise.0.cast(), on_settle, data);
+  runtime_native::rt_promise_then_rooted_h_legacy(promise, on_settle, data);
 }
 
 static FIRED: AtomicUsize = AtomicUsize::new(0);
@@ -63,7 +63,7 @@ extern "C" fn on_interval(data: *mut u8) {
 
   // Cancel the interval after the first tick so the test doesn't spin forever.
   let id = INTERVAL_TIMER_ID.load(Ordering::SeqCst);
-  runtime_native::rt_clear_timer(id);
+  runtime_native::rt_clear_timer(TimerId(id));
 }
 
 #[test]
@@ -124,7 +124,6 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
   let new_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
 
   let promise = runtime_native::rt_promise_new_legacy();
-  let promise_send = PromiseRef(promise.cast());
 
   let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
 
@@ -167,7 +166,7 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
       let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
       // Safety: `slot_ptr` points at a writable `GcPtr` slot that outlives this call.
       unsafe {
-        promise_then_rooted_h_legacy_sendable(promise_send, on_settle, slot_ptr);
+        promise_then_rooted_h_legacy_sendable(promise, on_settle, slot_ptr);
       }
       c_done_tx.send(()).unwrap();
 
@@ -464,7 +463,7 @@ fn set_timeout_rooted_h_reads_slot_after_lock_acquired() {
     let timer = c_done_rx
       .recv_timeout(TIMEOUT)
       .expect("timer schedule should complete after lock is released");
-    assert_ne!(timer, 0);
+    assert_ne!(timer.0, 0);
   });
 
   assert_eq!(
@@ -593,7 +592,7 @@ fn set_interval_rooted_h_reads_slot_after_lock_acquired() {
     let timer = c_done_rx
       .recv_timeout(TIMEOUT)
       .expect("interval schedule should complete after lock is released");
-    assert_ne!(timer, 0);
+    assert_ne!(timer.0, 0);
     timer
   });
 
@@ -603,7 +602,7 @@ fn set_interval_rooted_h_reads_slot_after_lock_acquired() {
     "rooted-h interval should allocate exactly one persistent handle for the slot contents while pending"
   );
 
-  INTERVAL_TIMER_ID.store(timer_id, Ordering::SeqCst);
+  INTERVAL_TIMER_ID.store(timer_id.0, Ordering::SeqCst);
 
   while runtime_native::rt_async_poll_legacy() {}
 

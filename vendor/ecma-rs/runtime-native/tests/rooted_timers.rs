@@ -2,6 +2,7 @@ use runtime_native::gc::roots::GlobalRootSet;
 use runtime_native::gc::ObjHeader;
 use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::abi::TimerId;
 use runtime_native::GcHeap;
 use runtime_native::TypeDescriptor;
 use std::sync::atomic::AtomicU64;
@@ -46,7 +47,7 @@ extern "C" fn record_magic_and_clear_self(data: *mut u8) {
   record_magic(data);
   let id = SELF_CLEAR_INTERVAL_ID.load(Ordering::Acquire);
   assert_ne!(id, 0, "interval id not set before callback");
-  runtime_native::rt_clear_timer(id);
+  runtime_native::rt_clear_timer(TimerId(id));
 }
 
 fn collect_major(heap: &mut GcHeap) {
@@ -219,7 +220,7 @@ fn interval_rooted_can_clear_itself_and_releases_root() {
   let _weak_guard = WeakHandleGuard(weak);
 
   let id = runtime_native::rt_set_interval_rooted(record_magic_and_clear_self, obj, 0);
-  SELF_CLEAR_INTERVAL_ID.store(id, Ordering::Release);
+  SELF_CLEAR_INTERVAL_ID.store(id.0, Ordering::Release);
 
   // Move/collect while the interval is registered but before it fires.
   collect_major(&mut heap);

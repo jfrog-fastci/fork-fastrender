@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use runtime_native::abi::RT_IO_READABLE;
+use runtime_native::abi::{IoWatcherId, RT_IO_READABLE};
 use runtime_native::gc::roots::GlobalRootSet;
 use runtime_native::gc::ObjHeader;
 use runtime_native::gc::SimpleRememberedSet;
@@ -265,7 +265,7 @@ fn rt_io_register_rejects_blocking_fd_and_reports_error() {
   let (rfd, _wfd) = pipe_blocking().unwrap();
 
   let id = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_eq!(id, 0, "expected rt_io_register to fail for blocking fd");
+  assert_eq!(id.0, 0, "expected rt_io_register to fail for blocking fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_FD_NOT_NONBLOCKING,
@@ -282,7 +282,7 @@ fn rt_io_register_invalid_fd_reports_other_error() {
   let _rt = TestRuntimeGuard::new();
 
   let id = rt_io_register(-1, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_eq!(id, 0, "expected rt_io_register to fail for an invalid fd");
+  assert_eq!(id.0, 0, "expected rt_io_register to fail for an invalid fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_OTHER,
@@ -308,7 +308,7 @@ fn rt_io_register_with_drop_calls_drop_on_registration_failure() {
     dropped_ptr.cast::<u8>(),
     inc_drop_count,
   );
-  assert_eq!(id, 0, "expected rt_io_register_with_drop to fail for blocking fd");
+  assert_eq!(id.0, 0, "expected rt_io_register_with_drop to fail for blocking fd");
   assert_eq!(
     unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
     1,
@@ -343,7 +343,7 @@ fn rt_io_register_with_drop_rejects_empty_interests_and_drops_data() {
     dropped_ptr.cast::<u8>(),
     inc_drop_count,
   );
-  assert_eq!(id, 0, "expected rt_io_register_with_drop to fail for empty interests");
+  assert_eq!(id.0, 0, "expected rt_io_register_with_drop to fail for empty interests");
   assert_eq!(
     unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
     1,
@@ -377,7 +377,7 @@ fn rt_io_register_with_drop_invalid_fd_drops_data_and_reports_other_error() {
     dropped_ptr.cast::<u8>(),
     inc_drop_count,
   );
-  assert_eq!(id, 0, "expected rt_io_register_with_drop to fail for invalid fd");
+  assert_eq!(id.0, 0, "expected rt_io_register_with_drop to fail for invalid fd");
   assert_eq!(
     unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
     1,
@@ -412,7 +412,7 @@ fn rt_io_register_with_drop_drops_data_on_unregister() {
     dropped_ptr.cast::<u8>(),
     inc_drop_count,
   );
-  assert_ne!(id, 0, "expected rt_io_register_with_drop to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_with_drop to succeed");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::OK,
@@ -462,7 +462,7 @@ fn rt_io_register_with_drop_drops_data_on_reset_runtime_state() {
     dropped_ptr.cast::<u8>(),
     inc_drop_count,
   );
-  assert_ne!(id, 0, "expected rt_io_register_with_drop to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_with_drop to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
   assert_eq!(
     unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
@@ -506,7 +506,7 @@ fn rt_io_register_with_drop_duplicate_fd_drops_data_and_reports_error() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_ne!(id1.0, 0, "expected initial registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   let dropped = Box::new(AtomicUsize::new(0));
@@ -519,7 +519,7 @@ fn rt_io_register_with_drop_duplicate_fd_drops_data_and_reports_error() {
     dropped_ptr.cast::<u8>(),
     inc_drop_count,
   );
-  assert_eq!(id2, 0, "expected duplicate fd registration to fail");
+  assert_eq!(id2.0, 0, "expected duplicate fd registration to fail");
   assert_eq!(
     unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
     1,
@@ -557,7 +557,7 @@ fn rt_io_register_handle_rejects_blocking_fd_and_frees_handle() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle);
-  assert_eq!(id, 0, "expected rt_io_register_handle to fail for blocking fd");
+  assert_eq!(id.0, 0, "expected rt_io_register_handle to fail for blocking fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_FD_NOT_NONBLOCKING,
@@ -583,7 +583,7 @@ fn rt_io_register_handle_rejects_empty_interests_and_frees_handle() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle(rfd.as_raw_fd(), 0, noop_cb, handle);
-  assert_eq!(id, 0, "expected rt_io_register_handle to fail for empty interests");
+  assert_eq!(id.0, 0, "expected rt_io_register_handle to fail for empty interests");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_INVALID_INTERESTS,
@@ -615,8 +615,7 @@ fn rt_io_register_handle_with_drop_calls_drop_on_registration_failure_and_frees_
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
-  assert_eq!(
-    id, 0,
+  assert_eq!(id.0, 0,
     "expected rt_io_register_handle_with_drop to fail for blocking fd"
   );
   assert_eq!(
@@ -655,8 +654,7 @@ fn rt_io_register_handle_with_drop_rejects_empty_interests_drops_data_and_frees_
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), 0, noop_cb, handle, inc_handle_drop_count);
-  assert_eq!(
-    id, 0,
+  assert_eq!(id.0, 0,
     "expected rt_io_register_handle_with_drop to fail for empty interests"
   );
   assert_eq!(
@@ -685,7 +683,7 @@ fn rt_io_register_handle_rejects_duplicate_fd_and_frees_handle() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_ne!(id1.0, 0, "expected initial registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   let mut heap = GcHeap::new();
@@ -693,7 +691,7 @@ fn rt_io_register_handle_rejects_duplicate_fd_and_frees_handle() {
   let handle = rt_handle_alloc(obj);
 
   let id2 = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle);
-  assert_eq!(id2, 0, "expected duplicate fd registration to fail");
+  assert_eq!(id2.0, 0, "expected duplicate fd registration to fail");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_ALREADY_REGISTERED,
@@ -725,7 +723,7 @@ fn rt_io_register_handle_invalid_fd_reports_other_error_and_frees_handle() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle(-1, RT_IO_READABLE, noop_cb, handle);
-  assert_eq!(id, 0, "expected rt_io_register_handle to fail for invalid fd");
+  assert_eq!(id.0, 0, "expected rt_io_register_handle to fail for invalid fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_OTHER,
@@ -756,8 +754,7 @@ fn rt_io_register_handle_with_drop_invalid_fd_drops_data_reports_other_error_and
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle_with_drop(-1, RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
-  assert_eq!(
-    id, 0,
+  assert_eq!(id.0, 0,
     "expected rt_io_register_handle_with_drop to fail for invalid fd"
   );
   assert_eq!(
@@ -786,7 +783,7 @@ fn rt_io_register_handle_with_drop_duplicate_fd_drops_data_and_frees_handle() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_ne!(id1.0, 0, "expected initial registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   let dropped = Box::new(AtomicUsize::new(0));
@@ -806,7 +803,7 @@ fn rt_io_register_handle_with_drop_duplicate_fd_drops_data_and_frees_handle() {
     handle,
     inc_handle_drop_count,
   );
-  assert_eq!(id2, 0, "expected duplicate fd registration to fail");
+  assert_eq!(id2.0, 0, "expected duplicate fd registration to fail");
   assert_eq!(
     dropped.load(Ordering::SeqCst),
     1,
@@ -850,7 +847,7 @@ fn rt_io_register_handle_with_drop_drops_data_on_unregister_and_frees_handle() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
-  assert_ne!(id, 0, "expected rt_io_register_handle_with_drop to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_handle_with_drop to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
   assert_eq!(
     dropped.load(Ordering::SeqCst),
@@ -897,7 +894,7 @@ fn rt_io_register_handle_with_drop_drops_data_on_reset_runtime_state() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
-  assert_ne!(id, 0, "expected rt_io_register_handle_with_drop to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_handle_with_drop to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
   assert_eq!(
     dropped.load(Ordering::SeqCst),
@@ -949,7 +946,7 @@ fn rt_io_register_handle_callback_receives_relocated_ptr_after_gc() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, record_rooted_ptr, handle);
-  assert_ne!(id, 0, "expected handle registration to succeed");
+  assert_ne!(id.0, 0, "expected handle registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   // Force a major GC to promote/move the object so the watcher must resolve the current pointer
@@ -1012,7 +1009,7 @@ fn rt_io_register_handle_callback_ignores_stale_handle() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, record_rooted_ptr, handle);
-  assert_ne!(id, 0, "expected handle registration to succeed");
+  assert_ne!(id.0, 0, "expected handle registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   // Misuse: free the consumed handle. The watcher should treat the callback as a no-op.
@@ -1044,7 +1041,7 @@ fn rt_async_cancel_all_frees_handle_io_watchers() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle);
-  assert_ne!(id, 0, "expected rt_io_register_handle to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_handle to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
   assert!(
     !rt_handle_load(handle).is_null(),
@@ -1087,7 +1084,7 @@ fn rt_async_cancel_all_runs_handle_watcher_drop_hook_and_frees_handle() {
   let handle = rt_handle_alloc(obj);
 
   let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
-  assert_ne!(id, 0, "expected rt_io_register_handle_with_drop to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_handle_with_drop to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
   assert_eq!(
     dropped.load(Ordering::SeqCst),
@@ -1126,7 +1123,7 @@ fn rt_async_cancel_all_clears_unrooted_io_watchers() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id, 0, "expected rt_io_register to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   rt_async_cancel_all();
@@ -1158,7 +1155,7 @@ fn rt_async_cancel_all_runs_drop_hook_for_rt_io_register_with_drop() {
     dropped_ptr.cast::<u8>(),
     inc_drop_count,
   );
-  assert_ne!(id, 0, "expected rt_io_register_with_drop to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_with_drop to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
   assert_eq!(
     unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
@@ -1206,7 +1203,7 @@ fn rt_async_cancel_all_releases_rooted_io_watchers() {
   let _weak_guard = WeakHandleGuard(weak);
 
   let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
-  assert_ne!(id, 0, "expected rt_io_register_rooted to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_rooted to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   rt_async_cancel_all();
@@ -1249,7 +1246,7 @@ fn rt_async_cancel_all_releases_rooted_h_io_watchers() {
 
   let mut slot = obj;
   let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
-  assert_ne!(id, 0, "expected rt_io_register_rooted_h to succeed");
+  assert_ne!(id.0, 0, "expected rt_io_register_rooted_h to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   rt_async_cancel_all();
@@ -1291,7 +1288,7 @@ fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
 
   let (rfd, _wfd) = pipe_blocking().unwrap();
   let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
-  assert_eq!(id, 0, "expected rt_io_register_rooted to fail for blocking fd");
+  assert_eq!(id.0, 0, "expected rt_io_register_rooted to fail for blocking fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_FD_NOT_NONBLOCKING,
@@ -1329,7 +1326,7 @@ fn rt_io_register_rooted_h_failure_does_not_leak_gc_root() {
   let (rfd, _wfd) = pipe_blocking().unwrap();
   let mut slot = obj;
   let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
-  assert_eq!(id, 0, "expected rt_io_register_rooted_h to fail for blocking fd");
+  assert_eq!(id.0, 0, "expected rt_io_register_rooted_h to fail for blocking fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_FD_NOT_NONBLOCKING,
@@ -1366,7 +1363,7 @@ fn rt_io_register_rooted_keeps_gc_object_alive_until_unregistered() {
   let _weak_guard = WeakHandleGuard(weak);
 
   let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
-  assert_ne!(id, 0, "expected rooted registration to succeed");
+  assert_ne!(id.0, 0, "expected rooted registration to succeed");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::OK,
@@ -1418,7 +1415,7 @@ fn rt_io_register_rooted_h_keeps_gc_object_alive_until_unregistered() {
 
   let mut slot = obj;
   let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
-  assert_ne!(id, 0, "expected rooted_h registration to succeed");
+  assert_ne!(id.0, 0, "expected rooted_h registration to succeed");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::OK,
@@ -1469,7 +1466,7 @@ fn rt_io_register_rooted_releases_gc_root_on_reset_runtime_state() {
   let _weak_guard = WeakHandleGuard(weak);
 
   let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
-  assert_ne!(id, 0, "expected rooted registration to succeed");
+  assert_ne!(id.0, 0, "expected rooted registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   // With the watcher still registered, the rooted context must keep the object alive across GC.
@@ -1519,7 +1516,7 @@ fn rt_io_register_rooted_h_releases_gc_root_on_reset_runtime_state() {
 
   let mut slot = obj;
   let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
-  assert_ne!(id, 0, "expected rooted_h registration to succeed");
+  assert_ne!(id.0, 0, "expected rooted_h registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   // With the watcher still registered, the rooted context must keep the object alive across GC.
@@ -1571,7 +1568,7 @@ fn rt_io_register_rooted_callback_receives_relocated_ptr_after_gc() {
   let _weak_guard = WeakHandleGuard(weak);
 
   let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, record_rooted_ptr, obj);
-  assert_ne!(id, 0, "expected rooted registration to succeed");
+  assert_ne!(id.0, 0, "expected rooted registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   // Force a major GC to promote/move the object so the rooted watcher must resolve the current
@@ -1634,7 +1631,7 @@ fn rt_io_register_rooted_h_callback_receives_relocated_ptr_after_gc() {
 
   let mut slot = obj;
   let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, record_rooted_h_ptr, &mut slot) };
-  assert_ne!(id, 0, "expected rooted_h registration to succeed");
+  assert_ne!(id.0, 0, "expected rooted_h registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   // Force a major GC to promote/move the object so the rooted watcher must resolve the current
@@ -1711,7 +1708,7 @@ fn rt_io_register_rooted_h_reads_slot_after_lock_acquired() {
     // Thread C attempts to register a rooted-h watcher while the lock is held.
     let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
     let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
-    let (c_done_tx, c_done_rx) = mpsc::channel::<u64>();
+    let (c_done_tx, c_done_rx) = mpsc::channel::<IoWatcherId>();
 
     scope.spawn(move || {
       threading::register_current_thread(ThreadKind::Worker);
@@ -1777,7 +1774,7 @@ fn rt_io_register_rooted_h_reads_slot_after_lock_acquired() {
     let id = c_done_rx
       .recv_timeout(TIMEOUT)
       .expect("watcher registration should complete after lock is released");
-    assert_ne!(id, 0, "expected rooted_h registration to succeed");
+    assert_ne!(id.0, 0, "expected rooted_h registration to succeed");
     id
   });
 
@@ -1840,7 +1837,7 @@ fn rt_io_register_rooted_h_rejects_empty_interests_and_does_not_leak_root() {
 
   let mut slot = obj;
   let id = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), 0, noop_cb, &mut slot) };
-  assert_eq!(id, 0, "expected rooted_h registration to fail for empty interests");
+  assert_eq!(id.0, 0, "expected rooted_h registration to fail for empty interests");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_INVALID_INTERESTS,
@@ -1872,7 +1869,7 @@ fn rt_io_register_rooted_h_duplicate_fd_does_not_leak_gc_root() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_ne!(id1.0, 0, "expected initial registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   let mut heap = GcHeap::new();
@@ -1882,7 +1879,7 @@ fn rt_io_register_rooted_h_duplicate_fd_does_not_leak_gc_root() {
 
   let mut slot = obj;
   let id2 = unsafe { rt_io_register_rooted_h(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, &mut slot) };
-  assert_eq!(id2, 0, "expected rooted_h registration to fail for duplicate fd");
+  assert_eq!(id2.0, 0, "expected rooted_h registration to fail for duplicate fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_ALREADY_REGISTERED,
@@ -1924,7 +1921,7 @@ fn rt_io_register_rooted_h_invalid_fd_does_not_leak_gc_root() {
 
   let mut slot = obj;
   let id = unsafe { rt_io_register_rooted_h(-1, RT_IO_READABLE, noop_cb, &mut slot) };
-  assert_eq!(id, 0, "expected rt_io_register_rooted_h to fail for invalid fd");
+  assert_eq!(id.0, 0, "expected rt_io_register_rooted_h to fail for invalid fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_OTHER,
@@ -1959,7 +1956,7 @@ fn rt_io_register_rooted_rejects_empty_interests_and_does_not_leak_root() {
   let _weak_guard = WeakHandleGuard(weak);
 
   let id = rt_io_register_rooted(rfd.as_raw_fd(), 0, noop_cb, obj);
-  assert_eq!(id, 0, "expected rooted registration to fail for empty interests");
+  assert_eq!(id.0, 0, "expected rooted registration to fail for empty interests");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_INVALID_INTERESTS,
@@ -1991,7 +1988,7 @@ fn rt_io_register_rooted_duplicate_fd_does_not_leak_gc_root() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_ne!(id1.0, 0, "expected initial registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   let mut heap = GcHeap::new();
@@ -2000,7 +1997,7 @@ fn rt_io_register_rooted_duplicate_fd_does_not_leak_gc_root() {
   let _weak_guard = WeakHandleGuard(weak);
 
   let id2 = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
-  assert_eq!(id2, 0, "expected rooted registration to fail for duplicate fd");
+  assert_eq!(id2.0, 0, "expected rooted registration to fail for duplicate fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_ALREADY_REGISTERED,
@@ -2041,7 +2038,7 @@ fn rt_io_register_rooted_invalid_fd_does_not_leak_gc_root() {
   let _weak_guard = WeakHandleGuard(weak);
 
   let id = rt_io_register_rooted(-1, RT_IO_READABLE, noop_cb, obj);
-  assert_eq!(id, 0, "expected rt_io_register_rooted to fail for invalid fd");
+  assert_eq!(id.0, 0, "expected rt_io_register_rooted to fail for invalid fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_OTHER,
@@ -2071,7 +2068,7 @@ fn rt_io_register_rejects_empty_interests_and_reports_error() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id = rt_io_register(rfd.as_raw_fd(), 0, noop_cb, std::ptr::null_mut());
-  assert_eq!(id, 0, "expected rt_io_register to fail for empty interests");
+  assert_eq!(id.0, 0, "expected rt_io_register to fail for empty interests");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_INVALID_INTERESTS,
@@ -2088,11 +2085,11 @@ fn rt_io_register_rejects_duplicate_fd_and_reports_error() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_ne!(id1.0, 0, "expected initial registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   let id2 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_eq!(id2, 0, "expected duplicate fd registration to fail");
+  assert_eq!(id2.0, 0, "expected duplicate fd registration to fail");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_ALREADY_REGISTERED,
@@ -2116,7 +2113,7 @@ fn rt_io_update_rejects_empty_interests_and_reports_error() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id, 0, "expected registration to succeed");
+  assert_ne!(id.0, 0, "expected registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   rt_io_update(id, 0);
@@ -2141,7 +2138,7 @@ fn rt_io_update_rejects_empty_interests_and_reports_error() {
 fn rt_io_update_invalid_id_reports_error() {
   let _rt = TestRuntimeGuard::new();
 
-  rt_io_update(0, RT_IO_READABLE);
+  rt_io_update(IoWatcherId(0), RT_IO_READABLE);
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_UPDATE_FAILED,
@@ -2158,7 +2155,7 @@ fn rt_io_update_detects_nonblocking_contract_violation() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id, 0, "expected registration to succeed");
+  assert_ne!(id.0, 0, "expected registration to succeed");
   assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
 
   // Flip the fd back to blocking: the reactor contract requires fds remain O_NONBLOCK.
@@ -2186,7 +2183,7 @@ fn rt_io_update_detects_nonblocking_contract_violation() {
 fn rt_io_unregister_invalid_id_reports_error() {
   let _rt = TestRuntimeGuard::new();
 
-  rt_io_unregister(0);
+  rt_io_unregister(IoWatcherId(0));
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::ERR_UNREGISTER_FAILED,
@@ -2240,7 +2237,7 @@ fn rt_io_update_closed_fd_fails_gracefully_and_can_be_unregistered() {
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
 
   let id = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
-  assert_ne!(id, 0, "expected rt_io_register to succeed for nonblocking fd");
+  assert_ne!(id.0, 0, "expected rt_io_register to succeed for nonblocking fd");
   assert_eq!(
     rt_io_debug_take_last_error(),
     rt_io_debug::OK,

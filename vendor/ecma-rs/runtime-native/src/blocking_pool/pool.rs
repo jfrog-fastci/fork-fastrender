@@ -1,6 +1,6 @@
-use crate::async_rt;
 use crate::abi::{LegacyPromiseRef, PromiseRef};
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING};
+use crate::async_rt;
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::sync::GcAwareMutex;
@@ -9,8 +9,7 @@ use crate::threading::ThreadKind;
 use once_cell::sync::OnceCell;
 use parking_lot::Condvar;
 use std::collections::VecDeque;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 enum WorkData {
@@ -188,20 +187,17 @@ impl BlockingPool {
     // Ensure the async runtime is initialized so promise settlement can wake a thread blocked in the
     // platform reactor wait syscall (`epoll_wait`/`kevent`).
     let _ = async_rt::global();
-    let promise_legacy: LegacyPromiseRef = async_rt::promise::promise_new().0.cast();
+    let promise = async_rt::promise::promise_new();
 
     {
       let mut q = self.shared.queue.lock();
       q.push_back(WorkItem {
         data: WorkData::Unrooted(data),
-        kind: WorkKind::Legacy {
-          task,
-          promise: promise_legacy,
-        },
+        kind: WorkKind::Legacy { task, promise },
       });
     }
     self.shared.cv.notify_one();
-    promise_legacy
+    promise
   }
 
   fn spawn_promise_impl(&self, task: extern "C" fn(*mut u8, *mut u8) -> u8, data: WorkData, layout: PromiseLayout) -> PromiseRef {

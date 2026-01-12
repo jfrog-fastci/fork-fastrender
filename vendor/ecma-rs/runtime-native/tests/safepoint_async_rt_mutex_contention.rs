@@ -2,7 +2,7 @@ use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use runtime_native::io::IoRuntime;
-use runtime_native::abi::{LegacyPromiseRef, PromiseRef};
+use runtime_native::abi::LegacyPromiseRef;
 use runtime_native::promise_api::{Promise, PromiseExt};
 use runtime_native::TypeDescriptor;
 use std::future::Future;
@@ -14,10 +14,6 @@ use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use std::time::Duration;
 
 extern "C" fn noop_task(_data: *mut u8) {}
-
-fn promise_then_legacy_sendable(promise: PromiseRef) {
-  runtime_native::rt_promise_then(promise.0.cast(), noop_task, core::ptr::null_mut());
-}
 
 fn noop_waker() -> Waker {
   unsafe fn clone(_: *const ()) -> RawWaker {
@@ -528,9 +524,9 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_pending_promise_reactions_
   threading::register_current_thread(ThreadKind::Main);
 
   let promise = runtime_native::rt_promise_new();
-  let promise_send = PromiseRef(promise.cast());
 
   let handle = runtime_native::async_rt::debug_with_pending_reactions_lock(move || {
+    let promise = promise;
     let (tx_id, rx_id) = mpsc::channel();
     let started = Arc::new(Barrier::new(2));
     let started_worker = started.clone();
@@ -543,7 +539,7 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_pending_promise_reactions_
 
       // This calls into `async_rt::promise::promise_register_reaction`, which tracks pending
       // reactions in a process-global set.
-      promise_then_legacy_sendable(promise_send);
+      runtime_native::rt_promise_then(promise, noop_task, core::ptr::null_mut());
 
       threading::unregister_current_thread();
     });

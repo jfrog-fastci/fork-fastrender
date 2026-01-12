@@ -26,7 +26,7 @@ extern "C" fn runaway_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
   unsafe {
     rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
   }
-  RtCoroStatus::Pending
+  RtCoroStatus::RT_CORO_PENDING
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn async_runaway_is_detected() {
   let mut coro = Box::new(RunawayCoro {
     header: RtCoroutineHeader {
       resume: runaway_resume,
-      promise: std::ptr::null_mut(),
+      promise: LegacyPromiseRef::null(),
       state: 0,
       await_is_error: 0,
       await_value: std::ptr::null_mut(),

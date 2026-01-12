@@ -144,7 +144,7 @@ fn rt_async_driver_concurrent_block_on_aborts() {
     })));
 
     let p = runtime_native::rt_promise_new_legacy();
-    let p = PromiseRef(p.cast());
+    let p = PromiseRef(p.0.cast());
 
     std::thread::spawn(move || unsafe {
       runtime_native::rt_async_block_on(p);

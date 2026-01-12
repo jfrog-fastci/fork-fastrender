@@ -1,7 +1,10 @@
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
-use crate::abi::{LegacyPromiseRef, PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
+use crate::abi::{
+  LegacyPromiseRef, PromiseRef, PromiseResolveInput, ThenableRef, ValueRef, RT_PROMISE_RESOLVE_PROMISE,
+  RT_PROMISE_RESOLVE_THENABLE, RT_PROMISE_RESOLVE_VALUE,
+};
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
 use crate::gc::HandleId;
 use crate::promise_reactions::{
@@ -591,10 +594,8 @@ pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
   }
 }
 
-pub(crate) fn promise_new() -> PromiseRef {
-  PromiseRef(
-    Box::into_raw(Box::new(RtPromise::new_pending())) as *mut runtime_native_abi::PromiseHeader
-  )
+pub(crate) fn promise_new() -> LegacyPromiseRef {
+  LegacyPromiseRef(Box::into_raw(Box::new(RtPromise::new_pending())).cast())
 }
 
 pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
@@ -619,7 +620,7 @@ pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
         }
       };
       unsafe { base.add(core::mem::size_of::<PromiseHeader>()) }
-    }
+    },
     _ => core::ptr::null_mut(),
   }
 }
@@ -1335,23 +1336,21 @@ pub(crate) fn promise_resolve_into(dst: PromiseRef, input: PromiseResolveInput) 
   }
 
   match input.kind {
-    PromiseResolveKind::Value => {
+    RT_PROMISE_RESOLVE_VALUE => {
       let value = unsafe { input.payload.value };
       promise_resolve(dst, value);
     }
-    PromiseResolveKind::Promise => {
+    RT_PROMISE_RESOLVE_PROMISE => {
       let src: LegacyPromiseRef = unsafe { input.payload.promise };
-      // `LegacyPromiseRef` is an ABI-level opaque promise pointer. By contract it points at a
-      // `PromiseHeader` prefix at offset 0, but the concrete promise layout may vary (legacy
-      // `RtPromise`, GC-managed payload promise, native async ABI promise, ...).
-      //
-      // Convert explicitly so we don't accidentally assume the underlying layout is `RtPromise`.
-      promise_resolve_promise(dst, PromiseRef(src.cast()));
+      // `LegacyPromiseRef` points at a legacy `RtPromise`, which embeds a `PromiseHeader` at offset
+      // 0.
+      promise_resolve_promise(dst, PromiseRef(src.0.cast()));
     }
-    PromiseResolveKind::Thenable => {
+    RT_PROMISE_RESOLVE_THENABLE => {
       let thenable = unsafe { input.payload.thenable };
       promise_resolve_thenable(dst, thenable);
     }
+    _ => std::process::abort(),
   }
 }
 
@@ -1712,11 +1711,12 @@ mod tests {
         let id = threading::register_current_thread(ThreadKind::Worker);
         c_registered_tx.send(id).unwrap();
 
-        // Create a promise in this thread so we don't have to send raw pointers across threads.
+        // Create a legacy `RtPromise` in this thread so we don't have to send raw pointers across
+        // threads.
         let p = promise_new();
         // `track_pending_reactions` tracks the `PromiseHeader` prefix (not the legacy `RtPromise`
         // wrapper type).
-        let ptr = promise_header_ref(p);
+        let ptr = promise_header_ref(PromiseRef(p.0.cast()));
 
         c_start_rx.recv().unwrap();
 
@@ -1724,7 +1724,7 @@ mod tests {
         c_attempt_tx.send(()).unwrap();
         track_pending_reactions(ptr);
         // Drop cleans up the tracking set entry too.
-        promise_drop(p);
+        promise_drop(PromiseRef(p.0.cast()));
 
         c_done_tx.send(()).unwrap();
         threading::unregister_current_thread();

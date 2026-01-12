@@ -1,5 +1,6 @@
 use core::ffi::c_void;
 
+use runtime_native::abi::PromiseRef;
 use runtime_native::test_util::{drop_legacy_promise, legacy_promise_outcome, LegacyPromiseOutcome, TestRuntimeGuard};
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
@@ -31,7 +32,7 @@ fn legacy_promise_fulfillment_value_is_rooted_and_relocatable() {
   runtime_native::rt_promise_resolve_legacy(p, obj1.cast::<c_void>());
 
   assert_eq!(
-    legacy_promise_outcome(p),
+    legacy_promise_outcome(PromiseRef(p.0.cast())),
     LegacyPromiseOutcome::Fulfilled(obj1.cast::<c_void>())
   );
 
@@ -62,12 +63,12 @@ fn legacy_promise_fulfillment_value_is_rooted_and_relocatable() {
 
   // Observers must see the relocated pointer.
   assert_eq!(
-    legacy_promise_outcome(p),
+    legacy_promise_outcome(PromiseRef(p.0.cast())),
     LegacyPromiseOutcome::Fulfilled(obj2.cast::<c_void>())
   );
 
   // Teardown should free the persistent handle so it no longer appears in the root set.
-  unsafe { drop_legacy_promise(p) };
+  unsafe { drop_legacy_promise(PromiseRef(p.0.cast())) };
 
   let mut still_rooted = 0usize;
   threading::safepoint::with_world_stopped(|epoch| {
@@ -97,12 +98,12 @@ fn legacy_promise_rejection_reason_is_rooted_and_relocatable() {
   let p = runtime_native::rt_promise_new_legacy();
   // Mark handled so rejection tracking doesn't retain the promise handle after we drop it.
   unsafe {
-    runtime_native::rt_promise_mark_handled(runtime_native::abi::PromiseRef(p.cast()));
+    runtime_native::rt_promise_mark_handled(PromiseRef(p.0.cast()));
   }
   runtime_native::rt_promise_reject_legacy(p, err1.cast::<c_void>());
 
   assert_eq!(
-    legacy_promise_outcome(p),
+    legacy_promise_outcome(PromiseRef(p.0.cast())),
     LegacyPromiseOutcome::Rejected(err1.cast::<c_void>())
   );
 
@@ -130,11 +131,11 @@ fn legacy_promise_rejection_reason_is_rooted_and_relocatable() {
   assert_eq!(updated, 1, "expected exactly one rooted rejection slot to update");
 
   assert_eq!(
-    legacy_promise_outcome(p),
+    legacy_promise_outcome(PromiseRef(p.0.cast())),
     LegacyPromiseOutcome::Rejected(err2.cast::<c_void>())
   );
 
-  unsafe { drop_legacy_promise(p) };
+  unsafe { drop_legacy_promise(PromiseRef(p.0.cast())) };
 
   let mut still_rooted = 0usize;
   threading::safepoint::with_world_stopped(|epoch| {

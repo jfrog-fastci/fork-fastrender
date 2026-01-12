@@ -40,13 +40,13 @@ extern "C" fn record_ptr_io(_events: u32, data: *mut u8) {
 extern "C" fn record_ptr_io_and_unregister(_events: u32, data: *mut u8) {
   record_ptr(data);
   let id = WATCHER_ID.load(Ordering::SeqCst);
-  runtime_native::rt_io_unregister(id);
+  runtime_native::rt_io_unregister(IoWatcherId(id));
 }
 
 extern "C" fn record_ptr_and_clear_timer(data: *mut u8) {
   record_ptr(data);
   let id = TIMER_ID.load(Ordering::SeqCst);
-  runtime_native::rt_clear_timer(id);
+  runtime_native::rt_clear_timer(TimerId(id));
 }
 
 extern "C" fn record_ptr_par(_i: usize, data: *mut u8) {
@@ -498,7 +498,7 @@ fn clear_interval_handle_with_drop_inside_callback_frees_handle() {
   DROP_COUNT.store(0, Ordering::SeqCst);
 
   let timer = runtime_native::rt_set_interval_handle_with_drop(record_ptr_and_clear_timer, h, record_drop, 0);
-  TIMER_ID.store(timer, Ordering::SeqCst);
+  TIMER_ID.store(timer.0, Ordering::SeqCst);
 
   simulate_relocation(obj1, obj2);
 
@@ -626,7 +626,7 @@ fn io_register_handle_reloads_userdata_from_persistent_handle() {
     record_ptr_io,
     h,
   );
-  assert_ne!(watcher, 0, "rt_io_register_handle should succeed");
+  assert_ne!(watcher.0, 0, "rt_io_register_handle should succeed");
 
   simulate_relocation(obj1, obj2);
 
@@ -668,7 +668,7 @@ fn io_register_handle_invalid_interests_frees_handle() {
   DROP_COUNT.store(0, Ordering::SeqCst);
 
   let watcher = runtime_native::rt_io_register_handle(0, 0, record_ptr_io, h);
-  assert_eq!(watcher, 0);
+  assert_eq!(watcher.0, 0);
   assert_eq!(runtime_native::rt_io_debug_take_last_error(), runtime_native::rt_io_debug::ERR_INVALID_INTERESTS);
 
   assert!(runtime_native::rt_handle_load(h).is_null());
@@ -701,7 +701,7 @@ fn io_register_handle_rejects_blocking_fd_and_frees_handle() {
     record_ptr_io,
     h,
   );
-  assert_eq!(watcher, 0);
+  assert_eq!(watcher.0, 0);
   assert_eq!(
     runtime_native::rt_io_debug_take_last_error(),
     runtime_native::rt_io_debug::ERR_FD_NOT_NONBLOCKING
@@ -736,7 +736,7 @@ fn io_register_handle_rejects_already_registered_fd_and_frees_handle() {
     record_ptr_io,
     h1,
   );
-  assert_ne!(watcher1, 0, "rt_io_register_handle should succeed");
+  assert_ne!(watcher1.0, 0, "rt_io_register_handle should succeed");
 
   let h2 = runtime_native::rt_handle_alloc(obj2);
 
@@ -750,7 +750,7 @@ fn io_register_handle_rejects_already_registered_fd_and_frees_handle() {
     record_ptr_io,
     h2,
   );
-  assert_eq!(watcher2, 0);
+  assert_eq!(watcher2.0, 0);
   assert_eq!(
     runtime_native::rt_io_debug_take_last_error(),
     runtime_native::rt_io_debug::ERR_ALREADY_REGISTERED
@@ -791,7 +791,7 @@ fn io_register_handle_with_drop_invalid_interests_calls_drop_and_frees_handle() 
   DROP_COUNT.store(0, Ordering::SeqCst);
 
   let watcher = runtime_native::rt_io_register_handle_with_drop(0, 0, record_ptr_io, h, record_drop);
-  assert_eq!(watcher, 0);
+  assert_eq!(watcher.0, 0);
   assert_eq!(runtime_native::rt_io_debug_take_last_error(), runtime_native::rt_io_debug::ERR_INVALID_INTERESTS);
 
   assert!(runtime_native::rt_handle_load(h).is_null());
@@ -821,7 +821,7 @@ fn io_register_handle_with_drop_rejects_already_registered_fd_and_drops_handle()
     record_ptr_io,
     h1,
   );
-  assert_ne!(watcher1, 0, "rt_io_register_handle should succeed");
+  assert_ne!(watcher1.0, 0, "rt_io_register_handle should succeed");
 
   let h2 = runtime_native::rt_handle_alloc(obj2);
   simulate_relocation(obj2, obj3);
@@ -836,7 +836,7 @@ fn io_register_handle_with_drop_rejects_already_registered_fd_and_drops_handle()
     h2,
     record_drop,
   );
-  assert_eq!(watcher2, 0);
+  assert_eq!(watcher2.0, 0);
   assert_eq!(
     runtime_native::rt_io_debug_take_last_error(),
     runtime_native::rt_io_debug::ERR_ALREADY_REGISTERED
@@ -884,7 +884,7 @@ fn io_register_handle_with_drop_rejects_blocking_fd_and_drops_handle() {
     h,
     record_drop,
   );
-  assert_eq!(watcher, 0);
+  assert_eq!(watcher.0, 0);
   assert_eq!(runtime_native::rt_io_debug_take_last_error(), runtime_native::rt_io_debug::ERR_FD_NOT_NONBLOCKING);
 
   assert!(runtime_native::rt_handle_load(h).is_null());
@@ -921,7 +921,7 @@ fn io_register_handle_with_drop_stale_handle_is_noop() {
     h,
     record_drop,
   );
-  assert_ne!(watcher, 0);
+  assert_ne!(watcher.0, 0);
 
   // Simulate ABI misuse: handle freed while watcher still registered. The runtime should treat this
   // as a no-op (no callback and no drop hook invocation).
@@ -977,7 +977,7 @@ fn io_register_handle_with_drop_cancel_all_invokes_drop_hook() {
     h,
     record_drop,
   );
-  assert_ne!(watcher, 0);
+  assert_ne!(watcher.0, 0);
 
   simulate_relocation(obj1, obj2);
 
@@ -1017,7 +1017,7 @@ fn io_register_handle_cancel_all_frees_handle() {
     record_ptr_io,
     h,
   );
-  assert_ne!(watcher, 0);
+  assert_ne!(watcher.0, 0);
 
   simulate_relocation(obj1, obj2);
 
@@ -1057,7 +1057,7 @@ fn io_register_handle_with_drop_invokes_drop_hook_on_unregister() {
     h,
     record_drop,
   );
-  assert_ne!(watcher, 0, "rt_io_register_handle_with_drop should succeed");
+  assert_ne!(watcher.0, 0, "rt_io_register_handle_with_drop should succeed");
 
   simulate_relocation(obj1, obj2);
 
@@ -1102,8 +1102,8 @@ fn io_register_handle_with_drop_can_unregister_inside_callback() {
     h,
     record_drop,
   );
-  assert_ne!(watcher, 0);
-  WATCHER_ID.store(watcher, Ordering::SeqCst);
+  assert_ne!(watcher.0, 0);
+  WATCHER_ID.store(watcher.0, Ordering::SeqCst);
 
   simulate_relocation(obj1, obj2);
 
@@ -1186,3 +1186,4 @@ fn parallel_for_rooted_reloads_userdata_from_persistent_handle() {
 
   threading::unregister_current_thread();
 }
+use runtime_native::abi::{IoWatcherId, TimerId};

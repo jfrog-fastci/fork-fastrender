@@ -1,6 +1,5 @@
 use runtime_native::abi::{
-  LegacyPromiseRef, Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId,
-  ValueRef,
+  LegacyPromiseRef, Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
 };
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::gc::ObjHeader;
@@ -13,8 +12,8 @@ use std::sync::Arc;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
-fn resolve_legacy_promise(p: PromiseRef, value: ValueRef) {
-  runtime_native::rt_promise_resolve_legacy(p.0.cast(), value);
+fn resolve_legacy_promise(p: LegacyPromiseRef, value: ValueRef) {
+  runtime_native::rt_promise_resolve_legacy(p, value);
 }
 
 #[repr(C)]
@@ -69,16 +68,16 @@ extern "C" fn yield_twice_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     match (*coro).header.state {
       0 => {
         (*coro).header.state = 1;
-        RtCoroStatus::Yield
+        RtCoroStatus::RT_CORO_YIELD
       }
       1 => {
         (*coro).header.state = 2;
-        RtCoroStatus::Yield
+        RtCoroStatus::RT_CORO_YIELD
       }
       2 => {
         (*( (*coro).done)).store(true, Ordering::SeqCst);
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -103,7 +102,7 @@ fn run_until_idle_drains_deferred_coroutines() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: yield_twice_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -142,7 +141,7 @@ extern "C" fn await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
       match (*coro).header.state {
       0 => {
         runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         // The awaited promise should have fulfilled.
@@ -150,7 +149,7 @@ extern "C" fn await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
         (*( (*coro).done)).store(true, Ordering::SeqCst);
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -168,7 +167,7 @@ fn block_on_waits_for_promise_settlement() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: await_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -178,19 +177,18 @@ fn block_on_waits_for_promise_settlement() {
   coro.awaited = awaited;
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
+  let promise_ref = PromiseRef(promise.0.cast());
 
-  // `LegacyPromiseRef` is a raw pointer and therefore not `Send`. Wrap it in the ABI's opaque
-  // `PromiseRef` newtype so we can move it into the resolver thread.
-  let awaited_send = PromiseRef(awaited.cast());
+  let awaited_for_thread = awaited;
   let t = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(20));
-    resolve_legacy_promise(awaited_send, 0xCAFE_BABE as ValueRef);
+    resolve_legacy_promise(awaited_for_thread, 0xCAFE_BABE as ValueRef);
   });
 
   let start = Instant::now();
   // Safety: ABI call.
   unsafe {
-    runtime_native::rt_async_block_on(PromiseRef(promise.cast()));
+    runtime_native::rt_async_block_on(promise_ref);
   }
   let elapsed = start.elapsed();
 
@@ -240,7 +238,7 @@ fn block_on_returns_immediately_when_promise_already_settled() {
   let start = Instant::now();
   // Safety: ABI call.
   unsafe {
-    runtime_native::rt_async_block_on(PromiseRef(p.cast()));
+    runtime_native::rt_async_block_on(PromiseRef(p.0.cast()));
   }
   let elapsed = start.elapsed();
 

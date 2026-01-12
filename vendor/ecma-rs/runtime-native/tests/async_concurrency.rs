@@ -1,5 +1,5 @@
 use runtime_native::abi::{
-  LegacyPromiseRef, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+  LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
 };
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 use std::time::Duration;
 
-fn resolve_legacy_promise(p: PromiseRef, value: ValueRef) {
-  runtime_native::rt_promise_resolve_legacy(p.0.cast(), value);
+fn resolve_legacy_promise(p: LegacyPromiseRef, value: ValueRef) {
+  runtime_native::rt_promise_resolve_legacy(p, value);
 }
 
 #[repr(C)]
@@ -56,7 +56,7 @@ extern "C" fn resume_await_once(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     match (*coro).header.state {
       0 => {
         runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         assert_eq!((*coro).header.await_is_error, 0);
@@ -64,7 +64,7 @@ extern "C" fn resume_await_once(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
 
         (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -82,7 +82,7 @@ fn cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: resume_await_once,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -94,10 +94,10 @@ fn cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait() {
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-  let awaited_send = PromiseRef(awaited.cast());
+  let awaited_for_thread = awaited;
   let resolver = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(50));
-    resolve_legacy_promise(awaited_send, 0xCAFE_BABEusize as ValueRef);
+    resolve_legacy_promise(awaited_for_thread, 0xCAFE_BABEusize as ValueRef);
   });
 
   runtime_native::rt_async_wait();
@@ -121,7 +121,7 @@ fn many_waiters_are_all_woken() {
     let coro = unsafe { &mut (*coro_obj).payload };
     coro.header = RtCoroutineHeader {
       resume: resume_await_once,
-      promise: core::ptr::null_mut(),
+      promise: LegacyPromiseRef::null(),
       state: 0,
       await_is_error: 0,
       await_value: core::ptr::null_mut(),
@@ -132,10 +132,10 @@ fn many_waiters_are_all_woken() {
     runtime_native::rt_async_spawn_legacy(&mut coro.header);
   }
 
-  let awaited_send = PromiseRef(awaited.cast());
+  let awaited_for_thread = awaited;
   let resolver = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(50));
-    resolve_legacy_promise(awaited_send, 0xCAFE_BABEusize as ValueRef);
+    resolve_legacy_promise(awaited_for_thread, 0xCAFE_BABEusize as ValueRef);
   });
 
   runtime_native::rt_async_wait();

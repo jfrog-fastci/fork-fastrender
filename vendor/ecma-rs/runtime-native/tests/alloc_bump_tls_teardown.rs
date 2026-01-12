@@ -3,6 +3,7 @@ use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use runtime_native::PromiseLayout;
 use runtime_native::PromiseRef;
+use runtime_native::abi::LegacyPromiseRef;
 
 thread_local! {
   static CALL_SPAWN_PAYLOAD_PROMISE_ON_DROP: CallSpawnPayloadPromiseOnDrop = CallSpawnPayloadPromiseOnDrop;
@@ -27,6 +28,7 @@ impl Drop for CallSpawnPayloadPromiseOnDrop {
         PromiseLayout { size: 1, align: 1 },
       );
       runtime_native::rt_async_block_on(promise);
+      runtime_native::rt_promise_drop_legacy(LegacyPromiseRef(promise.0.cast()));
     }
   }
 }
@@ -50,6 +52,7 @@ fn alloc_bump_tls_is_safe_to_access_during_tls_teardown() {
         PromiseLayout { size: 1, align: 1 },
       );
       runtime_native::rt_async_block_on(promise);
+      runtime_native::rt_promise_drop_legacy(LegacyPromiseRef(promise.0.cast()));
     }
   })
   .join()

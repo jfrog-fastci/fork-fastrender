@@ -53,7 +53,7 @@ extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     match (*coro).header.state {
       0 => {
         runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         // The awaited promise settled and the runtime should have stored the result.
@@ -65,7 +65,7 @@ extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
 
         // Resolve the coroutine's own promise to mimic JS async function semantics.
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -86,7 +86,7 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: test_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -95,17 +95,17 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
   coro.completed = completed;
   coro.awaited = awaited;
 
-  // Avoid relying on `Send` impls for raw pointers/ABI handles in this regression test.
+  // Raw pointers are `!Send` on newer Rust versions; pass the coroutine pointer as an integer
+  // across threads.
   let coro_ptr = (&mut coro.header as *mut RtCoroutineHeader) as usize;
-  let awaited_raw = awaited as usize;
+  let awaited_for_thread = awaited;
 
   let spawn_thread = std::thread::spawn(move || {
     let coro_ptr = coro_ptr as *mut RtCoroutineHeader;
     let _promise = runtime_native::rt_async_spawn_legacy(coro_ptr);
   });
   let resolve_thread = std::thread::spawn(move || {
-    let awaited = awaited_raw as LegacyPromiseRef;
-    runtime_native::rt_promise_resolve_legacy(awaited, 0xDEAD_BEEF as ValueRef);
+    runtime_native::rt_promise_resolve_legacy(awaited_for_thread, 0xDEAD_BEEF as ValueRef);
   });
 
   spawn_thread.join().unwrap();
@@ -115,7 +115,7 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
 
   // The promise should not retain stale waiters: the waiter list must be empty even before the
   // coroutine runs its microtask.
-  assert!(promise_waiters_is_empty(PromiseRef(awaited.cast())));
+  assert!(promise_waiters_is_empty(PromiseRef(awaited.0.cast())));
 
   let deadline = Instant::now() + Duration::from_secs(1);
   while !completed.load(Ordering::SeqCst) {
@@ -123,6 +123,6 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
     runtime_native::rt_async_poll_legacy();
   }
 
-  assert!(promise_waiters_is_empty(PromiseRef(awaited.cast())));
+  assert!(promise_waiters_is_empty(PromiseRef(awaited.0.cast())));
   assert!(!runtime_native::rt_async_poll_legacy());
 }

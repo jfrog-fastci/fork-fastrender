@@ -491,7 +491,33 @@ pub struct RtPromise {
   _private: [u8; 0],
 }
 
-pub type LegacyPromiseRef = *mut RtPromise;
+/// Opaque handle to a legacy runtime-native promise.
+///
+/// ABI: `LegacyPromiseRef` is a raw pointer to an opaque `RtPromise` allocation.
+///
+/// In Rust we wrap the pointer in a `#[repr(transparent)]` newtype (instead of a bare `*mut
+/// RtPromise`) so it can carry `Send`/`Sync` marker impls like [`PromiseRef`]. This matches how
+/// generated code uses the handle: as an opaque, thread-safe runtime object reference.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LegacyPromiseRef(pub *mut RtPromise);
+
+impl LegacyPromiseRef {
+  #[inline]
+  pub const fn null() -> Self {
+    Self(core::ptr::null_mut())
+  }
+
+  #[inline]
+  pub const fn is_null(self) -> bool {
+    self.0.is_null()
+  }
+}
+
+// `LegacyPromiseRef` is an opaque handle. The runtime API is responsible for ensuring thread-safety
+// of operations performed through this handle.
+unsafe impl Send for LegacyPromiseRef {}
+unsafe impl Sync for LegacyPromiseRef {}
 
 // -----------------------------------------------------------------------------
 // Legacy promise resolution ABI (PromiseResolve / thenable assimilation)
@@ -537,6 +563,32 @@ pub union PromiseResolvePayload {
 pub struct PromiseResolveInput {
   pub kind: PromiseResolveKind,
   pub payload: PromiseResolvePayload,
+}
+
+impl PromiseResolveInput {
+  #[inline]
+  pub const fn value(value: ValueRef) -> Self {
+    Self {
+      kind: RT_PROMISE_RESOLVE_VALUE,
+      payload: PromiseResolvePayload { value },
+    }
+  }
+
+  #[inline]
+  pub const fn promise(promise: LegacyPromiseRef) -> Self {
+    Self {
+      kind: RT_PROMISE_RESOLVE_PROMISE,
+      payload: PromiseResolvePayload { promise },
+    }
+  }
+
+  #[inline]
+  pub const fn thenable(thenable: ThenableRef) -> Self {
+    Self {
+      kind: RT_PROMISE_RESOLVE_THENABLE,
+      payload: PromiseResolvePayload { thenable },
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------

@@ -1,13 +1,13 @@
 use core::ptr::null_mut;
 
 use runtime_native::abi::{
-  LegacyPromiseRef, PromiseResolveInput, PromiseResolveKind, PromiseResolvePayload, RtCoroStatus,
+  LegacyPromiseRef, PromiseResolveInput, PromiseResolvePayload, RtCoroStatus,
   RtCoroutineHeader, ValueRef,
 };
 use runtime_native::roots::GcHandle;
 
 extern "C" fn dummy_resume(_coro: *mut RtCoroutineHeader) -> RtCoroStatus {
-  RtCoroStatus::Done
+  RtCoroStatus::RT_CORO_DONE
 }
 
 #[test]
@@ -56,9 +56,9 @@ fn legacy_exports_use_legacy_promise_ref_in_signatures() {
 
 #[test]
 fn promise_resolve_input_payload_uses_legacy_promise_ref() {
-  let p: LegacyPromiseRef = null_mut();
+  let p = LegacyPromiseRef::null();
   let input = PromiseResolveInput::promise(p);
-  assert_eq!(input.kind, PromiseResolveKind::Promise);
+  assert_eq!(input.kind, runtime_native::abi::RT_PROMISE_RESOLVE_PROMISE);
 
   let payload = PromiseResolvePayload { promise: p };
   let p2 = unsafe { payload.promise };
@@ -69,7 +69,7 @@ fn promise_resolve_input_payload_uses_legacy_promise_ref() {
 fn rt_coroutine_header_promise_field_uses_legacy_promise_ref() {
   let _hdr = RtCoroutineHeader {
     resume: dummy_resume,
-    promise: null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: null_mut(),

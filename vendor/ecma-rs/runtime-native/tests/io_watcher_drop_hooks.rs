@@ -1,4 +1,4 @@
-use runtime_native::abi::RT_IO_READABLE;
+use runtime_native::abi::{IoWatcherId, RT_IO_READABLE};
 use runtime_native::test_util::{reset_runtime_state, TestRuntimeGuard};
 use runtime_native::{rt_async_poll_legacy as rt_async_poll, rt_io_register_with_drop, rt_io_unregister};
 use std::io;
@@ -66,7 +66,7 @@ extern "C" fn on_readable(events: u32, data: *mut u8) {
   holder.shared.fired.store(true, Ordering::Release);
 
   let id = holder.shared.id.load(Ordering::Acquire);
-  rt_io_unregister(id);
+  rt_io_unregister(IoWatcherId(id));
 
   // `drop_holder` must not run while this callback is still executing.
   if holder.shared.drops.load(Ordering::Acquire) != 0 {
@@ -84,8 +84,8 @@ fn io_register_with_drop_runs_drop_on_unregister() {
   let data_ptr = Box::into_raw(holder) as *mut u8;
 
   let id = rt_io_register_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_io_cb, data_ptr, drop_holder);
-  assert_ne!(id, 0);
-  shared.id.store(id, Ordering::Release);
+  assert_ne!(id.0, 0);
+  shared.id.store(id.0, Ordering::Release);
 
   rt_io_unregister(id);
 
@@ -112,8 +112,8 @@ fn io_register_with_drop_does_not_drop_while_callback_running() {
   let data_ptr = Box::into_raw(holder) as *mut u8;
 
   let id = rt_io_register_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, on_readable, data_ptr, drop_holder);
-  assert_ne!(id, 0);
-  shared.id.store(id, Ordering::Release);
+  assert_ne!(id.0, 0);
+  shared.id.store(id.0, Ordering::Release);
 
   // Make the pipe readable.
   let buf = [1u8; 1];
@@ -144,12 +144,11 @@ fn io_register_with_drop_runs_drop_on_teardown_clear_watchers() {
   let data_ptr = Box::into_raw(holder) as *mut u8;
 
   let id = rt_io_register_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_io_cb, data_ptr, drop_holder);
-  assert_ne!(id, 0);
-  shared.id.store(id, Ordering::Release);
+  assert_ne!(id.0, 0);
+  shared.id.store(id.0, Ordering::Release);
 
   // Simulate teardown: clears watchers and must invoke the drop hook.
   reset_runtime_state();
 
   assert_eq!(shared.drops.load(Ordering::Acquire), 1);
 }
-

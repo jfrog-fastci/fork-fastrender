@@ -1,6 +1,6 @@
 use runtime_native::abi::{
-  LegacyPromiseRef, PromiseResolveInput, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId,
-  ThenableRef, ThenableRejectCallback, ThenableResolveCallback, ThenableVTable, ValueRef,
+  LegacyPromiseRef, PromiseResolveInput, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ThenableRef,
+  ThenableRejectCallback, ThenableResolveCallback, ThenableVTable, ValueRef,
 };
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
@@ -68,7 +68,7 @@ extern "C" fn await_promise_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus
     match (*coro).header.state {
       0 => {
         runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         *(*coro).out_is_error = (*coro).header.await_is_error;
@@ -76,7 +76,7 @@ extern "C" fn await_promise_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus
         *(*coro).out_error = (*coro).header.await_error;
         *(*coro).done = true;
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -101,7 +101,7 @@ extern "C" fn await_value_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     match (*coro).header.state {
       0 => {
         runtime_native::rt_coro_await_value_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         *(*coro).out_is_error = (*coro).header.await_is_error;
@@ -109,7 +109,7 @@ extern "C" fn await_value_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         *(*coro).out_error = (*coro).header.await_error;
         *(*coro).done = true;
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -132,7 +132,7 @@ fn self_resolution_rejects() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: await_promise_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -170,7 +170,7 @@ fn resolving_with_pending_promise_adopts_fulfillment() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: await_promise_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -209,7 +209,7 @@ fn resolving_with_pending_promise_adopts_rejection() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: await_promise_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -276,7 +276,7 @@ fn thenable_calling_resolve_twice_only_resolves_once() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: await_promise_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -351,7 +351,7 @@ fn thenable_calling_resolve_then_reject_only_resolves() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: await_promise_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -419,7 +419,7 @@ fn thenable_throwing_during_then_call_rejects() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: await_promise_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -481,7 +481,7 @@ fn await_thenable_uses_promise_resolve_and_marks_handled() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: await_value_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),

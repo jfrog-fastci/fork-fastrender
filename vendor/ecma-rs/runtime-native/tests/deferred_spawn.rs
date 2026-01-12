@@ -1,6 +1,4 @@
-use runtime_native::abi::{
-  LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
-};
+use runtime_native::abi::{LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -60,7 +58,7 @@ extern "C" fn counter_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
     runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
   }
-  RtCoroStatus::Done
+  RtCoroStatus::RT_CORO_DONE
 }
 
 #[test]
@@ -73,7 +71,7 @@ fn spawn_vs_deferred_spawn_immediacy() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: counter_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -91,7 +89,7 @@ fn spawn_vs_deferred_spawn_immediacy() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: counter_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),
@@ -124,7 +122,7 @@ extern "C" fn yield_once_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
       0 => {
         *(*coro).started = true;
         runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-        RtCoroStatus::Pending
+        RtCoroStatus::RT_CORO_PENDING
       }
       1 => {
         assert_eq!((*coro).header.await_is_error, 0);
@@ -132,7 +130,7 @@ extern "C" fn yield_once_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
 
         *(*coro).completed = true;
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-        RtCoroStatus::Done
+        RtCoroStatus::RT_CORO_DONE
       }
       other => panic!("unexpected coroutine state: {other}"),
     }
@@ -150,7 +148,7 @@ fn deferred_spawn_registers_waiter_when_polled() {
   let coro = unsafe { &mut (*coro_obj).payload };
   coro.header = RtCoroutineHeader {
     resume: yield_once_resume,
-    promise: core::ptr::null_mut(),
+    promise: LegacyPromiseRef::null(),
     state: 0,
     await_is_error: 0,
     await_value: core::ptr::null_mut(),

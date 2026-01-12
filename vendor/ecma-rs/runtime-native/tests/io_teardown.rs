@@ -3,6 +3,7 @@ use runtime_native::io::{IoOpDebugHooks, IoRuntime, IoVecRange, PinnedIoVec};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::buffer::{ArrayBuffer, Uint8Array};
 use runtime_native::{rt_async_poll_legacy as rt_async_poll, rt_promise_then_legacy as rt_promise_then};
+use runtime_native::abi::LegacyPromiseRef;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -54,7 +55,7 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
 
   let settled = Box::new(AtomicBool::new(false));
   let settled_ptr = Box::into_raw(settled);
-  rt_promise_then(promise.0.cast(), set_bool, settled_ptr.cast::<u8>());
+  rt_promise_then(LegacyPromiseRef(promise.0.cast()), set_bool, settled_ptr.cast::<u8>());
 
   assert_eq!(io_rt.debug_registry_len(), 1);
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
@@ -112,7 +113,7 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack_for_read() {
 
   let settled = Box::new(AtomicBool::new(false));
   let settled_ptr = Box::into_raw(settled);
-  rt_promise_then(promise.0.cast(), set_bool, settled_ptr.cast::<u8>());
+  rt_promise_then(LegacyPromiseRef(promise.0.cast()), set_bool, settled_ptr.cast::<u8>());
 
   assert_eq!(io_rt.debug_registry_len(), 1);
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
@@ -167,7 +168,7 @@ fn teardown_detaches_queued_completion_tasks() {
 
   let settled = Box::new(AtomicBool::new(false));
   let settled_ptr = Box::into_raw(settled);
-  rt_promise_then(promise.0.cast(), set_bool, settled_ptr.cast::<u8>());
+  rt_promise_then(LegacyPromiseRef(promise.0.cast()), set_bool, settled_ptr.cast::<u8>());
 
   // Wait until the I/O thread has finished the syscall and enqueued the completion task but is
   // paused before dropping its last reference.
@@ -232,7 +233,7 @@ fn teardown_detaches_queued_completion_tasks_for_read() {
 
   let settled = Box::new(AtomicBool::new(false));
   let settled_ptr = Box::into_raw(settled);
-  rt_promise_then(promise.0.cast(), set_bool, settled_ptr.cast::<u8>());
+  rt_promise_then(LegacyPromiseRef(promise.0.cast()), set_bool, settled_ptr.cast::<u8>());
 
   // Wait until the I/O thread has finished the syscall and enqueued the completion task but is
   // paused before dropping its last reference.
@@ -297,7 +298,7 @@ fn teardown_keeps_backing_store_pins_until_cancel_ack() {
 
   let settled = Box::new(AtomicBool::new(false));
   let settled_ptr = Box::into_raw(settled);
-  rt_promise_then(promise.0.cast(), set_bool, settled_ptr.cast::<u8>());
+  rt_promise_then(LegacyPromiseRef(promise.0.cast()), set_bool, settled_ptr.cast::<u8>());
 
   assert_eq!(buffer.pin_count(), 1);
   assert!(buffer.is_io_borrowed());
@@ -372,7 +373,7 @@ fn teardown_keeps_backing_store_pins_until_cancel_ack_for_read_iovecs() {
 
   let settled = Box::new(AtomicBool::new(false));
   let settled_ptr = Box::into_raw(settled);
-  rt_promise_then(promise.0.cast(), set_bool, settled_ptr.cast::<u8>());
+  rt_promise_then(LegacyPromiseRef(promise.0.cast()), set_bool, settled_ptr.cast::<u8>());
 
   assert_eq!(buffer.pin_count(), 1);
   assert!(buffer.is_io_borrowed());

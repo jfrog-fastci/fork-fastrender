@@ -25,11 +25,11 @@ extern "C" fn counted_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
     (*coro).resumes += 1;
     if (*coro).remaining == 0 {
       rt_promise_resolve((*coro).header.promise, std::ptr::null_mut());
-      return RtCoroStatus::Done;
+      return RtCoroStatus::RT_CORO_DONE;
     }
     (*coro).remaining -= 1;
     rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
-    RtCoroStatus::Pending
+    RtCoroStatus::RT_CORO_PENDING
   }
 }
 
@@ -45,7 +45,7 @@ fn normal_async_workload_completes() {
   let mut coro = Box::new(CountedCoro {
     header: RtCoroutineHeader {
       resume: counted_resume,
-      promise: std::ptr::null_mut(),
+      promise: LegacyPromiseRef::null(),
       state: 0,
       await_is_error: 0,
       await_value: std::ptr::null_mut(),

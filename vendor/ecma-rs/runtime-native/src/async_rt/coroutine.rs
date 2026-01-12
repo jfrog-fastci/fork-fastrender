@@ -1,25 +1,15 @@
-use crate::abi::{LegacyPromiseRef, PromiseRef};
-use crate::abi::PromiseResolveInput;
-use crate::abi::PromiseResolveKind;
-use crate::abi::RtCoroStatus;
-use crate::abi::RtCoroutineHeader;
+use crate::abi::{
+  LegacyPromiseRef, PromiseRef, PromiseResolveInput, RtCoroStatus, RtCoroutineHeader,
+  RT_PROMISE_RESOLVE_PROMISE, RT_PROMISE_RESOLVE_THENABLE, RT_PROMISE_RESOLVE_VALUE,
+};
 use crate::gc::OBJ_HEADER_SIZE;
 
 use super::promise::{
-  promise_mark_handled, promise_new, promise_outcome, promise_register_reaction, promise_resolve_into, PromiseOutcome,
+  promise_mark_handled, promise_new, promise_outcome, promise_register_reaction, promise_resolve_into,
+  PromiseOutcome,
 };
 use super::strict_await_yields;
 use super::{gc, global as async_global, Task, TaskFn};
-
-#[inline]
-fn promise_ref_from_legacy(p: LegacyPromiseRef) -> PromiseRef {
-  PromiseRef(p.cast())
-}
-
-#[inline]
-fn legacy_from_promise_ref(p: PromiseRef) -> LegacyPromiseRef {
-  p.0.cast()
-}
 
 #[inline]
 fn coro_from_obj_ptr(obj: *mut u8) -> *mut RtCoroutineHeader {
@@ -91,8 +81,8 @@ fn run_coroutine(coro: *mut RtCoroutineHeader) {
     let resume = unsafe { (*coro).resume };
     let status = crate::ffi::invoke_coro_resume(resume, coro);
     match status {
-      RtCoroStatus::Done | RtCoroStatus::Pending => break,
-      RtCoroStatus::Yield => {
+      RtCoroStatus::RT_CORO_DONE | RtCoroStatus::RT_CORO_PENDING => break,
+      RtCoroStatus::RT_CORO_YIELD => {
         schedule_resume_macrotask(coro);
         break;
       }
@@ -162,12 +152,12 @@ pub(crate) fn async_spawn(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef {
   super::ensure_event_loop_thread();
   let coro = validate_coro_ptr(coro);
   if coro.is_null() {
-    return core::ptr::null_mut();
+    return LegacyPromiseRef::null();
   }
 
   unsafe {
     if (*coro).promise.is_null() {
-      (*coro).promise = legacy_from_promise_ref(promise_new());
+      (*coro).promise = promise_new();
     }
   }
 
@@ -180,12 +170,12 @@ pub(crate) fn async_spawn_deferred(coro: *mut RtCoroutineHeader) -> LegacyPromis
   super::ensure_event_loop_thread();
   let coro = validate_coro_ptr(coro);
   if coro.is_null() {
-    return core::ptr::null_mut();
+    return LegacyPromiseRef::null();
   }
 
   unsafe {
     if (*coro).promise.is_null() {
-      (*coro).promise = legacy_from_promise_ref(promise_new());
+      (*coro).promise = promise_new();
     }
   }
 
@@ -213,18 +203,18 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: LegacyPromiseRef
     return;
   }
 
-  let awaited = promise_ref_from_legacy(awaited);
+  let awaited_ref = PromiseRef(awaited.0.cast());
 
   // `await` always attaches a rejection handler (even if it only propagates the error), so it
   // counts as handling the awaited promise for unhandled-rejection tracking. This must happen even
   // when we take the settled fast-path (synchronous resumption), because attaching handlers after
   // rejection should trigger `rejectionhandled` behavior.
-  promise_mark_handled(awaited);
+  promise_mark_handled(awaited_ref);
 
   // Fast-path: if the promise is already settled, resume the coroutine synchronously (unless strict
   // mode is requested).
   if !strict_await_yields() {
-    match promise_outcome(awaited) {
+    match promise_outcome(awaited_ref) {
       PromiseOutcome::Pending => {}
       PromiseOutcome::Fulfilled(v) => {
         unsafe {
@@ -249,20 +239,25 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: LegacyPromiseRef
 
   let coro_root = unsafe { gc::Root::new_unchecked(coro_obj_ptr(coro)) };
   let node = alloc_await_reaction(coro_root);
-  promise_register_reaction(awaited, node);
+  promise_register_reaction(awaited_ref, node);
 }
 
-pub(crate) fn coro_await_value(coro: *mut RtCoroutineHeader, awaited: PromiseResolveInput, next_state: u32) {
+pub(crate) fn coro_await_value(
+  coro: *mut RtCoroutineHeader,
+  awaited: PromiseResolveInput,
+  next_state: u32,
+) {
   match awaited.kind {
-    PromiseResolveKind::Promise => {
-      let p: LegacyPromiseRef = unsafe { awaited.payload.promise };
+    RT_PROMISE_RESOLVE_PROMISE => {
+      let p = unsafe { awaited.payload.promise };
       coro_await(coro, p, next_state);
     }
-    PromiseResolveKind::Value | PromiseResolveKind::Thenable => {
+    RT_PROMISE_RESOLVE_VALUE | RT_PROMISE_RESOLVE_THENABLE => {
       // Await semantics are equivalent to `PromiseResolve` + `then`.
       let p = promise_new();
-      promise_resolve_into(p, awaited);
-      coro_await(coro, legacy_from_promise_ref(p), next_state);
+      promise_resolve_into(PromiseRef(p.0.cast()), awaited);
+      coro_await(coro, p, next_state);
     }
+    _ => std::process::abort(),
   }
 }

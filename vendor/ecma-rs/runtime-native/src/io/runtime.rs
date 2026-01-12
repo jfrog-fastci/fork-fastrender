@@ -197,7 +197,7 @@ impl IoRuntime {
       return Err(io::Error::new(io::ErrorKind::Other, "I/O runtime is torn down"));
     }
 
-    let promise = async_rt::promise::promise_new();
+    let promise = PromiseRef(async_rt::promise::promise_new().0.cast());
     let cancel = super::op_registry::CancellationToken::new()?;
 
     let pinned = super::op::IoOp::pin_uint8_array_range(&self.inner.limiter, view, range)?;
@@ -248,7 +248,7 @@ impl IoRuntime {
       return Err(io::Error::new(io::ErrorKind::Other, "I/O runtime is torn down"));
     }
 
-    let promise = async_rt::promise::promise_new();
+    let promise = PromiseRef(async_rt::promise::promise_new().0.cast());
     let cancel = super::op_registry::CancellationToken::new()?;
 
     let pinned = super::op::IoOp::pin_iovecs(&self.inner.limiter, iovecs)?;
@@ -299,7 +299,7 @@ impl IoRuntime {
       return Err(io::Error::new(io::ErrorKind::Other, "I/O runtime is torn down"));
     }
  
-    let promise = async_rt::promise::promise_new();
+    let promise = PromiseRef(async_rt::promise::promise_new().0.cast());
     let cancel = super::op_registry::CancellationToken::new()?;
  
     let pinned = super::op::IoOp::pin_iovecs_for_read(&self.inner.limiter, iovecs)?;
@@ -351,7 +351,7 @@ impl IoRuntime {
       return Err(io::Error::new(io::ErrorKind::Other, "I/O runtime is torn down"));
     }
 
-    let promise = async_rt::promise::promise_new();
+    let promise = PromiseRef(async_rt::promise::promise_new().0.cast());
     let cancel = super::op_registry::CancellationToken::new()?;
 
     let pinned = super::op::IoOp::pin_uint8_array_range_for_read(&self.inner.limiter, view, range)?;

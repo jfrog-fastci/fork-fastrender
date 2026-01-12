@@ -1,10 +1,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use runtime_native::abi::LegacyPromiseRef;
-use runtime_native::abi::PromiseRef;
-use runtime_native::abi::ValueRef;
-use runtime_native::abi::{PromiseResolveInput, ThenableRef, ThenableVTable};
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef, PromiseResolveInput, ThenableRef, ThenableVTable, ValueRef};
 use runtime_native::test_util::TestRuntimeGuard;
+
+#[inline]
+fn legacy_promise_as_ref(p: LegacyPromiseRef) -> PromiseRef {
+  PromiseRef(p.0.cast())
+}
 
 fn drain_async_runtime() {
   while runtime_native::rt_async_poll() {}
@@ -29,7 +31,7 @@ struct ThenData {
 
 extern "C" fn on_settle_observe_outcome(data: *mut u8) {
   let data = unsafe { &*(data as *const ThenData) };
-  let (_state, value) = runtime_native::rt_debug_promise_outcome(PromiseRef(data.promise.cast()));
+  let (_state, value) = runtime_native::rt_debug_promise_outcome(legacy_promise_as_ref(data.promise));
   data.observed.store(value as usize, Ordering::Release);
 }
 
@@ -109,6 +111,7 @@ fn promise_outcome_is_relocatable_via_global_root_handle() {
   drain_async_runtime();
 
   let promise = runtime_native::rt_promise_new_legacy();
+  let promise_ref = legacy_promise_as_ref(promise);
 
   let mut then_data = ThenData {
     promise,
@@ -132,7 +135,7 @@ fn promise_outcome_is_relocatable_via_global_root_handle() {
   // Simulate a moving GC updating the stored root slot in-place.
   assert_eq!(replace_global_root_ptr(old_obj.cast(), new_obj.cast()), 1);
 
-  let (state, value) = runtime_native::rt_debug_promise_outcome(PromiseRef(promise.cast()));
+  let (state, value) = runtime_native::rt_debug_promise_outcome(promise_ref);
   assert_eq!(state, 1, "promise should be fulfilled");
   assert_eq!(value as *mut u8, new_obj.cast());
 
@@ -271,7 +274,7 @@ fn promise_thenable_resolver_uses_relocated_promise_ptr_after_job_runs() {
   assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
 
   assert_eq!(
-    replace_global_root_ptr(dst_old.cast::<u8>(), dst_new.cast::<u8>()),
+    replace_global_root_ptr(dst_old.0.cast::<u8>(), dst_new.0.cast::<u8>()),
     1
   );
 
@@ -284,10 +287,10 @@ fn promise_thenable_resolver_uses_relocated_promise_ptr_after_job_runs() {
 
   assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 0);
 
-  let (state_old, _) = runtime_native::rt_debug_promise_outcome(PromiseRef(dst_old.cast()));
+  let (state_old, _) = runtime_native::rt_debug_promise_outcome(legacy_promise_as_ref(dst_old));
   assert_eq!(state_old, 0, "old promise should remain pending");
 
-  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(PromiseRef(dst_new.cast()));
+  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(legacy_promise_as_ref(dst_new));
   assert_eq!(state_new, 1, "relocated promise should be fulfilled");
   assert_eq!(value_new, core::ptr::null_mut());
 
@@ -318,16 +321,16 @@ fn promise_thenable_job_uses_relocated_promise_ptr() {
   assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
 
   assert_eq!(
-    replace_global_root_ptr(dst_old.cast::<u8>(), dst_new.cast::<u8>()),
+    replace_global_root_ptr(dst_old.0.cast::<u8>(), dst_new.0.cast::<u8>()),
     1
   );
 
   drain_async_runtime();
 
-  let (state_old, _) = runtime_native::rt_debug_promise_outcome(PromiseRef(dst_old.cast()));
+  let (state_old, _) = runtime_native::rt_debug_promise_outcome(legacy_promise_as_ref(dst_old));
   assert_eq!(state_old, 0, "old promise should remain pending");
 
-  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(PromiseRef(dst_new.cast()));
+  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(legacy_promise_as_ref(dst_new));
   assert_eq!(state_new, 1, "relocated promise should be fulfilled");
   assert_eq!(value_new as usize, 0x1234usize);
 
@@ -353,17 +356,17 @@ fn promise_adopt_continuation_uses_relocated_dst_ptr() {
   assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 2);
 
   assert_eq!(
-    replace_global_root_ptr(dst_old.cast::<u8>(), dst_new.cast::<u8>()),
+    replace_global_root_ptr(dst_old.0.cast::<u8>(), dst_new.0.cast::<u8>()),
     1
   );
 
   runtime_native::rt_promise_resolve_legacy(src, core::ptr::null_mut());
   drain_async_runtime();
 
-  let (state_old, _) = runtime_native::rt_debug_promise_outcome(PromiseRef(dst_old.cast()));
+  let (state_old, _) = runtime_native::rt_debug_promise_outcome(legacy_promise_as_ref(dst_old));
   assert_eq!(state_old, 0, "old destination should remain pending");
 
-  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(PromiseRef(dst_new.cast()));
+  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(legacy_promise_as_ref(dst_new));
   assert_eq!(state_new, 1, "relocated destination should be fulfilled");
   assert_eq!(value_new, core::ptr::null_mut());
 
