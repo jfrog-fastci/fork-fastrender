@@ -1,8 +1,9 @@
 use inkwell::module::Module;
 use inkwell::targets::TargetMachine;
 use llvm_sys::core::{
-  LLVMAddFunction, LLVMAddGlobal, LLVMAddIncoming, LLVMAppendBasicBlockInContext, LLVMBuildAnd, LLVMBuildBr,
-  LLVMBuildCall2, LLVMBuildCondBr, LLVMBuildICmp, LLVMBuildLoad2, LLVMBuildPhi, LLVMBuildRetVoid, LLVMConstInt,
+  LLVMAddAttributeAtIndex, LLVMAddFunction, LLVMAddGlobal, LLVMAddIncoming, LLVMAppendBasicBlockInContext,
+  LLVMBuildAnd, LLVMBuildBr, LLVMBuildCall2, LLVMBuildCondBr, LLVMBuildICmp, LLVMBuildLoad2, LLVMBuildPhi,
+  LLVMBuildRetVoid, LLVMConstInt, LLVMCreateStringAttribute,
   LLVMCountBasicBlocks, LLVMCountIncoming, LLVMCountParamTypes, LLVMCreateBuilderInContext, LLVMDeleteBasicBlock,
   LLVMDisposeBuilder,
   LLVMDisposeMessage, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetBasicBlockTerminator, LLVMGetConstOpcode,
@@ -509,6 +510,36 @@ fn define_gc_safepoint_poll_body(module: &Module<'_>) -> Result<(), PassError> {
 
     // Keep the definition local to avoid duplicate symbol conflicts when linking multiple objects.
     LLVMSetLinkage(poll_fn, LLVMLinkage::LLVMInternalLinkage);
+
+    // Stack-walking invariants:
+    // - Keep frame pointers so the runtime's frame-pointer-based walker can traverse through the
+    //   poll frame when a stop-the-world GC is requested.
+    // - Disable tail calls so the poll frame is not elided.
+    //
+    // This matters because in debug-info builds we keep `call void @gc.safepoint_poll()` markers
+    // (instead of inlining the epoch check), so the poll function is on-stack exactly when a GC may
+    // be triggered (via the slow path).
+    let frame_pointer_key = CString::new("frame-pointer").expect("frame-pointer contains NUL");
+    let frame_pointer_val = CString::new("all").expect("frame-pointer value contains NUL");
+    let frame_pointer_attr = LLVMCreateStringAttribute(
+      ctx,
+      frame_pointer_key.as_ptr(),
+      frame_pointer_key.as_bytes().len() as u32,
+      frame_pointer_val.as_ptr(),
+      frame_pointer_val.as_bytes().len() as u32,
+    );
+    LLVMAddAttributeAtIndex(poll_fn, llvm_sys::LLVMAttributeFunctionIndex, frame_pointer_attr);
+
+    let disable_tail_key = CString::new("disable-tail-calls").expect("disable-tail-calls contains NUL");
+    let disable_tail_val = CString::new("true").expect("disable-tail-calls value contains NUL");
+    let disable_tail_attr = LLVMCreateStringAttribute(
+      ctx,
+      disable_tail_key.as_ptr(),
+      disable_tail_key.as_bytes().len() as u32,
+      disable_tail_val.as_ptr(),
+      disable_tail_val.as_bytes().len() as u32,
+    );
+    LLVMAddAttributeAtIndex(poll_fn, llvm_sys::LLVMAttributeFunctionIndex, disable_tail_attr);
 
     let entry_name = CString::new("entry").expect("entry contains NUL");
     let entry_bb = LLVMAppendBasicBlockInContext(ctx, poll_fn, entry_name.as_ptr());
