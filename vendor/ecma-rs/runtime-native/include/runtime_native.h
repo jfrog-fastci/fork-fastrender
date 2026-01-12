@@ -349,10 +349,29 @@ uint8_t* rt_array_data(uint8_t* obj);
 // allocations that participate in GC tracing.
 void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);
 
+// Append additional shapes to the global runtime shape registry.
+//
+// This is intended for dlopen/JIT-style embeddings that load additional native
+// modules after process initialization.
+//
+// The runtime copies all descriptor metadata into process-owned memory so the
+// caller does not need to keep `table` (or any of its `ptr_offsets` arrays)
+// alive after this call returns.
+//
+// Returns the first assigned shape id for the appended block:
+//   base, base+1, ..., base+len-1
+RtShapeId rt_register_shape_table_extend(const RtShapeDescriptor* table, size_t len);
+
+// Convenience wrapper: register a single shape descriptor and return its id.
+RtShapeId rt_register_shape(const RtShapeDescriptor* desc);
+
 // Register a shape table by appending it to the process-global shape-id space.
 //
 // Returns the base id assigned to the first descriptor in this table (1-indexed).
 // A module's local shape index `i` (0-based) maps to global `RtShapeId(base + i)`.
+//
+// Note: `rt_register_shape_table_append` and `rt_register_shape_table_extend` are equivalent;
+// prefer the `*_extend` name for new code.
 RtShapeId rt_register_shape_table_append(const RtShapeDescriptor* table, size_t len);
 
 // -----------------------------------------------------------------------------
@@ -609,7 +628,7 @@ void rt_gc_stats_reset(void);
 // These entrypoints are only available when `runtime-native` was built with the
 // Cargo feature `gc_debug`. Define `RUNTIME_NATIVE_GC_DEBUG` to expose them in C.
 #ifdef RUNTIME_NATIVE_GC_DEBUG
-// Return the number of shapes registered via `rt_register_shape_table`.
+// Return the number of shapes registered via `rt_register_shape_table*`.
 size_t rt_debug_shape_count(void);
 // Return a pointer to the registered descriptor for `id`, or NULL if invalid/out-of-bounds.
 const RtShapeDescriptor* rt_debug_shape_descriptor(RtShapeId id);

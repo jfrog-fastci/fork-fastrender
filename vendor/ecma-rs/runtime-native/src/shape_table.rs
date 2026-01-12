@@ -41,7 +41,7 @@ static SHAPES: Lazy<ShapeRegistry> = Lazy::new(ShapeRegistry::new);
 /// Intended to be called once during program initialization by compiler-emitted code.
 ///
 /// New embeddings that load multiple native modules (dlopen/JIT) should prefer
-/// [`rt_register_shape_table_append`] instead.
+/// [`rt_register_shape_table_extend`] (or the equivalent alias [`rt_register_shape_table_append`]).
 ///
 /// # Safety
 /// - `ptr` must point to an array of `len` [`RtShapeDescriptor`] values that is valid to read for
@@ -54,6 +54,41 @@ static SHAPES: Lazy<ShapeRegistry> = Lazy::new(ShapeRegistry::new);
 #[no_mangle]
 pub unsafe extern "C" fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize) {
   abort_on_panic(|| register_shape_table(ptr, len));
+}
+
+/// Append additional shapes to the global shape registry and return the first assigned shape id.
+///
+/// This is intended for dlopen/JIT-style embeddings that load additional native code modules after
+/// process initialization.
+///
+/// The runtime copies all shape metadata into process-owned memory so callers do not need to keep
+/// `table` (or any of its `ptr_offsets` arrays) alive after this call returns.
+///
+/// Returns the first assigned shape id for the appended block:
+/// `base, base+1, ..., base+len-1`.
+///
+/// # Safety
+/// - `ptr` must point to an array of `len` [`RtShapeDescriptor`] values that is valid to read for
+///   the duration of this call.
+/// - If any descriptor has `ptr_offsets_len != 0`, its `ptr_offsets` must be a valid pointer to
+///   `ptr_offsets_len` `u32` entries for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn rt_register_shape_table_extend(
+  ptr: *const RtShapeDescriptor,
+  len: usize,
+) -> RtShapeId {
+  abort_on_panic(|| register_shape_table_impl(ptr, len, RegisterMode::Extend))
+}
+
+/// Convenience wrapper: register a single shape descriptor and return its assigned id.
+///
+/// This is equivalent to calling [`rt_register_shape_table_extend`] with `len = 1`.
+///
+/// # Safety
+/// - `desc` must be valid to read for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn rt_register_shape(desc: *const RtShapeDescriptor) -> RtShapeId {
+  abort_on_panic(|| rt_register_shape_table_extend(desc, 1))
 }
 
 pub(crate) unsafe fn register_shape_table(ptr: *const RtShapeDescriptor, len: usize) {
@@ -189,12 +224,15 @@ enum RegisterMode {
   Single,
   /// Multi-module append (`rt_register_shape_table_append`).
   Append,
+  /// Multi-module extend (`rt_register_shape_table_extend`).
+  Extend,
 }
 
 unsafe fn register_shape_table_impl(ptr: *const RtShapeDescriptor, len: usize, mode: RegisterMode) -> RtShapeId {
   let func = match mode {
     RegisterMode::Single => "rt_register_shape_table",
     RegisterMode::Append => "rt_register_shape_table_append",
+    RegisterMode::Extend => "rt_register_shape_table_extend",
   };
 
   if ptr.is_null() {
@@ -241,7 +279,8 @@ unsafe fn register_shape_table_impl(ptr: *const RtShapeDescriptor, len: usize, m
     } else {
       debug_assert!(!desc.ptr_offsets.is_null());
       // SAFETY: validated above (`validate_shape_table`).
-      let offsets = unsafe { std::slice::from_raw_parts(desc.ptr_offsets, desc.ptr_offsets_len as usize) };
+      let offsets =
+        unsafe { std::slice::from_raw_parts(desc.ptr_offsets, desc.ptr_offsets_len as usize) };
       let owned: Box<[u32]> = offsets.to_vec().into_boxed_slice();
       let leaked: &'static [u32] = Box::leak(owned);
       (leaked.as_ptr(), leaked.len() as u32)
@@ -253,7 +292,9 @@ unsafe fn register_shape_table_impl(ptr: *const RtShapeDescriptor, len: usize, m
     let rt_desc: &'static RtShapeDescriptor = Box::leak(Box::new(rt_desc));
 
     let align = (desc.align as usize).max(crate::gc::OBJ_ALIGN);
-    let type_desc = unsafe { TypeDescriptor::from_raw_parts(desc.size as usize, align, ptr_offsets, ptr_offsets_len) };
+    let type_desc = unsafe {
+      TypeDescriptor::from_raw_parts(desc.size as usize, align, ptr_offsets, ptr_offsets_len)
+    };
     let type_desc: &'static TypeDescriptor = Box::leak(Box::new(type_desc));
 
     next.shapes.push(ShapeEntry { rt_desc, type_desc });
@@ -555,14 +596,14 @@ mod tests {
         seen.push(slot as usize);
       });
 
-       let expected_slot = base
-         .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
-         .cast::<*mut u8>() as usize;
-       assert_eq!(seen, vec![expected_slot]);
+      let expected_slot = base
+        .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
+        .cast::<*mut u8>() as usize;
+      assert_eq!(seen, vec![expected_slot]);
 
       if !was_registered {
         crate::rt_thread_deinit();
       }
     }
   }
-}  
+}
