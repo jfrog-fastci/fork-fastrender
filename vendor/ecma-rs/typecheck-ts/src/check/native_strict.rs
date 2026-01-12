@@ -39,6 +39,53 @@ impl<'a> ConstAliasResolver<'a> {
     }
   }
 
+  fn init_is_simple_const_alias(&self, init: VarInit) -> bool {
+    // Only treat `const x = <expr>` as an alias. Destructuring bindings like
+    // `const { eval: e } = globalThis` must *not* be unwrapped, because `e` is
+    // not an alias to `globalThis` at runtime.
+    let Some(pat_id) = init.pat else {
+      return false;
+    };
+    let Some(body) = self.resolver.body(init.body) else {
+      return false;
+    };
+
+    // Ensure the returned `pat` is the *root* declarator pattern, not a nested
+    // binding within an object/array destructure.
+    let mut is_root_pat = false;
+    for stmt in &body.stmts {
+      let StmtKind::Var(var) = &stmt.kind else {
+        continue;
+      };
+      for declarator in &var.declarators {
+        if declarator.init == Some(init.expr) && declarator.pat == pat_id {
+          is_root_pat = true;
+          break;
+        }
+      }
+      if is_root_pat {
+        break;
+      }
+    }
+    if !is_root_pat {
+      return false;
+    }
+
+    // Must be a simple identifier binding (`const x = ...`), optionally wrapped
+    // in a default assignment pattern.
+    let Some(pat) = body.pats.get(pat_id.0 as usize) else {
+      return false;
+    };
+    match &pat.kind {
+      PatKind::Ident(_) => true,
+      PatKind::Assign { target, .. } => body
+        .pats
+        .get(target.0 as usize)
+        .is_some_and(|target| matches!(&target.kind, PatKind::Ident(_))),
+      _ => false,
+    }
+  }
+
   fn unwrap(&self, mut expr: ExprRef) -> ExprRef {
     let mut visited: HashSet<hir_js::DefId> = HashSet::new();
     let mut path: Vec<hir_js::DefId> = Vec::new();
@@ -77,6 +124,11 @@ impl<'a> ConstAliasResolver<'a> {
         break;
       };
       if init.decl_kind != hir_js::VarDeclKind::Const {
+        self.cache.borrow_mut().insert(def, None);
+        break;
+      }
+
+      if !self.init_is_simple_const_alias(init) {
         self.cache.borrow_mut().insert(def, None);
         break;
       }
@@ -487,6 +539,56 @@ pub fn validate_native_strict_body(
             || object_key_is_literal_string(body, &mem.property, target_str))
       }
       _ => false,
+    }
+  }
+
+  fn expr_is_function_like_value(
+    resolver: &dyn NativeStrictResolver,
+    aliases: &ConstAliasResolver,
+    expr: ExprRef,
+    global_this_name: hir_js::NameId,
+    object_name: hir_js::NameId,
+    function_name: hir_js::NameId,
+    proxy_name: hir_js::NameId,
+    constructor_name: hir_js::NameId,
+  ) -> bool {
+    let expr = expr_unwrap_comma_and_alias(aliases, expr);
+    let Some(body) = resolver.body(expr.body) else {
+      return false;
+    };
+    let Some(expr_data) = body.exprs.get(expr.expr.0 as usize) else {
+      return false;
+    };
+
+    match &expr_data.kind {
+      ExprKind::FunctionExpr { .. } | ExprKind::ClassExpr { .. } => true,
+      ExprKind::Member(mem) if object_key_is_constructor(body, &mem.property, constructor_name) => true,
+      _ => {
+        // Recognize a few "obviously function-like" builtins without relying on
+        // type information, which is only available for the current body.
+        expr_is_ident_or_global_this_member(
+          resolver,
+          aliases,
+          expr,
+          global_this_name,
+          object_name,
+          "Object",
+        ) || expr_is_ident_or_global_this_member(
+          resolver,
+          aliases,
+          expr,
+          global_this_name,
+          function_name,
+          "Function",
+        ) || expr_is_ident_or_global_this_member(
+          resolver,
+          aliases,
+          expr,
+          global_this_name,
+          proxy_name,
+          "Proxy",
+        )
+      }
     }
   }
 
@@ -1738,9 +1840,278 @@ pub fn validate_native_strict_body(
     }
   }
 
+  struct DestructuredAliasResolver<'a> {
+    resolver: &'a dyn NativeStrictResolver,
+    const_aliases: &'a ConstAliasResolver<'a>,
+    cache: RefCell<HashMap<hir_js::DefId, Option<DestructuredAliasKind>>>,
+
+    eval_name: hir_js::NameId,
+    global_this_name: hir_js::NameId,
+    object_name: hir_js::NameId,
+    reflect_name: hir_js::NameId,
+    function_name: hir_js::NameId,
+    proxy_name: hir_js::NameId,
+    revocable_name: hir_js::NameId,
+    apply_name: hir_js::NameId,
+    construct_name: hir_js::NameId,
+    set_prototype_of_name: hir_js::NameId,
+    define_property_name: hir_js::NameId,
+    define_properties_name: hir_js::NameId,
+    assign_name: hir_js::NameId,
+    constructor_name: hir_js::NameId,
+  }
+
+  impl<'a> DestructuredAliasResolver<'a> {
+    fn new(
+      resolver: &'a dyn NativeStrictResolver,
+      const_aliases: &'a ConstAliasResolver<'a>,
+      eval_name: hir_js::NameId,
+      global_this_name: hir_js::NameId,
+      object_name: hir_js::NameId,
+      reflect_name: hir_js::NameId,
+      function_name: hir_js::NameId,
+      proxy_name: hir_js::NameId,
+      revocable_name: hir_js::NameId,
+      apply_name: hir_js::NameId,
+      construct_name: hir_js::NameId,
+      set_prototype_of_name: hir_js::NameId,
+      define_property_name: hir_js::NameId,
+      define_properties_name: hir_js::NameId,
+      assign_name: hir_js::NameId,
+      constructor_name: hir_js::NameId,
+    ) -> Self {
+      Self {
+        resolver,
+        const_aliases,
+        cache: RefCell::new(HashMap::new()),
+        eval_name,
+        global_this_name,
+        object_name,
+        reflect_name,
+        function_name,
+        proxy_name,
+        revocable_name,
+        apply_name,
+        construct_name,
+        set_prototype_of_name,
+        define_property_name,
+        define_properties_name,
+        assign_name,
+        constructor_name,
+      }
+    }
+
+    fn resolve_ident(&self, body_id: hir_js::BodyId, expr_id: hir_js::ExprId) -> Option<DestructuredAliasKind> {
+      let body = self.resolver.body(body_id)?;
+      let expr = body.exprs.get(expr_id.0 as usize)?;
+      if !matches!(&expr.kind, ExprKind::Ident(_)) {
+        return None;
+      }
+      let def = self.resolver.resolve_ident(body_id, expr_id)?;
+      self.resolve_def(def)
+    }
+
+    fn resolve_def(&self, def: hir_js::DefId) -> Option<DestructuredAliasKind> {
+      if let Some(hit) = self.cache.borrow().get(&def).copied() {
+        return hit;
+      }
+      let kind = self.compute_def(def);
+      self.cache.borrow_mut().insert(def, kind);
+      kind
+    }
+
+    fn compute_def(&self, def: hir_js::DefId) -> Option<DestructuredAliasKind> {
+      let init = self.resolver.var_initializer(def)?;
+      if init.decl_kind != hir_js::VarDeclKind::Const {
+        return None;
+      }
+      let binding_pat = init.pat?;
+      let body = self.resolver.body(init.body)?;
+
+      let prop_key = self.object_pat_prop_key(body, init.expr, binding_pat)?;
+      let init_ref = ExprRef {
+        body: init.body,
+        expr: init.expr,
+      };
+
+      let init_is_global_this = expr_is_global_this(
+        self.resolver,
+        self.const_aliases,
+        init_ref,
+        self.global_this_name,
+      );
+      let init_is_object = expr_is_ident_or_global_this_member(
+        self.resolver,
+        self.const_aliases,
+        init_ref,
+        self.global_this_name,
+        self.object_name,
+        "Object",
+      );
+      let init_is_reflect = expr_is_ident_or_global_this_member(
+        self.resolver,
+        self.const_aliases,
+        init_ref,
+        self.global_this_name,
+        self.reflect_name,
+        "Reflect",
+      );
+      let init_is_proxy = expr_is_ident_or_global_this_member(
+        self.resolver,
+        self.const_aliases,
+        init_ref,
+        self.global_this_name,
+        self.proxy_name,
+        "Proxy",
+      );
+
+      let mut kind = None;
+
+      if init_is_global_this {
+        if self.object_key_matches(body, &prop_key, self.eval_name, "eval") {
+          kind = Some(DestructuredAliasKind::Eval);
+        } else if self.object_key_matches(body, &prop_key, self.function_name, "Function") {
+          kind = Some(DestructuredAliasKind::Function);
+        } else if self.object_key_matches(body, &prop_key, self.proxy_name, "Proxy") {
+          kind = Some(DestructuredAliasKind::Proxy);
+        }
+      }
+
+      if init_is_object {
+        if self.object_key_matches(body, &prop_key, self.set_prototype_of_name, "setPrototypeOf") {
+          kind = Some(DestructuredAliasKind::ObjectSetPrototypeOf);
+        } else if self.object_key_matches(body, &prop_key, self.define_property_name, "defineProperty") {
+          kind = Some(DestructuredAliasKind::ObjectDefineProperty);
+        } else if self.object_key_matches(body, &prop_key, self.define_properties_name, "defineProperties") {
+          kind = Some(DestructuredAliasKind::ObjectDefineProperties);
+        } else if self.object_key_matches(body, &prop_key, self.assign_name, "assign") {
+          kind = Some(DestructuredAliasKind::ObjectAssign);
+        }
+      }
+
+      if init_is_reflect {
+        if self.object_key_matches(body, &prop_key, self.apply_name, "apply") {
+          kind = Some(DestructuredAliasKind::ReflectApply);
+        } else if self.object_key_matches(body, &prop_key, self.construct_name, "construct") {
+          kind = Some(DestructuredAliasKind::ReflectConstruct);
+        } else if self.object_key_matches(body, &prop_key, self.set_prototype_of_name, "setPrototypeOf") {
+          kind = Some(DestructuredAliasKind::ReflectSetPrototypeOf);
+        } else if self.object_key_matches(body, &prop_key, self.define_property_name, "defineProperty") {
+          kind = Some(DestructuredAliasKind::ReflectDefineProperty);
+        }
+      }
+
+      if init_is_proxy && self.object_key_matches(body, &prop_key, self.revocable_name, "revocable") {
+        kind = Some(DestructuredAliasKind::ProxyRevocable);
+      }
+
+      if kind.is_none()
+        && object_key_is_constructor(body, &prop_key, self.constructor_name)
+        && expr_is_function_like_value(
+          self.resolver,
+          self.const_aliases,
+          init_ref,
+          self.global_this_name,
+          self.object_name,
+          self.function_name,
+          self.proxy_name,
+          self.constructor_name,
+        )
+      {
+        kind = Some(DestructuredAliasKind::Function);
+      }
+
+      kind
+    }
+
+    fn object_key_matches(
+      &self,
+      body: &Body,
+      key: &ObjectKey,
+      name: hir_js::NameId,
+      value: &str,
+    ) -> bool {
+      object_key_is_ident(key, name) || object_key_is_string(key, value) || object_key_is_literal_string(body, key, value)
+    }
+
+    fn object_pat_prop_key(
+      &self,
+      body: &Body,
+      init_expr: hir_js::ExprId,
+      binding_pat: hir_js::PatId,
+    ) -> Option<ObjectKey> {
+      let binding_pat = self.pat_unwrap_assign_target(body, binding_pat);
+
+      for stmt in &body.stmts {
+        let StmtKind::Var(var) = &stmt.kind else {
+          continue;
+        };
+        for declarator in &var.declarators {
+          if declarator.init != Some(init_expr) {
+            continue;
+          }
+
+          let pat = body.pats.get(declarator.pat.0 as usize)?;
+          let PatKind::Object(obj) = &pat.kind else {
+            return None;
+          };
+
+          for prop in &obj.props {
+            if self.prop_value_binds_pat(body, prop.value, binding_pat) {
+              return Some(prop.key.clone());
+            }
+          }
+          return None;
+        }
+      }
+      None
+    }
+
+    fn pat_unwrap_assign_target(&self, body: &Body, pat_id: hir_js::PatId) -> hir_js::PatId {
+      let Some(pat) = body.pats.get(pat_id.0 as usize) else {
+        return pat_id;
+      };
+      match &pat.kind {
+        PatKind::Assign { target, .. } => *target,
+        _ => pat_id,
+      }
+    }
+
+    fn prop_value_binds_pat(&self, body: &Body, prop_value: hir_js::PatId, binding_pat: hir_js::PatId) -> bool {
+      if prop_value == binding_pat {
+        return true;
+      }
+      let Some(pat) = body.pats.get(prop_value.0 as usize) else {
+        return false;
+      };
+      match &pat.kind {
+        PatKind::Assign { target, .. } => *target == binding_pat,
+        _ => false,
+      }
+    }
+  }
+
   // Resolve scope-aware `const` aliases via semantic bindings so `native_strict` bans cannot be
   // bypassed via indirection across nested functions/blocks.
   let const_aliases = ConstAliasResolver::new(resolver);
+  let semantic_destructured_aliases = DestructuredAliasResolver::new(
+    resolver,
+    &const_aliases,
+    eval_name,
+    global_this_name,
+    object_name,
+    reflect_name,
+    function_name,
+    proxy_name,
+    revocable_name,
+    apply_name,
+    construct_name,
+    set_prototype_of_name,
+    define_property_name,
+    define_properties_name,
+    assign_name,
+    constructor_name,
+  );
   let body_id = result.body;
 
   let (local_const_aliases, destructured_aliases) = {
@@ -1793,7 +2164,11 @@ pub fn validate_native_strict_body(
 
         let callee_check_id =
           expr_unwrap_comma_and_local_alias(body, call.callee, &local_const_aliases);
-        if let Some(alias_kind) = destructured_aliases.get(&callee_check_id).copied() {
+        let alias_kind = destructured_aliases
+          .get(&callee_check_id)
+          .copied()
+          .or_else(|| semantic_destructured_aliases.resolve_ident(body_id, callee_check_id));
+        if let Some(alias_kind) = alias_kind {
           match alias_kind {
             DestructuredAliasKind::Eval => {
               if !call.is_new {
