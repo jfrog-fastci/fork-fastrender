@@ -51,7 +51,6 @@ section in sync with `ls tests/*.rs`.
 | `tests/paged_media.rs` | unit | `src/layout/pagination.rs` | Dedicated paged-media regression target; remove standalone binary after moving into `src/layout/**`. | TODO |
 | `tests/paint_tests.rs` | unit | `src/paint/` | Paint/backdrop/ref-image tests under `tests/paint/**`, `tests/backdrop/**`. | TODO |
 | `tests/progress_tests.rs` | integration | `tests/integration.rs::fixtures::progress` | Repo artifact guardrail tests for `progress/pages/*.json` (no library code). | TODO |
-| `tests/quirks_body_percent_height_tests.rs` | integration | `tests/integration.rs::api::quirks` | End-to-end render regression; spawns large-stack thread. | TODO |
 | `tests/ref_tests.rs` | integration | `tests/integration.rs::common::ref` | Reference image diff/test harness tests; serializes env var changes via mutex. | TODO |
 | `tests/render_tests.rs` | integration | `tests/integration.rs::api::render` | End-to-end rendering APIs (`render_url`, diagnostics, timeouts, etc.). | TODO |
 | `tests/scroll_tests.rs` | unit | `src/scroll.rs` | Scroll state/behavior tests under `tests/scroll/**`. | TODO |
@@ -92,6 +91,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/pipeline_churn_guardrail.rs` | unit | `src/layout/tests/pipeline_churn_guardrail.rs` | Migrated into unit tests under `src/layout/tests/**`; uses `crate::testing::global_test_lock()` to keep counter-reset assertions deterministic, so a dedicated binary is no longer required. | DONE |
 | `tests/regression_tests.rs` | integration | `tests/integration.rs::regression` | Top-level harness removed; suite now lives under `tests/regression/**`. | DONE |
 | `tests/csp_img_data_url.rs` | integration | `tests/integration.rs::api::csp_img_data_url` | Moved into `tests/api/csp_img_data_url.rs` and included from `tests/api/mod.rs`. | DONE |
+| `tests/quirks_body_percent_height_tests.rs` | integration | `tests/integration.rs::api::quirks` | Moved into `tests/api/quirks_body_percent_height.rs` (uses the shared large-stack helper). | DONE |
 | `tests/render_control_test_render_delay_smoke.rs` | integration | `tests/integration.rs::api::render_control` | Moved into `tests/api/render_control.rs`. | DONE |
 | `tests/resource_tests.rs` | integration | `tests/integration.rs::resource` | Top-level harness removed; suite now lives under `tests/resource/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/shadow_tests.rs` | unit | `src/dom2/shadow_dom.rs` | Migrated to unit tests for declarative shadow DOM + slotting. | DONE |
