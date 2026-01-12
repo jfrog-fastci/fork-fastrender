@@ -2796,7 +2796,7 @@ fn template_literal_expands_boolean_to_true_false_union() {
 }
 
 #[test]
-fn template_literal_expands_null_to_literal() {
+fn template_literal_null_is_finite() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
@@ -2812,14 +2812,12 @@ fn template_literal_expands_null_to_literal() {
   let mut eval = evaluator(store.clone(), &default_expander);
   let result = eval.evaluate(tpl);
 
-  let TypeKind::StringLiteral(id) = store.type_kind(result) else {
-    panic!("expected string literal, got {:?}", store.type_kind(result));
-  };
-  assert_eq!(store.name(id), "null".to_string());
+  let expected = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("null")));
+  assert_eq!(result, expected);
 }
 
 #[test]
-fn template_literal_expands_undefined_to_literal() {
+fn template_literal_undefined_is_finite() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
@@ -2835,10 +2833,8 @@ fn template_literal_expands_undefined_to_literal() {
   let mut eval = evaluator(store.clone(), &default_expander);
   let result = eval.evaluate(tpl);
 
-  let TypeKind::StringLiteral(id) = store.type_kind(result) else {
-    panic!("expected string literal, got {:?}", store.type_kind(result));
-  };
-  assert_eq!(store.name(id), "undefined".to_string());
+  let expected = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("undefined")));
+  assert_eq!(result, expected);
 }
 
 #[test]
