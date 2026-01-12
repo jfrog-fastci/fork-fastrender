@@ -34,6 +34,51 @@ fn object_prototype_to_string_tags_promises() {
 }
 
 #[test]
+fn object_prototype_to_string_promise_falls_back_to_object_when_to_string_tag_is_deleted() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var toString = Object.prototype.toString;
+         var p = Promise.resolve();
+         toString.call(p) === "[object Promise]" &&
+         (delete Promise.prototype[Symbol.toStringTag], true) &&
+         toString.call(p) === "[object Object]""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_prototype_to_string_weak_map_falls_back_to_object_when_to_string_tag_is_deleted() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var toString = Object.prototype.toString;
+         var wm = new WeakMap();
+         toString.call(wm) === "[object WeakMap]" &&
+         (delete WeakMap.prototype[Symbol.toStringTag], true) &&
+         toString.call(wm) === "[object Object]""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_prototype_to_string_weak_set_falls_back_to_object_when_to_string_tag_is_deleted() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var toString = Object.prototype.toString;
+         var ws = new WeakSet();
+         toString.call(ws) === "[object WeakSet]" &&
+         (delete WeakSet.prototype[Symbol.toStringTag], true) &&
+         toString.call(ws) === "[object Object]""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_prototype_to_string_tags_promise_prototype_via_symbol_to_string_tag() {
   let mut rt = new_runtime();
   let value = rt
@@ -73,7 +118,7 @@ fn object_prototype_to_string_tags_generator_heap_object() {
 
     let mut scope = heap.scope();
     let gen = scope
-      .alloc_generator_with_prototype(Some(intr.object_prototype()), Value::Undefined, &[], None)
+      .alloc_generator_with_prototype(Some(intr.generator_prototype()), Value::Undefined, &[], None)
       .unwrap();
     scope.push_root(Value::Object(gen)).unwrap();
 
@@ -95,7 +140,15 @@ fn object_prototype_to_string_tags_generator_heap_object() {
   }
 
   let value = rt
-    .exec_script(r#"Object.prototype.toString.call(g) === "[object Generator]""#)
+    .exec_script(
+      r#"var toString = Object.prototype.toString;
+         var genProto = Object.getPrototypeOf(g);
+         toString.call(g) === "[object Generator]" &&
+         (Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, get() { return {}; } }), true) &&
+         toString.call(g) === "[object Object]" &&
+         (Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, writable: false, enumerable: false, value: "Generator" }), true) &&
+         toString.call(g) === "[object Generator]""#,
+    )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
