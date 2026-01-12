@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>first-valid() chooses the first valid candidate</title>
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+
+  #target {
+    width: 100px;
+    height: 100px;
+
+    --invalid: 10px;
+    --valid: rgb(0, 160, 0);
+    --fallback: rgb(0, 0, 255);
+
+    /* `--invalid` is not a valid <color>, so `first-valid()` should pick `--valid`. */
+    background-color: first-valid(var(--invalid), var(--valid), var(--fallback));
+  }
+</style>
+<div id="target"></div>
+

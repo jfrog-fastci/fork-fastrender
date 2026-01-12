@@ -454,6 +454,23 @@ fn contains_ascii_case_insensitive_substitution_call(raw: &str) -> bool {
           return true;
         }
       }
+      b'f' => {
+        if idx + 11 < bytes.len()
+          && bytes[idx + 1].to_ascii_lowercase() == b'i'
+          && bytes[idx + 2].to_ascii_lowercase() == b'r'
+          && bytes[idx + 3].to_ascii_lowercase() == b's'
+          && bytes[idx + 4].to_ascii_lowercase() == b't'
+          && bytes[idx + 5] == b'-'
+          && bytes[idx + 6].to_ascii_lowercase() == b'v'
+          && bytes[idx + 7].to_ascii_lowercase() == b'a'
+          && bytes[idx + 8].to_ascii_lowercase() == b'l'
+          && bytes[idx + 9].to_ascii_lowercase() == b'i'
+          && bytes[idx + 10].to_ascii_lowercase() == b'd'
+          && bytes[idx + 11] == b'('
+        {
+          return true;
+        }
+      }
       b'a' => {
         if idx + 4 < bytes.len()
           && bytes[idx + 1].to_ascii_lowercase() == b't'
@@ -550,12 +567,14 @@ fn try_resolve_var_calls_without_tokenizer<'a>(
 
   // This fast path only understands `var()` token splicing.
   //
-  // CSS Values 5 `if()` and typed `attr()` have *lazy* semantics: the branch/fallback that is not
-  // chosen must not be evaluated (e.g. `if(...: var(--missing); <else>)` must not fail just because
-  // the unselected branch contains an unresolved var()).
+  // CSS Values 5 `if()`, `first-valid()`, and typed `attr()` have *lazy* semantics: the branch /
+  // candidate / fallback that is not chosen must not be evaluated (e.g.
+  // `if(...: var(--missing); <else>)` must not fail just because the unselected branch contains an
+  // unresolved var()).
   //
   // The full tokenizer-based resolver implements that laziness; this substring-based var splicer
-  // does not. Conservatively disable the fast path when `if()` or `attr()` appears in the value.
+  // does not. Conservatively disable the fast path when `if()`, `first-valid()`, or `attr()`
+  // appears in the value.
   {
     let bytes = raw.as_bytes();
     let mut i = 0usize;
@@ -612,6 +631,27 @@ fn try_resolve_var_calls_without_tokenizer<'a>(
         && bytes[i + 2].to_ascii_lowercase() == b't'
         && bytes[i + 3].to_ascii_lowercase() == b'r'
         && bytes[i + 4] == b'('
+      {
+        let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx).copied());
+        if !prev.is_some_and(is_ident_byte) {
+          return None;
+        }
+      }
+
+      // `first-valid(`
+      if i + 11 < bytes.len()
+        && b.to_ascii_lowercase() == b'f'
+        && bytes[i + 1].to_ascii_lowercase() == b'i'
+        && bytes[i + 2].to_ascii_lowercase() == b'r'
+        && bytes[i + 3].to_ascii_lowercase() == b's'
+        && bytes[i + 4].to_ascii_lowercase() == b't'
+        && bytes[i + 5] == b'-'
+        && bytes[i + 6].to_ascii_lowercase() == b'v'
+        && bytes[i + 7].to_ascii_lowercase() == b'a'
+        && bytes[i + 8].to_ascii_lowercase() == b'l'
+        && bytes[i + 9].to_ascii_lowercase() == b'i'
+        && bytes[i + 10].to_ascii_lowercase() == b'd'
+        && bytes[i + 11] == b'('
       {
         let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx).copied());
         if !prev.is_some_and(is_ident_byte) {
@@ -847,10 +887,12 @@ pub fn resolve_var_for_property<'a>(
     PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => {
       // Most declarations are simple keywords (display, position, etc.) and do not contain any
       // arbitrary substitution functions. Avoid feeding such values through cssparser tokenization
-      // by doing a cheap ASCII-case-insensitive substring check for `var(`/`if(`/`attr(` first.
+      // by doing a cheap ASCII-case-insensitive substring check for
+      // `var(`/`if(`/`first-valid(`/`attr(` first.
       //
       // Note: If the value contains a backslash escape, conservatively fall back to token parsing
-      // so we don't miss an escaped `var()`/`if()`/`attr()` function name. Function tokens require
+      // so we don't miss an escaped `var()`/`if()`/`first-valid()`/`attr()` function name. Function
+      // tokens require
       // a literal `(`, so values without any `(` can skip the slow-path even if they contain
       // backslashes.
       if !contains_ascii_case_insensitive_substitution_call(raw)
@@ -1027,6 +1069,14 @@ where
         let resolved = map_nested_result(nested, "if")?;
         push_css_with_token_splice_boundary(&mut output, resolved.as_str());
       }
+      Token::Function(name) if name.eq_ignore_ascii_case("first-valid") => {
+        let nested = parser.parse_nested_block(|nested| {
+          parse_first_valid_function(nested, custom_properties, stack, depth, property_name)
+            .map_err(|err| nested.new_custom_error(err))
+        });
+        let resolved = map_nested_result(nested, "first-valid")?;
+        push_css_with_token_splice_boundary(&mut output, resolved.as_str());
+      }
       Token::Function(name) if name.eq_ignore_ascii_case("attr") => {
         // Typed `attr()` (CSS Values 5) is an "arbitrary substitution function" that resolves at
         // computed-value time, but `content: attr(...)` (CSS Generated Content) is part of the
@@ -1192,6 +1242,54 @@ where
   }
 
   resolve_value_tokens(selected, custom_properties, stack, depth + 1, property_name)
+}
+
+fn parse_first_valid_function<'a, 'i, 't>(
+  parser: &mut Parser<'i, 't>,
+  custom_properties: &'a CustomPropertyStore,
+  stack: &mut Vec<String>,
+  depth: usize,
+  property_name: &str,
+) -> Result<String, VarResolutionResult<'a>>
+where
+  'a: 'i,
+{
+  let candidates = parse_first_valid_candidates(parser)
+    .map_err(|_| VarResolutionResult::InvalidSyntax("first-valid".into()))?;
+
+  // Reject `first-valid()` since it is always invalid at computed-value time.
+  if candidates.is_empty() {
+    return Err(VarResolutionResult::InvalidSyntax("first-valid".into()));
+  }
+
+  for candidate in candidates {
+    if candidate.is_empty() {
+      continue;
+    }
+
+    let candidate_resolved = if !contains_ascii_case_insensitive_substitution_call(&candidate)
+      && (!candidate.as_bytes().contains(&b'\\') || !candidate.as_bytes().contains(&b'('))
+    {
+      candidate
+    } else {
+      match resolve_value_tokens(
+        &candidate,
+        custom_properties,
+        stack,
+        depth + 1,
+        property_name,
+      ) {
+        Ok(resolved) => resolved,
+        Err(_) => continue,
+      }
+    };
+
+    if parse_value_after_resolution(&candidate_resolved, property_name).is_some() {
+      return Ok(candidate_resolved);
+    }
+  }
+
+  Err(VarResolutionResult::InvalidSyntax("first-valid".into()))
 }
 
 fn serialize_css_string_token(value: &str) -> String {
@@ -1668,6 +1766,53 @@ fn parse_if_branches<'i, 't>(
   Ok(branches)
 }
 
+fn parse_first_valid_candidates<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> Result<Vec<String>, ParseError<'i, ()>> {
+  let mut candidates = Vec::new();
+  let mut current = String::new();
+
+  fn flush(candidates: &mut Vec<String>, current: &mut String) {
+    candidates.push(trim_css_whitespace(current).to_string());
+    current.clear();
+  }
+
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::Comma => flush(&mut candidates, &mut current),
+      Token::Function(name) => {
+        push_css_with_token_splice_boundary(&mut current, name.as_ref());
+        current.push('(');
+        let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+        current.push_str(&nested);
+        current.push(')');
+      }
+      Token::ParenthesisBlock => {
+        push_css_with_token_splice_boundary(&mut current, "(");
+        let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+        current.push_str(&nested);
+        current.push(')');
+      }
+      Token::SquareBracketBlock => {
+        push_css_with_token_splice_boundary(&mut current, "[");
+        let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+        current.push_str(&nested);
+        current.push(']');
+      }
+      Token::CurlyBracketBlock => {
+        push_css_with_token_splice_boundary(&mut current, "{");
+        let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+        current.push_str(&nested);
+        current.push('}');
+      }
+      other => push_token_to_css(&mut current, &other),
+    }
+  }
+
+  flush(&mut candidates, &mut current);
+  Ok(candidates)
+}
+
 fn stringify_tokens<'i, 't, E>(parser: &mut Parser<'i, 't>) -> Result<String, ParseError<'i, E>> {
   let mut output = String::new();
   while let Ok(token) = parser.next_including_whitespace_and_comments() {
@@ -2005,6 +2150,25 @@ fn contains_var_or_if_substitution_function(value: &str) -> bool {
       return true;
     }
 
+    // `first-valid(`
+    if !prev_is_ident
+      && i + 11 < bytes.len()
+      && byte.to_ascii_lowercase() == b'f'
+      && bytes[i + 1].to_ascii_lowercase() == b'i'
+      && bytes[i + 2].to_ascii_lowercase() == b'r'
+      && bytes[i + 3].to_ascii_lowercase() == b's'
+      && bytes[i + 4].to_ascii_lowercase() == b't'
+      && bytes[i + 5] == b'-'
+      && bytes[i + 6].to_ascii_lowercase() == b'v'
+      && bytes[i + 7].to_ascii_lowercase() == b'a'
+      && bytes[i + 8].to_ascii_lowercase() == b'l'
+      && bytes[i + 9].to_ascii_lowercase() == b'i'
+      && bytes[i + 10].to_ascii_lowercase() == b'd'
+      && bytes[i + 11] == b'('
+    {
+      return true;
+    }
+
     i += 1;
   }
 
@@ -2027,7 +2191,9 @@ fn contains_var_or_if_substitution_function_in_parser<'i, 't>(parser: &mut Parse
   while let Ok(token) = parser.next_including_whitespace_and_comments() {
     match token {
       Token::Function(name)
-        if name.eq_ignore_ascii_case("var") || name.eq_ignore_ascii_case("if") =>
+        if name.eq_ignore_ascii_case("var")
+          || name.eq_ignore_ascii_case("if")
+          || name.eq_ignore_ascii_case("first-valid") =>
       {
         found = true;
         let _ = parser.parse_nested_block(|nested| {
@@ -2299,9 +2465,10 @@ pub fn contains_var(value: &str) -> bool {
 /// Checks if a string contains any "arbitrary substitution functions" that FastRender resolves at
 /// computed-value time.
 ///
-/// This is a superset of [`contains_var`] that additionally detects CSS Values 5 `if()` and typed
-/// `attr()` functions. Like `var()`, these functions must not be eagerly parsed at stylesheet parse
-/// time because their substitution result is only knowable at computed-value time.
+/// This is a superset of [`contains_var`] that additionally detects CSS Values 5 `if()`,
+/// `first-valid()`, and typed `attr()` functions. Like `var()`, these functions must not be eagerly
+/// parsed at stylesheet parse time because their substitution result is only knowable at
+/// computed-value time.
 ///
 /// The detector ignores occurrences inside comments and strings, and has a correctness slow-path
 /// for escaped function names.
@@ -2394,6 +2561,25 @@ pub fn contains_arbitrary_substitution_function(value: &str) -> bool {
       return true;
     }
 
+    // `first-valid(`
+    if !prev_is_ident
+      && i + 11 < bytes.len()
+      && byte.to_ascii_lowercase() == b'f'
+      && bytes[i + 1].to_ascii_lowercase() == b'i'
+      && bytes[i + 2].to_ascii_lowercase() == b'r'
+      && bytes[i + 3].to_ascii_lowercase() == b's'
+      && bytes[i + 4].to_ascii_lowercase() == b't'
+      && bytes[i + 5] == b'-'
+      && bytes[i + 6].to_ascii_lowercase() == b'v'
+      && bytes[i + 7].to_ascii_lowercase() == b'a'
+      && bytes[i + 8].to_ascii_lowercase() == b'l'
+      && bytes[i + 9].to_ascii_lowercase() == b'i'
+      && bytes[i + 10].to_ascii_lowercase() == b'd'
+      && bytes[i + 11] == b'('
+    {
+      return true;
+    }
+
     // `attr(`
     if !prev_is_ident
       && i + 4 < bytes.len()
@@ -2431,7 +2617,8 @@ fn contains_arbitrary_substitution_function_in_parser<'i, 't>(parser: &mut Parse
       Token::Function(name)
         if name.eq_ignore_ascii_case("var")
           || name.eq_ignore_ascii_case("if")
-          || name.eq_ignore_ascii_case("attr") =>
+          || name.eq_ignore_ascii_case("attr")
+          || name.eq_ignore_ascii_case("first-valid") =>
       {
         found = true;
         let _ = parser.parse_nested_block(|nested| {
@@ -2754,6 +2941,29 @@ mod tests {
         resolved
       );
     }
+  }
+
+  #[test]
+  fn first_valid_picks_first_parseable_candidate_and_is_lazy() {
+    // The first candidate resolves successfully but is invalid for the property.
+    // The second candidate is valid.
+    // The third candidate would fail var() resolution entirely, but must not be evaluated.
+    let props = make_props(&[("--invalid", "10px"), ("--valid", "rgb(0, 160, 0)")]);
+    let value = PropertyValue::Keyword(
+      "first-valid(var(--invalid), var(--valid), var(--missing))".to_string(),
+    );
+
+    let resolved = resolve_var_for_property(&value, &props, "background-color");
+    let VarResolutionResult::Resolved { value, .. } = resolved else {
+      panic!("expected first-valid() to resolve, got {resolved:?}");
+    };
+
+    let expected = Color::parse("rgb(0, 160, 0)").unwrap();
+    assert!(
+      matches!(value.as_ref(), PropertyValue::Color(color) if color == &expected),
+      "expected first-valid() to pick the green candidate, got {:?}",
+      value.as_ref()
+    );
   }
 
   #[test]

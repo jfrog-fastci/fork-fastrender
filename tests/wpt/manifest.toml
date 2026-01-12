@@ -2643,6 +2643,19 @@ width = 280
 height = 180
 
 [[tests]]
+id = "style/first-valid-001"
+path = "style/first-valid-001.html"
+reference = "style/first-valid-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 100
+
+[[tests]]
 id = "style/var-fallback-001"
 path = "style/var-fallback-001.html"
 test_type = "visual"
