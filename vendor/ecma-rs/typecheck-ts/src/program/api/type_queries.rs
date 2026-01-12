@@ -10,7 +10,7 @@ impl Program {
       Ok(store) => store,
       Err(fatal) => {
         self.record_fatal(fatal);
-        let state = self.lock_state();
+        let state = self.read_state();
         Arc::clone(&state.store)
       }
     }
@@ -22,7 +22,7 @@ impl Program {
       Ok(ty) => ty,
       Err(fatal) => {
         self.record_fatal(fatal);
-        let state = self.lock_state();
+        let state = self.read_state();
         state.store.primitive_ids().unknown
       }
     }
@@ -39,7 +39,7 @@ impl Program {
       Ok(ty) => ty,
       Err(fatal) => {
         self.record_fatal(fatal);
-        let state = self.lock_state();
+        let state = self.read_state();
         state.store.primitive_ids().unknown
       }
     }

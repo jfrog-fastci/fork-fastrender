@@ -120,7 +120,7 @@ impl Program {
 
   /// Resolve a loaded [`FileId`] back to its [`FileKey`], if available.
   pub fn file_key(&self, file: FileId) -> Option<FileKey> {
-    let state = self.lock_state();
+    let state = self.read_state();
     state.file_key_for_id(file)
   }
 
