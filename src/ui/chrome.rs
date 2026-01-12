@@ -4,7 +4,7 @@ use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
 use crate::ui::browser_app::BrowserAppState;
-use crate::ui::profile_autosave::BookmarkStore;
+use crate::ui::BookmarkStore;
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
@@ -1180,7 +1180,7 @@ mod tests {
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::messages::TabId;
   use crate::ui::omnibox::{OmniboxSuggestionSource, OmniboxUrlSource};
-  use crate::ui::profile_autosave::BookmarkStore;
+  use crate::ui::BookmarkStore;
 
   fn new_context() -> egui::Context {
     let ctx = egui::Context::default();
@@ -1346,11 +1346,10 @@ mod tests {
     let tab_id = TabId(1);
     app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
 
-    let bookmarks = BookmarkStore {
-      urls: ["https://example.com/bookmark".to_string()]
-        .into_iter()
-        .collect(),
-    };
+    let mut bookmarks = BookmarkStore::default();
+    bookmarks
+      .add("https://example.com/bookmark".to_string(), None, None)
+      .unwrap();
 
     app.chrome.request_focus_address_bar = true;
     let ctx = new_context();
@@ -2656,9 +2655,10 @@ mod tests {
     );
     app.chrome.address_bar_text.clear();
 
-    let bookmarks = BookmarkStore {
-      urls: ["https://example.com/".to_string()].into_iter().collect(),
-    };
+    let mut bookmarks = BookmarkStore::default();
+    bookmarks
+      .add("https://example.com/".to_string(), None, None)
+      .unwrap();
 
     let ctx = egui::Context::default();
 

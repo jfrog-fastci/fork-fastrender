@@ -160,7 +160,7 @@ pub fn build_page_context_menu_entries(
     out.push(PageContextMenuEntry::Action(PageContextMenuItem {
       label: "Bookmark Link",
       action: PageContextMenuAction::BookmarkLink(url.to_string()),
-      checked: input.bookmarks.contains(url),
+      checked: input.bookmarks.contains_url(url),
     }));
     out.push(PageContextMenuEntry::Separator);
   }
@@ -169,7 +169,7 @@ pub fn build_page_context_menu_entries(
   out.push(PageContextMenuEntry::Action(PageContextMenuItem {
     label: "Bookmark Page",
     action: PageContextMenuAction::BookmarkPage(page_url.to_string()),
-    checked: !page_url.is_empty() && input.bookmarks.contains(page_url),
+    checked: !page_url.is_empty() && input.bookmarks.contains_url(page_url),
   }));
 
   out.push(PageContextMenuEntry::Action(PageContextMenuItem {
@@ -213,9 +213,10 @@ pub fn apply_page_context_menu_action(
       if url.is_empty() {
         return ApplyPageContextMenuActionResult::default();
       }
-      bookmarks.toggle_url(url);
+      let was_bookmarked = bookmarks.contains_url(url);
+      let now_bookmarked = bookmarks.toggle(url, None);
       ApplyPageContextMenuActionResult {
-        bookmarks_changed: true,
+        bookmarks_changed: was_bookmarked || now_bookmarked,
         ui_changed: false,
       }
     }

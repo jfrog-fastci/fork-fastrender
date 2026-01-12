@@ -2,7 +2,7 @@ use crate::ui::browser_app::{BrowserTabState, ClosedTabState};
 use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
 use crate::ui::messages::TabId;
 use crate::ui::about_pages;
-use crate::ui::bookmarks::{BookmarkId, BookmarkNode, BookmarkStore};
+use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore};
 use crate::ui::visited::VisitedUrlStore;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -343,7 +343,9 @@ impl OmniboxProvider for BookmarksProvider {
           let url_owned = url.to_string();
           out.push(OmniboxSuggestion {
             action: OmniboxAction::NavigateToUrl(url_owned.clone()),
-            title: title.map(|t| t.to_string()),
+            title: title
+              .map(|t| t.to_string())
+              .or_else(|| Some(url_owned.clone())),
             url: Some(url_owned),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark),
           });
@@ -1002,6 +1004,73 @@ mod tests {
           && matches!(s.action, OmniboxAction::NavigateToUrl(ref u) if u == "https://example.com/bookmark")
       }),
       "expected bookmark suggestion, got {suggestions:?}"
+    );
+  }
+
+  #[test]
+  fn bookmarks_match_on_title_and_use_title_in_suggestion() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let mut bookmarks = BookmarkStore::default();
+    bookmarks
+      .add(
+        "https://example.com/opaque".to_string(),
+        Some("Learn Rust".to_string()),
+        None,
+      )
+      .unwrap();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: Some(&bookmarks),
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions_default_limit(&ctx, "rust");
+    let bookmark = suggestions
+      .iter()
+      .find(|s| s.url.as_deref() == Some("https://example.com/opaque"))
+      .expect("expected bookmark suggestion for title match");
+    assert_eq!(
+      bookmark.source,
+      OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
+    );
+    assert_eq!(bookmark.title.as_deref(), Some("Learn Rust"));
+  }
+
+  #[test]
+  fn bookmarks_inside_folders_are_suggested() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let mut bookmarks = BookmarkStore::default();
+    let folder = bookmarks.create_folder("Folder".to_string(), None).unwrap();
+    bookmarks
+      .add(
+        "https://example.com/nested".to_string(),
+        Some("Nested Bookmark".to_string()),
+        Some(folder),
+      )
+      .unwrap();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: Some(&bookmarks),
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions_default_limit(&ctx, "nested");
+    assert!(
+      suggestions.iter().any(|s| {
+        s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
+          && s.url.as_deref() == Some("https://example.com/nested")
+      }),
+      "expected nested bookmark suggestion, got {suggestions:?}"
     );
   }
 

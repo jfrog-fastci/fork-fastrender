@@ -35,10 +35,10 @@ fn context_menu_bookmark_link_toggles_bookmark_store() {
         _ => None,
       },
       _ => None,
-    })
-    .expect("expected context menu to include Bookmark Link action");
+  })
+  .expect("expected context menu to include Bookmark Link action");
 
-  assert!(!bookmarks.contains(link_url));
+  assert!(!bookmarks.contains_url(link_url));
 
   let res = apply_page_context_menu_action(
     &mut bookmarks,
@@ -47,7 +47,7 @@ fn context_menu_bookmark_link_toggles_bookmark_store() {
     &bookmark_action,
   );
   assert!(res.bookmarks_changed);
-  assert!(bookmarks.contains(link_url));
+  assert!(bookmarks.contains_url(link_url));
 
   let entries_after = build(&bookmarks, history_panel_open, bookmarks_panel_open);
   let checked_after = entries_after.iter().any(|entry| match entry {
@@ -66,5 +66,5 @@ fn context_menu_bookmark_link_toggles_bookmark_store() {
     &bookmark_action,
   );
   assert!(res2.bookmarks_changed);
-  assert!(!bookmarks.contains(link_url));
+  assert!(!bookmarks.contains_url(link_url));
 }
