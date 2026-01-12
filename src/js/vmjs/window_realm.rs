@@ -5769,7 +5769,13 @@ fn history_state_change_native(
       state_key,
       read_only_data_desc(cloned_state_value),
     )?;
-    // Keep `history.length` in sync with the per-realm session history.
+  }
+
+  // Keep `history.length` in sync with the per-realm session history.
+  {
+    // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(history_obj))?;
     let length_key = alloc_key(&mut scope, "length")?;
     scope.define_property(
       history_obj,
@@ -33791,34 +33797,34 @@ fn init_window_globals(
       vm.register_native_construct(event_target_constructor_construct_native)?;
     let event_target_ctor_name = scope.alloc_string("EventTarget")?;
     scope.push_root(Value::String(event_target_ctor_name))?;
-    let event_target_ctor_func = scope.alloc_native_function(
+    let event_target_ctor = scope.alloc_native_function(
       event_target_ctor_call_id,
       Some(event_target_ctor_construct_id),
       event_target_ctor_name,
       1,
     )?;
     scope.heap_mut().object_set_prototype(
-      event_target_ctor_func,
+      event_target_ctor,
       Some(realm.intrinsics().function_prototype()),
     )?;
-    scope.push_root(Value::Object(event_target_ctor_func))?;
+    scope.push_root(Value::Object(event_target_ctor))?;
     scope.define_property(
-      event_target_ctor_func,
+      event_target_ctor,
       prototype_key,
       ctor_link_desc(Value::Object(event_target_proto)),
     )?;
     scope.define_property(
       event_target_proto,
       constructor_key,
-      ctor_link_desc(Value::Object(event_target_ctor_func)),
+      ctor_link_desc(Value::Object(event_target_ctor)),
     )?;
     let event_target_key = alloc_key(&mut scope, "EventTarget")?;
     scope.define_property(
       global,
       event_target_key,
-      data_desc(Value::Object(event_target_ctor_func)),
+      data_desc(Value::Object(event_target_ctor)),
     )?;
-    event_target_ctor_func
+    event_target_ctor
   } else {
     let event_target_key = alloc_key(&mut scope, "EventTarget")?;
     let Some(event_target_val) = scope
