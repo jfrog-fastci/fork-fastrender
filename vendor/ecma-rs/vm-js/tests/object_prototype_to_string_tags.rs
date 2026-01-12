@@ -122,6 +122,34 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   let out = rt.exec_script("Object.prototype.toString.call(new DataView(new ArrayBuffer(0)))")?;
   assert_eq!(expect_string(&rt, out), "[object DataView]");
 
+  // Wrapper objects.
+  let out = rt.exec_script("Object.prototype.toString.call(Object(\"x\"))")?;
+  assert_eq!(expect_string(&rt, out), "[object String]");
+
+  let out = rt.exec_script("Object.prototype.toString.call(Object(1))")?;
+  assert_eq!(expect_string(&rt, out), "[object Number]");
+
+  let out = rt.exec_script("Object.prototype.toString.call(Object(true))")?;
+  assert_eq!(expect_string(&rt, out), "[object Boolean]");
+
+  let out = rt.exec_script("Object.prototype.toString.call(Object(1n))")?;
+  assert_eq!(expect_string(&rt, out), "[object BigInt]");
+
+  // Date.
+  let out = rt.exec_script("Object.prototype.toString.call(new Date(0))")?;
+  assert_eq!(expect_string(&rt, out), "[object Date]");
+
+  // `%Math%` / `%Reflect%`.
+  let out = rt.exec_script("Object.prototype.toString.call(Math)")?;
+  assert_eq!(expect_string(&rt, out), "[object Math]");
+
+  let out = rt.exec_script("Object.prototype.toString.call(Reflect)")?;
+  assert_eq!(expect_string(&rt, out), "[object Reflect]");
+
+  // Errors.
+  let out = rt.exec_script("Object.prototype.toString.call(new Error(\"x\"))")?;
+  assert_eq!(expect_string(&rt, out), "[object Error]");
+
   // Callable Proxies.
   let out = rt.exec_script("Object.prototype.toString.call(callableProxy)")?;
   assert_eq!(expect_string(&rt, out), "[object Function]");

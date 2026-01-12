@@ -2310,6 +2310,17 @@ impl Intrinsics {
       )?;
     }
 
+    // String.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("String")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        string_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
+
     // `%Number%`
     let number_name = scope.alloc_string("Number")?;
     let number_constructor = alloc_rooted_native_function(
@@ -2343,6 +2354,17 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(number_constructor), true, false, true),
     )?;
+
+    // Number.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Number")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        number_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
 
     // Number.prototype.valueOf
     {
@@ -2524,6 +2546,17 @@ impl Intrinsics {
       data_desc(Value::Object(boolean_constructor), true, false, true),
     )?;
 
+    // Boolean.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Boolean")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        boolean_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
+      )?;
+    }
+
     // Boolean.prototype.valueOf
     {
       let value_of_s = scope.alloc_string("valueOf")?;
@@ -2555,6 +2588,17 @@ impl Intrinsics {
         boolean_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // BigInt.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("BigInt")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        bigint_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
       )?;
     }
 
@@ -2651,6 +2695,17 @@ impl Intrinsics {
         date_constructor,
         utc_key,
         data_desc(Value::Object(utc_fn), true, false, true),
+      )?;
+    }
+
+    // Date.prototype[@@toStringTag]
+    {
+      let tag_value = scope.alloc_string("Date")?;
+      scope.push_root(Value::String(tag_value))?;
+      scope.define_property(
+        date_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(tag_value), false, false, true),
       )?;
     }
 
@@ -4196,6 +4251,15 @@ impl Intrinsics {
       define_method("random", math_random, 0)?;
     }
 
+    {
+      let to_string_tag_value = scope.alloc_string("Math")?;
+      scope.define_property(
+        math,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(to_string_tag_value), false, false, true),
+      )?;
+    }
+
     // `%JSON%`
     let json = alloc_rooted_object(scope, roots)?;
     scope
@@ -4267,6 +4331,14 @@ impl Intrinsics {
       define_method("setPrototypeOf", reflect_set_prototype_of, 2)?;
     }
 
+    {
+      let to_string_tag_value = scope.alloc_string("Reflect")?;
+      scope.define_property(
+        reflect,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(to_string_tag_value), false, false, true),
+      )?;
+    }
     // --- Error + subclasses ---
     let error_call = vm.register_native_call(builtins::error_constructor_call)?;
     let error_construct = vm.register_native_construct(builtins::error_constructor_construct)?;
@@ -4283,6 +4355,16 @@ impl Intrinsics {
       "Error",
       1,
     )?;
+
+    // Error.prototype[@@toStringTag]
+    {
+      let to_string_tag_value = scope.alloc_string("Error")?;
+      scope.define_property(
+        error_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(to_string_tag_value), false, false, true),
+      )?;
+    }
 
     // Error.prototype.message
     //
