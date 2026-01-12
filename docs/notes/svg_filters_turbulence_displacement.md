@@ -170,8 +170,8 @@ Regression coverage:
 
 - Unit test: `turbulence_encodes_channels_based_on_color_interpolation_filters`
   (`src/paint/svg_filter.rs`)
-- Integration test: `turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb`
-  (`tests/svg_integration/filter_turbulence.rs`)
+- Unit test: `turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb`
+  (`src/paint/svg_filter/tests/filter_turbulence.rs`)
 
 ### Coordinates: `primitiveUnits`, bbox translation, and `filterRes`/DPR
 
@@ -196,8 +196,9 @@ Important (Chrome-aligned) behavior:
 
 Regression coverage:
 
-- `turbulence_userspace_translation_changes_pattern` (`tests/svg_integration/filter_turbulence.rs`)
-- `turbulence_userspace_translation_changes_pattern_with_filter_res` (`tests/svg_integration/filter_turbulence.rs`)
+- `turbulence_userspace_translation_changes_pattern` (`src/paint/svg_filter/tests/filter_turbulence.rs`)
+- `turbulence_userspace_translation_changes_pattern_with_filter_res`
+  (`src/paint/svg_filter/tests/filter_turbulence.rs`)
 
 ### `stitchTiles` (wrapping algorithm)
 
@@ -220,8 +221,9 @@ Stitching is implemented inside `turbulence()` / `noise2()`:
 
 Regression coverage:
 
-- `turbulence_stitches_edges` (`tests/svg_integration/filter_turbulence.rs`)
-- `turbulence_stitches_edges_with_offset_filter_region` (`tests/svg_integration/filter_turbulence.rs`)
+- `turbulence_stitches_edges` (`src/paint/svg_filter/tests/filter_turbulence.rs`)
+- `turbulence_stitches_edges_with_offset_filter_region`
+  (`src/paint/svg_filter/tests/filter_turbulence.rs`)
 
 ## `feDisplacementMap`
 
@@ -371,7 +373,7 @@ Regression coverage:
 ## Regression coverage (tests + fixtures)
 
 ### `feTurbulence` unit tests
-
+ 
 - `src/paint/svg_filter.rs` (parsing/CIF encoding):
   - `turbulence_base_frequency_parses_pair`
   - `turbulence_base_frequency_clamps_negative_to_zero`
@@ -383,10 +385,10 @@ Regression coverage:
 - `src/paint/svg_filter/turbulence.rs` (determinism under rayon):
   - `turbulence_render_is_byte_identical_for_same_seed`
   - `turbulence_raster_is_deterministic_across_thread_counts`
-
-### `feTurbulence` integration tests
-
-- `tests/svg_integration/filter_turbulence.rs`:
+ 
+### `feTurbulence` unit tests (reference behavior)
+ 
+- `src/paint/svg_filter/tests/filter_turbulence.rs`:
   - `turbulence_is_deterministic`
   - `turbulence_seed_changes_output`
   - `turbulence_stitches_edges`
