@@ -481,6 +481,118 @@ Reflect.apply.call(Reflect, dp, null, [Foo, "prototype", {}]);
 }
 
 #[test]
+fn strict_native_reports_forbidden_eval_via_reflect_apply_destructuring_alias_call_with_destructuring_alias_target(
+) {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval: unknown };
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { eval: e } = globalThis;
+const { apply: a } = Reflect;
+a.call(Reflect, e, null, ["1"]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_prototype_mutation_via_reflect_apply_destructuring_alias_call_with_destructuring_alias_target(
+) {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { defineProperty: dp } = Object;
+const { apply: a } = Reflect;
+a.call(Reflect, dp, null, [Foo, "prototype", {}]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
+fn strict_native_reports_forbidden_eval_via_reflect_apply_destructuring_alias_with_call_invoker_target(
+) {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval: unknown };
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { eval: e } = globalThis;
+const { apply: a } = Reflect;
+a(Function.prototype.call, e, [null, "1"]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_prototype_mutation_via_reflect_apply_destructuring_alias_with_call_invoker_target(
+) {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+class Foo {}
+declare const Reflect: { apply(target: unknown, thisArg: unknown, args: unknown[]): unknown };
+const { defineProperty: dp } = Object;
+const { apply: a } = Reflect;
+a(Function.prototype.call, dp, [null, Foo, "prototype", {}]);
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    ));
+}
+
+#[test]
 fn strict_native_reports_forbidden_eval_via_reflect_apply_destructuring_alias_with_destructuring_alias_target(
 ) {
   let tmp = tempdir().expect("temp dir");
@@ -517,6 +629,31 @@ fn strict_native_reports_forbidden_eval_via_function_call_invoker_with_destructu
 declare const globalThis: { eval: unknown };
 const { eval: e } = globalThis;
 Function.prototype.call.call(e, null, "1");
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_forbidden_eval_via_function_call_invoker_destructuring_alias_receiver() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare const globalThis: { eval: unknown };
+const { eval: e } = globalThis;
+const { call: c } = Function.prototype;
+c.call(e, null, "1");
 "#,
   )
   .expect("write main.ts");

@@ -1127,6 +1127,9 @@ pub fn validate_native_strict_body(
     ProxyRevocable,
     ReflectApply,
     ReflectConstruct,
+    FunctionPrototypeCall,
+    FunctionPrototypeApply,
+    FunctionPrototypeBind,
     ObjectSetPrototypeOf,
     ReflectSetPrototypeOf,
     ObjectDefineProperty,
@@ -1850,9 +1853,12 @@ pub fn validate_native_strict_body(
     object_name: hir_js::NameId,
     reflect_name: hir_js::NameId,
     function_name: hir_js::NameId,
+    prototype_name: hir_js::NameId,
+    call_name: hir_js::NameId,
     proxy_name: hir_js::NameId,
     revocable_name: hir_js::NameId,
     apply_name: hir_js::NameId,
+    bind_name: hir_js::NameId,
     construct_name: hir_js::NameId,
     set_prototype_of_name: hir_js::NameId,
     define_property_name: hir_js::NameId,
@@ -1870,9 +1876,12 @@ pub fn validate_native_strict_body(
       object_name: hir_js::NameId,
       reflect_name: hir_js::NameId,
       function_name: hir_js::NameId,
+      prototype_name: hir_js::NameId,
+      call_name: hir_js::NameId,
       proxy_name: hir_js::NameId,
       revocable_name: hir_js::NameId,
       apply_name: hir_js::NameId,
+      bind_name: hir_js::NameId,
       construct_name: hir_js::NameId,
       set_prototype_of_name: hir_js::NameId,
       define_property_name: hir_js::NameId,
@@ -1889,9 +1898,12 @@ pub fn validate_native_strict_body(
         object_name,
         reflect_name,
         function_name,
+        prototype_name,
+        call_name,
         proxy_name,
         revocable_name,
         apply_name,
+        bind_name,
         construct_name,
         set_prototype_of_name,
         define_property_name,
@@ -1961,6 +1973,24 @@ pub fn validate_native_strict_body(
         self.reflect_name,
         "Reflect",
       );
+      let init_is_function = expr_is_ident_or_global_this_member(
+        self.resolver,
+        self.const_aliases,
+        init_ref,
+        self.global_this_name,
+        self.function_name,
+        "Function",
+      );
+      let init_is_function_prototype = expr_is_builtin_member(
+        self.resolver,
+        self.const_aliases,
+        init_ref,
+        self.global_this_name,
+        self.function_name,
+        "Function",
+        self.prototype_name,
+        "prototype",
+      );
       let init_is_proxy = expr_is_ident_or_global_this_member(
         self.resolver,
         self.const_aliases,
@@ -2003,6 +2033,16 @@ pub fn validate_native_strict_body(
           kind = Some(DestructuredAliasKind::ReflectSetPrototypeOf);
         } else if self.object_key_matches(body, &prop_key, self.define_property_name, "defineProperty") {
           kind = Some(DestructuredAliasKind::ReflectDefineProperty);
+        }
+      }
+
+      if kind.is_none() && (init_is_function || init_is_function_prototype) {
+        if self.object_key_matches(body, &prop_key, self.call_name, "call") {
+          kind = Some(DestructuredAliasKind::FunctionPrototypeCall);
+        } else if self.object_key_matches(body, &prop_key, self.apply_name, "apply") {
+          kind = Some(DestructuredAliasKind::FunctionPrototypeApply);
+        } else if self.object_key_matches(body, &prop_key, self.bind_name, "bind") {
+          kind = Some(DestructuredAliasKind::FunctionPrototypeBind);
         }
       }
 
@@ -2107,9 +2147,12 @@ pub fn validate_native_strict_body(
     object_name,
     reflect_name,
     function_name,
+    prototype_name,
+    call_name,
     proxy_name,
     revocable_name,
     apply_name,
+    bind_name,
     construct_name,
     set_prototype_of_name,
     define_property_name,
@@ -2439,6 +2482,502 @@ pub fn validate_native_strict_body(
                       }
                     }
                   }
+
+                  // `Reflect.apply(Function.prototype.{call,apply,bind}, target, [...])` can be used
+                  // to indirectly invoke (or bind) a forbidden target.
+                  let target_is_call_invoker = expr_is_function_prototype_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: body_id,
+                      expr: target_arg,
+                    },
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    call_name,
+                    "call",
+                  ) || expr_is_builtin_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: body_id,
+                      expr: target_arg,
+                    },
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    call_name,
+                    "call",
+                  ) || matches!(
+                    target_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeCall)
+                  );
+                  let target_is_apply_invoker = expr_is_function_prototype_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: body_id,
+                      expr: target_arg,
+                    },
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    apply_name,
+                    "apply",
+                  ) || expr_is_builtin_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: body_id,
+                      expr: target_arg,
+                    },
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    apply_name,
+                    "apply",
+                  ) || matches!(
+                    target_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeApply)
+                  );
+                  let target_is_bind_invoker = expr_is_function_prototype_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: body_id,
+                      expr: target_arg,
+                    },
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    bind_name,
+                    "bind",
+                  ) || expr_is_builtin_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: body_id,
+                      expr: target_arg,
+                    },
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    bind_name,
+                    "bind",
+                  ) || matches!(
+                    target_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeBind)
+                  );
+
+                  if target_is_call_invoker || target_is_apply_invoker || target_is_bind_invoker {
+                    if let Some(called_target) =
+                      call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                    {
+                      let called_target_span = result
+                        .expr_spans
+                        .get(called_target.0 as usize)
+                        .copied()
+                        .or_else(|| body.exprs.get(called_target.0 as usize).map(|expr| expr.span))
+                        .unwrap_or(callee_span);
+                      let called_target_alias_kind =
+                        semantic_destructured_aliases.resolve_expr(ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        });
+
+                      if expr_is_ident_or_global_this_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        eval_name,
+                        "eval",
+                      ) || matches!(called_target_alias_kind, Some(DestructuredAliasKind::Eval)) {
+                        diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                          "`eval` is forbidden when `native_strict` is enabled",
+                          Span::new(file, called_target_span),
+                        ));
+                      }
+                      if expr_is_ident_or_global_this_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        function_name,
+                        "Function",
+                      ) || matches!(called_target_alias_kind, Some(DestructuredAliasKind::Function))
+                      {
+                        diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                          "`Function` constructor is forbidden when `native_strict` is enabled",
+                          Span::new(file, called_target_span),
+                        ));
+                      }
+                      if let Some(constructor_span) = expr_is_function_constructor_via_constructor_access(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        result,
+                        store,
+                        type_expander,
+                        constructor_name,
+                        type_call_name,
+                        type_apply_name,
+                        type_bind_name,
+                        &mut function_like_cache,
+                      ) {
+                        diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                          "`Function` constructor is forbidden when `native_strict` is enabled",
+                          Span::new(file, constructor_span),
+                        ));
+                      }
+                      if expr_is_ident_or_global_this_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        proxy_name,
+                        "Proxy",
+                      ) || expr_is_builtin_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        proxy_name,
+                        "Proxy",
+                        revocable_name,
+                        "revocable",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::Proxy | DestructuredAliasKind::ProxyRevocable)
+                      ) {
+                        diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                          "`Proxy` is forbidden when `native_strict` is enabled",
+                          Span::new(file, called_target_span),
+                        ));
+                      }
+
+                      if expr_is_builtin_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        set_prototype_of_name,
+                        "setPrototypeOf",
+                      ) || expr_is_builtin_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        reflect_name,
+                        "Reflect",
+                        set_prototype_of_name,
+                        "setPrototypeOf",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(
+                          DestructuredAliasKind::ObjectSetPrototypeOf | DestructuredAliasKind::ReflectSetPrototypeOf
+                        )
+                      ) {
+                        let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                        diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                          "prototype mutation is forbidden when `native_strict` is enabled",
+                          Span::new(file, span),
+                        ));
+                      }
+
+                      let mut called_target_is_object_define_property = expr_is_builtin_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        define_property_name,
+                        "defineProperty",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::ObjectDefineProperty)
+                      );
+                      let mut called_target_is_reflect_define_property = expr_is_builtin_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        reflect_name,
+                        "Reflect",
+                        define_property_name,
+                        "defineProperty",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::ReflectDefineProperty)
+                      );
+                      let mut called_target_is_object_define_properties = expr_is_builtin_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        define_properties_name,
+                        "defineProperties",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::ObjectDefineProperties)
+                      );
+                      let mut called_target_is_object_assign = expr_is_builtin_member(
+                        resolver,
+                        &const_aliases,
+                        ExprRef {
+                          body: body_id,
+                          expr: called_target,
+                        },
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        assign_name,
+                        "assign",
+                      ) || matches!(
+                        called_target_alias_kind,
+                        Some(DestructuredAliasKind::ObjectAssign)
+                      );
+
+                      let mut bound_prefix: Vec<hir_js::ExprId> = Vec::new();
+                      if !called_target_is_object_define_property
+                        && !called_target_is_reflect_define_property
+                        && !called_target_is_object_define_properties
+                        && !called_target_is_object_assign
+                      {
+                        if let Some(called_expr) = body.exprs.get(called_target.0 as usize) {
+                          if let ExprKind::Call(bound_call) = &called_expr.kind {
+                            if !bound_call.is_new && !bound_call.args.iter().any(|arg| arg.spread) {
+                              if let Some(bound_callee) = body.exprs.get(bound_call.callee.0 as usize) {
+                                if let ExprKind::Member(bound_member) = &bound_callee.kind {
+                                  let prop_is_bind =
+                                    object_key_is_ident(&bound_member.property, bind_name)
+                                      || object_key_is_string(&bound_member.property, "bind")
+                                      || object_key_is_literal_string(body, &bound_member.property, "bind");
+                                  if prop_is_bind {
+                                    let bound_object_alias_kind =
+                                      semantic_destructured_aliases.resolve_expr(ExprRef {
+                                        body: body_id,
+                                        expr: bound_member.object,
+                                      });
+                                    let bound_is_object_define_property = expr_is_builtin_member(
+                                      resolver,
+                                      &const_aliases,
+                                      ExprRef {
+                                        body: body_id,
+                                        expr: bound_member.object,
+                                      },
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      define_property_name,
+                                      "defineProperty",
+                                    ) || matches!(
+                                      bound_object_alias_kind,
+                                      Some(DestructuredAliasKind::ObjectDefineProperty)
+                                    );
+                                    let bound_is_reflect_define_property = expr_is_builtin_member(
+                                      resolver,
+                                      &const_aliases,
+                                      ExprRef {
+                                        body: body_id,
+                                        expr: bound_member.object,
+                                      },
+                                      global_this_name,
+                                      reflect_name,
+                                      "Reflect",
+                                      define_property_name,
+                                      "defineProperty",
+                                    ) || matches!(
+                                      bound_object_alias_kind,
+                                      Some(DestructuredAliasKind::ReflectDefineProperty)
+                                    );
+                                    let bound_is_object_define_properties = expr_is_builtin_member(
+                                      resolver,
+                                      &const_aliases,
+                                      ExprRef {
+                                        body: body_id,
+                                        expr: bound_member.object,
+                                      },
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      define_properties_name,
+                                      "defineProperties",
+                                    ) || matches!(
+                                      bound_object_alias_kind,
+                                      Some(DestructuredAliasKind::ObjectDefineProperties)
+                                    );
+                                    let bound_is_object_assign = expr_is_builtin_member(
+                                      resolver,
+                                      &const_aliases,
+                                      ExprRef {
+                                        body: body_id,
+                                        expr: bound_member.object,
+                                      },
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      assign_name,
+                                      "assign",
+                                    ) || matches!(
+                                      bound_object_alias_kind,
+                                      Some(DestructuredAliasKind::ObjectAssign)
+                                    );
+                                    if bound_is_object_define_property
+                                      || bound_is_reflect_define_property
+                                      || bound_is_object_define_properties
+                                      || bound_is_object_assign
+                                    {
+                                      called_target_is_object_define_property =
+                                        bound_is_object_define_property;
+                                      called_target_is_reflect_define_property =
+                                        bound_is_reflect_define_property;
+                                      called_target_is_object_define_properties =
+                                        bound_is_object_define_properties;
+                                      called_target_is_object_assign = bound_is_object_assign;
+                                      for arg in bound_call.args.iter().skip(1) {
+                                        bound_prefix.push(arg.expr);
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+
+                      if called_target_is_object_define_property
+                        || called_target_is_reflect_define_property
+                        || called_target_is_object_define_properties
+                        || called_target_is_object_assign
+                      {
+                        if let Some(args_list_expr) =
+                          call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                        {
+                          let args_for_target = if target_is_call_invoker || target_is_bind_invoker {
+                            array_literal_exprs(body, args_list_expr).map(|mut args_list| {
+                              if !args_list.is_empty() {
+                                args_list.remove(0);
+                              }
+                              args_list
+                            })
+                          } else if target_is_apply_invoker {
+                            array_literal_exprs(body, args_list_expr)
+                              .and_then(|args_list| args_list.get(1).copied())
+                              .and_then(|inner| array_literal_exprs(body, inner))
+                          } else {
+                            None
+                          };
+                          if let Some(mut args_list) = args_for_target {
+                            if !bound_prefix.is_empty() {
+                              let mut combined =
+                                Vec::with_capacity(bound_prefix.len() + args_list.len());
+                              combined.extend(bound_prefix.iter().copied());
+                              combined.extend(args_list);
+                              args_list = combined;
+                            }
+                            if let Some(target_obj) = args_list.first().copied() {
+                              let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                resolver,
+                                &const_aliases,
+                                ExprRef {
+                                  body: body_id,
+                                  expr: target_obj,
+                                },
+                                prototype_name,
+                                proto_name,
+                              );
+
+                              if !is_proto_mutation
+                                && (called_target_is_object_define_property
+                                  || called_target_is_reflect_define_property)
+                              {
+                                if let Some(key_arg) = args_list.get(1).copied() {
+                                  if expr_is_const_string(body, key_arg, "prototype")
+                                    || expr_is_const_string(body, key_arg, "__proto__")
+                                  {
+                                    is_proto_mutation = true;
+                                  }
+                                }
+                              }
+
+                              if !is_proto_mutation && called_target_is_object_define_properties {
+                                if let Some(props_arg) = args_list.get(1).copied() {
+                                  if expr_is_object_literal_with_proto_key(
+                                    body,
+                                    props_arg,
+                                    prototype_name,
+                                    proto_name,
+                                  ) {
+                                    is_proto_mutation = true;
+                                  }
+                                }
+                              }
+
+                              if !is_proto_mutation && called_target_is_object_assign {
+                                for source_arg in args_list.iter().skip(1).copied() {
+                                  if expr_is_object_literal_with_proto_key(
+                                    body,
+                                    source_arg,
+                                    prototype_name,
+                                    proto_name,
+                                  ) {
+                                    is_proto_mutation = true;
+                                    break;
+                                  }
+                                }
+                              }
+
+                              if is_proto_mutation {
+                                let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                                diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                  "prototype mutation is forbidden when `native_strict` is enabled",
+                                  Span::new(file, span),
+                                ));
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -2487,6 +3026,9 @@ pub fn validate_native_strict_body(
                 }
               }
             }
+            DestructuredAliasKind::FunctionPrototypeCall
+            | DestructuredAliasKind::FunctionPrototypeApply
+            | DestructuredAliasKind::FunctionPrototypeBind => {}
             DestructuredAliasKind::ObjectSetPrototypeOf | DestructuredAliasKind::ReflectSetPrototypeOf => {
               diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
                 "prototype mutation is forbidden when `native_strict` is enabled",
@@ -3060,90 +3602,99 @@ pub fn validate_native_strict_body(
                 }
               }
 
-              // `Function.prototype.call.call(...)` and friends are a common way to indirectly
-              // invoke (or bind) a function (bypassing direct `eval.call(...)` / `eval.bind(...)`
-              // checks etc). Also covers the equivalent `Function.call.*` / `Function.apply.*` /
-              // `Function.bind.*` forms.
-              if is_call_like {
-                let obj_is_call_invoker = expr_is_function_prototype_member(
-                  resolver,
-                  &const_aliases,
-                  ExprRef {
-                    body: callee_check.body,
-                    expr: member.object,
-                  },
-                  global_this_name,
-                  function_name,
-                  prototype_name,
-                  call_name,
-                  "call",
-                ) || expr_is_builtin_member(
-                  resolver,
-                  &const_aliases,
-                  ExprRef {
-                    body: callee_check.body,
-                    expr: member.object,
-                  },
-                  global_this_name,
-                  function_name,
-                  "Function",
-                  call_name,
-                  "call",
-                );
-                let obj_is_apply_invoker = expr_is_function_prototype_member(
-                  resolver,
-                  &const_aliases,
-                  ExprRef {
-                    body: callee_check.body,
-                    expr: member.object,
-                  },
-                  global_this_name,
-                  function_name,
-                  prototype_name,
-                  apply_name,
-                  "apply",
-                ) || expr_is_builtin_member(
-                  resolver,
-                  &const_aliases,
-                  ExprRef {
-                    body: callee_check.body,
-                    expr: member.object,
-                  },
-                  global_this_name,
-                  function_name,
-                  "Function",
-                  apply_name,
-                  "apply",
-                );
-                let obj_is_bind_invoker = expr_is_function_prototype_member(
-                  resolver,
-                  &const_aliases,
-                  ExprRef {
-                    body: callee_check.body,
-                    expr: member.object,
-                  },
-                  global_this_name,
-                  function_name,
-                  prototype_name,
-                  bind_name,
-                  "bind",
-                ) || expr_is_builtin_member(
-                  resolver,
-                  &const_aliases,
-                  ExprRef {
-                    body: callee_check.body,
-                    expr: member.object,
-                  },
-                  global_this_name,
-                  function_name,
-                  "Function",
-                  bind_name,
-                  "bind",
-                );
-                if obj_is_call_invoker || obj_is_apply_invoker || obj_is_bind_invoker {
-                  if let Some(target_arg) =
-                    call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
-                  {
+                // `Function.prototype.call.call(...)` and friends are a common way to indirectly
+                // invoke (or bind) a function (bypassing direct `eval.call(...)` / `eval.bind(...)`
+                // checks etc). Also covers the equivalent `Function.call.*` / `Function.apply.*` /
+                // `Function.bind.*` forms.
+                if is_call_like {
+                  let obj_is_call_invoker = expr_is_function_prototype_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: callee_check.body,
+                      expr: member.object,
+                    },
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    call_name,
+                    "call",
+                  ) || expr_is_builtin_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: callee_check.body,
+                      expr: member.object,
+                    },
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    call_name,
+                    "call",
+                  ) || matches!(
+                    member_object_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeCall)
+                  );
+                  let obj_is_apply_invoker = expr_is_function_prototype_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: callee_check.body,
+                      expr: member.object,
+                    },
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    apply_name,
+                    "apply",
+                  ) || expr_is_builtin_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: callee_check.body,
+                      expr: member.object,
+                    },
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    apply_name,
+                    "apply",
+                  ) || matches!(
+                    member_object_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeApply)
+                  );
+                  let obj_is_bind_invoker = expr_is_function_prototype_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: callee_check.body,
+                      expr: member.object,
+                    },
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    bind_name,
+                    "bind",
+                  ) || expr_is_builtin_member(
+                    resolver,
+                    &const_aliases,
+                    ExprRef {
+                      body: callee_check.body,
+                      expr: member.object,
+                    },
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    bind_name,
+                    "bind",
+                  ) || matches!(
+                    member_object_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeBind)
+                  );
+                  if obj_is_call_invoker || obj_is_apply_invoker || obj_is_bind_invoker {
+                    if let Some(target_arg) =
+                      call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
+                    {
                     let target_span = result
                       .expr_spans
                       .get(target_arg.0 as usize)
@@ -3651,7 +4202,7 @@ pub fn validate_native_strict_body(
                   "Reflect",
                   apply_name,
                   "apply",
-                );
+                ) || matches!(member_object_alias_kind, Some(DestructuredAliasKind::ReflectApply));
                 let obj_is_reflect_construct = expr_is_builtin_member(
                   resolver,
                   &const_aliases,
@@ -3664,6 +4215,9 @@ pub fn validate_native_strict_body(
                   "Reflect",
                   construct_name,
                   "construct",
+                ) || matches!(
+                  member_object_alias_kind,
+                  Some(DestructuredAliasKind::ReflectConstruct)
                 );
                 if obj_is_reflect_apply || obj_is_reflect_construct {
                   let reflect_args = if prop_is_call {
@@ -3815,6 +4369,9 @@ pub fn validate_native_strict_body(
                           "Function",
                           call_name,
                           "call",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(DestructuredAliasKind::FunctionPrototypeCall)
                         );
                         let target_is_apply_invoker = expr_is_function_prototype_member(
                           resolver,
@@ -3840,6 +4397,9 @@ pub fn validate_native_strict_body(
                           "Function",
                           apply_name,
                           "apply",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(DestructuredAliasKind::FunctionPrototypeApply)
                         );
                         let target_is_bind_invoker = expr_is_function_prototype_member(
                           resolver,
@@ -3865,6 +4425,9 @@ pub fn validate_native_strict_body(
                           "Function",
                           bind_name,
                           "bind",
+                        ) || matches!(
+                          target_alias_kind,
+                          Some(DestructuredAliasKind::FunctionPrototypeBind)
                         );
                         if target_is_call_invoker || target_is_apply_invoker || target_is_bind_invoker {
                           if let Some(called_target) = reflect_args.get(1).copied() {
@@ -5266,6 +5829,9 @@ pub fn validate_native_strict_body(
                     "Function",
                     call_name,
                     "call",
+                  ) || matches!(
+                    target_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeCall)
                   );
                   let target_is_apply_invoker = expr_is_function_prototype_member(
                     resolver,
@@ -5291,6 +5857,9 @@ pub fn validate_native_strict_body(
                     "Function",
                     apply_name,
                     "apply",
+                  ) || matches!(
+                    target_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeApply)
                   );
                   let target_is_bind_invoker = expr_is_function_prototype_member(
                     resolver,
@@ -5316,6 +5885,9 @@ pub fn validate_native_strict_body(
                     "Function",
                     bind_name,
                     "bind",
+                  ) || matches!(
+                    target_alias_kind,
+                    Some(DestructuredAliasKind::FunctionPrototypeBind)
                   );
                   if target_is_call_invoker || target_is_apply_invoker || target_is_bind_invoker {
                   if let Some(called_target) =
