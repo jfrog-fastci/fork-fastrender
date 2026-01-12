@@ -4,6 +4,8 @@ use runtime_native::gc::RootStack;
 use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::threading;
+use runtime_native::threading::ThreadKind;
 use runtime_native::{
   rt_async_poll_legacy as rt_async_poll,
   rt_async_sleep_legacy as rt_async_sleep,
@@ -11,11 +13,13 @@ use runtime_native::{
   rt_promise_then_legacy as rt_promise_then,
   rt_spawn_blocking,
   rt_spawn_blocking_rooted,
+  rt_spawn_blocking_rooted_h,
   GcHeap,
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -61,6 +65,19 @@ extern "C" fn blocker_wait(data: *mut u8, promise: PromiseRef) {
     std::thread::sleep(Duration::from_millis(1));
   }
   st.finished.fetch_add(1, Ordering::SeqCst);
+  rt_promise_resolve(promise, core::ptr::null_mut());
+}
+
+static ROOTED_H_BLOCKING_STARTED: AtomicBool = AtomicBool::new(false);
+static ROOTED_H_BLOCKING_RELEASE: AtomicBool = AtomicBool::new(false);
+static ROOTED_H_BLOCKING_PTR: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn rooted_h_record_ptr_and_block(data: *mut u8, promise: PromiseRef) {
+  ROOTED_H_BLOCKING_PTR.store(data as usize, Ordering::SeqCst);
+  ROOTED_H_BLOCKING_STARTED.store(true, Ordering::SeqCst);
+  while !ROOTED_H_BLOCKING_RELEASE.load(Ordering::Acquire) {
+    std::thread::yield_now();
+  }
   rt_promise_resolve(promise, core::ptr::null_mut());
 }
 
@@ -270,4 +287,152 @@ fn spawn_blocking_rooted_keeps_gc_data_alive_across_minor_gc() {
       "timeout waiting for blocker tasks to finish"
     );
   }
+}
+
+#[test]
+fn spawn_blocking_rooted_h_reads_slot_after_lock_acquired() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Ensure the current thread claims the event-loop identity so the worker thread below registers
+  // as `External` rather than becoming the event loop.
+  let _ = rt_async_poll();
+
+  ROOTED_H_BLOCKING_STARTED.store(false, Ordering::SeqCst);
+  ROOTED_H_BLOCKING_PTR.store(0, Ordering::SeqCst);
+  ROOTED_H_BLOCKING_RELEASE.store(false, Ordering::Release);
+
+  struct ReleaseOnDrop;
+  impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+      ROOTED_H_BLOCKING_RELEASE.store(true, Ordering::Release);
+    }
+  }
+  let _release_on_drop = ReleaseOnDrop;
+
+  let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
+
+  // Pointers are treated as opaque addresses; they do not need to be dereferenceable in this test.
+  let mut slot_value: *mut u8 = 0x1111usize as *mut u8;
+  let new_value: *mut u8 = 0x2222usize as *mut u8;
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let slot_ptr: usize = (&mut slot_value as *mut *mut u8) as usize;
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  let promise = std::thread::scope(|scope| {
+    // Thread A holds the persistent handle table lock.
+    let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+    let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+    // Thread C attempts to spawn rooted-h work while the lock is held.
+    let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+    let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+    let (c_done_tx, c_done_rx) = mpsc::channel::<PromiseRef>();
+
+    scope.spawn(move || {
+      threading::register_current_thread(ThreadKind::Worker);
+      runtime_native::roots::global_persistent_handle_table().debug_with_read_lock_for_tests(|| {
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+      });
+      threading::unregister_current_thread();
+    });
+
+    a_locked_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread A should acquire the persistent handle table lock");
+
+    scope.spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      c_registered_tx.send(id).unwrap();
+
+      c_start_rx.recv().unwrap();
+
+      let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
+      // Safety: `slot_ptr` is a valid slot pointer.
+      let promise = unsafe { rt_spawn_blocking_rooted_h(rooted_h_record_ptr_and_block, slot_ptr) };
+      c_done_tx.send(promise).unwrap();
+
+      threading::unregister_current_thread();
+    });
+
+    let c_id = c_registered_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread C should register with the thread registry");
+
+    // Start thread C's spawn attempt (it should block on the handle table lock).
+    c_start_tx.send(()).unwrap();
+
+    // Wait until thread C is marked NativeSafe (meaning it's blocked on the GC-aware lock).
+    let start = Instant::now();
+    loop {
+      let mut native_safe = false;
+      threading::registry::for_each_thread(|t| {
+        if t.id() == c_id {
+          native_safe = t.is_native_safe();
+        }
+      });
+
+      if native_safe {
+        break;
+      }
+      if start.elapsed() > TIMEOUT {
+        panic!("thread C did not enter a GC-safe region while blocked on the persistent handle table lock");
+      }
+      std::thread::yield_now();
+    }
+
+    // Update the slot while thread C is blocked. If `rt_spawn_blocking_rooted_h` (or its internal
+    // plumbing) incorrectly reads the slot before acquiring the lock, it would still observe the
+    // old value.
+    slot_value = new_value;
+
+    // Release the lock so `alloc_from_slot` can proceed and read the updated slot value.
+    a_release_tx.send(()).unwrap();
+
+    c_done_rx
+      .recv_timeout(TIMEOUT)
+      .expect("spawn_blocking rooted_h should complete after lock is released")
+  });
+
+  let settled = Box::new(AtomicBool::new(false));
+  let settled_ptr = (&*settled as *const AtomicBool).cast_mut().cast::<u8>();
+  rt_promise_then(promise, set_bool, settled_ptr);
+
+  // Wait for the worker task to start so we know it has observed the rooted pointer.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  while !ROOTED_H_BLOCKING_STARTED.load(Ordering::SeqCst) {
+    assert!(Instant::now() < deadline, "timeout waiting for rooted_h spawn_blocking task to start");
+    std::thread::yield_now();
+  }
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots + 1,
+    "rooted-h spawn_blocking should allocate exactly one persistent handle while task is pending"
+  );
+
+  // Release the blocking task so it can settle the promise and free its persistent handle.
+  ROOTED_H_BLOCKING_RELEASE.store(true, Ordering::Release);
+
+  let start = Instant::now();
+  while !settled.load(Ordering::SeqCst) {
+    rt_async_poll();
+    assert!(
+      start.elapsed() < Duration::from_secs(5),
+      "timeout waiting for rooted_h spawn_blocking promise to settle"
+    );
+  }
+
+  assert_eq!(
+    ROOTED_H_BLOCKING_PTR.load(Ordering::SeqCst),
+    new_value as usize,
+    "spawn_blocking rooted_h task must observe the slot value read after lock acquisition"
+  );
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots,
+    "rooted-h spawn_blocking should release its persistent handle after the task completes"
+  );
 }

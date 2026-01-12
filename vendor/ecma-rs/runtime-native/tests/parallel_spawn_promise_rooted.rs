@@ -6,11 +6,13 @@ use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::GcHeap;
 use runtime_native::PromiseLayout;
 use runtime_native::TypeDescriptor;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -42,6 +44,21 @@ extern "C" fn record_magic_and_fulfill(data: *mut u8, promise: PromiseRef) {
     let magic = (data.add(MAGIC_OFFSET) as *const u64).read();
     let seen = &*(data.add(SEEN_OFFSET) as *const AtomicU64);
     seen.store(magic, Ordering::Release);
+    runtime_native::rt_promise_fulfill(promise);
+  }
+}
+
+static ROOTED_H_PROMISE_STARTED: AtomicBool = AtomicBool::new(false);
+static ROOTED_H_PROMISE_RELEASE: AtomicBool = AtomicBool::new(false);
+static ROOTED_H_PROMISE_PTR: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn rooted_h_record_ptr_and_block(data: *mut u8, promise: PromiseRef) {
+  ROOTED_H_PROMISE_PTR.store(data as usize, Ordering::SeqCst);
+  ROOTED_H_PROMISE_STARTED.store(true, Ordering::SeqCst);
+  while !ROOTED_H_PROMISE_RELEASE.load(Ordering::Acquire) {
+    std::thread::yield_now();
+  }
+  unsafe {
     runtime_native::rt_promise_fulfill(promise);
   }
 }
@@ -257,4 +274,170 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
 
   // Join tasks in Drop.
   drop(join_guard);
+}
+
+#[test]
+fn parallel_spawn_promise_rooted_h_reads_slot_after_lock_acquired() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Ensure the current thread claims the event-loop identity so the worker thread below registers
+  // as `External` rather than becoming the event loop.
+  let _ = runtime_native::rt_async_poll();
+
+  ROOTED_H_PROMISE_STARTED.store(false, Ordering::SeqCst);
+  ROOTED_H_PROMISE_PTR.store(0, Ordering::SeqCst);
+  ROOTED_H_PROMISE_RELEASE.store(false, Ordering::Release);
+
+  struct ReleaseOnDrop;
+  impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+      ROOTED_H_PROMISE_RELEASE.store(true, Ordering::Release);
+    }
+  }
+  let _release_on_drop = ReleaseOnDrop;
+
+  let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
+
+  // Pointers are treated as opaque addresses; they do not need to be dereferenceable in this test.
+  let mut slot_value: *mut u8 = 0x1111usize as *mut u8;
+  let new_value: *mut u8 = 0x2222usize as *mut u8;
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let slot_ptr: usize = runtime_native::roots::handle_from_slot(&mut slot_value) as usize;
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  let promise = std::thread::scope(|scope| {
+    // Thread A holds the persistent handle table lock.
+    let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+    let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+    // Thread C attempts to spawn rooted-h work while the lock is held.
+    let (c_registered_tx, c_registered_rx) = mpsc::channel::<runtime_native::threading::ThreadId>();
+    let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+    let (c_done_tx, c_done_rx) = mpsc::channel::<PromiseRef>();
+
+    scope.spawn(move || {
+      runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Worker);
+      runtime_native::roots::global_persistent_handle_table().debug_with_read_lock_for_tests(|| {
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+      });
+      runtime_native::threading::unregister_current_thread();
+    });
+
+    a_locked_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread A should acquire the persistent handle table lock");
+
+    scope.spawn(move || {
+      let id = runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Worker);
+      c_registered_tx.send(id).unwrap();
+
+      c_start_rx.recv().unwrap();
+
+      let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
+      // Safety: `slot_ptr` is a valid slot pointer.
+      let promise = unsafe {
+        runtime_native::rt_parallel_spawn_promise_rooted_h(
+          rooted_h_record_ptr_and_block,
+          slot_ptr,
+          PromiseLayout::of::<()>(),
+        )
+      };
+      c_done_tx.send(promise).unwrap();
+
+      runtime_native::threading::unregister_current_thread();
+    });
+
+    let c_id = c_registered_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread C should register with the thread registry");
+
+    // Start thread C's spawn attempt (it should block on the handle table lock).
+    c_start_tx.send(()).unwrap();
+
+    // Wait until thread C is marked NativeSafe (meaning it's blocked on the GC-aware lock).
+    let start = Instant::now();
+    loop {
+      let mut native_safe = false;
+      runtime_native::threading::registry::for_each_thread(|t| {
+        if t.id() == c_id {
+          native_safe = t.is_native_safe();
+        }
+      });
+
+      if native_safe {
+        break;
+      }
+      if start.elapsed() > TIMEOUT {
+        panic!("thread C did not enter a GC-safe region while blocked on the persistent handle table lock");
+      }
+      std::thread::yield_now();
+    }
+
+    // Update the slot while thread C is blocked. If `rt_parallel_spawn_promise_rooted_h` (or its
+    // internal plumbing) incorrectly reads the slot before acquiring the lock, it would still
+    // observe the old value.
+    slot_value = new_value;
+
+    // Release the lock so `alloc_from_slot` can proceed and read the updated slot value.
+    a_release_tx.send(()).unwrap();
+
+    c_done_rx
+      .recv_timeout(TIMEOUT)
+      .expect("spawn should complete after lock is released")
+  });
+
+  // Wait for the worker task to start so we know it has observed the rooted pointer.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  while !ROOTED_H_PROMISE_STARTED.load(Ordering::SeqCst) {
+    assert!(
+      Instant::now() < deadline,
+      "timeout waiting for rooted-h parallel_spawn_promise task to start"
+    );
+    std::thread::yield_now();
+  }
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots + 1,
+    "rooted-h parallel_spawn_promise should allocate exactly one persistent handle while task is pending"
+  );
+
+  assert_eq!(
+    ROOTED_H_PROMISE_PTR.load(Ordering::SeqCst),
+    new_value as usize,
+    "parallel_spawn_promise rooted_h task must observe the slot value read after lock acquisition"
+  );
+
+  // Release the blocking task so it can settle the promise and free its persistent handle.
+  ROOTED_H_PROMISE_RELEASE.store(true, Ordering::Release);
+
+  let promise_header = promise.0.cast::<runtime_native::async_abi::PromiseHeader>();
+  assert!(!promise_header.is_null());
+  let start = Instant::now();
+  loop {
+    let state = unsafe { &*promise_header }.state.load(Ordering::Acquire);
+    if state == runtime_native::async_abi::PromiseHeader::FULFILLED {
+      break;
+    }
+    if state == runtime_native::async_abi::PromiseHeader::REJECTED {
+      panic!("expected rooted-h parallel_spawn_promise task to fulfill, but it rejected");
+    }
+    assert!(
+      start.elapsed() < Duration::from_secs(5),
+      "timeout waiting for rooted-h parallel_spawn_promise promise to settle"
+    );
+    runtime_native::rt_async_poll();
+    std::thread::yield_now();
+  }
+
+  let deadline = Instant::now() + Duration::from_secs(2);
+  while runtime_native::roots::global_persistent_handle_table().live_count() != base_roots {
+    assert!(
+      Instant::now() < deadline,
+      "rooted-h parallel_spawn_promise should release its persistent handle after the task completes"
+    );
+    std::thread::yield_now();
+  }
 }
