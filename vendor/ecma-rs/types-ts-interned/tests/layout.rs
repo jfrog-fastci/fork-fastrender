@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use types_ts_interned::{
-  AbiScalar, FieldKey, Layout, LayoutId, ObjectType, PropData, PropKey, Property, Shape, TupleElem,
-  TypeKind, TypeStore,
+  AbiScalar, ArrayElemRepr, FieldKey, GcTraceKind, Layout, LayoutId, ObjectType, PropData, PropKey,
+  Property, Shape, TupleElem, TypeKind, TypeStore,
 };
 
 fn collect_layout_graph(store: &TypeStore, root: LayoutId) -> BTreeMap<LayoutId, Layout> {
@@ -498,4 +498,98 @@ fn gc_trace_reports_tagged_union_variants() {
       other => panic!("unexpected union member layout: {other:?}"),
     }
   }
+}
+
+#[test]
+fn layout_classification_scalars_are_pointer_free() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let number_layout = store.layout_of(primitives.number);
+  assert!(store.layout_is_pointer_free(number_layout));
+  assert_eq!(store.layout_gc_trace_kind(number_layout), GcTraceKind::None);
+  assert_eq!(
+    store.array_elem_repr(number_layout),
+    ArrayElemRepr::PlainOldData {
+      elem_size: 8,
+      elem_align: 8
+    }
+  );
+}
+
+#[test]
+fn layout_classification_struct_pod() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tuple = store.intern_type(TypeKind::Tuple(vec![
+    TupleElem {
+      ty: primitives.boolean,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+  ]));
+  let layout = store.layout_of(tuple);
+
+  assert!(store.layout_is_pointer_free(layout));
+  assert_eq!(store.layout_gc_trace_kind(layout), GcTraceKind::None);
+  assert_eq!(
+    store.array_elem_repr(layout),
+    ArrayElemRepr::PlainOldData {
+      elem_size: 16,
+      elem_align: 8
+    }
+  );
+}
+
+#[test]
+fn layout_classification_struct_with_gc_pointer_needs_boxing_in_arrays() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tuple = store.intern_type(TypeKind::Tuple(vec![
+    TupleElem {
+      ty: primitives.string,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+  ]));
+  let tuple_layout = store.layout_of(tuple);
+
+  assert!(!store.layout_is_pointer_free(tuple_layout));
+  assert_eq!(store.layout_gc_trace_kind(tuple_layout), GcTraceKind::Flat);
+  assert_eq!(store.array_elem_repr(tuple_layout), ArrayElemRepr::NeedsBoxing);
+
+  let string_layout = store.layout_of(primitives.string);
+  assert_eq!(store.array_elem_repr(string_layout), ArrayElemRepr::GcPointer);
+}
+
+#[test]
+fn layout_classification_tagged_union_requires_tag_dispatch() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let union = store.intern_type(TypeKind::Union(vec![primitives.number, primitives.string]));
+  let union_layout = store.layout_of(union);
+
+  assert!(!store.layout_is_pointer_free(union_layout));
+  assert_eq!(
+    store.layout_gc_trace_kind(union_layout),
+    GcTraceKind::RequiresTagDispatch
+  );
+  assert_eq!(store.array_elem_repr(union_layout), ArrayElemRepr::NeedsBoxing);
 }

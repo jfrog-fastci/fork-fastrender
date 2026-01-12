@@ -1,7 +1,7 @@
 use crate::display::TypeDisplay;
 use crate::ids::{NameId, ObjectId, ShapeId, SignatureId, TypeId};
 use crate::kind::{CompositeKind, TypeKind};
-use crate::layout::{GcTraceStep, Layout, LayoutId, LayoutStore};
+use crate::layout::{ArrayElemRepr, GcTraceKind, GcTraceStep, Layout, LayoutId, LayoutStore, PtrKind};
 use crate::options::TypeOptions;
 use crate::shape::{Indexer, ObjectType, Property, Shape};
 use crate::signature::{Param, Signature, TypeParamDecl};
@@ -626,6 +626,106 @@ impl TypeStore {
   /// specific tagged-union variants.
   pub fn gc_ptr_offsets(&self, layout: LayoutId) -> Vec<u32> {
     self.layouts.gc_ptr_offsets(layout)
+  }
+
+  fn layout_flat_gc_ptr_offsets(&self, layout: LayoutId) -> Option<Vec<u32>> {
+    match self.layout(layout) {
+      Layout::Scalar { .. } => Some(Vec::new()),
+      Layout::Ptr { to } => match to {
+        PtrKind::GcObject { .. }
+        | PtrKind::GcArray { .. }
+        | PtrKind::GcString
+        | PtrKind::GcAny => Some(vec![0]),
+        PtrKind::Opaque => Some(Vec::new()),
+      },
+      Layout::Struct { fields, .. } => {
+        let mut offsets = Vec::new();
+        for field in fields {
+          let child_offsets = self.layout_flat_gc_ptr_offsets(field.layout)?;
+          offsets.extend(
+            child_offsets
+              .into_iter()
+              .map(|offset| field.offset.saturating_add(offset)),
+          );
+        }
+        offsets.sort_unstable();
+        offsets.dedup();
+        Some(offsets)
+      }
+      Layout::TaggedUnion { variants, .. } => {
+        let mut reference: Option<Vec<u32>> = None;
+        for variant in variants {
+          let child_offsets = self.layout_flat_gc_ptr_offsets(variant.layout)?;
+          let mut offsets: Vec<u32> = child_offsets
+            .into_iter()
+            .map(|offset| variant.payload_offset.saturating_add(offset))
+            .collect();
+          offsets.sort_unstable();
+          offsets.dedup();
+
+          match &reference {
+            None => reference = Some(offsets),
+            Some(existing) if existing == &offsets => {}
+            Some(_) => return None,
+          }
+        }
+        Some(reference.unwrap_or_default())
+      }
+    }
+  }
+
+  /// Returns `true` if the layout contains **no GC pointers** and therefore does
+  /// not require any GC tracing.
+  ///
+  /// This is derived purely from the [`Layout`] graph (no dependence on source
+  /// insertion order).
+  pub fn layout_is_pointer_free(&self, layout: LayoutId) -> bool {
+    self.layout_gc_trace_kind(layout) == GcTraceKind::None
+  }
+
+  /// Classify the GC tracing requirements for a layout.
+  ///
+  /// Native backends currently rely on `runtime-native`'s `RtShapeDescriptor`,
+  /// which can only express **flat** pointer maps (`ptr_offsets`). Tagged unions
+  /// whose pointer slots vary by variant therefore require either:
+  /// - tag-aware tracing support in the runtime, or
+  /// - boxing (so tracing can use a flat map per box shape).
+  pub fn layout_gc_trace_kind(&self, layout: LayoutId) -> GcTraceKind {
+    match self.layout_flat_gc_ptr_offsets(layout) {
+      Some(offsets) if offsets.is_empty() => GcTraceKind::None,
+      Some(_) => GcTraceKind::Flat,
+      None => GcTraceKind::RequiresTagDispatch,
+    }
+  }
+
+  /// Determine how a `runtime-native` GC array should represent elements with
+  /// this layout.
+  ///
+  /// `runtime-native` arrays are currently limited to either:
+  /// - raw byte payloads (no interior GC pointer tracing), or
+  /// - pointer-element payloads (trace every element slot as a GC pointer).
+  ///
+  /// As a consequence, any non-pointer layout that contains interior GC pointers
+  /// (or requires tag-aware tracing) must be represented as an array of pointers
+  /// to separately-allocated boxes.
+  pub fn array_elem_repr(&self, elem_layout: LayoutId) -> ArrayElemRepr {
+    if self.layout_is_pointer_free(elem_layout) {
+      let elem = self.layout(elem_layout);
+      return ArrayElemRepr::PlainOldData {
+        elem_size: elem.size(),
+        elem_align: elem.align(),
+      };
+    }
+
+    match self.layout(elem_layout) {
+      Layout::Ptr {
+        to: PtrKind::GcObject { .. }
+          | PtrKind::GcArray { .. }
+          | PtrKind::GcString
+          | PtrKind::GcAny,
+      } => ArrayElemRepr::GcPointer,
+      _ => ArrayElemRepr::NeedsBoxing,
+    }
   }
 
   pub fn intern_shape(&self, mut shape: Shape) -> ShapeId {

@@ -209,6 +209,52 @@ impl Layout {
   }
 }
 
+/// GC traceability classification for a [`Layout`].
+///
+/// This is intentionally *coarse* and designed to drive representation decisions
+/// in native backends:
+///
+/// - `runtime-native`'s [`RtShapeDescriptor`](https://github.com/wilsonzlin/ecma-rs/blob/main/vendor/ecma-rs/docs/runtime-native.md)
+///   currently supports only a **flat** list of pointer-slot offsets
+///   (`ptr_offsets`). It cannot express variant-dependent pointer maps.
+/// - `runtime-native` arrays (`rt_alloc_array`) currently support only:
+///   - raw byte payloads (no interior pointer tracing), or
+///   - pointer-element payloads (trace every element as a GC pointer).
+///
+/// Downstream codegen should therefore treat `RequiresTagDispatch` layouts as
+/// requiring boxing (or a future tag-aware tracing scheme).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GcTraceKind {
+  /// No GC pointers and no conditional pointer maps.
+  None,
+  /// All GC pointer slots are at statically-known offsets (traceable with a
+  /// single flat offset list).
+  Flat,
+  /// GC pointer slots depend on a runtime tag/discriminant (e.g. a tagged union
+  /// where different variants contain pointers in different positions).
+  RequiresTagDispatch,
+}
+
+/// Representation strategy for `runtime-native` GC arrays (`rt_alloc_array`) for
+/// a given element layout.
+///
+/// This helper exists because the runtime currently cannot trace interior
+/// pointers in inline struct elements; only raw bytes or pointer elements are
+/// supported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ArrayElemRepr {
+  /// The element has no GC pointers and can be stored inline as raw bytes.
+  PlainOldData { elem_size: u32, elem_align: u32 },
+  /// The element is itself a GC pointer (so the array can be allocated as a
+  /// pointer-element array).
+  GcPointer,
+  /// The element contains interior pointers or requires tag-aware tracing; it
+  /// must be represented as a pointer array to separately-allocated boxes.
+  NeedsBoxing,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct LayoutStore {
   by_type: DashMap<TypeId, LayoutId>,
