@@ -1970,6 +1970,16 @@ mod tests {
   fn structured_clone_clones_regexp() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
+    // Regression test: platform-object checks in `structuredClone` must not call APIs that return
+    // `VmError::InvalidHandle` for `RegExp` objects.
+    match realm.exec_script("structuredClone(/a+/g).test('aa')") {
+      Ok(v) => assert_eq!(v, Value::Bool(true)),
+      Err(VmError::InvalidHandle { .. }) => {
+        panic!("structuredClone(/a+/g) must not throw VmError::InvalidHandle")
+      }
+      Err(err) => return Err(err),
+    }
+
     let ok = realm.exec_script(
       "(() => {\
          const r = /a+/gi;\
@@ -1977,12 +1987,11 @@ mod tests {
          if (!(c instanceof RegExp)) return false;\
          if (c.source !== r.source) return false;\
          if (c.flags !== r.flags) return false;\
-         if (structuredClone(/a+/g).test('aa') !== true) return false;\
          const r2 = /x/;\
          r2.foo = 1;\
          if (structuredClone(r2).foo !== undefined) return false;\
          return true;\
-       })()",
+        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
