@@ -213,8 +213,8 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/concat/arg-length-exceeding-integer-limit.js"
-status = "skip"
-reason = "vm-js: test262 case triggers a timeout (pathological array length / allocation)."
+status = "pass"
+reason = "vm-js implements the Array.prototype.concat max-safe-integer length guard (prevents pathological length loops)."
 
 [[expectations]]
 id = "built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js"

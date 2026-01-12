@@ -10031,10 +10031,16 @@ pub fn array_prototype_concat(
     .object_set_prototype(out, Some(intr.array_prototype()))?;
 
   let length_key = string_key(&mut scope, "length")?;
-  let mut n = 0usize;
+  // Per ECMA-262 `Array.prototype.concat`, `n` is the next insertion index and is guarded against
+  // exceeding `2^53 - 1` (`Number.MAX_SAFE_INTEGER`).
+  //
+  // Important: we must perform this check *before* iterating over `len` so pathological `length`
+  // values do not lead to O(len) loops when the spec requires an early TypeError.
+  const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991; // 2^53 - 1
+  let mut n: u64 = 0;
 
   // Per spec, concat starts with `this` and then processes each argument.
-  let mut process_item = |item: Value, n: &mut usize| -> Result<(), VmError> {
+  let mut process_item = |item: Value, n: &mut u64| -> Result<(), VmError> {
     if crate::spec_ops::is_concat_spreadable_with_host_and_hooks(vm, &mut scope, host, hooks, item)? {
       let Value::Object(source_obj) = item else {
         return Err(VmError::InvariantViolation(
@@ -10053,6 +10059,17 @@ pub fn array_prototype_concat(
         Value::Object(source_obj),
       )?;
       let source_len = to_length_usize(vm, &mut scope, host, hooks, source_len_value)?;
+      let source_len_u64 = u64::try_from(source_len).map_err(|_| VmError::OutOfMemory)?;
+
+      // ECMA-262: If n + len > 2^53 - 1, throw a TypeError exception.
+      let new_n = n
+        .checked_add(source_len_u64)
+        .ok_or(VmError::OutOfMemory)?;
+      if new_n > MAX_SAFE_INTEGER {
+        return Err(VmError::TypeError(
+          "Array.prototype.concat result length exceeds maximum safe integer",
+        ));
+      }
 
       for k in 0..source_len {
         if k % 1024 == 0 {
@@ -10086,18 +10103,23 @@ pub fn array_prototype_concat(
           let to_key = PropertyKey::from_string(to_s);
           iter_scope.create_data_property_or_throw(out, to_key, value)?;
         }
-        *n = n.checked_add(1).ok_or(VmError::OutOfMemory)?;
+        *n = (*n).checked_add(1).ok_or(VmError::OutOfMemory)?;
       }
       return Ok(());
     }
 
     // Not spreadable: append as a single element.
+    if *n >= MAX_SAFE_INTEGER {
+      return Err(VmError::TypeError(
+        "Array.prototype.concat result length exceeds maximum safe integer",
+      ));
+    }
     let mut iter_scope = scope.reborrow();
     let to_s = alloc_string_from_usize(&mut iter_scope, *n)?;
     iter_scope.push_root(Value::String(to_s))?;
     let to_key = PropertyKey::from_string(to_s);
     iter_scope.create_data_property_or_throw(out, to_key, item)?;
-    *n = n.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    *n = (*n).checked_add(1).ok_or(VmError::OutOfMemory)?;
     Ok(())
   };
 
