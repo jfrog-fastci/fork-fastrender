@@ -1,4 +1,4 @@
-// @lib: es2015
+// @lib: es5
 declare const Foo: { prototype: object };
 
 const Reflect = {
@@ -6,4 +6,3 @@ const Reflect = {
 };
 
 Reflect.defineProperty(Foo.prototype, "x", {});
-

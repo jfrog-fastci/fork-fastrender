@@ -1,4 +1,4 @@
-// @lib: es2015
+// @lib: es5
 function eval(_src: string): number {
   return 0;
 }

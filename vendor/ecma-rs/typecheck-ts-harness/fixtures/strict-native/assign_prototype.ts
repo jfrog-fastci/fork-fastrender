@@ -1,4 +1,4 @@
-// @lib: es2015
+// @lib: es5
 declare const Foo: { prototype: object };
 
 const Object = {
