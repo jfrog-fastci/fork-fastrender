@@ -1044,8 +1044,8 @@ impl ModuleGraph {
       "top-level await requires intrinsics (create a Realm first)",
     ))?;
 
-    let on_fulfilled_call = vm.register_native_call(module_tla_on_fulfilled)?;
-    let on_rejected_call = vm.register_native_call(module_tla_on_rejected)?;
+    let on_fulfilled_call = vm.module_tla_on_fulfilled_call_id()?;
+    let on_rejected_call = vm.module_tla_on_rejected_call_id()?;
 
     let on_fulfilled_name = scope.alloc_string("moduleTlaOnFulfilled")?;
     scope.push_root(Value::String(on_fulfilled_name))?;
@@ -1176,7 +1176,7 @@ fn module_id_from_native_slot(scope: &Scope<'_>, callee: GcObject) -> Result<Mod
   Ok(ModuleId::from_raw(raw))
 }
 
-fn module_tla_on_fulfilled(
+pub(crate) fn module_tla_on_fulfilled(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -1293,7 +1293,7 @@ fn module_tla_on_fulfilled(
   Ok(Value::Undefined)
 }
 
-fn module_tla_on_rejected(
+pub(crate) fn module_tla_on_rejected(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -1428,5 +1428,62 @@ fn module_namespace_getter(
     _ => Err(VmError::InvariantViolation(
       "module namespace getter slot must be a binding name or namespace object",
     )),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::microtasks::MicrotaskQueue;
+  use crate::{HeapLimits, Realm, VmOptions};
+
+  #[test]
+  fn tla_resume_callbacks_are_cached_per_vm() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let mut host = ();
+    let mut hooks = MicrotaskQueue::new();
+
+    // Create a pending promise to use as the awaited TLA promise.
+    let awaited_promise_root = {
+      let mut scope = heap.scope();
+      let cap =
+        crate::promise_ops::new_promise_capability_with_host_and_hooks(&mut vm, &mut scope, &mut host, &mut hooks)?;
+      scope.push_root(cap.promise)?;
+      scope.heap_mut().add_root(cap.promise)?
+    };
+
+    let module = ModuleId::from_raw(0);
+    let mut graph = ModuleGraph::new();
+
+    // First scheduling may register the two internal callbacks; subsequent schedules must not.
+    let before = vm.native_call_count();
+    {
+      let promise = heap
+        .get_root(awaited_promise_root)
+        .ok_or_else(VmError::invalid_handle)?;
+      let mut scope = heap.scope();
+      graph.schedule_tla_resume(&mut vm, &mut scope, &mut host, &mut hooks, module, promise)?;
+    }
+    let after_first = vm.native_call_count();
+    {
+      let promise = heap
+        .get_root(awaited_promise_root)
+        .ok_or_else(VmError::invalid_handle)?;
+      let mut scope = heap.scope();
+      graph.schedule_tla_resume(&mut vm, &mut scope, &mut host, &mut hooks, module, promise)?;
+    }
+    let after_second = vm.native_call_count();
+
+    assert_eq!(
+      after_first, after_second,
+      "schedule_tla_resume should not register new native calls after first use (native_calls: {before} -> {after_first} -> {after_second})"
+    );
+
+    heap.remove_root(awaited_promise_root);
+    realm.teardown(&mut heap);
+    Ok(())
   }
 }

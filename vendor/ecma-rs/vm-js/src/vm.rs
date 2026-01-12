@@ -335,6 +335,8 @@ pub struct Vm {
   import_meta_cache: HashMap<ModuleId, RootId>,
   template_registry: HashMap<TemplateRegistryKey, TemplateRegistryEntry>,
   async_resume_call: Option<NativeFunctionId>,
+  module_tla_on_fulfilled_call: Option<NativeFunctionId>,
+  module_tla_on_rejected_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, AsyncContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
@@ -563,6 +565,8 @@ impl Vm {
       import_meta_cache: HashMap::new(),
       template_registry: HashMap::new(),
       async_resume_call: None,
+      module_tla_on_fulfilled_call: None,
+      module_tla_on_rejected_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
       module_graph: None,
@@ -627,6 +631,29 @@ impl Vm {
     let id = self.register_native_call(crate::exec::async_resume_call)?;
     self.async_resume_call = Some(id);
     Ok(id)
+  }
+
+  pub(crate) fn module_tla_on_fulfilled_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.module_tla_on_fulfilled_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::module_graph::module_tla_on_fulfilled)?;
+    self.module_tla_on_fulfilled_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn module_tla_on_rejected_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.module_tla_on_rejected_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::module_graph::module_tla_on_rejected)?;
+    self.module_tla_on_rejected_call = Some(id);
+    Ok(id)
+  }
+
+  #[cfg(test)]
+  pub(crate) fn native_call_count(&self) -> usize {
+    self.native_calls.len()
   }
 
   pub(crate) fn insert_async_continuation(

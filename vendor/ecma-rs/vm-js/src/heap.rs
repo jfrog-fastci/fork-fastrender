@@ -3580,17 +3580,6 @@ impl Heap {
     }
   }
 
-  pub(crate) fn proxy_revoke(&mut self, obj: GcObject) -> Result<(), VmError> {
-    match self.get_heap_object_mut(obj.0)? {
-      HeapObject::Proxy(p) => {
-        p.target = None;
-        p.handler = None;
-        Ok(())
-      }
-      _ => Err(VmError::invalid_handle()),
-    }
-  }
-
   /// Returns the captured native slots for a function object.
   ///
   /// If the function has no native slots, this returns an empty slice.
@@ -3956,29 +3945,6 @@ impl<'a> Scope<'a> {
 
     let obj = HeapObject::Object(JsObject::new(None));
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
-  }
-
-  /// Allocates a new Proxy object with `[[ProxyTarget]] = target` and `[[ProxyHandler]] = handler`.
-  pub fn alloc_proxy(&mut self, target: GcObject, handler: GcObject) -> Result<GcObject, VmError> {
-    if !self.heap.is_valid_object(target) || !self.heap.is_valid_object(handler) {
-      return Err(VmError::invalid_handle());
-    }
-
-    // Root inputs during allocation in case `ensure_can_allocate` or slot-table growth triggers GC.
-    let mut scope = self.reborrow();
-    let roots = [Value::Object(target), Value::Object(handler)];
-    scope.push_roots(&roots)?;
-
-    // Proxies have no heap-owned payload allocations (their internal slots are stored inline in the
-    // heap slot table).
-    let new_bytes = 0;
-    scope.heap.ensure_can_allocate(new_bytes)?;
-
-    let obj = HeapObject::Proxy(JsProxy {
-      target: Some(target),
-      handler: Some(handler),
-    });
-    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
   /// Allocates an ordinary object with the provided `[[Prototype]]` and own properties.
@@ -4879,7 +4845,6 @@ enum HeapObject {
   Function(JsFunction),
   Proxy(JsProxy),
   Env(EnvRecord),
-  Proxy(JsProxy),
   Promise(JsPromise),
 }
 
@@ -4894,7 +4859,6 @@ impl Trace for HeapObject {
       HeapObject::Function(f) => f.trace(tracer),
       HeapObject::Proxy(p) => p.trace(tracer),
       HeapObject::Env(e) => e.trace(tracer),
-      HeapObject::Proxy(p) => p.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
     }
   }
@@ -5238,23 +5202,6 @@ impl Trace for JsPromise {
       for reaction in reactions.iter() {
         reaction.trace(tracer);
       }
-    }
-  }
-}
-
-#[derive(Debug)]
-struct JsProxy {
-  target: Option<GcObject>,
-  handler: Option<GcObject>,
-}
-
-impl Trace for JsProxy {
-  fn trace(&self, tracer: &mut Tracer<'_>) {
-    if let Some(target) = self.target {
-      tracer.trace_value(Value::Object(target));
-    }
-    if let Some(handler) = self.handler {
-      tracer.trace_value(Value::Object(handler));
     }
   }
 }
