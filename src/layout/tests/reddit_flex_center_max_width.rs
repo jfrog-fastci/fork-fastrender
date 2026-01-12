@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{AlignItems, BoxSizing, FlexDirection};
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::{ComputedStyle, FragmentNode};
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{AlignItems, BoxSizing, FlexDirection};
+use crate::style::values::Length;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::{ComputedStyle, FragmentNode};
 
 fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
   match &fragment.content {

@@ -1,12 +1,12 @@
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::Display;
-use fastrender::style::position::Position;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::{BoxNode, ReplacedType, SvgContent};
-use fastrender::Size;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::Display;
+use crate::style::position::Position;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::{BoxNode, ReplacedType, SvgContent};
+use crate::Size;
 use std::sync::Arc;
 
 fn assert_approx_eq(actual: f32, expected: f32) {

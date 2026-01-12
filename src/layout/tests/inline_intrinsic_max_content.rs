@@ -1,9 +1,9 @@
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::Display;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextFactory;
-use fastrender::FormattingContextType;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::Display;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextFactory;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn default_style() -> Arc<ComputedStyle> {

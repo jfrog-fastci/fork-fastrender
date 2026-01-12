@@ -1,14 +1,14 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::AlignItems;
-use fastrender::style::types::GridTrack;
-use fastrender::style::types::WritingMode;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::FormattingContextType;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::display::Display;
+use crate::style::types::AlignItems;
+use crate::style::types::GridTrack;
+use crate::style::types::WritingMode;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -22,9 +22,9 @@ fn assert_approx(val: f32, expected: f32, msg: &str) {
 }
 
 fn find_first_fragment_with_id<'a>(
-  fragment: &'a fastrender::FragmentNode,
+  fragment: &'a crate::FragmentNode,
   id: usize,
-) -> Option<&'a fastrender::FragmentNode> {
+) -> Option<&'a crate::FragmentNode> {
   if fragment
     .box_id()
     .is_some_and(|fragment_id| fragment_id == id)

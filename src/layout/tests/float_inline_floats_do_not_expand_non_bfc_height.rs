@@ -1,15 +1,15 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::float::Float;
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::ReplacedType;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::FormattingContextType;
-use fastrender::FragmentContent;
-use fastrender::Size;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::display::Display;
+use crate::style::float::Float;
+use crate::style::values::Length;
+use crate::tree::box_tree::ReplacedType;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::FormattingContextType;
+use crate::FragmentContent;
+use crate::Size;
 use std::sync::Arc;
 
 #[test]
@@ -82,7 +82,7 @@ fn inline_level_float_does_not_expand_non_bfc_block_height() {
   );
 
   // The float should still affect line box placement for the following block.
-  fn first_line_x(fragment: &fastrender::FragmentNode, acc_x: f32) -> Option<f32> {
+  fn first_line_x(fragment: &crate::FragmentNode, acc_x: f32) -> Option<f32> {
     if matches!(fragment.content, FragmentContent::Line { .. }) {
       return Some(acc_x + fragment.bounds.x());
     }

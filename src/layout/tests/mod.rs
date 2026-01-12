@@ -1,7 +1,7 @@
-//! Layout unit tests migrated from `tests/layout/`.
+//! Layout unit tests.
 //
-// Tests that do not mention `FastRender` were moved under `src/` so they run as unit tests (single
-// lib test binary) instead of separate integration test binaries.
+//! These tests were migrated from `tests/layout/` (the unit-style tests that do not
+//! exercise the public `FastRender` API).
 
 mod abspos_aspect_ratio_auto_auto_non_replaced;
 mod abspos_auto_height_intrinsic_remeasure_clamped_width;
@@ -142,6 +142,7 @@ mod float_grid_container_uses_own_formatting_context;
 mod float_inline_floats_do_not_expand_non_bfc_height;
 mod float_intrinsic_includes_floats;
 mod float_logical_sides;
+mod float_range_scan_cache;
 mod float_shrink_to_min;
 mod form_control_baseline;
 mod fragmentation_axes;
@@ -272,9 +273,13 @@ mod test_absolute;
 mod test_baseline;
 mod test_grid_margins;
 mod test_inline_float;
+mod test_locks;
 mod test_positioned;
 
 fn layout_parallel_debug_lock() -> parking_lot::MutexGuard<'static, ()> {
-  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-  LOCK.lock()
+  test_locks::layout_parallel_debug_lock()
+}
+
+fn layout_profile_lock() -> parking_lot::MutexGuard<'static, ()> {
+  test_locks::layout_profile_lock()
 }

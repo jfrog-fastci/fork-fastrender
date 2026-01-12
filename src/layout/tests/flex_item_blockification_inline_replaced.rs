@@ -1,12 +1,12 @@
-use fastrender::css::parser::extract_css;
-use fastrender::dom;
-use fastrender::style::display::Display;
-use fastrender::style::media::MediaContext;
-use fastrender::style::{cascade::apply_styles_with_media, ComputedStyle};
-use fastrender::tree::box_generation::generate_box_tree_with_anonymous_fixup;
-use fastrender::tree::box_tree::{AnonymousType, BoxNode, BoxType};
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::{LayoutConfig, LayoutEngine, Size};
+use crate::css::parser::extract_css;
+use crate::dom;
+use crate::style::display::Display;
+use crate::style::media::MediaContext;
+use crate::style::{cascade::apply_styles_with_media, ComputedStyle};
+use crate::tree::box_generation::generate_box_tree_with_anonymous_fixup;
+use crate::tree::box_tree::{AnonymousType, BoxNode, BoxType};
+use crate::tree::fragment_tree::FragmentNode;
+use crate::{LayoutConfig, LayoutEngine, Size};
 
 fn find_first_flex_box<'a>(node: &'a BoxNode) -> Option<&'a BoxNode> {
   if node.style.display == Display::Flex {

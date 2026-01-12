@@ -1,18 +1,18 @@
-use fastrender::error::RenderStage;
-use fastrender::layout::engine::{
+use crate::error::RenderStage;
+use crate::layout::engine::{
   enable_layout_parallel_debug_counters, layout_parallel_debug_counters,
   reset_layout_parallel_debug_counters, DEFAULT_LAYOUT_MIN_FANOUT,
 };
-use fastrender::layout::formatting_context::LayoutError;
-use fastrender::render_control::{RenderDeadline, StageGuard};
-use fastrender::snapshot_fragment_tree;
-use fastrender::style::display::Display;
-use fastrender::style::position::Position;
-use fastrender::style::types::{ContentVisibility, InsetValue};
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::text::font_loader::FontContext;
-use fastrender::{
+use crate::layout::formatting_context::LayoutError;
+use crate::render_control::{RenderDeadline, StageGuard};
+use crate::snapshot_fragment_tree;
+use crate::style::display::Display;
+use crate::style::position::Position;
+use crate::style::types::{ContentVisibility, InsetValue};
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::text::font_loader::FontContext;
+use crate::{
   BoxNode, BoxTree, FormattingContextType, FragmentNodeSnapshot, FragmentTreeSnapshot,
   LayoutConfig, LayoutEngine, LayoutParallelism, Size, Transform,
 };
@@ -21,7 +21,7 @@ use std::sync::Arc;
 fn available_threads() -> usize {
   // Keep test pools small even on beefy CI machines so we don't allocate excessive stacks or spawn
   // huge pools when `available_parallelism()` sees host CPUs outside a cgroup quota.
-  fastrender::system::cpu_budget().min(4).max(2)
+  crate::system::cpu_budget().min(4).max(2)
 }
 
 fn approx(a: f32, b: f32) -> bool {
@@ -29,10 +29,10 @@ fn approx(a: f32, b: f32) -> bool {
 }
 
 fn assert_content_eq(
-  a: &fastrender::tree::fragment_tree::FragmentContent,
-  b: &fastrender::tree::fragment_tree::FragmentContent,
+  a: &crate::tree::fragment_tree::FragmentContent,
+  b: &crate::tree::fragment_tree::FragmentContent,
 ) {
-  use fastrender::tree::fragment_tree::FragmentContent::*;
+  use crate::tree::fragment_tree::FragmentContent::*;
   match (a, b) {
     (Block { box_id: a_id }, Block { box_id: b_id }) => assert_eq!(a_id, b_id),
     (
@@ -87,7 +87,7 @@ fn assert_content_eq(
   }
 }
 
-fn assert_fragment_eq(a: &fastrender::FragmentNode, b: &fastrender::FragmentNode) {
+fn assert_fragment_eq(a: &crate::FragmentNode, b: &crate::FragmentNode) {
   assert!(approx(a.bounds.x(), b.bounds.x()));
   assert!(approx(a.bounds.y(), b.bounds.y()));
   assert!(approx(a.bounds.width(), b.bounds.width()));
@@ -108,7 +108,7 @@ fn assert_fragment_eq(a: &fastrender::FragmentNode, b: &fastrender::FragmentNode
   }
 }
 
-fn assert_trees_match(a: &fastrender::FragmentTree, b: &fastrender::FragmentTree) {
+fn assert_trees_match(a: &crate::FragmentTree, b: &crate::FragmentTree) {
   assert!(approx(a.viewport_size().width, b.viewport_size().width));
   assert!(approx(a.viewport_size().height, b.viewport_size().height));
   assert_eq!(a.additional_fragments.len(), b.additional_fragments.len());
@@ -437,7 +437,7 @@ fn build_mixed_layout() -> BoxTree {
 }
 
 fn build_grid(rows: usize, cols: usize) -> BoxTree {
-  use fastrender::style::types::GridAutoFlow;
+  use crate::style::types::GridAutoFlow;
 
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;
@@ -543,7 +543,7 @@ fn find_fragment_by_box_id<'a>(
   node: &'a FragmentNodeSnapshot,
   box_id: usize,
 ) -> Option<&'a FragmentNodeSnapshot> {
-  use fastrender::debug::snapshot::FragmentContentSnapshot;
+  use crate::debug::snapshot::FragmentContentSnapshot;
   let matches = match &node.content {
     FragmentContentSnapshot::Block { box_id: Some(id) }
     | FragmentContentSnapshot::Inline {
@@ -947,7 +947,7 @@ fn parallel_layout_propagates_active_stage_into_workers() {
   // This ensures we exercise stage propagation for layout parallelism rather than just deadlines.
   let cancel = Arc::new(|| {
     rayon::current_thread_index().is_some()
-      && fastrender::render_control::active_stage() != Some(RenderStage::Layout)
+      && crate::render_control::active_stage() != Some(RenderStage::Layout)
   });
   let deadline = RenderDeadline::new(None, Some(cancel));
 

@@ -1,11 +1,11 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::float::Float;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FragmentContent;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::style::display::Display;
+use crate::style::float::Float;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FragmentContent;
 use std::sync::Arc;
 
 /// Inline-level floats should still participate in shrink-to-fit and honor min/max
@@ -25,7 +25,7 @@ fn inline_float_honors_min_width() {
   let root = BoxNode::new_inline(text_style, vec![float_node, text]);
 
   let constraints = LayoutConstraints::definite_width(50.0); // narrower than the float min-width
-  let mut float_ctx = fastrender::layout::float_context::FloatContext::new(50.0);
+  let mut float_ctx = crate::layout::float_context::FloatContext::new(50.0);
   let ifc = InlineFormattingContext::new();
   let fragment = ifc
     .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0, 0.0)

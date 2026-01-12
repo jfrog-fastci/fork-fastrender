@@ -1,11 +1,11 @@
-use fastrender::geometry::Size;
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{BoxNode, ComputedStyle, FontContext};
+use crate::geometry::Size;
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::values::Length;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{BoxNode, ComputedStyle, FontContext};
 use std::sync::Arc;
 
 fn line_count(fragment: &FragmentNode) -> usize {

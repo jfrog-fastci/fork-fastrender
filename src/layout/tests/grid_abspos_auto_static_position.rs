@@ -1,16 +1,16 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::position::Position;
-use fastrender::style::types::AlignContent;
-use fastrender::style::types::Direction;
-use fastrender::style::types::GridTrack;
-use fastrender::style::types::JustifyContent;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::BoxNode;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::position::Position;
+use crate::style::types::AlignContent;
+use crate::style::types::Direction;
+use crate::style::types::GridTrack;
+use crate::style::types::JustifyContent;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::BoxNode;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -21,9 +21,9 @@ fn assert_approx(val: f32, expected: f32, msg: &str) {
 }
 
 fn find_fragment<'a>(
-  fragment: &'a fastrender::tree::fragment_tree::FragmentNode,
+  fragment: &'a crate::tree::fragment_tree::FragmentNode,
   id: usize,
-) -> &'a fastrender::tree::fragment_tree::FragmentNode {
+) -> &'a crate::tree::fragment_tree::FragmentNode {
   fragment
     .iter_fragments()
     .find(|node| node.box_id() == Some(id))

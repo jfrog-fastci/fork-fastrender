@@ -1,11 +1,11 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::float::Float;
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType, Size};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::display::Display;
+use crate::style::float::Float;
+use crate::style::values::Length;
+use crate::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
+use crate::tree::fragment_tree::FragmentNode;
+use crate::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType, Size};
 use std::sync::Arc;
 
 fn collect_by_size<'a>(

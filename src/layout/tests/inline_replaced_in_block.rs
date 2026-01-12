@@ -1,10 +1,10 @@
-use fastrender::style::display::Display;
-use fastrender::style::types::LineHeight;
-use fastrender::style::values::Length;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{
+use crate::style::display::Display;
+use crate::style::types::LineHeight;
+use crate::style::values::Length;
+use crate::text::font_loader::FontContext;
+use crate::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{
   BoxNode, BoxTree, ComputedStyle, FontConfig, FormattingContextType, LayoutConfig, LayoutEngine,
   Size,
 };

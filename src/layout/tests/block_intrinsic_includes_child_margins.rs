@@ -1,9 +1,9 @@
-use fastrender::css::properties::parse_length;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::{FormattingContext, IntrinsicSizingMode};
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::BoxNode;
+use crate::css::properties::parse_length;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::{FormattingContext, IntrinsicSizingMode};
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::BoxNode;
 use std::sync::Arc;
 
 #[test]

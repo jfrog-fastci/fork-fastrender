@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::ContainerType;
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, BoxTree, ComputedStyle, FormattingContext};
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::ContainerType;
+use crate::style::values::Length;
+use crate::{BoxNode, BoxTree, ComputedStyle, FormattingContext};
 
 const EPS: f32 = 0.01;
 
@@ -34,7 +34,7 @@ fn layout_parent_with_container_type(container_type: ContainerType) -> (f32, f32
   let mut outer_style = ComputedStyle::default();
   outer_style.display = Display::Block;
   outer_style.container_type = container_type;
-  fastrender::style::properties::apply_container_type_implied_containment(&mut outer_style);
+  crate::style::properties::apply_container_type_implied_containment(&mut outer_style);
   let outer = BoxNode::new_block(
     Arc::new(outer_style),
     FormattingContextType::Block,

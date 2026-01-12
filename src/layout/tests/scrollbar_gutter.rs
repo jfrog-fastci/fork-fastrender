@@ -1,13 +1,13 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::utils::resolve_scrollbar_width;
-use fastrender::style::types::Overflow;
-use fastrender::style::types::ScrollbarGutter;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::FormattingContextType;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::utils::resolve_scrollbar_width;
+use crate::style::types::Overflow;
+use crate::style::types::ScrollbarGutter;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn layout_with_container(style: ComputedStyle) -> (f32, f32) {

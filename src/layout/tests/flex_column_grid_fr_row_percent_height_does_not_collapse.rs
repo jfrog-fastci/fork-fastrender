@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::AvailableSpace;
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::types::AlignItems;
-use fastrender::style::types::FlexDirection;
-use fastrender::style::types::GridTrack;
-use fastrender::style::types::Overflow;
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::ComputedStyle;
+use crate::layout::constraints::AvailableSpace;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::types::AlignItems;
+use crate::style::types::FlexDirection;
+use crate::style::types::GridTrack;
+use crate::style::types::Overflow;
+use crate::style::values::Length;
+use crate::tree::box_tree::BoxNode;
+use crate::ComputedStyle;
 
 #[test]
 fn flex_column_grid_fr_row_percent_height_does_not_collapse() {

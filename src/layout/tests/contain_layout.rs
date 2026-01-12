@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::BorderStyle;
-use fastrender::style::types::Containment;
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::BorderStyle;
+use crate::style::types::Containment;
+use crate::style::values::Length;
+use crate::tree::box_tree::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
 
 fn container_with_child(containment: Containment) -> BoxNode {
   let mut child_style = ComputedStyle::default();

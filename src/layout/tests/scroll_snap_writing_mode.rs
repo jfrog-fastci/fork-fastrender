@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use fastrender::geometry::{Rect, Size};
-use fastrender::style::types::{
+use crate::geometry::{Rect, Size};
+use crate::style::types::{
   Direction, ScrollSnapAlign, ScrollSnapAxis, ScrollSnapStrictness, WritingMode,
 };
-use fastrender::{ComputedStyle, FragmentContent, FragmentNode, FragmentTree};
+use crate::{ComputedStyle, FragmentContent, FragmentNode, FragmentTree};
 
 fn snap_target_y(writing_mode: WritingMode, direction: Direction, align: ScrollSnapAlign) -> f32 {
   let mut container_style = ComputedStyle::default();

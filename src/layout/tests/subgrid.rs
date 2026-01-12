@@ -1,18 +1,18 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::Display;
-use fastrender::style::types::AlignItems;
-use fastrender::style::types::AspectRatio;
-use fastrender::style::types::Direction;
-use fastrender::style::types::GridTrack;
-use fastrender::style::types::JustifyContent;
-use fastrender::style::types::WritingMode;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::FormattingContextType;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::Display;
+use crate::style::types::AlignItems;
+use crate::style::types::AspectRatio;
+use crate::style::types::Direction;
+use crate::style::types::GridTrack;
+use crate::style::types::JustifyContent;
+use crate::style::types::WritingMode;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::FormattingContextType;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -31,7 +31,7 @@ fn synthesize_area_line_names(style: &mut ComputedStyle) {
     return;
   }
   if let Some(bounds) =
-    fastrender::style::grid::validate_area_rectangles(&style.grid_template_areas)
+    crate::style::grid::validate_area_rectangles(&style.grid_template_areas)
   {
     let ensure_line = |lines: &mut Vec<Vec<String>>,
                        names: &mut HashMap<String, Vec<usize>>,

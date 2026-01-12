@@ -1,12 +1,12 @@
-use fastrender::css::properties::parse_length;
-use fastrender::layout::constraints::AvailableSpace;
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::BoxNode;
+use crate::css::properties::parse_length;
+use crate::layout::constraints::AvailableSpace;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::BoxNode;
 use std::sync::Arc;
 
 #[test]

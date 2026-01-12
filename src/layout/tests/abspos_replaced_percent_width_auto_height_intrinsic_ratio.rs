@@ -1,5 +1,5 @@
-use fastrender::geometry::{Point, Size};
-use fastrender::{
+use crate::geometry::{Point, Size};
+use crate::{
   AbsoluteLayout, AbsoluteLayoutInput, ContainingBlock, EdgeOffsets, LengthOrAuto, Position,
   PositionedStyle,
 };

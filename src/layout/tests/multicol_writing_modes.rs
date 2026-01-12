@@ -1,12 +1,12 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{ColumnFill, WritingMode};
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::FormattingContext;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{ColumnFill, WritingMode};
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::FormattingContext;
 use std::sync::Arc;
 
 fn find_fragment<'a>(fragment: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {

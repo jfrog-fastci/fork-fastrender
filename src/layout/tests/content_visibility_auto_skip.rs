@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{ContainIntrinsicSizeAxis, ContentVisibility};
-use fastrender::style::values::Length;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::{ComputedStyle, FormattingContext, Size};
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{ContainIntrinsicSizeAxis, ContentVisibility};
+use crate::style::values::Length;
+use crate::text::font_loader::FontContext;
+use crate::tree::box_tree::BoxNode;
+use crate::{ComputedStyle, FormattingContext, Size};
 
 fn block_with_style(style: ComputedStyle, children: Vec<BoxNode>) -> BoxNode {
   BoxNode::new_block(Arc::new(style), FormattingContextType::Block, children)

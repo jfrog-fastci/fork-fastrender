@@ -1,15 +1,15 @@
-use fastrender::layout::constraints::AvailableSpace;
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::types::FlexDirection;
-use fastrender::style::types::IntrinsicSizeKeyword;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::{BoxNode, ReplacedType};
-use fastrender::{FragmentContent, FragmentNode, Size};
+use crate::layout::constraints::AvailableSpace;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::types::FlexDirection;
+use crate::style::types::IntrinsicSizeKeyword;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::{BoxNode, ReplacedType};
+use crate::{FragmentContent, FragmentNode, Size};
 use std::sync::Arc;
 
 fn find_fragment_by_box_id<'a>(

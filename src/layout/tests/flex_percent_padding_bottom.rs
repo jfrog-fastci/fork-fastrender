@@ -1,10 +1,10 @@
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::FormattingContext;
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::BoxNode;
+use crate::FormattingContext;
 use std::sync::Arc;
 
 #[test]
@@ -21,7 +21,7 @@ fn flex_column_percent_padding_bottom_resolves_against_container_width_once() {
   // a box height of 200px for `padding-bottom:50%` instead of the correct 100px.
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
-  container_style.flex_direction = fastrender::style::types::FlexDirection::Column;
+  container_style.flex_direction = crate::style::types::FlexDirection::Column;
   container_style.width = Some(Length::px(200.0));
 
   let mut child_style = ComputedStyle::default();

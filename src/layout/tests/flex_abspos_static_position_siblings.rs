@@ -1,13 +1,13 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::position::Position;
-use fastrender::style::types::JustifyContent;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::BoxNode;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::position::Position;
+use crate::style::types::JustifyContent;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::BoxNode;
 use std::sync::Arc;
 
 fn abspos_child(order: i32) -> BoxNode {
@@ -49,7 +49,7 @@ fn flex_container(children: Vec<BoxNode>) -> BoxNode {
   BoxNode::new_block(Arc::new(style), FormattingContextType::Flex, children)
 }
 
-fn abspos_x(fragment: &fastrender::tree::fragment_tree::FragmentNode) -> f32 {
+fn abspos_x(fragment: &crate::tree::fragment_tree::FragmentNode) -> f32 {
   fragment
     .children
     .iter()
@@ -64,7 +64,7 @@ fn abspos_x(fragment: &fastrender::tree::fragment_tree::FragmentNode) -> f32 {
     .x()
 }
 
-fn abspos_x_by_order(fragment: &fastrender::tree::fragment_tree::FragmentNode, order: i32) -> f32 {
+fn abspos_x_by_order(fragment: &crate::tree::fragment_tree::FragmentNode, order: i32) -> f32 {
   fragment
     .children
     .iter()

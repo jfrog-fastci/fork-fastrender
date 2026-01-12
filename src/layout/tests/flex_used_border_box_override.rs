@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, ComputedStyle, FormattingContext};
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::values::Length;
+use crate::{BoxNode, ComputedStyle, FormattingContext};
 
 const EPS: f32 = 0.01;
 

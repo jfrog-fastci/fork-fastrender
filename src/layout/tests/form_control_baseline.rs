@@ -1,13 +1,13 @@
-use fastrender::style::display::Display;
-use fastrender::style::types::Appearance;
-use fastrender::text::caret::CaretAffinity;
-use fastrender::text::font_db::FontConfig;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::box_tree::{
+use crate::style::display::Display;
+use crate::style::types::Appearance;
+use crate::text::caret::CaretAffinity;
+use crate::text::font_db::FontConfig;
+use crate::text::font_loader::FontContext;
+use crate::tree::box_tree::{
   FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem, TextControlKind,
 };
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{
   BoxNode, BoxTree, ComputedStyle, FormattingContextType, LayoutConfig, LayoutEngine, Size,
 };
 use std::sync::Arc;

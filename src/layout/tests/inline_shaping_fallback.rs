@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use fastrender::css::types::{FontFaceRule, FontFaceSource};
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::layout::formatting_context::LayoutError;
-use fastrender::resource::FetchedResource;
-use fastrender::text::font_db::FontDatabase;
-use fastrender::text::font_loader::{FontContext, FontFetcher, WebFontPolicy};
-use fastrender::{
+use crate::css::types::{FontFaceRule, FontFaceSource};
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::layout::formatting_context::LayoutError;
+use crate::resource::FetchedResource;
+use crate::text::font_db::FontDatabase;
+use crate::text::font_loader::{FontContext, FontFetcher, WebFontPolicy};
+use crate::{
   BoxNode, ComputedStyle, FormattingContext, FormattingContextType, FragmentContent,
 };
 
@@ -16,7 +16,7 @@ struct FixtureFontFetcher {
 }
 
 impl FontFetcher for FixtureFontFetcher {
-  fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> fastrender::Result<FetchedResource> {
+  fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> crate::Result<FetchedResource> {
     Ok(FetchedResource::with_final_url(
       self.font.clone(),
       Some("font/ttf".to_string()),
@@ -25,7 +25,7 @@ impl FontFetcher for FixtureFontFetcher {
   }
 }
 
-fn find_first_text_fragment(node: &fastrender::FragmentNode) -> Option<&fastrender::FragmentNode> {
+fn find_first_text_fragment(node: &crate::FragmentNode) -> Option<&crate::FragmentNode> {
   if matches!(node.content, FragmentContent::Text { .. }) {
     return Some(node);
   }
@@ -76,7 +76,7 @@ fn inline_layout_degrades_gracefully_when_shaping_fails() {
   let ifc = InlineFormattingContext::with_font_context(font_context);
   let fragment = match ifc.layout(
     &root,
-    &fastrender::LayoutConstraints::definite(200.0, 100.0),
+    &crate::LayoutConstraints::definite(200.0, 100.0),
   ) {
     Ok(fragment) => fragment,
     Err(LayoutError::MissingContext(msg)) => {

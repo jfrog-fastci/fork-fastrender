@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use fastrender::geometry::{Point, Rect, Size};
-use fastrender::layout::fragmentation::{fragment_tree, FragmentationOptions};
-use fastrender::scroll::{apply_scroll_snap, ScrollState};
-use fastrender::style::types::{ScrollSnapAlign, ScrollSnapAxis, ScrollSnapStrictness};
-use fastrender::{ComputedStyle, FragmentContent, FragmentNode, FragmentTree};
+use crate::geometry::{Point, Rect, Size};
+use crate::layout::fragmentation::{fragment_tree, FragmentationOptions};
+use crate::scroll::{apply_scroll_snap, ScrollState};
+use crate::style::types::{ScrollSnapAlign, ScrollSnapAxis, ScrollSnapStrictness};
+use crate::{ComputedStyle, FragmentContent, FragmentNode, FragmentTree};
 
 #[test]
 fn scroll_snap_targets_include_fragment_offsets() {

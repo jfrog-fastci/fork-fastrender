@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use fastrender::geometry::Size;
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::factory::FormattingContextFactory;
-use fastrender::layout::contexts::positioned::ContainingBlock;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::ComputedStyle;
+use crate::geometry::Size;
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::factory::FormattingContextFactory;
+use crate::layout::contexts::positioned::ContainingBlock;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::text::font_loader::FontContext;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::ComputedStyle;
 
 #[test]
 fn running_position_creates_anchor_snapshot() {

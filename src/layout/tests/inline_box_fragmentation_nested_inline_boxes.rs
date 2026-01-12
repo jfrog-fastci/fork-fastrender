@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::style::display::FormattingContextType;
-use fastrender::text::font_db::FontConfig;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{BoxNode, ComputedStyle, FormattingContext};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::style::display::FormattingContextType;
+use crate::text::font_db::FontConfig;
+use crate::text::font_loader::FontContext;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{BoxNode, ComputedStyle, FormattingContext};
 
 fn collect_text(fragment: &FragmentNode, out: &mut String) {
   match &fragment.content {
@@ -39,7 +39,7 @@ fn inline_box_fragmentation_splits_nested_inline_boxes() {
 
   // <span><em>Vogue</em>’s 55 Best Dressed People of 2025</span>
   let mut em_style = (*style).clone();
-  em_style.font_style = fastrender::style::types::FontStyle::Italic;
+  em_style.font_style = crate::style::types::FontStyle::Italic;
   let em_style = Arc::new(em_style);
 
   let em = BoxNode::new_inline(

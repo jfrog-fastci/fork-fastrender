@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::{AlignItems, AspectRatio, FlexDirection, FlexWrap};
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::style::display::Display;
+use crate::style::types::{AlignItems, AspectRatio, FlexDirection, FlexWrap};
+use crate::style::values::Length;
+use crate::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
 
 #[test]
 fn flex_multiline_auto_height_includes_lines_after_flex_grow_with_aspect_ratio() {

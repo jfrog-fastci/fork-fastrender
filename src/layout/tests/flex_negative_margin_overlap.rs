@@ -1,10 +1,10 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{FlexDirection, JustifyContent};
-use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::{BoxNode, ComputedStyle, FormattingContext};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{FlexDirection, JustifyContent};
+use crate::style::values::Length;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::{BoxNode, ComputedStyle, FormattingContext};
 use std::sync::Arc;
 
 #[test]

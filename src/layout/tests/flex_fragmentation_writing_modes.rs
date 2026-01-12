@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{
   AlignContent, AlignItems, FlexDirection, FlexWrap, JustifyContent, WritingMode,
 };
-use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{BoxNode, BoxTree, ComputedStyle, LayoutConfig, LayoutEngine, Size};
+use crate::style::values::Length;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{BoxNode, BoxTree, ComputedStyle, LayoutConfig, LayoutEngine, Size};
 
 fn fragments_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Vec<&'a FragmentNode> {
   let mut out = Vec::new();

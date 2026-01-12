@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
-use fastrender::css::types::{Declaration, PropertyName, PropertyValue};
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::position::Position;
-use fastrender::style::position_try::PositionTryRegistry;
-use fastrender::style::types::{AlignItems, PositionAnchor, PositionArea, WritingMode};
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::ComputedStyle;
+use crate::css::types::{Declaration, PropertyName, PropertyValue};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::position::Position;
+use crate::style::position_try::PositionTryRegistry;
+use crate::style::types::{AlignItems, PositionAnchor, PositionArea, WritingMode};
+use crate::style::values::Length;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::ComputedStyle;
 
 fn find_fragment_by_box_id<'a>(
   fragment: &'a FragmentNode,

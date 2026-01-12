@@ -1,14 +1,14 @@
-use fastrender::geometry::Size;
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::BoxNode;
+use crate::geometry::Size;
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::BoxNode;
 use std::sync::Arc;
 
-fn max_descendant_right(fragment: &fastrender::tree::fragment_tree::FragmentNode) -> f32 {
+fn max_descendant_right(fragment: &crate::tree::fragment_tree::FragmentNode) -> f32 {
   fragment
     .iter_fragments()
     .map(|f| f.bounds.max_x())

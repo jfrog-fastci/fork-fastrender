@@ -1,14 +1,14 @@
-use fastrender::geometry::{Point, Rect, Size};
-use fastrender::scroll::{
+use crate::geometry::{Point, Rect, Size};
+use crate::scroll::{
   apply_scroll_snap, ScrollMetadata, ScrollSnapContainer, ScrollSnapTarget, ScrollState,
 };
-use fastrender::style::types::{ScrollBehavior, ScrollSnapStop, ScrollSnapStrictness};
-use fastrender::{FragmentNode, FragmentTree};
+use crate::style::types::{ScrollBehavior, ScrollSnapStop, ScrollSnapStrictness};
+use crate::{FragmentNode, FragmentTree};
 
 fn run_snap_with_targets(
   targets_x: Vec<f32>,
   scroll_x: f32,
-) -> fastrender::scroll::ScrollSnapResult {
+) -> crate::scroll::ScrollSnapResult {
   let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 300.0, 100.0), vec![]);
   let viewport = Size::new(100.0, 100.0);
   let mut tree = FragmentTree::with_viewport(root, viewport);

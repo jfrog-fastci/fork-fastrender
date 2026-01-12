@@ -1,8 +1,8 @@
-use fastrender::style::types::LineHeight;
-use fastrender::text::font_db::FontConfig;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{
+use crate::style::types::LineHeight;
+use crate::text::font_db::FontConfig;
+use crate::text::font_loader::FontContext;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{
   BoxNode, BoxTree, ComputedStyle, Display, Float, FormattingContextType, LayoutConfig,
   LayoutEngine, Length, Rgba, Size,
 };

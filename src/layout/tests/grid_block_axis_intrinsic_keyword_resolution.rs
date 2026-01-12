@@ -1,11 +1,11 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::{
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::style::display::Display;
+use crate::style::types::{
   AlignContent, FlexDirection, GridTrack, IntrinsicSizeKeyword, JustifyContent,
 };
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
+use crate::style::values::Length;
+use crate::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
 use std::sync::Arc;
 
 #[test]

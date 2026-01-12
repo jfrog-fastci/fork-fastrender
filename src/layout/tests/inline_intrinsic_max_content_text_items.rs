@@ -1,10 +1,10 @@
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::Display;
-use fastrender::style::types::FontWeight;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextFactory;
-use fastrender::FormattingContextType;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::Display;
+use crate::style::types::FontWeight;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextFactory;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn block_container(children: Vec<BoxNode>) -> BoxNode {

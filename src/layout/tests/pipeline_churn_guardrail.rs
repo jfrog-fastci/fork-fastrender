@@ -10,17 +10,17 @@
 
 use std::sync::Arc;
 
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::layout::taffy_integration::{taffy_perf_counters, TaffyPerfCountersGuard};
-use fastrender::style::display::Display;
-use fastrender::style::position::Position;
-use fastrender::style::types::InsetValue;
-use fastrender::style::values::Length;
-use fastrender::text::ShapingPipeline;
-use fastrender::{
-  BoxNode, BoxTree, ComputedStyle, FontContext, FormattingContextFactory, FormattingContextType,
-  IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::layout::taffy_integration::{taffy_perf_counters, TaffyPerfCountersGuard};
+use crate::style::display::Display;
+use crate::style::position::Position;
+use crate::style::types::InsetValue;
+use crate::style::values::Length;
+use crate::text::ShapingPipeline;
+use crate::{
+  BoxNode, BoxTree, ComputedStyle, FontContext, FormattingContext, FormattingContextFactory,
+  FormattingContextType, IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
 };
 
 #[test]

@@ -1,10 +1,10 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::{Direction, FlexDirection, JustifyContent, WritingMode};
-use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::style::display::Display;
+use crate::style::types::{Direction, FlexDirection, JustifyContent, WritingMode};
+use crate::style::values::Length;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
 use std::sync::Arc;
 use taffy::prelude as taffy_prelude;
 

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use fastrender::layout::fragmentation::{
+use crate::layout::fragmentation::{
   fragment_tree, resolve_fragmentation_boundaries_with_context, FragmentationContext,
   FragmentationOptions,
 };
-use fastrender::style::types::{BreakBetween, WritingMode};
-use fastrender::{ComputedStyle, FragmentContent, FragmentNode, Rect};
+use crate::style::types::{BreakBetween, WritingMode};
+use crate::{ComputedStyle, FragmentContent, FragmentNode, Rect};
 
 fn fragments_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Vec<&'a FragmentNode> {
   let mut out = Vec::new();

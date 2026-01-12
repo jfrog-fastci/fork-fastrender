@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::fragmentation::{fragment_tree, FragmentationOptions};
-use fastrender::style::display::Display;
-use fastrender::style::types::{AlignItems, GridTrack, WritingMode};
-use fastrender::style::values::Length;
-use fastrender::{
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::fragmentation::{fragment_tree, FragmentationOptions};
+use crate::style::display::Display;
+use crate::style::types::{AlignItems, GridTrack, WritingMode};
+use crate::style::values::Length;
+use crate::{
   BoxNode, ComputedStyle, FormattingContext, FormattingContextType, FragmentContent, FragmentNode,
 };
 

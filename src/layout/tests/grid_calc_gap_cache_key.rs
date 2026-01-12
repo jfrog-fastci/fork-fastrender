@@ -1,14 +1,14 @@
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::GridTrack;
-use fastrender::style::values::CalcLength;
-use fastrender::style::values::Length;
-use fastrender::style::values::LengthUnit;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextType;
-use fastrender::LayoutConstraints;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::types::GridTrack;
+use crate::style::values::CalcLength;
+use crate::style::values::Length;
+use crate::style::values::LengthUnit;
+use crate::tree::box_tree::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextType;
+use crate::LayoutConstraints;
 use std::sync::Arc;
 
 fn calc_percent_plus_px(percent: f32, px: f32) -> Length {
@@ -25,7 +25,7 @@ fn assert_approx(val: f32, expected: f32, msg: &str) {
   );
 }
 
-fn inter_item_gap_px(fragment: &fastrender::tree::fragment_tree::FragmentNode) -> f32 {
+fn inter_item_gap_px(fragment: &crate::tree::fragment_tree::FragmentNode) -> f32 {
   assert!(
     fragment.children.len() >= 2,
     "expected >= 2 grid item fragments, got {}",

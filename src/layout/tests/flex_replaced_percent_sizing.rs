@@ -1,12 +1,12 @@
-use fastrender::geometry::Size;
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{AspectRatio, BoxSizing, FlexDirection};
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::{BoxNode, ReplacedType};
+use crate::geometry::Size;
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{AspectRatio, BoxSizing, FlexDirection};
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::{BoxNode, ReplacedType};
 use std::sync::Arc;
 
 #[test]

@@ -1,17 +1,17 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::AlignContent;
-use fastrender::style::types::AlignItems;
-use fastrender::style::types::GridTrack;
-use fastrender::style::types::JustifyContent;
-use fastrender::style::values::CalcLength;
-use fastrender::style::values::Length;
-use fastrender::style::values::LengthUnit;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextType;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::types::AlignContent;
+use crate::style::types::AlignItems;
+use crate::style::types::GridTrack;
+use crate::style::types::JustifyContent;
+use crate::style::values::CalcLength;
+use crate::style::values::Length;
+use crate::style::values::LengthUnit;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {

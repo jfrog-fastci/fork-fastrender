@@ -1,8 +1,8 @@
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::CaptionSide;
-use fastrender::tree::box_tree::{AnonymousBox, AnonymousType, BoxNode, BoxType};
-use fastrender::tree::table_fixup::TableStructureFixer;
-use fastrender::ComputedStyle;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::CaptionSide;
+use crate::tree::box_tree::{AnonymousBox, AnonymousType, BoxNode, BoxType};
+use crate::tree::table_fixup::TableStructureFixer;
+use crate::ComputedStyle;
 use std::sync::Arc;
 
 fn style_with_display(display: Display) -> Arc<ComputedStyle> {

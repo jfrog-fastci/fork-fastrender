@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{FlexDirection, WritingMode};
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::{ComputedStyle, FormattingContext};
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{FlexDirection, WritingMode};
+use crate::style::values::Length;
+use crate::tree::box_tree::BoxNode;
+use crate::{ComputedStyle, FormattingContext};
 
 fn horizontal_block(width: f32, height: f32) -> BoxNode {
   let mut style = ComputedStyle::default();

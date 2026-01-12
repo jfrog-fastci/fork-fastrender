@@ -7,23 +7,23 @@
 //! - CSS 2.1 Section 10.6.4: Absolutely positioned, non-replaced elements (height)
 //! - CSS 2.1 Section 10.1: Definition of "containing block"
 
-use fastrender::geometry::EdgeOffsets;
-use fastrender::geometry::Point;
-use fastrender::geometry::Rect;
-use fastrender::geometry::Size;
-use fastrender::style::types::Direction;
-use fastrender::style::types::InsetValue;
-use fastrender::AbsoluteLayout;
-use fastrender::AbsoluteLayoutInput;
-use fastrender::AbsoluteLayoutResult;
-use fastrender::ComputedStyle;
-use fastrender::ContainingBlock;
-use fastrender::FragmentNode;
-use fastrender::Length;
-use fastrender::LengthOrAuto;
-use fastrender::Position;
-use fastrender::PositionedStyle;
-use fastrender::ResolvedMargins;
+use crate::geometry::EdgeOffsets;
+use crate::geometry::Point;
+use crate::geometry::Rect;
+use crate::geometry::Size;
+use crate::style::types::Direction;
+use crate::style::types::InsetValue;
+use crate::AbsoluteLayout;
+use crate::AbsoluteLayoutInput;
+use crate::AbsoluteLayoutResult;
+use crate::ComputedStyle;
+use crate::ContainingBlock;
+use crate::FragmentNode;
+use crate::Length;
+use crate::LengthOrAuto;
+use crate::Position;
+use crate::PositionedStyle;
+use crate::ResolvedMargins;
 
 // ============================================================================
 // Test Fixtures
@@ -293,8 +293,8 @@ fn percent_offsets_ignore_auto_block_base() {
 
   let mut style = default_style();
   style.position = Position::Absolute;
-  style.top = LengthOrAuto::Length(fastrender::Length::percent(50.0));
-  style.height = LengthOrAuto::Length(fastrender::Length::percent(50.0));
+  style.top = LengthOrAuto::Length(crate::Length::percent(50.0));
+  style.height = LengthOrAuto::Length(crate::Length::percent(50.0));
 
   let intrinsic = Size::new(40.0, 30.0);
   let static_pos = Point::new(5.0, 10.0);

@@ -1,14 +1,14 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::style::cascade::apply_styles;
-use fastrender::tree::box_generation::generate_box_tree;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::FormattingContext;
-use fastrender::FragmentContent;
-use fastrender::FragmentNode;
-use fastrender::Rgba;
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::style::cascade::apply_styles;
+use crate::tree::box_generation::generate_box_tree;
+use crate::tree::box_tree::BoxNode;
+use crate::FormattingContext;
+use crate::FragmentContent;
+use crate::FragmentNode;
+use crate::Rgba;
 
 fn find_first<'a>(node: &'a BoxNode, tag: &str) -> Option<&'a BoxNode> {
   if let Some(name) = node.debug_info.as_ref().and_then(|d| d.tag_name.as_ref()) {

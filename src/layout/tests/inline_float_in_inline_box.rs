@@ -1,8 +1,8 @@
-use fastrender::style::display::Display;
-use fastrender::style::float::Float;
-use fastrender::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{
+use crate::style::display::Display;
+use crate::style::float::Float;
+use crate::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::{
   BoxNode, BoxTree, ComputedStyle, FormattingContextType, LayoutConfig, LayoutEngine, Size,
 };
 use std::sync::Arc;

@@ -4,11 +4,11 @@
 //! for various real-world scenarios based on CSS 2.1 Section 17.5.2.2 and
 //! CSS Tables Module Level 3.
 
-use fastrender::layout::contexts::table::column_distribution::compute_column_constraints;
-use fastrender::layout::contexts::table::column_distribution::distribute_spanning_cell_width;
-use fastrender::layout::contexts::table::column_distribution::ColumnConstraints;
-use fastrender::layout::contexts::table::column_distribution::ColumnDistributor;
-use fastrender::layout::contexts::table::column_distribution::DistributionMode;
+use crate::layout::contexts::table::column_distribution::compute_column_constraints;
+use crate::layout::contexts::table::column_distribution::distribute_spanning_cell_width;
+use crate::layout::contexts::table::column_distribution::ColumnConstraints;
+use crate::layout::contexts::table::column_distribution::ColumnDistributor;
+use crate::layout::contexts::table::column_distribution::DistributionMode;
 
 // =============================================================================
 // Test Utilities

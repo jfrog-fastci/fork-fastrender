@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use fastrender::geometry::Size;
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{FlexDirection, FlexWrap};
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::{BoxNode, ReplacedType};
-use fastrender::{ComputedStyle, FormattingContext, FragmentNode};
+use crate::geometry::Size;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{FlexDirection, FlexWrap};
+use crate::style::values::Length;
+use crate::tree::box_tree::{BoxNode, ReplacedType};
+use crate::{ComputedStyle, FormattingContext, FragmentNode};
 
 fn fixed_block(width: f32) -> BoxNode {
   let mut style = ComputedStyle::default();

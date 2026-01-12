@@ -1,35 +1,35 @@
-use fastrender::css::types::ColorStop;
-use fastrender::geometry::Rect;
-use fastrender::geometry::Size;
-use fastrender::image_loader::ImageCache;
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::layout::float_context::{FloatContext, FloatSide};
-use fastrender::layout::float_shape::build_float_shape;
-use fastrender::style::color::Color;
-use fastrender::style::color::Rgba;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::types::BackgroundImage;
-use fastrender::style::types::BackgroundPosition;
-use fastrender::style::types::BackgroundPositionComponent;
-use fastrender::style::types::BasicShape;
-use fastrender::style::types::Direction;
-use fastrender::style::types::FillRule;
-use fastrender::style::types::LineHeight;
-use fastrender::style::types::ShapeOutside;
-use fastrender::style::types::ShapeRadius;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::BoxNode;
+use crate::css::types::ColorStop;
+use crate::geometry::Rect;
+use crate::geometry::Size;
+use crate::image_loader::ImageCache;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::layout::float_context::{FloatContext, FloatSide};
+use crate::layout::float_shape::build_float_shape;
+use crate::style::color::Color;
+use crate::style::color::Rgba;
+use crate::style::display::FormattingContextType;
+use crate::style::types::BackgroundImage;
+use crate::style::types::BackgroundPosition;
+use crate::style::types::BackgroundPositionComponent;
+use crate::style::types::BasicShape;
+use crate::style::types::Direction;
+use crate::style::types::FillRule;
+use crate::style::types::LineHeight;
+use crate::style::types::ShapeOutside;
+use crate::style::types::ShapeRadius;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::text::font_loader::FontContext;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::BoxNode;
 use std::sync::Arc;
 
 fn circle_shape_style() -> ComputedStyle {
   let mut style = ComputedStyle::default();
   style.shape_outside = ShapeOutside::BasicShape(
     Box::new(BasicShape::Circle {
-      radius: fastrender::style::types::ShapeRadius::Length(Length::percent(50.0)),
+      radius: crate::style::types::ShapeRadius::Length(Length::percent(50.0)),
       position: BackgroundPosition::Position {
         x: BackgroundPositionComponent {
           alignment: 0.5,
@@ -168,11 +168,11 @@ fn image_shape_respects_threshold() {
     stops: vec![
       ColorStop {
         color: Color::Rgba(Rgba::new(0, 0, 0, 0.0)),
-        position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
       },
       ColorStop {
         color: Color::Rgba(Rgba::new(0, 0, 0, 1.0)),
-        position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
       },
     ],
   });
@@ -222,11 +222,11 @@ fn image_shape_gradient_resolves_light_dark_using_used_color_scheme() {
       stops: vec![
         ColorStop {
           color: light_dark.clone(),
-          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: light_dark,
-          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     });
@@ -460,11 +460,11 @@ fn image_shape_threshold_wraps_text() {
     stops: vec![
       ColorStop {
         color: Color::Rgba(Rgba::new(0, 0, 0, 0.0)),
-        position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
       },
       ColorStop {
         color: Color::Rgba(Rgba::new(0, 0, 0, 1.0)),
-        position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
       },
     ],
   });

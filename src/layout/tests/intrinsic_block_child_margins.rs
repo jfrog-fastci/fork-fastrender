@@ -1,9 +1,9 @@
-use fastrender::style::display::Display;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextFactory;
-use fastrender::FormattingContextType;
+use crate::style::display::Display;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextFactory;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 #[test]

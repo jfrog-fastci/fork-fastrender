@@ -1,14 +1,14 @@
-use fastrender::geometry::Size;
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::contexts::positioned::ContainingBlock;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::position::Position;
-use fastrender::style::types::InsetValue;
-use fastrender::style::values::Length;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::{BoxNode, ComputedStyle, FormattingContext};
+use crate::geometry::Size;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::contexts::positioned::ContainingBlock;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::position::Position;
+use crate::style::types::InsetValue;
+use crate::style::values::Length;
+use crate::text::font_loader::FontContext;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::{BoxNode, ComputedStyle, FormattingContext};
 use std::sync::Arc;
 
 #[test]

@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::contexts::factory::FormattingContextFactory;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::float::{Clear, Float};
-use fastrender::style::types::{AspectRatio, BorderStyle, LineHeight, Overflow, WritingMode};
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, BoxTree, ComputedStyle, FormattingContext};
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::contexts::factory::FormattingContextFactory;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::float::{Clear, Float};
+use crate::style::types::{AspectRatio, BorderStyle, LineHeight, Overflow, WritingMode};
+use crate::style::values::Length;
+use crate::{BoxNode, BoxTree, ComputedStyle, FormattingContext};
 
 const EPS: f32 = 0.01;
 

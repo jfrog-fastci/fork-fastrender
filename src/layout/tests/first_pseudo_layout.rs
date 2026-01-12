@@ -1,20 +1,20 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::style::float::Float;
-use fastrender::style::types::CaseTransform;
-use fastrender::style::types::Direction;
-use fastrender::style::types::TextTransform;
-use fastrender::style::values::Length;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::Rgba;
-use fastrender::{BoxNode, FormattingContextType};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::style::float::Float;
+use crate::style::types::CaseTransform;
+use crate::style::types::Direction;
+use crate::style::types::TextTransform;
+use crate::style::values::Length;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::Rgba;
+use crate::{BoxNode, FormattingContextType};
 use std::sync::Arc;
 
 fn find_first_line<'a>(
-  fragment: &'a fastrender::FragmentNode,
-) -> Option<&'a fastrender::FragmentNode> {
-  if matches!(fragment.content, fastrender::FragmentContent::Line { .. }) {
+  fragment: &'a crate::FragmentNode,
+) -> Option<&'a crate::FragmentNode> {
+  if matches!(fragment.content, crate::FragmentContent::Line { .. }) {
     return Some(fragment);
   }
   for child in fragment.children.iter() {
@@ -25,8 +25,8 @@ fn find_first_line<'a>(
   None
 }
 
-fn collect_texts<'a>(fragment: &'a fastrender::FragmentNode, out: &mut Vec<(&'a str, Rgba)>) {
-  if let fastrender::FragmentContent::Text {
+fn collect_texts<'a>(fragment: &'a crate::FragmentNode, out: &mut Vec<(&'a str, Rgba)>) {
+  if let crate::FragmentContent::Text {
     text, is_marker, ..
   } = &fragment.content
   {
@@ -35,7 +35,7 @@ fn collect_texts<'a>(fragment: &'a fastrender::FragmentNode, out: &mut Vec<(&'a 
         .style
         .as_ref()
         .map(|s| s.color)
-        .unwrap_or_else(|| fastrender::Rgba::BLACK);
+        .unwrap_or_else(|| crate::Rgba::BLACK);
       out.push((text.as_ref(), color));
     }
   }
@@ -45,10 +45,10 @@ fn collect_texts<'a>(fragment: &'a fastrender::FragmentNode, out: &mut Vec<(&'a 
 }
 
 fn collect_text_fragments<'a>(
-  fragment: &'a fastrender::FragmentNode,
-  out: &mut Vec<&'a fastrender::FragmentNode>,
+  fragment: &'a crate::FragmentNode,
+  out: &mut Vec<&'a crate::FragmentNode>,
 ) {
-  if matches!(fragment.content, fastrender::FragmentContent::Text { .. }) {
+  if matches!(fragment.content, crate::FragmentContent::Text { .. }) {
     out.push(fragment);
   }
   for child in fragment.children.iter() {
@@ -57,9 +57,9 @@ fn collect_text_fragments<'a>(
 }
 
 fn find_fragment_with_background<'a>(
-  fragment: &'a fastrender::FragmentNode,
+  fragment: &'a crate::FragmentNode,
   color: Rgba,
-) -> Option<&'a fastrender::FragmentNode> {
+) -> Option<&'a crate::FragmentNode> {
   if fragment
     .style
     .as_ref()
@@ -79,7 +79,7 @@ fn find_fragment_with_background<'a>(
 #[test]
 fn first_letter_and_first_line_styles_apply_to_fragments() {
   let mut container_style = ComputedStyle::default();
-  container_style.display = fastrender::style::display::Display::Block;
+  container_style.display = crate::style::display::Display::Block;
   let mut first_line_style = ComputedStyle::default();
   first_line_style.color = Rgba::rgb(0, 0, 255);
   first_line_style.text_transform = TextTransform::with_case(CaseTransform::Uppercase);
@@ -129,7 +129,7 @@ fn first_letter_and_first_line_styles_apply_to_fragments() {
 #[test]
 fn first_letter_wraps_punctuation_and_combining_marks() {
   let mut container_style = ComputedStyle::default();
-  container_style.display = fastrender::style::display::Display::Block;
+  container_style.display = crate::style::display::Display::Block;
   let mut first_letter_style = ComputedStyle::default();
   first_letter_style.color = Rgba::rgb(10, 20, 30);
 
@@ -163,7 +163,7 @@ fn first_letter_wraps_punctuation_and_combining_marks() {
 #[test]
 fn first_letter_respects_rtl_direction() {
   let mut container_style = ComputedStyle::default();
-  container_style.display = fastrender::style::display::Display::Block;
+  container_style.display = crate::style::display::Display::Block;
   container_style.direction = Direction::Rtl;
   let mut first_letter_style = ComputedStyle::default();
   first_letter_style.color = Rgba::rgb(200, 10, 10);
@@ -193,7 +193,7 @@ fn first_letter_respects_rtl_direction() {
 #[test]
 fn first_letter_float_creates_separate_fragment() {
   let mut container_style = ComputedStyle::default();
-  container_style.display = fastrender::style::display::Display::Block;
+  container_style.display = crate::style::display::Display::Block;
   let mut first_letter_style = ComputedStyle::default();
   first_letter_style.float = Float::Left;
   first_letter_style.padding_right = Length::px(6.0);

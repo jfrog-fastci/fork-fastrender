@@ -1,12 +1,12 @@
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::Display;
-use fastrender::style::types::GridTrack;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::FormattingContextType;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::Display;
+use crate::style::types::GridTrack;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {

@@ -1,10 +1,10 @@
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::WhiteSpace;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextType;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::types::WhiteSpace;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn assert_approx(actual: f32, expected: f32, msg: &str) {

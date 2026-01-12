@@ -1,13 +1,13 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::Display;
-use fastrender::style::float::Float;
-use fastrender::style::types::IntrinsicSizeKeyword;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextFactory;
-use fastrender::FormattingContextType;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::Display;
+use crate::style::float::Float;
+use crate::style::types::IntrinsicSizeKeyword;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextFactory;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn default_style() -> Arc<ComputedStyle> {

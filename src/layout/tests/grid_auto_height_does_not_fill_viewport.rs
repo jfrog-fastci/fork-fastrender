@@ -1,16 +1,16 @@
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
+use crate::css::types::Declaration;
+use crate::css::types::PropertyValue;
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::style::display::Display;
+use crate::style::properties::apply_declaration;
+use crate::style::values::Length;
+use crate::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
 
 fn decl(name: &'static str, value: PropertyValue) -> Declaration {
   let contains_var = match &value {
     PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => {
-      fastrender::style::var_resolution::contains_var(raw)
+      crate::style::var_resolution::contains_var(raw)
     }
     _ => false,
   };

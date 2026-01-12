@@ -1,16 +1,16 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::{AlignItems, BoxSizing, GridTrack};
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, ComputedStyle, FormattingContextType};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::types::{AlignItems, BoxSizing, GridTrack};
+use crate::style::values::Length;
+use crate::{BoxNode, ComputedStyle, FormattingContextType};
 use std::sync::Arc;
 
 fn find_fragment_with_id<'a>(
-  fragment: &'a fastrender::FragmentNode,
+  fragment: &'a crate::FragmentNode,
   id: usize,
-) -> Option<&'a fastrender::FragmentNode> {
+) -> Option<&'a crate::FragmentNode> {
   if fragment
     .box_id()
     .is_some_and(|fragment_id| fragment_id == id)
@@ -25,7 +25,7 @@ fn find_fragment_with_id<'a>(
   None
 }
 
-fn layout_single_child(child_style: ComputedStyle) -> fastrender::FragmentNode {
+fn layout_single_child(child_style: ComputedStyle) -> crate::FragmentNode {
   let fc = GridFormattingContext::new();
 
   let mut container_style = ComputedStyle::default();

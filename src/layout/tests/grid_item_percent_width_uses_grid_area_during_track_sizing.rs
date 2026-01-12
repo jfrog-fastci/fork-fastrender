@@ -1,10 +1,10 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::GridTrack;
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, ComputedStyle, FormattingContextType};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::types::GridTrack;
+use crate::style::values::Length;
+use crate::{BoxNode, ComputedStyle, FormattingContextType};
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {

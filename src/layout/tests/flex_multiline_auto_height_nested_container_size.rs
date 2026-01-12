@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::{AlignItems, FlexDirection, FlexWrap};
-use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::style::display::Display;
+use crate::style::types::{AlignItems, FlexDirection, FlexWrap};
+use crate::style::values::Length;
+use crate::tree::fragment_tree::FragmentNode;
+use crate::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
 
 fn find_block_child<'a>(fragment: &'a FragmentNode, box_id: usize) -> &'a FragmentNode {
   fragment

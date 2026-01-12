@@ -1,16 +1,16 @@
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::JustifyContent;
-use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextType;
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::types::JustifyContent;
+use crate::style::values::Length;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
-fn fragment_box_id(fragment: &fastrender::FragmentNode) -> Option<usize> {
+fn fragment_box_id(fragment: &crate::FragmentNode) -> Option<usize> {
   match &fragment.content {
     FragmentContent::Block { box_id }
     | FragmentContent::Inline { box_id, .. }

@@ -1,13 +1,13 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::types::IntrinsicSizeKeyword;
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::box_tree::ReplacedType;
-use fastrender::Size;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::types::IntrinsicSizeKeyword;
+use crate::style::values::Length;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::box_tree::ReplacedType;
+use crate::Size;
 use std::sync::Arc;
 
 #[test]
@@ -16,7 +16,7 @@ fn height_min_content_on_block_container_behaves_like_auto() {
   // content-based height. Ensure it behaves like `auto` for block containers whose block size is
   // determined by their in-flow content.
 
-  let mut replaced_style = fastrender::ComputedStyle::default();
+  let mut replaced_style = crate::ComputedStyle::default();
   replaced_style.display = Display::Inline;
   replaced_style.width = Some(Length::percent(100.0));
   replaced_style.height = Some(Length::percent(100.0));
@@ -39,7 +39,7 @@ fn height_min_content_on_block_container_behaves_like_auto() {
   );
   replaced_min.id = 2;
 
-  let mut auto_style = fastrender::ComputedStyle::default();
+  let mut auto_style = crate::ComputedStyle::default();
   auto_style.display = Display::Block;
   let auto_container = BoxNode::new_block(
     Arc::new(auto_style),
@@ -47,7 +47,7 @@ fn height_min_content_on_block_container_behaves_like_auto() {
     vec![replaced_auto],
   );
 
-  let mut min_style = fastrender::ComputedStyle::default();
+  let mut min_style = crate::ComputedStyle::default();
   min_style.display = Display::Block;
   min_style.height = None;
   min_style.height_keyword = Some(IntrinsicSizeKeyword::MinContent);
@@ -57,7 +57,7 @@ fn height_min_content_on_block_container_behaves_like_auto() {
     vec![replaced_min],
   );
 
-  let mut root_style = fastrender::ComputedStyle::default();
+  let mut root_style = crate::ComputedStyle::default();
   root_style.display = Display::Block;
   let root = BoxNode::new_block(
     Arc::new(root_style),

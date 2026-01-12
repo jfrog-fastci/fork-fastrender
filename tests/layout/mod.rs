@@ -1,8 +1,8 @@
 //! Layout integration tests.
-//
-// These tests exercise the public `FastRender` API or other end-to-end layout paths.
-// Unit tests that do not mention `FastRender` live in `src/layout/tests/` to avoid building a
-// separate test binary.
+//!
+//! These tests exercise the public `FastRender` API or other end-to-end layout paths.
+//! Unit tests that do not mention `FastRender` live in `src/layout/tests/` to avoid building a
+//! separate test binary.
 
 mod absolute_position_body;
 mod abspos_blockification;
@@ -43,7 +43,6 @@ mod float_external_base_x;
 mod float_external_context_width;
 mod float_line_box_intrusion;
 mod float_line_boxes_do_not_spurious_clear;
-mod float_range_scan_cache;
 mod font_relative_units_test;
 mod form_control_pseudo_elements;
 mod fragmentation;
@@ -157,7 +156,6 @@ mod table_visibility_collapse_layout;
 mod taffy_usage_guards;
 mod template_inert;
 mod test_factory;
-mod test_locks;
 mod text_combine_upright;
 mod text_emphasis_line_height;
 mod text_emphasis_line_height_vertical;
@@ -177,9 +175,11 @@ mod web_font_swap_layout;
 mod word_break_auto_phrase;
 
 fn layout_parallel_debug_lock() -> parking_lot::MutexGuard<'static, ()> {
-  test_locks::layout_parallel_debug_lock()
+  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+  LOCK.lock()
 }
 
 fn layout_profile_lock() -> parking_lot::MutexGuard<'static, ()> {
-  test_locks::layout_profile_lock()
+  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+  LOCK.lock()
 }

@@ -1,5 +1,7 @@
-use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
-use fastrender::layout::float_context::{float_profile_stats, reset_float_profile_counters, FloatContext, FloatSide};
+use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+use crate::layout::float_context::{
+  float_profile_stats, reset_float_profile_counters, FloatContext, FloatSide,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 

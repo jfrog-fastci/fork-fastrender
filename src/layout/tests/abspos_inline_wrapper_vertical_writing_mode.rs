@@ -1,22 +1,22 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::position::Position;
-use fastrender::style::types::{
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::position::Position;
+use crate::style::types::{
   AnchorFunction, AnchorSide, BorderStyle, InsetValue, PositionAnchor, WritingMode,
 };
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::box_tree::CrossOriginAttribute;
-use fastrender::tree::box_tree::ImageDecodingAttribute;
-use fastrender::tree::box_tree::ReplacedType;
-use fastrender::tree::box_tree::SrcsetCandidate;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::{Point, Rect, Size};
+use crate::style::values::Length;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::box_tree::CrossOriginAttribute;
+use crate::tree::box_tree::ImageDecodingAttribute;
+use crate::tree::box_tree::ReplacedType;
+use crate::tree::box_tree::SrcsetCandidate;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::{Point, Rect, Size};
 use std::sync::Arc;
 
-fn find_abs_bounds_by_box_id(root: &fastrender::FragmentNode, box_id: usize) -> Option<Rect> {
+fn find_abs_bounds_by_box_id(root: &crate::FragmentNode, box_id: usize) -> Option<Rect> {
   let mut stack = vec![(root, Point::ZERO)];
   while let Some((node, parent_origin)) = stack.pop() {
     let abs_origin = Point::new(
@@ -47,7 +47,7 @@ fn find_abs_bounds_by_box_id(root: &fastrender::FragmentNode, box_id: usize) -> 
 }
 
 fn image_node(id: usize, size: Size, writing_mode: WritingMode) -> BoxNode {
-  let mut style = fastrender::ComputedStyle::default();
+  let mut style = crate::ComputedStyle::default();
   style.display = Display::Inline;
   style.writing_mode = writing_mode;
 
@@ -77,7 +77,7 @@ fn anchored_image_node(
   writing_mode: WritingMode,
   anchor_name: &str,
 ) -> BoxNode {
-  let mut style = fastrender::ComputedStyle::default();
+  let mut style = crate::ComputedStyle::default();
   style.display = Display::Inline;
   style.writing_mode = writing_mode;
   style.anchor_names = vec![anchor_name.to_string()];
@@ -115,14 +115,14 @@ fn abspos_descendant_inside_positioned_inline_wrapper_in_vertical_writing_mode_u
   //       abspos child (inset:0) should fill wrapper padding box (not the outer block)
   let writing_mode = WritingMode::VerticalRl;
 
-  let mut root_style = fastrender::ComputedStyle::default();
+  let mut root_style = crate::ComputedStyle::default();
   root_style.display = Display::Block;
   root_style.writing_mode = writing_mode;
   root_style.width = Some(Length::px(200.0));
   root_style.height = Some(Length::px(150.0));
 
   // The inline wrapper establishes the containing block.
-  let mut wrapper_style = fastrender::ComputedStyle::default();
+  let mut wrapper_style = crate::ComputedStyle::default();
   wrapper_style.display = Display::Inline;
   wrapper_style.writing_mode = writing_mode;
   wrapper_style.position = Position::Relative;
@@ -139,7 +139,7 @@ fn abspos_descendant_inside_positioned_inline_wrapper_in_vertical_writing_mode_u
   let img = image_node(3, Size::new(60.0, 30.0), writing_mode);
 
   // Absolutely positioned empty block that should fill the wrapper's padding box.
-  let mut abs_style = fastrender::ComputedStyle::default();
+  let mut abs_style = crate::ComputedStyle::default();
   abs_style.display = Display::Block;
   abs_style.writing_mode = writing_mode;
   abs_style.position = Position::Absolute;
@@ -195,13 +195,13 @@ fn anchor_positioning_inside_positioned_inline_wrapper_in_vertical_writing_mode_
 ) {
   let writing_mode = WritingMode::VerticalRl;
 
-  let mut root_style = fastrender::ComputedStyle::default();
+  let mut root_style = crate::ComputedStyle::default();
   root_style.display = Display::Block;
   root_style.writing_mode = writing_mode;
   root_style.width = Some(Length::px(200.0));
   root_style.height = Some(Length::px(150.0));
 
-  let mut wrapper_style = fastrender::ComputedStyle::default();
+  let mut wrapper_style = crate::ComputedStyle::default();
   wrapper_style.display = Display::Inline;
   wrapper_style.writing_mode = writing_mode;
   wrapper_style.position = Position::Relative;
@@ -210,7 +210,7 @@ fn anchor_positioning_inside_positioned_inline_wrapper_in_vertical_writing_mode_
   let overlay_id = 4usize;
   let anchor = anchored_image_node(anchor_id, Size::new(60.0, 30.0), writing_mode, "--a");
 
-  let mut overlay_style = fastrender::ComputedStyle::default();
+  let mut overlay_style = crate::ComputedStyle::default();
   overlay_style.display = Display::Block;
   overlay_style.writing_mode = writing_mode;
   overlay_style.position = Position::Absolute;

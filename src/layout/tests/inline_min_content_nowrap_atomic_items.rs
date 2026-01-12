@@ -1,12 +1,12 @@
-use fastrender::style::display::Display;
-use fastrender::style::types::WhiteSpace;
-use fastrender::tree::box_tree::ReplacedType;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContextFactory;
-use fastrender::FormattingContextType;
-use fastrender::IntrinsicSizingMode;
-use fastrender::Size;
+use crate::style::display::Display;
+use crate::style::types::WhiteSpace;
+use crate::tree::box_tree::ReplacedType;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContextFactory;
+use crate::FormattingContextType;
+use crate::IntrinsicSizingMode;
+use crate::Size;
 use std::sync::Arc;
 
 #[test]

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::float::{Clear, Float};
-use fastrender::style::types::GridTrack;
-use fastrender::style::values::Length;
-use fastrender::{BoxNode, BoxTree, ComputedStyle, FormattingContext, FragmentNode};
+use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::float::{Clear, Float};
+use crate::style::types::GridTrack;
+use crate::style::values::Length;
+use crate::{BoxNode, BoxTree, ComputedStyle, FormattingContext, FragmentNode};
 
 const EPS: f32 = 0.1;
 

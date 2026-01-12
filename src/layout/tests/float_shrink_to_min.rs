@@ -1,11 +1,11 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::float::Float;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::FormattingContextType;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::float::Float;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 #[test]
@@ -179,8 +179,8 @@ fn inherited_float_context_is_scoped_to_containing_block_width() {
 
   // Find the float fragment (it may not be a direct child due to float reparenting).
   fn find_float<'a>(
-    node: &'a fastrender::tree::fragment_tree::FragmentNode,
-  ) -> Option<&'a fastrender::tree::fragment_tree::FragmentNode> {
+    node: &'a crate::tree::fragment_tree::FragmentNode,
+  ) -> Option<&'a crate::tree::fragment_tree::FragmentNode> {
     if let Some(style) = node.style.as_ref() {
       if style.float == Float::Right && (node.bounds.width() - 20.0).abs() < 0.5 {
         return Some(node);
@@ -261,7 +261,7 @@ fn float_auto_width_does_not_shrink_to_remaining_space() {
   let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
 
   let mut inline_a_style = ComputedStyle::default();
-  inline_a_style.display = fastrender::style::display::Display::InlineBlock;
+  inline_a_style.display = crate::style::display::Display::InlineBlock;
   inline_a_style.width = Some(Length::px(60.0));
   inline_a_style.height = Some(Length::px(10.0));
   let inline_a = BoxNode::new_inline_block(
@@ -273,7 +273,7 @@ fn float_auto_width_does_not_shrink_to_remaining_space() {
   let space = BoxNode::new_text(Arc::new(ComputedStyle::default()), " ".to_string());
 
   let mut inline_b_style = ComputedStyle::default();
-  inline_b_style.display = fastrender::style::display::Display::InlineBlock;
+  inline_b_style.display = crate::style::display::Display::InlineBlock;
   inline_b_style.width = Some(Length::px(60.0));
   inline_b_style.height = Some(Length::px(10.0));
   let inline_b = BoxNode::new_inline_block(

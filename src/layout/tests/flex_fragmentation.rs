@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use fastrender::layout::fragmentation::FragmentationOptions;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{AlignItems, BreakBetween, FlexDirection, FlexWrap};
-use fastrender::style::values::Length;
-use fastrender::{
+use crate::layout::fragmentation::FragmentationOptions;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{AlignItems, BreakBetween, FlexDirection, FlexWrap};
+use crate::style::values::Length;
+use crate::{
   BoxNode, BoxTree, ComputedStyle, FragmentContent, FragmentNode, FragmentTree, LayoutConfig,
   LayoutEngine, Point, Size,
 };

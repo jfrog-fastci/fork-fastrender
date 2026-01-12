@@ -1,16 +1,16 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::AlignItems;
-use fastrender::style::types::GridTrack;
-use fastrender::style::types::WritingMode;
-use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::FormattingContextType;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::style::display::Display;
+use crate::style::types::AlignItems;
+use crate::style::types::GridTrack;
+use crate::style::types::WritingMode;
+use crate::style::values::Length;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::tree::fragment_tree::FragmentNode;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::FormattingContextType;
 use std::sync::Arc;
 
 fn grid_container(children: Vec<BoxNode>) -> BoxNode {
@@ -252,7 +252,7 @@ fn grid_children_are_laid_out_even_when_taffy_reports_zero_width() {
   grid_style.display = Display::Grid;
   grid_style.min_height = Some(Length::new(
     100.0,
-    fastrender::style::values::LengthUnit::Vh,
+    crate::style::values::LengthUnit::Vh,
   ));
   let text_style = Arc::new(ComputedStyle::default());
   let text = BoxNode::new_text(text_style.clone(), "Grid child text".to_string());
@@ -295,12 +295,12 @@ fn nested_grid_items_preserve_measured_children() {
   // instead of producing an empty fragment tree.
   let mut outer_style = ComputedStyle::default();
   outer_style.display = Display::Grid;
-  outer_style.grid_auto_flow = fastrender::style::types::GridAutoFlow::Column;
+  outer_style.grid_auto_flow = crate::style::types::GridAutoFlow::Column;
   outer_style.grid_auto_columns = vec![GridTrack::Fr(1.0)].into();
 
   let mut inner_style = ComputedStyle::default();
   inner_style.display = Display::Grid;
-  inner_style.grid_auto_flow = fastrender::style::types::GridAutoFlow::Row;
+  inner_style.grid_auto_flow = crate::style::types::GridAutoFlow::Row;
   inner_style.grid_auto_rows = vec![GridTrack::Fr(1.0)].into();
 
   let text_style = Arc::new(ComputedStyle::default());

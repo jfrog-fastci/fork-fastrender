@@ -1,17 +1,17 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::float::Float;
-use fastrender::style::types::{LineHeight, TextAlign};
-use fastrender::style::values::Length;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
-use fastrender::FormattingContextType;
-use fastrender::Point;
-use fastrender::Rect;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::style::display::Display;
+use crate::style::float::Float;
+use crate::style::types::{LineHeight, TextAlign};
+use crate::style::values::Length;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::tree::fragment_tree::FragmentNode;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
+use crate::FormattingContextType;
+use crate::Point;
+use crate::Rect;
 use std::sync::Arc;
 
 fn find_abs_bounds_by_box_id(fragment: &FragmentNode, box_id: usize) -> Option<Rect> {

@@ -1,17 +1,17 @@
-use fastrender::css::types::Declaration;
-use fastrender::css::types::PropertyValue;
-use fastrender::style::properties::apply_declaration;
-use fastrender::style::properties::resolve_pending_logical_properties;
-use fastrender::style::types::BorderCornerRadius;
-use fastrender::style::types::InsetValue;
-use fastrender::style::types::WritingMode;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
+use crate::css::types::Declaration;
+use crate::css::types::PropertyValue;
+use crate::style::properties::apply_declaration;
+use crate::style::properties::resolve_pending_logical_properties;
+use crate::style::types::BorderCornerRadius;
+use crate::style::types::InsetValue;
+use crate::style::types::WritingMode;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
 
 fn decl(property: &'static str, value: PropertyValue) -> Declaration {
   let contains_var = match &value {
     PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => {
-      fastrender::style::var_resolution::contains_var(raw)
+      crate::style::var_resolution::contains_var(raw)
     }
     _ => false,
   };
@@ -150,11 +150,11 @@ fn border_inline_color_maps_in_sideways_lr_writing_mode() {
     &decl(
       "border-inline-color",
       PropertyValue::Multiple(vec![
-        PropertyValue::Color(fastrender::style::color::Color::Rgba(
-          fastrender::style::color::Rgba::RED,
+        PropertyValue::Color(crate::style::color::Color::Rgba(
+          crate::style::color::Rgba::RED,
         )),
-        PropertyValue::Color(fastrender::style::color::Color::Rgba(
-          fastrender::style::color::Rgba::GREEN,
+        PropertyValue::Color(crate::style::color::Color::Rgba(
+          crate::style::color::Rgba::GREEN,
         )),
       ]),
     ),
@@ -167,11 +167,11 @@ fn border_inline_color_maps_in_sideways_lr_writing_mode() {
   // Sideways-lr + ltr: inline axis is vertical -> start maps to bottom, end maps to top.
   assert_eq!(
     style.border_bottom_color,
-    fastrender::style::color::Rgba::RED
+    crate::style::color::Rgba::RED
   );
   assert_eq!(
     style.border_top_color,
-    fastrender::style::color::Rgba::GREEN
+    crate::style::color::Rgba::GREEN
   );
 }
 
@@ -197,11 +197,11 @@ fn border_inline_style_maps_in_sideways_lr_writing_mode() {
   // Sideways-lr + ltr: inline axis is vertical -> start is bottom, end is top.
   assert_eq!(
     style.border_bottom_style,
-    fastrender::style::types::BorderStyle::Dashed
+    crate::style::types::BorderStyle::Dashed
   );
   assert_eq!(
     style.border_top_style,
-    fastrender::style::types::BorderStyle::Dotted
+    crate::style::types::BorderStyle::Dotted
   );
 }
 
@@ -301,7 +301,7 @@ fn background_position_logical_maps_in_sideways_lr_writing_mode() {
 
   // Note: logical background-position properties are not yet supported; ensure defaults remain stable.
   assert_eq!(style.background_positions.len(), 1);
-  let fastrender::style::types::BackgroundPosition::Position { x, y } =
+  let crate::style::types::BackgroundPosition::Position { x, y } =
     style.background_positions[0];
   assert_eq!(x.offset, Length::percent(0.0));
   assert_eq!(y.offset, Length::percent(0.0));

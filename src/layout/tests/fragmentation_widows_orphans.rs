@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use fastrender::layout::fragmentation::{fragment_tree, FragmentationOptions};
-use fastrender::style::types::BreakInside;
-use fastrender::{ComputedStyle, FragmentContent, FragmentNode, Rect};
+use crate::layout::fragmentation::{fragment_tree, FragmentationOptions};
+use crate::style::types::BreakInside;
+use crate::{ComputedStyle, FragmentContent, FragmentNode, Rect};
 
 fn labeled_line(y: f32, line_height: f32, label: &str) -> FragmentNode {
   let text = FragmentNode::new_text(

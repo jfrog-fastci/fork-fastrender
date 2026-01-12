@@ -1,10 +1,10 @@
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
-use fastrender::{BoxNode, FormattingContextFactory, Size};
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
+use crate::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
+use crate::{BoxNode, FormattingContextFactory, Size};
 use std::sync::Arc;
 
 #[test]

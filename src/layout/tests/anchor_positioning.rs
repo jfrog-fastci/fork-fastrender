@@ -1,22 +1,22 @@
 use std::sync::Arc;
 
-use fastrender::css::types::{Declaration, PropertyValue, Transform};
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::formatting_context::FormattingContext;
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::position::Position;
-use fastrender::style::position_try::PositionTryRegistry;
-use fastrender::style::types::{
+use crate::css::types::{Declaration, PropertyValue, Transform};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::formatting_context::FormattingContext;
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::position::Position;
+use crate::style::position_try::PositionTryRegistry;
+use crate::style::types::{
   AnchorFunction, AnchorScope, AnchorSide, AnchorSizeAxis, AnchorSizeFunction, Direction,
   InsetValue, PositionAnchor, PositionTryOrder, WritingMode,
 };
-use fastrender::style::values::Length;
-use fastrender::tree::box_tree::{BoxNode, GeneratedPseudoElement};
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::ComputedStyle;
-use fastrender::Point;
-use fastrender::Rect;
+use crate::style::values::Length;
+use crate::tree::box_tree::{BoxNode, GeneratedPseudoElement};
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::ComputedStyle;
+use crate::Point;
+use crate::Rect;
 
 fn find_fragment_by_box_id<'a>(
   fragment: &'a FragmentNode,

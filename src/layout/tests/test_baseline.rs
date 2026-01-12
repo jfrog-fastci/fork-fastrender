@@ -2,11 +2,11 @@
 //!
 //! Tests the baseline alignment algorithm as specified in CSS 2.1 Section 10.8.
 
-use fastrender::layout::inline::baseline::BaselineAligner;
-use fastrender::layout::inline::baseline::InlineBoxMetrics;
-use fastrender::layout::inline::baseline::LineMetrics;
-use fastrender::layout::inline::baseline::VerticalAlign;
-use fastrender::text::font_db::ScaledMetrics;
+use crate::layout::inline::baseline::BaselineAligner;
+use crate::layout::inline::baseline::InlineBoxMetrics;
+use crate::layout::inline::baseline::LineMetrics;
+use crate::layout::inline::baseline::VerticalAlign;
+use crate::text::font_db::ScaledMetrics;
 
 // =============================================================================
 // Test Helpers

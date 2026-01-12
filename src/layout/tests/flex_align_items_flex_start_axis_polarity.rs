@@ -1,16 +1,16 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::types::AlignItems;
-use fastrender::style::types::Direction;
-use fastrender::style::types::FlexDirection;
-use fastrender::style::types::FlexWrap;
-use fastrender::style::types::WritingMode;
-use fastrender::style::values::Length;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::types::AlignItems;
+use crate::style::types::Direction;
+use crate::style::types::FlexDirection;
+use crate::style::types::FlexWrap;
+use crate::style::types::WritingMode;
+use crate::style::values::Length;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -24,9 +24,9 @@ fn assert_approx(val: f32, expected: f32, msg: &str) {
 }
 
 fn find_fragment_with_id<'a>(
-  fragment: &'a fastrender::FragmentNode,
+  fragment: &'a crate::FragmentNode,
   id: usize,
-) -> Option<&'a fastrender::FragmentNode> {
+) -> Option<&'a crate::FragmentNode> {
   if fragment
     .box_id()
     .is_some_and(|fragment_id| fragment_id == id)
@@ -47,7 +47,7 @@ fn layout_flex(
   children: Vec<BoxNode>,
   width: f32,
   height: f32,
-) -> fastrender::FragmentNode {
+) -> crate::FragmentNode {
   let mut container = BoxNode::new_block(
     Arc::new(container_style),
     FormattingContextType::Flex,

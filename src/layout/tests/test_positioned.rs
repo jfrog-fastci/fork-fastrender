@@ -8,39 +8,39 @@
 //! - CSS 2.1 Section 10.6.4: Absolutely positioned height
 //! - CSS Position Module Level 3: Sticky positioning
 
-use fastrender::geometry::EdgeOffsets;
-use fastrender::geometry::Point;
-use fastrender::geometry::Rect;
-use fastrender::geometry::Size;
-use fastrender::layout::contexts::block::BlockFormattingContext;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::contexts::grid::GridFormattingContext;
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::paint::stacking::build_stacking_tree_from_fragment_tree;
-use fastrender::paint::stacking::StackingContextReason;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::types::Direction;
-use fastrender::style::types::FontSizeAdjust;
-use fastrender::style::types::FontSizeAdjustMetric;
-use fastrender::style::types::InsetValue;
-use fastrender::style::types::IntrinsicSizeKeyword;
-use fastrender::style::types::WritingMode;
-use fastrender::text::font_loader::FontContext;
-use fastrender::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::ContainingBlock;
-use fastrender::Display;
-use fastrender::FormattingContext;
-use fastrender::FragmentContent;
-use fastrender::FragmentNode;
-use fastrender::LayoutConstraints;
-use fastrender::Length;
-use fastrender::LengthOrAuto;
-use fastrender::LengthUnit;
-use fastrender::Position;
-use fastrender::PositionedLayout;
-use fastrender::PositionedStyle;
-use fastrender::StickyConstraints;
+use crate::geometry::EdgeOffsets;
+use crate::geometry::Point;
+use crate::geometry::Rect;
+use crate::geometry::Size;
+use crate::layout::contexts::block::BlockFormattingContext;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::contexts::grid::GridFormattingContext;
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::paint::stacking::build_stacking_tree_from_fragment_tree;
+use crate::paint::stacking::StackingContextReason;
+use crate::style::display::FormattingContextType;
+use crate::style::types::Direction;
+use crate::style::types::FontSizeAdjust;
+use crate::style::types::FontSizeAdjustMetric;
+use crate::style::types::InsetValue;
+use crate::style::types::IntrinsicSizeKeyword;
+use crate::style::types::WritingMode;
+use crate::text::font_loader::FontContext;
+use crate::BoxNode;
+use crate::ComputedStyle;
+use crate::ContainingBlock;
+use crate::Display;
+use crate::FormattingContext;
+use crate::FragmentContent;
+use crate::FragmentNode;
+use crate::LayoutConstraints;
+use crate::Length;
+use crate::LengthOrAuto;
+use crate::LengthUnit;
+use crate::Position;
+use crate::PositionedLayout;
+use crate::PositionedStyle;
+use crate::StickyConstraints;
 use std::sync::Arc;
 
 // ============================================================================
@@ -1108,7 +1108,7 @@ fn absolute_auto_height_uses_aspect_ratio_with_specified_width() {
   style.position = Position::Absolute;
   style.width = LengthOrAuto::px(120.0);
   style.height = LengthOrAuto::Auto;
-  style.aspect_ratio = fastrender::style::types::AspectRatio::Ratio(2.0);
+  style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
 
   let cb = create_containing_block(300.0, 300.0);
   let intrinsic = Size::new(0.0, 0.0);
@@ -1135,7 +1135,7 @@ fn absolute_auto_width_uses_aspect_ratio_with_specified_height() {
   style.position = Position::Absolute;
   style.height = LengthOrAuto::px(50.0);
   style.width = LengthOrAuto::Auto;
-  style.aspect_ratio = fastrender::style::types::AspectRatio::Ratio(2.0);
+  style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
 
   let cb = create_containing_block(300.0, 300.0);
   let intrinsic = Size::new(0.0, 0.0);
@@ -1162,7 +1162,7 @@ fn absolute_auto_both_uses_aspect_ratio_and_intrinsic() {
   style.position = Position::Absolute;
   style.width = LengthOrAuto::Auto;
   style.height = LengthOrAuto::Auto;
-  style.aspect_ratio = fastrender::style::types::AspectRatio::Ratio(2.0);
+  style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
 
   let cb = create_containing_block(300.0, 300.0);
   let intrinsic = Size::new(80.0, 40.0);

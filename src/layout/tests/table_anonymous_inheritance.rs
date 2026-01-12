@@ -1,7 +1,7 @@
-use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{Direction, WritingMode};
-use fastrender::tree::table_fixup::TableStructureFixer;
-use fastrender::{BoxNode, ComputedStyle};
+use crate::style::display::{Display, FormattingContextType};
+use crate::style::types::{Direction, WritingMode};
+use crate::tree::table_fixup::TableStructureFixer;
+use crate::{BoxNode, ComputedStyle};
 use std::sync::Arc;
 
 fn table_with_style(mut style: ComputedStyle, child: BoxNode) -> BoxNode {

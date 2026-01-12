@@ -1,17 +1,17 @@
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::inline::InlineFormattingContext;
-use fastrender::style::display::Display;
-use fastrender::style::types::WritingMode;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::box_tree::CrossOriginAttribute;
-use fastrender::tree::box_tree::ImageDecodingAttribute;
-use fastrender::tree::box_tree::ReplacedType;
-use fastrender::tree::box_tree::SrcsetCandidate;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::{Point, Rect, Size};
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::inline::InlineFormattingContext;
+use crate::style::display::Display;
+use crate::style::types::WritingMode;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::box_tree::CrossOriginAttribute;
+use crate::tree::box_tree::ImageDecodingAttribute;
+use crate::tree::box_tree::ReplacedType;
+use crate::tree::box_tree::SrcsetCandidate;
+use crate::tree::fragment_tree::FragmentContent;
+use crate::{Point, Rect, Size};
 use std::sync::Arc;
 
-fn find_abs_bounds_by_box_id(root: &fastrender::FragmentNode, box_id: usize) -> Option<Rect> {
+fn find_abs_bounds_by_box_id(root: &crate::FragmentNode, box_id: usize) -> Option<Rect> {
   let mut stack = vec![(root, Point::ZERO)];
   while let Some((node, parent_origin)) = stack.pop() {
     let abs_origin = Point::new(
@@ -42,7 +42,7 @@ fn find_abs_bounds_by_box_id(root: &fastrender::FragmentNode, box_id: usize) -> 
 }
 
 fn image_node(id: usize, size: Size, writing_mode: WritingMode) -> BoxNode {
-  let mut style = fastrender::ComputedStyle::default();
+  let mut style = crate::ComputedStyle::default();
   style.display = Display::Inline;
   style.writing_mode = writing_mode;
 
@@ -79,7 +79,7 @@ fn inline_fc_layout_with_floats_returns_logical_coordinates_in_vertical_writing_
   let img1 = image_node(1, Size::new(20.0, 20.0), writing_mode);
   let img2 = image_node(2, Size::new(20.0, 20.0), writing_mode);
 
-  let mut root_style = fastrender::ComputedStyle::default();
+  let mut root_style = crate::ComputedStyle::default();
   root_style.display = Display::Inline;
   root_style.writing_mode = writing_mode;
   let mut root = BoxNode::new_inline(Arc::new(root_style), vec![img1, img2]);

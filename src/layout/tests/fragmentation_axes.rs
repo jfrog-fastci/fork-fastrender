@@ -1,8 +1,8 @@
-use fastrender::layout::fragmentation::{
+use crate::layout::fragmentation::{
   fragment_tree, fragment_tree_for_writing_mode, FragmentationOptions,
 };
-use fastrender::style::types::{Direction, WritingMode};
-use fastrender::{FragmentContent, FragmentNode, Rect};
+use crate::style::types::{Direction, WritingMode};
+use crate::{FragmentContent, FragmentNode, Rect};
 
 fn fragments_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Vec<&'a FragmentNode> {
   let mut out = Vec::new();

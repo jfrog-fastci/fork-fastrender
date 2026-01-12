@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
-use fastrender::layout::constraints::AvailableSpace;
-use fastrender::layout::constraints::LayoutConstraints;
-use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::formatting_context::IntrinsicSizingMode;
-use fastrender::style::display::Display;
-use fastrender::style::display::FormattingContextType;
-use fastrender::style::types::FlexDirection;
-use fastrender::style::values::CalcLength;
-use fastrender::style::values::Length;
-use fastrender::style::values::LengthUnit;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::ComputedStyle;
-use fastrender::FormattingContext;
+use crate::layout::constraints::AvailableSpace;
+use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::flex::FlexFormattingContext;
+use crate::layout::formatting_context::IntrinsicSizingMode;
+use crate::style::display::Display;
+use crate::style::display::FormattingContextType;
+use crate::style::types::FlexDirection;
+use crate::style::values::CalcLength;
+use crate::style::values::Length;
+use crate::style::values::LengthUnit;
+use crate::tree::box_tree::BoxNode;
+use crate::ComputedStyle;
+use crate::FormattingContext;
 
 fn assert_approx(actual: f32, expected: f32, epsilon: f32, msg: &str) {
   assert!(
