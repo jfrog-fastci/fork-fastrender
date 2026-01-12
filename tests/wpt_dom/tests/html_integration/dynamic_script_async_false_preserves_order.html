@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML integration: dynamic scripts async=false preserves order</title>
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/fastrender_testharness_report.js"></script>
+
+<script>
+  var log = [];
+  var order_error = "";
+  var second_script_loaded;
+
+  function check_dynamic_script_order() {
+    assert_equals(order_error, "", "dynamic script ordering should have no errors");
+    assert_equals(
+      log.join(","),
+      "dynamic-1,dynamic-2",
+      "dynamic scripts with async=false should execute in insertion order"
+    );
+  }
+
+  function run_dynamic_script_order_test(t) {
+    log = [];
+    order_error = "";
+
+    second_script_loaded = t.step_func_done(check_dynamic_script_order);
+
+    var s1 = document.createElement("script");
+    s1.async = false;
+    s1.src = "resources/dynamic-1.js";
+
+    var s2 = document.createElement("script");
+    s2.async = false;
+    s2.src = "resources/dynamic-2.js";
+    s2.addEventListener("load", second_script_loaded);
+
+    document.head.appendChild(s1);
+    document.head.appendChild(s2);
+  }
+
+  async_test(
+    run_dynamic_script_order_test,
+    "dynamic scripts with async=false preserve insertion order"
+  );
+</script>

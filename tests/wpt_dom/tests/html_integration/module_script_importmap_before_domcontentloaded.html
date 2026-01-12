@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML integration: module scripts + import maps</title>
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/fastrender_testharness_report.js"></script>
+
+<script>
+  // Use globalThis so the module script can mutate shared state without relying on global var
+  // bindings (module scripts run in their own scope).
+  globalThis.log = [];
+  globalThis.module_value = "";
+  globalThis.ready_state_at_domcontentloaded = "";
+</script>
+
+<script type="importmap">{"imports":{"foo":"https://web-platform.test/html_integration/resources/module_mapped.js"}}</script>
+
+<script type="module">
+  import foo from "foo";
+  globalThis.module_value = foo;
+  globalThis.log.push("module");
+</script>
+
+<script>
+  var finish_module_test;
+  var domcontentloaded_handler;
+
+  function on_domcontentloaded(e) {
+    globalThis.ready_state_at_domcontentloaded = document.readyState;
+    if (e && e.type) {
+      globalThis.log.push(e.type);
+    } else {
+      globalThis.log.push("(unknown)");
+    }
+    finish_module_test();
+  }
+
+  function check_module_script_importmap_order() {
+    assert_equals(
+      globalThis.module_value,
+      "mapped",
+      "module script should resolve bare specifier via import map"
+    );
+    assert_equals(
+      globalThis.log.join(","),
+      "module,DOMContentLoaded",
+      "module script should run before DOMContentLoaded"
+    );
+    assert_equals(
+      globalThis.ready_state_at_domcontentloaded,
+      "interactive",
+      "document.readyState should be interactive at DOMContentLoaded"
+    );
+  }
+
+  function run_module_script_importmap_test(t) {
+    finish_module_test = t.step_func_done(check_module_script_importmap_order);
+    domcontentloaded_handler = t.step_func(on_domcontentloaded);
+    document.addEventListener("DOMContentLoaded", domcontentloaded_handler);
+  }
+
+  async_test(
+    run_module_script_importmap_test,
+    "module scripts use import maps and execute before DOMContentLoaded"
+  );
+</script>

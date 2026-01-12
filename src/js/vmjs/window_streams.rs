@@ -2631,7 +2631,6 @@ fn reader_release_lock_native(
       .ok_or(VmError::TypeError(
         "ReadableStreamDefaultReader.releaseLock: illegal invocation",
       ))?;
-
     let Some(stream_weak) = reader_state.stream.take() else {
       return Ok(None);
     };
@@ -2707,7 +2706,7 @@ fn reader_cancel_native(
   let (outcome, pending_read) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
       .readers
-      .get_mut(&WeakGcObject::from(reader_obj))
+      .get(&WeakGcObject::from(reader_obj))
       .ok_or(VmError::TypeError(
         "ReadableStreamDefaultReader.cancel: illegal invocation",
       ))?;

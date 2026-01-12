@@ -328,3 +328,15 @@ reason = "IntersectionObserver is not implemented yet."
 id = "dom/resize-observer-basic.window.js"
 status = "xfail"
 reason = "ResizeObserver is not implemented yet."
+
+[[expectations]]
+id = "html_integration/module_script_importmap_before_domcontentloaded.html"
+backend = "vmjs"
+status = "xfail"
+reason = "HTML importmap support is not yet fully wired for <script type=module> bare specifier resolution."
+
+[[expectations]]
+id = "modules/dynamic_import_microtask_order.window.js"
+backend = "vmjs"
+status = "xfail"
+reason = "Dynamic import promise reactions are not yet scheduled via the microtask queue."

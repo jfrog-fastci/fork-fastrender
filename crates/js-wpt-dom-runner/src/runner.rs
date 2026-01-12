@@ -3,9 +3,13 @@ use crate::discover::{TestCase, TestKind};
 use crate::meta::parse_leading_meta;
 use crate::wpt_fs::{WptFs, WptFsError};
 use crate::wpt_report::{WptReport, WptSubtest};
+#[cfg(feature = "vmjs")]
+use crate::WptResourceFetcher;
 use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
+#[cfg(feature = "vmjs")]
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use url::Url;
@@ -123,19 +127,42 @@ impl Runner {
       None => self.config.default_timeout,
     };
 
-    let base_dir = id_dir(&test.id);
-
-    let mut scripts = Vec::new();
-    push_testharness_bootstrap(&mut scripts);
-    for script in parsed.scripts {
-      match script {
-        ScriptToEval::Url(url) if is_required_harness_script(&url) => continue,
-        ScriptToEval::Url(url) if is_testharnessreport(&url) => continue,
-        other => scripts.push(other),
-      }
+    let backend_kind = resolve_backend_kind(self.config.backend)?;
+    if !backend_kind.is_available() {
+      return Err(RunError::Js(format!(
+        "selected backend `{backend_kind}` is not available in this build"
+      )));
     }
 
-    self.run_scripts_in_window(test, &base_dir, scripts, timeout)
+    match backend_kind {
+      BackendKind::VmJs => {
+        #[cfg(feature = "vmjs")]
+        {
+          self.run_html_test_in_browser_tab(test, &html_source, timeout)
+        }
+        #[cfg(not(feature = "vmjs"))]
+        {
+          Err(RunError::Js(
+            "selected backend `vmjs` is not available in this build".to_string(),
+          ))
+        }
+      }
+      BackendKind::QuickJs => {
+        let base_dir = id_dir(&test.id);
+
+        let mut scripts = Vec::new();
+        push_testharness_bootstrap(&mut scripts);
+        for script in parsed.scripts {
+          match script {
+            ScriptToEval::Url(url) if is_required_harness_script(&url) => continue,
+            ScriptToEval::Url(url) if is_testharnessreport(&url) => continue,
+            other => scripts.push(other),
+          }
+        }
+
+        self.run_scripts_in_window(test, &base_dir, scripts, timeout)
+      }
+    }
   }
 
   #[cfg(any(feature = "vmjs", feature = "quickjs"))]
@@ -148,13 +175,7 @@ impl Runner {
   ) -> RunResultResult {
     let test_url = test.url();
 
-    // Allow local debugging overrides via env var, but only when the runner is in `Auto` mode.
-    let selection = if self.config.backend == BackendSelection::Auto {
-      BackendSelection::from_env()?.unwrap_or(BackendSelection::Auto)
-    } else {
-      self.config.backend
-    };
-    let backend_kind = selection.resolve();
+    let backend_kind = resolve_backend_kind(self.config.backend)?;
     if !backend_kind.is_available() {
       return Err(RunError::Js(format!(
         "selected backend `{backend_kind}` is not available in this build"
@@ -284,6 +305,158 @@ impl Runner {
       "js-wpt-dom-runner was built without any JS backends; enable `vmjs` (recommended) or `quickjs`"
         .to_string(),
     ))
+  }
+}
+
+fn resolve_backend_kind(config: BackendSelection) -> Result<BackendKind, RunError> {
+  // Allow local debugging overrides via env var, but only when the runner is in `Auto` mode.
+  let selection = if config == BackendSelection::Auto {
+    BackendSelection::from_env()?.unwrap_or(BackendSelection::Auto)
+  } else {
+    config
+  };
+  Ok(selection.resolve())
+}
+
+#[cfg(feature = "vmjs")]
+impl Runner {
+  fn run_html_test_in_browser_tab(
+    &self,
+    test: &TestCase,
+    html_source: &str,
+    timeout: Duration,
+  ) -> RunResultResult {
+    use fastrender::api::{BrowserTab, DiagnosticsLevel, RenderOptions};
+    use fastrender::js::{RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason};
+
+    const REPORT_ATTR: &str = "data-fastrender-wpt-report";
+
+    fn take_report_from_dom(tab: &BrowserTab) -> Option<String> {
+      let dom = tab.dom();
+      let html = dom.document_element()?;
+      let raw = dom.get_attribute(html, REPORT_ATTR).ok().flatten()?;
+      let raw = raw.trim();
+      if raw.is_empty() {
+        return None;
+      }
+      Some(raw.to_string())
+    }
+
+    // WPT HTML files commonly include `/resources/testharness.js` + `/resources/testharnessreport.js`,
+    // but the offline runner relies on `/resources/fastrender_testharness_report.js` to emit a
+    // machine-readable payload. When the test file does not include it, inject it immediately after
+    // the harness script.
+    fn patch_html_source(html: &str) -> String {
+      if html.contains("fastrender_testharness_report.js") {
+        return html.to_string();
+      }
+
+      let reporter_tag = format!(
+        r#"<script src="{FASTRENDER_TESTHARNESS_REPORT_JS}"></script>"#
+      );
+
+      // Best-effort insertion immediately after the first `testharness.js` script.
+      if let Some(harness_idx) = html.find("testharness.js") {
+        let after = &html[harness_idx..];
+        if let Some(close_idx) = after.find("</script>") {
+          let insert_at = harness_idx + close_idx + "</script>".len();
+          let mut out = String::with_capacity(html.len() + reporter_tag.len() + 8);
+          out.push_str(&html[..insert_at]);
+          out.push('\n');
+          out.push_str(&reporter_tag);
+          out.push('\n');
+          out.push_str(&html[insert_at..]);
+          return out;
+        }
+      }
+
+      // Fallback: prepend both harness and reporter.
+      let harness_tag = format!(r#"<script src="{TESTHARNESS_JS}"></script>"#);
+      let mut out = String::with_capacity(html.len() + harness_tag.len() + reporter_tag.len() + 8);
+      out.push_str(&harness_tag);
+      out.push('\n');
+      out.push_str(&reporter_tag);
+      out.push('\n');
+      out.push_str(html);
+      out
+    }
+
+    let test_url = test.url();
+    let patched_html = patch_html_source(html_source);
+    let fetcher: Arc<dyn fastrender::resource::ResourceFetcher> =
+      Arc::new(WptResourceFetcher::from_wpt_fs(&self.fs));
+
+    let mut options = RenderOptions::default();
+    options.diagnostics_level = DiagnosticsLevel::Basic;
+    options.timeout = Some(timeout);
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      &patched_html,
+      &test_url,
+      options,
+      fetcher,
+    )
+    .map_err(|err| RunError::Js(err.to_string()))?;
+
+    if let Some(payload) = take_report_from_dom(&tab) {
+      let report: WptReport = serde_json::from_str(&payload).map_err(|err| {
+        RunError::Js(format!(
+          "failed to parse WPT report JSON from {REPORT_ATTR}: {err}; payload={payload:?}"
+        ))
+      })?;
+      let outcome = outcome_from_report(&report);
+      return Ok(RunResult {
+        outcome,
+        wpt_report: Some(report),
+      });
+    }
+
+    let limits = RunLimits {
+      max_tasks: self.config.max_tasks,
+      max_microtasks: self.config.max_microtasks,
+      max_wall_time: Some(timeout),
+    };
+    let outcome = tab
+      .run_event_loop_until_idle(limits)
+      .map_err(|err| RunError::Js(err.to_string()))?;
+
+    if let Some(payload) = take_report_from_dom(&tab) {
+      let report: WptReport = serde_json::from_str(&payload).map_err(|err| {
+        RunError::Js(format!(
+          "failed to parse WPT report JSON from {REPORT_ATTR}: {err}; payload={payload:?}"
+        ))
+      })?;
+      let outcome = outcome_from_report(&report);
+      return Ok(RunResult {
+        outcome,
+        wpt_report: Some(report),
+      });
+    }
+
+    match outcome {
+      RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::WallTime { .. }) => Ok(RunResult {
+        outcome: RunOutcome::Timeout,
+        wpt_report: None,
+      }),
+      other => {
+        let diagnostics = tab.diagnostics_snapshot();
+        let msg = match diagnostics {
+          Some(diag) if !diag.js_exceptions.is_empty() || !diag.console_messages.is_empty() => {
+            format!(
+              "HTML test produced no WPT report payload (event loop outcome={other:?}); js_exceptions={:?} console_messages={:?}",
+              diag.js_exceptions, diag.console_messages
+            )
+          }
+          _ => format!(
+            "HTML test produced no WPT report payload (event loop outcome={other:?})"
+          ),
+        };
+        Ok(RunResult {
+          outcome: RunOutcome::Error(msg),
+          wpt_report: None,
+        })
+      }
+    }
   }
 }
 

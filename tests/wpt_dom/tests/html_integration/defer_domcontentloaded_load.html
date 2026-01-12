@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML integration: defer ordering + DOMContentLoaded/load</title>
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/fastrender_testharness_report.js"></script>
+
+<script>
+  var log = [];
+  var ready_state_at_domcontentloaded = "";
+</script>
+
+<script defer src="resources/defer-1.js"></script>
+<script defer src="resources/defer-2.js"></script>
+
+<script>
+  var finish_defer_test;
+  var lifecycle_handler;
+
+  function on_lifecycle_event(e) {
+    if (e && e.type) {
+      log.push(e.type);
+      if (e.type === "DOMContentLoaded") {
+        ready_state_at_domcontentloaded = document.readyState;
+      }
+      if (e.type === "load") {
+        finish_defer_test();
+      }
+    } else {
+      log.push("(unknown)");
+      finish_defer_test();
+    }
+  }
+
+  function check_defer_domcontentloaded_load_order() {
+    assert_equals(
+      log.join(","),
+      "defer-1,defer-2,DOMContentLoaded,load",
+      "defer scripts should execute in document order before DOMContentLoaded; load should be last"
+    );
+    assert_equals(
+      ready_state_at_domcontentloaded,
+      "interactive",
+      "document.readyState should be interactive at DOMContentLoaded"
+    );
+    assert_equals(
+      document.readyState,
+      "complete",
+      "document.readyState should be complete after load"
+    );
+  }
+
+  function run_defer_domcontentloaded_load_test(t) {
+    finish_defer_test = t.step_func_done(check_defer_domcontentloaded_load_order);
+    lifecycle_handler = t.step_func(on_lifecycle_event);
+    document.addEventListener("DOMContentLoaded", lifecycle_handler);
+    window.addEventListener("load", lifecycle_handler);
+  }
+
+  async_test(
+    run_defer_domcontentloaded_load_test,
+    "defer ordering integrates with DOMContentLoaded/load lifecycle"
+  );
+</script>

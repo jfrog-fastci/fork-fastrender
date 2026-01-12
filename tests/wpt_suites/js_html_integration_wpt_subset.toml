@@ -1,0 +1,31 @@
+# Focused WPT subset for the js_html_integration workstream.
+#
+# This suite is intentionally small and deterministic (explicit test IDs) so it can run as part of
+# `cargo test` without pulling in the full WPT corpus.
+#
+# The corresponding integration test is:
+#   crates/js-wpt-dom-runner/tests/js_html_integration_wpt_subset.rs
+#
+# Test IDs are paths relative to `tests/wpt_dom/tests/`.
+
+tests = [
+  # Event loop: microtasks vs tasks (Promises, queueMicrotask, setTimeout(0)).
+  "event_loop/promise_then_before_timeout.window.js",
+  "event_loop/queue_microtask_before_timeout.window.js",
+  "event_loop/queue_microtask_order.window.js",
+  "event_loop/settimeout_args.window.js",
+
+  # Modules: dynamic import + import maps (runner-provided import map registration shim).
+  "modules/dynamic_import_basic.window.js",
+  "modules/dynamic_import_microtask_order.window.js",
+  "modules/dynamic_import_uses_import_map.window.js",
+
+  # HTML integration: real HTML script scheduling + lifecycle ordering.
+  "html_integration/defer_domcontentloaded_load.html",
+  "html_integration/dynamic_script_async_false_preserves_order.html",
+  "html_integration/module_script_importmap_before_domcontentloaded.html",
+
+  # Lifecycle: event constructors + visibilitychange handler semantics.
+  "lifecycle/beforeunload_pagetransition_event_constructors.window.js",
+  "lifecycle/visibilitychange_event_handler.window.js",
+]

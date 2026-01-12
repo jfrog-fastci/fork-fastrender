@@ -81,6 +81,135 @@ function __fastrender_wpt_optional_string(value) {
   return s;
 }
 
+// Best-effort JSON serialization for report payloads.
+//
+// Some FastRender JS embeddings do not provide a working `JSON.stringify` implementation. The WPT
+// HTML runner needs a stable string representation so it can read the final report out of the DOM.
+// Keep this conservative and deterministic.
+function __fastrender_wpt_json_escape_string(value) {
+  var s = __fastrender_wpt_safe_string(value);
+  var out = ['"'];
+  var hex = "0123456789abcdef";
+  for (var i = 0; i !== s.length; i++) {
+    var code = 0;
+    try {
+      code = s.charCodeAt(i);
+    } catch (_e) {
+      code = 0;
+    }
+    // `"` and `\`
+    if (code === 34) {
+      out.push('\\"');
+      continue;
+    }
+    if (code === 92) {
+      out.push("\\\\");
+      continue;
+    }
+    // Control characters.
+    if (code === 8) {
+      out.push("\\b");
+      continue;
+    }
+    if (code === 12) {
+      out.push("\\f");
+      continue;
+    }
+    if (code === 10) {
+      out.push("\\n");
+      continue;
+    }
+    if (code === 13) {
+      out.push("\\r");
+      continue;
+    }
+    if (code === 9) {
+      out.push("\\t");
+      continue;
+    }
+    if (code < 32) {
+      out.push("\\u00");
+      out.push(hex.charAt((code >> 4) & 15));
+      out.push(hex.charAt(code & 15));
+      continue;
+    }
+    out.push(s.charAt(i));
+  }
+  out.push('"');
+  return out.join("");
+}
+
+function __fastrender_wpt_json_serialize_maybe_string(value) {
+  if (value === null) return "null";
+  return __fastrender_wpt_json_escape_string(value);
+}
+
+function __fastrender_wpt_json_serialize_subtests(subtests) {
+  var out = ["["];
+  if (subtests && typeof subtests.length === "number") {
+    for (var i = 0; i !== subtests.length; i++) {
+      var st = subtests[i];
+      if (i !== 0) out.push(",");
+      out.push("{");
+      if (st && typeof st === "object") {
+        out.push('"name":');
+        out.push(__fastrender_wpt_json_escape_string(st.name));
+        out.push(',"status":');
+        out.push(__fastrender_wpt_json_escape_string(st.status));
+        if (st.message !== undefined) {
+          out.push(',"message":');
+          out.push(__fastrender_wpt_json_serialize_maybe_string(st.message));
+        }
+        if (st.stack !== undefined) {
+          out.push(',"stack":');
+          out.push(__fastrender_wpt_json_serialize_maybe_string(st.stack));
+        }
+      } else {
+        out.push('"name":"(invalid subtest)","status":"error"');
+      }
+      out.push("}");
+    }
+  }
+  out.push("]");
+  return out.join("");
+}
+
+function __fastrender_wpt_json_serialize_payload(payload) {
+  // Prefer native JSON.stringify when available and working.
+  try {
+    if (typeof JSON !== "undefined" && JSON && typeof JSON.stringify === "function") {
+      var native = JSON.stringify(payload);
+      if (typeof native === "string" && native !== "") {
+        return native;
+      }
+    }
+  } catch (_e) {}
+
+  // Manual serialization fallback (deterministic, only supports the report payload shape).
+  try {
+    var out = ["{"];
+    out.push('"file_status":');
+    out.push(__fastrender_wpt_json_escape_string(payload && payload.file_status));
+    out.push(',"harness_status":');
+    out.push(__fastrender_wpt_json_escape_string(payload && payload.harness_status));
+    if (payload && payload.message !== undefined) {
+      out.push(',"message":');
+      out.push(__fastrender_wpt_json_serialize_maybe_string(payload.message));
+    }
+    if (payload && payload.stack !== undefined) {
+      out.push(',"stack":');
+      out.push(__fastrender_wpt_json_serialize_maybe_string(payload.stack));
+    }
+    out.push(',"subtests":');
+    out.push(__fastrender_wpt_json_serialize_subtests(payload && payload.subtests));
+    out.push("}");
+    return out.join("");
+  } catch (_e2) {}
+
+  // Final fallback: emit a minimal error payload so the runner doesn't hang.
+  return '{"file_status":"error","harness_status":"error","message":"failed to serialize WPT report payload","subtests":[]}';
+}
+
 function __fastrender_wpt_unknown_status(value) {
   // Prefer raw numeric codes when available.
   if (typeof value === "number" && value === value) {
@@ -128,6 +257,26 @@ function __fastrender_wpt_emit_payload(payload) {
       __fastrender_wpt_global.__fastrender_wpt_last_payload = payload;
     }
   } catch (_e) {}
+
+  // Persist the report payload into the DOM for runners that cannot read JS globals directly
+  // (e.g. BrowserTab-based HTML execution).
+  //
+  // This is best-effort and must never throw: reporter failures should surface as harness errors,
+  // not crash the test.
+  try {
+    if (
+      typeof document !== "undefined" &&
+      document &&
+      document.documentElement &&
+      typeof document.documentElement.setAttribute === "function"
+    ) {
+      var json = __fastrender_wpt_json_serialize_payload(payload);
+      document.documentElement.setAttribute(
+        "data-fastrender-wpt-report",
+        json
+      );
+    }
+  } catch (_e_dom) {}
 
   try {
     if (__fastrender_wpt_reporter_original_report) {
