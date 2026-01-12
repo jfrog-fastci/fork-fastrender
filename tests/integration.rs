@@ -19,13 +19,13 @@ mod iframe;
 mod image_integration;
 mod grid;
 mod misc;
-mod progress;
 mod render;
 mod scroll;
 mod tree;
 mod ui;
 mod guards;
 mod js;
+mod progress;
 mod resource;
 mod wpt;
 
