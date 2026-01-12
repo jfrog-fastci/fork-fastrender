@@ -1798,6 +1798,89 @@ pub fn proxy_revocable(
   Ok(Value::Object(result))
 }
 
+/// `Proxy` constructor (ECMA-262).
+///
+/// Proxy must be called with `new`; calling it as a normal function throws a TypeError.
+pub fn proxy_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("Proxy constructor requires 'new'"))
+}
+
+pub fn proxy_constructor_construct(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let handler_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  let handler = require_object(handler_val)?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  Ok(Value::Object(proxy))
+}
+
+/// `Proxy.revocable(target, handler)` (ECMA-262).
+pub fn proxy_revocable(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-proxy.revocable
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let handler_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  let handler = require_object(handler_val)?;
+  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  scope.push_root(Value::Object(proxy))?;
+
+  // Create the revocation function. It captures the proxy object in a native slot.
+  let revoke_name = scope.alloc_string("revoke")?;
+  scope.push_root(Value::String(revoke_name))?;
+  let revoke_slots = [Value::Object(proxy)];
+  let revoke_fn =
+    scope.alloc_native_function_with_slots(intr.proxy_revoker_call(), None, revoke_name, 0, &revoke_slots)?;
+  scope.push_root(Value::Object(revoke_fn))?;
+  set_function_job_realm_to_current(vm, &mut scope, revoke_fn)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(revoke_fn, Some(intr.function_prototype()))?;
+
+  // Create the result object `{ proxy, revoke }`.
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intr.object_prototype()))?;
+
+  let proxy_key = PropertyKey::from_string(scope.alloc_string("proxy")?);
+  scope.define_property(out, proxy_key, data_desc(Value::Object(proxy), true, false, true))?;
+  let revoke_key = PropertyKey::from_string(scope.alloc_string("revoke")?);
+  scope.define_property(out, revoke_key, data_desc(Value::Object(revoke_fn), true, false, true))?;
+
+  Ok(Value::Object(out))
+}
+
 /// Revocation function created by `Proxy.revocable`.
 pub fn proxy_revoker(
   _vm: &mut Vm,
