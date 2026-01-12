@@ -82,6 +82,13 @@ const _VM_JS_RUNTIME_VM_REALM_AND_HEAP_MUT_GUARD: fn(
 #[derive(Clone)]
 pub struct WindowRealmConfig {
   pub document_url: String,
+  /// Identifier of the session storage namespace that this realm's `sessionStorage` should bind to.
+  ///
+  /// Realms created via [`WindowRealmConfig::new`] allocate a fresh namespace by default (isolated
+  /// `sessionStorage`), but embedders can override this via
+  /// [`WindowRealmConfig::with_session_storage_namespace`] to persist session storage across
+  /// navigations within the same top-level browsing context.
+  pub session_storage_namespace: u64,
   /// Media context used for `window.devicePixelRatio`, viewport geometry, and `matchMedia()`.
   ///
   /// This should generally match the renderer's layout/styling media context for the document so
@@ -113,6 +120,17 @@ pub struct WindowRealmConfig {
   pub web_storage_quota_utf16_bytes: usize,
 }
 
+static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_SESSION_STORAGE_NAMESPACE: AtomicU64 = AtomicU64::new(1);
+
+fn alloc_window_id() -> u64 {
+  NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn alloc_session_storage_namespace() -> u64 {
+  NEXT_SESSION_STORAGE_NAMESPACE.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Navigation request emitted by `window.location` APIs (`href`, `assign`, `replace`).
 ///
 /// WindowRealm itself does not perform document loading/navigation; it records a pending request and
@@ -127,6 +145,7 @@ impl WindowRealmConfig {
   pub fn new(document_url: impl Into<String>) -> Self {
     Self {
       document_url: document_url.into(),
+      session_storage_namespace: alloc_session_storage_namespace(),
       media: MediaContext::screen(800.0, 600.0),
       current_script_state: None,
       console_sink: None,
@@ -141,6 +160,11 @@ impl WindowRealmConfig {
 
   pub fn with_media_context(mut self, media: MediaContext) -> Self {
     self.media = media;
+    self
+  }
+
+  pub fn with_session_storage_namespace(mut self, id: u64) -> Self {
+    self.session_storage_namespace = id;
     self
   }
 
@@ -211,6 +235,8 @@ pub struct WindowRealm {
 }
 
 pub(crate) struct WindowRealmUserData {
+  pub(crate) window_id: u64,
+  pub(crate) session_storage_namespace: u64,
   document_url: String,
   pub(crate) base_url: Option<String>,
   pending_navigation: Option<LocationNavigationRequest>,
@@ -242,6 +268,8 @@ pub(crate) struct WindowRealmUserData {
 impl std::fmt::Debug for WindowRealmUserData {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("WindowRealmUserData")
+      .field("window_id", &self.window_id)
+      .field("session_storage_namespace", &self.session_storage_namespace)
       .field("document_url", &self.document_url)
       .field("base_url", &self.base_url)
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
@@ -259,12 +287,16 @@ impl WindowRealmUserData {
   pub(crate) fn new(
     document_url: String,
     module_loader: ModuleLoaderHandle,
+    session_storage_namespace: u64,
     crypto_rng_seed: Option<u64>,
   ) -> Self {
     let crypto_rng_state = crypto_rng_seed
       .map(crate::js::window_crypto::crypto_rng_seed_from_u64)
       .unwrap_or_else(|| crate::js::window_crypto::crypto_rng_seed_from_document_url(&document_url));
+    let window_id = alloc_window_id();
     Self {
+      window_id,
+      session_storage_namespace,
       base_url: Some(document_url.clone()),
       pending_navigation: None,
       document_url,
@@ -322,6 +354,7 @@ impl WindowRealm {
     runtime.vm.set_user_data(WindowRealmUserData::new(
       config.document_url.clone(),
       Rc::clone(&module_loader),
+      config.session_storage_namespace,
       config.crypto_rng_seed,
     ));
     let realm_id = runtime.realm().id();
@@ -446,6 +479,15 @@ impl WindowRealm {
 
   pub fn realm(&self) -> &Realm {
     self.runtime.realm()
+  }
+
+  pub fn window_id(&self) -> u64 {
+    self
+      .runtime
+      .vm
+      .user_data::<WindowRealmUserData>()
+      .expect("WindowRealm missing WindowRealmUserData")
+      .window_id
   }
 
   pub fn global_object(&self) -> GcObject {
@@ -19756,6 +19798,22 @@ mod tests {
       !document.is_dirty(),
       "no-op attribute writes must not mark BrowserDocumentDom2 dirty"
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_id_and_session_storage_namespace_are_unique() -> Result<(), VmError> {
+    let config_a = WindowRealmConfig::new("about:blank");
+    let config_b = WindowRealmConfig::new("about:blank");
+    assert_ne!(
+      config_a.session_storage_namespace,
+      config_b.session_storage_namespace
+    );
+
+    let realm_a = new_realm(config_a)?;
+    let realm_b = new_realm(config_b)?;
+    assert_ne!(realm_a.window_id(), realm_b.window_id());
     Ok(())
   }
 

@@ -47,6 +47,7 @@ pub struct VmJsBrowserTabExecutor {
   inline_module_id_counter: u64,
   document_url: String,
   document_referrer_policy: ReferrerPolicy,
+  session_storage_namespace: u64,
   pending_module_evaluation: Option<PendingModuleEvaluation>,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
@@ -69,6 +70,9 @@ impl VmJsBrowserTabExecutor {
       inline_module_id_counter: 0,
       document_url: "about:blank".to_string(),
       document_referrer_policy: ReferrerPolicy::default(),
+      session_storage_namespace: WindowRealmConfig::new("about:blank").session_storage_namespace,
+      document_referrer_policy: ReferrerPolicy::default(),
+      session_storage_namespace: WindowRealmConfig::new("about:blank").session_storage_namespace,
       pending_module_evaluation: None,
       pending_navigation: None,
       diagnostics: None,
@@ -204,7 +208,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let mut config = WindowRealmConfig::new(url)
       .with_media_context(media)
-      .with_current_script_state(current_script.clone());
+      .with_current_script_state(current_script.clone())
+      .with_session_storage_namespace(self.session_storage_namespace);
 
     if let Some(diag) = self.diagnostics.clone() {
       let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
