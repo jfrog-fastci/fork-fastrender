@@ -93,6 +93,7 @@ const ENV_COLOR_GLYPH_CACHE_ITEMS: &str = "FASTR_COLOR_GLYPH_CACHE_ITEMS";
 const ENV_COLOR_GLYPH_CACHE_BYTES: &str = "FASTR_COLOR_GLYPH_CACHE_BYTES";
 const ENV_TEXT_SUBPIXEL_AA_GAMMA: &str = "FASTR_TEXT_SUBPIXEL_AA_GAMMA";
 const ENV_TEXT_SUBPIXEL_AA_DIAGNOSTICS: &str = "FASTR_TEXT_SUBPIXEL_AA_DIAGNOSTICS";
+const ENV_TEXT_SNAP_GLYPH_POSITIONS: &str = "FASTR_TEXT_SNAP_GLYPH_POSITIONS";
 const SCALE_QUANTIZATION: f32 = 512.0;
 const DEADLINE_STRIDE: usize = 256;
 const SUBPIXEL_AA_SCALE_X: u32 = 3;
@@ -934,6 +935,32 @@ pub(crate) fn concat_transforms(a: Transform, b: Transform) -> Transform {
   )
 }
 
+#[inline]
+fn is_translation_only_transform(transform: Transform) -> bool {
+  // Quantization/numerical noise from matrix math can produce values like `0.99999994`.
+  const EPS: f32 = 1e-6;
+  (transform.sx - 1.0).abs() <= EPS
+    && (transform.sy - 1.0).abs() <= EPS
+    && transform.kx.abs() <= EPS
+    && transform.ky.abs() <= EPS
+}
+
+#[inline]
+fn snap_device_x(coord: f32, translation: f32) -> f32 {
+  // Chrome's fixture baseline harness disables font subpixel positioning, meaning glyph origins
+  // land on whole device pixels. Our text shaping/layout can produce fractional coordinates even
+  // in otherwise axis-aligned scenes, so snap the glyph translation in device space to improve
+  // fixture-vs-Chrome diffs.
+  if !coord.is_finite() || !translation.is_finite() {
+    return coord;
+  }
+  let device = coord + translation;
+  if !device.is_finite() {
+    return coord;
+  }
+  device.round() - translation
+}
+
 fn color_glyph_transform(skew: f32, glyph_x: f32, glyph_y: f32, left: f32, top: f32) -> Transform {
   // Color glyph rasters are already in device pixels with a Y-down origin, so we
   // only need to add the synthetic oblique shear in X and translate to the glyph
@@ -1070,6 +1097,7 @@ pub struct TextRasterizer {
   /// Renderer for color glyph formats
   color_renderer: ColorFontRenderer,
   hinting_enabled: bool,
+  snap_glyph_positions: bool,
   subpixel_aa_enabled: bool,
   subpixel_aa_gamma: Option<SubpixelAAGammaLut>,
   subpixel_scratch: SubpixelAAScratch,
@@ -1160,6 +1188,11 @@ impl TextRasterizer {
     let toggles = runtime::runtime_toggles();
     let hinting_enabled = toggles.truthy("FASTR_TEXT_HINTING");
     let subpixel_aa_enabled = toggles.truthy("FASTR_TEXT_SUBPIXEL_AA");
+    let default_snap_glyph_positions = toggles.truthy("FASTR_DETERMINISTIC_PAINT")
+      && hinting_enabled
+      && !subpixel_aa_enabled;
+    let snap_glyph_positions =
+      toggles.truthy_with_default(ENV_TEXT_SNAP_GLYPH_POSITIONS, default_snap_glyph_positions);
     let subpixel_aa_diagnostics = if toggles.truthy(ENV_TEXT_SUBPIXEL_AA_DIAGNOSTICS) {
       Some(SubpixelAADiagnostics::default())
     } else {
@@ -1182,6 +1215,7 @@ impl TextRasterizer {
       color_cache,
       color_renderer,
       hinting_enabled,
+      snap_glyph_positions,
       subpixel_aa_enabled,
       subpixel_aa_gamma,
       subpixel_scratch: SubpixelAAScratch::default(),
@@ -1747,13 +1781,20 @@ impl TextRasterizer {
     let transform_signature = cache_transform_signature(state.transform, rotation);
     let glyph_opacity = color.a.clamp(0.0, 1.0);
     let color_for_glyph = Rgba { a: 1.0, ..color };
+    let snap_glyph_positions = self.snap_glyph_positions
+      && rotation.is_none()
+      && synthetic_oblique.abs() <= 1e-6
+      && is_translation_only_transform(state.transform);
 
     // Render each glyph
     for glyph in glyphs {
       check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
         .map_err(Error::Render)?;
       // Calculate glyph position
-      let glyph_x = cursor_x + glyph.x_offset;
+      let mut glyph_x = cursor_x + glyph.x_offset;
+      if snap_glyph_positions {
+        glyph_x = snap_device_x(glyph_x, state.transform.tx);
+      }
       let glyph_y = baseline_y + cursor_y + glyph.y_offset;
 
       // Color glyph (if available) is painted after the outline stroke/fill so the fill lands on top.
@@ -2605,6 +2646,37 @@ mod tests {
   fn test_text_rasterizer_with_capacity() {
     let rasterizer = TextRasterizer::with_cache_capacity(500);
     assert_eq!(rasterizer.cache_size(), 0);
+  }
+
+  #[test]
+  fn text_rasterizer_enables_glyph_position_snapping_in_deterministic_hinted_mode() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_DETERMINISTIC_PAINT".to_string(), "1".to_string()),
+      ("FASTR_TEXT_HINTING".to_string(), "1".to_string()),
+      ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "0".to_string()),
+    ])));
+    runtime::with_runtime_toggles(toggles, || {
+      let rasterizer = TextRasterizer::new();
+      assert!(rasterizer.snap_glyph_positions);
+    });
+  }
+
+  #[test]
+  fn snap_device_x_aligns_to_integer_device_pixels() {
+    for (coord, tx) in [
+      (0.0, 0.0),
+      (0.25, 0.0),
+      (10.2, 0.3),
+      (-5.8, 2.25),
+      (1234.567, -0.125),
+    ] {
+      let snapped = snap_device_x(coord, tx);
+      let device = snapped + tx;
+      assert!(
+        (device - device.round()).abs() < 1e-6,
+        "expected snapped coord to land on device pixel: coord={coord} tx={tx} -> snapped={snapped} device={device}",
+      );
+    }
   }
 
   #[test]
