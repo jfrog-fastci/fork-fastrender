@@ -146,3 +146,41 @@ fn float_context_many_range_queries_complete_before_deadline() {
     Err(err) => panic!("unexpected deadline error: {err:?}"),
   }
 }
+
+#[test]
+fn float_context_incremental_float_placement_complete_before_deadline() {
+  let _delay_guard = TestRenderDelayGuard::set(Some(0));
+
+  // Regression target: float-heavy pages often interleave float placement with many range queries.
+  // If `FloatRangeCache` rebuilds from scratch for every inserted float, placement devolves into
+  // O(n^2) heap construction.
+  let deadline = RenderDeadline::new(Some(Duration::from_millis(1500)), None);
+
+  const CONTAINING_WIDTH: f32 = 200.0;
+  const FLOAT_WIDTH: f32 = 80.0;
+  const FLOAT_HEIGHT: f32 = 1.0;
+  const FLOAT_COUNT: usize = 10_000;
+
+  let result = with_deadline(Some(&deadline), || {
+    let mut ctx = FloatContext::new(CONTAINING_WIDTH);
+    for i in 0..FLOAT_COUNT {
+      let side = if i % 2 == 0 {
+        crate::layout::float_context::FloatSide::Left
+      } else {
+        crate::layout::float_context::FloatSide::Right
+      };
+      let (x, y) = ctx.compute_float_position(side, FLOAT_WIDTH, FLOAT_HEIGHT, 0.0);
+      ctx.add_float_at(side, x, y, FLOAT_WIDTH, FLOAT_HEIGHT);
+    }
+    ctx.take_timeout_error()
+  });
+
+  match result {
+    Ok(None) => {}
+    Ok(Some(LayoutError::Timeout { elapsed })) => panic!(
+      "expected incremental float placement to finish under deadline, timed out after {elapsed:?}"
+    ),
+    Ok(Some(other)) => panic!("unexpected layout error: {other:?}"),
+    Err(err) => panic!("unexpected deadline error: {err:?}"),
+  }
+}

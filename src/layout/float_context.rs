@@ -436,6 +436,112 @@ impl FloatRangeCache {
     self.sweep_state = FloatSweepState::new(float_count, events);
   }
 
+  fn split_segment_at(&mut self, y: f32) {
+    if self.segments.is_empty() || !y.is_finite() {
+      return;
+    }
+
+    // Fast path: if a segment already starts at y, nothing to do.
+    if self
+      .segments
+      .binary_search_by(|seg| seg.start_y.total_cmp(&y))
+      .is_ok()
+    {
+      return;
+    }
+
+    let idx = self.segment_index(y);
+    let Some(seg) = self.segments.get(idx).copied() else {
+      return;
+    };
+    if y <= seg.start_y || y >= seg.end_y {
+      return;
+    }
+
+    self.segments[idx].end_y = y;
+    self.segments.insert(
+      idx + 1,
+      FloatRangeSegment {
+        start_y: y,
+        end_y: seg.end_y,
+        left_edge: seg.left_edge,
+        right_edge: seg.right_edge,
+      },
+    );
+  }
+
+  fn apply_rect_float(&mut self, start_y: f32, end_y: f32, side: FloatSide, edge: f32) {
+    if self.segments.is_empty() || start_y.is_nan() || end_y.is_nan() {
+      return;
+    }
+
+    let (y0, y1) = if start_y <= end_y {
+      (start_y, end_y)
+    } else {
+      (end_y, start_y)
+    };
+    if !(y0 < y1) {
+      return;
+    }
+
+    let cache_start = self.segments.first().map(|seg| seg.start_y).unwrap_or(y0);
+    let cache_end = self
+      .segments
+      .last()
+      .map(|seg| seg.end_y)
+      .unwrap_or(cache_start);
+
+    let overlap_start = y0.max(cache_start);
+    let overlap_end = y1.min(cache_end);
+    if !(overlap_start < overlap_end) {
+      return;
+    }
+
+    // Ensure segment boundaries align with the new float's span.
+    self.split_segment_at(overlap_start);
+    self.split_segment_at(overlap_end);
+
+    let start_idx = self.segment_index(overlap_start);
+    let end_idx = match self
+      .segments
+      .binary_search_by(|seg| seg.start_y.total_cmp(&overlap_end))
+    {
+      Ok(idx) => idx,
+      Err(idx) => idx,
+    };
+
+    for seg in self.segments.iter_mut().take(end_idx).skip(start_idx) {
+      match side {
+        FloatSide::Left => {
+          seg.left_edge = seg.left_edge.max(edge);
+        }
+        FloatSide::Right => {
+          seg.right_edge = seg.right_edge.min(edge);
+        }
+      }
+    }
+
+    // Coalesce any adjacent segments that were split but ended up with identical constraints.
+    let mut i = start_idx.saturating_sub(1);
+    let mut stop_idx = end_idx.min(self.segments.len());
+    while i + 1 < self.segments.len() && i < stop_idx {
+      let next = i + 1;
+      let can_merge = self.segments[i].end_y == self.segments[next].start_y
+        && self.segments[i].left_edge == self.segments[next].left_edge
+        && self.segments[i].right_edge == self.segments[next].right_edge;
+      if can_merge {
+        let end_y = self.segments[next].end_y;
+        self.segments[i].end_y = end_y;
+        self.segments.remove(next);
+        if stop_idx > 0 {
+          stop_idx -= 1;
+        }
+        continue;
+      }
+      i += 1;
+    }
+  }
+
   fn segment_index(&self, y: f32) -> usize {
     if self.segments.is_empty() {
       return 0;
@@ -1378,6 +1484,15 @@ impl FloatContext {
       FloatSide::Left => (&mut self.left_floats, FloatSide::Left),
       FloatSide::Right => (&mut self.right_floats, FloatSide::Right),
     };
+    let affects_range_cache_incrementally = float_info.shape.is_none();
+    let rect_edge_for_range_cache = if affects_range_cache_incrementally {
+      Some(match side {
+        FloatSide::Left => float_info.right_edge(),
+        FloatSide::Right => float_info.left_edge(),
+      })
+    } else {
+      None
+    };
     let (start_y, end_y) = float_vertical_span(&float_info);
     // CSS 2.1 §9.5.1: a float's outer top may not be higher than the outer top of any earlier
     // float. Track a monotonic "ceiling" so even if callers accidentally pass a smaller `min_y`
@@ -1415,13 +1530,57 @@ impl FloatContext {
     // Keep the sweep state usable across interleaved insertions + monotonic queries (the common
     // pattern during BFC layout). Resetting here destroys the incremental sweep and turns
     // float-heavy pages into O(n^2) boundary rescans.
-    let mut sweep_state = self.sweep_state.borrow_mut();
-    sweep_state.active.push(false);
-    sweep_state.pending_events.push(Reverse(start_event));
-    sweep_state.pending_events.push(Reverse(end_event));
-    sweep_state.pending_start_events.push(Reverse(start_event));
-    let current_y = sweep_state.current_y;
-    self.advance_sweep_to(current_y, &mut sweep_state);
+    {
+      let mut sweep_state = self.sweep_state.borrow_mut();
+      sweep_state.active.push(false);
+      sweep_state.pending_events.push(Reverse(start_event));
+      sweep_state.pending_events.push(Reverse(end_event));
+      sweep_state.pending_start_events.push(Reverse(start_event));
+      let current_y = sweep_state.current_y;
+      self.advance_sweep_to(current_y, &mut sweep_state);
+    }
+
+    // Keep the range cache incrementally up to date so float placement does not rebuild
+    // `FloatSweepState` heaps from scratch for every inserted float.
+    //
+    // `FloatRangeCache` segments model the piecewise-constant max/min constraints imposed by
+    // rectangular floats, which can be updated via range max/min when a new float is added.
+    //
+    // `shape-outside` floats are rare and are intentionally handled by invalidating the cache.
+    let mut range_cache = self.range_cache.borrow_mut();
+    if affects_range_cache_incrementally {
+      let expected_prev_float_count = id;
+      let expected_prev_events_len = self.events.len().saturating_sub(2);
+      if range_cache.float_count == expected_prev_float_count
+        && range_cache.events_len == expected_prev_events_len
+        && range_cache.sweep_state.active.len() == expected_prev_float_count
+      {
+        range_cache.float_count = self.float_map.len();
+        range_cache.events_len = self.events.len();
+        if let Some(edge) = rect_edge_for_range_cache {
+          range_cache.apply_rect_float(start_y, end_y, side, edge);
+        }
+        range_cache.sweep_state.active.push(false);
+        range_cache
+          .sweep_state
+          .pending_events
+          .push(Reverse(start_event));
+        range_cache
+          .sweep_state
+          .pending_events
+          .push(Reverse(end_event));
+        range_cache
+          .sweep_state
+          .pending_start_events
+          .push(Reverse(start_event));
+        let current_y = range_cache.sweep_state.current_y;
+        self.advance_sweep_to(current_y, &mut range_cache.sweep_state);
+      } else {
+        range_cache.ensure_current(self.float_map.len(), &self.events);
+      }
+    } else {
+      range_cache.ensure_current(self.float_map.len(), &self.events);
+    }
   }
 
   /// Get the left edge at a given Y position (accounting for left floats)
