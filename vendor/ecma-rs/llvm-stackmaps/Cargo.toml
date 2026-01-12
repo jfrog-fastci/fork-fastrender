@@ -10,3 +10,4 @@ publish = false
 
 [dev-dependencies]
 tempfile = { workspace = true }
+proptest = { workspace = true }

@@ -205,7 +205,11 @@ where
         e.insert(base_old);
       }
       Entry::Occupied(e) => {
-        debug_assert_eq!(*e.get(), base_old, "base location value changed while snapshotting");
+        debug_assert_eq!(
+          *e.get(),
+          base_old,
+          "base location value changed while snapshotting"
+        );
       }
     }
 
@@ -315,9 +319,28 @@ mod tests {
   use std::collections::HashMap;
   use std::process::Command;
 
+  use proptest::prelude::*;
   use tempfile::tempdir;
 
   use super::*;
+
+  #[derive(Default)]
+  struct MapAccess {
+    values: HashMap<StackMapLocation, usize>,
+  }
+
+  impl LocationValueAccess for MapAccess {
+    type Error = ();
+
+    fn read_usize(&mut self, loc: &StackMapLocation) -> Result<usize, Self::Error> {
+      Ok(*self.values.get(loc).unwrap_or(&0))
+    }
+
+    fn write_usize(&mut self, loc: &StackMapLocation, value: usize) -> Result<(), Self::Error> {
+      self.values.insert(loc.clone(), value);
+      Ok(())
+    }
+  }
 
   #[test]
   fn statepoint_record_view_decodes_header_deopt_and_roots() {
@@ -385,6 +408,133 @@ mod tests {
   }
 
   #[test]
+  fn statepoint_record_view_rejects_non_constant_header_locations() {
+    let locs = vec![
+      StackMapLocation::Register {
+        dwarf_reg: 0,
+        size: 8,
+      },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+    ];
+    match StatepointRecordView::new(&locs).unwrap_err() {
+      StatepointRecordError::HeaderNotConstant {
+        header_index,
+        found_kind,
+      } => {
+        assert_eq!(header_index, 1);
+        assert_eq!(found_kind, "Register");
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
+
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Register {
+        dwarf_reg: 0,
+        size: 8,
+      },
+      StackMapLocation::Constant { value: 0, size: 8 },
+    ];
+    match StatepointRecordView::new(&locs).unwrap_err() {
+      StatepointRecordError::HeaderNotConstant {
+        header_index,
+        found_kind,
+      } => {
+        assert_eq!(header_index, 2);
+        assert_eq!(found_kind, "Register");
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
+
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+    ];
+    match StatepointRecordView::new(&locs).unwrap_err() {
+      StatepointRecordError::HeaderNotConstant {
+        header_index,
+        found_kind,
+      } => {
+        assert_eq!(header_index, 3);
+        assert_eq!(found_kind, "Indirect");
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn statepoint_record_view_rejects_deopt_count_that_exceeds_locations() {
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 5, size: 8 },
+      StackMapLocation::Register {
+        dwarf_reg: 1,
+        size: 8,
+      },
+    ];
+    match StatepointRecordView::new(&locs).unwrap_err() {
+      StatepointRecordError::DeoptCountExceedsLocations {
+        deopt_count,
+        remaining_locations,
+      } => {
+        assert_eq!(deopt_count, 5);
+        assert_eq!(remaining_locations, 1);
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn statepoint_record_view_splits_deopt_and_gc_locations_for_multiple_roots() {
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 1, size: 8 },
+      // One deopt arg.
+      StackMapLocation::Register {
+        dwarf_reg: 1,
+        size: 8,
+      },
+      // Root #0
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 16,
+        size: 8,
+      },
+      // Root #1
+      StackMapLocation::Register {
+        dwarf_reg: 2,
+        size: 8,
+      },
+      StackMapLocation::Register {
+        dwarf_reg: 3,
+        size: 8,
+      },
+    ];
+
+    let view = StatepointRecordView::new(&locs).unwrap();
+    assert_eq!(view.deopt_locations, &locs[3..4]);
+    assert_eq!(view.gc_root_count(), 2);
+
+    let roots: Vec<_> = view.gc_roots().collect();
+    assert_eq!(roots.len(), 2);
+    assert_eq!(roots[0], (&locs[4], &locs[5]));
+    assert_eq!(roots[1], (&locs[6], &locs[7]));
+  }
+
+  #[test]
   fn relocate_statepoint_derived_roots_uses_base_and_derived_semantics() {
     let locs = vec![
       StackMapLocation::Constant { value: 0, size: 8 },
@@ -415,24 +565,6 @@ mod tests {
     ];
 
     let view = StatepointRecordView::new(&locs).unwrap();
-
-    #[derive(Default)]
-    struct MapAccess {
-      values: HashMap<StackMapLocation, usize>,
-    }
-
-    impl LocationValueAccess for MapAccess {
-      type Error = ();
-
-      fn read_usize(&mut self, loc: &StackMapLocation) -> Result<usize, Self::Error> {
-        Ok(*self.values.get(loc).unwrap_or(&0))
-      }
-
-      fn write_usize(&mut self, loc: &StackMapLocation, value: usize) -> Result<(), Self::Error> {
-        self.values.insert(loc.clone(), value);
-        Ok(())
-      }
-    }
 
     let base = StackMapLocation::Indirect {
       dwarf_reg: 7,
@@ -483,24 +615,6 @@ mod tests {
 
     let view = StatepointRecordView::new(&locs).unwrap();
 
-    #[derive(Default)]
-    struct MapAccess {
-      values: HashMap<StackMapLocation, usize>,
-    }
-
-    impl LocationValueAccess for MapAccess {
-      type Error = ();
-
-      fn read_usize(&mut self, loc: &StackMapLocation) -> Result<usize, Self::Error> {
-        Ok(*self.values.get(loc).unwrap_or(&0))
-      }
-
-      fn write_usize(&mut self, loc: &StackMapLocation, value: usize) -> Result<(), Self::Error> {
-        self.values.insert(loc.clone(), value);
-        Ok(())
-      }
-    }
-
     let base = StackMapLocation::Indirect {
       dwarf_reg: 7,
       offset: 8,
@@ -522,7 +636,10 @@ mod tests {
     })
     .unwrap();
 
-    assert_eq!(access.values[&base], 0x2000, "base location must be relocated");
+    assert_eq!(
+      access.values[&base], 0x2000,
+      "base location must be relocated"
+    );
     assert_eq!(
       access.values[&derived], 0x2000,
       "derived location must be updated even when it is a distinct location holding the same value"
@@ -560,24 +677,6 @@ mod tests {
     ];
 
     let view = StatepointRecordView::new(&locs).unwrap();
-
-    #[derive(Default)]
-    struct MapAccess {
-      values: HashMap<StackMapLocation, usize>,
-    }
-
-    impl LocationValueAccess for MapAccess {
-      type Error = ();
-
-      fn read_usize(&mut self, loc: &StackMapLocation) -> Result<usize, Self::Error> {
-        Ok(*self.values.get(loc).unwrap_or(&0))
-      }
-
-      fn write_usize(&mut self, loc: &StackMapLocation, value: usize) -> Result<(), Self::Error> {
-        self.values.insert(loc.clone(), value);
-        Ok(())
-      }
-    }
 
     let base = StackMapLocation::Indirect {
       dwarf_reg: 7,
@@ -636,24 +735,6 @@ mod tests {
 
     let view = StatepointRecordView::new(&locs).unwrap();
 
-    #[derive(Default)]
-    struct MapAccess {
-      values: HashMap<StackMapLocation, usize>,
-    }
-
-    impl LocationValueAccess for MapAccess {
-      type Error = ();
-
-      fn read_usize(&mut self, loc: &StackMapLocation) -> Result<usize, Self::Error> {
-        Ok(*self.values.get(loc).unwrap_or(&0))
-      }
-
-      fn write_usize(&mut self, loc: &StackMapLocation, value: usize) -> Result<(), Self::Error> {
-        self.values.insert(loc.clone(), value);
-        Ok(())
-      }
-    }
-
     let base = StackMapLocation::Indirect {
       dwarf_reg: 7,
       offset: 8,
@@ -673,6 +754,164 @@ mod tests {
 
     assert_eq!(access.values[&base], 0);
     assert_eq!(access.values[&derived], 0);
+  }
+
+  #[test]
+  fn relocate_statepoint_derived_roots_supports_multiple_location_kinds_and_dedupes_by_base_value()
+  {
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      // Root #0: Register → Register
+      StackMapLocation::Register {
+        dwarf_reg: 1,
+        size: 8,
+      },
+      StackMapLocation::Register {
+        dwarf_reg: 2,
+        size: 8,
+      },
+      // Root #1: Indirect → Indirect
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 16,
+        size: 8,
+      },
+      // Root #2: Direct → Direct
+      StackMapLocation::Direct {
+        address: 0x10,
+        size: 8,
+      },
+      StackMapLocation::Direct {
+        address: 0x18,
+        size: 8,
+      },
+    ];
+
+    let view = StatepointRecordView::new(&locs).unwrap();
+    assert_eq!(view.gc_root_count(), 3);
+
+    let mut access = MapAccess::default();
+    // Root #0: base/derived in registers.
+    access.values.insert(locs[3].clone(), 0x1000);
+    access.values.insert(locs[4].clone(), 0x1010);
+    // Root #1: base/derived in stack slots, but shares the same base value as root #0.
+    access.values.insert(locs[5].clone(), 0x1000);
+    access.values.insert(locs[6].clone(), 0x1020);
+    // Root #2: null base should remain null and force derived null.
+    access.values.insert(locs[7].clone(), 0);
+    access.values.insert(locs[8].clone(), 0xDEAD);
+
+    let mut relocate_calls = 0usize;
+    relocate_statepoint_derived_roots(&view, &mut access, |ptr| {
+      relocate_calls += 1;
+      ptr.wrapping_add(0x10_000)
+    })
+    .unwrap();
+
+    assert_eq!(
+      relocate_calls, 1,
+      "relocator must be called once per unique non-null base value"
+    );
+
+    let base_new = 0x11_000;
+    assert_eq!(access.values[&locs[3]], base_new);
+    assert_eq!(access.values[&locs[5]], base_new);
+    assert_eq!(access.values[&locs[7]], 0);
+
+    assert_eq!(access.values[&locs[4]], base_new + 0x10);
+    assert_eq!(access.values[&locs[6]], base_new + 0x20);
+    assert_eq!(access.values[&locs[8]], 0);
+  }
+
+  #[test]
+  fn relocate_statepoint_derived_roots_handles_wrapping_deltas() {
+    let locs = vec![
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Constant { value: 0, size: 8 },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 8,
+        size: 8,
+      },
+      StackMapLocation::Indirect {
+        dwarf_reg: 7,
+        offset: 16,
+        size: 8,
+      },
+    ];
+
+    let view = StatepointRecordView::new(&locs).unwrap();
+    let base = locs[3].clone();
+    let derived = locs[4].clone();
+
+    let mut access = MapAccess::default();
+    access.values.insert(base.clone(), 0x2000);
+    access.values.insert(derived.clone(), 0x1ff0);
+
+    relocate_statepoint_derived_roots(&view, &mut access, |_ptr| 0x3000).unwrap();
+
+    assert_eq!(access.values[&base], 0x3000);
+    assert_eq!(access.values[&derived], 0x2ff0);
+  }
+
+  proptest! {
+    #[test]
+    fn relocate_statepoint_derived_roots_preserves_delta_through_relocation(
+      base_old in any::<usize>(),
+      derived_old in any::<usize>(),
+      relocate_delta in any::<usize>(),
+      base_kind in 0u8..3,
+      derived_kind in 0u8..3,
+    ) {
+      let base_loc = match base_kind {
+        0 => StackMapLocation::Register { dwarf_reg: 1, size: 8 },
+        1 => StackMapLocation::Indirect { dwarf_reg: 7, offset: 8, size: 8 },
+        _ => StackMapLocation::Direct { address: 0x10, size: 8 },
+      };
+      let derived_loc = match derived_kind {
+        0 => StackMapLocation::Register { dwarf_reg: 2, size: 8 },
+        1 => StackMapLocation::Indirect { dwarf_reg: 7, offset: 16, size: 8 },
+        _ => StackMapLocation::Direct { address: 0x18, size: 8 },
+      };
+
+      let locs = vec![
+        StackMapLocation::Constant { value: 0, size: 8 },
+        StackMapLocation::Constant { value: 0, size: 8 },
+        StackMapLocation::Constant { value: 0, size: 8 },
+        base_loc.clone(),
+        derived_loc.clone(),
+      ];
+      let view = StatepointRecordView::new(&locs).unwrap();
+
+      let mut access = MapAccess::default();
+      access.values.insert(base_loc.clone(), base_old);
+      access.values.insert(derived_loc.clone(), derived_old);
+
+      relocate_statepoint_derived_roots(&view, &mut access, |ptr| ptr.wrapping_add(relocate_delta))
+        .unwrap();
+
+      let base_new = if base_old == 0 {
+        0
+      } else {
+        base_old.wrapping_add(relocate_delta)
+      };
+      let derived_new = if base_old == 0 || derived_old == 0 || base_new == 0 {
+        0
+      } else {
+        base_new.wrapping_add(derived_old.wrapping_sub(base_old))
+      };
+
+      prop_assert_eq!(access.values[&base_loc], base_new);
+      prop_assert_eq!(access.values[&derived_loc], derived_new);
+    }
   }
 
   #[test]
