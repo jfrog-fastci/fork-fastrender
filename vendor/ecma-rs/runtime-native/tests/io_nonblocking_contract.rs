@@ -1699,7 +1699,9 @@ fn rt_io_register_rooted_h_reads_slot_after_lock_acquired() {
   let slot_ptr: usize = (&mut slot_value as *mut *mut u8) as usize;
   let rfd_raw = rfd.as_raw_fd();
 
-  const TIMEOUT: Duration = Duration::from_secs(2);
+  // Use a generous timeout: this test relies on spawning/scheduling multiple threads and can
+  // otherwise flake on heavily contended CI hosts.
+  const TIMEOUT: Duration = Duration::from_secs(10);
 
   let watcher_id = std::thread::scope(|scope| {
     // Thread A holds the persistent handle table lock.

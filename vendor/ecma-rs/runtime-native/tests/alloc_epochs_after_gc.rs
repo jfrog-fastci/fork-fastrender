@@ -97,7 +97,12 @@ fn alloc_fast_paths_are_invalidated_after_gc() {
         unsafe {
           marker_slot(obj).write(marker);
         }
-        slots[slot_idx] = obj as usize;
+        // These slots are registered via `register_global_root_slot`, meaning stop-the-world GC can
+        // update them in-place when objects move. Use volatile stores so the compiler can't keep
+        // them in registers across safepoints.
+        unsafe {
+          std::ptr::write_volatile(&mut slots[slot_idx], obj as usize);
+        }
         expected[slot_idx] = marker;
         gen = gen.wrapping_add(1);
       }
@@ -123,7 +128,9 @@ fn alloc_fast_paths_are_invalidated_after_gc() {
           unsafe {
             marker_slot(obj).write(marker);
           }
-          slots[slot_idx] = obj as usize;
+          unsafe {
+            std::ptr::write_volatile(&mut slots[slot_idx], obj as usize);
+          }
           expected[slot_idx] = marker;
           gen = gen.wrapping_add(1);
         }
@@ -133,7 +140,9 @@ fn alloc_fast_paths_are_invalidated_after_gc() {
 
         if tick % CHECK_EVERY_TICKS == 0 {
           for i in 0..ROOTS {
-            let obj = slots[i] as *mut u8;
+            // GC can mutate `slots` behind Rust's back; ensure we observe the latest value after
+            // each safepoint.
+            let obj = unsafe { std::ptr::read_volatile(&slots[i]) as *mut u8 };
             assert!(!obj.is_null());
             let got = unsafe { marker_slot(obj).read() };
             assert_eq!(got, expected[i], "marker corruption in thread {thread_idx} slot {i}");
