@@ -2841,6 +2841,91 @@ fn multicol_columns_continue_across_pages() {
 }
 
 #[test]
+fn multicol_break_after_page_forces_new_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          #a { height: 150px; }
+          #b { height: 10px; break-after: page; }
+          #c { height: 150px; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div id="a">A</div>
+          <div id="b">B</div>
+          <div id="c">C</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected break-after: page inside multicol to force a new page; got {} pages",
+    page_roots.len()
+  );
+  assert!(find_text(page_roots[0], "C").is_none(), "C should not appear on page 1");
+  assert!(find_text(page_roots[1], "C").is_some(), "C should appear on page 2");
+}
+
+#[test]
+fn multicol_break_after_always_only_forces_column_break() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          #a { height: 150px; }
+          #b { height: 10px; break-after: always; }
+          #c { height: 150px; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div id="a">A</div>
+          <div id="b">B</div>
+          <div id="c">C</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    1,
+    "expected break-after: always inside multicol to stay within the same page; got {} pages",
+    page_roots.len()
+  );
+  let (left, right) = count_text_fragments_by_column(page_roots[0], "C");
+  assert!(
+    left == 0 && right > 0,
+    "expected C to appear in the second column after a column break; got left={left} right={right}"
+  );
+}
+
+#[test]
 fn multicol_columns_align_to_page_boundary_when_offset_within_page() {
   let html = r#"
     <html>

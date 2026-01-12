@@ -1415,6 +1415,28 @@ impl FragmentationAnalyzer {
     total_extent: f32,
   ) -> Result<Vec<f32>, LayoutError> {
     let effective_total = total_extent.max(self.content_extent);
+    self.boundaries_with_effective_total(fragmentainer_size, effective_total)
+  }
+
+  /// Like [`Self::boundaries`], but treats `total_extent` as authoritative instead of always
+  /// expanding it to `max(total_extent, self.content_extent)`.
+  ///
+  /// This is useful when callers intentionally want to clamp the analyzed extent (e.g. when
+  /// fragmenting a clipped subtree where tiny visual overflow beyond the clipped range should not
+  /// create additional fragments).
+  pub fn boundaries_clamped_total(
+    &mut self,
+    fragmentainer_size: f32,
+    total_extent: f32,
+  ) -> Result<Vec<f32>, LayoutError> {
+    self.boundaries_with_effective_total(fragmentainer_size, total_extent)
+  }
+
+  fn boundaries_with_effective_total(
+    &mut self,
+    fragmentainer_size: f32,
+    effective_total: f32,
+  ) -> Result<Vec<f32>, LayoutError> {
     if fragmentainer_size <= 0.0 {
       return Ok(vec![0.0, effective_total]);
     }

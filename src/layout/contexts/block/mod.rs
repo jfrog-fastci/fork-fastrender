@@ -7858,7 +7858,7 @@ impl BlockFormattingContext {
           let mut fragment_count_for = |height: f32| -> Result<usize, LayoutError> {
             Ok(
               set_analyzer
-                .boundaries(height, content_extent)?
+                .boundaries_clamped_total(height, content_extent)?
                 .len()
                 .saturating_sub(1),
             )
@@ -7898,7 +7898,8 @@ impl BlockFormattingContext {
             }
           };
 
-          let mut set_boundaries = set_analyzer.boundaries(used_height, content_extent)?;
+          let mut set_boundaries =
+            set_analyzer.boundaries_clamped_total(used_height, content_extent)?;
           if let Some(last) = set_boundaries.last_mut() {
             *last = set_total_extent;
           }
@@ -7935,12 +7936,7 @@ impl BlockFormattingContext {
     // reintroduced via marker fragments at column-set boundaries.
     fn rewrite_pagination_breaks_in_place(node: &mut FragmentNode) {
       let rewrite = |value: crate::style::types::BreakBetween| match value {
-        crate::style::types::BreakBetween::Always
-        // `Always` is a forced break in all fragmentation contexts. When we are laying out a
-        // columnized subtree under a fragmentainer size hint (paged multicol), the break should be
-        // handled by the column fragmentation context and must not leak into the outer page
-        // paginator.
-        | crate::style::types::BreakBetween::Page
+        crate::style::types::BreakBetween::Page
         | crate::style::types::BreakBetween::Left
         | crate::style::types::BreakBetween::Right
         | crate::style::types::BreakBetween::Recto

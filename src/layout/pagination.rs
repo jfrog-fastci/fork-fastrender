@@ -291,16 +291,184 @@ fn flow_start_for_token_in_layout(
   parent_block_size: f32,
   axis: &FragmentAxis,
 ) -> Option<f32> {
+  // `BreakToken::Block` and `BreakToken::Replaced` need special handling: a single box can produce
+  // multiple fragments with the same `box_id` (e.g. multi-column layout clones fragments into
+  // columns). Tokens store an offset into the *original* box, so resolving them needs to pick the
+  // fragment slice whose `slice_info` range contains that offset.
+  //
+  // Scan the fragment tree to find the matching fragment with the greatest `slice_offset` that
+  // still covers the requested offset. This avoids accidentally resolving to an earlier fragment
+  // when multiple fragments overlap due to rounding or when the offset lands exactly on a slice
+  // boundary.
+  match token {
+    BreakToken::Block { box_id, offset_bits } => {
+      let mut offset = f32::from_bits(*offset_bits);
+      if !offset.is_finite() || offset < 0.0 {
+        offset = 0.0;
+      }
+      let mut best: Option<(f32, f32)> = None; // (slice_offset, abs_pos)
+
+      fn walk(
+        node: &FragmentNode,
+        box_id: usize,
+        offset: f32,
+        abs_start: f32,
+        parent_block_size: f32,
+        axis: &FragmentAxis,
+        best: &mut Option<(f32, f32)>,
+      ) {
+        let node_block_size = axis.block_size(&node.bounds);
+        let (node_abs_start, node_abs_end) =
+          axis.flow_range(abs_start, parent_block_size, &node.bounds);
+        if matches!(node.content, FragmentContent::Block { box_id: Some(id) } if id == box_id) {
+          let mut slice_offset = node.slice_info.slice_offset;
+          if !slice_offset.is_finite() || slice_offset < 0.0 {
+            slice_offset = 0.0;
+          }
+          let span = (node_abs_end - node_abs_start).max(0.0);
+          let rel = offset - slice_offset;
+          if rel + EPSILON >= 0.0 && rel <= span + EPSILON {
+            let rel = rel.clamp(0.0, span);
+            let abs_pos = node_abs_start + rel;
+            match best {
+              Some((best_slice, best_pos))
+                if *best_slice > slice_offset + EPSILON
+                  || ((*best_slice - slice_offset).abs() <= EPSILON
+                    && *best_pos >= abs_pos - EPSILON) => {}
+              _ => *best = Some((slice_offset, abs_pos)),
+            }
+          }
+        }
+
+        for child in node.children.iter() {
+          walk(
+            child,
+            box_id,
+            offset,
+            node_abs_start,
+            node_block_size,
+            axis,
+            best,
+          );
+        }
+      }
+
+      walk(
+        node,
+        *box_id,
+        offset,
+        abs_start,
+        parent_block_size,
+        axis,
+        &mut best,
+      );
+      return best.map(|(_, pos)| pos);
+    }
+    BreakToken::Replaced { box_id, offset_bits } => {
+      let mut offset = f32::from_bits(*offset_bits);
+      if !offset.is_finite() || offset < 0.0 {
+        offset = 0.0;
+      }
+      let zero_bits = 0.0f32.to_bits();
+      if *offset_bits == zero_bits {
+        // Special case: line-start tokens for inline replaced elements use `offset_bits = 0` and
+        // should resolve to the containing line box start.
+        fn walk_line(
+          node: &FragmentNode,
+          box_id: usize,
+          abs_start: f32,
+          parent_block_size: f32,
+          axis: &FragmentAxis,
+        ) -> Option<f32> {
+          let node_block_size = axis.block_size(&node.bounds);
+          let (node_abs_start, _node_abs_end) =
+            axis.flow_range(abs_start, parent_block_size, &node.bounds);
+          if matches!(node.content, FragmentContent::Line { .. }) && line_contains_replaced(node, box_id)
+          {
+            return Some(node_abs_start);
+          }
+          for child in node.children.iter() {
+            if let Some(found) = walk_line(child, box_id, node_abs_start, node_block_size, axis) {
+              return Some(found);
+            }
+          }
+          None
+        }
+
+        if let Some(found) = walk_line(node, *box_id, abs_start, parent_block_size, axis) {
+          return Some(found);
+        }
+      }
+
+      let mut best: Option<(f32, f32)> = None; // (slice_offset, abs_pos)
+
+      fn walk(
+        node: &FragmentNode,
+        box_id: usize,
+        offset: f32,
+        abs_start: f32,
+        parent_block_size: f32,
+        axis: &FragmentAxis,
+        best: &mut Option<(f32, f32)>,
+      ) {
+        let node_block_size = axis.block_size(&node.bounds);
+        let (node_abs_start, node_abs_end) =
+          axis.flow_range(abs_start, parent_block_size, &node.bounds);
+        if matches!(node.content, FragmentContent::Replaced { box_id: Some(id), .. } if id == box_id)
+        {
+          let mut slice_offset = node.slice_info.slice_offset;
+          if !slice_offset.is_finite() || slice_offset < 0.0 {
+            slice_offset = 0.0;
+          }
+          let span = (node_abs_end - node_abs_start).max(0.0);
+          let rel = offset - slice_offset;
+          if rel + EPSILON >= 0.0 && rel <= span + EPSILON {
+            let rel = rel.clamp(0.0, span);
+            let abs_pos = node_abs_start + rel;
+            match best {
+              Some((best_slice, best_pos))
+                if *best_slice > slice_offset + EPSILON
+                  || ((*best_slice - slice_offset).abs() <= EPSILON
+                    && *best_pos >= abs_pos - EPSILON) => {}
+              _ => *best = Some((slice_offset, abs_pos)),
+            }
+          }
+        }
+
+        for child in node.children.iter() {
+          walk(
+            child,
+            box_id,
+            offset,
+            node_abs_start,
+            node_block_size,
+            axis,
+            best,
+          );
+        }
+      }
+
+      walk(
+        node,
+        *box_id,
+        offset,
+        abs_start,
+        parent_block_size,
+        axis,
+        &mut best,
+      );
+      return best.map(|(_, pos)| pos);
+    }
+    _ => {}
+  }
+
   let node_block_size = axis.block_size(&node.bounds);
   let (node_abs_start, node_abs_end) = axis.flow_range(abs_start, parent_block_size, &node.bounds);
 
   match token {
     BreakToken::Start => return Some(0.0),
     BreakToken::End => return None,
-    BreakToken::Block {
-      box_id,
-      offset_bits,
-    } => {
+    BreakToken::Block { box_id, offset_bits } => {
       if matches!(node.content, FragmentContent::Block { box_id: Some(id) } if id == *box_id) {
         let mut offset = f32::from_bits(*offset_bits);
         if !offset.is_finite() {
@@ -318,10 +486,7 @@ fn flow_start_for_token_in_layout(
         return Some(node_abs_start);
       }
     }
-    BreakToken::Replaced {
-      box_id,
-      offset_bits,
-    } => {
+    BreakToken::Replaced { box_id, offset_bits } => {
       let zero_bits = 0.0f32.to_bits();
       if *offset_bits == zero_bits
         && matches!(node.content, FragmentContent::Line { .. })
@@ -380,24 +545,34 @@ fn next_break_token_after_pos(
       }
     }
     FragmentContent::Block { box_id: Some(id) } => {
+      // `BreakToken::Block` offsets are expressed in the coordinate space of the original
+      // unfragmented box. Use this fragment slice's offset so the token is unambiguous when a box
+      // has already been fragmented (e.g. multi-column layout produces multiple fragments with the
+      // same `box_id`).
+      let mut slice_offset = node.slice_info.slice_offset;
+      if !slice_offset.is_finite() || slice_offset < 0.0 {
+        slice_offset = 0.0;
+      }
       consider(
         best,
         node_abs_start,
         BreakToken::Block {
           box_id: *id,
-          offset_bits: f32_to_canonical_bits(0.0),
+          offset_bits: f32_to_canonical_bits(slice_offset),
         },
       );
     }
-    FragmentContent::Replaced {
-      box_id: Some(id), ..
-    } => {
+    FragmentContent::Replaced { box_id: Some(id), .. } => {
+      let mut slice_offset = node.slice_info.slice_offset;
+      if !slice_offset.is_finite() || slice_offset < 0.0 {
+        slice_offset = 0.0;
+      }
       consider(
         best,
         node_abs_start,
         BreakToken::Replaced {
           box_id: *id,
-          offset_bits: f32_to_canonical_bits(0.0),
+          offset_bits: f32_to_canonical_bits(slice_offset),
         },
       );
     }
@@ -416,20 +591,30 @@ fn line_start_containing_pos(
   parent_block_size: f32,
   axis: &FragmentAxis,
   best: &mut Option<f32>,
+  under_column: bool,
 ) {
   let node_block_size = axis.block_size(&node.bounds);
   let (node_abs_start, node_abs_end) = axis.flow_range(abs_start, parent_block_size, &node.bounds);
 
-  if matches!(node.content, FragmentContent::Line { .. })
+  let under_column = under_column
+    || node.fragmentainer.column_index.is_some()
+    || node.fragmentainer.column_set_index.is_some();
+  // Avoid snapping page boundaries to line-box starts inside nested fragmentation contexts such as
+  // multi-column layout. Column content is already laid out in its own fragmentation coordinate
+  // system, and treating those line fragments as part of the main paginated flow can cause the
+  // continuation token to jump backwards (duplicating content across pages).
+  let under_column = under_column || node.fragmentation.is_some();
+
+  let contains_pos = matches!(node.content, FragmentContent::Line { .. })
     && pos > node_abs_start + EPSILON
     && pos < node_abs_end - EPSILON
-    && node_abs_end > node_abs_start + EPSILON
-  {
+    && node_abs_end > node_abs_start + EPSILON;
+  if contains_pos && !under_column {
     *best = Some(best.map_or(node_abs_start, |prev| prev.max(node_abs_start)));
   }
 
   for child in node.children.iter() {
-    line_start_containing_pos(child, pos, node_abs_start, node_block_size, axis, best);
+    line_start_containing_pos(child, pos, node_abs_start, node_block_size, axis, best, under_column);
   }
 }
 
@@ -473,7 +658,13 @@ fn continuation_token_for_pos(
 
       match &node.content {
         FragmentContent::Block { box_id: Some(id) } => {
-          let offset = (pos - node_abs_start).max(0.0);
+          let mut offset = (pos - node_abs_start).max(0.0);
+          // Encode the offset into the original unfragmented box by adding the slice offset for
+          // this fragment.
+          let slice_offset = node.slice_info.slice_offset;
+          if slice_offset.is_finite() && slice_offset > 0.0 {
+            offset += slice_offset;
+          }
           consider(
             false,
             BreakToken::Block {
@@ -482,10 +673,12 @@ fn continuation_token_for_pos(
             },
           );
         }
-        FragmentContent::Replaced {
-          box_id: Some(id), ..
-        } => {
-          let offset = (pos - node_abs_start).max(0.0);
+        FragmentContent::Replaced { box_id: Some(id), .. } => {
+          let mut offset = (pos - node_abs_start).max(0.0);
+          let slice_offset = node.slice_info.slice_offset;
+          if slice_offset.is_finite() && slice_offset > 0.0 {
+            offset += slice_offset;
+          }
           consider(
             true,
             BreakToken::Replaced {
@@ -1603,6 +1796,7 @@ pub fn paginate_fragment_tree(
           root_block_size,
           &axis,
           &mut containing_line,
+          false,
         );
         if let Some(line_start) = containing_line {
           // If the page boundary falls inside a line box, prefer moving the entire line to the next
@@ -1648,8 +1842,9 @@ pub fn paginate_fragment_tree(
             flow_start_for_token_in_layout(&layout.root, &next_token, 0.0, root_block_size, &axis)
               .unwrap_or(total_height);
           if next_start <= start + EPSILON {
-            next_token = continuation_token_for_pos(&layout.root, end, 0.0, root_block_size, &axis)
-              .unwrap_or(BreakToken::End);
+            next_token =
+              continuation_token_for_pos(&layout.root, end, 0.0, root_block_size, &axis)
+                .unwrap_or(BreakToken::End);
           }
         }
       }
