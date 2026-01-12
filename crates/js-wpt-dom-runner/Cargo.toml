@@ -19,7 +19,10 @@ anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 conformance-harness = { path = "../../vendor/ecma-rs/conformance-harness" }
-fastrender = { path = "../.." }
+# `js-wpt-dom-runner` exercises the JS/DOM runtime and doesn't need renderer-only optional features
+# like AVIF decoding. Keep the dependency lean so `cargo test -p xtask` doesn't pull in heavy native
+# builds like `libaom-sys`.
+fastrender = { path = "../..", default-features = false }
 globset = "0.4"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
