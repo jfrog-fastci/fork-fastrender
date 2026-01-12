@@ -183,30 +183,30 @@ pub struct DomWrapperMeta {
   pub realm_id: RealmId,
 }
 
-#[derive(Clone, Copy)]
-struct DomPrototypes {
-  event_target: GcObject,
-  node: GcObject,
-  document_type: GcObject,
-  text: GcObject,
-  comment: GcObject,
-  processing_instruction: GcObject,
-  element: GcObject,
-  html_element: GcObject,
-  html_input_element: GcObject,
-  html_select_element: GcObject,
-  html_text_area_element: GcObject,
-  html_option_element: GcObject,
-  html_form_element: GcObject,
-  html_div_element: GcObject,
-  html_span_element: GcObject,
-  html_paragraph_element: GcObject,
-  html_anchor_element: GcObject,
-  html_image_element: GcObject,
-  html_link_element: GcObject,
-  html_script_element: GcObject,
-  document: GcObject,
-  document_fragment: GcObject,
+#[derive(Debug, Clone, Copy)]
+pub struct DomPlatformPrototypes {
+  pub event_target: GcObject,
+  pub node: GcObject,
+  pub document_type: GcObject,
+  pub text: GcObject,
+  pub comment: GcObject,
+  pub processing_instruction: GcObject,
+  pub element: GcObject,
+  pub html_element: GcObject,
+  pub html_input_element: GcObject,
+  pub html_select_element: GcObject,
+  pub html_text_area_element: GcObject,
+  pub html_option_element: GcObject,
+  pub html_form_element: GcObject,
+  pub html_div_element: GcObject,
+  pub html_span_element: GcObject,
+  pub html_paragraph_element: GcObject,
+  pub html_anchor_element: GcObject,
+  pub html_image_element: GcObject,
+  pub html_link_element: GcObject,
+  pub html_script_element: GcObject,
+  pub document: GcObject,
+  pub document_fragment: GcObject,
 }
 
 /// Per-realm platform-object registry for `dom2` node wrappers inside a `vm-js` realm.
@@ -220,7 +220,7 @@ struct DomPrototypes {
 /// be rooted explicitly.
 pub struct DomPlatform {
   realm_id: RealmId,
-  prototypes: DomPrototypes,
+  prototypes: DomPlatformPrototypes,
   prototype_roots: Vec<RootId>,
   wrappers_by_node: HashMap<DomNodeKey, WeakGcObject>,
   meta_by_wrapper: HashMap<WeakGcObject, DomWrapperMeta>,
@@ -228,6 +228,192 @@ pub struct DomPlatform {
 }
 
 impl DomPlatform {
+  fn lookup_global_interface_prototype(
+    scope: &mut Scope<'_>,
+    global: GcObject,
+    interface: &'static str,
+    err: &'static str,
+  ) -> Result<GcObject, VmError> {
+    let base = scope.heap().stack_root_len();
+    scope.push_root(Value::Object(global))?;
+    let ctor_key_s = scope.alloc_string(interface)?;
+    scope.push_root(Value::String(ctor_key_s))?;
+    let ctor_key = PropertyKey::from_string(ctor_key_s);
+    let ctor_obj = match scope
+      .heap()
+      .object_get_own_data_property_value(global, &ctor_key)
+    {
+      Ok(Some(Value::Object(obj))) => obj,
+      Ok(Some(_)) | Ok(None) | Err(VmError::PropertyNotData) => {
+        scope.heap_mut().truncate_stack_roots(base);
+        return Err(VmError::InvariantViolation(err));
+      }
+      Err(other) => {
+        scope.heap_mut().truncate_stack_roots(base);
+        return Err(other);
+      }
+    };
+    scope.push_root(Value::Object(ctor_obj))?;
+
+    let proto_key_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(proto_key_s))?;
+    let proto_key = PropertyKey::from_string(proto_key_s);
+    let proto_obj = match scope
+      .heap()
+      .object_get_own_data_property_value(ctor_obj, &proto_key)
+    {
+      Ok(Some(Value::Object(obj))) => obj,
+      Ok(Some(_)) | Ok(None) | Err(VmError::PropertyNotData) => {
+        scope.heap_mut().truncate_stack_roots(base);
+        return Err(VmError::InvariantViolation(err));
+      }
+      Err(other) => {
+        scope.heap_mut().truncate_stack_roots(base);
+        return Err(other);
+      }
+    };
+
+    scope.heap_mut().truncate_stack_roots(base);
+    Ok(proto_obj)
+  }
+
+  pub fn new_with_prototypes(
+    scope: &mut Scope<'_>,
+    realm: &Realm,
+    prototypes: DomPlatformPrototypes,
+  ) -> Result<Self, VmError> {
+    let realm_id = realm.id();
+
+    // Root prototypes: `DomPlatform` lives on the host side and is not traced by GC.
+    //
+    // Root each object immediately after acquiring it. Under a tight heap limit, subsequent
+    // allocations can trigger GC, and unrooted prototypes would be collected (turning their
+    // handles into stale values).
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(22);
+    for proto in [
+      prototypes.event_target,
+      prototypes.node,
+      prototypes.document_type,
+      prototypes.text,
+      prototypes.comment,
+      prototypes.processing_instruction,
+      prototypes.element,
+      prototypes.html_element,
+      prototypes.html_input_element,
+      prototypes.html_select_element,
+      prototypes.html_text_area_element,
+      prototypes.html_option_element,
+      prototypes.html_form_element,
+      prototypes.html_div_element,
+      prototypes.html_span_element,
+      prototypes.html_paragraph_element,
+      prototypes.html_anchor_element,
+      prototypes.html_image_element,
+      prototypes.html_link_element,
+      prototypes.html_script_element,
+      prototypes.document,
+      prototypes.document_fragment,
+    ] {
+      prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto))?);
+    }
+
+    Ok(Self {
+      realm_id,
+      prototypes,
+      prototype_roots,
+      wrappers_by_node: HashMap::new(),
+      meta_by_wrapper: HashMap::new(),
+      last_gc_runs: scope.heap().gc_runs(),
+    })
+  }
+
+  pub fn new_from_global(
+    scope: &mut Scope<'_>,
+    realm: &Realm,
+    global: GcObject,
+  ) -> Result<Self, VmError> {
+    let realm_id = realm.id();
+
+    // Root prototypes: `DomPlatform` lives on the host side and is not traced by GC.
+    //
+    // Root each object immediately after lookup. Under a tight heap limit, subsequent allocations
+    // can trigger GC, and unrooted prototypes would be collected (turning their handles into stale
+    // values).
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(22);
+
+    macro_rules! lookup_proto {
+      ($name:literal) => {{
+        let proto = Self::lookup_global_interface_prototype(
+          scope,
+          global,
+          $name,
+          concat!(
+            "DomPlatform::new_from_global expected globalThis.",
+            $name,
+            ".prototype"
+          ),
+        )?;
+        prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto))?);
+        proto
+      }};
+    }
+
+    let proto_event_target = lookup_proto!("EventTarget");
+    let proto_node = lookup_proto!("Node");
+    let proto_document_type = lookup_proto!("DocumentType");
+    let proto_text = lookup_proto!("Text");
+    let proto_comment = lookup_proto!("Comment");
+    let proto_processing_instruction = lookup_proto!("ProcessingInstruction");
+    let proto_element = lookup_proto!("Element");
+    let proto_html_element = lookup_proto!("HTMLElement");
+    let proto_html_input_element = lookup_proto!("HTMLInputElement");
+    let proto_html_select_element = lookup_proto!("HTMLSelectElement");
+    let proto_html_text_area_element = lookup_proto!("HTMLTextAreaElement");
+    let proto_html_option_element = lookup_proto!("HTMLOptionElement");
+    let proto_html_form_element = lookup_proto!("HTMLFormElement");
+    let proto_html_div_element = lookup_proto!("HTMLDivElement");
+    let proto_html_span_element = lookup_proto!("HTMLSpanElement");
+    let proto_html_paragraph_element = lookup_proto!("HTMLParagraphElement");
+    let proto_html_anchor_element = lookup_proto!("HTMLAnchorElement");
+    let proto_html_image_element = lookup_proto!("HTMLImageElement");
+    let proto_html_link_element = lookup_proto!("HTMLLinkElement");
+    let proto_html_script_element = lookup_proto!("HTMLScriptElement");
+    let proto_document = lookup_proto!("Document");
+    let proto_document_fragment = lookup_proto!("DocumentFragment");
+
+    Ok(Self {
+      realm_id,
+      prototypes: DomPlatformPrototypes {
+        event_target: proto_event_target,
+        node: proto_node,
+        document_type: proto_document_type,
+        text: proto_text,
+        comment: proto_comment,
+        processing_instruction: proto_processing_instruction,
+        element: proto_element,
+        html_element: proto_html_element,
+        html_input_element: proto_html_input_element,
+        html_select_element: proto_html_select_element,
+        html_text_area_element: proto_html_text_area_element,
+        html_option_element: proto_html_option_element,
+        html_form_element: proto_html_form_element,
+        html_div_element: proto_html_div_element,
+        html_span_element: proto_html_span_element,
+        html_paragraph_element: proto_html_paragraph_element,
+        html_anchor_element: proto_html_anchor_element,
+        html_image_element: proto_html_image_element,
+        html_link_element: proto_html_link_element,
+        html_script_element: proto_html_script_element,
+        document: proto_document,
+        document_fragment: proto_document_fragment,
+      },
+      prototype_roots,
+      wrappers_by_node: HashMap::new(),
+      meta_by_wrapper: HashMap::new(),
+      last_gc_runs: scope.heap().gc_runs(),
+    })
+  }
+
   pub fn new(scope: &mut Scope<'_>, realm: &Realm) -> Result<Self, VmError> {
     let realm_id = realm.id();
 
@@ -236,7 +422,7 @@ impl DomPlatform {
     // Root each object immediately after allocation. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(19);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(22);
 
     // Prototype objects.
     let proto_event_target = scope.alloc_object()?;
@@ -356,7 +542,7 @@ impl DomPlatform {
 
     Ok(Self {
       realm_id,
-      prototypes: DomPrototypes {
+      prototypes: DomPlatformPrototypes {
         event_target: proto_event_target,
         node: proto_node,
         document_type: proto_document_type,
@@ -841,7 +1027,8 @@ mod tests {
   use crate::dom2::{NodeId, NodeKind};
   use std::collections::HashMap;
   use vm_js::{
-    Heap, HeapLimits, PropertyKey, Realm, Value, Vm, VmError, VmOptions, WeakGcObject,
+    GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Value, Vm,
+    VmError, VmOptions, WeakGcObject,
   };
 
   fn split_runtime_realm(runtime: &mut vm_js::JsRuntime) -> (&Realm, &mut Heap) {
@@ -856,6 +1043,127 @@ mod tests {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
     vm_js::JsRuntime::new(vm, heap)
+  }
+
+  fn alloc_key(scope: &mut vm_js::Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
+    let s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(s))?;
+    Ok(PropertyKey::from_string(s))
+  }
+
+  fn get_global_interface_prototype(
+    scope: &mut vm_js::Scope<'_>,
+    global: GcObject,
+    name: &str,
+  ) -> Result<GcObject, VmError> {
+    let ctor_key = alloc_key(scope, name)?;
+    let ctor_val = scope
+      .heap()
+      .object_get_own_data_property_value(global, &ctor_key)?
+      .ok_or(VmError::TypeError("missing global constructor"))?;
+    let Value::Object(ctor_obj) = ctor_val else {
+      return Err(VmError::TypeError("global constructor is not an object"));
+    };
+    scope.push_root(Value::Object(ctor_obj))?;
+
+    let proto_key = alloc_key(scope, "prototype")?;
+    let proto_val = scope
+      .heap()
+      .object_get_own_data_property_value(ctor_obj, &proto_key)?
+      .ok_or(VmError::TypeError("missing constructor.prototype"))?;
+    let Value::Object(proto_obj) = proto_val else {
+      return Err(VmError::TypeError("constructor.prototype is not an object"));
+    };
+    Ok(proto_obj)
+  }
+
+  fn install_stub_interface(
+    scope: &mut vm_js::Scope<'_>,
+    global: GcObject,
+    name: &str,
+    parent_proto: GcObject,
+  ) -> Result<GcObject, VmError> {
+    // If a real interface already exists (e.g. installed by WebIDL bindings), reuse it.
+    if let Ok(existing) = get_global_interface_prototype(scope, global, name) {
+      return Ok(existing);
+    }
+
+    let proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto, Some(parent_proto))?;
+
+    let ctor = scope.alloc_object()?;
+    scope.push_root(Value::Object(ctor))?;
+
+    let proto_key = alloc_key(scope, "prototype")?;
+    scope.define_property(
+      ctor,
+      proto_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(proto),
+          writable: true,
+        },
+      },
+    )?;
+
+    let ctor_key = alloc_key(scope, name)?;
+    scope.define_property(
+      global,
+      ctor_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(ctor),
+          writable: true,
+        },
+      },
+    )?;
+    Ok(proto)
+  }
+
+  fn install_dom_interface_stubs_for_platform(
+    scope: &mut vm_js::Scope<'_>,
+    global: GcObject,
+    node_proto: GcObject,
+  ) -> Result<(GcObject, GcObject), VmError> {
+    // Interfaces inheriting from Node.
+    for name in [
+      "DocumentType",
+      "Text",
+      "Comment",
+      "ProcessingInstruction",
+      "Document",
+      "DocumentFragment",
+    ] {
+      let _ = install_stub_interface(scope, global, name, node_proto)?;
+    }
+
+    // Element + HTMLElement + HTML*Element chain.
+    let element_proto = install_stub_interface(scope, global, "Element", node_proto)?;
+    let html_element_proto = install_stub_interface(scope, global, "HTMLElement", element_proto)?;
+    for name in [
+      "HTMLInputElement",
+      "HTMLSelectElement",
+      "HTMLTextAreaElement",
+      "HTMLOptionElement",
+      "HTMLFormElement",
+      "HTMLDivElement",
+      "HTMLSpanElement",
+      "HTMLParagraphElement",
+      "HTMLAnchorElement",
+      "HTMLImageElement",
+      "HTMLLinkElement",
+      "HTMLScriptElement",
+    ] {
+      let _ = install_stub_interface(scope, global, name, html_element_proto)?;
+    }
+    Ok((element_proto, html_element_proto))
   }
 
   #[test]
@@ -1138,6 +1446,94 @@ mod tests {
     assert_eq!(value, Value::Number(new_id.index() as f64));
 
     scope.heap_mut().remove_root(root);
+    Ok(())
+  }
+
+  #[test]
+  fn new_from_global_adopts_realm_interface_prototypes_for_wrappers() -> Result<(), VmError> {
+    let mut runtime = make_runtime()?;
+    let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
+
+    crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let node_proto = get_global_interface_prototype(&mut scope, global, "Node")?;
+    scope.push_root(Value::Object(node_proto))?;
+
+    let _ = install_dom_interface_stubs_for_platform(&mut scope, global, node_proto)?;
+
+    let mut platform = DomPlatform::new_from_global(&mut scope, realm, global)?;
+
+    let document_obj = scope.alloc_object()?;
+    let document_key = WeakGcObject::from(document_obj);
+    let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+
+    let node_id = NodeId::from_index(1);
+    let wrapper =
+      platform.get_or_create_wrapper(&mut scope, document_key, node_id, DomInterface::Node)?;
+    let _wrapper_root = scope.heap_mut().add_root(Value::Object(wrapper))?;
+
+    assert_eq!(scope.heap().object_prototype(wrapper)?, Some(node_proto));
+    Ok(())
+  }
+
+  #[test]
+  fn wrapper_prototype_chain_matches_realm_interface_chain() -> Result<(), VmError> {
+    let mut runtime = make_runtime()?;
+    let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
+
+    crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let event_target_proto = get_global_interface_prototype(&mut scope, global, "EventTarget")?;
+    scope.push_root(Value::Object(event_target_proto))?;
+    let node_proto = get_global_interface_prototype(&mut scope, global, "Node")?;
+    scope.push_root(Value::Object(node_proto))?;
+
+    let (_element_proto, _html_element_proto) =
+      install_dom_interface_stubs_for_platform(&mut scope, global, node_proto)?;
+
+    let html_input_proto = get_global_interface_prototype(&mut scope, global, "HTMLInputElement")?;
+    let html_element_proto = get_global_interface_prototype(&mut scope, global, "HTMLElement")?;
+    let element_proto = get_global_interface_prototype(&mut scope, global, "Element")?;
+
+    let mut platform = DomPlatform::new_from_global(&mut scope, realm, global)?;
+
+    let document_obj = scope.alloc_object()?;
+    let document_key = WeakGcObject::from(document_obj);
+    let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+
+    let node_id = NodeId::from_index(1);
+    let wrapper = platform.get_or_create_wrapper(
+      &mut scope,
+      document_key,
+      node_id,
+      DomInterface::HTMLInputElement,
+    )?;
+    let _wrapper_root = scope.heap_mut().add_root(Value::Object(wrapper))?;
+
+    assert_eq!(scope.heap().object_prototype(wrapper)?, Some(html_input_proto));
+    assert_eq!(
+      scope.heap().object_prototype(html_input_proto)?,
+      Some(html_element_proto)
+    );
+    assert_eq!(
+      scope.heap().object_prototype(html_element_proto)?,
+      Some(element_proto)
+    );
+    assert_eq!(scope.heap().object_prototype(element_proto)?, Some(node_proto));
+    assert_eq!(
+      scope.heap().object_prototype(node_proto)?,
+      Some(event_target_proto)
+    );
     Ok(())
   }
 }
