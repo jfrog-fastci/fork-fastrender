@@ -118,9 +118,56 @@ impl<'a> Scope<'a> {
         Value::Object(handler),
         &trap_args,
       )?;
+      // Root the raw trap result value across subsequent allocations/GC. In particular, the trap
+      // is allowed to return a freshly-allocated descriptor object that is not reachable from any
+      // other heap object.
+      scope.push_root(trap_result)?;
 
-      // Per spec, `undefined` means "no own property".
+      // Invariants require comparing the trap result with the target's actual descriptor.
+      let target_desc = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?;
+
+      // Root any values from `target_desc` across subsequent allocations/GC (especially important
+      // if `target_desc` itself came from a nested Proxy trap and is not reachable from `target`'s
+      // own property table).
+      let mut desc_value_roots = [Value::Undefined; 2];
+      let mut desc_value_root_count = 0usize;
+      if let Some(desc) = &target_desc {
+        match desc.kind {
+          PropertyKind::Data { value, .. } => {
+            desc_value_roots[desc_value_root_count] = value;
+            desc_value_root_count += 1;
+          }
+          PropertyKind::Accessor { get, set } => {
+            desc_value_roots[desc_value_root_count] = get;
+            desc_value_root_count += 1;
+            desc_value_roots[desc_value_root_count] = set;
+            desc_value_root_count += 1;
+          }
+        }
+      }
+      if desc_value_root_count != 0 {
+        scope.push_roots(&desc_value_roots[..desc_value_root_count])?;
+      }
+
+      // Per spec, `undefined` means "no own property", but the trap is not allowed to report a
+      // missing property if the target has a non-configurable property or is non-extensible.
       if matches!(trap_result, Value::Undefined) {
+        let Some(target_desc) = target_desc else {
+          return Ok(None);
+        };
+        if !target_desc.configurable {
+          return Err(VmError::TypeError(
+            "Proxy getOwnPropertyDescriptor trap returned undefined for a non-configurable target property",
+          ));
+        }
+        // Minimal `IsExtensible` semantics: `vm-js` does not yet implement the full Proxy
+        // `isExtensible` trap, but the invariants require observing the target's extensibility.
+        let extensible_target = scope.object_is_extensible(target)?;
+        if !extensible_target {
+          return Err(VmError::TypeError(
+            "Proxy getOwnPropertyDescriptor trap returned undefined for an existing property on a non-extensible target",
+          ));
+        }
         return Ok(None);
       }
 
@@ -130,6 +177,10 @@ impl<'a> Scope<'a> {
         ));
       };
 
+      // Spec: `extensibleTarget = IsExtensible(target)` is evaluated before `ToPropertyDescriptor`
+      // (which can invoke user code via accessors on the descriptor object).
+      let extensible_target = scope.object_is_extensible(target)?;
+
       scope.push_root(Value::Object(desc_obj))?;
       let patch = crate::property_descriptor_ops::to_property_descriptor_with_host_and_hooks(
         vm,
@@ -138,7 +189,57 @@ impl<'a> Scope<'a> {
         hooks,
         desc_obj,
       )?;
-      return Ok(Some(crate::property_descriptor_ops::complete_property_descriptor(patch)));
+
+      let result_desc = crate::property_descriptor_ops::complete_property_descriptor(patch);
+
+      // `IsCompatiblePropertyDescriptor(extensibleTarget, resultDesc, targetDesc)`.
+      let result_patch = match result_desc.kind {
+        PropertyKind::Data { value, writable } => PropertyDescriptorPatch {
+          enumerable: Some(result_desc.enumerable),
+          configurable: Some(result_desc.configurable),
+          value: Some(value),
+          writable: Some(writable),
+          get: None,
+          set: None,
+        },
+        PropertyKind::Accessor { get, set } => PropertyDescriptorPatch {
+          enumerable: Some(result_desc.enumerable),
+          configurable: Some(result_desc.configurable),
+          value: None,
+          writable: None,
+          get: Some(get),
+          set: Some(set),
+        },
+      };
+      let compatible = crate::property_descriptor_ops::is_compatible_property_descriptor(
+        extensible_target,
+        result_patch,
+        target_desc,
+        scope.heap(),
+      );
+      if !compatible {
+        return Err(VmError::TypeError(
+          "Proxy getOwnPropertyDescriptor trap returned an incompatible property descriptor",
+        ));
+      }
+
+      // Additional non-configurable invariants:
+      // if the trap reports `configurable: false`, the target must already have a non-configurable
+      // property.
+      if !result_desc.configurable {
+        let Some(target_desc) = target_desc else {
+          return Err(VmError::TypeError(
+            "Proxy getOwnPropertyDescriptor trap reported a non-configurable descriptor for a non-existent property",
+          ));
+        };
+        if target_desc.configurable {
+          return Err(VmError::TypeError(
+            "Proxy getOwnPropertyDescriptor trap reported a non-configurable descriptor for a configurable target property",
+          ));
+        }
+      }
+
+      return Ok(Some(result_desc));
     }
 
     scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())
