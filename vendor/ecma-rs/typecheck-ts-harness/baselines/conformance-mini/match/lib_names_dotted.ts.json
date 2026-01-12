@@ -5,7 +5,7 @@
     "options": {
       "exactOptionalPropertyTypes": false,
       "lib": [
-        "lib.dom.iterable.d.ts",
+        "lib.es2015.iterable.d.ts",
         "lib.es2015.promise.d.ts"
       ],
       "moduleResolution": 2,

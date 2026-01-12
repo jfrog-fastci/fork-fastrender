@@ -178,13 +178,13 @@ fn exposes_applied_lib_list_with_dotted_names() {
 
   assert_eq!(
     result.options.harness.lib,
-    vec!["DOM.Iterable", "es2015.promise"]
+    vec!["ES2015.Iterable", "es2015.promise"]
   );
   assert!(!result.options.rust.no_default_lib);
   assert_eq!(
     result.options.rust.libs,
     vec![
-      LibName::parse("dom.iterable").expect("dom.iterable lib"),
+      LibName::parse("es2015.iterable").expect("es2015.iterable lib"),
       LibName::parse("es2015.promise").expect("es2015.promise lib"),
     ],
   );

@@ -1,4 +1,4 @@
-// @lib: es5,dom
+// @lib: es5
 /// <reference lib="es2015.promise" />
 
 const p: Promise<number> = Promise.resolve(1);
