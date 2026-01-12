@@ -230,6 +230,7 @@ mod imp {
   }
 
   #[inline]
+  #[allow(dead_code)]
   pub(super) fn alloc_bytes_zeroed(size: usize, align: usize, context: &str) -> *mut u8 {
     alloc_bytes(size, align, context)
   }
@@ -261,6 +262,7 @@ mod imp {
   }
 
   #[inline]
+  #[allow(dead_code)]
   pub(super) fn alloc_bytes_zeroed(size: usize, align: usize, context: &str) -> *mut u8 {
     if size == 0 {
       return NonNull::<u8>::dangling().as_ptr();
@@ -294,6 +296,7 @@ pub(crate) fn alloc_bytes(size: usize, align: usize, context: &str) -> *mut u8 {
 /// Notes:
 /// - The allocator is leak-only for now (no frees).
 /// - `align` must be a power of two. `align = 1` is allowed.
+#[allow(dead_code)]
 pub(crate) fn alloc_bytes_zeroed(size: usize, align: usize, context: &str) -> *mut u8 {
   if size == 0 {
     return NonNull::<u8>::dangling().as_ptr();
