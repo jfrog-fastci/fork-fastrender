@@ -2155,10 +2155,7 @@ pub fn chrome_ui_with_bookmarks(
                       // Render decorative row icons without allocating an egui widget so we don't
                       // add noise to the accessibility tree (the row itself has a semantic label).
                       let icon_side = ui.spacing().icon_width;
-                      let (icon_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(icon_side, row_height),
-                        egui::Sense::hover(),
-                      );
+                      let (_id, icon_rect) = ui.allocate_space(egui::vec2(icon_side, row_height));
                       paint_icon_in_rect(
                         ui,
                         icon_rect,
