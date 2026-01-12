@@ -2,7 +2,28 @@ use super::*;
 
 impl ProgramState {
   pub(super) fn push_semantic_diagnostics(&mut self, diags: Vec<Diagnostic>) {
+    fn merged_decl_name_from_ts2652(message: &str) -> Option<&str> {
+      // `semantic-js` currently mirrors `tsc` by emitting TS2652 for default-export
+      // declaration merges:
+      //   "Merged declaration 'Foo' cannot include a default export declaration. ..."
+      //
+      // `typecheck-ts` historically only surfaced TS2395 for merge/export mismatches,
+      // and several tests rely on that behaviour. Extract the merged name so we can
+      // synthesize a TS2395 diagnostic at the typecheck layer.
+      let rest = message.strip_prefix("Merged declaration '")?;
+      let (name, _) = rest.split_once('\'')?;
+      Some(name)
+    }
+
+    let mut ts2652_groups: HashMap<String, Vec<Span>> = HashMap::new();
     for mut diag in diags {
+      if diag.code == "TS2652" {
+        ts2652_groups
+          .entry(diag.message.clone())
+          .or_default()
+          .push(diag.primary);
+        continue;
+      }
       if diag.code == "BIND1002" {
         continue;
       }
@@ -35,6 +56,30 @@ impl ProgramState {
         continue;
       }
       self.diagnostics.push(diag);
+    }
+
+    for (message, mut spans) in ts2652_groups {
+      spans.sort_by_key(|span| (span.file.0, span.range.start, span.range.end));
+      spans.dedup();
+      if spans.is_empty() {
+        continue;
+      }
+      // Prefer pointing at the later span (typically the non-default- export
+      // declaration), matching the old TS2395 behaviour in this codebase.
+      let primary = *spans.last().unwrap();
+      let name = merged_decl_name_from_ts2652(&message).unwrap_or("declaration");
+      let diag = codes::MERGED_DECLARATIONS_EXPORT_MISMATCH.error(
+        format!(
+          "Individual declarations in merged declaration '{name}' must be all exported or all local."
+        ),
+        primary,
+      );
+      let duplicate = self.diagnostics.iter().any(|existing| {
+        existing.code == diag.code && existing.primary == diag.primary && existing.message == diag.message
+      });
+      if !duplicate {
+        self.diagnostics.push(diag);
+      }
     }
   }
 

@@ -677,27 +677,14 @@ fn resolve_overload_set(
   }
 
   if tied.len() > 1 {
-    let mut diag = codes::AMBIGUOUS_OVERLOAD.error("call is ambiguous", span);
-    let shown = tied.len().min(MAX_NOTES);
-    for (idx, candidate) in tied.iter().take(shown).enumerate() {
-      let sig = store.signature(candidate.sig_id);
-      diag.push_note(format!(
-        "candidate {index}: {sig}",
-        index = idx + 1,
-        sig = format_signature(store, &sig),
-      ));
-    }
-    let hidden = tied.len().saturating_sub(shown);
-    if hidden > 0 {
-      diag.push_note(format!("~ {hidden} overload candidate(s) not shown"));
-    }
-
-    let ret = store.union(tied.iter().map(|candidate| candidate.instantiated_sig.ret).collect());
+    // TypeScript does not report an ambiguity error when multiple overloads are
+    // equally applicable. Instead, it deterministically selects the first
+    // overload in declaration order.
     return CallResolution {
-      return_type: ret,
-      signature: None,
+      return_type: best.instantiated_sig.ret,
+      signature: Some(best.instantiated_id),
       contextual_signature: Some(best.instantiated_id),
-      diagnostics: vec![diag],
+      diagnostics: Vec::new(),
     };
   }
 
