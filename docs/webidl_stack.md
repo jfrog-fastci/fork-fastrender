@@ -51,6 +51,9 @@ execute author scripts and should not be used for new bindings work.
 This layer exists for migration/testing where older heap-only bindings/runtime code is still
 referenced. Prefer the realm-based `webidl-vm-js` path for new bindings work.
 
+The old `crates/webidl-js-runtime` crate remains temporarily for migration, but new work should
+prefer the vendored `webidl-runtime` crate.
+
 FastRender continues to expose this layer under `fastrender::js::webidl::legacy` while migration is
 in progress.
 

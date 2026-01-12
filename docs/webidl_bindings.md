@@ -42,6 +42,8 @@ For an overview of the consolidated WebIDL crate layout (and where new code belo
     bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-runtime
     bash vendor/ecma-rs/scripts/cargo_agent.sh build -p webidl-runtime
     ```
+  - Note: the older `crates/webidl-js-runtime` crate (`webidl_js_runtime`) still exists temporarily
+    for migration.
   - Note: FastRender’s canonical author-script execution is realm-based (`vm-js` + `WindowRealm`).
     The heap-only runtime exists mainly for migration and targeted unit tests.
 - **Committed generated snapshot**: `src/webidl/generated/mod.rs`
@@ -196,7 +198,7 @@ world:
     against the committed snapshot world).
 - **Legacy `webidl-runtime` (heap-only) bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
   `src/js/webidl/bindings/generated_legacy.rs`
-  - Backed by `fastrender::js::webidl::legacy` (vendored in `vendor/ecma-rs/webidl-runtime`).
+  - Backed by `fastrender::js::webidl::legacy` (vendored as `vendor/ecma-rs/webidl-runtime`).
   - Kept temporarily for migration and for unit tests that still exercise the older bindings/runtime
     surface.
   - Regenerate with:

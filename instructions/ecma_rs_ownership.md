@@ -98,7 +98,7 @@ This is a one-time fix. Don't create parallel crates to avoid it.
 | JS runtime/VM | `vendor/ecma-rs/vm-js/` | Language infrastructure |
 | WebIDL IR + algorithms | `vendor/ecma-rs/webidl/` | Spec infrastructure |
 | WebIDL ↔ vm-js adapter | `vendor/ecma-rs/webidl-vm-js/` | Engine integration |
-| Legacy heap-only WebIDL runtime adapter | `vendor/ecma-rs/webidl-runtime/` | Compatibility layer |
+| Legacy heap-only WebIDL runtime adapter | `vendor/ecma-rs/webidl-runtime/` (legacy wrapper: `crates/webidl-js-runtime/`) | Compatibility layer |
 | DOM/Web API bindings integration (FastRender) | `src/js/webidl/` | FastRender-specific glue |
 | Browser APIs (timers, fetch, URL, ...) | `src/js/` + `src/web/` | FastRender-specific |
 | Event loop | `src/js/event_loop.rs` | FastRender-specific |

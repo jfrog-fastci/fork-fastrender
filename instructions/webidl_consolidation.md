@@ -20,12 +20,13 @@ After consolidation:
 vendor/ecma-rs/
 ├── webidl/               ← WebIDL IR + parsing + spec algorithms (exports `webidl::ir`)
 ├── webidl-vm-js/         ← vm-js adapter + realm bindings helpers
-└── webidl-runtime/       ← legacy heap-only runtime adapter (compat/migration)
+└── webidl-runtime/       ← legacy heap-only runtime adapter (compat/migration; Cargo package `webidl-runtime`)
 
 src/js/webidl/            ← FastRender-specific bindings integration (re-exports, host dispatch,
                             realm installation/runtime glue)
 
 crates/
+├── webidl-js-runtime/    ← legacy heap-only runtime adapter (FastRender compatibility crate; Cargo package `webidl-js-runtime`)
 └── js-wpt-dom-runner/    ← FastRender-specific tooling (offline WPT runner)
 ```
 
