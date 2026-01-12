@@ -562,6 +562,245 @@ fn circular_export_is_cycle_safe() {
 }
 
 #[test]
+fn export_all_cycle_includes_late_local_export_of_import() {
+  let file_a = FileId(110);
+  let file_b = FileId(111);
+  let file_c = FileId(112);
+
+  let mut c = HirFile::module(file_c);
+  c.decls
+    .push(mk_decl(0, "Foo", DeclKind::Function, Exported::Named));
+
+  let mut a = HirFile::module(file_a);
+  a.imports.push(Import {
+    specifier: "c".to_string(),
+    specifier_span: span(1),
+    default: None,
+    namespace: None,
+    named: vec![ImportNamed {
+      imported: "Foo".to_string(),
+      local: "Foo".to_string(),
+      is_type_only: false,
+      imported_span: span(2),
+      local_span: span(3),
+    }],
+    is_type_only: false,
+  });
+  // Force the `export *` to be processed before the local export spec.
+  a.exports.push(Export::All(ExportAll {
+    specifier: "b".to_string(),
+    is_type_only: false,
+    specifier_span: span(10),
+    alias: None,
+    alias_span: None,
+  }));
+  a.exports.push(Export::Named(NamedExport {
+    specifier: None,
+    specifier_span: None,
+    items: vec![ExportSpecifier {
+      local: "Foo".to_string(),
+      exported: None,
+      local_span: span(20),
+      exported_span: None,
+    }],
+    is_type_only: false,
+  }));
+
+  let mut b = HirFile::module(file_b);
+  b.decls
+    .push(mk_decl(30, "Bar", DeclKind::Var, Exported::Named));
+  b.exports.push(Export::All(ExportAll {
+    specifier: "a".to_string(),
+    is_type_only: false,
+    specifier_span: span(11),
+    alias: None,
+    alias_span: None,
+  }));
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_b => Arc::new(b),
+    file_c => Arc::new(c),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "a".to_string() => file_a,
+    "b".to_string() => file_b,
+    "c".to_string() => file_c,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_a], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let exports_a = semantics.exports_of(file_a);
+  let exports_b = semantics.exports_of(file_b);
+  assert!(exports_a.contains_key("Foo"));
+  assert!(exports_a.contains_key("Bar"));
+  assert!(exports_b.contains_key("Foo"));
+  assert!(exports_b.contains_key("Bar"));
+
+  let symbols = semantics.symbols();
+  let foo_c = semantics
+    .exports_of(file_c)
+    .get("Foo")
+    .unwrap()
+    .symbol_for(Namespace::VALUE, symbols)
+    .unwrap();
+  let foo_a = exports_a
+    .get("Foo")
+    .unwrap()
+    .symbol_for(Namespace::VALUE, symbols)
+    .unwrap();
+  let foo_b = exports_b
+    .get("Foo")
+    .unwrap()
+    .symbol_for(Namespace::VALUE, symbols)
+    .unwrap();
+  assert_eq!(foo_c, foo_a);
+  assert_eq!(foo_a, foo_b);
+
+  let bar_b = exports_b
+    .get("Bar")
+    .unwrap()
+    .symbol_for(Namespace::VALUE, symbols)
+    .unwrap();
+  let bar_a = exports_a
+    .get("Bar")
+    .unwrap()
+    .symbol_for(Namespace::VALUE, symbols)
+    .unwrap();
+  assert_eq!(bar_a, bar_b);
+}
+
+#[test]
+fn ambient_export_all_cycle_includes_late_local_export_of_import() {
+  let file = FileId(113);
+  let mut hir = HirFile::module(file);
+  hir.file_kind = FileKind::Dts;
+
+  let mut foo_decl = mk_decl(0, "Foo", DeclKind::Function, Exported::No);
+  foo_decl.is_ambient = true;
+  let ambient_c = AmbientModule {
+    name: "c".to_string(),
+    name_span: span(1),
+    decls: vec![foo_decl],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  };
+
+  let ambient_a = AmbientModule {
+    name: "a".to_string(),
+    name_span: span(10),
+    decls: Vec::new(),
+    imports: vec![Import {
+      specifier: "c".to_string(),
+      specifier_span: span(2),
+      default: None,
+      namespace: None,
+      named: vec![ImportNamed {
+        imported: "Foo".to_string(),
+        local: "Foo".to_string(),
+        is_type_only: false,
+        imported_span: span(3),
+        local_span: span(4),
+      }],
+      is_type_only: false,
+    }],
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: vec![
+      // Force the `export *` to be processed before the local export spec.
+      Export::All(ExportAll {
+        specifier: "b".to_string(),
+        is_type_only: false,
+        specifier_span: span(11),
+        alias: None,
+        alias_span: None,
+      }),
+      Export::Named(NamedExport {
+        specifier: None,
+        specifier_span: None,
+        items: vec![ExportSpecifier {
+          local: "Foo".to_string(),
+          exported: None,
+          local_span: span(12),
+          exported_span: None,
+        }],
+        is_type_only: false,
+      }),
+    ],
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  };
+
+  let mut bar_decl = mk_decl(30, "Bar", DeclKind::Var, Exported::No);
+  bar_decl.is_ambient = true;
+  let ambient_b = AmbientModule {
+    name: "b".to_string(),
+    name_span: span(20),
+    decls: vec![bar_decl],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: vec![Export::All(ExportAll {
+      specifier: "a".to_string(),
+      is_type_only: false,
+      specifier_span: span(21),
+      alias: None,
+      alias_span: None,
+    })],
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  };
+
+  hir.ambient_modules.push(ambient_a);
+  hir.ambient_modules.push(ambient_b);
+  hir.ambient_modules.push(ambient_c);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let resolver = StaticResolver::new(HashMap::new());
+
+  let (semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let exports_a = semantics
+    .exports_of_ambient_module("a")
+    .expect("ambient module a exports");
+  let exports_b = semantics
+    .exports_of_ambient_module("b")
+    .expect("ambient module b exports");
+  assert!(exports_a.contains_key("Foo"));
+  assert!(exports_a.contains_key("Bar"));
+  assert!(exports_b.contains_key("Foo"));
+  assert!(exports_b.contains_key("Bar"));
+
+  let symbols = semantics.symbols();
+  let foo_c = semantics
+    .exports_of_ambient_module("c")
+    .unwrap()
+    .get("Foo")
+    .unwrap()
+    .symbol_for(Namespace::VALUE, symbols)
+    .unwrap();
+  let foo_a = exports_a
+    .get("Foo")
+    .unwrap()
+    .symbol_for(Namespace::VALUE, symbols)
+    .unwrap();
+  let foo_b = exports_b
+    .get("Foo")
+    .unwrap()
+    .symbol_for(Namespace::VALUE, symbols)
+    .unwrap();
+  assert_eq!(foo_c, foo_a);
+  assert_eq!(foo_a, foo_b);
+}
+
+#[test]
 fn type_only_import_export_isolated() {
   let file_a = FileId(20);
   let file_b = FileId(21);

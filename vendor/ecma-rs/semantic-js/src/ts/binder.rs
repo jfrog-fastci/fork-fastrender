@@ -9,7 +9,18 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 enum ExportStatus {
-  InProgress(ExportMap),
+  /// Non-`export *` exports are available.
+  ///
+  /// This contains all local exports (`export { local }`, `export =`, exported
+  /// declarations, etc) plus non-star re-exports (`export { x } from`,
+  /// `export * as ns from`). It deliberately excludes `export *` because star
+  /// exports require a fixed point across cyclic graphs.
+  Base(ExportMap),
+  /// Full export computation is currently in progress for this module.
+  ///
+  /// The contained map is the stable base export map used for cycle-breaking
+  /// lookups.
+  Computing(ExportMap),
   Done(ExportMap),
 }
 
@@ -1856,27 +1867,36 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     ModuleRef::Unresolved(spec.to_string())
   }
 
-  fn exports_for(&mut self, file: FileId) -> ExportMap {
+  fn base_exports_for(&mut self, file: FileId) -> ExportMap {
     if self.is_cancelled() {
       return ExportMap::new();
     }
     if let Some(status) = self.export_cache.get(&file) {
       return match status {
-        ExportStatus::InProgress(m) | ExportStatus::Done(m) => m.clone(),
+        ExportStatus::Base(m) | ExportStatus::Computing(m) | ExportStatus::Done(m) => m.clone(),
       };
     }
+
+    // Seed to break recursion while we compute locals.
     self
       .export_cache
-      .insert(file, ExportStatus::InProgress(ExportMap::new()));
+      .insert(file, ExportStatus::Computing(ExportMap::new()));
+
     let mut map = ExportMap::new();
     if let Some(module) = self.modules.get(&file).cloned() {
       let mut export_spans = module.export_spans.clone();
-      for spec in &module.export_specs {
+
+      // 1) Local exports.
+      let mut locals: Vec<&ExportSpec> = module
+        .export_specs
+        .iter()
+        .filter(|spec| matches!(spec, ExportSpec::Local { .. } | ExportSpec::ExportAssignment { .. }))
+        .collect();
+      locals.sort_by(|a, b| export_spec_sort_key(a).cmp(&export_spec_sort_key(b)));
+      for spec in locals {
         if self.is_cancelled() {
           let empty = ExportMap::new();
-          self
-            .export_cache
-            .insert(file, ExportStatus::Done(empty.clone()));
+          self.export_cache.insert(file, ExportStatus::Done(empty.clone()));
           return empty;
         }
         match spec {
@@ -1885,17 +1905,50 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             exported_as,
             type_only,
             span,
-          } => {
-            self.add_local_export(
-              &module,
-              name,
-              exported_as,
-              *type_only,
-              *span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
+          } => self.add_local_export(
+            &module,
+            name,
+            exported_as,
+            *type_only,
+            *span,
+            &mut map,
+            &mut export_spans,
+          ),
+          ExportSpec::ExportAssignment {
+            path,
+            span,
+            expr_span,
+          } => self.add_export_assignment(
+            &module,
+            path,
+            *span,
+            *expr_span,
+            &mut map,
+            &mut export_spans,
+          ),
+          _ => unreachable!("filtered above"),
+        }
+      }
+
+      // Expose locals eagerly.
+      self
+        .export_cache
+        .insert(file, ExportStatus::Computing(map.clone()));
+
+      // 2) Non-star re-exports.
+      let mut reexports: Vec<&ExportSpec> = module
+        .export_specs
+        .iter()
+        .filter(|spec| matches!(spec, ExportSpec::ReExport { .. } | ExportSpec::ExportAllAlias { .. }))
+        .collect();
+      reexports.sort_by(|a, b| export_spec_sort_key(a).cmp(&export_spec_sort_key(b)));
+      for spec in reexports {
+        if self.is_cancelled() {
+          let empty = ExportMap::new();
+          self.export_cache.insert(file, ExportStatus::Done(empty.clone()));
+          return empty;
+        }
+        match spec {
           ExportSpec::ReExport {
             from,
             name,
@@ -1903,69 +1956,240 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             type_only,
             span,
             ..
-          } => {
-            self.add_reexport(
-              &module,
-              from,
-              name,
-              exported_as,
-              *type_only,
-              *span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
-          ExportSpec::ExportAll {
+          } => self.add_reexport(
+            &module,
             from,
-            type_only,
-            span,
-            ..
-          } => {
-            self.add_export_all(
-              &module,
-              from,
-              *type_only,
-              *span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
+            name,
+            exported_as,
+            *type_only,
+            *span,
+            &mut map,
+            &mut export_spans,
+          ),
           ExportSpec::ExportAllAlias {
             from,
             exported_as,
             type_only,
             span,
             ..
-          } => {
-            self.add_export_all_alias(
-              &module,
-              from,
-              exported_as,
-              *type_only,
-              *span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
+          } => self.add_export_all_alias(
+            &module,
+            from,
+            exported_as,
+            *type_only,
+            *span,
+            &mut map,
+            &mut export_spans,
+          ),
+          _ => unreachable!("filtered above"),
+        }
+        self
+          .export_cache
+          .insert(file, ExportStatus::Computing(map.clone()));
+      }
+
+      if let Some(module) = self.modules.get_mut(&file) {
+        module.export_spans = export_spans;
+      }
+    }
+
+    self.export_cache.insert(file, ExportStatus::Base(map.clone()));
+    map
+  }
+
+  fn base_exports_for_ambient(&mut self, name: &str) -> ExportMap {
+    if self.is_cancelled() {
+      return ExportMap::new();
+    }
+    if let Some(status) = self.ambient_export_cache.get(name) {
+      return match status {
+        ExportStatus::Base(m) | ExportStatus::Computing(m) | ExportStatus::Done(m) => m.clone(),
+      };
+    }
+
+    self.ambient_export_cache.insert(
+      name.to_string(),
+      ExportStatus::Computing(ExportMap::new()),
+    );
+
+    let mut map = ExportMap::new();
+    if let Some(module) = self.ambient_modules.get(name).cloned() {
+      let mut export_spans = module.export_spans.clone();
+
+      let mut locals: Vec<&ExportSpec> = module
+        .export_specs
+        .iter()
+        .filter(|spec| matches!(spec, ExportSpec::Local { .. } | ExportSpec::ExportAssignment { .. }))
+        .collect();
+      locals.sort_by(|a, b| export_spec_sort_key(a).cmp(&export_spec_sort_key(b)));
+      for spec in locals {
+        if self.is_cancelled() {
+          let empty = ExportMap::new();
+          self
+            .ambient_export_cache
+            .insert(name.to_string(), ExportStatus::Done(empty.clone()));
+          return empty;
+        }
+        match spec {
+          ExportSpec::Local {
+            name,
+            exported_as,
+            type_only,
+            span,
+          } => self.add_local_export(
+            &module,
+            name,
+            exported_as,
+            *type_only,
+            *span,
+            &mut map,
+            &mut export_spans,
+          ),
           ExportSpec::ExportAssignment {
             path,
             span,
             expr_span,
-          } => {
-            self.add_export_assignment(
-              &module,
-              path,
-              *span,
-              *expr_span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
+          } => self.add_export_assignment(
+            &module,
+            path,
+            *span,
+            *expr_span,
+            &mut map,
+            &mut export_spans,
+          ),
+          _ => unreachable!("filtered above"),
         }
-        self
-          .export_cache
-          .insert(file, ExportStatus::InProgress(map.clone()));
       }
+
+      self.ambient_export_cache.insert(
+        name.to_string(),
+        ExportStatus::Computing(map.clone()),
+      );
+
+      let mut reexports: Vec<&ExportSpec> = module
+        .export_specs
+        .iter()
+        .filter(|spec| matches!(spec, ExportSpec::ReExport { .. } | ExportSpec::ExportAllAlias { .. }))
+        .collect();
+      reexports.sort_by(|a, b| export_spec_sort_key(a).cmp(&export_spec_sort_key(b)));
+      for spec in reexports {
+        if self.is_cancelled() {
+          let empty = ExportMap::new();
+          self
+            .ambient_export_cache
+            .insert(name.to_string(), ExportStatus::Done(empty.clone()));
+          return empty;
+        }
+        match spec {
+          ExportSpec::ReExport {
+            from,
+            name,
+            exported_as,
+            type_only,
+            span,
+            ..
+          } => self.add_reexport(
+            &module,
+            from,
+            name,
+            exported_as,
+            *type_only,
+            *span,
+            &mut map,
+            &mut export_spans,
+          ),
+          ExportSpec::ExportAllAlias {
+            from,
+            exported_as,
+            type_only,
+            span,
+            ..
+          } => self.add_export_all_alias(
+            &module,
+            from,
+            exported_as,
+            *type_only,
+            *span,
+            &mut map,
+            &mut export_spans,
+          ),
+          _ => unreachable!("filtered above"),
+        }
+        self.ambient_export_cache.insert(
+          name.to_string(),
+          ExportStatus::Computing(map.clone()),
+        );
+      }
+
+      if let Some(module) = self.ambient_modules.get_mut(name) {
+        module.export_spans = export_spans;
+      }
+    }
+
+    self.ambient_export_cache.insert(
+      name.to_string(),
+      ExportStatus::Base(map.clone()),
+    );
+    map
+  }
+
+  fn exports_for(&mut self, file: FileId) -> ExportMap {
+    if self.is_cancelled() {
+      return ExportMap::new();
+    }
+
+    if let Some(status) = self.export_cache.get(&file) {
+      match status {
+        ExportStatus::Done(m) => return m.clone(),
+        ExportStatus::Computing(base) => return base.clone(),
+        ExportStatus::Base(_) => {}
+      }
+    }
+
+    let base = self.base_exports_for(file);
+    if let Some(ExportStatus::Done(m)) = self.export_cache.get(&file) {
+      return m.clone();
+    }
+
+    self
+      .export_cache
+      .insert(file, ExportStatus::Computing(base.clone()));
+
+    let mut map = base;
+    if let Some(module) = self.modules.get(&file).cloned() {
+      let mut export_spans = module.export_spans.clone();
+      let mut export_alls: Vec<&ExportSpec> = module
+        .export_specs
+        .iter()
+        .filter(|spec| matches!(spec, ExportSpec::ExportAll { .. }))
+        .collect();
+      export_alls.sort_by(|a, b| export_spec_sort_key(a).cmp(&export_spec_sort_key(b)));
+
+      for spec in export_alls {
+        if self.is_cancelled() {
+          let empty = ExportMap::new();
+          self.export_cache.insert(file, ExportStatus::Done(empty.clone()));
+          return empty;
+        }
+        let ExportSpec::ExportAll {
+          from,
+          type_only,
+          span,
+          ..
+        } = spec
+        else {
+          continue;
+        };
+        self.add_export_all(
+          &module,
+          from,
+          *type_only,
+          *span,
+          &mut map,
+          &mut export_spans,
+        );
+      }
+
       if let Some(module) = self.modules.get_mut(&file) {
         module.export_spans = export_spans.clone();
       }
@@ -1984,18 +2208,36 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     if self.is_cancelled() {
       return ExportMap::new();
     }
+
     if let Some(status) = self.ambient_export_cache.get(name) {
-      return match status {
-        ExportStatus::InProgress(m) | ExportStatus::Done(m) => m.clone(),
-      };
+      match status {
+        ExportStatus::Done(m) => return m.clone(),
+        ExportStatus::Computing(base) => return base.clone(),
+        ExportStatus::Base(_) => {}
+      }
     }
-    self
-      .ambient_export_cache
-      .insert(name.to_string(), ExportStatus::InProgress(ExportMap::new()));
-    let mut map = ExportMap::new();
+
+    let base = self.base_exports_for_ambient(name);
+    if let Some(ExportStatus::Done(m)) = self.ambient_export_cache.get(name) {
+      return m.clone();
+    }
+
+    self.ambient_export_cache.insert(
+      name.to_string(),
+      ExportStatus::Computing(base.clone()),
+    );
+
+    let mut map = base;
     if let Some(module) = self.ambient_modules.get(name).cloned() {
       let mut export_spans = module.export_spans.clone();
-      for spec in &module.export_specs {
+      let mut export_alls: Vec<&ExportSpec> = module
+        .export_specs
+        .iter()
+        .filter(|spec| matches!(spec, ExportSpec::ExportAll { .. }))
+        .collect();
+      export_alls.sort_by(|a, b| export_spec_sort_key(a).cmp(&export_spec_sort_key(b)));
+
+      for spec in export_alls {
         if self.is_cancelled() {
           let empty = ExportMap::new();
           self
@@ -2003,101 +2245,34 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             .insert(name.to_string(), ExportStatus::Done(empty.clone()));
           return empty;
         }
-        match spec {
-          ExportSpec::Local {
-            name,
-            exported_as,
-            type_only,
-            span,
-          } => {
-            self.add_local_export(
-              &module,
-              name,
-              exported_as,
-              *type_only,
-              *span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
-          ExportSpec::ReExport {
-            from,
-            name,
-            exported_as,
-            type_only,
-            span,
-            ..
-          } => {
-            self.add_reexport(
-              &module,
-              from,
-              name,
-              exported_as,
-              *type_only,
-              *span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
-          ExportSpec::ExportAll {
-            from,
-            type_only,
-            span,
-            ..
-          } => {
-            self.add_export_all(
-              &module,
-              from,
-              *type_only,
-              *span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
-          ExportSpec::ExportAllAlias {
-            from,
-            exported_as,
-            type_only,
-            span,
-            ..
-          } => {
-            self.add_export_all_alias(
-              &module,
-              from,
-              exported_as,
-              *type_only,
-              *span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
-          ExportSpec::ExportAssignment {
-            path,
-            span,
-            expr_span,
-          } => {
-            self.add_export_assignment(
-              &module,
-              path,
-              *span,
-              *expr_span,
-              &mut map,
-              &mut export_spans,
-            );
-          }
-        }
-        self
-          .ambient_export_cache
-          .insert(name.to_string(), ExportStatus::InProgress(map.clone()));
+        let ExportSpec::ExportAll {
+          from,
+          type_only,
+          span,
+          ..
+        } = spec
+        else {
+          continue;
+        };
+        self.add_export_all(
+          &module,
+          from,
+          *type_only,
+          *span,
+          &mut map,
+          &mut export_spans,
+        );
       }
+
       if let Some(module) = self.ambient_modules.get_mut(name) {
         module.export_spans = export_spans.clone();
       }
     }
 
-    self
-      .ambient_export_cache
-      .insert(name.to_string(), ExportStatus::Done(map.clone()));
+    self.ambient_export_cache.insert(
+      name.to_string(),
+      ExportStatus::Done(map.clone()),
+    );
     if let Some(module) = self.ambient_modules.get_mut(name) {
       module.exports = map.clone();
     }
@@ -2105,11 +2280,194 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
   }
 
   fn exports_for_ref(&mut self, reference: &ModuleRef) -> Option<ExportMap> {
+    self.exports_for_ref_complete(reference)
+  }
+
+  fn exports_for_ref_complete(&mut self, reference: &ModuleRef) -> Option<ExportMap> {
     match reference {
-      ModuleRef::File(file) => Some(self.exports_for(*file)),
-      ModuleRef::Ambient(spec) => Some(self.exports_for_ambient(spec)),
+      ModuleRef::File(file) => Some(self.exports_for_complete_file(*file)),
+      ModuleRef::Ambient(spec) => Some(self.exports_for_complete_ambient(spec)),
       ModuleRef::Unresolved(_) => None,
     }
+  }
+
+  fn exports_for_complete_file(&mut self, file: FileId) -> ExportMap {
+    if self.is_cancelled() {
+      return ExportMap::new();
+    }
+    match self.export_cache.get(&file).cloned() {
+      Some(ExportStatus::Done(m)) => m,
+      Some(ExportStatus::Base(_)) => self.exports_for(file),
+      Some(ExportStatus::Computing(base)) => {
+        self.compute_full_exports_snapshot(ModuleRef::File(file), base)
+      }
+      None => self.exports_for(file),
+    }
+  }
+
+  fn exports_for_complete_ambient(&mut self, name: &str) -> ExportMap {
+    if self.is_cancelled() {
+      return ExportMap::new();
+    }
+    match self.ambient_export_cache.get(name).cloned() {
+      Some(ExportStatus::Done(m)) => m,
+      Some(ExportStatus::Base(_)) => self.exports_for_ambient(name),
+      Some(ExportStatus::Computing(base)) => {
+        self.compute_full_exports_snapshot(ModuleRef::Ambient(name.to_string()), base)
+      }
+      None => self.exports_for_ambient(name),
+    }
+  }
+
+  fn compute_full_exports_snapshot(&mut self, reference: ModuleRef, base: ExportMap) -> ExportMap {
+    // This is used only for cycle-breaking lookups while a module's full exports
+    // are still being computed. It must not emit diagnostics or mutate
+    // `export_spans`.
+    let mut map = base;
+    let specs = match &reference {
+      ModuleRef::File(file) => self
+        .modules
+        .get(file)
+        .map(|m| m.export_specs.clone())
+        .unwrap_or_default(),
+      ModuleRef::Ambient(name) => self
+        .ambient_modules
+        .get(name)
+        .map(|m| m.export_specs.clone())
+        .unwrap_or_default(),
+      ModuleRef::Unresolved(_) => Vec::new(),
+    };
+
+    let mut export_alls: Vec<ExportSpec> = specs
+      .into_iter()
+      .filter(|spec| matches!(spec, ExportSpec::ExportAll { .. }))
+      .collect();
+    export_alls.sort_by(|a, b| export_spec_sort_key(a).cmp(&export_spec_sort_key(b)));
+
+    for spec in export_alls {
+      let ExportSpec::ExportAll {
+        from, type_only, ..
+      } = spec
+      else {
+        continue;
+      };
+      if let Some(target_exports) = self.star_exports_for_ref(&from) {
+        for (name, entry) in target_exports.iter() {
+          if let Some(group) = filter_group(
+            entry.clone(),
+            if type_only {
+              Namespace::TYPE | Namespace::NAMESPACE
+            } else {
+              Namespace::VALUE | Namespace::TYPE | Namespace::NAMESPACE
+            },
+            &self.symbols,
+          ) {
+            insert_export_silent(&mut map, name, group, &mut self.symbols);
+          }
+        }
+      }
+    }
+
+    map
+  }
+
+  fn star_exports_for_ref(&mut self, reference: &ModuleRef) -> Option<ExportMap> {
+    if self.is_cancelled() {
+      return Some(ExportMap::new());
+    }
+    match reference {
+      ModuleRef::Unresolved(_) => None,
+      ModuleRef::File(file) => {
+        if let Some(ExportStatus::Done(done)) = self.export_cache.get(file) {
+          return Some(star_filter_special(done));
+        }
+        Some(self.star_exports_fixed_point(ModuleRef::File(*file)))
+      }
+      ModuleRef::Ambient(name) => {
+        if let Some(ExportStatus::Done(done)) = self.ambient_export_cache.get(name) {
+          return Some(star_filter_special(done));
+        }
+        Some(self.star_exports_fixed_point(ModuleRef::Ambient(name.clone())))
+      }
+    }
+  }
+
+  fn star_exports_fixed_point(&mut self, start: ModuleRef) -> ExportMap {
+    let mut out = ExportMap::new();
+    let mut stack: Vec<(ModuleRef, StarExportMask)> = vec![(start, StarExportMask::All)];
+    let mut seen: HashMap<StarExportKey, u8> = HashMap::new();
+
+    while let Some((current, mask)) = stack.pop() {
+      let Some(key) = StarExportKey::from_ref(&current) else {
+        continue;
+      };
+
+      // `All` subsumes `TypeOnly` for a node.
+      let entry = seen.entry(key.clone()).or_insert(0);
+      if mask == StarExportMask::All {
+        if *entry & 0b10 != 0 {
+          continue;
+        }
+        *entry |= 0b10 | 0b01;
+      } else if *entry & 0b01 != 0 {
+        continue;
+      } else {
+        *entry |= 0b01;
+      }
+
+      let (exports, traverse_star) = match &key {
+        StarExportKey::File(file) => match self.export_cache.get(file).cloned() {
+          Some(ExportStatus::Done(m)) => (m, false),
+          Some(ExportStatus::Base(m) | ExportStatus::Computing(m)) => (m, true),
+          None => (self.base_exports_for(*file), true),
+        },
+        StarExportKey::Ambient(name) => match self.ambient_export_cache.get(name).cloned() {
+          Some(ExportStatus::Done(m)) => (m, false),
+          Some(ExportStatus::Base(m) | ExportStatus::Computing(m)) => (m, true),
+          None => (self.base_exports_for_ambient(name), true),
+        },
+      };
+
+      let ns_mask = mask.namespaces();
+      for (name, group) in exports.iter() {
+        if name == "default" || name == "export=" {
+          continue;
+        }
+        if let Some(filtered) = filter_group(group.clone(), ns_mask, &self.symbols) {
+          insert_export_silent(&mut out, name, filtered, &mut self.symbols);
+        }
+      }
+
+      if !traverse_star {
+        continue;
+      }
+
+      let export_specs = match &key {
+        StarExportKey::File(file) => self
+          .modules
+          .get(file)
+          .map(|m| m.export_specs.clone())
+          .unwrap_or_default(),
+        StarExportKey::Ambient(name) => self
+          .ambient_modules
+          .get(name)
+          .map(|m| m.export_specs.clone())
+          .unwrap_or_default(),
+      };
+
+      for spec in export_specs.iter() {
+        let ExportSpec::ExportAll {
+          from, type_only, ..
+        } = spec
+        else {
+          continue;
+        };
+        let next_mask = mask.and_export_all(*type_only);
+        stack.push((from.clone(), next_mask));
+      }
+    }
+
+    out
   }
 
   fn add_local_export(
@@ -2278,11 +2636,8 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     map: &mut ExportMap,
     export_spans: &mut BTreeMap<String, ExportNamespaceSpans>,
   ) {
-    if let Some(target_exports) = self.exports_for_ref(from) {
+    if let Some(target_exports) = self.star_exports_for_ref(from) {
       for (name, entry) in target_exports.iter() {
-        if name == "default" || name == "export=" {
-          continue;
-        }
         if let Some(group) = filter_group(
           entry.clone(),
           if type_only {
@@ -2414,6 +2769,148 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       &mut self.diagnostics,
     );
   }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StarExportMask {
+  /// Value + type + namespace exports are visible.
+  All,
+  /// Only type + namespace exports are visible (value exports filtered out).
+  TypeOnly,
+}
+
+impl StarExportMask {
+  fn namespaces(self) -> Namespace {
+    match self {
+      StarExportMask::All => Namespace::VALUE | Namespace::TYPE | Namespace::NAMESPACE,
+      StarExportMask::TypeOnly => Namespace::TYPE | Namespace::NAMESPACE,
+    }
+  }
+
+  fn and_export_all(self, export_type_only: bool) -> StarExportMask {
+    match (self, export_type_only) {
+      (StarExportMask::TypeOnly, _) => StarExportMask::TypeOnly,
+      (StarExportMask::All, true) => StarExportMask::TypeOnly,
+      (StarExportMask::All, false) => StarExportMask::All,
+    }
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum StarExportKey {
+  File(FileId),
+  Ambient(String),
+}
+
+impl StarExportKey {
+  fn from_ref(reference: &ModuleRef) -> Option<Self> {
+    match reference {
+      ModuleRef::File(file) => Some(StarExportKey::File(*file)),
+      ModuleRef::Ambient(name) => Some(StarExportKey::Ambient(name.clone())),
+      ModuleRef::Unresolved(_) => None,
+    }
+  }
+}
+
+fn export_spec_sort_key(spec: &ExportSpec) -> (FileId, u32, u32, u8, ModuleRef, String, String, bool)
+{
+  let (span, kind_rank, from, name, exported_as, type_only) = match spec {
+    ExportSpec::Local {
+      name,
+      exported_as,
+      type_only,
+      span,
+    } => (
+      *span,
+      0,
+      ModuleRef::Unresolved(String::new()),
+      name.clone(),
+      exported_as.clone(),
+      *type_only,
+    ),
+    ExportSpec::ExportAssignment { span, .. } => (
+      *span,
+      1,
+      ModuleRef::Unresolved(String::new()),
+      String::new(),
+      "export=".to_string(),
+      false,
+    ),
+    ExportSpec::ReExport {
+      from,
+      name,
+      exported_as,
+      type_only,
+      span,
+      ..
+    } => (
+      *span,
+      2,
+      from.clone(),
+      name.clone(),
+      exported_as.clone(),
+      *type_only,
+    ),
+    ExportSpec::ExportAllAlias {
+      from,
+      exported_as,
+      type_only,
+      span,
+      ..
+    } => (
+      *span,
+      3,
+      from.clone(),
+      String::new(),
+      exported_as.clone(),
+      *type_only,
+    ),
+    ExportSpec::ExportAll {
+      from,
+      type_only,
+      span,
+      ..
+    } => (
+      *span,
+      4,
+      from.clone(),
+      String::new(),
+      String::new(),
+      *type_only,
+    ),
+  };
+  (
+    span.file,
+    span.range.start,
+    span.range.end,
+    kind_rank,
+    from,
+    name,
+    exported_as,
+    type_only,
+  )
+}
+
+fn insert_export_silent(map: &mut ExportMap, name: &str, group: SymbolGroup, symbols: &mut SymbolTable) {
+  if let Some(existing) = map.remove(name) {
+    let merged = merge_groups(existing, group, symbols);
+    map.insert(name.to_string(), merged);
+  } else {
+    map.insert(name.to_string(), group);
+  }
+}
+
+fn star_filter_special(map: &ExportMap) -> ExportMap {
+  map
+    .iter()
+    .filter_map(|(name, group)| {
+      if name == "default" || name == "export=" {
+        None
+      } else {
+        Some((name.clone(), group.clone()))
+      }
+    })
+    .collect()
 }
 
 fn has_ambient_module_named(specifier: &str, modules: &[AmbientModule]) -> bool {
