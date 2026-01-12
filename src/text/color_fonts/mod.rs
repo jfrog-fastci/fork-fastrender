@@ -8,6 +8,8 @@ mod colr_v1;
 mod cpal;
 mod limits;
 mod svg;
+#[cfg(test)]
+mod golden_tests;
 
 use crate::style::color::Rgba;
 use crate::text::face_cache;

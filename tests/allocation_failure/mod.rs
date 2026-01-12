@@ -169,6 +169,7 @@ mod cascade_dom_maps_allocation_failure_test;
 mod cascade_rule_index_allocation_failure_test;
 mod cascade_selector_key_cache_allocation_failure_test;
 mod cluster_map_allocation_failure_test;
+mod colrv0_layer_records_allocation_failure_test;
 mod colrv1_gradient_stop_allocation_failure_test;
 mod cpal_palette_allocation_failure_test;
 mod delta_set_index_map_allocation_failure_test;

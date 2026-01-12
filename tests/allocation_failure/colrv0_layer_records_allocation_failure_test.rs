@@ -2,72 +2,11 @@ use fastrender::style::color::Rgba;
 use fastrender::text::color_fonts::ColorFontRenderer;
 use fastrender::text::font_db::{FontStretch, FontStyle, FontWeight, LoadedFont};
 use fastrender::text::font_instance::FontInstance;
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::mem;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-struct FailingAllocator;
-
-static FAIL_SIZE: AtomicUsize = AtomicUsize::new(0);
-static FAIL_ALIGN: AtomicUsize = AtomicUsize::new(0);
-static FAILED_ALLOCS: AtomicUsize = AtomicUsize::new(0);
-
-fn fail_next_allocation(size: usize, align: usize) {
-  FAIL_ALIGN.store(align, Ordering::Relaxed);
-  FAIL_SIZE.store(size, Ordering::Relaxed);
-}
-
-unsafe impl GlobalAlloc for FailingAllocator {
-  unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-    let fail_size = FAIL_SIZE.load(Ordering::Relaxed);
-    if fail_size != 0
-      && layout.size() == fail_size
-      && layout.align() == FAIL_ALIGN.load(Ordering::Relaxed)
-    {
-      FAIL_SIZE.store(0, Ordering::Relaxed);
-      FAILED_ALLOCS.fetch_add(1, Ordering::Relaxed);
-      return std::ptr::null_mut();
-    }
-    System.alloc(layout)
-  }
-
-  unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-    let fail_size = FAIL_SIZE.load(Ordering::Relaxed);
-    if fail_size != 0
-      && layout.size() == fail_size
-      && layout.align() == FAIL_ALIGN.load(Ordering::Relaxed)
-    {
-      FAIL_SIZE.store(0, Ordering::Relaxed);
-      FAILED_ALLOCS.fetch_add(1, Ordering::Relaxed);
-      return std::ptr::null_mut();
-    }
-    System.alloc_zeroed(layout)
-  }
-
-  unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-    let fail_size = FAIL_SIZE.load(Ordering::Relaxed);
-    if fail_size != 0
-      && new_size == fail_size
-      && layout.align() == FAIL_ALIGN.load(Ordering::Relaxed)
-    {
-      FAIL_SIZE.store(0, Ordering::Relaxed);
-      FAILED_ALLOCS.fetch_add(1, Ordering::Relaxed);
-      return std::ptr::null_mut();
-    }
-    System.realloc(ptr, layout, new_size)
-  }
-
-  unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-    System.dealloc(ptr, layout)
-  }
-}
-
-#[global_allocator]
-static GLOBAL: FailingAllocator = FailingAllocator;
-
-static LOCK: Mutex<()> = Mutex::new(());
+use super::{fail_next_allocation, failed_allocs, lock_allocator};
 
 fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
   let bytes = data.get(offset..offset + 2)?;
@@ -125,7 +64,7 @@ struct LayerRecordLayout {
 
 #[test]
 fn colr_v0_layer_records_parse_survives_allocation_failure() {
-  let _guard = LOCK.lock().unwrap();
+  let _guard = lock_allocator();
 
   let renderer = ColorFontRenderer::new();
 
@@ -161,7 +100,7 @@ fn colr_v0_layer_records_parse_survives_allocation_failure() {
 
   let alloc_size = layer_count * mem::size_of::<LayerRecordLayout>();
   let alloc_align = mem::align_of::<LayerRecordLayout>();
-  let start_failures = FAILED_ALLOCS.load(Ordering::Relaxed);
+  let start_failures = failed_allocs();
   fail_next_allocation(alloc_size, alloc_align);
 
   let rendered = renderer.render(
@@ -179,7 +118,7 @@ fn colr_v0_layer_records_parse_survives_allocation_failure() {
   );
 
   assert_eq!(
-    FAILED_ALLOCS.load(Ordering::Relaxed),
+    failed_allocs(),
     start_failures + 1,
     "expected to trigger layer-record allocation failure"
   );
@@ -188,3 +127,4 @@ fn colr_v0_layer_records_parse_survives_allocation_failure() {
     "expected color glyph render to return None after allocation failure"
   );
 }
+
