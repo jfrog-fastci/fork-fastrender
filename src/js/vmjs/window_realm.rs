@@ -877,6 +877,12 @@ impl WindowRealm {
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
     let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+    // When the embedder doesn't provide a real document host, `WindowRealm::exec_script` runs
+    // against this lightweight `DocumentHostState`. Treat it as an already-loaded document so
+    // `document.readyState` observes the same default as browsers after load.
+    host_ctx
+      .dom_mut()
+      .set_ready_state(crate::web::dom::DocumentReadyState::Complete);
     self.exec_script_source_with_host_and_hooks(&mut host_ctx, hooks, source)
   }
 
@@ -989,6 +995,12 @@ impl WindowRealm {
       // - keep Promise jobs enqueued onto the VM-owned queue (restored on drop).
       let mut guard = MicrotaskQueueRestoreGuard::new(&mut rt.vm);
       let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+      // When the embedder doesn't provide a real document host, `WindowRealm::exec_script` runs
+      // against this lightweight `DocumentHostState`. Treat it as an already-loaded document so
+      // `document.readyState` observes the same default as browsers after load.
+      host_ctx
+        .dom_mut()
+        .set_ready_state(crate::web::dom::DocumentReadyState::Complete);
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(&mut host_ctx);
       let mut hooks = WindowRealmDomShimHooks {

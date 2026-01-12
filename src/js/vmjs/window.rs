@@ -4625,7 +4625,7 @@ mod tests {
   }
 
   #[test]
-  fn dynamic_inline_script_executes_as_task_on_insertion() -> Result<()> {
+  fn dynamic_inline_script_executes_synchronously_on_insertion() -> Result<()> {
     let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
     let container = dom.create_element("div", "");
     dom
@@ -4649,7 +4649,7 @@ mod tests {
 
     assert_eq!(
       get_global_prop_utf8(&mut host, "__log").as_deref(),
-      Some("A")
+      Some("SA")
     );
 
     host.run_until_idle(RunLimits {
@@ -4660,7 +4660,7 @@ mod tests {
 
     assert_eq!(
       get_global_prop_utf8(&mut host, "__log").as_deref(),
-      Some("AS")
+      Some("SA")
     );
     Ok(())
   }
@@ -4692,7 +4692,7 @@ mod tests {
 
     assert_eq!(
       get_global_prop_utf8(&mut host, "__log").as_deref(),
-      Some("A")
+      Some("SA")
     );
 
     host.run_until_idle(RunLimits {
@@ -4703,7 +4703,7 @@ mod tests {
 
     assert_eq!(
       get_global_prop_utf8(&mut host, "__log").as_deref(),
-      Some("AS")
+      Some("SA")
     );
 
     // Mutating the script again must not re-execute it.
@@ -4722,7 +4722,7 @@ mod tests {
 
     assert_eq!(
       get_global_prop_utf8(&mut host, "__log").as_deref(),
-      Some("ASB")
+      Some("SAB")
     );
     Ok(())
   }

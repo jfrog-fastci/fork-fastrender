@@ -281,6 +281,22 @@ fn set_data_prop(
   scope.define_property(obj, key, data_desc(value, writable))
 }
 
+fn set_accessor_prop(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  name: &str,
+  get: Value,
+  set: Value,
+) -> Result<(), VmError> {
+  // Root `obj`, `get`, and `set` while allocating the property key: `alloc_key` can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  scope.push_root(get)?;
+  scope.push_root(set)?;
+  let key = alloc_key(&mut scope, name)?;
+  scope.define_property(obj, key, accessor_desc(get, set))
+}
+
 fn get_data_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<Value, VmError> {
   let key = alloc_key(scope, name)?;
   Ok(
@@ -2410,11 +2426,12 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(ready_get_fn, Some(func_proto))?;
-  let ready_key = alloc_key(&mut scope, "readyState")?;
-  scope.define_property(
+  set_accessor_prop(
+    &mut scope,
     proto,
-    ready_key,
-    accessor_desc(Value::Object(ready_get_fn), Value::Undefined),
+    "readyState",
+    Value::Object(ready_get_fn),
+    Value::Undefined,
   )?;
 
   let status_get_id = vm.register_native_call(xhr_status_get)?;
@@ -2424,11 +2441,12 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(status_get_fn, Some(func_proto))?;
-  let status_key = alloc_key(&mut scope, "status")?;
-  scope.define_property(
+  set_accessor_prop(
+    &mut scope,
     proto,
-    status_key,
-    accessor_desc(Value::Object(status_get_fn), Value::Undefined),
+    "status",
+    Value::Object(status_get_fn),
+    Value::Undefined,
   )?;
 
   let status_text_get_id = vm.register_native_call(xhr_status_text_get)?;
@@ -2439,11 +2457,12 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(status_text_get_fn, Some(func_proto))?;
-  let status_text_key = alloc_key(&mut scope, "statusText")?;
-  scope.define_property(
+  set_accessor_prop(
+    &mut scope,
     proto,
-    status_text_key,
-    accessor_desc(Value::Object(status_text_get_fn), Value::Undefined),
+    "statusText",
+    Value::Object(status_text_get_fn),
+    Value::Undefined,
   )?;
 
   let rt_get_id = vm.register_native_call(xhr_response_type_get)?;
@@ -2453,6 +2472,9 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(rt_get_fn, Some(func_proto))?;
+  // Root the getter while we allocate the setter; otherwise, GC can collect it before the
+  // descriptor is installed under tight heap limits.
+  scope.push_root(Value::Object(rt_get_fn))?;
   let rt_set_id = vm.register_native_call(xhr_response_type_set)?;
   let rt_set_name = scope.alloc_string("set responseType")?;
   scope.push_root(Value::String(rt_set_name))?;
@@ -2460,11 +2482,12 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(rt_set_fn, Some(func_proto))?;
-  let rt_key = alloc_key(&mut scope, "responseType")?;
-  scope.define_property(
+  set_accessor_prop(
+    &mut scope,
     proto,
-    rt_key,
-    accessor_desc(Value::Object(rt_get_fn), Value::Object(rt_set_fn)),
+    "responseType",
+    Value::Object(rt_get_fn),
+    Value::Object(rt_set_fn),
   )?;
 
   let wc_get_id = vm.register_native_call(xhr_with_credentials_get)?;
@@ -2474,6 +2497,9 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(wc_get_fn, Some(func_proto))?;
+  // Root the getter while we allocate the setter; otherwise, GC can collect it before the
+  // descriptor is installed under tight heap limits.
+  scope.push_root(Value::Object(wc_get_fn))?;
   let wc_set_id = vm.register_native_call(xhr_with_credentials_set)?;
   let wc_set_name = scope.alloc_string("set withCredentials")?;
   scope.push_root(Value::String(wc_set_name))?;
@@ -2481,11 +2507,12 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(wc_set_fn, Some(func_proto))?;
-  let wc_key = alloc_key(&mut scope, "withCredentials")?;
-  scope.define_property(
+  set_accessor_prop(
+    &mut scope,
     proto,
-    wc_key,
-    accessor_desc(Value::Object(wc_get_fn), Value::Object(wc_set_fn)),
+    "withCredentials",
+    Value::Object(wc_get_fn),
+    Value::Object(wc_set_fn),
   )?;
 
   let timeout_get_id = vm.register_native_call(xhr_timeout_get)?;
@@ -2517,11 +2544,12 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(response_text_get_fn, Some(func_proto))?;
-  let response_text_key = alloc_key(&mut scope, "responseText")?;
-  scope.define_property(
+  set_accessor_prop(
+    &mut scope,
     proto,
-    response_text_key,
-    accessor_desc(Value::Object(response_text_get_fn), Value::Undefined),
+    "responseText",
+    Value::Object(response_text_get_fn),
+    Value::Undefined,
   )?;
 
   let response_get_id = vm.register_native_call(xhr_response_get)?;
@@ -2531,11 +2559,12 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   scope
     .heap_mut()
     .object_set_prototype(response_get_fn, Some(func_proto))?;
-  let response_key = alloc_key(&mut scope, "response")?;
-  scope.define_property(
+  set_accessor_prop(
+    &mut scope,
     proto,
-    response_key,
-    accessor_desc(Value::Object(response_get_fn), Value::Undefined),
+    "response",
+    Value::Object(response_get_fn),
+    Value::Undefined,
   )?;
 
   // Event handler properties.
