@@ -300,6 +300,8 @@ pub struct ExportAsNamespace {
 pub struct AmbientModule {
   pub name: String,
   pub name_span: TextRange,
+  pub export_modifier: bool,
+  pub export_modifier_span: Option<TextRange>,
   pub decls: Vec<Decl>,
   pub imports: Vec<Import>,
   pub type_imports: Vec<TypeImport>,

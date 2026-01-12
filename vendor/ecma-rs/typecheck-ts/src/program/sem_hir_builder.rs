@@ -123,10 +123,18 @@ impl SemHirBuilder {
     }
   }
 
-  pub(super) fn into_ambient(self, name: String, name_span: TextRange) -> sem_ts::AmbientModule {
+  pub(super) fn into_ambient(
+    self,
+    name: String,
+    name_span: TextRange,
+    export_modifier: bool,
+    export_modifier_span: Option<TextRange>,
+  ) -> sem_ts::AmbientModule {
     sem_ts::AmbientModule {
       name,
       name_span,
+      export_modifier,
+      export_modifier_span,
       decls: self.decls,
       imports: self.imports,
       type_imports: Vec::new(),

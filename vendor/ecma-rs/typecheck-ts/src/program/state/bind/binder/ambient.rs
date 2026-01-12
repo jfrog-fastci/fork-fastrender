@@ -11,7 +11,24 @@ impl ProgramState {
     let Some(body) = module.stx.body.as_ref() else {
       return;
     };
-    let name_span = loc_to_span(file, module.loc).range;
+    let stmt_range = loc_to_span(file, module.loc).range;
+    let name_span = stmt_range;
+    let export_modifier = module.stx.export;
+    let export_modifier_span = if export_modifier {
+      const EXPORT_LEN: u32 = 6;
+      const DECLARE_LEN: u32 = 7;
+      const SEP_LEN: u32 = 1;
+      let mut offset = EXPORT_LEN + SEP_LEN;
+      if module.stx.declare {
+        offset += DECLARE_LEN + SEP_LEN;
+      }
+      let start = stmt_range.start.saturating_sub(offset);
+      let end = start.saturating_add(EXPORT_LEN);
+      let span = TextRange::new(start, end);
+      Some(if span.is_empty() { stmt_range } else { span })
+    } else {
+      None
+    };
     let name = match &module.stx.name {
       parse_js::ast::ts_stmt::ModuleName::Identifier(id) => id.clone(),
       parse_js::ast::ts_stmt::ModuleName::String(specifier) => specifier.clone(),
@@ -21,7 +38,12 @@ impl ProgramState {
     for stmt in body.iter() {
       self.bind_ambient_stmt(file, stmt, &mut module_builder, &mut bindings, defs);
     }
-    builder.add_ambient_module(module_builder.into_ambient(name, name_span));
+    builder.add_ambient_module(module_builder.into_ambient(
+      name,
+      name_span,
+      export_modifier,
+      export_modifier_span,
+    ));
   }
 
   pub(super) fn bind_ambient_stmt(

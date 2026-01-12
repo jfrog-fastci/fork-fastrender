@@ -705,6 +705,8 @@ fn gen_ambient_module(
   ts::AmbientModule {
     name,
     name_span,
+    export_modifier: false,
+    export_modifier_span: None,
     decls,
     imports,
     type_imports,

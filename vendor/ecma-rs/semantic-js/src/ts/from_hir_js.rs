@@ -484,6 +484,22 @@ fn lower_block(
         }
         ModuleName::String(spec) => {
           let name_span = to_range(module.stx.name_loc);
+          let export_modifier = module.stx.export;
+          let export_modifier_span = if export_modifier {
+            const EXPORT_LEN: u32 = 6;
+            const DECLARE_LEN: u32 = 7;
+            const SEP_LEN: u32 = 1;
+            let mut offset = EXPORT_LEN + SEP_LEN;
+            if module.stx.declare {
+              offset += DECLARE_LEN + SEP_LEN;
+            }
+            let start = stmt_range.start.saturating_sub(offset);
+            let end = start.saturating_add(EXPORT_LEN);
+            let span = TextRange::new(start, end);
+            Some(if span.is_empty() { stmt_range } else { span })
+          } else {
+            None
+          };
           let nested = lower_block(
             module.stx.body.as_deref().unwrap_or(&[]),
             lower,
@@ -495,6 +511,8 @@ fn lower_block(
           result.ambient_modules.push(AmbientModule {
             name: spec.clone(),
             name_span,
+            export_modifier,
+            export_modifier_span,
             decls: nested.decls,
             imports: nested.imports,
             type_imports: Vec::new(),

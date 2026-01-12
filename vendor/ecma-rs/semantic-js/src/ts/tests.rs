@@ -710,6 +710,8 @@ fn ambient_module_type_imports_are_traversed() {
   host.ambient_modules.push(AmbientModule {
     name: "pkg".to_string(),
     name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: Vec::new(),
     type_imports: vec![TypeImport {
@@ -2502,6 +2504,8 @@ fn ambient_modules_collect_exports() {
   let ambient = AmbientModule {
     name: "pkg".to_string(),
     name_span: span(100),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![decl],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -2540,6 +2544,8 @@ fn ambient_import_diagnostic_points_to_specifier() {
   hir.ambient_modules.push(AmbientModule {
     name: "pkg".to_string(),
     name_span: span(10),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: vec![Import {
       specifier: "missing".to_string(),
@@ -2730,6 +2736,8 @@ fn ambient_module_export_as_namespace_fragments_preserve_decl_files() {
   a.ambient_modules.push(AmbientModule {
     name: "pkg".to_string(),
     name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -2747,6 +2755,8 @@ fn ambient_module_export_as_namespace_fragments_preserve_decl_files() {
   b.ambient_modules.push(AmbientModule {
     name: "pkg".to_string(),
     name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -2801,6 +2811,8 @@ fn ambient_module_fragments_merge_exports() {
   let mut part1 = AmbientModule {
     name: "pkg".to_string(),
     name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -2849,6 +2861,8 @@ fn ambient_module_interfaces_merge_deterministically() {
   let mut part1 = AmbientModule {
     name: "lib".to_string(),
     name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -2901,6 +2915,8 @@ fn ambient_module_import_reexports_without_resolver_mapping() {
   let ambient = AmbientModule {
     name: "pkg".to_string(),
     name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![decl],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -2984,6 +3000,8 @@ fn ambient_module_reexport_chain() {
   pkg.ambient_modules.push(AmbientModule {
     name: "pkg".to_string(),
     name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![decl],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -3050,6 +3068,8 @@ fn external_module_augmentation_merges_without_new_exports() {
   aug.ambient_modules.push(AmbientModule {
     name: "./a".to_string(),
     name_span: span(10),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![augmented_request, only_aug],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -3125,6 +3145,8 @@ fn imports_use_ambient_modules_when_file_missing() {
   let ambient = AmbientModule {
     name: "pkg".to_string(),
     name_span: span(4),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![ambient_decl],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -3186,6 +3208,8 @@ fn reexports_from_ambient_modules_are_resolved() {
   let ambient = AmbientModule {
     name: "pkg".to_string(),
     name_span: span(7),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![ambient_decl],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -3260,6 +3284,23 @@ fn lower_ambient_module_from_dts() {
     .get("Foo")
     .and_then(|group| group.symbol_for(Namespace::TYPE, symbols))
     .is_some());
+}
+
+#[test]
+fn lower_export_declare_module_records_export_modifier_span() {
+  let source = r#"export declare module "M" {}"#;
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(FileId(206), HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered);
+
+  assert_eq!(hir.ambient_modules.len(), 1);
+  let ambient = &hir.ambient_modules[0];
+  assert!(ambient.export_modifier);
+  let span = ambient
+    .export_modifier_span
+    .expect("export modifier span should be recorded");
+  assert!(!span.is_empty());
+  assert_eq!(&source[span.start as usize..span.end as usize], "export");
 }
 
 #[test]
