@@ -4331,7 +4331,6 @@ impl<'a> Checker<'a> {
       .super_value_ty
       .unwrap_or(self.current_super_ctor_ty);
     let callee_ty = self.expand_callable_type(callee_ty);
-
     let arg_exprs = call.stx.arguments.as_slice();
     let all_candidate_sigs =
       construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);
@@ -4756,7 +4755,6 @@ impl<'a> Checker<'a> {
     self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
     resolution.return_type
   }
-
   fn check_new_expr(
     &mut self,
     un: &Node<parse_js::ast::expr::UnaryExpr>,
@@ -7176,23 +7174,36 @@ impl<'a> Checker<'a> {
         for member in obj.stx.members.iter() {
           match &member.stx.typ {
             ObjMemberType::Valued { key, val } => {
-              if let ClassOrObjKey::Direct(direct) = key {
-                if let ClassOrObjVal::Prop(Some(value)) = val {
-                  let prop_key = PropKey::String(self.store.intern_name_ref(&direct.stx.key));
-                  let value_ty = self.const_inference_type(value);
-                  shape.properties.push(types_ts_interned::Property {
-                    key: prop_key,
-                    data: PropData {
-                      ty: value_ty,
-                      optional: false,
-                      readonly: true,
-                      accessibility: None,
-                      is_method: false,
-                      origin: None,
-                      declared_on: None,
-                    },
-                  });
+              let prop_key = match key {
+                ClassOrObjKey::Direct(direct) => {
+                  Some(PropKey::String(self.store.intern_name_ref(&direct.stx.key)))
                 }
+                ClassOrObjKey::Computed(expr) => {
+                  let key_ty = self.const_inference_type(expr);
+                  match self.store.type_kind(key_ty) {
+                    TypeKind::StringLiteral(id) => Some(PropKey::String(id)),
+                    TypeKind::NumberLiteral(num) => Some(PropKey::String(
+                      self.store.intern_name(num.0.to_string()),
+                    )),
+                    _ => None,
+                  }
+                }
+              };
+
+              if let (Some(prop_key), ClassOrObjVal::Prop(Some(value))) = (prop_key, val) {
+                let value_ty = self.const_inference_type(value);
+                shape.properties.push(types_ts_interned::Property {
+                  key: prop_key,
+                  data: PropData {
+                    ty: value_ty,
+                    optional: false,
+                    readonly: true,
+                    accessibility: None,
+                    is_method: false,
+                    origin: None,
+                    declared_on: None,
+                  },
+                });
               }
             }
             ObjMemberType::Shorthand { id } => {
@@ -7294,10 +7305,25 @@ impl<'a> Checker<'a> {
         for member in obj.stx.members.iter() {
           match &member.stx.typ {
             ObjMemberType::Valued { key, val } => {
-              if let ClassOrObjKey::Direct(direct) = key {
-                if let ClassOrObjVal::Prop(Some(value)) = val {
-                  let prop_key = PropKey::String(self.store.intern_name_ref(&direct.stx.key));
-                  let value_ty = self.const_assertion_type(value);
+              let prop_key = match key {
+                ClassOrObjKey::Direct(direct) => {
+                  Some(PropKey::String(self.store.intern_name_ref(&direct.stx.key)))
+                }
+                ClassOrObjKey::Computed(expr) => {
+                  let key_ty = self.check_expr(expr);
+                  match self.store.type_kind(key_ty) {
+                    TypeKind::StringLiteral(id) => Some(PropKey::String(id)),
+                    TypeKind::NumberLiteral(num) => Some(PropKey::String(
+                      self.store.intern_name(num.0.to_string()),
+                    )),
+                    _ => None,
+                  }
+                }
+              };
+
+              if let ClassOrObjVal::Prop(Some(value)) = val {
+                let value_ty = self.const_assertion_type(value);
+                if let Some(prop_key) = prop_key {
                   shape.properties.push(types_ts_interned::Property {
                     key: prop_key,
                     data: PropData {
@@ -7311,8 +7337,6 @@ impl<'a> Checker<'a> {
                     },
                   });
                 }
-              } else if let ClassOrObjVal::Prop(Some(expr)) = val {
-                let _ = self.check_expr(expr);
               }
             }
             ObjMemberType::Shorthand { id } => {
@@ -14226,8 +14250,34 @@ impl<'a> FlowBodyChecker<'a> {
             ObjectKey::String(s) => PropKey::String(self.store.intern_name_ref(s)),
             ObjectKey::Number(n) => PropKey::Number(n.parse::<i64>().unwrap_or(0)),
             ObjectKey::Computed(expr) => {
-              let _ = self.eval_expr(*expr, env);
-              let _ = self.eval_expr(*value, env);
+              let key_ty = self.eval_expr(*expr, env).0;
+              let ty = self.eval_expr(*value, env).0;
+              let ty = if self.widen_object_literals {
+                self.widen_object_prop(ty)
+              } else {
+                ty
+              };
+              let prop_key = match self.store.type_kind(key_ty) {
+                TypeKind::StringLiteral(id) => Some(PropKey::String(id)),
+                TypeKind::NumberLiteral(num) => {
+                  Some(PropKey::String(self.store.intern_name(num.0.to_string())))
+                }
+                _ => None,
+              };
+              if let Some(prop_key) = prop_key {
+                shape.properties.push(types_ts_interned::Property {
+                  key: prop_key,
+                  data: PropData {
+                    ty,
+                    optional: false,
+                    readonly: false,
+                    accessibility: None,
+                    is_method: false,
+                    origin: None,
+                    declared_on: None,
+                  },
+                });
+              }
               continue;
             }
           };
