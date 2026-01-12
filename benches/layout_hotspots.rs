@@ -242,8 +242,12 @@ fn bench_flex_measure_hot_path(c: &mut Criterion) {
   let font_ctx = common::fixed_font_context();
   let engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(LayoutParallelism::disabled()),
-    font_ctx,
+    font_ctx.clone(),
   );
+  let mut cached_config =
+    LayoutConfig::for_viewport(viewport).with_parallelism(LayoutParallelism::disabled());
+  cached_config.enable_cache = true;
+  let cached_engine = LayoutEngine::with_font_context(cached_config, font_ctx);
   // 96 flex items * ~3 nodes/item ~= 289 nodes total.
   let box_tree = build_flex_measure_tree(96);
 
@@ -272,6 +276,14 @@ fn bench_flex_measure_hot_path(c: &mut Criterion) {
   group.bench_function("flex_layout_single_pass", |b| {
     b.iter(|| {
       let fragments = engine
+        .layout_tree(black_box(&box_tree))
+        .expect("flex layout should succeed");
+      black_box(fragments);
+    })
+  });
+  group.bench_function("flex_layout_single_pass_layout_cache", |b| {
+    b.iter(|| {
+      let fragments = cached_engine
         .layout_tree(black_box(&box_tree))
         .expect("flex layout should succeed");
       black_box(fragments);

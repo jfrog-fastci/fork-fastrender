@@ -277,6 +277,15 @@ thread_local! {
   static POSITIONED_DESCENDANT_DEPENDENT_CACHE: RefCell<FxHashMap<usize, (usize, u8)>> =
     RefCell::new(FxHashMap::default());
   static POSITIONED_DESCENDANT_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
+
+  /// Float descendant memoization keyed by node id within a cache epoch.
+  ///
+  /// Inline formatting contexts can depend on float layout (floats affect available line space and
+  /// can introduce out-of-flow fragments). Our conservative inline layout caching policy starts by
+  /// caching only float-free subtrees, so this memoization keeps the cacheability predicate cheap.
+  static FLOAT_DESCENDANT_DEPENDENT_CACHE: RefCell<FxHashMap<usize, (usize, bool)>> =
+    RefCell::new(FxHashMap::default());
+  static FLOAT_DESCENDANT_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
 }
 
 const COUNTER_SHARDS: usize = 64;
@@ -439,6 +448,21 @@ fn positioned_descendant_cache_use_epoch(epoch: usize, force_clear: bool) {
     let previous = cell.get();
     if force_clear || previous != epoch {
       clear_positioned_descendant_cache();
+      cell.set(epoch);
+    }
+  });
+}
+
+fn clear_float_descendant_cache() {
+  FLOAT_DESCENDANT_DEPENDENT_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+fn float_descendant_cache_use_epoch(epoch: usize, force_clear: bool) {
+  let epoch = epoch.max(1);
+  FLOAT_DESCENDANT_CACHE_EPOCH.with(|cell| {
+    let previous = cell.get();
+    if force_clear || previous != epoch {
+      clear_float_descendant_cache();
       cell.set(epoch);
     }
   });
@@ -956,6 +980,38 @@ fn subtree_contains_content_visibility_auto(node: &BoxNode, epoch: usize) -> boo
   contains
 }
 
+fn subtree_contains_floats_uncached(node: &BoxNode, epoch: usize) -> bool {
+  if node.style.float.is_floating() {
+    return true;
+  }
+  node
+    .children
+    .iter()
+    .any(|child| subtree_contains_floats(child, epoch))
+}
+
+fn subtree_contains_floats(node: &BoxNode, epoch: usize) -> bool {
+  let id = node.id();
+  if id == 0 {
+    return subtree_contains_floats_uncached(node, epoch);
+  }
+
+  if let Some(cached) = FLOAT_DESCENDANT_DEPENDENT_CACHE.with(|cache| {
+    cache
+      .borrow()
+      .get(&id)
+      .and_then(|(cached_epoch, contains)| (*cached_epoch == epoch).then_some(*contains))
+  }) {
+    return cached;
+  }
+
+  let contains = subtree_contains_floats_uncached(node, epoch);
+  FLOAT_DESCENDANT_DEPENDENT_CACHE.with(|cache| {
+    cache.borrow_mut().insert(id, (epoch, contains));
+  });
+  contains
+}
+
 const POSITIONED_DEP_ABSOLUTE: u8 = 1;
 const POSITIONED_DEP_FIXED: u8 = 2;
 
@@ -1121,6 +1177,7 @@ fn layout_cache_sync_thread_state() {
     subgrid_cache_use_epoch(epoch, true);
     content_visibility_auto_cache_use_epoch(epoch, true);
     positioned_descendant_cache_use_epoch(epoch, true);
+    float_descendant_cache_use_epoch(epoch, true);
   }
 
   LAYOUT_CACHE_EPOCH.with(|cell| cell.set(epoch));
@@ -1147,7 +1204,7 @@ fn is_layout_cacheable(box_node: &BoxNode, fc_type: FormattingContextType) -> bo
   }
 
   match fc_type {
-    FormattingContextType::Inline => false,
+    FormattingContextType::Inline => true,
     FormattingContextType::Block => {
       crate::layout::contexts::block::margin_collapse::establishes_bfc(&box_node.style)
     }
@@ -1187,6 +1244,18 @@ fn layout_cache_key(
     0
   };
   let positioned_deps = subtree_positioned_dependencies(box_node, epoch);
+  if matches!(fc_type, FormattingContextType::Inline) {
+    // Inline formatting contexts interact with floats and out-of-flow positioned descendants in
+    // ways that are not fully captured by the generic cache key (e.g. floats from an ancestor
+    // float context can change available line space, and abs/fixed descendants can depend on
+    // containing blocks that are not part of the inline layout inputs).
+    //
+    // Start with a conservative cacheability subset that matches common real-world inline
+    // subtrees: no floats and no abs/fixed descendants.
+    if positioned_deps != 0 || subtree_contains_floats(box_node, epoch) {
+      return None;
+    }
+  }
   let include_positioned_cb = positioned_deps & POSITIONED_DEP_ABSOLUTE != 0
     && !box_node.style.establishes_abs_containing_block();
   let include_fixed_cb = positioned_deps & POSITIONED_DEP_FIXED != 0
@@ -1366,6 +1435,7 @@ pub(crate) fn layout_cache_reset_counters() {
   subgrid_cache_use_epoch(epoch, true);
   content_visibility_auto_cache_use_epoch(epoch, true);
   positioned_descendant_cache_use_epoch(epoch, true);
+  float_descendant_cache_use_epoch(epoch, true);
   LAYOUT_CACHE_CLONE_RETURNS.store(0);
 }
 
@@ -1415,6 +1485,7 @@ pub(crate) fn layout_cache_use_epoch(
     subgrid_cache_use_epoch(epoch, false);
     content_visibility_auto_cache_use_epoch(epoch, false);
     positioned_descendant_cache_use_epoch(epoch, false);
+    float_descendant_cache_use_epoch(epoch, false);
   }
 }
 

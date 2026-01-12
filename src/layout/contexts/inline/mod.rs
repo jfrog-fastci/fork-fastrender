@@ -59,6 +59,8 @@ use crate::layout::float_context::ClearSide;
 use crate::layout::float_context::FloatContext;
 use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_inline_intrinsic_call;
+use crate::layout::formatting_context::layout_cache_lookup;
+use crate::layout::formatting_context::layout_cache_store;
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
@@ -10907,8 +10909,19 @@ impl FormattingContext for InlineFormattingContext {
       if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
         return Err(LayoutError::Timeout { elapsed });
       }
-      let mut fragment = self.layout_with_floats(box_node, constraints, None, 0.0, 0.0)?;
       let style_override = crate::layout::style_override::style_override_for(box_node.id);
+      if let Some(cached) = layout_cache_lookup(
+        box_node,
+        FormattingContextType::Inline,
+        constraints,
+        self.factory.viewport_scroll(),
+        self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
+      ) {
+        return Ok(cached);
+      }
+      let mut fragment = self.layout_with_floats(box_node, constraints, None, 0.0, 0.0)?;
       let style_arc = style_override.unwrap_or_else(|| box_node.style.clone());
       let style: &ComputedStyle = style_arc.as_ref();
       fragment.style = Some(style_arc.clone());
@@ -10916,6 +10929,16 @@ impl FormattingContext for InlineFormattingContext {
       if crate::style::block_axis_is_horizontal(style.writing_mode) {
         fragment = crate::layout::contexts::block::convert_fragment_axes_root(fragment);
       }
+      layout_cache_store(
+        box_node,
+        FormattingContextType::Inline,
+        constraints,
+        &fragment,
+        self.factory.viewport_scroll(),
+        self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
+      );
       return Ok(fragment);
     }
 
@@ -26355,6 +26378,111 @@ mod tests {
       .lines;
 
     assert_ne!(line_texts(&auto_narrow), line_texts(&auto_wide));
+  }
+
+  static INLINE_LAYOUT_CACHE_TEST_EPOCH: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(1_000_000);
+
+  #[test]
+  fn inline_fc_layout_cache_hits_and_returns_identical_fragments() {
+    let _guard = crate::layout::formatting_context::layout_cache_test_lock();
+    let epoch = INLINE_LAYOUT_CACHE_TEST_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::layout::formatting_context::layout_cache_use_epoch(epoch, true, true, None, Some(1024));
+    assert_eq!(
+      crate::layout::formatting_context::layout_cache_stats(),
+      (0, 0, 0, 0, 0)
+    );
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let root_style = Arc::new(root_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let text_style = Arc::new(text_style);
+
+    let text = BoxNode::new_text(
+      text_style,
+      "FastRender inline layout cache smoke test ".repeat(16),
+    );
+    let root = BoxNode::new_block(root_style, FormattingContextType::Inline, vec![text]);
+    let tree = crate::tree::box_tree::BoxTree::new(root);
+    let root = &tree.root;
+
+    let ifc = InlineFormattingContext::new();
+    let constraints = LayoutConstraints::definite_width(240.0);
+
+    let before_stats = crate::layout::formatting_context::layout_cache_stats();
+    let fragment_a =
+      crate::layout::auto_scrollbars::with_bypass(root, || ifc.layout(root, &constraints))
+        .expect("first inline layout");
+    let mid_stats = crate::layout::formatting_context::layout_cache_stats();
+    assert_eq!(
+      (mid_stats.0 - before_stats.0, mid_stats.1 - before_stats.1, mid_stats.2 - before_stats.2),
+      (1, 0, 1),
+      "expected 1 lookup, 0 hits, 1 store on first layout"
+    );
+
+    let fragment_b =
+      crate::layout::auto_scrollbars::with_bypass(root, || ifc.layout(root, &constraints))
+        .expect("second inline layout");
+    let after_stats = crate::layout::formatting_context::layout_cache_stats();
+    assert_eq!(
+      (after_stats.0 - mid_stats.0, after_stats.1 - mid_stats.1, after_stats.2 - mid_stats.2),
+      (1, 1, 0),
+      "expected 1 lookup, 1 hit, 0 stores on second layout"
+    );
+
+    assert_eq!(format!("{fragment_a:?}"), format!("{fragment_b:?}"));
+  }
+
+  #[test]
+  fn inline_fc_layout_cache_bypasses_float_subtrees() {
+    let _guard = crate::layout::formatting_context::layout_cache_test_lock();
+    let epoch = INLINE_LAYOUT_CACHE_TEST_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::layout::formatting_context::layout_cache_use_epoch(epoch, true, true, None, Some(1024));
+    assert_eq!(
+      crate::layout::formatting_context::layout_cache_stats(),
+      (0, 0, 0, 0, 0)
+    );
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let root_style = Arc::new(root_style);
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Inline;
+    float_style.float = crate::style::float::Float::Left;
+    float_style.width = Some(Length::px(40.0));
+    float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
+    let float_node = BoxNode::new_inline(Arc::new(float_style), vec![]);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let text_style = Arc::new(text_style);
+    let text = BoxNode::new_text(text_style, "text after float".to_string());
+
+    let root = BoxNode::new_block(root_style, FormattingContextType::Inline, vec![float_node, text]);
+    let tree = crate::tree::box_tree::BoxTree::new(root);
+    let root = &tree.root;
+
+    let ifc = InlineFormattingContext::new();
+    let constraints = LayoutConstraints::definite_width(240.0);
+
+    let _ =
+      crate::layout::auto_scrollbars::with_bypass(root, || ifc.layout(root, &constraints))
+        .expect("first inline layout with float");
+    let _ =
+      crate::layout::auto_scrollbars::with_bypass(root, || ifc.layout(root, &constraints))
+        .expect("second inline layout with float");
+
+    assert_eq!(
+      crate::layout::formatting_context::layout_cache_stats(),
+      (0, 0, 0, 0, 0),
+      "expected float subtrees to be excluded from layout caching"
+    );
   }
 
   #[test]
