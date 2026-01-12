@@ -167,7 +167,7 @@ fn codegen_error_to_diagnostic(file: FileId, err: &CodegenError) -> Diagnostic {
       Span::new(file, TextRange::new(loc.start_u32(), loc.end_u32())),
     ),
     CodegenError::BuiltinsDisabled { loc } => codes::BUILTINS_DISABLED.error(
-      "builtins are disabled by compiler options",
+      "builtins disabled by compiler options",
       Span::new(file, TextRange::new(loc.start_u32(), loc.end_u32())),
     ),
     CodegenError::TypeError { message, loc } => codes::LEGACY_TYPE_ERROR.error(
