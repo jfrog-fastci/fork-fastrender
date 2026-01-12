@@ -1681,7 +1681,9 @@ pub mod body_check {
           if idx < result.call_signatures.len()
             && matches!(body.exprs[idx].kind, hir_js::ExprKind::Call(_))
           {
-            result.call_signatures[idx] = *sig;
+            if sig.is_some() || result.call_signatures[idx].is_none() {
+              result.call_signatures[idx] = *sig;
+            }
           }
         }
         if flow_result.pat_types.len() == result.pat_types.len() {
