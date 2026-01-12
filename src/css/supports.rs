@@ -207,6 +207,45 @@ mod tests {
   use super::*;
 
   #[test]
+  fn strip_trailing_important_strips_whitespace_comment_variants() {
+    assert_eq!(strip_trailing_important("10px !important"), "10px");
+    assert_eq!(strip_trailing_important("10px!important"), "10px");
+    assert_eq!(strip_trailing_important("10px ! important"), "10px");
+    assert_eq!(strip_trailing_important("10px !/*comment*/important"), "10px");
+    assert_eq!(
+      strip_trailing_important("10px /*keep*/ !/*comment*/important /*trailing*/"),
+      "10px /*keep*/"
+    );
+  }
+
+  #[test]
+  fn strip_trailing_important_ignores_nested_blocks() {
+    // `!important` inside a nested block should not be treated as the declaration's important flag.
+    assert_eq!(
+      strip_trailing_important("var(--x, !important)"),
+      "var(--x, !important)"
+    );
+
+    // But `!important` after nested blocks should still be stripped.
+    assert_eq!(
+      strip_trailing_important("var(--x, !important) !important"),
+      "var(--x, !important)"
+    );
+  }
+
+  #[test]
+  fn strip_trailing_important_keeps_non_trailing_tokens() {
+    assert_eq!(
+      strip_trailing_important("10px !important 0"),
+      "10px !important 0"
+    );
+    assert_eq!(
+      strip_trailing_important("10px !importantish"),
+      "10px !importantish"
+    );
+  }
+
+  #[test]
   fn supports_legacy_box_display_values() {
     assert!(supports_declaration("display", "-webkit-box"));
     assert!(supports_declaration("display", "-webkit-inline-box"));

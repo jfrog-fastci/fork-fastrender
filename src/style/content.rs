@@ -1531,9 +1531,10 @@ fn parse_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<Stri
         .copied()
         .is_some_and(is_ascii_whitespace_html_css)
       {
-        let consumed = chars.next().unwrap();
-        if consumed == '\r' && matches!(chars.peek().copied(), Some('\n')) {
-          chars.next();
+        if let Some(consumed) = chars.next() {
+          if consumed == '\r' && matches!(chars.peek().copied(), Some('\n')) {
+            chars.next();
+          }
         }
       }
 
@@ -1764,6 +1765,25 @@ fn parse_keyword(name: &str) -> Option<ContentItem> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn test_parse_string_hex_escape_whitespace_consumption() {
+    fn parse(input: &str) -> String {
+      let mut chars = input.chars().peekable();
+      parse_string(&mut chars).expect("string parse")
+    }
+
+    // Without a whitespace terminator, all hex digits are consumed.
+    assert_eq!(parse(r#""\26A""#), "\u{26A}");
+
+    // With a whitespace terminator, the whitespace is consumed and the next character remains.
+    assert_eq!(parse(r#""\26 A""#), "&A");
+    assert_eq!(parse("\"\\26\nA\""), "&A");
+    assert_eq!(parse("\"\\26\r\nA\""), "&A");
+
+    // Only one whitespace is consumed after the hex escape.
+    assert_eq!(parse(r#""\26  A""#), "& A");
+  }
 
   // === ContentValue Tests ===
 

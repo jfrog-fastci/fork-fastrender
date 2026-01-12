@@ -35,3 +35,20 @@ fn invalid_second_token_does_not_override_text_overflow() {
   );
   assert_eq!(node.styles.text_overflow.inline_end, TextOverflowSide::Clip);
 }
+
+#[test]
+fn one_value_text_overflow_applies_to_inline_end_only() {
+  let node = styled_div(r#"<div style="text-overflow: ellipsis;"></div>"#);
+  assert_eq!(node.styles.text_overflow.inline_start, TextOverflowSide::Clip);
+  assert_eq!(node.styles.text_overflow.inline_end, TextOverflowSide::Ellipsis);
+}
+
+#[test]
+fn text_overflow_accepts_custom_string() {
+  let node = styled_div(r#"<div style="text-overflow: '>>';"></div>"#);
+  assert_eq!(node.styles.text_overflow.inline_start, TextOverflowSide::Clip);
+  assert_eq!(
+    node.styles.text_overflow.inline_end,
+    TextOverflowSide::String(">>".to_string())
+  );
+}
