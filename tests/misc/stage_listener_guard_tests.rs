@@ -1,6 +1,5 @@
-use fastrender::render_control::{
-  record_stage, GlobalStageListenerGuard, StageHeartbeat, StageListener,
-};
+use crate::common::StageListenerGuard;
+use fastrender::render_control::{record_stage, StageHeartbeat, StageListener};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -33,13 +32,13 @@ fn stage_listener_guard_restores_previous_listener() {
   });
 
   // Install A, then temporarily override it with B.
-  let guard_a = GlobalStageListenerGuard::new(Arc::clone(&listener_a));
+  let guard_a = StageListenerGuard::new(Arc::clone(&listener_a));
   record_stage(StageHeartbeat::DomParse);
   assert_eq!(a_hits.load(Ordering::SeqCst), 1);
   assert_eq!(b_hits.load(Ordering::SeqCst), 0);
 
   {
-    let _guard_b = GlobalStageListenerGuard::new(Arc::clone(&listener_b));
+    let _guard_b = StageListenerGuard::new(Arc::clone(&listener_b));
     record_stage(StageHeartbeat::DomParse);
     assert_eq!(a_hits.load(Ordering::SeqCst), 1);
     assert_eq!(b_hits.load(Ordering::SeqCst), 1);
