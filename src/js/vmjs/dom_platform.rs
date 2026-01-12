@@ -804,16 +804,15 @@ impl DomPlatform {
       .retain(|weak, _| weak.upgrade(heap).is_some());
   }
 
-  pub fn register_wrapper(
+  fn register_wrapper_for_document_id(
     &mut self,
     heap: &Heap,
     wrapper: GcObject,
-    document_key: WeakGcObject,
+    document_id: DocumentId,
     node_id: NodeId,
     primary_interface: DomInterface,
   ) {
     self.sweep_dead_wrappers_if_needed(heap);
-    let document_id = document_id_from_key(document_key);
     let key = DomNodeKey::new(document_id, node_id);
     let weak = WeakGcObject::from(wrapper);
     self.wrappers_by_node.insert(key, weak);
@@ -828,6 +827,18 @@ impl DomPlatform {
     );
   }
 
+  pub fn register_wrapper(
+    &mut self,
+    heap: &Heap,
+    wrapper: GcObject,
+    document_key: WeakGcObject,
+    node_id: NodeId,
+    primary_interface: DomInterface,
+  ) {
+    let document_id = document_id_from_key(document_key);
+    self.register_wrapper_for_document_id(heap, wrapper, document_id, node_id, primary_interface);
+  }
+
   /// Return an existing wrapper for `node_id` if still alive.
   pub fn get_existing_wrapper(
     &mut self,
@@ -835,8 +846,17 @@ impl DomPlatform {
     document_key: WeakGcObject,
     node_id: NodeId,
   ) -> Option<GcObject> {
+    self.get_existing_wrapper_for_document_id(heap, document_id_from_key(document_key), node_id)
+  }
+
+  pub fn get_existing_wrapper_for_document_id(
+    &mut self,
+    heap: &Heap,
+    document_id: DocumentId,
+    node_id: NodeId,
+  ) -> Option<GcObject> {
     self.sweep_dead_wrappers_if_needed(heap);
-    let key = DomNodeKey::new(document_id_from_key(document_key), node_id);
+    let key = DomNodeKey::new(document_id, node_id);
     self
       .wrappers_by_node
       .get(&key)
@@ -860,7 +880,24 @@ impl DomPlatform {
     node_id: NodeId,
     primary_interface: DomInterface,
   ) -> Result<GcObject, VmError> {
-    if let Some(existing) = self.get_existing_wrapper(scope.heap(), document_key, node_id) {
+    self.get_or_create_wrapper_for_document_id(
+      scope,
+      document_id_from_key(document_key),
+      node_id,
+      primary_interface,
+    )
+  }
+
+  pub fn get_or_create_wrapper_for_document_id(
+    &mut self,
+    scope: &mut Scope<'_>,
+    document_id: DocumentId,
+    node_id: NodeId,
+    primary_interface: DomInterface,
+  ) -> Result<GcObject, VmError> {
+    if let Some(existing) =
+      self.get_existing_wrapper_for_document_id(scope.heap(), document_id, node_id)
+    {
       return Ok(existing);
     }
 
@@ -901,10 +938,10 @@ impl DomPlatform {
       )?;
     }
 
-    self.register_wrapper(
+    self.register_wrapper_for_document_id(
       scope.heap(),
       wrapper,
-      document_key,
+      document_id,
       node_id,
       primary_interface,
     );

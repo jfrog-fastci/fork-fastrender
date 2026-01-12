@@ -1,5 +1,6 @@
 use crate::api::{BrowserDocumentDom2, BrowserTabHost, ConsoleMessageLevel};
 use crate::dom2::{self, NodeId, NodeKind};
+use crate::geometry::Rect;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
@@ -25,7 +26,6 @@ use crate::js::{
   TaskSource, WindowHostState,
 };
 use crate::render_control;
-use crate::Rect;
 use crate::resource::{
   cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success,
   ensure_script_mime_sane, origin_from_url, CorsMode, FetchDestination, FetchRequest,

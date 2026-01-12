@@ -38,9 +38,6 @@ const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 
-// Must match `window_realm::WRAPPER_DOCUMENT_KEY`.
-const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
   Entries,
@@ -364,26 +361,6 @@ fn key_from_str(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> 
   scope.push_root(Value::String(s))?;
   Ok(PropertyKey::from_string(s))
 }
-
-fn wrapper_document_key_from_wrapper_obj(
-  scope: &mut Scope<'_>,
-  wrapper_obj: GcObject,
-) -> Result<WeakGcObject, VmError> {
-  // Root the wrapper while allocating the key: `alloc_string` can trigger GC.
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(wrapper_obj))?;
-  let key = key_from_str(&mut scope, WRAPPER_DOCUMENT_KEY)?;
-  let Some(Value::Object(document_obj)) = scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &key)?
-  else {
-    return Err(VmError::InvariantViolation(
-      "DOM wrapper missing __fastrender_wrapper_document",
-    ));
-  };
-  Ok(WeakGcObject::from(document_obj))
-}
-
 fn require_dom_platform_mut(vm: &mut Vm) -> Result<&mut DomPlatform, VmError> {
   dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))
 }
@@ -1807,11 +1784,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "parentNode", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
         let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.with_dom(|dom| dom.parent(node_id)))
         })?;
@@ -1832,7 +1807,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }))
         })?;
         let wrapper =
-          require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, document_key, parent_id, primary)?;
+          require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, parent_id, primary)?;
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
@@ -1841,11 +1816,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         //
         // Follow-up task: replace with a real `NodeList` platform object wrapper.
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
         let children = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.with_dom(|dom| dom.children(node_id).map(|children| children.to_vec())))
         })?;
@@ -1871,11 +1844,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 DomInterface::Node
               } else {
                 DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
-                }
-              }))
-            })?;
-          let child_wrapper = require_dom_platform_mut(vm)?
-            .get_or_create_wrapper(scope, document_key, child_id, primary)?;
+              }
+            }))
+          })?;
+          let child_wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+            scope,
+            document_id,
+            child_id,
+            primary,
+          )?;
           scope.push_root(Value::Object(child_wrapper))?;
 
           let idx_key = key_from_str(scope, &idx.to_string())?;
@@ -1890,11 +1867,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "firstChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
         let first = with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.first_child(node_id))))?;
         let Some(first_id) = first else {
           return Ok(Value::Null);
@@ -1909,17 +1884,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }))
         })?;
         let wrapper =
-          require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, document_key, first_id, primary)?;
+          require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, first_id, primary)?;
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
       ("Node", "lastChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
         let last =
           with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.last_child(node_id))))?;
         let Some(last_id) = last else {
@@ -1935,17 +1908,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }))
         })?;
         let wrapper =
-          require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, document_key, last_id, primary)?;
+          require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, last_id, primary)?;
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
       ("Node", "nextSibling", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
         let sib =
           with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.next_sibling(node_id))))?;
         let Some(sib_id) = sib else {
@@ -1961,17 +1932,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }))
         })?;
         let wrapper =
-          require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, document_key, sib_id, primary)?;
+          require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, sib_id, primary)?;
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
       ("Node", "previousSibling", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
         let sib = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.with_dom(|dom| dom.previous_sibling(node_id)))
         })?;
@@ -1988,7 +1957,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }))
         })?;
         let wrapper =
-          require_dom_platform_mut(vm)?.get_or_create_wrapper(scope, document_key, sib_id, primary)?;
+          require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, sib_id, primary)?;
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
@@ -2113,12 +2082,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
       ("Node", "appendChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
         let platform = require_dom_platform_mut(vm)?;
-        let parent_id = platform.require_node_id(scope.heap(), receiver)?;
+        let parent_handle = platform.require_node_handle(scope.heap(), receiver)?;
+        let parent_id = parent_handle.node_id;
+        let document_id = parent_handle.document_id;
         let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
 
@@ -2139,8 +2106,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 }
               }))
             })?;
-            let wrapper = require_dom_platform_mut(vm)?
-              .get_or_create_wrapper(scope, document_key, child_id, primary)?;
+            let wrapper =
+              require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, child_id, primary)?;
             scope.push_root(Value::Object(wrapper))?;
             Ok(Value::Object(wrapper))
           }
@@ -2149,12 +2116,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "insertBefore", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
         let platform = require_dom_platform_mut(vm)?;
-        let parent_id = platform.require_node_id(scope.heap(), receiver)?;
+        let parent_handle = platform.require_node_handle(scope.heap(), receiver)?;
+        let parent_id = parent_handle.node_id;
+        let document_id = parent_handle.document_id;
         let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
         let reference = match args.get(1).copied() {
@@ -2179,8 +2144,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 }
               }))
             })?;
-            let wrapper = require_dom_platform_mut(vm)?
-              .get_or_create_wrapper(scope, document_key, child_id, primary)?;
+            let wrapper =
+              require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, child_id, primary)?;
             scope.push_root(Value::Object(wrapper))?;
             Ok(Value::Object(wrapper))
           }
@@ -2189,12 +2154,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "removeChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
         let platform = require_dom_platform_mut(vm)?;
-        let parent_id = platform.require_node_id(scope.heap(), receiver)?;
+        let parent_handle = platform.require_node_handle(scope.heap(), receiver)?;
+        let parent_id = parent_handle.node_id;
+        let document_id = parent_handle.document_id;
         let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
 
@@ -2215,8 +2178,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 }
               }))
             })?;
-            let wrapper = require_dom_platform_mut(vm)?
-              .get_or_create_wrapper(scope, document_key, child_id, primary)?;
+            let wrapper =
+              require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, child_id, primary)?;
             scope.push_root(Value::Object(wrapper))?;
             Ok(Value::Object(wrapper))
           }
@@ -2225,12 +2188,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "replaceChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
         let platform = require_dom_platform_mut(vm)?;
-        let parent_id = platform.require_node_id(scope.heap(), receiver)?;
+        let parent_handle = platform.require_node_handle(scope.heap(), receiver)?;
+        let parent_id = parent_handle.node_id;
+        let document_id = parent_handle.document_id;
         let new_child_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let new_child_id = platform.require_node_id(scope.heap(), new_child_value)?;
         let old_child_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -2253,8 +2214,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 }
               }))
             })?;
-            let wrapper = require_dom_platform_mut(vm)?
-              .get_or_create_wrapper(scope, document_key, old_child_id, primary)?;
+            let wrapper =
+              require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, old_child_id, primary)?;
             scope.push_root(Value::Object(wrapper))?;
             Ok(Value::Object(wrapper))
           }
@@ -2263,11 +2224,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "cloneNode", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let Value::Object(receiver_obj) = receiver else {
-          return Err(VmError::TypeError("Illegal invocation"));
-        };
-        let document_key = wrapper_document_key_from_wrapper_obj(scope, receiver_obj)?;
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
         let deep = args.get(0).copied().unwrap_or(Value::Bool(false));
         let deep = scope.heap().to_boolean(deep)?;
 
@@ -2288,8 +2247,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 }
               }))
             })?;
-            let wrapper = require_dom_platform_mut(vm)?
-              .get_or_create_wrapper(scope, document_key, cloned_id, primary)?;
+            let wrapper =
+              require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, cloned_id, primary)?;
             scope.push_root(Value::Object(wrapper))?;
             Ok(Value::Object(wrapper))
           }
@@ -4113,6 +4072,12 @@ mod tests {
     let (vm, realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
 
+    let document_obj = vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.document_obj)
+      .ok_or(VmError::TypeError("missing window.document"))?;
+    let document_key = WeakGcObject::from(document_obj);
+
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
@@ -4211,6 +4176,12 @@ mod tests {
     let (vm, realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
 
+    let document_obj = vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.document_obj)
+      .ok_or(VmError::TypeError("missing window.document"))?;
+    let document_key = WeakGcObject::from(document_obj);
+
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
@@ -4262,6 +4233,12 @@ mod tests {
     let window = host.window_mut();
     let (vm, realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
+
+    let document_obj = vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.document_obj)
+      .ok_or(VmError::TypeError("missing window.document"))?;
+    let document_key = WeakGcObject::from(document_obj);
 
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
     let document_obj = vm
