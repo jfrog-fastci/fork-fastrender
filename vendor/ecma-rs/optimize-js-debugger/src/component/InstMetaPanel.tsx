@@ -122,6 +122,19 @@ export const InstMetaPanel = ({
 
   const meta: any = (inst as any)?.meta;
 
+  const effectsSummary = useMemo(() => {
+    const summary = meta?.effects?.summary;
+    if (!summary || typeof summary !== "object") {
+      return undefined;
+    }
+    const flags = (summary as any).flags;
+    const throws = (summary as any).throws;
+    if (typeof flags !== "string" || typeof throws !== "string") {
+      return undefined;
+    }
+    return { flags, throws };
+  }, [meta]);
+
   const span: { start: number; end: number } | undefined = useMemo(() => {
     const span = meta?.span;
     if (
@@ -220,6 +233,14 @@ export const InstMetaPanel = ({
             <section>
               <h2>Effects</h2>
               <ul>
+                {effectsSummary && (
+                  <li>
+                    summary:{" "}
+                    <code>
+                      flags={effectsSummary.flags}, throws={effectsSummary.throws}
+                    </code>
+                  </li>
+                )}
                 <li>
                   unknown:{" "}
                   <code>
@@ -256,6 +277,16 @@ export const InstMetaPanel = ({
                 <li>
                   arg use modes: <code>{formatArgUseModes(meta.argUseModes)}</code>
                 </li>
+                {meta.preserveVarAssign && (
+                  <li>
+                    preserveVarAssign: <code>true</code>
+                  </li>
+                )}
+                {meta.stackAllocCandidate && (
+                  <li>
+                    stackAllocCandidate: <code>true</code>
+                  </li>
+                )}
                 <li>
                   in-place hint:{" "}
                   <code>
@@ -302,6 +333,32 @@ export const InstMetaPanel = ({
                 <li>
                   encoding: <code>{meta.encoding ?? "n/a"}</code>
                 </li>
+                {meta.awaitKnownResolved && (
+                  <li>
+                    awaitKnownResolved: <code>true</code>
+                  </li>
+                )}
+                {meta.awaitBehavior != undefined && (
+                  <li>
+                    awaitBehavior: <code>{formatExternallyTagged(meta.awaitBehavior)}</code>
+                  </li>
+                )}
+                {meta.parallel != undefined && (
+                  <li>
+                    parallel: <code>{formatExternallyTagged(meta.parallel)}</code>
+                  </li>
+                )}
+                {meta.nullabilityNarrowing != undefined && (
+                  <li>
+                    nullabilityNarrowing:{" "}
+                    <code>{formatExternallyTagged(meta.nullabilityNarrowing)}</code>
+                  </li>
+                )}
+                {meta.value != undefined && (
+                  <li>
+                    value: <code>{formatExternallyTagged(meta.value)}</code>
+                  </li>
+                )}
                 <li>
                   excludesNullish:{" "}
                   <code>
