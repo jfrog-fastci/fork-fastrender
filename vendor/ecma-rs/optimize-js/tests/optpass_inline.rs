@@ -180,6 +180,7 @@ fn does_not_inline_when_callee_too_large() {
     symbols: None,
     top_level: ProgramFunction {
       debug: None,
+      meta: Default::default(),
       body: top_cfg.clone(),
       params: Vec::new(),
       ssa_body: Some(top_cfg),
@@ -188,6 +189,7 @@ fn does_not_inline_when_callee_too_large() {
     functions: vec![
       ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: caller_cfg.clone(),
         params: Vec::new(),
         ssa_body: Some(caller_cfg),
@@ -195,6 +197,7 @@ fn does_not_inline_when_callee_too_large() {
       },
       ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: callee_cfg.clone(),
         params: Vec::new(),
         ssa_body: Some(callee_cfg),
@@ -276,6 +279,7 @@ fn inlines_recursive_callees_once() {
     symbols: None,
     top_level: ProgramFunction {
       debug: None,
+      meta: Default::default(),
       body: top_cfg.clone(),
       params: Vec::new(),
       ssa_body: Some(top_cfg),
@@ -284,6 +288,7 @@ fn inlines_recursive_callees_once() {
     functions: vec![
       ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: caller_cfg.clone(),
         params: Vec::new(),
         ssa_body: Some(caller_cfg),
@@ -291,6 +296,7 @@ fn inlines_recursive_callees_once() {
       },
       ProgramFunction {
         debug: None,
+        meta: Default::default(),
         body: callee_cfg.clone(),
         params: Vec::new(),
         ssa_body: Some(callee_cfg),
