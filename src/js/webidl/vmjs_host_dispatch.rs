@@ -4057,6 +4057,40 @@ mod tests {
     )
   }
 
+  fn set_wrapper_document(
+    scope: &mut Scope<'_>,
+    wrapper: GcObject,
+    document_obj: GcObject,
+  ) -> Result<(), VmError> {
+    // Mirror `window_realm`'s DOM wrappers: attach the originating document object so native DOM
+    // operations can derive the correct wrapper cache key.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(wrapper))?;
+    scope.push_root(Value::Object(document_obj))?;
+    let key = key_from_str(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+    match scope
+      .heap_mut()
+      .object_set_existing_data_property_value(wrapper, key, Value::Object(document_obj))
+    {
+      Ok(()) => return Ok(()),
+      Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {}
+      Err(err) => return Err(err),
+    }
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(document_obj),
+          writable: true,
+        },
+      },
+    )?;
+    Ok(())
+  }
+
   #[test]
   fn node_append_child_attaches_and_traversal_reflects_it() -> Result<(), VmError> {
     let dom = crate::dom2::parse_html("<div id=a></div>").unwrap();
@@ -4080,21 +4114,23 @@ mod tests {
     let mut scope = heap.scope();
 
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
-    let document_key = vm
+    let document_obj = vm
       .user_data::<WindowRealmUserData>()
       .and_then(|data| data.document_obj())
-      .map(WeakGcObject::from)
       .ok_or(VmError::TypeError("missing document object"))?;
-
+    scope.push_root(Value::Object(document_obj))?;
+    let document_key = WeakGcObject::from(document_obj);
     let parent_wrapper = {
       let wrapper =
         require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, document_key, parent_id, parent_primary)?;
+      set_wrapper_document(&mut scope, wrapper, document_obj)?;
       scope.push_root(Value::Object(wrapper))?;
       wrapper
     };
     let child_wrapper = {
       let wrapper =
         require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, document_key, child_id, child_primary)?;
+      set_wrapper_document(&mut scope, wrapper, document_obj)?;
       scope.push_root(Value::Object(wrapper))?;
       wrapper
     };
@@ -4176,14 +4212,16 @@ mod tests {
     let mut scope = heap.scope();
 
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
-    let document_key = vm
+    let document_obj = vm
       .user_data::<WindowRealmUserData>()
       .and_then(|data| data.document_obj())
-      .map(WeakGcObject::from)
       .ok_or(VmError::TypeError("missing document object"))?;
+    scope.push_root(Value::Object(document_obj))?;
+    let document_key = WeakGcObject::from(document_obj);
     let parent_wrapper = {
       let wrapper =
         require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, document_key, parent_id, parent_primary)?;
+      set_wrapper_document(&mut scope, wrapper, document_obj)?;
       scope.push_root(Value::Object(wrapper))?;
       wrapper
     };
@@ -4226,22 +4264,23 @@ mod tests {
     let mut scope = heap.scope();
 
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
-    let document_key = vm
+    let document_obj = vm
       .user_data::<WindowRealmUserData>()
       .and_then(|data| data.document_obj())
-      .map(WeakGcObject::from)
       .ok_or(VmError::TypeError("missing document object"))?;
-
+    scope.push_root(Value::Object(document_obj))?;
+    let document_key = WeakGcObject::from(document_obj);
     let text_wrapper = {
       let wrapper =
-        require_dom_platform_mut(vm)?
-          .get_or_create_wrapper(&mut scope, document_key, parent_text_id, parent_primary)?;
+        require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, document_key, parent_text_id, parent_primary)?;
+      set_wrapper_document(&mut scope, wrapper, document_obj)?;
       scope.push_root(Value::Object(wrapper))?;
       wrapper
     };
     let child_wrapper = {
       let wrapper =
         require_dom_platform_mut(vm)?.get_or_create_wrapper(&mut scope, document_key, child_id, child_primary)?;
+      set_wrapper_document(&mut scope, wrapper, document_obj)?;
       scope.push_root(Value::Object(wrapper))?;
       wrapper
     };
