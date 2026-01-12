@@ -52,7 +52,7 @@ use crate::strict::Entrypoint;
 use crate::codes;
 use crate::Resolver;
 mod debuginfo;
-use diagnostics::{Diagnostic, Span, TextRange};
+use diagnostics::{Diagnostic, Label, Span, TextRange};
 use hir_js::{
   AssignOp, BinaryOp, ExprId, ExprKind, FileKind, ForInit, ImportKind, Literal, NameId, PatKind,
   StmtId, StmtKind, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
@@ -494,10 +494,33 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       } else {
         formatted.join(" -> ")
       };
-      vec![codes::HIR_CODEGEN_CYCLIC_MODULE_DEPENDENCY.error(
+      let mut diagnostic = codes::HIR_CODEGEN_CYCLIC_MODULE_DEPENDENCY.error(
         format!("cyclic module dependency detected: {cycle_text}"),
         cycle.span,
-      )]
+      );
+
+      // Attach labels for each import/re-export edge in the cycle, pointing at the source-level
+      // statements that create the runtime dependency. This makes the error actionable while we
+      // still reject cycles (until full ESM cycle semantics are implemented in the backend).
+      for window in cycle.cycle.windows(2) {
+        let [from, to] = window else {
+          continue;
+        };
+        let from = *from;
+        let to = *to;
+        let Some(edge) = deps
+          .get(&from)
+          .and_then(|edges| edges.iter().find(|edge| edge.file == to))
+        else {
+          continue;
+        };
+        diagnostic.push_label(Label::secondary(
+          Span::new(from, edge.span),
+          format!("module dependency edge: {} -> {}", file_label(self.program, from), file_label(self.program, to)),
+        ));
+      }
+
+      vec![diagnostic]
     })?;
     Ok(order)
   }
@@ -566,6 +589,53 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     };
     let types = self.program.check_body(body_id);
 
+    #[derive(Clone, Copy)]
+    enum FileInitItem {
+      Stmt(StmtId),
+      ExportDefaultExpr {
+        body: hir_js::BodyId,
+        expr: ExprId,
+        span: TextRange,
+      },
+    }
+
+    let mut items: Vec<(TextRange, FileInitItem)> = Vec::new();
+    let mut export_default_expr_types: HashMap<hir_js::BodyId, _> = HashMap::new();
+    for &stmt in &body.root_stmts {
+      let span = body
+        .stmts
+        .get(stmt.0 as usize)
+        .map(|stmt| stmt.span)
+        .unwrap_or(body.span);
+      items.push((span, FileInitItem::Stmt(stmt)));
+    }
+
+    // `export default <expr>` is evaluated at runtime during module init. `hir-js` lowers the
+    // default expression into a synthetic top-level body, so we need to explicitly run it here.
+    for export in &lowered.hir.exports {
+      let hir_js::ExportKind::Default(default) = &export.kind else {
+        continue;
+      };
+      let hir_js::ExportDefaultValue::Expr { expr, body } = &default.value else {
+        continue;
+      };
+      let expr = *expr;
+      let body = *body;
+      export_default_expr_types
+        .entry(body)
+        .or_insert_with(|| self.program.check_body(body));
+      items.push((
+        export.span,
+        FileInitItem::ExportDefaultExpr {
+          body,
+          expr,
+          span: export.span,
+        },
+      ));
+    }
+
+    items.sort_by_key(|(span, _)| (span.start, span.end));
+
     let mut cg = FnCodegen::new(
       self,
       func,
@@ -579,8 +649,54 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     );
 
     let mut fallthrough = true;
-    for &stmt in &body.root_stmts {
-      fallthrough = cg.codegen_stmt(stmt)?;
+    for (_, item) in items {
+      match item {
+        FileInitItem::Stmt(stmt) => {
+          fallthrough = cg.codegen_stmt(stmt)?;
+        }
+        FileInitItem::ExportDefaultExpr { body, expr, span } => {
+          let span = Span::new(file, span);
+          let def = cg.cg.resolve_export_def(file, "default", span)?;
+          let global = cg.cg.ensure_global_var(def, span)?;
+          let export_body = lowered.body(body).ok_or_else(|| {
+            vec![Diagnostic::error(
+              "NJS0101",
+              "failed to access lowered HIR for export default expression",
+              span,
+            )]
+          })?;
+          let export_types = export_default_expr_types.get(&body).ok_or_else(|| {
+            vec![Diagnostic::error(
+              "NJS0103",
+              "missing type information for export default expression",
+              span,
+            )]
+          })?;
+          let value =
+            cg.with_body(body, export_body, export_types.as_ref(), |cg| cg.codegen_expr(expr))?;
+          match (global.kind, value) {
+            (TsAbiKind::Number, NativeValue::Number(v)) => {
+              cg.builder
+                .build_store(global.global.as_pointer_value(), v)
+                .expect("failed to build store");
+            }
+            (TsAbiKind::Boolean, NativeValue::Boolean(v)) => {
+              cg.builder
+                .build_store(global.global.as_pointer_value(), v)
+                .expect("failed to build store");
+            }
+            (expected, actual) => {
+              return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                format!(
+                  "export default expression type mismatch (expected {expected:?}, got {got:?})",
+                  got = actual.kind()
+                ),
+                span,
+              )]);
+            }
+          }
+        }
+      }
       if !fallthrough {
         break;
       }
@@ -1003,6 +1119,19 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       }
     }
   }
+
+  fn namespace_import_target(&self, def: DefId) -> Option<FileId> {
+    let typecheck_ts::DefKind::Import(import) = self.program.def_kind(def)? else {
+      return None;
+    };
+    if import.original.as_str() != "*" {
+      return None;
+    }
+    match import.target {
+      typecheck_ts::ImportTarget::File(target_file) => Some(target_file),
+      _ => None,
+    }
+  }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1230,6 +1359,26 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     };
     let (line, col) = debuginfo::line_col(self.cg.program, self.file, span.start);
     debug.insert_value(self.cg.context, &self.builder, &self.cg.module, scope, var, value, line, col);
+  }
+
+  fn with_body<R>(
+    &mut self,
+    body_id: hir_js::BodyId,
+    body: &'a hir_js::Body,
+    types: &'a typecheck_ts::BodyCheckResult,
+    f: impl FnOnce(&mut Self) -> R,
+  ) -> R {
+    let prev_body_id = self.body_id;
+    let prev_body = self.body;
+    let prev_types = self.types;
+    self.body_id = body_id;
+    self.body = body;
+    self.types = types;
+    let out = f(self);
+    self.types = prev_types;
+    self.body = prev_body;
+    self.body_id = prev_body_id;
+    out
   }
 
   fn stmt(&self, stmt: StmtId) -> Result<&hir_js::Stmt, Vec<Diagnostic>> {
@@ -2273,6 +2422,85 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
   }
 
+  fn member_property_static_name(&mut self, key: &hir_js::ObjectKey, span: Span) -> Result<String, Vec<Diagnostic>> {
+    match key {
+      hir_js::ObjectKey::Ident(name) => self
+        .names
+        .resolve(*name)
+        .map(|s| s.to_string())
+        .ok_or_else(|| vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error("failed to resolve member property name", span)]),
+      hir_js::ObjectKey::String(s) => Ok(s.clone()),
+      hir_js::ObjectKey::Computed(expr) => {
+        let expr = self.expr_data(*expr)?;
+        match &expr.kind {
+          ExprKind::Literal(Literal::String(s)) => Ok(s.lossy.clone()),
+          _ => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+            "unsupported computed property access in this codegen subset (expected a literal string key)",
+            span,
+          )]),
+        }
+      }
+      _ => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+        "unsupported member property syntax in this codegen subset",
+        span,
+      )]),
+    }
+  }
+
+  fn resolve_namespace_member_export_def(
+    &mut self,
+    member: &hir_js::MemberExpr,
+    span: Span,
+  ) -> Result<DefId, Vec<Diagnostic>> {
+    if member.optional {
+      return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+        "optional chaining is not supported in this codegen subset",
+        span,
+      )]);
+    }
+
+    let object = self.expr_data(member.object)?;
+    let ExprKind::Ident(object_name) = object.kind else {
+      return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+        "unsupported member expression receiver in this codegen subset (expected an identifier)",
+        Span::new(self.file, object.span),
+      )]);
+    };
+
+    let object_binding = if let Some(binding) = self.env.resolve(object_name) {
+      binding
+    } else {
+      self
+        .cg
+        .resolver
+        .for_file(self.file)
+        .resolve_expr_ident(self.body, member.object)
+        .ok_or_else(|| {
+          vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error(
+            "failed to resolve member expression receiver",
+            span,
+          )]
+        })?
+    };
+
+    let BindingId::Def(object_def) = object_binding else {
+      return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+        "unsupported member expression receiver in this codegen subset",
+        span,
+      )]);
+    };
+
+    let Some(target_file) = self.cg.namespace_import_target(object_def) else {
+      return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+        "unsupported member expression in this codegen subset (only namespace import property access is supported)",
+        span,
+      )]);
+    };
+
+    let export_name = self.member_property_static_name(&member.property, span)?;
+    self.cg.resolve_export_def(target_file, export_name.as_str(), span)
+  }
+
   fn codegen_expr(&mut self, expr: ExprId) -> Result<NativeValue<'ctx>, Vec<Diagnostic>> {
     let (kind, span) = {
       let expr_data = self.expr_data(expr)?;
@@ -2487,7 +2715,41 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           )]),
         }
       }
+      ExprKind::Member(member) => {
+        let export_def = self.resolve_namespace_member_export_def(&member, span)?;
+        let resolved = self.cg.resolve_import_def(export_def, span)?;
+        if matches!(
+          self.cg.program.def_kind(resolved),
+          Some(typecheck_ts::DefKind::Function(_))
+        ) {
+          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+            "function-valued namespace member access is only supported in call position in this codegen subset",
+            span,
+          )]);
+        }
 
+        let global = self.cg.ensure_global_var(export_def, span)?;
+        match global.kind {
+          TsAbiKind::Number => Ok(NativeValue::Number(
+            self
+              .builder
+              .build_load(self.cg.f64_ty, global.global.as_pointer_value(), "ns.load")
+              .expect("failed to build load")
+              .into_float_value(),
+          )),
+          TsAbiKind::Boolean => Ok(NativeValue::Boolean(
+            self
+              .builder
+              .build_load(self.cg.i1_ty, global.global.as_pointer_value(), "ns.load")
+              .expect("failed to build load")
+              .into_int_value(),
+          )),
+          TsAbiKind::Void => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`void` values are not supported in this context",
+            span,
+          )]),
+        }
+      }
       ExprKind::Ident(name) => {
         let binding = if let Some(binding) = self.env.resolve(name) {
           binding
@@ -2499,6 +2761,18 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .resolve_expr_ident(self.body, expr)
             .ok_or_else(|| vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error("failed to resolve identifier", span)])?
         };
+
+        if let BindingId::Def(def) = binding {
+          if self.cg.namespace_import_target(def).is_some() {
+            let label = self.names.resolve(name).unwrap_or("<namespace>");
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+              format!(
+                "unsupported use of namespace import `{label}` in native-js codegen (only direct property access like `{label}.foo` is supported)"
+              ),
+              span,
+            )]);
+          }
+        }
 
         let slot = match binding {
           b if self.locals.contains_key(&b) => self.locals.get(&b).copied().unwrap(),
@@ -2657,29 +2931,46 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .exprs
           .get(call.callee.0 as usize)
           .ok_or_else(|| vec![codes::HIR_CODEGEN_EXPR_ID_OUT_OF_BOUNDS.error("callee id out of bounds", span)])?;
-        if !matches!(callee_expr.kind, ExprKind::Ident(_)) {
-          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
-            "only direct identifier calls are supported in this codegen subset",
-            span,
-          )]);
-        }
 
-        let binding = self
-          .cg
-          .resolver
-          .for_file(self.file)
-          .resolve_expr_ident(self.body, call.callee)
-          .ok_or_else(|| {
-            vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error("failed to resolve call callee", span)]
-          })?;
-        let BindingId::Def(def) = binding else {
-          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
-            "callee must resolve to a global function definition",
-            span,
-          )]);
+        let (def, resolved) = match &callee_expr.kind {
+          ExprKind::Ident(_) => {
+            let binding = self
+              .cg
+              .resolver
+              .for_file(self.file)
+              .resolve_expr_ident(self.body, call.callee)
+              .ok_or_else(|| vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error("failed to resolve call callee", span)])?;
+            let BindingId::Def(def) = binding else {
+              return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
+                "callee must resolve to a global function definition",
+                span,
+              )]);
+            };
+
+            let resolved = self.cg.resolve_import_def(def, span)?;
+            (def, resolved)
+          }
+          ExprKind::Member(member) => {
+            let def = self.resolve_namespace_member_export_def(member, span)?;
+            let resolved = self.cg.resolve_import_def(def, span)?;
+            if !matches!(
+              self.cg.program.def_kind(resolved),
+              Some(typecheck_ts::DefKind::Function(_))
+            ) {
+              return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
+                "callee must resolve to a global function definition",
+                span,
+              )]);
+            }
+            (def, resolved)
+          }
+          _ => {
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
+              "only direct identifier calls and namespace import member calls are supported in this codegen subset",
+              span,
+            )]);
+          }
         };
-
-        let resolved = self.cg.resolve_import_def(def, span)?;
         let Some(target) = self.cg.functions.get(&resolved).copied() else {
           return Err(vec![codes::HIR_CODEGEN_INVALID_CALL.error(
             "call to unknown function in codegen",
