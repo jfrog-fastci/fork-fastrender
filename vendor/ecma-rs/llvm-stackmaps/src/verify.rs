@@ -530,7 +530,7 @@ fn verify_gc_root_location(
     // slot / memory reference. Constants should never appear as relocation targets.
     let supported_root_kind = matches!(
         kind,
-        LocationKind::Register | LocationKind::Direct | LocationKind::Indirect
+        LocationKind::Register | LocationKind::Indirect
     );
     if !supported_root_kind {
         report.failures.push(VerificationFailure {
