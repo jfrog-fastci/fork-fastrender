@@ -423,7 +423,7 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
   );
   let wb = function_block(&ir, "@rt_write_barrier_gc");
   assert!(
-    wb.contains("store ptr @rt_write_barrier"),
+    wb.contains("store ptr @rt_write_barrier") || wb.contains("store volatile ptr @rt_write_barrier"),
     "expected rt_write_barrier_gc to indirect-call @rt_write_barrier:\n{wb}"
   );
   // The wrapper uses addrspace(1) pointer types to participate in GC liveness/relocation analysis.
@@ -463,7 +463,8 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
   );
   let wbr = function_block(&ir, "@rt_write_barrier_range_gc");
   assert!(
-    wbr.contains("store ptr @rt_write_barrier_range"),
+    wbr.contains("store ptr @rt_write_barrier_range")
+      || wbr.contains("store volatile ptr @rt_write_barrier_range"),
     "expected rt_write_barrier_range_gc to indirect-call @rt_write_barrier_range:\n{wbr}"
   );
   let wbr_gc_params = fns.rt_write_barrier_range_gc.get_type().get_param_types();
@@ -510,7 +511,8 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
   );
   let keep_alive = function_block(&ir, "@rt_keep_alive_gc_ref_gc");
   assert!(
-    keep_alive.contains("store ptr @rt_keep_alive_gc_ref"),
+    keep_alive.contains("store ptr @rt_keep_alive_gc_ref")
+      || keep_alive.contains("store volatile ptr @rt_keep_alive_gc_ref"),
     "expected rt_keep_alive_gc_ref_gc to indirect-call @rt_keep_alive_gc_ref:\n{keep_alive}"
   );
   let keep_alive_gc_params = fns.rt_keep_alive_gc_ref_gc.get_type().get_param_types();

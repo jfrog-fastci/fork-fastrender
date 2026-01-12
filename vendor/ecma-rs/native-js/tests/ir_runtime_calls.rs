@@ -139,7 +139,7 @@ fn alloc_is_statepointed_write_barrier_is_not() {
   // The statepoint should directly reference the actual GC-triggering callee.
   assert!(ir.contains("@llvm.experimental.gc.statepoint"));
   assert!(
-    ir.contains("store ptr @rt_alloc"),
+    ir.contains("store ptr @rt_alloc") || ir.contains("store volatile ptr @rt_alloc"),
     "missing rt_alloc function pointer materialization:\n{ir}"
   );
   assert!(
@@ -148,7 +148,7 @@ fn alloc_is_statepointed_write_barrier_is_not() {
     "statepoint does not call the rt_alloc function pointer:\n{ir}"
   );
   assert!(
-    ir.contains("store ptr @rt_alloc_array"),
+    ir.contains("store ptr @rt_alloc_array") || ir.contains("store volatile ptr @rt_alloc_array"),
     "missing rt_alloc_array function pointer materialization:\n{ir}"
   );
   assert!(
