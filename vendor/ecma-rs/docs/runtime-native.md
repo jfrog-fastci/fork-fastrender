@@ -662,9 +662,9 @@ at the same range:
 They are defined by a small linker-script fragment (the `KEEP` is important so
 `--gc-sections` does not discard stackmaps). See:
 
- - `runtime-native/link/stackmaps_nopie.ld` (non-PIE, anchored at `INSERT AFTER .text;`)
- - `runtime-native/link/stackmaps.ld` (lld-friendly PIE/DSO, anchored at `INSERT BEFORE .bss;` to stay outside RELRO)
- - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld hardening; avoids RWX when stackmaps are writable)
+- `runtime-native/link/stackmaps_nopie.ld` (non-PIE, anchored at `INSERT AFTER .text;`)
+- `runtime-native/link/stackmaps.ld` (lld-friendly PIE/DSO; appends stackmaps into `.data.rel.ro` and anchors at `INSERT BEFORE .dynamic;` to stay inside RELRO)
+- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld hardening; avoids RWX when stackmaps are writable)
 
 ```ld
 /* Non-PIE (stackmaps_nopie.ld): keep `.llvm_stackmaps` and export start/stop symbols. */
@@ -677,15 +677,15 @@ SECTIONS {
   }
 } INSERT AFTER .text;
 
-/* PIE (stackmaps.ld): keep `.data.rel.ro.llvm_stackmaps` inputs (after objcopy rewrite; inserted before `.bss`). */
+/* PIE (stackmaps.ld): keep `.data.rel.ro.llvm_stackmaps` inputs (after objcopy rewrite) and append into `.data.rel.ro` (RELRO). */
 SECTIONS {
-  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
+  .data.rel.ro : ALIGN(8) {
     __start_llvm_stackmaps = .;
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     __stop_llvm_stackmaps = .;
   }
-} INSERT BEFORE .bss;
+} INSERT BEFORE .dynamic;
 ```
 
 Note: GNU ld links should use `runtime-native/link/stackmaps_gnuld.ld` to avoid RWX LOAD segments

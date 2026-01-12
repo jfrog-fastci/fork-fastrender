@@ -3,9 +3,11 @@
  * This is the GNU ld counterpart to `runtime-native/link/stackmaps.ld`.
  *
  * Why a separate fragment?
- * - `runtime-native/link/stackmaps.ld` is optimized for lld: it inserts the
- *   `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` sections
- *   immediately before `.bss` to avoid lld's RELRO contiguity errors.
+ * - `runtime-native/link/stackmaps.ld` is optimized for lld: it appends
+ *   `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` inputs into
+ *   the standard `.data.rel.ro` output section and anchors at `.dynamic` so the
+ *   payload stays inside lld's RELRO block without triggering RELRO contiguity
+ *   errors.
  * - GNU ld differs in how it assigns output sections to PT_LOAD segments. For GNU ld we keep
  *   stackmaps/faultmaps in dedicated `.data.rel.ro.llvm_*` output sections and insert before
  *   `.dynamic` so the payload stays in the data/RELRO region (anchoring a writable `.data.rel.ro.*`

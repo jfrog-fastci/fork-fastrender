@@ -102,9 +102,9 @@ impl Default for LinkOpts {
 /// - non-PIE (system/GNU ld): `stackmaps_gnuld.ld` (safer with GNU ld if stackmaps sections are
 ///   writable).
 /// - PIE (lld): `stackmaps.ld` keeps `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps`
-///   in dedicated output sections inserted just before `.bss` (an always-present anchor, even for
-///   minimal PIE links; outside the RELRO range) to avoid lld's RELRO contiguity checks for custom
-///   `.data.rel.ro.*` output sections.
+///   but appends them into the standard `.data.rel.ro` output section (covered by RELRO) and
+///   anchors at `INSERT BEFORE .dynamic;` (present in PIE/DSO links) to avoid lld RELRO contiguity
+///   issues without relying on dedicated `.data.rel.ro.*` output section names.
 /// - PIE (GNU ld): `stackmaps_gnuld.ld`, to avoid producing an RWX LOAD segment when placing
 ///   writable stackmaps/faultmaps.
 ///

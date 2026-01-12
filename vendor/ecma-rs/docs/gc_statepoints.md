@@ -496,9 +496,10 @@ Fragments:
 - `runtime-native/link/stackmaps_nopie.ld` (non-PIE): keeps `.llvm_{stackmaps,faultmaps}*` (and
   `.data.rel.ro.llvm_*` if present) and anchors after `.text`.
 - `runtime-native/link/stackmaps.ld` (PIE + lld): keeps rewritten `.data.rel.ro.llvm_*` inputs
-  (after `objcopy`/`llvm-objcopy --rename-section`) and inserts dedicated
-  `.data.rel.ro.llvm_{stackmaps,faultmaps}` output sections before `.bss` (an always-present anchor
-  even for minimal PIE links, and outside the RELRO range) to avoid lld RELRO contiguity failures.
+  (after `objcopy`/`llvm-objcopy --rename-section`) and appends them into the standard
+  `.data.rel.ro` output section (covered by RELRO) by inserting at `INSERT BEFORE .dynamic;`.
+  This avoids lld RELRO contiguity failures without relying on dedicated `.data.rel.ro.*` output
+  section names.
 - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld): avoids RWX segments when stackmaps are writable.
 
 When linking a final ELF binary, apply the appropriate fragment:
@@ -738,7 +739,8 @@ segment to be writable.
 The repo's linker fragments avoid this by *not* inserting writable stackmaps immediately after
 `.text`:
 
-- lld: `runtime-native/link/stackmaps.ld` inserts stackmaps/faultmaps before `.bss` (after `.data`).
+- lld: `runtime-native/link/stackmaps.ld` keeps stackmaps/faultmaps in `.data.rel.ro` (RELRO) and
+  anchors at `.dynamic` (`INSERT BEFORE .dynamic;`).
 - GNU ld: the wrappers (`scripts/native_link.sh`, `native_js::link`) select the GNU ld-specific
   fragment (`runtime-native/link/stackmaps_gnuld.ld`) automatically.
 

@@ -8,7 +8,7 @@ The `native-js` link pipeline preserves this data and exports global symbols tha
 in-memory byte range (see `native-js/src/link.rs` and `runtime-native/link/` linker fragments):
 
 - `runtime-native/link/stackmaps_nopie.ld` (non-PIE)
-- `runtime-native/link/stackmaps.ld` (PIE, lld-friendly; emits dedicated `.data.rel.ro.llvm_*` output sections)
+- `runtime-native/link/stackmaps.ld` (PIE, lld-friendly; keeps `.data.rel.ro.llvm_*` inputs and appends them into `.data.rel.ro`)
 - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening; avoids RWX segments)
 
 - Canonical:
