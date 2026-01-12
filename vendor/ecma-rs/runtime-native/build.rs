@@ -15,6 +15,8 @@ fn main() {
   // Silence `unexpected_cfgs` warnings for cfgs set by this build script.
   println!("cargo::rustc-check-cfg=cfg(runtime_native_has_stackmap_test_artifact)");
   println!("cargo::rustc-check-cfg=cfg(runtime_native_no_stackmap_test_artifact)");
+  println!("cargo::rustc-check-cfg=cfg(runtime_native_has_statepoint_fixture)");
+  println!("cargo::rustc-check-cfg=cfg(runtime_native_no_statepoint_fixture)");
 
   // Integration tests `dlopen` small DSOs whose constructors call into this crate's
   // `rt_stackmaps_register` export. On ELF, executables only export symbols into
@@ -38,6 +40,12 @@ fn main() {
   // Integration test artifact (x86_64 only): compile a tiny statepoint module and extract the
   // `Indirect [SP + off]` stackmap location so we can validate stack walking logic.
   maybe_build_stackmap_test_artifact();
+
+  // Link the checked-in LLVM statepoint fixture object into test binaries (x86_64 Linux only).
+  //
+  // This allows integration tests to call into an LLVM statepoint frame and validate end-to-end
+  // root relocation via `rt_gc_collect`.
+  maybe_link_statepoint_fixture();
 }
 
 fn build_rt_thread_tls() {
@@ -404,6 +412,63 @@ fn maybe_build_stackmap_test_artifact() {
 
   // Enable the integration test.
   println!("cargo:rustc-cfg=runtime_native_has_stackmap_test_artifact");
+}
+
+fn maybe_link_statepoint_fixture() {
+  let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+  let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+
+  println!("cargo:rerun-if-changed=testdata/statepoint_fixture.o");
+
+  if target_os != "linux" || target_arch != "x86_64" {
+    println!("cargo:rustc-cfg=runtime_native_no_statepoint_fixture");
+    return;
+  }
+
+  let objcopy = find_tool(&["llvm-objcopy-18", "llvm-objcopy"]);
+  let Some(objcopy) = objcopy else {
+    println!(
+      "cargo:warning=runtime-native: llvm-objcopy not found; statepoint fixture integration tests will be skipped"
+    );
+    println!("cargo:rustc-cfg=runtime_native_no_statepoint_fixture");
+    return;
+  };
+
+  let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+  let src_obj = manifest_dir.join("testdata").join("statepoint_fixture.o");
+  if !src_obj.is_file() {
+    println!(
+      "cargo:warning=runtime-native: statepoint fixture missing at {}; GC+stackmap integration tests will be skipped",
+      src_obj.display()
+    );
+    println!("cargo:rustc-cfg=runtime_native_no_statepoint_fixture");
+    return;
+  }
+
+  // The checked-in fixture object is not guaranteed to be PIE-friendly (its `.llvm_stackmaps`
+  // section is SHF_ALLOC but not SHF_WRITE). Copy it into OUT_DIR and rewrite section names/flags
+  // so we can link it into PIE test binaries without text relocations.
+  let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR not set"));
+  let out_obj = out_dir.join("statepoint_fixture.o");
+  if let Err(err) = fs::copy(&src_obj, &out_obj) {
+    println!(
+      "cargo:warning=runtime-native: failed to copy statepoint fixture to {}: {err}",
+      out_obj.display()
+    );
+    println!("cargo:rustc-cfg=runtime_native_no_statepoint_fixture");
+    return;
+  }
+  if let Err(err) = rewrite_stackmap_sections_for_pie(&out_obj, &objcopy) {
+    println!(
+      "cargo:warning=runtime-native: failed to rewrite statepoint fixture stackmaps for PIE: {err}"
+    );
+    println!("cargo:rustc-cfg=runtime_native_no_statepoint_fixture");
+    return;
+  }
+
+  // Allow integration tests to link the fixture via `#[link(name = \":statepoint_fixture.o\")]`.
+  println!("cargo:rustc-link-search=native={}", out_dir.display());
+  println!("cargo:rustc-cfg=runtime_native_has_statepoint_fixture");
 }
 
 fn emit_stub() {
