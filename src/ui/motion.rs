@@ -123,7 +123,45 @@ impl UiMotion {
 
 #[cfg(test)]
 mod tests {
-  use super::parse_env_bool;
+  use super::{parse_env_bool, UiMotion, ENV_REDUCED_MOTION, REDUCED_MOTION_ENV_CACHE};
+  use std::sync::atomic::Ordering;
+  use std::sync::{Mutex, OnceLock};
+
+  static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+  fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK
+      .get_or_init(|| Mutex::new(()))
+      .lock()
+      .expect("env test lock poisoned")
+  }
+
+  fn reset_env_cache() {
+    // 2 = unknown/uninitialized (see the cache encoding in the parent module).
+    REDUCED_MOTION_ENV_CACHE.store(2, Ordering::Relaxed);
+  }
+
+  struct EnvVarGuard {
+    prev: Option<String>,
+  }
+
+  impl EnvVarGuard {
+    fn new() -> Self {
+      Self {
+        prev: std::env::var(ENV_REDUCED_MOTION).ok(),
+      }
+    }
+  }
+
+  impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+      match self.prev.as_deref() {
+        Some(value) => std::env::set_var(ENV_REDUCED_MOTION, value),
+        None => std::env::remove_var(ENV_REDUCED_MOTION),
+      }
+      reset_env_cache();
+    }
+  }
 
   #[test]
   fn parse_env_bool_falsey_values() {
@@ -140,5 +178,29 @@ mod tests {
     for v in ["1", "true", "yes", "on", "anything", " 1 ", " TRUE "] {
       assert!(parse_env_bool(v), "expected {v:?} to be treated as true");
     }
+  }
+
+  #[test]
+  fn ui_motion_from_env_respects_reduced_motion_env_var() {
+    let _lock = lock_env();
+    let _guard = EnvVarGuard::new();
+
+    std::env::remove_var(ENV_REDUCED_MOTION);
+    reset_env_cache();
+    assert!(UiMotion::from_env().enabled, "motion should be enabled by default");
+
+    std::env::set_var(ENV_REDUCED_MOTION, "1");
+    reset_env_cache();
+    assert!(
+      !UiMotion::from_env().enabled,
+      "motion should be disabled when reduced motion env var is truthy"
+    );
+
+    std::env::set_var(ENV_REDUCED_MOTION, "0");
+    reset_env_cache();
+    assert!(
+      UiMotion::from_env().enabled,
+      "motion should be enabled when reduced motion env var is falsey"
+    );
   }
 }

@@ -416,7 +416,7 @@ pub fn chrome_ui(
 
     // Navigation + address bar row.
     ui.horizontal(|ui| {
-      let (can_back, can_forward, loading, stage, warning, error, zoom_factor) = app
+      let (can_back, can_forward, loading, stage, load_progress, warning, error, zoom_factor) = app
         .active_tab()
         .map(|t| {
           (
@@ -424,12 +424,13 @@ pub fn chrome_ui(
             t.can_go_forward,
             t.loading,
             t.stage,
+            t.load_progress,
             t.warning.clone(),
             t.error.clone(),
             t.zoom,
           )
         })
-        .unwrap_or((false, false, false, None, None, None, zoom::DEFAULT_ZOOM));
+        .unwrap_or((false, false, false, None, None, None, None, zoom::DEFAULT_ZOOM));
 
       if icon_button(ui, BrowserIcon::Back, "Back", can_back).clicked() {
         actions.push(ChromeAction::Back);
@@ -545,14 +546,23 @@ pub fn chrome_ui(
       );
       if loading_t > 0.0 {
         let bar_h = 2.0;
+        let progress = load_progress
+          .filter(|p| p.is_finite())
+          .map(|p| p.clamp(0.0, 1.0))
+          .unwrap_or(0.0);
+        // Ensure the bar appears quickly on navigation start even before the first stage heartbeat.
+        let progress = if loading { progress.max(0.02) } else { progress };
+        let x1 = response.rect.left() + response.rect.width() * progress;
         let rect = egui::Rect::from_min_max(
           egui::pos2(response.rect.left(), response.rect.bottom() - bar_h),
-          egui::pos2(response.rect.right(), response.rect.bottom()),
+          egui::pos2(x1, response.rect.bottom()),
         );
         let color = with_alpha(ui.visuals().selection.stroke.color, loading_t);
-        ui
-          .painter()
-          .rect_filled(rect, egui::Rounding::same(1.0), color);
+        if rect.width() > 0.0 {
+          ui
+            .painter()
+            .rect_filled(rect, egui::Rounding::same(1.0), color);
+        }
       }
 
       if has_focus != app.chrome.address_bar_has_focus {
