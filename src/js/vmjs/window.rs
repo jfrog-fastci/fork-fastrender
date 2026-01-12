@@ -3493,6 +3493,30 @@ mod tests {
   }
 
   #[test]
+  fn node_onclick_handler_runs_on_click_event_dispatch() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      "globalThis.__called = false;\n\
+       var el = document.createElement('div');\n\
+       el.onclick = function (e) {\n\
+         globalThis.__called = (\n\
+           this === el &&\n\
+           e && e.type === 'click' &&\n\
+           e.target === el &&\n\
+           e.currentTarget === el &&\n\
+           e.eventPhase === 2\n\
+         );\n\
+       };\n\
+       el.dispatchEvent(new Event('click'));\n",
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
   fn window_onerror_handler_uses_special_signature_and_return_true_cancels() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

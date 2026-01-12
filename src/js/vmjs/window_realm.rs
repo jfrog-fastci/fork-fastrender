@@ -9976,17 +9976,24 @@ fn event_target_dispatch_event_native(
     Ok(())
   }
 
-  // Window + Document EventHandler properties (`onload`, `onvisibilitychange`, ...).
+  // Window/Document/Node EventHandler properties (`onload`, `onvisibilitychange`, `onclick`, ...).
   //
   // This is a minimal approximation of the web platform's EventHandler IDL attributes: after the
   // normal DOM event dispatch completes, invoke `target["on" + type]` if it is callable.
   if matches!(
     resolved.target_id,
-    web_events::EventTargetId::Window | web_events::EventTargetId::Document
+    web_events::EventTargetId::Window
+      | web_events::EventTargetId::Document
+      | web_events::EventTargetId::Node(_)
   ) {
     let (handler_target_obj, handler_target_id) = match resolved.target_id {
       web_events::EventTargetId::Window => (resolved.window_obj, web_events::EventTargetId::Window),
-      web_events::EventTargetId::Document => (resolved.document_obj, web_events::EventTargetId::Document),
+      web_events::EventTargetId::Document => {
+        (resolved.document_obj, web_events::EventTargetId::Document)
+      }
+      web_events::EventTargetId::Node(node_id) => {
+        (target_obj, web_events::EventTargetId::Node(node_id))
+      }
       _ => unreachable!(),
     };
 
