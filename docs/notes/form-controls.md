@@ -82,7 +82,7 @@ When `appearance:none` is computed, the control stops using the native form-cont
 - Integration tests cover end-to-end behavior (box tree + paint). After consolidation they run under `--test integration`; during migration you can still run them by name if they haven’t moved yet. They are discoverable via filters like:
   - `form_controls_appearance_none_fallback` (fallback children, slider/file pseudos)
   - `form_control_placeholder_opacity` (`::placeholder` opacity in both paint backends)
-- Paint integration tests (run with `--test paint_tests`) cover renderer output and are discoverable via filters like:
+- Paint integration tests (run with `--test integration`) cover renderer output and are discoverable via filters like:
   - `form_control_appearance_none_affordances` (spinner/dropdown affordance suppression)
   - `range_track_pseudo_element` / `range_pseudo_opacity` (slider pseudos)
   - `file_selector_button_pseudo_element` (`::file-selector-button` painting)
@@ -92,7 +92,7 @@ To locate the exact test names (tests may migrate between unit and integration s
 ```bash
 bash scripts/cargo_agent.sh test -p fastrender --lib -- --list | rg 'appearance_none|form_controls'
 bash scripts/cargo_agent.sh test -p fastrender --test integration -- --list | rg 'appearance_none|form_control|slider|placeholder|file_selector'
-bash scripts/cargo_agent.sh test -p fastrender --test paint_tests -- --list | rg 'form_control|range_|file_selector'
+bash scripts/cargo_agent.sh test -p fastrender --test integration -- --list | rg 'form_control|range_|file_selector'
 ```
 
 Then run a specific regression via a filter:
@@ -100,7 +100,7 @@ Then run a specific regression via a filter:
 ```bash
 bash scripts/cargo_agent.sh test -p fastrender --lib appearance_none_form_controls_generate_fallback_children
 bash scripts/cargo_agent.sh test -p fastrender --test integration form_control_placeholder_opacity
-bash scripts/cargo_agent.sh test -p fastrender --test paint_tests form_control_appearance_none_affordances
+bash scripts/cargo_agent.sh test -p fastrender --test integration form_control_appearance_none_affordances
 ```
 - Offline page fixtures:
   - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including vendor slider pseudos like `::-webkit-slider-thumb` / `::-moz-range-thumb`).
