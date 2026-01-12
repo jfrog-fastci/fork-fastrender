@@ -353,11 +353,13 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
 ///   - LLVM: `disable-tail-calls="true"`
 /// - The stack grows downwards and FP values increase as we walk toward older
 ///   callers (Linux x86_64/AArch64).
-/// - In practice, LLVM statepoints *often* spill GC roots into addressable stack
-///   slots (`Indirect [SP + off]`). However, the stackmap format also supports
-///   register locations (`Register R#N`), which require rewriting the stopped
-///   thread's register file when resuming (see `statepoints::RootSlot` and the
-///   `stackmap-context` crate).
+/// - In practice, LLVM statepoints *often* spill GC roots into addressable stack slots
+///   (`Indirect [SP/FP + off]`).
+///
+///   LLVM StackMaps can also describe roots in registers (`Register R#N`), but `runtime-native`
+///   currently **rejects** register roots at statepoints: we require addressable spill slots so the
+///   GC can update pointers in-place by walking frames (see `docs/stackmaps.md` and
+///   `runtime-native/src/statepoint_verify.rs`).
 /// - Derived pointers (statepoint `(base, derived)` pairs where `base != derived`) are supported.
 ///   The walker visits only the **base** root slots (derived slots are not traced as independent
 ///   roots). If the callback relocates a base slot in-place, the walker updates any derived slots
