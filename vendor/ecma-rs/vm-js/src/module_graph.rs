@@ -2367,7 +2367,10 @@ pub(crate) fn module_namespace_getter(
   }
 
   let export_name = match slots[1] {
-    Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy(),
+    Value::String(s) => {
+      let units = scope.heap().get_string(s)?.as_code_units();
+      crate::string::utf16_to_utf8_lossy_with_tick(units, || vm.tick())?
+    }
     _ => {
       return Err(VmError::InvariantViolation(
         "module namespace getter export name slot must be a string",
@@ -2392,11 +2395,17 @@ pub(crate) fn module_namespace_getter(
 
         let binding_name_units = scope.heap().get_string(binding_name)?.as_code_units();
         let mut found: Option<(crate::env::EnvBindingValue, bool)> = None;
+        let mut scanned: usize = 0;
         for binding in rec.bindings.iter() {
           let Some(name) = binding.name else {
             continue;
           };
-          if scope.heap().get_string(name)?.as_code_units() == binding_name_units {
+          scanned = scanned.wrapping_add(1);
+          if scanned % 1024 == 0 {
+            vm.tick()?;
+          }
+          let name_units = scope.heap().get_string(name)?.as_code_units();
+          if crate::tick::code_units_eq_with_ticks(name_units, binding_name_units, || vm.tick())? {
             found = Some((binding.value, binding.initialized));
             break;
           }
@@ -2419,7 +2428,55 @@ pub(crate) fn module_namespace_getter(
         return Err(VmError::Throw(err_obj));
       }
 
-      match binding_value.get(scope.heap()) {
+      // `EnvBindingValue::Indirect` uses a tickless heap-internal lookup; do the lookup here so
+      // large module environments and export names still observe budgets/interrupts.
+      fn env_get_binding_value_by_gc_string_with_tick(
+        heap: &Heap,
+        env: GcEnv,
+        name: crate::GcString,
+        tick: &mut impl FnMut() -> Result<(), VmError>,
+      ) -> Result<Value, VmError> {
+        let rec = heap.get_env_record(env)?;
+        let crate::env::EnvRecord::Declarative(rec) = rec else {
+          return Err(VmError::Unimplemented("object environment record"));
+        };
+        let needle_units = heap.get_string(name)?.as_code_units();
+        let mut found: Option<&crate::env::EnvBinding> = None;
+        for (i, binding) in rec.bindings.iter().enumerate() {
+          if i % 1024 == 0 {
+            tick()?;
+          }
+          let Some(binding_name) = binding.name else {
+            continue;
+          };
+          let units = heap.get_string(binding_name)?.as_code_units();
+          if crate::tick::code_units_eq_with_ticks(units, needle_units, || tick())? {
+            found = Some(binding);
+            break;
+          }
+        }
+        let binding = found.ok_or(VmError::Unimplemented("unbound identifier"))?;
+        if !binding.initialized {
+          // TDZ sentinel; see `Heap::env_get_binding_value`.
+          return Err(VmError::Throw(Value::Null));
+        }
+        match binding.value {
+          crate::env::EnvBindingValue::Direct(v) => Ok(v),
+          crate::env::EnvBindingValue::Indirect { env, name } => {
+            env_get_binding_value_by_gc_string_with_tick(heap, env, name, tick)
+          }
+        }
+      }
+
+      let mut tick = || vm.tick();
+      let value_res = match binding_value {
+        crate::env::EnvBindingValue::Direct(v) => Ok(v),
+        crate::env::EnvBindingValue::Indirect { env, name } => {
+          env_get_binding_value_by_gc_string_with_tick(scope.heap(), env, name, &mut tick)
+        }
+      };
+
+      match value_res {
         Ok(v) => Ok(v),
         Err(VmError::Throw(Value::Null)) => {
           let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
