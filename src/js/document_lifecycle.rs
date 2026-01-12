@@ -146,6 +146,16 @@ impl DocumentLifecycle {
       .saturating_add(self.pending_load_blockers_other)
   }
 
+  /// Returns `true` once `DOMContentLoaded` has been dispatched for this document.
+  pub fn dom_content_loaded_fired(&self) -> bool {
+    self.dom_content_loaded_fired
+  }
+
+  /// Returns `true` once the window `load` event has been dispatched for this document.
+  pub fn load_fired(&self) -> bool {
+    self.load_fired
+  }
+
   /// Record discovery of a parser-inserted `defer` script that should delay `DOMContentLoaded`.
   pub fn register_deferred_script(&mut self) {
     self.pending_deferred_scripts = self.pending_deferred_scripts.saturating_add(1);

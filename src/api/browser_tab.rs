@@ -1,4 +1,5 @@
 use crate::css::encoding::decode_css_bytes_cow;
+use crate::css::loader::resolve_href_with_base;
 use crate::css::parser::parse_stylesheet_with_media;
 use crate::css::types::CssImportLoader;
 use crate::debug::trace::TraceHandle;
@@ -387,6 +388,8 @@ pub struct BrowserTabHost {
   deferred_scripts: HashSet<HtmlScriptId>,
   executed: HashSet<HtmlScriptId>,
   pending_script_load_blockers: HashSet<HtmlScriptId>,
+  pending_image_load_blockers: HashSet<NodeId>,
+  started_image_loads: HashSet<NodeId>,
   parser_blocked_on: Option<HtmlScriptId>,
   document_url: Option<String>,
   /// Current document base URL used for resolving *JS-visible* relative URLs.
@@ -423,6 +426,7 @@ pub struct BrowserTabHost {
   lifecycle: DocumentLifecycle,
   webidl_bindings_host: Box<VmJsWebIdlBindingsHostDispatch<BrowserTabHost>>,
   last_dynamic_script_discovery_generation: u64,
+  last_image_load_discovery_generation: Option<u64>,
   /// Whether we are currently running a streaming HTML parse (even if the parser state is
   /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
   streaming_parse_active: bool,
@@ -469,6 +473,8 @@ impl BrowserTabHost {
       deferred_scripts: HashSet::new(),
       executed: HashSet::new(),
       pending_script_load_blockers: HashSet::new(),
+      pending_image_load_blockers: HashSet::new(),
+      started_image_loads: HashSet::new(),
       parser_blocked_on: None,
       document_url: None,
       base_url: None,
@@ -490,6 +496,7 @@ impl BrowserTabHost {
       lifecycle: DocumentLifecycle::new(),
       webidl_bindings_host,
       last_dynamic_script_discovery_generation: 0,
+      last_image_load_discovery_generation: None,
       streaming_parse_active: false,
       streaming_parse_in_progress: false,
       streaming_parse: None,
@@ -655,6 +662,8 @@ impl BrowserTabHost {
     self.deferred_scripts.clear();
     self.executed.clear();
     self.pending_script_load_blockers.clear();
+    self.pending_image_load_blockers.clear();
+    self.started_image_loads.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url.clone();
     self.base_url = document_url;
@@ -681,6 +690,7 @@ impl BrowserTabHost {
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
     self.last_dynamic_script_discovery_generation = 0;
+    self.last_image_load_discovery_generation = None;
     self.document_write_state.reset_for_navigation();
     self
       .document_write_state
@@ -1737,6 +1747,155 @@ impl BrowserTabHost {
         base_url_at_discovery,
         event_loop,
       )?;
+    }
+
+    // After DOMContentLoaded, images should behave like load blockers: trigger their fetches in the
+    // background and delay `window.load` until they complete.
+    self.discover_and_start_image_loads(event_loop)?;
+
+    Ok(())
+  }
+
+  fn discover_and_start_image_loads(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+    // The `load` event waits for images, but `DOMContentLoaded` must not. To avoid making
+    // DOMContentLoaded observers wait on synchronous fetch work (since `ResourceFetcher` is
+    // currently synchronous), we only start image fetch tasks after DOMContentLoaded has fired.
+    if !self.lifecycle.dom_content_loaded_fired() || self.lifecycle.load_fired() {
+      return Ok(());
+    }
+
+    let generation = self.document.dom_mutation_generation();
+    if self
+      .last_image_load_discovery_generation
+      .is_some_and(|last| last == generation)
+    {
+      return Ok(());
+    }
+    self.last_image_load_discovery_generation = Some(generation);
+
+    fn is_html_namespace(namespace: &str) -> bool {
+      namespace.is_empty() || namespace == HTML_NAMESPACE
+    }
+
+    let base_url = self.base_url.clone();
+    let discovered: Vec<(NodeId, String, Option<crate::resource::CorsMode>)> = {
+      let dom = self.document.dom();
+      let mut out = Vec::new();
+      for node_id in dom.dom_connected_preorder() {
+        let node = dom.node(node_id);
+        let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &node.kind
+        else {
+          continue;
+        };
+        if !tag_name.eq_ignore_ascii_case("img") || !is_html_namespace(namespace) {
+          continue;
+        }
+        if self.started_image_loads.contains(&node_id) {
+          continue;
+        }
+        let src = match dom.get_attribute(node_id, "src") {
+          Ok(Some(v)) => super::trim_ascii_whitespace(v),
+          _ => continue,
+        };
+        if src.is_empty() {
+          continue;
+        }
+        let Some(url) = resolve_href_with_base(base_url.as_deref(), src) else {
+          continue;
+        };
+        if crate::resource::is_data_url(&url) {
+          continue;
+        }
+
+        let cors_mode = dom
+          .get_attribute(node_id, "crossorigin")
+          .ok()
+          .flatten()
+          .map(|value| {
+            let value = super::trim_ascii_whitespace(value);
+            if value.eq_ignore_ascii_case("use-credentials") {
+              crate::resource::CorsMode::UseCredentials
+            } else {
+              // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+              crate::resource::CorsMode::Anonymous
+            }
+          });
+
+        out.push((node_id, url, cors_mode));
+      }
+      out
+    };
+
+    for (node_id, url, cors_mode) in discovered {
+      self.start_image_load(node_id, url, cors_mode, event_loop)?;
+    }
+
+    Ok(())
+  }
+
+  fn start_image_load(
+    &mut self,
+    node_id: NodeId,
+    url: String,
+    cors_mode: Option<crate::resource::CorsMode>,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    if self.started_image_loads.contains(&node_id) {
+      return Ok(());
+    }
+
+    let destination = if cors_mode.is_some() {
+      FetchDestination::ImageCors
+    } else {
+      FetchDestination::Image
+    };
+
+    // Track as a load blocker before the fetch runs so `load` cannot be queued prematurely.
+    self.started_image_loads.insert(node_id);
+    self.pending_image_load_blockers.insert(node_id);
+    self
+      .lifecycle
+      .register_pending_load_blocker(LoadBlockerKind::Other);
+
+    let queued = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      let fetcher = host.document.fetcher();
+
+      let mut req = FetchRequest::new(&url, destination);
+      if let Some(referrer) = host.document_url.as_deref() {
+        req = req.with_referrer_url(referrer);
+      }
+      if let Some(origin) = host.document_origin.as_ref() {
+        req = req.with_client_origin(origin);
+      }
+      req = req.with_referrer_policy(host.document_referrer_policy);
+      if let Some(cors_mode) = cors_mode {
+        req = req.with_credentials_mode(cors_mode.credentials_mode());
+      }
+
+      let _ = fetcher.fetch_with_request(req);
+
+      if host.pending_image_load_blockers.remove(&node_id) {
+        host
+          .lifecycle
+          .load_blocker_completed(LoadBlockerKind::Other, event_loop)?;
+      }
+
+      Ok(())
+    });
+
+    if let Err(err) = queued {
+      // Avoid wedging `load`: if we can't queue the fetch task, treat the image as completed (as if
+      // it immediately errored) and unwind our bookkeeping.
+      self.pending_image_load_blockers.remove(&node_id);
+      self.started_image_loads.remove(&node_id);
+      self
+        .lifecycle
+        .load_blocker_completed(LoadBlockerKind::Other, event_loop)?;
+      return Err(err);
     }
 
     Ok(())
@@ -3226,10 +3385,16 @@ impl DocumentLifecycleHost for BrowserTabHost {
     }
 
     let dom: &crate::dom2::Document = self.document.dom();
-    self
-      .js_events
-      .dispatch_dom_event(dom, target, &mut event)
-      .map(|_default_not_prevented| ())
+    self.js_events.dispatch_dom_event(dom, target, &mut event)?;
+
+    // Start loading image-like subresources after DOMContentLoaded has been delivered to listeners.
+    // This keeps `DOMContentLoaded` independent of image fetch completion (matching browser
+    // behavior), while still ensuring `load` waits on these resources via `LoadBlockerKind::Other`.
+    if target == EventTargetId::Document && event.type_ == "DOMContentLoaded" {
+      self.discover_and_start_image_loads(event_loop)?;
+    }
+
+    Ok(())
   }
 
   fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle {
@@ -9843,6 +10008,134 @@ html, body { margin: 0; padding: 0; }
         "load".to_string(),
         "checkpoint".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_load_waits_for_images_but_dom_content_loaded_does_not() -> Result<()> {
+    #[derive(Debug, Default, Clone)]
+    struct ImageFetcher {
+      image_fetches: Arc<AtomicUsize>,
+      destinations: Arc<Mutex<Vec<FetchDestination>>>,
+    }
+
+    impl ImageFetcher {
+      fn image_fetch_count(&self) -> usize {
+        self.image_fetches.load(Ordering::SeqCst)
+      }
+    }
+
+    impl ResourceFetcher for ImageFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("ImageFetcher::fetch should not be used".to_string()))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .destinations
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push(req.destination);
+
+        if matches!(req.destination, FetchDestination::Image | FetchDestination::ImageCors) {
+          self.image_fetches.fetch_add(1, Ordering::SeqCst);
+          Ok(FetchedResource::new(
+            // We don't decode in this test; any deterministic bytes are fine.
+            b"fake-png-bytes".to_vec(),
+            Some("image/png".to_string()),
+          ))
+        } else {
+          Err(Error::Other(format!(
+            "unexpected fetch destination {:?} for url={}",
+            req.destination, req.url
+          )))
+        }
+      }
+    }
+
+    let fetcher = Arc::new(ImageFetcher::default());
+    let html = r#"<!doctype html><body>
+      <img src="https://example.com/a.png">
+      <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.setAttribute('data-dom', '1');
+        });
+        window.addEventListener('load', function () {
+          document.body.setAttribute('data-load', '1');
+        });
+      </script>
+    </body>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>,
+    )?;
+
+    let body = tab.dom().body().expect("body should exist");
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-dom")
+        .expect("get_attribute"),
+      None
+    );
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      None
+    );
+
+    // DocumentLifecycle queues two tasks at parsing completion:
+    // - DOMContentLoaded barrier
+    // - DOMContentLoaded
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // barrier
+      assert!(event_loop.run_next_task(host)?); // DOMContentLoaded
+    }
+
+    // DOMContentLoaded must be observable even while the image is still pending.
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-dom")
+        .expect("get_attribute"),
+      Some("1")
+    );
+    assert_eq!(fetcher.image_fetch_count(), 0);
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      None
+    );
+
+    // Next turn: image networking task runs and completes the load blocker, which queues `load`.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // image fetch task
+    }
+    assert_eq!(fetcher.image_fetch_count(), 1);
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      None
+    );
+
+    // Final turn: `load` event dispatch.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      assert!(event_loop.run_next_task(host)?); // load
+    }
+
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-load")
+        .expect("get_attribute"),
+      Some("1")
     );
     Ok(())
   }
