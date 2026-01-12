@@ -186,16 +186,38 @@ jobs:
           set -euo pipefail
           bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-vm-js --lib --tests
 
-      - name: Test webidl-js-runtime (vendored ecma-rs, if present)
+      - name: Test WebIDL runtime crate (vendored ecma-rs, if present)
         shell: bash
         env:
           FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
         run: |
           set -euo pipefail
-          if [ -f vendor/ecma-rs/webidl-runtime/Cargo.toml ]; then
-            bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-js-runtime --lib
+          runtime_cargo_toml="vendor/ecma-rs/webidl-runtime/Cargo.toml"
+          if [ -f "${runtime_cargo_toml}" ]; then
+            runtime_package_name="$(
+              awk -F '"' '
+                $0 ~ /^\[package\]/ { in_pkg=1; next }
+                $0 ~ /^\[/ { if (in_pkg) exit; in_pkg=0 }
+                in_pkg && $0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*"/ {
+                  print $2
+                  exit
+                }
+              ' "${runtime_cargo_toml}"
+            )"
+            if [ -z "${runtime_package_name}" ]; then
+              echo "Failed to parse package.name from ${runtime_cargo_toml}" >&2
+              exit 1
+            fi
+
+            runtime_test_package="webidl-runtime"
+            if [ "${runtime_package_name}" = "webidl-js-runtime" ]; then
+              runtime_test_package="webidl-js-runtime"
+            fi
+
+            echo "Testing vendored WebIDL runtime: ${runtime_test_package} (Cargo.toml name = ${runtime_package_name})"
+            bash vendor/ecma-rs/scripts/cargo_agent.sh test -p "${runtime_test_package}" --lib --tests
           else
-            echo "vendor/ecma-rs/webidl-runtime/Cargo.toml not present; skipping webidl-js-runtime tests."
+            echo "${runtime_cargo_toml} not present; skipping WebIDL runtime tests."
           fi
 
   # ===========================================================================
