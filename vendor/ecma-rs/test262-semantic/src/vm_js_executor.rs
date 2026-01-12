@@ -4,6 +4,7 @@ use crate::report::Variant;
 use crate::runner::TestCase;
 use diagnostics::render::render_diagnostic;
 use diagnostics::SimpleFiles;
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
@@ -147,6 +148,10 @@ impl VmHostHooks for Test262ModuleHooks {
     self.microtasks.enqueue_promise_job(job, realm);
   }
 
+  fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
+    &["type"]
+  }
+
   fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
     Some(self)
   }
@@ -227,6 +232,66 @@ impl VmHostHooks for Test262ModuleHooks {
         result,
       );
     }
+
+    enum RequestedModuleKind {
+      JavaScript,
+      Json,
+    }
+
+    let kind = if module_request.attributes.is_empty() {
+      RequestedModuleKind::JavaScript
+    } else {
+      // `vm-js` performs `AllImportAttributesSupported` using `host_get_supported_import_attributes`
+      // before invoking this hook, but be defensive when called directly.
+      if let Some(attr) = module_request.attributes.iter().find(|a| a.key != "type") {
+        let result = Err(module_load_syntax_error_message(
+          vm,
+          scope,
+          &format!("Unsupported import attribute: {}", attr.key),
+        )?);
+        return finish_loading_imported_module(
+          vm,
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          result,
+        );
+      }
+
+      // Support JSON modules via `with { type: 'json' }`.
+      if module_request
+        .attributes
+        .iter()
+        .all(|a| a.key == "type" && a.value == "json")
+      {
+        RequestedModuleKind::Json
+      } else {
+        let typ = module_request
+          .attributes
+          .iter()
+          .find(|a| a.key == "type" && a.value != "json")
+          .map(|a| a.value.as_str())
+          .unwrap_or("<unknown>");
+        let result = Err(module_load_syntax_error_message(
+          vm,
+          scope,
+          &format!("Unsupported module type: {typ}"),
+        )?);
+        return finish_loading_imported_module(
+          vm,
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          result,
+        );
+      }
+    };
 
     let joined = base_dir.join(&specifier);
     let normalized = normalize_path(&joined);
@@ -362,7 +427,57 @@ impl VmHostHooks for Test262ModuleHooks {
       }
     };
 
-    let source_text = Arc::new(SourceText::new(canonical.to_string_lossy().into_owned(), source));
+    let source_name = canonical.to_string_lossy().into_owned();
+    let source_text = match kind {
+      RequestedModuleKind::JavaScript => Arc::new(SourceText::new(source_name, source)),
+      RequestedModuleKind::Json => {
+        let json: JsonValue = match serde_json::from_str(&source) {
+          Ok(v) => v,
+          Err(err) => {
+            let result = Err(module_load_syntax_error_message(
+              vm,
+              scope,
+              &format!("Failed to parse JSON module '{specifier}': {err}"),
+            )?);
+            return finish_loading_imported_module(
+              vm,
+              scope,
+              modules,
+              self,
+              referrer,
+              module_request,
+              payload,
+              result,
+            );
+          }
+        };
+
+        // JSON is a syntactic subset of JavaScript expressions, so `serde_json::to_string` produces
+        // a valid module-default-export expression.
+        let json_expr = match serde_json::to_string(&json) {
+          Ok(s) => s,
+          Err(err) => {
+            let result = Err(module_load_syntax_error_message(
+              vm,
+              scope,
+              &format!("Failed to serialize JSON module '{specifier}': {err}"),
+            )?);
+            return finish_loading_imported_module(
+              vm,
+              scope,
+              modules,
+              self,
+              referrer,
+              module_request,
+              payload,
+              result,
+            );
+          }
+        };
+        let synthesized = format!("export default {json_expr};\n");
+        Arc::new(SourceText::new(source_name, synthesized))
+      }
+    };
 
     let record = match SourceTextModuleRecord::parse_source_with_vm(vm, Arc::clone(&source_text)) {
       Ok(record) => record,
@@ -844,11 +959,18 @@ fn module_load_type_error(vm: &mut Vm, scope: &mut vm_js::Scope<'_>, message: &s
 }
 
 fn module_load_syntax_error(vm: &mut Vm, scope: &mut vm_js::Scope<'_>, err: &VmError) -> Result<VmError, VmError> {
+  module_load_syntax_error_message(vm, scope, &err.to_string())
+}
+
+fn module_load_syntax_error_message(
+  vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  message: &str,
+) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-  let message = err.to_string();
-  let value = vm_js::new_syntax_error_object(scope, &intr, &message)?;
+  let value = vm_js::new_syntax_error_object(scope, &intr, message)?;
   Ok(VmError::Throw(value))
 }
 
