@@ -1152,7 +1152,6 @@ impl ModuleGraph {
     }
 
     let exports_boxed = export_entries.into_boxed_slice();
-
     // Allocate the namespace object.
     //
     // Root it before any further allocations (e.g. the `toStringTag` value string) in case those

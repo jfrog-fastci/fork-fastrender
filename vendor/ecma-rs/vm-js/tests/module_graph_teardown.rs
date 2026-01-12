@@ -84,7 +84,7 @@ fn module_graph_teardown_unregisters_persistent_roots() -> Result<(), VmError> {
     scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     let meta_value =
-      scope.ordinary_get_with_host_and_hooks(&mut vm, &mut host, &mut hooks, ns, key, Value::Object(ns))?;
+      scope.get_with_host_and_hooks(&mut vm, &mut host, &mut hooks, ns, key, Value::Object(ns))?;
     let Value::Object(meta_obj) = meta_value else {
       panic!("expected exported `meta` binding to be an object");
     };
@@ -122,4 +122,3 @@ fn module_graph_teardown_unregisters_persistent_roots() -> Result<(), VmError> {
   realm.teardown(&mut heap);
   Ok(())
 }
-

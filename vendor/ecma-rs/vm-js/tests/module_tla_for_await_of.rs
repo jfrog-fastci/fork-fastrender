@@ -5,7 +5,7 @@ use vm_js::{
 
 fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let realm = Realm::new(&mut vm, &mut heap)?;
   Ok((vm, heap, realm))
 }
@@ -23,7 +23,7 @@ fn ns_get(
   let key_s = scope.alloc_string(name)?;
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
-  scope.ordinary_get_with_host_and_hooks(vm, host, hooks, ns, key, Value::Object(ns))
+  scope.get_with_host_and_hooks(vm, host, hooks, ns, key, Value::Object(ns))
 }
 
 struct JobCtx<'a> {

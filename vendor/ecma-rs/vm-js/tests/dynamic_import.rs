@@ -215,7 +215,7 @@ impl VmHostHooks for SyncHostHooks {
 
 fn new_runtime() -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = vm_js::Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   JsRuntime::new(vm, heap)
 }
 
@@ -310,51 +310,40 @@ fn dynamic_import_resolves_to_module_namespace() -> Result<(), VmError> {
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
 
+  let mut dummy_host = ();
   let desc_x = scope
-    .heap()
-    .object_get_own_property(ns_obj, &x_key)?
+    .object_get_own_property_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, x_key)?
     .expect("namespace should have an 'x' export");
   assert!(desc_x.enumerable);
   assert!(!desc_x.configurable);
   assert!(matches!(
     desc_x.kind,
-    PropertyKind::Accessor {
-      get: Value::Object(_),
-      set: Value::Undefined,
-    }
+    PropertyKind::Data {
+      value: Value::Number(n),
+      writable: true,
+    } if n == 1.0
   ));
 
   let desc_y = scope
-    .heap()
-    .object_get_own_property(ns_obj, &y_key)?
+    .object_get_own_property_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, y_key)?
     .expect("namespace should have a 'y' export");
   assert!(desc_y.enumerable);
   assert!(!desc_y.configurable);
   assert!(matches!(
     desc_y.kind,
-    PropertyKind::Accessor {
-      get: Value::Object(_),
-      set: Value::Undefined,
-    }
+    PropertyKind::Data {
+      value: Value::Number(n),
+      writable: true,
+    } if n == 1.0
   ));
 
   // Reading the exported bindings should reflect evaluated module state.
-  let x_value = scope.ordinary_get_with_host(
-    &mut rt.vm,
-    &mut host,
-    ns_obj,
-    x_key,
-    Value::Object(ns_obj),
-  )?;
+  let x_value =
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
   assert!(matches!(x_value, Value::Number(n) if n == 1.0));
 
-  let y_value = scope.ordinary_get_with_host(
-    &mut rt.vm,
-    &mut host,
-    ns_obj,
-    y_key,
-    Value::Object(ns_obj),
-  )?;
+  let y_value =
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
   assert!(matches!(y_value, Value::Number(n) if n == 1.0));
 
   drop(scope);
@@ -418,12 +407,13 @@ fn dynamic_import_sync_host_completion_fulfills_promise() -> Result<(), VmError>
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
 
+  let mut dummy_host = ();
   let x_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
   assert!(matches!(x_value, Value::Number(n) if n == 1.0));
 
   let y_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
   assert!(matches!(y_value, Value::Number(n) if n == 1.0));
 
   drop(scope);
@@ -546,8 +536,9 @@ fn dynamic_import_waits_for_top_level_await() -> Result<(), VmError> {
 
   let mut scope = rt.heap.scope();
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let mut dummy_host = ();
   let x_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
   assert!(matches!(x_value, Value::Number(n) if n == 1.0));
 
   drop(scope);
@@ -610,12 +601,13 @@ fn dynamic_import_from_function_body_works() -> Result<(), VmError> {
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
 
+  let mut dummy_host = ();
   let x_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
   assert!(matches!(x_value, Value::Number(n) if n == 1.0));
 
   let y_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
   assert!(matches!(y_value, Value::Number(n) if n == 1.0));
 
   drop(scope);
@@ -676,10 +668,11 @@ fn dynamic_import_with_awaited_specifier_works() -> Result<(), VmError> {
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
 
+  let mut dummy_host = ();
   let x_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
   let y_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
   assert!(matches!(x_value, Value::Number(n) if n == 1.0));
   assert!(matches!(y_value, Value::Number(n) if n == 1.0));
 
@@ -733,10 +726,11 @@ fn dynamic_import_from_promise_callback_works() -> Result<(), VmError> {
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
 
+  let mut dummy_host = ();
   let x_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
   let y_value =
-    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
+    scope.get_with_host_and_hooks(&mut rt.vm, &mut dummy_host, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
   assert!(matches!(x_value, Value::Number(n) if n == 1.0));
   assert!(matches!(y_value, Value::Number(n) if n == 1.0));
 

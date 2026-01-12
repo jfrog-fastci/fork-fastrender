@@ -919,7 +919,6 @@ pub fn object_get_own_property_names(
     let PropertyKey::String(name) = key else {
       continue;
     };
-
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(array), Value::String(name)])?;
 
@@ -1312,7 +1311,6 @@ pub fn object_keys(
     if !desc.enumerable {
       continue;
     }
-
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(array), Value::String(name)])?;
     let out_idx_u32 = u32::try_from(out_idx).map_err(|_| {
@@ -1918,8 +1916,7 @@ pub fn reflect_delete_property(
   let key = scope.to_property_key(vm, host, hooks, prop)?;
   root_property_key(&mut scope, key)?;
 
-  let ok =
-    crate::spec_ops::internal_delete_with_host_and_hooks(vm, &mut scope, host, hooks, target, key)?;
+  let ok = crate::spec_ops::internal_delete_with_host_and_hooks(vm, &mut scope, host, hooks, target, key)?;
   Ok(Value::Bool(ok))
 }
 

@@ -422,6 +422,18 @@ impl<'a> Scope<'a> {
         }
       }
 
+      // Module Namespace Exotic Object `[[HasProperty]]` (ECMA-262 §9.4.6).
+      //
+      // `[[HasProperty]]` for module namespaces is defined in terms of the `[[Exports]]` list and
+      // does **not** access the live binding value (important for TDZ correctness).
+      if scope.heap().object_is_module_namespace(current)? {
+        if let PropertyKey::String(s) = key {
+          if scope.heap().module_namespace_export(current, s)?.is_some() {
+            return Ok(true);
+          }
+        }
+      }
+
       // Own property check.
       if scope
         .heap()
@@ -877,7 +889,34 @@ impl<'a> Scope<'a> {
       return Ok(Some(result_desc));
     }
 
-    let desc = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())?;
+    // Module Namespace Exotic Object `[[GetOwnProperty]]` (ECMA-262 §9.4.6).
+    //
+    // Module namespaces compute the descriptor's `[[Value]]` via `[[Get]]`, which can throw
+    // (notably, a `ReferenceError` for TDZ access). Ensure we compute the value using the full VM
+    // semantics rather than the heap-level environment lookup.
+    let desc = if scope.heap().object_is_module_namespace(obj)? {
+      match key {
+        PropertyKey::Symbol(_) => scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())?,
+        PropertyKey::String(s) => {
+          let export = scope.heap().module_namespace_export(obj, s)?;
+          if let Some(export) = export {
+            let value = scope.module_namespace_get_export_value(vm, obj, export)?;
+            Some(PropertyDescriptor {
+              enumerable: true,
+              configurable: false,
+              kind: PropertyKind::Data {
+                value,
+                writable: true,
+              },
+            })
+          } else {
+            None
+          }
+        }
+      }
+    } else {
+      scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())?
+    };
     if !materialize_string_index_value {
       return Ok(desc);
     }

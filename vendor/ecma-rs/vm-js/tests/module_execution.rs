@@ -27,7 +27,7 @@ fn ns_get(
   let key_s = scope.alloc_string(name)?;
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
-  scope.ordinary_get_with_host_and_hooks(vm, host, hooks, ns, key, Value::Object(ns))
+  scope.get_with_host_and_hooks(vm, host, hooks, ns, key, Value::Object(ns))
 }
 
 #[test]

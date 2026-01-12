@@ -390,7 +390,7 @@ impl VmHostHooks for SyncHostHooks {
 #[test]
 fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut modules = ModuleGraph::new();
@@ -427,7 +427,7 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
   let mut scope = heap.scope();
   let ns_consumer = modules.get_module_namespace(consumer, &mut vm, &mut scope)?;
   let p_key = PropertyKey::from_string(scope.alloc_string("p")?);
-  let p_value = scope.ordinary_get_with_host_and_hooks(
+  let p_value = scope.get_with_host_and_hooks(
     &mut vm,
     &mut dummy_host,
     &mut host_hooks,
@@ -477,7 +477,7 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
   // Verify the namespace exports are readable and reflect evaluated module state.
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
-  let x_value = scope.ordinary_get_with_host_and_hooks(
+  let x_value = scope.get_with_host_and_hooks(
     &mut vm,
     &mut dummy_host,
     &mut host_hooks,
@@ -485,7 +485,7 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
     x_key,
     Value::Object(ns_obj),
   )?;
-  let y_value = scope.ordinary_get_with_host_and_hooks(
+  let y_value = scope.get_with_host_and_hooks(
     &mut vm,
     &mut dummy_host,
     &mut host_hooks,
@@ -507,7 +507,7 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
 #[test]
 fn dynamic_import_tla_module_works_with_sync_host_completion_without_attached_graph() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut modules = ModuleGraph::new();
@@ -545,7 +545,7 @@ fn dynamic_import_tla_module_works_with_sync_host_completion_without_attached_gr
     let mut scope = heap.scope();
     let ns_consumer = modules.get_module_namespace(consumer, &mut vm, &mut scope)?;
     let p_key = PropertyKey::from_string(scope.alloc_string("p")?);
-    let p_value = scope.ordinary_get_with_host_and_hooks(
+    let p_value = scope.get_with_host_and_hooks(
       &mut vm,
       &mut dummy_host,
       &mut host_hooks,
@@ -592,7 +592,7 @@ fn dynamic_import_tla_module_works_with_sync_host_completion_without_attached_gr
   };
 
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
-  let x_value = scope.ordinary_get_with_host_and_hooks(
+  let x_value = scope.get_with_host_and_hooks(
     &mut vm,
     &mut dummy_host,
     &mut host_hooks,
@@ -614,7 +614,7 @@ fn dynamic_import_tla_module_works_with_sync_host_completion_without_attached_gr
 #[test]
 fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut modules = ModuleGraph::new();
@@ -681,7 +681,7 @@ fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<
     let mut scope = heap.scope();
     let ns_consumer = modules.get_module_namespace(consumer, &mut vm, &mut scope)?;
     let p_key = PropertyKey::from_string(scope.alloc_string("p")?);
-    let p_value = scope.ordinary_get_with_host_and_hooks(
+    let p_value = scope.get_with_host_and_hooks(
       &mut vm,
       &mut dummy_host,
       &mut host_hooks,
@@ -732,7 +732,7 @@ fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<
   // Verify the namespace exports are readable and reflect evaluated module state.
   let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
-  let x_value = scope.ordinary_get_with_host_and_hooks(
+  let x_value = scope.get_with_host_and_hooks(
     &mut vm,
     &mut dummy_host,
     &mut host_hooks,
@@ -740,7 +740,7 @@ fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<
     x_key,
     Value::Object(ns_obj),
   )?;
-  let y_value = scope.ordinary_get_with_host_and_hooks(
+  let y_value = scope.get_with_host_and_hooks(
     &mut vm,
     &mut dummy_host,
     &mut host_hooks,
@@ -780,7 +780,7 @@ fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<
 #[test]
 fn abort_tla_evaluation_restores_module_graph_ptr() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut modules = ModuleGraph::new();
