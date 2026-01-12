@@ -32,7 +32,6 @@ mod replaced_element_max_width_toggle;
 mod template_inert_styles;
 mod textarea_runtime_value;
 mod transition_behavior_property_test;
-mod ua_form_control_defaults_test;
 mod vm_js_crypto_subtle_digest;
 mod vm_js_dynamic_script_crossorigin_cors;
 mod vm_js_function_object_properties_smoke;

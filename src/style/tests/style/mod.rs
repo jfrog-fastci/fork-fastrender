@@ -182,6 +182,7 @@ mod tokenize_property_value_comments_test;
 mod top_layer_closed_hidden_test;
 mod transition_global_keyword_tests;
 mod transitions_starting_style_test;
+mod ua_form_control_defaults_test;
 mod user_agent_defaults_test;
 mod user_agent_test;
 mod user_validity_pseudo_test;
