@@ -589,6 +589,7 @@ impl Intrinsics {
     let array_prototype_find_index = vm.register_native_call(builtins::array_prototype_find_index)?;
     let array_prototype_concat = vm.register_native_call(builtins::array_prototype_concat)?;
     let array_prototype_reverse = vm.register_native_call(builtins::array_prototype_reverse)?;
+    let array_prototype_sort = vm.register_native_call(builtins::array_prototype_sort)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
     let array_prototype_push = vm.register_native_call(builtins::array_prototype_push)?;
@@ -1143,7 +1144,7 @@ impl Intrinsics {
       data_desc(Value::String(array_iterator_tag), false, false, true),
     )?;
 
-      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / concat / reverse / join / slice / push / pop / shift / unshift / splice
+      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / concat / reverse / sort / join / slice / push / pop / shift / unshift / splice
       {
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
@@ -1314,6 +1315,20 @@ impl Intrinsics {
           array_prototype,
           reverse_key,
           data_desc(Value::Object(reverse_fn), true, false, true),
+        )?;
+
+        let sort_s = scope.alloc_string("sort")?;
+        scope.push_root(Value::String(sort_s))?;
+        let sort_key = PropertyKey::from_string(sort_s);
+        let sort_fn = scope.alloc_native_function(array_prototype_sort, None, sort_s, 1)?;
+        scope.push_root(Value::Object(sort_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(sort_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          sort_key,
+          data_desc(Value::Object(sort_fn), true, false, true),
         )?;
 
         let join_s = scope.alloc_string("join")?;

@@ -1443,9 +1443,16 @@ fn array_constructor_impl(
   match args {
     [] => Ok(Value::Object(create_array_object(vm, scope, 0)?)),
     [Value::Number(n)] => {
-      // Minimal `Array(len)` support (used by WebIDL sequence conversions).
+      // https://tc39.es/ecma262/#sec-array-constructor
+      //
+      // `Array(len)` / `new Array(len)` where `len` is a Number validates via:
+      //   If `ToUint32(len) != len`, throw a RangeError.
+      //
+      // This accepts +0/-0 and integer lengths in the inclusive range [0, 2^32-1].
       if !n.is_finite() || n.fract() != 0.0 || *n < 0.0 || *n > (u32::MAX as f64) {
-        return Err(VmError::Unimplemented("Array(length) validation"));
+        let intr = require_intrinsics(vm)?;
+        let err = crate::error_object::new_range_error(scope, intr, "Invalid array length")?;
+        return Err(VmError::Throw(err));
       }
       Ok(Value::Object(create_array_object(vm, scope, *n as u32)?))
     }
@@ -7439,6 +7446,209 @@ pub fn array_prototype_reverse(
       }
       (None, None) => {}
     }
+  }
+
+  Ok(Value::Object(obj))
+}
+
+/// `Array.prototype.sort` (ECMA-262).
+pub fn array_prototype_sort(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  use std::cmp::Ordering;
+  const TICK_EVERY: usize = 1024;
+
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let comparefn = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(comparefn, Value::Undefined) && !scope.heap().is_callable(comparefn)? {
+    return Err(VmError::TypeError("Array.prototype.sort compareFn is not callable"));
+  }
+  scope.push_root(comparefn)?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  #[derive(Clone, Copy)]
+  struct SortItem {
+    value: Value,
+    original_pos: usize,
+  }
+
+  // --- SortIndexedProperties(O, len, SortCompare, SKIP-HOLES) ---
+  //
+  // Collect present indices (including inherited properties), skipping holes.
+  let mut items: Vec<SortItem> = Vec::new();
+  for k in 0..len {
+    if k % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let value = {
+      let mut iter_scope = scope.reborrow();
+      let key_s = iter_scope.alloc_string(&k.to_string())?;
+      iter_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+        None
+      } else {
+        Some(iter_scope.ordinary_get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          key,
+          Value::Object(obj),
+        )?)
+      }
+    };
+
+    let Some(value) = value else {
+      continue;
+    };
+
+    // Root captured values for the duration of the sort so they remain alive even if user
+    // comparator/toString side-effects delete them from the receiver.
+    scope.push_root(value)?;
+    let original_pos = items.len();
+    vec_try_push(
+      &mut items,
+      SortItem {
+        value,
+        original_pos,
+      },
+    )?;
+  }
+
+  // --- Sort values (stable; ES2019+) ---
+  let mut sort_err: Option<VmError> = None;
+  let mut compare_count: usize = 0;
+  items.sort_unstable_by(|a, b| {
+    if sort_err.is_some() {
+      return a.original_pos.cmp(&b.original_pos);
+    }
+
+    compare_count = compare_count.wrapping_add(1);
+    if compare_count % TICK_EVERY == 0 {
+      if let Err(e) = vm.tick() {
+        sort_err = Some(e);
+        return a.original_pos.cmp(&b.original_pos);
+      }
+    }
+
+    let result: Result<Ordering, VmError> = (|| {
+      // Undefined sorts to the end (regardless of comparefn).
+      match (a.value, b.value) {
+        (Value::Undefined, Value::Undefined) => return Ok(Ordering::Equal),
+        (Value::Undefined, _) => return Ok(Ordering::Greater),
+        (_, Value::Undefined) => return Ok(Ordering::Less),
+        _ => {}
+      }
+
+      // User comparefn.
+      if !matches!(comparefn, Value::Undefined) {
+        let cmp_value = vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          comparefn,
+          Value::Undefined,
+          &[a.value, b.value],
+        )?;
+        let n = scope.to_number(vm, host, hooks, cmp_value)?;
+        if n.is_nan() || n == 0.0 {
+          return Ok(Ordering::Equal);
+        }
+        return Ok(if n < 0.0 { Ordering::Less } else { Ordering::Greater });
+      }
+
+      // Default string comparison (UTF-16 code unit order).
+      //
+      // Root both string results so the first string doesn't get collected if allocating the second
+      // triggers GC.
+      let mut cmp_scope = scope.reborrow();
+      cmp_scope.push_roots(&[a.value, b.value])?;
+
+      let a_str = cmp_scope.to_string(vm, host, hooks, a.value)?;
+      cmp_scope.push_root(Value::String(a_str))?;
+      let b_str = cmp_scope.to_string(vm, host, hooks, b.value)?;
+      cmp_scope.push_root(Value::String(b_str))?;
+
+      let a_units = cmp_scope.heap().get_string(a_str)?.as_code_units();
+      let b_units = cmp_scope.heap().get_string(b_str)?.as_code_units();
+      Ok(a_units.cmp(b_units))
+    })();
+
+    let ord = match result {
+      Ok(ord) => ord,
+      Err(e) => {
+        sort_err = Some(e);
+        Ordering::Equal
+      }
+    };
+
+    if ord == Ordering::Equal {
+      // Ensure stability by falling back to the original collection order when `SortCompare`
+      // produces 0.
+      a.original_pos.cmp(&b.original_pos)
+    } else {
+      ord
+    }
+  });
+
+  if let Some(err) = sort_err {
+    return Err(err);
+  }
+
+  // --- Write back ---
+  //
+  // Spec: `Set(O, ToString(j), sortedList[j], true)` for j < itemCount
+  //       `DeletePropertyOrThrow(O, ToString(j))` for j >= itemCount
+  let item_count = items.len();
+  for j in 0..item_count {
+    if j % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let value = items[j].value;
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&j.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    let ok = iter_scope.ordinary_set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      key,
+      value,
+      Value::Object(obj),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.sort failed"));
+    }
+  }
+
+  for j in item_count..len {
+    if j % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&j.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    iter_scope.delete_property_or_throw(obj, key)?;
   }
 
   Ok(Value::Object(obj))
