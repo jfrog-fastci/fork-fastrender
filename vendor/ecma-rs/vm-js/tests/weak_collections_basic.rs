@@ -1,4 +1,7 @@
-use vm_js::{GcObject, Heap, HeapLimits, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  GcObject, Heap, HeapLimits, JsRuntime, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
+  VmOptions,
+};
 
 struct TestRt {
   vm: Vm,
@@ -190,11 +193,7 @@ fn weak_map_iterable_constructor_with_array() -> Result<(), VmError> {
     .heap_mut()
     .object_set_prototype(iterable, Some(intr.array_prototype()))?;
   let iterable_0 = string_key(&mut scope, "0")?;
-  scope.create_data_property_or_throw(
-    iterable,
-    iterable_0,
-    Value::Object(entry),
-  )?;
+  scope.create_data_property_or_throw(iterable, iterable_0, Value::Object(entry))?;
 
   // new WeakMap([[key, 123]]).get(key) === 123
   let weak_map_ctor = Value::Object(intr.weak_map());
@@ -214,5 +213,259 @@ fn weak_map_iterable_constructor_with_array() -> Result<(), VmError> {
     .call_without_host(&mut scope, get, weak_map, &[Value::Object(key)])?;
   assert_eq!(out, Value::Number(123.0));
 
+  Ok(())
+}
+
+fn new_runtime() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
+#[test]
+fn weak_map_and_weak_set_prototype_methods_have_brand_checks() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function isTypeError(thunk) {
+        try { thunk(); return false; } catch (e) { return e instanceof TypeError; }
+      }
+      var ok =
+        isTypeError(function () { WeakMap.prototype.get.call({}, {}); }) &&
+        isTypeError(function () { WeakMap.prototype.set.call({}, {}, 1); }) &&
+        isTypeError(function () { WeakMap.prototype.has.call({}, {}); }) &&
+        isTypeError(function () { WeakMap.prototype.delete.call({}, {}); }) &&
+        isTypeError(function () { WeakSet.prototype.add.call({}, {}); }) &&
+        isTypeError(function () { WeakSet.prototype.has.call({}, {}); }) &&
+        isTypeError(function () { WeakSet.prototype.delete.call({}, {}); });
+      ok;
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn weak_map_and_weak_set_objects_support_ordinary_object_operations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function check(obj, proto) {
+        obj.x = 1;
+        Object.defineProperty(obj, "y", { value: 2, enumerable: true, configurable: true, writable: true });
+        var ok = obj.x === 1 && obj.y === 2;
+        ok = ok && Object.keys(obj).join(",") === "x,y";
+        ok = ok && Object.getPrototypeOf(obj) === proto;
+        Object.setPrototypeOf(obj, null);
+        ok = ok && Object.getPrototypeOf(obj) === null;
+        Object.setPrototypeOf(obj, proto);
+        ok = ok && Object.getPrototypeOf(obj) === proto;
+        obj.z = 3;
+        ok = ok && obj.z === 3;
+        delete obj.y;
+        ok = ok && obj.y === undefined && Object.keys(obj).join(",") === "x,z";
+        return ok;
+      }
+
+      var ok = check(new WeakMap(), WeakMap.prototype) && check(new WeakSet(), WeakSet.prototype);
+      ok;
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn weak_map_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), VmError> {
+  const N: usize = 1024;
+
+  // First, measure the bytes needed to allocate keys and then add N WeakMap entries.
+  let (bytes_after_keys, bytes_after_inserts) = {
+    let mut heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let wm = scope.alloc_weak_map()?;
+    scope.push_root(Value::Object(wm))?;
+
+    let mut keys: Vec<Value> = Vec::new();
+    keys.try_reserve_exact(N).map_err(|_| VmError::OutOfMemory)?;
+    for _ in 0..N {
+      let key = scope.alloc_object()?;
+      keys.push(Value::Object(key));
+    }
+    scope.push_roots(&keys)?;
+
+    let bytes_after_keys = scope.heap().estimated_total_bytes();
+
+    for value in &keys {
+      let Value::Object(key) = *value else {
+        unreachable!();
+      };
+      scope
+        .heap_mut()
+        .weak_map_set_with_tick(wm, key, Value::Number(0.0), || Ok(()))?;
+    }
+
+    let bytes_after_inserts = scope.heap().estimated_total_bytes();
+    (bytes_after_keys, bytes_after_inserts)
+  };
+
+  assert!(
+    bytes_after_inserts > bytes_after_keys,
+    "expected WeakMap entry storage to increase heap bytes (after_keys={bytes_after_keys}, after_inserts={bytes_after_inserts})"
+  );
+
+  // Set a heap limit between the two values so we can allocate the keys, but cannot grow the WeakMap
+  // all the way to N entries.
+  let growth = bytes_after_inserts.saturating_sub(bytes_after_keys);
+  let max_bytes = bytes_after_keys
+    .saturating_add(growth / 2)
+    .saturating_add(4096);
+
+  let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
+  let mut scope = heap.scope();
+
+  let wm = scope.alloc_weak_map()?;
+  scope.push_root(Value::Object(wm))?;
+
+  let mut keys: Vec<Value> = Vec::new();
+  keys.try_reserve_exact(N).map_err(|_| VmError::OutOfMemory)?;
+  for _ in 0..N {
+    let key = scope.alloc_object()?;
+    keys.push(Value::Object(key));
+  }
+  scope.push_roots(&keys)?;
+
+  let mut inserted = 0usize;
+  let mut saw_oom = false;
+  for value in keys {
+    let Value::Object(key) = value else {
+      unreachable!();
+    };
+    match scope
+      .heap_mut()
+      .weak_map_set_with_tick(wm, key, Value::Number(0.0), || Ok(()))
+    {
+      Ok(()) => inserted += 1,
+      Err(VmError::OutOfMemory) => {
+        saw_oom = true;
+        break;
+      }
+      Err(e) => return Err(e),
+    }
+  }
+
+  assert!(
+    saw_oom,
+    "expected WeakMap growth to eventually hit VmError::OutOfMemory (inserted={inserted}, max_bytes={max_bytes}, estimated_total_bytes={})",
+    scope.heap().estimated_total_bytes()
+  );
+  assert!(inserted > 0, "expected to insert at least one entry before OOM");
+  assert!(inserted < N, "expected OOM before inserting all entries");
+
+  // Allow a small epsilon since `estimated_total_bytes` includes vector capacities/rounding and the
+  // limit check is based on an estimate.
+  let epsilon = 4096;
+  assert!(
+    scope.heap().estimated_total_bytes() <= max_bytes + epsilon,
+    "heap.estimated_total_bytes should be bounded by max_bytes (max_bytes={max_bytes}, estimated_total_bytes={}, epsilon={epsilon})",
+    scope.heap().estimated_total_bytes(),
+  );
+  Ok(())
+}
+
+#[test]
+fn weak_set_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), VmError> {
+  const N: usize = 1024;
+
+  // First, measure the bytes needed to allocate keys and then add N WeakSet entries.
+  let (bytes_after_keys, bytes_after_inserts) = {
+    let mut heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ws = scope.alloc_weak_set()?;
+    scope.push_root(Value::Object(ws))?;
+
+    let mut keys: Vec<Value> = Vec::new();
+    keys.try_reserve_exact(N).map_err(|_| VmError::OutOfMemory)?;
+    for _ in 0..N {
+      let key = scope.alloc_object()?;
+      keys.push(Value::Object(key));
+    }
+    scope.push_roots(&keys)?;
+
+    let bytes_after_keys = scope.heap().estimated_total_bytes();
+
+    for value in &keys {
+      let Value::Object(key) = *value else {
+        unreachable!();
+      };
+      scope.heap_mut().weak_set_add_with_tick(ws, key, || Ok(()))?;
+    }
+
+    let bytes_after_inserts = scope.heap().estimated_total_bytes();
+    (bytes_after_keys, bytes_after_inserts)
+  };
+
+  assert!(
+    bytes_after_inserts > bytes_after_keys,
+    "expected WeakSet entry storage to increase heap bytes (after_keys={bytes_after_keys}, after_inserts={bytes_after_inserts})"
+  );
+
+  // Set a heap limit between the two values so we can allocate the keys, but cannot grow the WeakSet
+  // all the way to N entries.
+  let growth = bytes_after_inserts.saturating_sub(bytes_after_keys);
+  let max_bytes = bytes_after_keys
+    .saturating_add(growth / 2)
+    .saturating_add(4096);
+
+  let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
+  let mut scope = heap.scope();
+
+  let ws = scope.alloc_weak_set()?;
+  scope.push_root(Value::Object(ws))?;
+
+  let mut keys: Vec<Value> = Vec::new();
+  keys.try_reserve_exact(N).map_err(|_| VmError::OutOfMemory)?;
+  for _ in 0..N {
+    let key = scope.alloc_object()?;
+    keys.push(Value::Object(key));
+  }
+  scope.push_roots(&keys)?;
+
+  let mut inserted = 0usize;
+  let mut saw_oom = false;
+  for value in keys {
+    let Value::Object(key) = value else {
+      unreachable!();
+    };
+    match scope.heap_mut().weak_set_add_with_tick(ws, key, || Ok(())) {
+      Ok(()) => inserted += 1,
+      Err(VmError::OutOfMemory) => {
+        saw_oom = true;
+        break;
+      }
+      Err(e) => return Err(e),
+    }
+  }
+
+  assert!(
+    saw_oom,
+    "expected WeakSet growth to eventually hit VmError::OutOfMemory (inserted={inserted}, max_bytes={max_bytes}, estimated_total_bytes={})",
+    scope.heap().estimated_total_bytes()
+  );
+  assert!(inserted > 0, "expected to insert at least one entry before OOM");
+  assert!(inserted < N, "expected OOM before inserting all entries");
+
+  // Allow a small epsilon since `estimated_total_bytes` includes vector capacities/rounding and the
+  // limit check is based on an estimate.
+  let epsilon = 4096;
+  assert!(
+    scope.heap().estimated_total_bytes() <= max_bytes + epsilon,
+    "heap.estimated_total_bytes should be bounded by max_bytes (max_bytes={max_bytes}, estimated_total_bytes={}, epsilon={epsilon})",
+    scope.heap().estimated_total_bytes(),
+  );
   Ok(())
 }

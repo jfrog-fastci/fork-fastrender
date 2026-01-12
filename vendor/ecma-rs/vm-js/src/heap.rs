@@ -2733,6 +2733,15 @@ impl Heap {
   ///
   /// Dead/stale keys are treated as absent.
   pub fn weak_map_get(&self, map: GcObject, key: GcObject) -> Result<Option<Value>, VmError> {
+    self.weak_map_get_with_tick(map, key, || Ok(()))
+  }
+
+  pub fn weak_map_get_with_tick(
+    &self,
+    map: GcObject,
+    key: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<Value>, VmError> {
     if !self.is_valid_object(key) {
       return Ok(None);
     }
@@ -2742,7 +2751,11 @@ impl Heap {
     };
 
     let key_weak = WeakGcObject::from(key);
-    for entry in wm.entries.iter() {
+    const TICK_EVERY: usize = 1024;
+    for (i, entry) in wm.entries.iter().enumerate() {
+      if i != 0 && i % TICK_EVERY == 0 {
+        tick()?;
+      }
       if entry.key != key_weak {
         continue;
       }
@@ -2760,13 +2773,32 @@ impl Heap {
   ///
   /// Dead/stale keys are treated as absent.
   pub fn weak_map_has(&self, map: GcObject, key: GcObject) -> Result<bool, VmError> {
-    Ok(self.weak_map_get(map, key)?.is_some())
+    self.weak_map_has_with_tick(map, key, || Ok(()))
+  }
+
+  pub fn weak_map_has_with_tick(
+    &self,
+    map: GcObject,
+    key: GcObject,
+    tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    Ok(self.weak_map_get_with_tick(map, key, tick)?.is_some())
   }
 
   /// Sets `map[key] = value`.
   ///
   /// Dead/stale keys are ignored.
   pub fn weak_map_set(&mut self, map: GcObject, key: GcObject, value: Value) -> Result<(), VmError> {
+    self.weak_map_set_with_tick(map, key, value, || Ok(()))
+  }
+
+  pub fn weak_map_set_with_tick(
+    &mut self,
+    map: GcObject,
+    key: GcObject,
+    value: Value,
+    tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
     debug_assert!(self.debug_value_is_valid_or_primitive(value));
 
     if !self.is_valid_object(map) {
@@ -2779,10 +2811,18 @@ impl Heap {
     // Root inputs across any potential GC while growing the entry vector.
     let mut scope = self.scope();
     scope.push_roots(&[Value::Object(map), Value::Object(key), value])?;
-    scope.heap.weak_map_set_rooted(map, key, value)
+    scope
+      .heap
+      .weak_map_set_rooted_with_tick(map, key, value, tick)
   }
 
-  fn weak_map_set_rooted(&mut self, map: GcObject, key: GcObject, value: Value) -> Result<(), VmError> {
+  fn weak_map_set_rooted_with_tick(
+    &mut self,
+    map: GcObject,
+    key: GcObject,
+    value: Value,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
     let slot_idx = self
       .validate(map.0)
       .ok_or_else(|| VmError::invalid_handle())?;
@@ -2795,10 +2835,17 @@ impl Heap {
         return Err(VmError::invalid_handle());
       };
 
-      let existing_idx = wm
-        .entries
-        .iter()
-        .position(|entry| entry.key == key_weak && entry.key.upgrade(self).is_some());
+      const TICK_EVERY: usize = 1024;
+      let mut existing_idx = None;
+      for (i, entry) in wm.entries.iter().enumerate() {
+        if i != 0 && i % TICK_EVERY == 0 {
+          tick()?;
+        }
+        if entry.key == key_weak && entry.key.upgrade(self).is_some() {
+          existing_idx = Some(i);
+          break;
+        }
+      }
 
       (
         existing_idx,
@@ -2851,6 +2898,15 @@ impl Heap {
   ///
   /// Dead/stale keys are treated as absent.
   pub fn weak_map_delete(&mut self, map: GcObject, key: GcObject) -> Result<bool, VmError> {
+    self.weak_map_delete_with_tick(map, key, || Ok(()))
+  }
+
+  pub fn weak_map_delete_with_tick(
+    &mut self,
+    map: GcObject,
+    key: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
     if !self.is_valid_object(key) {
       return Ok(false);
     }
@@ -2862,7 +2918,7 @@ impl Heap {
     let key_weak = WeakGcObject::from(key);
     let mut removed = false;
 
-    // No allocation: `retain` is in-place.
+    // No allocation: compact the entry vector in-place.
     let mut entries = {
       let Some(HeapObject::WeakMap(wm)) = self.slots[slot_idx].value.as_mut() else {
         return Err(VmError::invalid_handle());
@@ -2870,16 +2926,28 @@ impl Heap {
       mem::take(&mut wm.entries)
     };
 
-    entries.retain(|entry| {
+    const TICK_EVERY: usize = 1024;
+    let mut out_len = 0usize;
+    let len = entries.len();
+    for i in 0..len {
+      if i != 0 && i % TICK_EVERY == 0 {
+        tick()?;
+      }
+      let entry = entries[i];
+
       let Some(obj) = entry.key.upgrade(&*self) else {
-        return false;
+        // Drop dead keys.
+        continue;
       };
       if entry.key == key_weak && obj == key {
         removed = true;
-        return false;
+        continue;
       }
-      true
-    });
+
+      entries[out_len] = entry;
+      out_len += 1;
+    }
+    entries.truncate(out_len);
 
     let Some(HeapObject::WeakMap(wm)) = self.slots[slot_idx].value.as_mut() else {
       return Err(VmError::invalid_handle());
@@ -2903,6 +2971,15 @@ impl Heap {
   ///
   /// Dead/stale keys are treated as absent.
   pub fn weak_set_has(&self, set: GcObject, key: GcObject) -> Result<bool, VmError> {
+    self.weak_set_has_with_tick(set, key, || Ok(()))
+  }
+
+  pub fn weak_set_has_with_tick(
+    &self,
+    set: GcObject,
+    key: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
     if !self.is_valid_object(key) {
       return Ok(false);
     }
@@ -2911,7 +2988,11 @@ impl Heap {
       return Err(VmError::invalid_handle());
     };
 
-    for entry in ws.entries.iter() {
+    const TICK_EVERY: usize = 1024;
+    for (i, entry) in ws.entries.iter().enumerate() {
+      if i != 0 && i % TICK_EVERY == 0 {
+        tick()?;
+      }
       let Some(obj) = entry.upgrade(self) else {
         continue;
       };
@@ -2926,6 +3007,15 @@ impl Heap {
   ///
   /// Dead/stale keys are ignored.
   pub fn weak_set_add(&mut self, set: GcObject, key: GcObject) -> Result<(), VmError> {
+    self.weak_set_add_with_tick(set, key, || Ok(()))
+  }
+
+  pub fn weak_set_add_with_tick(
+    &mut self,
+    set: GcObject,
+    key: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
     if !self.is_valid_object(set) {
       return Err(VmError::invalid_handle());
     }
@@ -2936,10 +3026,15 @@ impl Heap {
     // Root inputs across any potential GC while growing the entry vector.
     let mut scope = self.scope();
     scope.push_roots(&[Value::Object(set), Value::Object(key)])?;
-    scope.heap.weak_set_add_rooted(set, key)
+    scope.heap.weak_set_add_rooted_with_tick(set, key, &mut tick)
   }
 
-  fn weak_set_add_rooted(&mut self, set: GcObject, key: GcObject) -> Result<(), VmError> {
+  fn weak_set_add_rooted_with_tick(
+    &mut self,
+    set: GcObject,
+    key: GcObject,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
     let slot_idx = self
       .validate(set.0)
       .ok_or_else(|| VmError::invalid_handle())?;
@@ -2954,7 +3049,11 @@ impl Heap {
 
       // WeakSet operations must treat dead keys as absent. Entries are expected to be GC-pruned,
       // but this check prevents stale keys from being observed even if pruning falls behind.
-      for entry in ws.entries.iter() {
+      const TICK_EVERY: usize = 1024;
+      for (i, entry) in ws.entries.iter().enumerate() {
+        if i != 0 && i % TICK_EVERY == 0 {
+          tick()?;
+        }
         if *entry == key_weak && entry.upgrade(self).is_some() {
           return Ok(());
         }
@@ -3001,6 +3100,15 @@ impl Heap {
   ///
   /// Dead/stale keys are treated as absent.
   pub fn weak_set_delete(&mut self, set: GcObject, key: GcObject) -> Result<bool, VmError> {
+    self.weak_set_delete_with_tick(set, key, || Ok(()))
+  }
+
+  pub fn weak_set_delete_with_tick(
+    &mut self,
+    set: GcObject,
+    key: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
     if !self.is_valid_object(key) {
       return Ok(false);
     }
@@ -3012,7 +3120,7 @@ impl Heap {
     let key_weak = WeakGcObject::from(key);
     let mut removed = false;
 
-    // No allocation: `retain` is in-place.
+    // No allocation: compact the entry vector in-place.
     let mut entries = {
       let Some(HeapObject::WeakSet(ws)) = self.slots[slot_idx].value.as_mut() else {
         return Err(VmError::invalid_handle());
@@ -3020,16 +3128,28 @@ impl Heap {
       mem::take(&mut ws.entries)
     };
 
-    entries.retain(|entry| {
-      let Some(obj) = entry.upgrade(&*self) else {
-        return false;
-      };
-      if *entry == key_weak && obj == key {
-        removed = true;
-        return false;
+    const TICK_EVERY: usize = 1024;
+    let mut out_len = 0usize;
+    let len = entries.len();
+    for i in 0..len {
+      if i != 0 && i % TICK_EVERY == 0 {
+        tick()?;
       }
-      true
-    });
+      let entry = entries[i];
+
+      let Some(obj) = entry.upgrade(&*self) else {
+        // Drop dead keys.
+        continue;
+      };
+      if entry == key_weak && obj == key {
+        removed = true;
+        continue;
+      }
+
+      entries[out_len] = entry;
+      out_len += 1;
+    }
+    entries.truncate(out_len);
 
     let Some(HeapObject::WeakSet(ws)) = self.slots[slot_idx].value.as_mut() else {
       return Err(VmError::invalid_handle());

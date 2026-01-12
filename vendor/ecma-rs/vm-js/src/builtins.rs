@@ -22091,7 +22091,7 @@ pub fn finalization_registry_prototype_cleanup_some(
 }
 
 pub fn weak_map_prototype_get(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -22116,12 +22116,12 @@ pub fn weak_map_prototype_get(
 
   Ok(scope
     .heap()
-    .weak_map_get(map, key_obj)?
+    .weak_map_get_with_tick(map, key_obj, || vm.tick())?
     .unwrap_or(Value::Undefined))
 }
 
 pub fn weak_map_prototype_set(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -22145,12 +22145,14 @@ pub fn weak_map_prototype_set(
     return Err(VmError::TypeError("WeakMap key must be an object"));
   };
 
-  scope.heap_mut().weak_map_set(map, key_obj, value)?;
+  scope
+    .heap_mut()
+    .weak_map_set_with_tick(map, key_obj, value, || vm.tick())?;
   Ok(Value::Object(map))
 }
 
 pub fn weak_map_prototype_has(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -22173,11 +22175,15 @@ pub fn weak_map_prototype_has(
     return Ok(Value::Bool(false));
   };
 
-  Ok(Value::Bool(scope.heap().weak_map_has(map, key_obj)?))
+  Ok(Value::Bool(
+    scope
+      .heap()
+      .weak_map_has_with_tick(map, key_obj, || vm.tick())?,
+  ))
 }
 
 pub fn weak_map_prototype_delete(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -22200,11 +22206,15 @@ pub fn weak_map_prototype_delete(
     return Ok(Value::Bool(false));
   };
 
-  Ok(Value::Bool(scope.heap_mut().weak_map_delete(map, key_obj)?))
+  Ok(Value::Bool(
+    scope
+      .heap_mut()
+      .weak_map_delete_with_tick(map, key_obj, || vm.tick())?,
+  ))
 }
 
 pub fn weak_set_prototype_add(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -22227,12 +22237,14 @@ pub fn weak_set_prototype_add(
     return Err(VmError::TypeError("WeakSet key must be an object"));
   };
 
-  scope.heap_mut().weak_set_add(set, key_obj)?;
+  scope
+    .heap_mut()
+    .weak_set_add_with_tick(set, key_obj, || vm.tick())?;
   Ok(Value::Object(set))
 }
 
 pub fn weak_set_prototype_has(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -22255,11 +22267,15 @@ pub fn weak_set_prototype_has(
     return Ok(Value::Bool(false));
   };
 
-  Ok(Value::Bool(scope.heap().weak_set_has(set, key_obj)?))
+  Ok(Value::Bool(
+    scope
+      .heap()
+      .weak_set_has_with_tick(set, key_obj, || vm.tick())?,
+  ))
 }
 
 pub fn weak_set_prototype_delete(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -22282,7 +22298,11 @@ pub fn weak_set_prototype_delete(
     return Ok(Value::Bool(false));
   };
 
-  Ok(Value::Bool(scope.heap_mut().weak_set_delete(set, key_obj)?))
+  Ok(Value::Bool(
+    scope
+      .heap_mut()
+      .weak_set_delete_with_tick(set, key_obj, || vm.tick())?,
+  ))
 }
 
 #[cfg(test)]
