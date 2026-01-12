@@ -2,7 +2,7 @@ use crate::ui::browser_app::{BrowserTabState, ClosedTabState};
 use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
 use crate::ui::messages::TabId;
 use crate::ui::about_pages;
-use crate::ui::profile_autosave::BookmarkStore;
+use crate::ui::bookmarks::{BookmarkNode, BookmarkStore};
 use crate::ui::visited::VisitedUrlStore;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -300,22 +300,32 @@ impl OmniboxProvider for BookmarksProvider {
     }
 
     let mut out = Vec::new();
-    'urls: for url in &bookmarks.urls {
-      let url = url.trim();
+    'nodes: for node in bookmarks.nodes.values() {
+      let BookmarkNode::Bookmark(entry) = node else {
+        continue;
+      };
+
+      let url = entry.url.trim();
       if url.is_empty() {
         continue;
       }
 
+      let title = entry
+        .title
+        .as_deref()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty());
+
       for token in &tokens {
-        if !contains_case_insensitive(url, token) {
-          continue 'urls;
+        if !contains_case_insensitive(url, token) && !title.is_some_and(|t| contains_case_insensitive(t, token)) {
+          continue 'nodes;
         }
       }
 
       let url_owned = url.to_string();
       out.push(OmniboxSuggestion {
         action: OmniboxAction::NavigateToUrl(url_owned.clone()),
-        title: None,
+        title: title.map(|t| t.to_string()),
         url: Some(url_owned),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark),
       });
