@@ -11155,6 +11155,21 @@ impl DisplayListBuilder {
     position: TextUnderlinePosition,
     inline_vertical: bool,
   ) -> f32 {
+    // Font underline metrics (`post` table / FreeType / Skia) typically describe the *center* of
+    // the underline bar. CSS underline positioning is defined in terms of an "edge" that is then
+    // offset away from the text, so adjust the metric to refer to the bar's edge closest to the
+    // text.
+    //
+    // Without this adjustment, underlines end up consistently shifted by ~½ the underline
+    // thickness (often a full device pixel after snapping), which shows up prominently in
+    // Chrome-vs-FastRender diffs on pages with many underlined links (e.g. `weibo.cn`).
+    let underline_pos =
+      if metrics.underline_pos.is_finite() && metrics.underline_thickness.is_finite() {
+        metrics.underline_pos + metrics.underline_thickness * 0.5
+      } else {
+        metrics.underline_pos
+      };
+
     // `text-underline-offset: auto` is UA-defined. We preserve existing underline placement
     // behavior by defaulting to the font-provided underline position (or clamping to the
     // text-under edge for `text-underline-position: under`). The CSS Text Decoration Level 4 spec
@@ -11164,12 +11179,12 @@ impl DisplayListBuilder {
       TextUnderlinePosition::FromFont if metrics.has_font_underline_metrics => 0.0,
       TextUnderlinePosition::Under
       | TextUnderlinePosition::UnderLeft
-      | TextUnderlinePosition::UnderRight => (-metrics.descent - metrics.underline_pos).max(0.0),
+      | TextUnderlinePosition::UnderRight => (-metrics.descent - underline_pos).max(0.0),
       TextUnderlinePosition::Left if inline_vertical => {
-        (-metrics.descent - metrics.underline_pos).max(0.0)
+        (-metrics.descent - underline_pos).max(0.0)
       }
       TextUnderlinePosition::Right if inline_vertical => 0.0,
-      _ => -metrics.underline_pos,
+      _ => (-underline_pos).max(0.0),
     }
   }
 
@@ -11205,7 +11220,11 @@ impl DisplayListBuilder {
       TextUnderlinePosition::Auto => 0.0,
       TextUnderlinePosition::FromFont => {
         if metrics.has_font_underline_metrics {
-          metrics.underline_pos
+          if metrics.underline_pos.is_finite() && metrics.underline_thickness.is_finite() {
+            metrics.underline_pos + metrics.underline_thickness * 0.5
+          } else {
+            metrics.underline_pos
+          }
         } else {
           0.0
         }
