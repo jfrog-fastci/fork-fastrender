@@ -3096,6 +3096,9 @@ impl<'a> BodyBuilder<'a> {
       include(stmt.span);
     }
     for pat in &self.pats {
+      if pat.span.is_empty() {
+        continue;
+      }
       include(pat.span);
     }
     let body_span = body_span

@@ -2241,8 +2241,34 @@ impl<'a> Checker<'a> {
       self.current_this_ty = this_ty;
       self.current_super_ty = super_ty;
       self.current_super_ctor_ty = self.super_ctor_for_span(body_range);
+      let prim = self.store.primitive_ids();
 
       let contextual_sig = self.contextual_signature();
+      let explicit_this_ty = func_node
+        .stx
+        .parameters
+        .first()
+        .and_then(|param| {
+          matches!(
+            param.stx.pattern.stx.pat.stx.as_ref(),
+            AstPat::Id(id) if id.stx.name == "this"
+          )
+          .then(|| {
+            param
+              .stx
+              .type_annotation
+              .as_ref()
+              .map(|ann| self.lowerer.lower_type_expr(ann))
+          })
+          .flatten()
+        });
+      let contextual_this_ty = contextual_sig
+        .as_ref()
+        .and_then(|sig| sig.this_param)
+        .filter(|ty| *ty != prim.unknown);
+      if let Some(this_ty) = explicit_this_ty.or(contextual_this_ty) {
+        self.current_this_ty = this_ty;
+      }
       let annotated_return = func_node
         .stx
         .return_type
@@ -2610,6 +2636,12 @@ impl<'a> Checker<'a> {
     contextual_sig: Option<&Signature>,
   ) {
     let prim = self.store.primitive_ids();
+    let has_explicit_this = func.stx.parameters.first().is_some_and(|param| {
+      matches!(
+        param.stx.pattern.stx.pat.stx.as_ref(),
+        AstPat::Id(id) if id.stx.name == "this"
+      )
+    });
     for (idx, param) in func.stx.parameters.iter().enumerate() {
       if idx % 64 == 0 {
         self.check_cancelled();
@@ -2622,7 +2654,15 @@ impl<'a> Checker<'a> {
       let default_ty = param.stx.default_value.as_ref().map(|d| self.check_expr(d));
       let contextual_param_ty = contextual_sig
         .and_then(|sig| {
-          if let Some(param_sig) = sig.params.get(idx) {
+          let sig_idx = if has_explicit_this {
+            if idx == 0 {
+              return None;
+            }
+            idx - 1
+          } else {
+            idx
+          };
+          if let Some(param_sig) = sig.params.get(sig_idx) {
             if param_sig.rest && !param.stx.rest {
               let elem_ty = self.spread_element_type(param_sig.ty);
               return Some(elem_ty);
@@ -2635,7 +2675,7 @@ impl<'a> Checker<'a> {
             .iter()
             .enumerate()
             .find(|(_, param)| param.rest)
-            .filter(|(rest_idx, _)| idx >= *rest_idx);
+            .filter(|(rest_idx, _)| sig_idx >= *rest_idx);
           rest.map(|(_, rest_param)| {
             if param.stx.rest {
               rest_param.ty
@@ -2674,7 +2714,11 @@ impl<'a> Checker<'a> {
       // in scope for identifier resolution while checking the body; relying on
       // `AstIndex` span lookups here can be brittle when spans differ between
       // HIR lowering and parse-js nodes.
-      self.bind_pattern_with_type_params(&param.stx.pattern.stx.pat, ty, type_param_decls.to_vec());
+      self.bind_pattern_with_type_params(
+        &param.stx.pattern.stx.pat,
+        ty,
+        type_param_decls.to_vec(),
+      );
     }
   }
 
@@ -4309,15 +4353,16 @@ impl<'a> Checker<'a> {
     contextual_return: Option<TypeId>,
   ) -> TypeId {
     let prim = self.store.primitive_ids();
-    // For `super(...)` we need the base constructor type (not the base instance
-    // type used by `super.prop`), so record the callee as the constructor.
-    let super_ctor_ty = if self.store.canon(self.current_super_ctor_ty) != prim.unknown {
+    // `super()` uses the base constructor value, which can differ from the
+    // instance type used for `super.prop`. Record the callee type explicitly
+    // because `check_call_expr` skips `check_expr` for the `super` callee.
+    let callee_ty = if self.store.canon(self.current_super_ctor_ty) != prim.unknown {
       self.current_super_ctor_ty
     } else {
       self.this_super_context.super_value_ty.unwrap_or(prim.unknown)
     };
-    self.record_expr_type(call.stx.callee.loc, super_ctor_ty);
-    let callee_ty = self.expand_callable_type(super_ctor_ty);
+    self.record_expr_type(call.stx.callee.loc, callee_ty);
+    let callee_ty = self.expand_callable_type(callee_ty);
     let arg_exprs = call.stx.arguments.as_slice();
     let all_candidate_sigs =
       construct_signatures_with_expander(self.store.as_ref(), callee_ty, self.ref_expander);
@@ -8910,10 +8955,12 @@ impl<'a> Checker<'a> {
         .contextual_signature_for_function_expr(expected, param_count)
         .or_else(|| self.first_callable_signature(expected))?
     };
+    let prim = self.store.primitive_ids();
 
     let saved_expected = self.expected_return;
     let saved_async = self.in_async_function;
     let saved_returns = std::mem::take(&mut self.return_types);
+    let saved_this = self.current_this_ty;
 
     self.in_async_function = func.stx.async_;
     self.expected_return = Some(if func.stx.async_ {
@@ -8921,11 +8968,31 @@ impl<'a> Checker<'a> {
     } else {
       expected_sig.ret
     });
-
     let use_contextual_type_params =
       func.stx.type_parameters.is_none() && !expected_sig.type_params.is_empty();
     if use_contextual_type_params {
       self.type_param_scopes.push(expected_sig.type_params.clone());
+    }
+
+    let explicit_this_ty = func.stx.parameters.first().and_then(|param| {
+      matches!(
+        param.stx.pattern.stx.pat.stx.as_ref(),
+        AstPat::Id(id) if id.stx.name == "this"
+      )
+      .then(|| {
+        param
+          .stx
+          .type_annotation
+          .as_ref()
+          .map(|ann| self.lowerer.lower_type_expr(ann))
+      })
+      .flatten()
+    });
+    let contextual_this_ty = expected_sig
+      .this_param
+      .filter(|ty| *ty != prim.unknown);
+    if let Some(this_ty) = explicit_this_ty.or(contextual_this_ty) {
+      self.current_this_ty = this_ty;
     }
     self.scopes.push(Scope::default());
     self.var_scopes.push(self.scopes.len().saturating_sub(1));
@@ -8942,7 +9009,6 @@ impl<'a> Checker<'a> {
       self.type_param_scopes.pop();
     }
 
-    let prim = self.store.primitive_ids();
     let inferred_ret = if self.return_types.is_empty() {
       prim.void
     } else {
@@ -8952,6 +9018,7 @@ impl<'a> Checker<'a> {
     self.return_types = saved_returns;
     self.expected_return = saved_expected;
     self.in_async_function = saved_async;
+    self.current_this_ty = saved_this;
 
     let mut instantiated = expected_sig;
     instantiated.ret = if func.stx.async_ {
@@ -9475,34 +9542,47 @@ impl<'a> Checker<'a> {
       self.lowerer.push_type_param_scope();
       type_params = self.lower_type_params(params);
     }
-    let params = func
-      .stx
-      .parameters
-      .iter()
-      .map(|p| {
-        let name = match p.stx.pattern.stx.pat.stx.as_ref() {
-          AstPat::Id(id) => Some(self.store.intern_name_ref(&id.stx.name)),
-          _ => None,
-        };
-        SigParam {
-          name,
-          ty: p
-            .stx
+    let prim = self.store.primitive_ids();
+    let mut this_param = None;
+    let mut params = Vec::new();
+    for (idx, p) in func.stx.parameters.iter().enumerate() {
+      if idx == 0
+        && matches!(
+          p.stx.pattern.stx.pat.stx.as_ref(),
+          AstPat::Id(id) if id.stx.name == "this"
+        )
+      {
+        this_param = Some(
+          p.stx
             .type_annotation
             .as_ref()
             .map(|t| self.lowerer.lower_type_expr(t))
-            .unwrap_or(self.store.primitive_ids().unknown),
-          optional: p.stx.optional,
-          rest: p.stx.rest,
-        }
-      })
-      .collect::<Vec<_>>();
+            .unwrap_or(prim.unknown),
+        );
+        continue;
+      }
+      let name = match p.stx.pattern.stx.pat.stx.as_ref() {
+        AstPat::Id(id) => Some(self.store.intern_name_ref(&id.stx.name)),
+        _ => None,
+      };
+      params.push(SigParam {
+        name,
+        ty: p
+          .stx
+          .type_annotation
+          .as_ref()
+          .map(|t| self.lowerer.lower_type_expr(t))
+          .unwrap_or(prim.unknown),
+        optional: p.stx.optional,
+        rest: p.stx.rest,
+      });
+    }
     let ret = func
       .stx
       .return_type
       .as_ref()
       .map(|t| self.lowerer.lower_type_expr(t))
-      .unwrap_or(self.store.primitive_ids().unknown);
+      .unwrap_or(prim.unknown);
     let mut ret = if func.stx.async_ {
       self.async_function_return_type(ret)
     } else {
@@ -9519,7 +9599,11 @@ impl<'a> Checker<'a> {
       let saved_expected = self.expected_return;
       let saved_async = self.in_async_function;
       let saved_returns = std::mem::take(&mut self.return_types);
-      let (saved_this, saved_super) = (self.current_this_ty, self.current_super_ty);
+      let (saved_this, saved_super, saved_super_ctor) = (
+        self.current_this_ty,
+        self.current_super_ty,
+        self.current_super_ctor_ty,
+      );
 
       let pushed_scope = Scope::default();
       let pushed_type_param_scope = !type_params.is_empty();
@@ -9538,16 +9622,19 @@ impl<'a> Checker<'a> {
           self.current_this_ty = prim.unknown;
           self.current_super_ty = prim.unknown;
         }
+        self.current_super_ctor_ty = self.super_ctor_for_span(func_span);
       }
 
       self.in_async_function = func.stx.async_;
       self.expected_return = None;
+      if let Some(this_ty) = this_param {
+        self.current_this_ty = this_ty;
+      }
       self.scopes.push(pushed_scope);
       self.bind_params(func, &type_params, None);
       self.check_function_body(func);
       self.scopes.pop();
 
-      let prim = self.store.primitive_ids();
       let inferred_ret = if self.return_types.is_empty() {
         prim.void
       } else {
@@ -9559,6 +9646,7 @@ impl<'a> Checker<'a> {
       self.in_async_function = saved_async;
       self.current_this_ty = saved_this;
       self.current_super_ty = saved_super;
+      self.current_super_ctor_ty = saved_super_ctor;
       if pushed_type_param_scope {
         self.type_param_scopes.pop();
       }
@@ -9576,7 +9664,7 @@ impl<'a> Checker<'a> {
       params,
       ret,
       type_params,
-      this_param: None,
+      this_param,
     };
     let sig_id = self.store.intern_signature(sig);
     let ty = self.store.intern_type(TypeKind::Callable {
@@ -10288,6 +10376,9 @@ fn body_range(body: &Body) -> TextRange {
     end = end.max(expr.span.end);
   }
   for pat in body.pats.iter() {
+    if pat.span.start == 0 && pat.span.end == 0 {
+      continue;
+    }
     start = start.min(pat.span.start);
     end = end.max(pat.span.end);
   }
