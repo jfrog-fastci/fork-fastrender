@@ -1,4 +1,1 @@
-[[expectations]]
-id = "match/options_passthrough.ts"
-status = "xfail"
-reason = "CompilerOptions.types not implemented yet"
+## conformance-mini currently has no expected failures.

@@ -320,6 +320,23 @@ pub const CANNOT_FIND_GLOBAL_TYPE: Code = Code::new(
   &[],
 );
 
+/// TS5053: Conflicting `--noLib` and `--lib` options.
+///
+/// TypeScript reports this diagnostic when `--noLib` is enabled while an
+/// explicit `--lib` list is also provided. The checker mirrors `tsc` by emitting
+/// the diagnostic once and then ignoring the `lib` list (behaving as `--noLib`).
+///
+/// - Primary span: placeholder span (tsc reports `file: null` with `0..0` range).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const LIB_OPTION_CANNOT_BE_SPECIFIED_WITH_NOLIB: Code = Code::new(
+  "TS5053",
+  "conflicting lib and noLib options",
+  "placeholder span when --noLib conflicts with an explicit --lib list",
+  &["primary: placeholder span"],
+  &[],
+);
+
 /// TS2454: Variable is used before it has been assigned.
 ///
 /// - Primary span: the identifier token being read.

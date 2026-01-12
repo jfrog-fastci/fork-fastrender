@@ -24,6 +24,17 @@ impl ProgramState {
       }
     }
 
+    // Match tsc's TS5053 behaviour: `--noLib` conflicts with an explicit `--lib`
+    // list. TypeScript emits the diagnostic and then proceeds as `--noLib`
+    // (ignoring the `lib` list entirely).
+    if options.no_default_lib && !options.libs.is_empty() {
+      self.push_program_diagnostic(codes::LIB_OPTION_CANNOT_BE_SPECIFIED_WITH_NOLIB.error(
+        "Option 'lib' cannot be specified with option 'noLib'.",
+        Span::new(FileId(u32::MAX), TextRange::new(0, 0)),
+      ));
+      options.libs.clear();
+    }
+
     self.compiler_options = options.clone();
     self.checker_caches = CheckerCaches::new(options.cache.clone());
     self.cache_stats = CheckerCacheStats::default();
