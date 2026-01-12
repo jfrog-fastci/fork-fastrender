@@ -21,8 +21,8 @@
     {
       "code": 2607,
       "file": "main.tsx",
-      "start": 63,
-      "end": 76,
+      "start": 64,
+      "end": 67,
       "category": "error",
       "message": "JSX element class does not support attributes because it does not have a 'props' property."
     }

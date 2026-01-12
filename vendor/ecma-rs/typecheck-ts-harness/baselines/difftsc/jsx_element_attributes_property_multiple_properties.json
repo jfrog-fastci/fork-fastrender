@@ -20,9 +20,9 @@
   "diagnostics": [
     {
       "code": 2608,
-      "file": "main.tsx",
-      "start": 63,
-      "end": 70,
+      "file": "lib.d.ts",
+      "start": 49,
+      "end": 112,
       "category": "error",
       "message": "The global type 'JSX.ElementAttributesProperty' may not have more than one property."
     }

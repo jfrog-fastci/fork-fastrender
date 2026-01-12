@@ -5356,6 +5356,14 @@ impl<'a> Checker<'a> {
       self.jsx_element_attributes_prop_name = Some(name);
       return name;
     };
+    let container_span = match self.store.type_kind(attrs_ty) {
+      TypeKind::Ref { def, args } if args.is_empty() => self
+        .type_resolver
+        .as_ref()
+        .and_then(|resolver| resolver.span_of_def(def))
+        .unwrap_or_else(|| Span::new(self.file, loc_to_range(self.file, loc))),
+      _ => Span::new(self.file, loc_to_range(self.file, loc)),
+    };
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
     self.jsx_collect_children_attribute_keys(attrs_ty, &mut candidates, &mut seen);
@@ -5369,7 +5377,7 @@ impl<'a> Checker<'a> {
         self.diagnostics.push(
           codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
             "The global type 'JSX.ElementAttributesProperty' may not have more than one property.",
-            Span::new(self.file, loc_to_range(self.file, loc)),
+            container_span,
           ),
         );
         JsxAttributesPropertyName::Missing
@@ -5396,6 +5404,14 @@ impl<'a> Checker<'a> {
       self.jsx_children_prop_name = Some(None);
       return None;
     };
+    let container_span = match self.store.type_kind(children_attr_ty) {
+      TypeKind::Ref { def, args } if args.is_empty() => self
+        .type_resolver
+        .as_ref()
+        .and_then(|resolver| resolver.span_of_def(def))
+        .unwrap_or_else(|| Span::new(self.file, loc_to_range(self.file, loc))),
+      _ => Span::new(self.file, loc_to_range(self.file, loc)),
+    };
 
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
@@ -5409,7 +5425,7 @@ impl<'a> Checker<'a> {
         self.diagnostics.push(
           codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
             "The global type 'JSX.ElementChildrenAttribute' may not have more than one property.",
-            Span::new(self.file, loc_to_range(self.file, loc)),
+            container_span,
           ),
         );
         None

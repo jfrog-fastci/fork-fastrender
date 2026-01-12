@@ -27,6 +27,19 @@ pub trait TypeResolver: Send + Sync {
   /// definition identifier.
   fn resolve_type_name(&self, path: &[String]) -> Option<DefId>;
 
+  /// Resolve the declaration span for a definition.
+  ///
+  /// This is used by parts of the checker that need to anchor diagnostics on the
+  /// originating definition (for example, JSX container types like
+  /// `JSX.ElementAttributesProperty` report TS2608 on the container declaration
+  /// when it has multiple properties).
+  ///
+  /// Resolvers that do not track definition locations can rely on the default
+  /// implementation, which returns `None`.
+  fn span_of_def(&self, _def: DefId) -> Option<Span> {
+    None
+  }
+
   /// Resolve a `typeof` query. By default this delegates to [`resolve_type_name`].
   fn resolve_typeof(&self, path: &[String]) -> Option<DefId> {
     self.resolve_type_name(path)

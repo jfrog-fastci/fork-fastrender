@@ -1,4 +1,5 @@
 use super::*;
+use diagnostics::Span;
 
 impl TypeResolver for ProgramTypeResolver {
   fn resolve_type_name(&self, path: &[String]) -> Option<DefId> {
@@ -51,5 +52,11 @@ impl TypeResolver for ProgramTypeResolver {
       return self.module_namespace_defs.get(&target_file).copied();
     }
     self.resolve_export_path(path, &mut module, sem_ts::Namespace::VALUE)
+  }
+
+  fn span_of_def(&self, def: DefId) -> Option<Span> {
+    let file = self.def_files.get(&def).copied()?;
+    let range = self.def_spans.get(&def).copied()?;
+    Some(Span::new(file, range))
   }
 }

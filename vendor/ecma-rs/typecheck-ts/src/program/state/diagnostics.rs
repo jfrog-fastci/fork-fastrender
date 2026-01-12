@@ -106,6 +106,13 @@ impl ProgramState {
       }
       let code = diag.code.as_str();
 
+      // Some `.d.ts` diagnostics are produced as a result of checking user code
+      // (rather than while typechecking the library itself). Keep these even
+      // under `skipLibCheck` so the user can fix their JSX typing setup.
+      if code == "TS2608" {
+        return true;
+      }
+
       // `skipLibCheck` suppresses almost all semantic diagnostics originating
       // from `.d.ts` files (type errors, binder errors, and resolution errors).
       // Keep diagnostics that are not tied to semantic checking (parse errors,
