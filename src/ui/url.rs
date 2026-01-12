@@ -355,7 +355,7 @@ pub fn resolve_omnibox_input_with_search_template(
   Ok(OmniboxInputResolution::Search { query, url })
 }
 
-fn search_url_for_query(query: &str, template: &str) -> Result<String, String> {
+pub fn search_url_for_query(query: &str, template: &str) -> Result<String, String> {
   if !template.contains("{query}") {
     return Err("search engine template missing `{query}` placeholder".to_string());
   }

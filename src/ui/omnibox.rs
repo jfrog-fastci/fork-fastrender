@@ -1,4 +1,4 @@
-use crate::ui::browser_app::{BrowserTabState, ClosedTabState};
+use crate::ui::browser_app::{BrowserTabState, ClosedTabState, RemoteSearchSuggestCache};
 use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
 use crate::ui::messages::TabId;
 use crate::ui::about_pages;
@@ -97,32 +97,6 @@ impl OmniboxSuggestion {
         .to_ascii_lowercase(),
       OmniboxAction::Search(query) => query.to_ascii_lowercase(),
     }
-  }
-}
-/// Placeholder for a cache of remote search suggestions.
-#[derive(Debug, Default)]
-pub struct RemoteSearchSuggestCache {
-  // Using an `Arc` here makes it easy for async-updaters to replace the entire cache without
-  // blocking the UI thread.
-  latest: Arc<RemoteSearchSuggestSnapshot>,
-}
-
-#[derive(Debug, Default)]
-pub struct RemoteSearchSuggestSnapshot {
-  // In the future this can include per-engine state (e.g. Google vs DuckDuckGo), freshness
-  // timestamps, debounced in-flight query, etc.
-  //
-  // For now it remains empty; the `RemoteSearchSuggestProvider` is a no-op.
-  _private: (),
-}
-
-impl RemoteSearchSuggestCache {
-  pub fn new() -> Self {
-    Self::default()
-  }
-
-  pub fn snapshot(&self) -> Arc<RemoteSearchSuggestSnapshot> {
-    self.latest.clone()
   }
 }
 
@@ -349,14 +323,50 @@ impl OmniboxProvider for BookmarksProvider {
   }
 }
 
-/// Stub provider: remote search suggestions are not implemented yet.
+/// Cached remote (network) search query suggestions.
 pub struct RemoteSearchSuggestProvider;
 
 impl OmniboxProvider for RemoteSearchSuggestProvider {
-  fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
-    // Future implementation will read from `ctx.remote_search_suggest` and return
-    // `OmniboxAction::Search` suggestions.
-    Vec::new()
+  fn suggestions(&self, ctx: &OmniboxContext<'_>, input: &str) -> Vec<OmniboxSuggestion> {
+    let query = match resolve_omnibox_input(input) {
+      Ok(OmniboxInputResolution::Search { query, .. }) => query,
+      Ok(OmniboxInputResolution::Url { .. }) => return Vec::new(),
+      Err(_) => return Vec::new(),
+    };
+
+    let Some(cache) = ctx.remote_search_suggest else {
+      return Vec::new();
+    };
+    if cache.query != query {
+      return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for s in &cache.suggestions {
+      let trimmed = s.trim();
+      if trimmed.is_empty() {
+        continue;
+      }
+      if trimmed.eq_ignore_ascii_case(&query) {
+        continue;
+      }
+
+      // Best-effort de-dupe (case-insensitive).
+      if out.iter().any(|existing: &OmniboxSuggestion| match &existing.action {
+        OmniboxAction::Search(existing_q) => existing_q.eq_ignore_ascii_case(trimmed),
+        _ => false,
+      }) {
+        continue;
+      }
+
+      out.push(OmniboxSuggestion {
+        action: OmniboxAction::Search(trimmed.to_string()),
+        title: None,
+        url: None,
+        source: OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest),
+      });
+    }
+    out
   }
 }
 
@@ -387,12 +397,12 @@ pub fn build_omnibox_suggestions_default_limit(
 fn default_providers() -> Vec<Box<dyn OmniboxProvider>> {
   vec![
     Box::new(PrimaryActionProvider),
+    Box::new(RemoteSearchSuggestProvider),
     Box::new(OpenTabsProvider),
     Box::new(AboutPagesProvider),
     Box::new(ClosedTabsProvider),
     Box::new(VisitedProvider),
     Box::new(BookmarksProvider),
-    Box::new(RemoteSearchSuggestProvider),
   ]
 }
 
@@ -461,15 +471,14 @@ fn score_suggestion(
 ) -> Option<i64> {
   let base = match suggestion.source {
     OmniboxSuggestionSource::Primary => 1_000_000,
+    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 10_000,
     // NOTE: Base scores are spaced far enough apart that match bonuses (see `match_score`) cannot
-    // reorder the key source group we care about:
-    // OpenTab > About > Bookmark > Visited.
+    // reorder the key source group we care about.
     OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => 5_000,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => 3_700,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 2_400,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => 2_000,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => 1_000,
-    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 500,
   };
 
   // Non-blocking local frecency bonus for URL suggestions.
@@ -657,8 +666,8 @@ fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ord
     ord => return ord,
   }
 
-  // Secondary: source, consistent with base score (Primary > OpenTab > About > Bookmark >
-  // ClosedTab > Visited > Search).
+  // Secondary: source, consistent with base score
+  // (Primary > RemoteSuggest > OpenTab > About > Bookmark > ClosedTab > Visited).
   match suggestion_source_rank(b.suggestion.source).cmp(&suggestion_source_rank(a.suggestion.source)) {
     Ordering::Equal => {}
     ord => return ord,
@@ -674,12 +683,12 @@ fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ord
 fn suggestion_source_rank(source: OmniboxSuggestionSource) -> i64 {
   match source {
     OmniboxSuggestionSource::Primary => 6,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => 5,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => 4,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 3,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => 2,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => 1,
-    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 0,
+    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 5,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => 4,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => 3,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 2,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => 1,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => 0,
   }
 }
 
@@ -725,6 +734,7 @@ fn tokenize_lower(input: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::time::SystemTime;
 
   #[test]
   fn engine_produces_expected_local_suggestions() {
@@ -810,6 +820,99 @@ mod tests {
           source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
         },
       ]
+    );
+  }
+
+  #[test]
+  fn remote_suggestions_are_ranked_between_primary_and_local_matches() {
+    let tab_a = TabId(1);
+    let mut open_tabs = Vec::new();
+    let mut a = BrowserTabState::new(tab_a, "https://example.com/".to_string());
+    a.title = Some("Example Domain".to_string());
+    open_tabs.push(a);
+
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+
+    let remote_cache = RemoteSearchSuggestCache {
+      query: "example".to_string(),
+      // Include the raw query; provider should filter it out.
+      suggestions: vec![
+        "example".to_string(),
+        "example one".to_string(),
+        "example two".to_string(),
+      ],
+      fetched_at: SystemTime::UNIX_EPOCH,
+    };
+
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: Some(&remote_cache),
+    };
+
+    let suggestions = build_omnibox_suggestions(&ctx, "example", 10);
+    assert_eq!(
+      suggestions,
+      vec![
+        OmniboxSuggestion {
+          action: OmniboxAction::Search("example".to_string()),
+          title: Some("example".to_string()),
+          url: None,
+          source: OmniboxSuggestionSource::Primary,
+        },
+        OmniboxSuggestion {
+          action: OmniboxAction::Search("example one".to_string()),
+          title: None,
+          url: None,
+          source: OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest),
+        },
+        OmniboxSuggestion {
+          action: OmniboxAction::Search("example two".to_string()),
+          title: None,
+          url: None,
+          source: OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest),
+        },
+        OmniboxSuggestion {
+          action: OmniboxAction::ActivateTab(tab_a),
+          title: Some("Example Domain".to_string()),
+          url: Some("https://example.com/".to_string()),
+          source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
+        },
+      ]
+    );
+  }
+
+  #[test]
+  fn remote_suggestions_are_ignored_when_cache_query_does_not_match() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+
+    let remote_cache = RemoteSearchSuggestCache {
+      query: "other".to_string(),
+      suggestions: vec!["other one".to_string()],
+      fetched_at: SystemTime::UNIX_EPOCH,
+    };
+
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: Some(&remote_cache),
+    };
+
+    let suggestions = build_omnibox_suggestions(&ctx, "example", 10);
+    assert!(
+      !suggestions
+        .iter()
+        .any(|s| s.source == OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest)),
+      "expected no remote suggestions when cache query mismatches; got {suggestions:?}"
     );
   }
 

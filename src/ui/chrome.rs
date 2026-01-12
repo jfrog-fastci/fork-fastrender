@@ -15,6 +15,7 @@ use crate::ui::omnibox::{
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
+use crate::ui::url::{resolve_omnibox_input, search_url_for_query, OmniboxInputResolution, DEFAULT_SEARCH_ENGINE_TEMPLATE};
 use crate::ui::url_display;
 use crate::ui::zoom;
 use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
@@ -181,7 +182,9 @@ fn omnibox_suggestion_accept_action(suggestion: &OmniboxSuggestion) -> ChromeAct
   match &suggestion.action {
     OmniboxAction::NavigateToUrl(url) => ChromeAction::NavigateTo(url.clone()),
     OmniboxAction::ActivateTab(tab_id) => ChromeAction::ActivateTab(*tab_id),
-    OmniboxAction::Search(query) => ChromeAction::NavigateTo(query.clone()),
+    OmniboxAction::Search(query) => ChromeAction::NavigateTo(
+      search_url_for_query(query, DEFAULT_SEARCH_ENGINE_TEMPLATE).unwrap_or_else(|_| query.clone()),
+    ),
   }
 }
 
@@ -1021,12 +1024,13 @@ pub fn chrome_ui_with_bookmarks(
               visited: &app.visited,
               active_tab_id: app.active_tab_id(),
               bookmarks: omnibox_bookmarks,
-              remote_search_suggest: None,
+              remote_search_suggest: Some(&app.chrome.remote_search_cache),
             };
             build_omnibox_suggestions_default_limit(&ctx, &input)
           };
           app.chrome.omnibox.suggestions = suggestions;
           app.chrome.omnibox.last_built_for_input = input;
+          app.chrome.omnibox.last_built_remote_fetched_at = app.chrome.remote_search_cache.fetched_at;
           if app.chrome.omnibox.suggestions.is_empty() {
             app.chrome.omnibox.open = false;
           }
@@ -1043,18 +1047,20 @@ pub fn chrome_ui_with_bookmarks(
             {
               let input = app.chrome.address_bar_text.clone();
               let suggestions = {
-                let ctx = OmniboxContext {
-                  open_tabs: &app.tabs,
-                  closed_tabs: &app.closed_tabs,
-                  visited: &app.visited,
-                  active_tab_id: app.active_tab_id(),
-                  bookmarks: omnibox_bookmarks,
-                  remote_search_suggest: None,
-                };
+               let ctx = OmniboxContext {
+                 open_tabs: &app.tabs,
+                 closed_tabs: &app.closed_tabs,
+                 visited: &app.visited,
+                 active_tab_id: app.active_tab_id(),
+                 bookmarks: omnibox_bookmarks,
+                 remote_search_suggest: Some(&app.chrome.remote_search_cache),
+               };
                 build_omnibox_suggestions_default_limit(&ctx, &input)
               };
               app.chrome.omnibox.suggestions = suggestions;
               app.chrome.omnibox.last_built_for_input = input;
+              app.chrome.omnibox.last_built_remote_fetched_at =
+                app.chrome.remote_search_cache.fetched_at;
             }
 
             if app.chrome.omnibox.suggestions.is_empty() {
@@ -1087,6 +1093,50 @@ pub fn chrome_ui_with_bookmarks(
                 app.chrome.address_bar_text = fill.to_string();
               }
             }
+          }
+        }
+
+        // If remote suggestions arrived for the current query, rebuild the suggestion list so the
+        // dropdown updates even when the user pauses typing.
+        if has_focus
+          && app.chrome.address_bar_editing
+          && app.chrome.omnibox.open
+          && app.chrome.omnibox.selected.is_none()
+          && app.chrome.omnibox.last_built_for_input == app.chrome.address_bar_text
+        {
+          let remote = &app.chrome.remote_search_cache;
+          if remote.fetched_at != app.chrome.omnibox.last_built_remote_fetched_at {
+            let remote_is_for_current_query = resolve_omnibox_input(&app.chrome.address_bar_text)
+              .ok()
+              .and_then(|r| match r {
+                OmniboxInputResolution::Search { query, .. } => Some(query),
+                OmniboxInputResolution::Url { .. } => None,
+              })
+              .is_some_and(|q| q == remote.query);
+
+            if remote_is_for_current_query {
+              let input = app.chrome.address_bar_text.clone();
+              let suggestions = {
+                let ctx = OmniboxContext {
+                  open_tabs: &app.tabs,
+                  closed_tabs: &app.closed_tabs,
+                  visited: &app.visited,
+                  active_tab_id: app.active_tab_id(),
+                  bookmarks: omnibox_bookmarks,
+                  remote_search_suggest: Some(remote),
+                };
+                build_omnibox_suggestions_default_limit(&ctx, &input)
+              };
+              app.chrome.omnibox.suggestions = suggestions;
+              app.chrome.omnibox.last_built_for_input = input;
+              if app.chrome.omnibox.suggestions.is_empty() {
+                app.chrome.omnibox.open = false;
+              }
+            }
+
+            // Either way, mark the remote cache as observed so we don't keep rebuilding every frame
+            // for unrelated queries.
+            app.chrome.omnibox.last_built_remote_fetched_at = remote.fetched_at;
           }
         }
 
@@ -1551,6 +1601,7 @@ fn store_test_rect(ctx: &egui::Context, key: &'static str, rect: egui::Rect) {
 #[cfg(test)]
 mod tests {
   use super::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
+  use crate::ui::bookmarks::BookmarkStore;
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::BookmarkStore;
   use crate::ui::messages::TabId;

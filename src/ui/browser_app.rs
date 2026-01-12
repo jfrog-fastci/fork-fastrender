@@ -10,6 +10,7 @@ use crate::ui::{
   VisitedUrlStore,
 };
 use std::collections::VecDeque;
+use std::time::SystemTime;
 use url::Url;
 
 const DEBUG_LOG_CAPACITY: usize = 256;
@@ -434,6 +435,11 @@ pub struct ChromeState {
   pub request_focus_address_bar: bool,
   /// One-frame request flag consumed by `chrome_ui` to select all text in the address bar.
   pub request_select_all_address_bar: bool,
+  /// Cached remote search query suggestions (typeahead) for the current omnibox query.
+  ///
+  /// This is egui-agnostic state: the windowed front-end owns the background fetch worker and
+  /// stores the latest results here for consumption by the omnibox suggestion engine.
+  pub remote_search_cache: RemoteSearchSuggestCache,
   /// Whether the chrome History side panel is currently visible.
   pub history_panel_open: bool,
   /// Search/filter query for the History panel.
@@ -462,6 +468,23 @@ impl ChromeState {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct RemoteSearchSuggestCache {
+  pub query: String,
+  pub suggestions: Vec<String>,
+  pub fetched_at: SystemTime,
+}
+
+impl Default for RemoteSearchSuggestCache {
+  fn default() -> Self {
+    Self {
+      query: String::new(),
+      suggestions: Vec::new(),
+      fetched_at: SystemTime::UNIX_EPOCH,
+    }
+  }
+}
+
 /// Egui-agnostic UI state for the address bar omnibox dropdown.
 #[derive(Debug, Clone)]
 pub struct OmniboxUiState {
@@ -474,6 +497,11 @@ pub struct OmniboxUiState {
   pub original_input: Option<String>,
   /// The raw address bar input that `suggestions` were last built for.
   pub last_built_for_input: String,
+  /// `RemoteSearchSuggestCache::fetched_at` value observed when building `suggestions`.
+  ///
+  /// This is used to refresh the omnibox dropdown when remote suggestions arrive for the current
+  /// query, even if the user has paused typing.
+  pub last_built_remote_fetched_at: SystemTime,
   pub suggestions: Vec<OmniboxSuggestion>,
 }
 
@@ -484,6 +512,7 @@ impl Default for OmniboxUiState {
       selected: None,
       original_input: None,
       last_built_for_input: String::new(),
+      last_built_remote_fetched_at: SystemTime::UNIX_EPOCH,
       suggestions: Vec::new(),
     }
   }

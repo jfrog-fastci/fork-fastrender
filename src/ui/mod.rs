@@ -26,6 +26,7 @@ pub mod history;
 pub mod visited;
 pub mod omnibox;
 pub mod load_progress;
+pub mod search_suggest;
 pub mod messages;
 pub mod downloads;
 pub mod render_worker;
@@ -114,12 +115,12 @@ pub use omnibox::{
   build_omnibox_suggestions, build_omnibox_suggestions_default_limit, AboutPagesProvider,
   BookmarksProvider, ClosedTabsProvider, DEFAULT_OMNIBOX_LIMIT, OmniboxAction, OmniboxContext,
   OmniboxProvider, OmniboxSearchSource, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
-  OpenTabsProvider, PrimaryActionProvider, RemoteSearchSuggestCache, RemoteSearchSuggestProvider,
-  VisitedProvider,
+  OpenTabsProvider, PrimaryActionProvider, RemoteSearchSuggestProvider, VisitedProvider,
 };
+pub use search_suggest::{SearchSuggestConfig, SearchSuggestService, SearchSuggestUpdate};
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,
-  FindInPageState, LatestFrameMeta, OpenSelectDropdownUpdate,
+  FindInPageState, LatestFrameMeta, OpenSelectDropdownUpdate, RemoteSearchSuggestCache,
 };
 pub use global_history::{
   ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistoryStore, DEFAULT_GLOBAL_HISTORY_CAPACITY,

@@ -1835,6 +1835,7 @@ struct App {
   browser_state: fastrender::ui::BrowserAppState,
   /// Configured home page URL (default: `about:newtab`).
   home_url: String,
+  search_suggest: fastrender::ui::SearchSuggestService,
 
   bookmarks_path: std::path::PathBuf,
   history_path: std::path::PathBuf,
@@ -2213,6 +2214,9 @@ impl App {
       worker_join: Some(worker_join),
       browser_state,
       home_url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
+      search_suggest: fastrender::ui::SearchSuggestService::new(
+        fastrender::ui::SearchSuggestConfig::default(),
+      ),
       bookmarks_path,
       history_path,
       bookmarks,
@@ -6365,6 +6369,11 @@ impl App {
     self.flush_pending_frame_uploads();
 
     let mut session_dirty = false;
+    while let Some(update) = self.search_suggest.try_recv() {
+      self.browser_state.chrome.remote_search_cache.query = update.query;
+      self.browser_state.chrome.remote_search_cache.suggestions = update.suggestions;
+      self.browser_state.chrome.remote_search_cache.fetched_at = update.fetched_at;
+    }
 
     let (raw_input, wheel_events, paste_events) = {
       let mut raw = self.egui_state.take_egui_input(&self.window);
@@ -6436,6 +6445,20 @@ impl App {
     #[cfg(target_os = "macos")]
     {
       ctx.set_style(original_style);
+    }
+
+    if self.browser_state.chrome.address_bar_has_focus && self.browser_state.chrome.address_bar_editing {
+      if let Ok(fastrender::ui::OmniboxInputResolution::Search { query, .. }) =
+        fastrender::ui::resolve_omnibox_input(&self.browser_state.chrome.address_bar_text)
+      {
+        self.search_suggest.request(query.clone());
+
+        // Ensure we poll for remote suggestions even when the user pauses typing (the suggest
+        // service runs on a background thread).
+        if self.browser_state.chrome.remote_search_cache.query != query {
+          ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+      }
     }
 
     session_dirty |= zoom_before != zoom_after;
