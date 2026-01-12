@@ -319,12 +319,13 @@ fn conditional_with_wrapped_unresolved_type_param_is_deferred() {
 }
 
 #[test]
-fn conditional_with_infer_in_extends_is_deferred() {
+fn conditional_with_infer_in_extends_infers_identity() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
+  let t = store.intern_type(TypeKind::TypeParam(TypeParamId(0)));
   let cond = store.intern_type(TypeKind::Conditional {
-    check: store.intern_type(TypeKind::TypeParam(TypeParamId(0))),
+    check: t,
     extends: store.intern_type(TypeKind::Infer {
       param: TypeParamId(1),
       constraint: None,
@@ -338,10 +339,183 @@ fn conditional_with_infer_in_extends_is_deferred() {
   let mut eval = evaluator(store.clone(), &default_expander);
   let result = eval.evaluate(cond);
 
-  assert!(matches!(
-    store.type_kind(result),
-    TypeKind::Conditional { .. }
+  assert_eq!(result, t);
+}
+
+#[test]
+fn conditional_infers_return_type() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t_param = TypeParamId(0);
+  let r_param = TypeParamId(1);
+
+  // `T extends (...args: any) => infer R ? R : any`
+  let t_ty = store.intern_type(TypeKind::TypeParam(t_param));
+  let r_ty = store.intern_type(TypeKind::TypeParam(r_param));
+  let infer_r = store.intern_type(TypeKind::Infer {
+    param: r_param,
+    constraint: None,
+  });
+
+  let any_rest_param = Param {
+    name: None,
+    ty: primitives.any,
+    optional: false,
+    rest: true,
+  };
+  let extends_sig = store.intern_signature(Signature::new(vec![any_rest_param], infer_r));
+  let extends = store.intern_type(TypeKind::Callable {
+    overloads: vec![extends_sig],
+  });
+
+  let cond = store.intern_type(TypeKind::Conditional {
+    check: t_ty,
+    extends,
+    true_ty: r_ty,
+    false_ty: primitives.any,
+    distributive: true,
+  });
+
+  let check_param = Param {
+    name: None,
+    ty: primitives.number,
+    optional: false,
+    rest: false,
+  };
+  let check_sig = store.intern_signature(Signature::new(vec![check_param], primitives.string));
+  let check_callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![check_sig],
+  });
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(cond, vec![(t_param, check_callable)]);
+  assert_eq!(result, primitives.string);
+}
+
+#[test]
+fn conditional_infers_parameters_tuple() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t_param = TypeParamId(0);
+  let p_param = TypeParamId(1);
+
+  // `T extends (...args: infer P) => any ? P : never`
+  let t_ty = store.intern_type(TypeKind::TypeParam(t_param));
+  let p_ty = store.intern_type(TypeKind::TypeParam(p_param));
+  let infer_p = store.intern_type(TypeKind::Infer {
+    param: p_param,
+    constraint: None,
+  });
+
+  let rest_infer_param = Param {
+    name: None,
+    ty: infer_p,
+    optional: false,
+    rest: true,
+  };
+  let extends_sig = store.intern_signature(Signature::new(vec![rest_infer_param], primitives.any));
+  let extends = store.intern_type(TypeKind::Callable {
+    overloads: vec![extends_sig],
+  });
+
+  let cond = store.intern_type(TypeKind::Conditional {
+    check: t_ty,
+    extends,
+    true_ty: p_ty,
+    false_ty: primitives.never,
+    distributive: true,
+  });
+
+  let check_sig = store.intern_signature(Signature::new(
+    vec![
+      Param {
+        name: None,
+        ty: primitives.number,
+        optional: false,
+        rest: false,
+      },
+      Param {
+        name: None,
+        ty: primitives.string,
+        optional: true,
+        rest: false,
+      },
+    ],
+    primitives.void,
   ));
+  let check_callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![check_sig],
+  });
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(cond, vec![(t_param, check_callable)]);
+
+  let TypeKind::Tuple(elems) = store.type_kind(result) else {
+    panic!("expected tuple, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(elems.len(), 2);
+
+  let elem_0 = store.evaluate(store.intern_type(TypeKind::IndexedAccess {
+    obj: result,
+    index: store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(0.0))),
+  }));
+  assert_eq!(elem_0, primitives.number);
+
+  let elem_1 = store.evaluate(store.intern_type(TypeKind::IndexedAccess {
+    obj: result,
+    index: store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0))),
+  }));
+  assert_eq!(elem_1, store.union(vec![primitives.string, primitives.undefined]));
+}
+
+#[test]
+fn infer_constraint_failure_defers_conditional() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let t_param = TypeParamId(0);
+  let r_param = TypeParamId(1);
+
+  // `T extends (...args: any) => infer R extends string ? R : never`
+  let t_ty = store.intern_type(TypeKind::TypeParam(t_param));
+  let r_ty = store.intern_type(TypeKind::TypeParam(r_param));
+  let infer_r = store.intern_type(TypeKind::Infer {
+    param: r_param,
+    constraint: Some(primitives.string),
+  });
+
+  let any_rest_param = Param {
+    name: None,
+    ty: primitives.any,
+    optional: false,
+    rest: true,
+  };
+  let extends_sig = store.intern_signature(Signature::new(vec![any_rest_param], infer_r));
+  let extends = store.intern_type(TypeKind::Callable {
+    overloads: vec![extends_sig],
+  });
+
+  let cond = store.intern_type(TypeKind::Conditional {
+    check: t_ty,
+    extends,
+    true_ty: r_ty,
+    false_ty: primitives.never,
+    distributive: true,
+  });
+
+  let check_sig = store.intern_signature(Signature::new(Vec::new(), primitives.number));
+  let check_callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![check_sig],
+  });
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate_with_bindings(cond, vec![(t_param, check_callable)]);
+  assert!(matches!(store.type_kind(result), TypeKind::Conditional { .. }));
 }
 
 #[test]

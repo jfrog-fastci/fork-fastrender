@@ -908,11 +908,34 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       {
         span.record("indeterminate", &true);
       }
+
       // Some conditional types include `infer` placeholders in the `extends`
-      // operand (e.g. `Awaited<T>`, `ReturnType<T>`). We cannot generally reduce
-      // these without performing inference, but we *can* still pick the false
-      // branch when the `check` type is provably incompatible with a concrete
-      // (non-`infer`) part of the `extends` type.
+      // operand (e.g. `ReturnType<T>`, `Parameters<T>`, `Awaited<T>`). When the
+      // `extends` pattern is otherwise indeterminate, attempt a small
+      // deterministic inference step and, if successful, evaluate the true
+      // branch under the inferred bindings.
+      if let Some(bindings) =
+        self.infer_from_extends_pattern(check_eval, extends_eval, subst, depth + 1)
+      {
+        let mut next_subst = subst.clone();
+        for (param, ty) in bindings {
+          next_subst = next_subst.with(param, ty);
+        }
+        #[cfg(feature = "tracing")]
+        {
+          span.record("deferred", &false);
+        }
+        let result = self.evaluate_with_subst(true_ty, &next_subst, depth + 1);
+        #[cfg(feature = "tracing")]
+        {
+          span.record("result", &tracing::field::debug(&result));
+        }
+        return result;
+      }
+
+      // If inference fails, we still have one safe reduction opportunity: pick
+      // the false branch when the `check` type is provably incompatible with a
+      // concrete (non-`infer`) part of the `extends` type.
       //
       // This is important for upstream lib declarations like
       // `Promise.resolve<T>(value: T): Promise<Awaited<T>>`, where
@@ -974,6 +997,40 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       span.record("result", &tracing::field::debug(&result));
     }
     result
+  }
+
+  fn infer_from_extends_pattern(
+    &mut self,
+    check: TypeId,
+    extends_pattern: TypeId,
+    _subst: &Substitution,
+    depth: usize,
+  ) -> Option<Vec<(TypeParamId, TypeId)>> {
+    // Use the same assignability semantics as conditional evaluation for `infer`
+    // constraints.
+    if self.conditional_assignability.is_none() && self.default_conditional_assignability.is_none()
+    {
+      self.default_conditional_assignability =
+        Some(RelateCtx::new(self.store.clone(), self.store.options()));
+    }
+
+    let assignability: &dyn ConditionalAssignability = match self.conditional_assignability {
+      Some(provider) => provider,
+      None => self
+        .default_conditional_assignability
+        .as_ref()
+        .expect("default conditional assignability must be initialized"),
+    };
+
+    crate::infer::infer_from_extends_pattern(
+      self.store.as_ref(),
+      self.limits,
+      &mut self.steps,
+      assignability,
+      check,
+      extends_pattern,
+      depth,
+    )
   }
 
   /// Conservative fast path for conditional-type reduction in the presence of

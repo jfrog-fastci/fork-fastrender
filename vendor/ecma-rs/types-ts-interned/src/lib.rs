@@ -41,6 +41,7 @@
 mod cache;
 mod display;
 mod eval;
+mod infer;
 #[cfg(all(feature = "fuzzing", feature = "serde-json"))]
 mod fuzz;
 mod ids;
