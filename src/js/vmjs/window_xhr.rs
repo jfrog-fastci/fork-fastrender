@@ -1382,7 +1382,12 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
       .request
       .clone()
       .ok_or(VmError::TypeError("XMLHttpRequest.open must be called first"))?;
-    req.body = body;
+    // XHR spec: GET/HEAD ignore the request body.
+    if req.method.eq_ignore_ascii_case("GET") || req.method.eq_ignore_ascii_case("HEAD") {
+      req.body = None;
+    } else {
+      req.body = body;
+    }
     xhr.request = Some(req.clone());
     xhr.send_in_progress = true;
     xhr.aborted = false;
@@ -3235,6 +3240,40 @@ mod tests {
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].method, "GET");
     assert_eq!(reqs[0].url, "https://example.invalid/ok");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_send_ignores_body_for_get() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher.clone());
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "var xhr = new XMLHttpRequest();\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.send('payload');",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let reqs = fetcher.requests.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].method, "GET");
+    assert_eq!(reqs[0].body, None);
     Ok(())
   }
 
