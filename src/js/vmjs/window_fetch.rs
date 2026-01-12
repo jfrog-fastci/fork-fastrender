@@ -10052,6 +10052,128 @@ mod tests {
   }
 
   #[test]
+  fn request_clone_rejects_locked_body_stream() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+      return Err(VmError::InvariantViolation("Request constructor missing"));
+    };
+
+    let url_s = scope.alloc_string("https://example.com/")?;
+    scope.push_root(Value::String(url_s))?;
+
+    // new Request(url, { method: "POST", body: "hello" })
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let body_s = scope.alloc_string("hello")?;
+    scope.push_root(Value::String(body_s))?;
+    let method_s = scope.alloc_string("POST")?;
+    scope.push_root(Value::String(method_s))?;
+    set_data_prop(
+      &mut scope,
+      init_obj,
+      "method",
+      Value::String(method_s),
+      true,
+    )?;
+    set_data_prop(&mut scope, init_obj, "body", Value::String(body_s), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(req_obj) = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Object(init_obj)],
+      Value::Object(request_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation(
+        "Request constructor must return an object",
+      ));
+    };
+    scope.push_root(Value::Object(req_obj))?;
+
+    // Lock the body stream via `req.body.getReader()`.
+    let body_key = alloc_key(&mut scope, "body")?;
+    let body_val = vm.get(&mut scope, req_obj, body_key)?;
+    let Value::Object(body_stream_obj) = body_val else {
+      return Err(VmError::InvariantViolation(
+        "Request.body must return an object when the request has a body",
+      ));
+    };
+    scope.push_root(Value::Object(body_stream_obj))?;
+
+    let get_reader_key = alloc_key(&mut scope, "getReader")?;
+    let get_reader = vm.get(&mut scope, body_stream_obj, get_reader_key)?;
+    vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      get_reader,
+      Value::Object(body_stream_obj),
+      &[],
+    )?;
+
+    // Once the underlying ReadableStream is locked, Request.prototype.clone should throw.
+    let clone_key = alloc_key(&mut scope, "clone")?;
+    let clone_fn = vm.get(&mut scope, req_obj, clone_key)?;
+    let err = vm
+      .call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        clone_fn,
+        Value::Object(req_obj),
+        &[],
+      )
+      .expect_err("expected TypeError for locked body stream");
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
+    };
+    scope.push_root(Value::Object(err_obj))?;
+    let name_key = alloc_key(&mut scope, "name")?;
+    let msg_key = alloc_key(&mut scope, "message")?;
+    let Value::String(name_s) = vm.get(&mut scope, err_obj, name_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.name missing"));
+    };
+    let Value::String(msg_s) = vm.get(&mut scope, err_obj, msg_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.message missing"));
+    };
+    assert_eq!(
+      scope.heap().get_string(name_s)?.to_utf8_lossy(),
+      "TypeError"
+    );
+    assert_eq!(
+      scope.heap().get_string(msg_s)?.to_utf8_lossy(),
+      "Request body is locked"
+    );
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
   fn request_ctor_rejects_used_body_input_request() -> Result<(), VmError> {
     struct NoopHooks;
 
