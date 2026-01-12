@@ -592,6 +592,7 @@ impl Document {
     };
 
     self.nodes[old_parent.index()].children.remove(pos);
+    let _ = self.mutation_observer_add_transient_observers_on_remove(child, old_parent);
     self.nodes[child.index()].parent = None;
     self.record_child_list_mutation(old_parent);
     let _ = self.queue_mutation_record_child_list(
@@ -806,6 +807,10 @@ impl Document {
       // Fragments are always detached.
       self.nodes[new_child.index()].parent = None;
 
+      for &child in &children_to_move {
+        let _ = self.mutation_observer_add_transient_observers_on_remove(child, new_child);
+      }
+
       // Per DOM: inserting a DocumentFragment queues a childList record on the fragment itself for
       // the removal of its children.
       let _ = self.queue_mutation_record_child_list(
@@ -907,6 +912,7 @@ impl Document {
     };
 
     self.nodes[parent.index()].children.remove(idx);
+    let _ = self.mutation_observer_add_transient_observers_on_remove(child, parent);
     self.nodes[child.index()].parent = None;
     self.record_child_list_mutation(parent);
     self.bump_mutation_generation();
@@ -985,6 +991,10 @@ impl Document {
       let moved_children = children_to_move.clone();
       self.nodes[new_child.index()].parent = None;
 
+      for &child in &children_to_move {
+        let _ = self.mutation_observer_add_transient_observers_on_remove(child, new_child);
+      }
+
       // Per DOM: inserting a DocumentFragment queues a childList record on the fragment itself for
       // the removal of its children.
       if !moved_children.is_empty() {
@@ -1010,6 +1020,7 @@ impl Document {
       self.nodes[parent.index()]
         .children
         .remove(old_child_idx + inserted_len);
+      let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
       self.nodes[old_child.index()].parent = None;
 
       self.record_child_list_mutation(parent);
@@ -1041,6 +1052,7 @@ impl Document {
     }
 
     self.nodes[parent.index()].children.remove(old_child_idx);
+    let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
     self.nodes[old_child.index()].parent = None;
 
     self.nodes[parent.index()]
