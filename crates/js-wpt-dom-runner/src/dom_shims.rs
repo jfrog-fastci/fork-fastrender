@@ -3444,15 +3444,27 @@ mod tests {
 
             textareaIsHTMLElement: textarea instanceof HTMLElement,
             textareaIsHTMLTextAreaElement: textarea instanceof HTMLTextAreaElement,
+            textareaIsElement: textarea instanceof Element,
+            textareaIsNode: textarea instanceof Node,
+            textareaProtoIsHTMLTextArea: Object.getPrototypeOf(textarea) === HTMLTextAreaElement.prototype,
 
             selectIsHTMLElement: select instanceof HTMLElement,
             selectIsHTMLSelectElement: select instanceof HTMLSelectElement,
+            selectIsElement: select instanceof Element,
+            selectIsNode: select instanceof Node,
+            selectProtoIsHTMLSelect: Object.getPrototypeOf(select) === HTMLSelectElement.prototype,
 
             formIsHTMLElement: form instanceof HTMLElement,
             formIsHTMLFormElement: form instanceof HTMLFormElement,
+            formIsElement: form instanceof Element,
+            formIsNode: form instanceof Node,
+            formProtoIsHTMLForm: Object.getPrototypeOf(form) === HTMLFormElement.prototype,
 
             optionIsHTMLElement: option instanceof HTMLElement,
             optionIsHTMLOptionElement: option instanceof HTMLOptionElement,
+            optionIsElement: option instanceof Element,
+            optionIsNode: option instanceof Node,
+            optionProtoIsHTMLOption: Object.getPrototypeOf(option) === HTMLOptionElement.prototype,
 
             headIsHTMLElement: document.head instanceof HTMLElement,
             bodyIsHTMLElement: document.body instanceof HTMLElement,
@@ -3483,15 +3495,27 @@ mod tests {
 
       assert_eq!(v["textareaIsHTMLElement"], true);
       assert_eq!(v["textareaIsHTMLTextAreaElement"], true);
+      assert_eq!(v["textareaIsElement"], true);
+      assert_eq!(v["textareaIsNode"], true);
+      assert_eq!(v["textareaProtoIsHTMLTextArea"], true);
 
       assert_eq!(v["selectIsHTMLElement"], true);
       assert_eq!(v["selectIsHTMLSelectElement"], true);
+      assert_eq!(v["selectIsElement"], true);
+      assert_eq!(v["selectIsNode"], true);
+      assert_eq!(v["selectProtoIsHTMLSelect"], true);
 
       assert_eq!(v["formIsHTMLElement"], true);
       assert_eq!(v["formIsHTMLFormElement"], true);
+      assert_eq!(v["formIsElement"], true);
+      assert_eq!(v["formIsNode"], true);
+      assert_eq!(v["formProtoIsHTMLForm"], true);
 
       assert_eq!(v["optionIsHTMLElement"], true);
       assert_eq!(v["optionIsHTMLOptionElement"], true);
+      assert_eq!(v["optionIsElement"], true);
+      assert_eq!(v["optionIsNode"], true);
+      assert_eq!(v["optionProtoIsHTMLOption"], true);
 
       assert_eq!(v["headIsHTMLElement"], true);
       assert_eq!(v["bodyIsHTMLElement"], true);
