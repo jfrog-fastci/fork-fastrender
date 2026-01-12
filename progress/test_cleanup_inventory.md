@@ -56,7 +56,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/display_list_tests.rs` | unit | `src/paint/display_list_renderer/tests/display_list/mod.rs` | Migrated the display-list backend regression suite into unit tests under `src/paint/display_list_renderer/tests/display_list/**` and removed the standalone test binary. | DONE |
 | `tests/border_tests.rs` | delete | `src/style/tests/border/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
 | `tests/cascade_tests.rs` | delete | `src/style/tests/cascade/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
-| `tests/css_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/css_integration/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/` `css_integration_tests.rs` | delete | `src/css/**` + `tests/integration.rs::api` + `tests/integration.rs::fixtures` | Top-level harness removed; coverage migrated into CSS unit tests under `src/css/*` and integration tests under `tests/api/**` + `tests/fixtures/**` (run via `tests/integration.rs`). | DONE |
 | `tests/determinism_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/determinism/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/dom_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/dom_integration/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/font_tests.rs` | delete | `src/text/tests/font/` | Top-level harness removed; suite moved out of `tests/` into `src/text/tests/font/**` unit tests. | DONE |
@@ -117,7 +117,7 @@ migrations.
 | `tests/browser_integration/` | browser/UI worker integration suite | `tests/integration.rs::browser_integration` | Runs in the shared integration binary; avoid process-init env mutation. Tests that touch global state should serialize via `stage_listener_test_lock()` / `common::global_test_lock()`. |
 | `tests/bundled/` | bundled font fixture tests | `tests/integration.rs::bundled` | Integration-style fixture assertions. |
 | `tests/common/` | shared helpers for integration tests | keep (not a binary) | Replaces the old `tests/test_support/**` helpers. |
-| `tests/css_integration/` | css loader/import/url rewrite tests | `src/css/loader.rs` (+ friends) | Despite name, these are mostly unit tests. |
+| `tests/` `css_integration/` | migrated (directory removed) | `src/css/**` + `tests/integration.rs::api` + `tests/integration.rs::fixtures` | Coverage migrated into CSS unit tests under `src/css/*` and integration tests under `tests/api/**` + `tests/fixtures/**` (run via `tests/integration.rs`). |
 | `tests/fuzz_corpus/` | checked-in corpus inputs for smoke testing | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Exercised by `tests/tooling/fuzz_corpus_smoke.rs` (via `tests/integration.rs`). |
 | `tests/dom_integration/` | DOM parsing/query integration tests | `src/dom/**` + `src/dom2/**` | Unit tests. |
 | `tests/fixtures/` | HTML + golden-image fixtures | `tests/integration.rs::fixtures` | Stays in `tests/` (data-driven integration). |
