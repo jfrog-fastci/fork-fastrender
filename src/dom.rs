@@ -2527,7 +2527,7 @@ pub(crate) fn clone_dom_with_deadline_and_top_layer_hint(
         }
 
         // Template contents are inert; avoid descending into them to match `needs_top_layer_state`.
-        if tag_name.eq_ignore_ascii_case("template") {
+        if node.template_contents_are_inert() {
           return true;
         }
 
@@ -16880,6 +16880,55 @@ mod tests {
     assert!(
       dialog.get_attribute_ref("open").is_some(),
       "open dialogs should remain open"
+    );
+  }
+
+  #[test]
+  fn clone_dom_top_layer_hint_traverses_non_html_template_contents() {
+    let svg_dom = document(vec![DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "svg".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "template".to_string(),
+          namespace: SVG_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "g".to_string(),
+            namespace: SVG_NAMESPACE.to_string(),
+            attributes: vec![("data-fastr-open".to_string(), "true".to_string())],
+          },
+          children: vec![],
+        }],
+      }],
+    }]);
+
+    let (_, svg_hint) =
+      clone_dom_with_deadline_and_top_layer_hint(&svg_dom, RenderStage::DomParse).expect("clone");
+    assert!(
+      svg_hint,
+      "non-HTML <template> contents are not inert and must be traversed for top-layer hints"
+    );
+
+    let html_dom = document(vec![element_with_attrs(
+      "template",
+      vec![("id", "tpl")],
+      vec![element_with_attrs(
+        "div",
+        vec![("data-fastr-open", "true")],
+        vec![],
+      )],
+    )]);
+    let (_, html_hint) =
+      clone_dom_with_deadline_and_top_layer_hint(&html_dom, RenderStage::DomParse).expect("clone");
+    assert!(
+      !html_hint,
+      "HTML <template> contents are inert and must be skipped for top-layer hints"
     );
   }
 
