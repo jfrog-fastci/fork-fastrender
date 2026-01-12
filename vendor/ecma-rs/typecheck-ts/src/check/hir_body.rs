@@ -4829,6 +4829,7 @@ impl<'a> Checker<'a> {
     // Match `tsc`: `super(...)` is treated as `void` (the value is not usable).
     prim.void
   }
+
   fn check_new_expr(
     &mut self,
     un: &Node<parse_js::ast::expr::UnaryExpr>,
@@ -7190,6 +7191,27 @@ impl<'a> Checker<'a> {
     }
   }
 
+  fn constant_computed_key_name(&self, expr: &Node<AstExpr>) -> Option<String> {
+    match expr.stx.as_ref() {
+      AstExpr::LitStr(str_lit) => Some(str_lit.stx.value.clone()),
+      AstExpr::LitNum(num_lit) => Some(num_lit.stx.value.0.to_string()),
+      AstExpr::LitTemplate(tpl) => {
+        let mut out = String::new();
+        for part in tpl.stx.parts.iter() {
+          match part {
+            parse_js::ast::expr::lit::LitTemplatePart::String(s) => out.push_str(s),
+            parse_js::ast::expr::lit::LitTemplatePart::Substitution(_) => return None,
+          }
+        }
+        Some(out)
+      }
+      AstExpr::TypeAssertion(assert) => self.constant_computed_key_name(&assert.stx.expression),
+      AstExpr::NonNullAssertion(assert) => self.constant_computed_key_name(&assert.stx.expression),
+      AstExpr::SatisfiesExpr(expr) => self.constant_computed_key_name(&expr.stx.expression),
+      _ => None,
+    }
+  }
+
   fn const_inference_type(&self, expr: &Node<AstExpr>) -> TypeId {
     let prim = self.store.primitive_ids();
     match expr.stx.as_ref() {
@@ -7253,13 +7275,17 @@ impl<'a> Checker<'a> {
                   Some(PropKey::String(self.store.intern_name_ref(&direct.stx.key)))
                 }
                 ClassOrObjKey::Computed(expr) => {
-                  let key_ty = self.const_inference_type(expr);
-                  match self.store.type_kind(key_ty) {
+                  if let Some(literal) = self.constant_computed_key_name(expr) {
+                    Some(PropKey::String(self.store.intern_name_ref(&literal)))
+                  } else {
+                    let key_ty = self.const_inference_type(expr);
+                    match self.store.type_kind(key_ty) {
                     TypeKind::StringLiteral(id) => Some(PropKey::String(id)),
                     TypeKind::NumberLiteral(num) => Some(PropKey::String(
                       self.store.intern_name(num.0.to_string()),
                     )),
                     _ => None,
+                    }
                   }
                 }
               };
@@ -7385,12 +7411,16 @@ impl<'a> Checker<'a> {
                 }
                 ClassOrObjKey::Computed(expr) => {
                   let key_ty = self.check_expr(expr);
-                  match self.store.type_kind(key_ty) {
-                    TypeKind::StringLiteral(id) => Some(PropKey::String(id)),
-                    TypeKind::NumberLiteral(num) => Some(PropKey::String(
-                      self.store.intern_name(num.0.to_string()),
-                    )),
-                    _ => None,
+                  if let Some(literal) = self.constant_computed_key_name(expr) {
+                    Some(PropKey::String(self.store.intern_name_ref(&literal)))
+                  } else {
+                    match self.store.type_kind(key_ty) {
+                      TypeKind::StringLiteral(id) => Some(PropKey::String(id)),
+                      TypeKind::NumberLiteral(num) => Some(PropKey::String(
+                        self.store.intern_name(num.0.to_string()),
+                      )),
+                      _ => None,
+                    }
                   }
                 }
               };
@@ -8294,9 +8324,18 @@ impl<'a> Checker<'a> {
       (as_i64 as f64 == num).then_some(as_i64)
     }
 
+    fn strip_computed_key_wrappers<'a>(expr: &'a Node<AstExpr>) -> &'a Node<AstExpr> {
+      match expr.stx.as_ref() {
+        AstExpr::TypeAssertion(assert) => strip_computed_key_wrappers(&assert.stx.expression),
+        AstExpr::NonNullAssertion(assert) => strip_computed_key_wrappers(&assert.stx.expression),
+        AstExpr::SatisfiesExpr(expr) => strip_computed_key_wrappers(&expr.stx.expression),
+        _ => expr,
+      }
+    }
+
     let computed_key_as_prop_key = |checker: &mut Checker<'_>,
-                                    expr: &Node<AstExpr>,
-                                    key_ty: TypeId|
+                                     expr: &Node<AstExpr>,
+                                     key_ty: TypeId|
      -> Option<(PropKey, String)> {
       match expr.stx.as_ref() {
         AstExpr::LitStr(s) => {
@@ -8354,7 +8393,8 @@ impl<'a> Checker<'a> {
             }
             ClassOrObjKey::Computed(expr) => {
               let key_ty = self.check_expr(expr);
-              computed_key_as_prop_key(self, expr, key_ty).map(|(key, _)| key)
+              computed_key_as_prop_key(self, strip_computed_key_wrappers(expr), key_ty)
+                .map(|(key, _)| key)
             }
           };
 
@@ -8482,9 +8522,18 @@ impl<'a> Checker<'a> {
       (as_i64 as f64 == num).then_some(as_i64)
     }
 
+    fn strip_computed_key_wrappers<'a>(expr: &'a Node<AstExpr>) -> &'a Node<AstExpr> {
+      match expr.stx.as_ref() {
+        AstExpr::TypeAssertion(assert) => strip_computed_key_wrappers(&assert.stx.expression),
+        AstExpr::NonNullAssertion(assert) => strip_computed_key_wrappers(&assert.stx.expression),
+        AstExpr::SatisfiesExpr(expr) => strip_computed_key_wrappers(&expr.stx.expression),
+        _ => expr,
+      }
+    }
+
     let computed_key_as_prop_key = |checker: &mut Checker<'_>,
-                                    expr: &Node<AstExpr>,
-                                    key_ty: TypeId|
+                                     expr: &Node<AstExpr>,
+                                     key_ty: TypeId|
      -> Option<(PropKey, String)> {
       match expr.stx.as_ref() {
         AstExpr::LitStr(s) => {
@@ -8545,7 +8594,11 @@ impl<'a> Checker<'a> {
             }
             ClassOrObjKey::Computed(expr) => {
               let key_ty = self.check_expr(expr);
-              if let Some((prop_key, name)) = computed_key_as_prop_key(self, expr, key_ty) {
+              if let Some((prop_key, name)) = computed_key_as_prop_key(
+                self,
+                strip_computed_key_wrappers(expr),
+                key_ty,
+              ) {
                 (Some(prop_key), Some(name))
               } else {
                 (None, None)
