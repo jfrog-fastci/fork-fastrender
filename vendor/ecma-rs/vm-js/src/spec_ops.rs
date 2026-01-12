@@ -90,12 +90,7 @@ pub fn internal_has_property_with_host_and_hooks(
 /// ECMAScript `[[Set]](P, V, Receiver)` internal method dispatch for ordinary and Proxy exotic
 /// objects.
 ///
-/// This is a minimal implementation today:
-/// - Ordinary objects delegate to `Scope::ordinary_set_with_host_and_hooks`
-/// - Proxy objects implement `Proxy.[[Set]]` with support for the `"set"` trap (when present)
-/// - Revoked proxies throw a TypeError
-///
-/// Note: full Proxy invariants are not enforced yet.
+/// This is host-aware because Proxy `"set"` traps can invoke user code.
 pub fn internal_set_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -113,50 +108,12 @@ pub fn internal_set_with_host_and_hooks(
     PropertyKey::Symbol(s) => Value::Symbol(s),
   };
   scope.push_roots(&[Value::Object(obj), key_root, value, receiver])?;
-
-  // Fast path: ordinary object.
-  if !scope.heap().is_proxy_object(obj) {
-    return scope.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, value, receiver);
-  }
-
-  // Proxy.[[Set]]
-  let proxy = scope
-    .heap()
-    .get_proxy_data(obj)?
-    .ok_or(VmError::invalid_handle())?;
-  let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
-    return Err(VmError::TypeError(
-      "Cannot perform 'set' on a proxy that has been revoked",
-    ));
-  };
-  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
-
-  // trap = ? GetMethod(handler, "set")
-  let set_key_s = scope.alloc_string("set")?;
-  scope.push_root(Value::String(set_key_s))?;
-  let set_key = PropertyKey::from_string(set_key_s);
-  let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), set_key)?;
-  let Some(trap) = trap else {
-    // No trap: forward to target.
-    return internal_set_with_host_and_hooks(vm, &mut scope, host, hooks, target, key, value, receiver);
-  };
-  scope.push_root(trap)?;
-
-  // trapResult = ToBoolean(? Call(trap, handler, « target, P, V, Receiver »))
-  let trap_args = [Value::Object(target), key_root, value, receiver];
-  let trap_result =
-    vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &trap_args)?;
-  scope.heap().to_boolean(trap_result)
+  scope.set_with_host_and_hooks(vm, host, hooks, obj, key, value, receiver)
 }
 
 /// ECMAScript `[[Delete]](P)` internal method dispatch for ordinary and Proxy exotic objects.
 ///
-/// This is a minimal implementation today:
-/// - Ordinary objects delegate to `Scope::ordinary_delete_with_host_and_hooks`
-/// - Proxy objects implement `Proxy.[[Delete]]` with support for the `"deleteProperty"` trap (when present)
-/// - Revoked proxies throw a TypeError
-///
-/// Note: full Proxy invariants are not enforced yet.
+/// This is host-aware because Proxy `"deleteProperty"` traps can invoke user code.
 pub fn internal_delete_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -173,38 +130,7 @@ pub fn internal_delete_with_host_and_hooks(
   };
   scope.push_roots(&[Value::Object(obj), key_root])?;
 
-  if !scope.heap().is_proxy_object(obj) {
-    return scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, key);
-  }
-
-  // Proxy.[[Delete]]
-  let proxy = scope
-    .heap()
-    .get_proxy_data(obj)?
-    .ok_or(VmError::invalid_handle())?;
-  let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
-    return Err(VmError::TypeError(
-      "Cannot perform 'deleteProperty' on a proxy that has been revoked",
-    ));
-  };
-  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
-
-  // trap = ? GetMethod(handler, "deleteProperty")
-  let trap_key_s = scope.alloc_string("deleteProperty")?;
-  scope.push_root(Value::String(trap_key_s))?;
-  let trap_key = PropertyKey::from_string(trap_key_s);
-  let trap = get_method_with_host_and_hooks(vm, &mut scope, host, hooks, Value::Object(handler), trap_key)?;
-  let Some(trap) = trap else {
-    // No trap: forward to target.
-    return internal_delete_with_host_and_hooks(vm, &mut scope, host, hooks, target, key);
-  };
-  scope.push_root(trap)?;
-
-  // trapResult = ToBoolean(? Call(trap, handler, « target, P »))
-  let trap_args = [Value::Object(target), key_root];
-  let trap_result =
-    vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &trap_args)?;
-  scope.heap().to_boolean(trap_result)
+  scope.delete_with_host_and_hooks(vm, host, hooks, obj, key)
 }
 
 /// `IsArray(argument)` (ECMA-262).

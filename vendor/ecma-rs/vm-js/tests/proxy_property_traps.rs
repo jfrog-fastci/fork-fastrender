@@ -293,6 +293,27 @@ fn proxy_property_traps_are_observable_from_js() -> Result<(), VmError> {
 }
 
 #[test]
+fn proxy_set_and_delete_forward_when_traps_missing() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = r#"
+    (() => {
+      const target = {};
+      const p = new Proxy(target, {});
+      p.x = 1;
+      const okSet = target.x === 1;
+      const okDelete = delete p.x === true && !("x" in target);
+      return okSet && okDelete;
+    })()
+  "#;
+  let value = rt.exec_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn proxy_define_property_trap_is_observable_from_js() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -462,6 +483,128 @@ fn proxy_define_property_trap_invariants_observe_string_index_values() -> Result
       try { Reflect.defineProperty(p, "0", { value: undefined }); } catch (e) { ok2 = e instanceof TypeError; }
 
       return ok1 && ok2;
+    })()
+  "#;
+  let value = rt.exec_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_set_trap_invariants_are_enforced() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = r#"
+    (() => {
+      const target = {};
+      Object.defineProperty(target, "x", { value: 1, writable: false, configurable: false });
+      const p = new Proxy(target, { set() { return true; } });
+
+      // Allowed when `SameValue` to the existing target value.
+      const okSame = Reflect.set(p, "x", 1) === true && target.x === 1;
+
+      // Must throw when the trap reports success for a different value.
+      let okDiff = false;
+      try { Reflect.set(p, "x", 2); } catch (e) { okDiff = e instanceof TypeError; }
+
+      return okSame && okDiff;
+    })()
+  "#;
+  let value = rt.exec_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_set_trap_invariants_observe_string_index_values() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = r#"
+    (() => {
+      const target = new String("abc");
+      const p = new Proxy(target, { set() { return true; } });
+
+      // String index properties are non-writable/non-configurable data properties, so the trap is
+      // only allowed to report success when `SameValue` to the target's current value.
+      const okSame = Reflect.set(p, "0", "a") === true && target[0] === "a";
+
+      let okDiff = false;
+      try { Reflect.set(p, "0", "z"); } catch (e) { okDiff = e instanceof TypeError; }
+
+      return okSame && okDiff;
+    })()
+  "#;
+  let value = rt.exec_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_has_trap_invariants_are_enforced() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = r#"
+    (() => {
+      // Non-configurable target property: trap cannot report `false`.
+      const t1 = {};
+      Object.defineProperty(t1, "x", { value: 1, configurable: false });
+      const p1 = new Proxy(t1, { has() { return false; } });
+      let ok1 = false;
+      try { "x" in p1; } catch (e) { ok1 = e instanceof TypeError; }
+
+      // Non-extensible target with existing property: trap cannot report `false`.
+      const t2 = { x: 1 };
+      Object.preventExtensions(t2);
+      const p2 = new Proxy(t2, { has() { return false; } });
+      let ok2 = false;
+      try { "x" in p2; } catch (e) { ok2 = e instanceof TypeError; }
+
+      // Allowed when the target property is truly absent.
+      const t3 = {};
+      const p3 = new Proxy(t3, { has() { return false; } });
+      const ok3 = ("x" in p3) === false;
+
+      return ok1 && ok2 && ok3;
+    })()
+  "#;
+  let value = rt.exec_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_delete_property_trap_invariants_are_enforced() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = r#"
+    (() => {
+      // Non-configurable target property: trap cannot report deletion success.
+      const t1 = {};
+      Object.defineProperty(t1, "x", { value: 1, configurable: false });
+      const p1 = new Proxy(t1, { deleteProperty() { return true; } });
+      let ok1 = false;
+      try { Reflect.deleteProperty(p1, "x"); } catch (e) { ok1 = e instanceof TypeError; }
+
+      // Allowed for configurable properties.
+      const t2 = { x: 1 };
+      const p2 = new Proxy(t2, { deleteProperty() { return true; } });
+      const ok2 = Reflect.deleteProperty(p2, "x") === true;
+
+      // String index properties are non-configurable, so deletion success is also forbidden.
+      const t3 = new String("abc");
+      const p3 = new Proxy(t3, { deleteProperty() { return true; } });
+      let ok3 = false;
+      try { Reflect.deleteProperty(p3, "0"); } catch (e) { ok3 = e instanceof TypeError; }
+
+      return ok1 && ok2 && ok3;
     })()
   "#;
   let value = rt.exec_script(script)?;

@@ -352,7 +352,29 @@ impl<'a> Scope<'a> {
           Value::Object(handler),
           &trap_args,
         )?;
-        return scope.heap().to_boolean(trap_result);
+        let trap_bool = scope.heap().to_boolean(trap_result)?;
+
+        // Proxy invariants: if the trap reports `false`, the target must not have a non-configurable
+        // property, and if the target is non-extensible it must not have any property at all.
+        if !trap_bool {
+          if let Some(target_desc) =
+            scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?
+          {
+            if !target_desc.configurable {
+              return Err(VmError::TypeError(
+                "Proxy has trap returned false for a non-configurable target property",
+              ));
+            }
+            let extensible_target = scope.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+            if !extensible_target {
+              return Err(VmError::TypeError(
+                "Proxy has trap returned false for an existing property on a non-extensible target",
+              ));
+            }
+          }
+        }
+
+        return Ok(trap_bool);
       }
 
       // --- Ordinary [[HasProperty]] ---
@@ -1208,7 +1230,29 @@ impl<'a> Scope<'a> {
         Value::Object(handler),
         &trap_args,
       )?;
-      return self.heap().to_boolean(trap_result);
+      let trap_bool = self.heap().to_boolean(trap_result)?;
+
+      // Proxy invariants: if the trap reports `false`, the target must not have a non-configurable
+      // property, and if the target is non-extensible it must not have any property at all.
+      if !trap_bool {
+        if let Some(target_desc) =
+          self.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?
+        {
+          if !target_desc.configurable {
+            return Err(VmError::TypeError(
+              "Proxy has trap returned false for a non-configurable target property",
+            ));
+          }
+          let extensible_target = self.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+          if !extensible_target {
+            return Err(VmError::TypeError(
+              "Proxy has trap returned false for an existing property on a non-extensible target",
+            ));
+          }
+        }
+      }
+
+      return Ok(trap_bool);
     }
   }
 
@@ -1542,7 +1586,24 @@ impl<'a> Scope<'a> {
         Value::Object(handler),
         &trap_args,
       )?;
-      return self.heap().to_boolean(trap_result);
+      let trap_ok = self.heap().to_boolean(trap_result)?;
+      if !trap_ok {
+        return Ok(false);
+      }
+
+      // Proxy invariants: a successful delete must not report deleting a non-configurable target
+      // property.
+      if let Some(target_desc) =
+        self.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?
+      {
+        if !target_desc.configurable {
+          return Err(VmError::TypeError(
+            "Proxy deleteProperty trap returned true for a non-configurable target property",
+          ));
+        }
+      }
+
+      return Ok(true);
     }
   }
 
@@ -4243,33 +4304,131 @@ fn proxy_set(
   value: Value,
   receiver: Value,
 ) -> Result<bool, VmError> {
-  let (target, handler) = proxy_target_and_handler(scope, proxy)?;
-
   let key_val = property_key_to_value(key);
   let mut scope = scope.reborrow();
   scope.push_roots(&[
     Value::Object(proxy),
-    Value::Object(target),
-    Value::Object(handler),
     receiver,
     value,
     key_val,
   ])?;
 
-  let Some(trap) = proxy_get_method(vm, &mut scope, host, hooks, handler, "set")? else {
-    return scope.set_with_host_and_hooks(vm, host, hooks, target, key, value, receiver);
-  };
+  // Allocate the trap key once (rather than once per proxy hop).
+  let mut trap_key: Option<PropertyKey> = None;
 
-  let trap_result = vm.call_with_host_and_hooks(
-    host,
-    &mut scope,
-    hooks,
-    trap,
-    Value::Object(handler),
-    &[Value::Object(target), key_val, value, receiver],
-  )?;
+  // Follow Proxy chains iteratively to avoid recursion (deep attacker-controlled Proxy chains
+  // should not be able to overflow the Rust stack).
+  let mut current = proxy;
+  let mut steps = 0usize;
+  loop {
+    const TICK_EVERY: usize = 1024;
+    if steps != 0 && steps % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    if steps >= crate::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+    steps += 1;
 
-  Ok(scope.heap().to_boolean(trap_result)?)
+    // If we've reached a non-proxy target (i.e. all Proxy objects in the chain had an undefined
+    // `set` trap), fall back to the target's ordinary `[[Set]]` behaviour.
+    let Some(proxy_data) = scope.heap().get_proxy_data(current)? else {
+      return scope.ordinary_set_with_host_and_hooks(vm, host, hooks, current, key, value, receiver);
+    };
+    let (Some(target), Some(handler)) = (proxy_data.target, proxy_data.handler) else {
+      return Err(VmError::TypeError("Cannot perform 'set' on a revoked Proxy"));
+    };
+
+    // Root the Proxy's `[[ProxyTarget]]` and `[[ProxyHandler]]` while we look up and invoke the
+    // trap.
+    //
+    // `GetMethod(handler, "set")` can run user code via accessors. That user code can revoke this
+    // Proxy (clearing `[[ProxyTarget]]`/`[[ProxyHandler]]`) and then trigger a GC. If that happens,
+    // `target` could become unreachable and collected even though the Proxy algorithm is still
+    // required to use the original target object for this operation.
+    scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+    let trap_key = match trap_key {
+      Some(k) => k,
+      None => {
+        let s = scope.alloc_string("set")?;
+        scope.push_root(Value::String(s))?;
+        let k = PropertyKey::from_string(s);
+        trap_key = Some(k);
+        k
+      }
+    };
+
+    let trap = vm.get_method_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      Value::Object(handler),
+      trap_key,
+    )?;
+
+    // If the trap is undefined, forward to the target.
+    let Some(trap) = trap else {
+      current = target;
+      continue;
+    };
+    // `trap` can come from an accessor on `handler`, so root it across allocations/GC.
+    scope.push_root(trap)?;
+
+    let trap_args = [Value::Object(target), key_val, value, receiver];
+    let trap_result = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      trap,
+      Value::Object(handler),
+      &trap_args,
+    )?;
+    let trap_ok = scope.heap().to_boolean(trap_result)?;
+    if !trap_ok {
+      return Ok(false);
+    }
+
+    // Proxy invariants (ECMA-262):
+    // If the target has a non-configurable, non-writable data property, the trap cannot report
+    // success unless `value` is `SameValue` to the target's current value. Similarly, for
+    // non-configurable accessor properties without a setter, the trap cannot report success.
+    let target_desc = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?;
+    if let Some(target_desc) = &target_desc {
+      if !target_desc.configurable {
+        match target_desc.kind {
+          PropertyKind::Data { writable: false, .. } => {
+            // Ensure string exotic index properties materialize their actual value.
+            let Some(target_desc) =
+              scope.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, target, key)?
+            else {
+              return Err(VmError::InvariantViolation(
+                "proxy_set: internal error: missing target property descriptor",
+              ));
+            };
+            let PropertyKind::Data { value: target_value, .. } = target_desc.kind else {
+              return Err(VmError::InvariantViolation(
+                "proxy_set: internal error: expected data descriptor",
+              ));
+            };
+            if !value.same_value(target_value, scope.heap()) {
+              return Err(VmError::TypeError(
+                "Proxy set trap returned true for a non-writable, non-configurable data property with a different value",
+              ));
+            }
+          }
+          PropertyKind::Accessor { set: Value::Undefined, .. } => {
+            return Err(VmError::TypeError(
+              "Proxy set trap returned true for a non-configurable accessor property with an undefined setter",
+            ));
+          }
+          _ => {}
+        }
+      }
+    }
+
+    return Ok(true);
+  }
 }
 
 fn array_length_from_value(value: Value) -> Option<u32> {
