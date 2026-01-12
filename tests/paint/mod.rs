@@ -65,6 +65,7 @@ mod filter_clip_halo;
 mod filter_offscreen_halo;
 mod filter_premultiplication;
 mod filter_transform_order_projective;
+mod filter_scale_transform_parallel_seam;
 mod filter_url_svg_display_list;
 mod fit_canvas_to_content;
 mod font_size_zero_text;
