@@ -24,6 +24,76 @@ fn for_of_over_array() {
 }
 
 #[test]
+fn for_of_break_calls_iterator_return_on_custom_array_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var returnCalls = 0;
+      const arr = [1, 2, 3];
+      arr[Symbol.iterator] = function () {
+        let i = 0;
+        return {
+          next() {
+            if (i >= 3) return { value: undefined, done: true };
+            return { value: i++, done: false };
+          },
+          return() {
+            returnCalls++;
+            return { done: true };
+          },
+        };
+      };
+
+      for (const x of arr) {
+        break;
+      }
+      returnCalls === 1
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn for_of_throw_calls_iterator_return_on_custom_array_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var returnCalls = 0;
+      var out = "";
+      const arr = [1, 2, 3];
+      arr[Symbol.iterator] = function () {
+        let i = 0;
+        return {
+          next() {
+            if (i >= 3) return { value: undefined, done: true };
+            return { value: i++, done: false };
+          },
+          return() {
+            returnCalls++;
+            return { done: true };
+          },
+        };
+      };
+
+      try {
+        for (const x of arr) {
+          throw "boom";
+        }
+      } catch (e) {
+        out = e;
+      }
+
+      out === "boom" && returnCalls === 1
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn for_of_over_string() {
   let mut rt = new_runtime();
   let value = rt
