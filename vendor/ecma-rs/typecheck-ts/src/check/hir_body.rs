@@ -5663,6 +5663,10 @@ impl<'a> Checker<'a> {
               let elem_range = loc_to_range(self.file, elem.loc);
               let opening_range =
                 TextRange::new(elem_range.start, (elem_range.start + 2).min(elem_range.end));
+              self.diagnostics.push(codes::JSX_FACTORY_MISSING.error(
+                "This JSX tag requires 'React' to be in scope, but it could not be found.",
+                Span::new(self.file, opening_range),
+              ));
               self
                 .diagnostics
                 .push(codes::JSX_FRAGMENT_FACTORY_MISSING.error(
@@ -7470,11 +7474,15 @@ impl<'a> Checker<'a> {
       self.jsx_element_attributes_prop_name = Some(name);
       return name;
     };
+    // These diagnostics are surfaced while checking JSX usage. When `skipLibCheck` is enabled
+    // (the default), diagnostics anchored inside `.d.ts` files are filtered out. Prefer to
+    // anchor on the JSX usage site whenever the container declaration lives in another file.
     let container_span = match self.store.type_kind(attrs_ty) {
       TypeKind::Ref { def, args } if args.is_empty() => self
         .type_resolver
         .as_ref()
         .and_then(|resolver| resolver.span_of_def(def))
+        .filter(|span| span.file == self.file)
         .unwrap_or_else(|| Span::new(self.file, loc_to_range(self.file, loc))),
       _ => Span::new(self.file, loc_to_range(self.file, loc)),
     };
@@ -7520,11 +7528,14 @@ impl<'a> Checker<'a> {
       self.jsx_children_prop_name = Some(selected);
       return selected;
     };
+    // See note in `jsx_element_attributes_prop_name` about anchoring diagnostics when
+    // `skipLibCheck` is enabled.
     let container_span = match self.store.type_kind(children_attr_ty) {
       TypeKind::Ref { def, args } if args.is_empty() => self
         .type_resolver
         .as_ref()
         .and_then(|resolver| resolver.span_of_def(def))
+        .filter(|span| span.file == self.file)
         .unwrap_or_else(|| Span::new(self.file, loc_to_range(self.file, loc))),
       _ => Span::new(self.file, loc_to_range(self.file, loc)),
     };

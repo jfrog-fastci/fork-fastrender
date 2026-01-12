@@ -1013,6 +1013,24 @@ pub const JSX_SPREAD_ATTR_MUST_BE_OBJECT: Code = Code::new(
   &[],
 );
 
+/// TS2874: JSX tags require a JSX factory (`React`) to be in scope in classic
+/// React/preserve modes.
+///
+/// TypeScript emits this diagnostic when using JSX in classic React mode (or
+/// preserve mode) and the default JSX factory namespace (`React`) cannot be
+/// resolved.
+///
+/// - Primary span: the JSX opening tag (or `<>` for fragments).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_FACTORY_MISSING: Code = Code::new(
+  "TS2874",
+  "jsx factory missing",
+  "JSX opening tag (or fragment opening `<>`)",
+  &["primary: JSX opening tag"],
+  &[],
+);
+
 /// TS2875: Automatic JSX runtime import module could not be resolved.
 ///
 /// TypeScript emits this diagnostic for `jsx=react-jsx` / `jsx=react-jsxdev` when

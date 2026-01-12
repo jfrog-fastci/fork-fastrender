@@ -2589,12 +2589,16 @@ declare namespace JSX {
 
   assert_eq!(
     diagnostics.len(),
-    1,
-    "expected one diagnostic, got {diagnostics:?}"
+    2,
+    "expected two diagnostics, got {diagnostics:?}"
   );
-  assert_eq!(
-    diagnostics[0].code.as_str(),
-    codes::JSX_FRAGMENT_FACTORY_MISSING.as_str(),
+  let codes: Vec<_> = diagnostics.iter().map(|d| d.code.as_str()).collect();
+  assert!(
+    codes.contains(&codes::JSX_FACTORY_MISSING.as_str()),
+    "expected JSX_FACTORY_MISSING, got {diagnostics:?}"
+  );
+  assert!(
+    codes.contains(&codes::JSX_FRAGMENT_FACTORY_MISSING.as_str()),
     "expected JSX_FRAGMENT_FACTORY_MISSING, got {diagnostics:?}"
   );
 }
