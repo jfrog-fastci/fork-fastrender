@@ -306,6 +306,16 @@ impl ModuleGraph {
     Self::default()
   }
 
+  /// Marks the cached SCC (cycle) structure as dirty so it will be recomputed on the next
+  /// evaluation.
+  ///
+  /// This must be invoked whenever `[[LoadedModules]]` edges change (e.g. during host-driven module
+  /// loading) since SCC membership and evaluation ordering depend on the resolved import graph, not
+  /// just the static `[[RequestedModules]]` list.
+  pub(crate) fn mark_scc_dirty(&mut self) {
+    self.scc_dirty = true;
+  }
+
   pub fn set_global_lexical_env(&mut self, env: GcEnv) {
     self.global_lexical_env = Some(env);
   }

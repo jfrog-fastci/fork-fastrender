@@ -1112,6 +1112,9 @@ pub fn finish_loading_imported_module_with_host_and_hooks(
             referrer_module
               .loaded_modules
               .push(LoadedModuleRequest::new(module_request, loaded));
+            // `[[LoadedModules]]` edges affect SCC membership and therefore module evaluation order;
+            // invalidate cached SCC structure when new edges are added during host-driven loading.
+            modules.mark_scc_dirty();
             Ok(loaded)
           }
         } else {
