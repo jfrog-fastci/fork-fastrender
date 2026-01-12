@@ -3290,8 +3290,8 @@ pub fn typed_array_prototype_slice(
 pub fn typed_array_prototype_set(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -3321,7 +3321,11 @@ pub fn typed_array_prototype_set(
   let offset = if matches!(offset_val, Value::Undefined) {
     0usize
   } else {
-    let n = scope.heap_mut().to_number(offset_val)?;
+    // Spec: `offset` is converted using `ToIndex`/`ToInteger`, which can invoke user code via
+    // `ToNumber(ToPrimitive(...))`. Use the spec-shaped `Scope::to_number` rather than the heap's
+    // minimal `ToNumber` so objects (including those with side-effectful `valueOf`/`toString`) are
+    // handled correctly.
+    let n = scope.to_number(vm, host, hooks, offset_val)?;
     if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
       return Err(VmError::TypeError(
         "TypedArray.prototype.set offset must be a non-negative integer",
@@ -3330,6 +3334,14 @@ pub fn typed_array_prototype_set(
     n as usize
   };
 
+  // Spec: detached buffer checks happen after coercing `offset` (ToInteger/ToIndex), since that
+  // coercion can run user code via `valueOf`/`toString`.
+  //
+  // Per ECMA-262 `SetTypedArrayFromTypedArray`, `%TypedArray%.prototype.set` must throw a TypeError
+  // when either the target or source typed array is out-of-bounds (including detached).
+  //
+  // This also prevents detached buffers (introduced via transfer/structured clone) from tripping
+  // non-catchable VM invariant violations during the copy loop.
   if scope.heap().typed_array_is_out_of_bounds(target)? {
     return Err(VmError::TypeError(
       "TypedArray.prototype.set target is detached or out of bounds",
@@ -3361,23 +3373,16 @@ pub fn typed_array_prototype_set(
     let v = scope
       .heap()
       .typed_array_get_element_value(source, i)?
-      .ok_or(VmError::InvariantViolation(
-        "typed_array_prototype_set: source index out of bounds",
-      ))?;
+      .unwrap_or(Value::Undefined);
     tmp.push(v);
   }
   for (i, v) in tmp.into_iter().enumerate() {
     if i % TICK_EVERY == 0 {
       vm.tick()?;
     }
-    let ok = scope
+    let _ = scope
       .heap_mut()
       .typed_array_set_element_value(target, offset + i, v)?;
-    if !ok {
-      return Err(VmError::InvariantViolation(
-        "typed_array_prototype_set: target index out of bounds",
-      ));
-    }
   }
 
   Ok(Value::Undefined)

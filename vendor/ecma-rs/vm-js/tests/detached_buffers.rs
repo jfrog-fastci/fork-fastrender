@@ -75,10 +75,8 @@ fn heap_byte_access_helpers_throw_type_error_on_detached_and_writes_are_noop() -
     other => panic!("expected TypeError, got {other:?}"),
   }
 
-  match scope.heap_mut().uint8_array_write(view, 0, &[1]) {
-    Err(VmError::TypeError(msg)) => assert_eq!(msg, "ArrayBuffer is detached"),
-    other => panic!("expected TypeError, got {other:?}"),
-  }
+  // `Uint8Array` writes on detached buffers are a safe no-op.
+  assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
 
   // Preserve out-of-bounds behaviour (no-op write).
   assert_eq!(scope.heap_mut().uint8_array_write(view, 4, &[1, 2])?, 0);
@@ -86,3 +84,45 @@ fn heap_byte_access_helpers_throw_type_error_on_detached_and_writes_are_noop() -
   Ok(())
 }
 
+#[test]
+fn typed_array_set_detach_during_offset_throws_type_error() {
+  let mut rt = new_runtime();
+  rt
+    .register_global_native_function("detachArrayBuffer", detach_array_buffer, 1)
+    .unwrap();
+
+  let out = rt
+    .exec_script(
+      r#"
+        // Detachment checks for TypedArray.prototype.set must occur *after* coercing the offset
+        // argument, since ToIndex can run user code via `valueOf`/`toString`.
+
+        var ok1 = false;
+        try {
+          var ab = new ArrayBuffer(1);
+          var ta = new Uint8Array(ab);
+          var sb = new ArrayBuffer(1);
+          var src = new Uint8Array(sb);
+          ta.set(src, { valueOf() { detachArrayBuffer(ab); return 0; } });
+        } catch (e) {
+          ok1 = e && e.name === "TypeError";
+        }
+
+        var ok2 = false;
+        try {
+          var ab2 = new ArrayBuffer(1);
+          var ta2 = new Uint8Array(ab2);
+          var sb2 = new ArrayBuffer(1);
+          var src2 = new Uint8Array(sb2);
+          ta2.set(src2, { valueOf() { detachArrayBuffer(sb2); return 0; } });
+        } catch (e) {
+          ok2 = e && e.name === "TypeError";
+        }
+
+        ok1 && ok2
+      "#,
+    )
+    .expect("script should run");
+
+  assert_eq!(out, Value::Bool(true));
+}
