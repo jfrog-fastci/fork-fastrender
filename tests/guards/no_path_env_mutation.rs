@@ -31,6 +31,8 @@ fn tests_do_not_mutate_path_env_var() {
     format!("EnvVarsGuard::new(&[({var:?},"),
     format!("EnvVarsGuard::set(&[({var:?},"),
     format!("EnvVarsGuard::remove(&[{var:?}]"),
+    // Convenience helper that uses EnvVarsGuard internally.
+    format!("with_env_vars(&[({var:?},"),
   ];
 
   for entry in WalkDir::new(&tests_root) {
@@ -53,4 +55,3 @@ fn tests_do_not_mutate_path_env_var() {
     }
   }
 }
-
