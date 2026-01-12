@@ -114,8 +114,8 @@ New columns/transform/form fixtures ship with checked-in goldens; keep these up 
 
 ## Offline page regression suite
 
-- Run: `bash scripts/cargo_agent.sh test -p fastrender --test regression_tests pages_regression_suite`
-- Refresh goldens: `UPDATE_PAGES_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test regression_tests pages_regression_suite`
+- Run: `bash scripts/cargo_agent.sh test -p fastrender --test integration regression::pages::pages_regression_suite`
+- Refresh goldens: `UPDATE_PAGES_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test integration regression::pages::pages_regression_suite`
 
 This suite renders a curated set of realistic pages under `tests/pages/fixtures/` (flex/grid/table, multicol, pagination, masks/filters, SVG, writing modes, form controls, plus a positioned-child regression) and compares them against goldens in `tests/pages/golden/`.
 

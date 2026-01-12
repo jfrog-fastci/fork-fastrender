@@ -234,7 +234,7 @@ tests/
 ├── backdrop/           ← modules included by `paint_tests.rs`
 ├── style_tests.rs
 ├── style/
-├── regression_tests.rs
+├── integration.rs
 ├── regression/
 ├── determinism_tests.rs
 ├── determinism/
