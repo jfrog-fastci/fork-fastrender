@@ -1,7 +1,7 @@
 # Test Cleanup Inventory (Phase 1.4)
 
 This file is the durable checklist for the test architecture migration described in
-`instructions/test_cleanup.md`.
+`docs/test_architecture.md`.
 
 Update this inventory in every migration PR:
 - Change **Status** from `TODO` → `DONE` once the tests have been moved and the old harness/shim is

@@ -34,7 +34,7 @@ FastRender is spec-first: correctness is defined by the HTML/CSS specifications 
 
 ### JavaScript + Web APIs
 
-FastRender is actively moving toward full browser execution as described in [`instructions/javascript_support.md`](../instructions/javascript_support.md). A spec-shaped JS host exists today (engine embed, script scheduling/execution, event loop/microtasks, URL/fetch/timers), but coverage is still incomplete; see the matrix below for current scope and gaps:
+FastRender is actively moving toward full browser execution (see the JS workstreams: [`js_engine.md`](../instructions/js_engine.md), [`js_dom.md`](../instructions/js_dom.md), [`js_web_apis.md`](../instructions/js_web_apis.md), [`js_html_integration.md`](../instructions/js_html_integration.md)). A spec-shaped JS host exists today (engine embed, script scheduling/execution, event loop/microtasks, URL/fetch/timers), but coverage is still incomplete; see the matrix below for current scope and gaps:
 
 - **`<script>` processing model**: HTML script processing model for classic + module scripts (+ import maps), including parser-inserted vs dynamic scripts, `async`/`defer` ordering, `document.currentScript`, and microtask checkpoints.
 - **Event loop + microtasks**: HTML event loop semantics (task queues) plus a microtask queue with microtask checkpoints at the HTML-defined points.
@@ -90,7 +90,7 @@ Status legend: ✅ Supported, ⚠️ Partial/targeted, 🚫 Not supported.
 
 ## Non-goals (reiterated)
 
-- **No unbounded JavaScript execution**: When JS execution is enabled, it must be interruptible and subject to budgets so hostile scripts cannot hang the process (see [`instructions/javascript_support.md`](../instructions/javascript_support.md)).
+- **No unbounded JavaScript execution**: When JS execution is enabled, it must be interruptible and subject to budgets so hostile scripts cannot hang the process (see the JS workstreams in `instructions/js_*.md`).
 - **No page-specific hacks by default**: Site compatibility shims are opt-in (`CompatProfile::SiteCompatibility`), and the pipeline stays spec-faithful otherwise (`docs/notes/site-compat-hacks.md`).
 - **No “table as flex/grid” shortcuts**: Tables use the native algorithms; flex/grid substitutions are invalid (`docs/research/table-layout-spec.md`).
 - **No pixel-nudging after layout**: The pipeline is staged (parse → style → box → layout → paint). Paint should not override layout decisions.

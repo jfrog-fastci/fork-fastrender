@@ -53,7 +53,7 @@ Rules (post-cleanup):
 
 CI guardrail:
 
-- Run `bash scripts/ci_check_test_architecture.sh` before pushing changes that touch `tests/`. It enforces the 2 integration-test-binary architecture and bans `#[path = "..."]` shims / `Cargo.toml` `[[test]]` entries. See `instructions/test_cleanup.md`.
+- Run `bash scripts/ci_check_test_architecture.sh` before pushing changes that touch `tests/`. It enforces the 2 integration-test-binary architecture and bans `#[path = "..."]` shims / `Cargo.toml` `[[test]]` entries. See `docs/test_architecture.md`.
 
 ## Core tests
 

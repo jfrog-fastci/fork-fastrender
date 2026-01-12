@@ -27,12 +27,11 @@ If a document can’t be kept accurate, delete it and replace it with something 
 
 ## JavaScript workstreams
 
-- **ecma-rs ownership principle**: [`instructions/ecma_rs_ownership.md`](../instructions/ecma_rs_ownership.md) — READ THIS FIRST
+- **ecma-rs ownership principle**: [ecma_rs_ownership.md](ecma_rs_ownership.md) — READ THIS FIRST
 - JS engine (vm-js core): [`instructions/js_engine.md`](../instructions/js_engine.md)
 - JS DOM bindings: [`instructions/js_dom.md`](../instructions/js_dom.md)
 - JS Web APIs (fetch, timers, etc.): [`instructions/js_web_apis.md`](../instructions/js_web_apis.md)
 - JS HTML integration (script loading, modules): [`instructions/js_html_integration.md`](../instructions/js_html_integration.md)
-- **WebIDL consolidation** (migration plan): [`instructions/webidl_consolidation.md`](../instructions/webidl_consolidation.md)
 - WebIDL stack (crate layout + boundaries): [webidl_stack.md](webidl_stack.md)
 - JavaScript integration architecture: [javascript.md](javascript.md)
 - LLVM StackMaps / statepoint metadata decoding: [llvm_stackmaps.md](llvm_stackmaps.md)
@@ -53,7 +52,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Runtime environment variables: [env-vars.md](env-vars.md)
 - Instrumentation patterns: [instrumentation.md](instrumentation.md)
 - Testing: [testing.md](testing.md)
-- **Test architecture cleanup**: [`instructions/test_cleanup.md`](../instructions/test_cleanup.md) — migration from 60 binaries to ~2
+- **Test architecture**: [test_architecture.md](test_architecture.md) — target: 2 integration test binaries
 - Vendoring / dependency patches: [vendoring.md](vendoring.md)
 - CSS loading & URL resolution: [css-loading.md](css-loading.md)
 

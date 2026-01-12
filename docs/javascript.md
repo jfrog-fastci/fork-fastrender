@@ -5,8 +5,8 @@ It is intended to be a contributor-facing mental model, not an implementation lo
 
 Workstreams/spec anchors:
 
-- JS support goals + milestones: [`instructions/javascript_support.md`](../instructions/javascript_support.md)
-- `ecma-rs` integration: [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)
+- JS workstreams: [`js_engine.md`](../instructions/js_engine.md), [`js_dom.md`](../instructions/js_dom.md), [`js_web_apis.md`](../instructions/js_web_apis.md), [`js_html_integration.md`](../instructions/js_html_integration.md)
+- ecma-rs ownership: [`docs/ecma_rs_ownership.md`](ecma_rs_ownership.md)
 - Renderer pipeline overview: [`docs/architecture.md`](architecture.md)
 - Conformance matrix (repo reality): [`docs/conformance.md`](conformance.md)
 

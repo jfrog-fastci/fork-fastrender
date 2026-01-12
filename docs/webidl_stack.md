@@ -7,7 +7,7 @@ FastRender’s WebIDL implementation is split into:
 
 This document is the contributor-facing “where does this live?” reference for FastRender’s WebIDL
 stack (and the boundary between `vendor/ecma-rs/` vs `src/`; see also:
-[`instructions/ecma_rs_ownership.md`](../instructions/ecma_rs_ownership.md)).
+[`docs/ecma_rs_ownership.md`](ecma_rs_ownership.md)).
 
 Note: WebIDL *consolidation* is complete: generic JS/WebIDL infrastructure lives in the vendored
 `vendor/ecma-rs/` workspace. FastRender may still carry compatibility shims (e.g.
@@ -144,4 +144,3 @@ bash scripts/cargo_agent.sh test -p fastrender --test integration js_webidl
 ## Related docs
 
 - WebIDL bindings/codegen pipeline: [`docs/webidl_bindings.md`](webidl_bindings.md)
-- Consolidation rationale/target layout: [`instructions/webidl_consolidation.md`](../instructions/webidl_consolidation.md)

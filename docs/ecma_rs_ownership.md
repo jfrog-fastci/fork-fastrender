@@ -11,7 +11,7 @@ This is not a dependency relationship. This is not "upstream vs downstream." Fas
 **All JavaScript/WebIDL infrastructure belongs in `vendor/ecma-rs/`, not in parallel FastRender crates.**
 
 For a contributor-facing overview of the consolidated WebIDL crate layout (and where new code should
-go), see [`docs/webidl_stack.md`](../docs/webidl_stack.md).
+go), see [`docs/webidl_stack.md`](webidl_stack.md).
 
 If you need functionality that doesn't exist in ecma-rs, **add it to ecma-rs**.  
 If ecma-rs code doesn't work for FastRender's needs, **change ecma-rs**.  

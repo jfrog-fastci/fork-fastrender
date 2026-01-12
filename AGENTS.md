@@ -259,10 +259,10 @@ Run a single test via filter:
 
 (See "Cargo builds/tests" above for the required `scripts/cargo_agent.sh` wrapper + `timeout -k`.)
 
-## Archived workstreams
+## Reference documentation
 
-The following instruction files are **deprecated** and replaced by the workstreams above:
+Non-workstream docs live in `docs/`, not `instructions/`:
 
-- `instructions/browser_ui.md` → replaced by `browser_chrome.md`, `browser_ux.md`, `browser_interaction.md`
-- `instructions/javascript_support.md` → replaced by `js_engine.md`, `js_dom.md`, `js_web_apis.md`, `js_html_integration.md`
-- `instructions/ecma_rs.md` → merged into `js_engine.md` (FastRender owns ecma-rs and modifies it directly)
+- ecma-rs ownership principle: [`docs/ecma_rs_ownership.md`](docs/ecma_rs_ownership.md)
+- Test architecture: [`docs/test_architecture.md`](docs/test_architecture.md)
+- WebIDL stack: [`docs/webidl_stack.md`](docs/webidl_stack.md)
