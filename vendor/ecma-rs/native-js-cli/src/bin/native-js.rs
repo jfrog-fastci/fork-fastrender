@@ -1,7 +1,7 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use diagnostics::{host_error, Diagnostic, FileId, Severity, Span, TextRange};
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -256,7 +256,7 @@ struct Addr2LineArgs {
   exe: PathBuf,
 
   /// Instruction addresses to resolve (hex, with or without 0x prefix).
-  #[arg(value_name = "ADDR", required = true, num_args = 1..)]
+  #[arg(value_name = "ADDR", required_unless_present = "stdin", num_args = 1..)]
   addrs: Vec<String>,
 
   /// Base load address to subtract from each input address (hex).
@@ -268,6 +268,10 @@ struct Addr2LineArgs {
   /// Demangle function names when possible (Rust symbols).
   #[arg(long, action = ArgAction::SetTrue)]
   demangle: bool,
+
+  /// Also read addresses from stdin (best-effort scan per line).
+  #[arg(long, action = ArgAction::SetTrue)]
+  stdin: bool,
 
   /// Exit with code 1 if any address cannot be resolved to a source line.
   ///
@@ -285,6 +289,7 @@ struct Addr2LineJsonOutput {
   exe: String,
   base: Option<String>,
   demangle: bool,
+  stdin: bool,
   strict: bool,
   results: Vec<Addr2LineJsonResult>,
   error: Option<String>,
@@ -1207,6 +1212,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
             exe: args.exe.display().to_string(),
             base: None,
             demangle: args.demangle,
+            stdin: args.stdin,
             strict: args.strict,
             results: Vec::new(),
             error: Some(err),
@@ -1236,6 +1242,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
           exe: args.exe.display().to_string(),
           base: base.map(|b| format!("0x{b:x}")),
           demangle: args.demangle,
+          stdin: args.stdin,
           strict: args.strict,
           results: Vec::new(),
           error: Some(msg),
@@ -1249,10 +1256,76 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
     }
   };
 
-  let mut results = Vec::with_capacity(args.addrs.len());
+  let mut addr_inputs = args.addrs.clone();
+  if args.stdin {
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+      let line = match line {
+        Ok(line) => line,
+        Err(err) => {
+          let msg = format!("failed to read stdin: {err}");
+          if cli.json {
+            let payload = Addr2LineJsonOutput {
+              schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+              command: "addr2line",
+              exe: args.exe.display().to_string(),
+              base: base.map(|b| format!("0x{b:x}")),
+              demangle: args.demangle,
+              stdin: true,
+              strict: args.strict,
+              results: Vec::new(),
+              error: Some(msg),
+              exit_code: 2,
+            };
+            emit_json(&payload);
+          } else {
+            eprintln!("{msg}");
+          }
+          return ExitCode::from(2);
+        }
+      };
+
+      // Best-effort: scan each line for the first hex token.
+      for tok in line.split_whitespace() {
+        let tok = tok.trim_end_matches(|c: char| !c.is_ascii_hexdigit() && c != '_');
+        if try_parse_hex_u64(tok).is_some() {
+          addr_inputs.push(tok.to_string());
+          break;
+        }
+      }
+    }
+  }
+
+  if addr_inputs.is_empty() {
+    let msg = if args.stdin {
+      "no addresses found on stdin".to_string()
+    } else {
+      "no addresses provided".to_string()
+    };
+    if cli.json {
+      let payload = Addr2LineJsonOutput {
+        schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+        command: "addr2line",
+        exe: args.exe.display().to_string(),
+        base: base.map(|b| format!("0x{b:x}")),
+        demangle: args.demangle,
+        stdin: args.stdin,
+        strict: args.strict,
+        results: Vec::new(),
+        error: Some(msg),
+        exit_code: 2,
+      };
+      emit_json(&payload);
+    } else {
+      eprintln!("{msg}");
+    }
+    return ExitCode::from(2);
+  }
+
+  let mut results = Vec::with_capacity(addr_inputs.len());
   let mut had_unresolved = false;
 
-  for raw_addr in &args.addrs {
+  for raw_addr in &addr_inputs {
     let addr_raw = match parse_hex_u64(raw_addr) {
       Ok(addr) => addr,
       Err(err) => {
@@ -1263,6 +1336,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
             exe: args.exe.display().to_string(),
             base: base.map(|b| format!("0x{b:x}")),
             demangle: args.demangle,
+            stdin: args.stdin,
             strict: args.strict,
             results,
             error: Some(err),
@@ -1291,6 +1365,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
               exe: args.exe.display().to_string(),
               base: Some(format!("0x{base:x}")),
               demangle: args.demangle,
+              stdin: args.stdin,
               strict: args.strict,
               results,
               error: Some(msg),
@@ -1330,6 +1405,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
             exe: args.exe.display().to_string(),
             base: base.map(|b| format!("0x{b:x}")),
             demangle: args.demangle,
+            stdin: args.stdin,
             strict: args.strict,
             results,
             error: Some(msg),
@@ -1356,6 +1432,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
               exe: args.exe.display().to_string(),
               base: base.map(|b| format!("0x{b:x}")),
               demangle: args.demangle,
+              stdin: args.stdin,
               strict: args.strict,
               results,
               error: Some(msg),
@@ -1443,6 +1520,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
       exe: args.exe.display().to_string(),
       base: base.map(|b| format!("0x{b:x}")),
       demangle: args.demangle,
+      stdin: args.stdin,
       strict: args.strict,
       results,
       error: None,
@@ -1464,6 +1542,31 @@ fn parse_hex_u64(raw: &str) -> Result<u64, String> {
   let no_underscores = no_prefix.replace('_', "");
   u64::from_str_radix(&no_underscores, 16)
     .map_err(|err| format!("invalid hex address `{raw}`: {err}"))
+}
+
+fn try_parse_hex_u64(raw: &str) -> Option<u64> {
+  let raw = raw.trim();
+  let raw = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")).unwrap_or(raw);
+
+  let mut out: u64 = 0;
+  let mut has_digit = false;
+
+  for b in raw.bytes() {
+    if b == b'_' {
+      continue;
+    }
+    let digit = match b {
+      b'0'..=b'9' => u64::from(b - b'0'),
+      b'a'..=b'f' => u64::from(b - b'a') + 10,
+      b'A'..=b'F' => u64::from(b - b'A') + 10,
+      _ => return None,
+    };
+    has_digit = true;
+    out = out.checked_mul(16)?;
+    out = out.checked_add(digit)?;
+  }
+
+  has_digit.then_some(out)
 }
 
 fn collect_check_diagnostics(program: &Program, entry_file: FileId, extra_strict: bool) -> Vec<Diagnostic> {

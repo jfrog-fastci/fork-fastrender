@@ -539,6 +539,17 @@ fn addr2line_resolves_main_symbol_to_typescript_location() {
     .stdout(predicate::str::contains("entry.ts:1"))
     .stdout(predicate::str::contains("main"));
 
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("addr2line")
+    .arg("--stdin")
+    .arg(&out)
+    .write_stdin(format!("#0  0x{main_addr:x} in main\n"))
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("entry.ts:1"))
+    .stdout(predicate::str::contains("main"));
+
   // `--base` is intended for PIE/ASLR runtime addresses. We can validate the arithmetic by adding a
   // synthetic base offset and ensuring it resolves to the same location.
   let base = 0x1000u64;
@@ -570,8 +581,9 @@ fn addr2line_resolves_main_symbol_to_typescript_location() {
     .timeout(CLI_TIMEOUT)
     .arg("--json")
     .arg("addr2line")
+    .arg("--stdin")
     .arg(&out)
-    .arg(format!("{main_addr:x}"))
+    .write_stdin(format!("0x{main_addr:x}\n"))
     .assert()
     .success()
     .code(0);
@@ -587,6 +599,7 @@ fn addr2line_resolves_main_symbol_to_typescript_location() {
   assert_eq!(value["schema_version"], 1);
   assert_eq!(value["command"], "addr2line");
   assert_eq!(value["exit_code"], 0);
+  assert_eq!(value["stdin"], true);
 
   let results = value["results"].as_array().expect("expected results array");
   assert_eq!(results.len(), 1);

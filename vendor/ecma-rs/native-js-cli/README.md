@@ -495,6 +495,13 @@ native-js --debug build path/to/entry.ts -o /tmp/out
 native-js addr2line /tmp/out 0x401234
 ```
 
+To symbolize addresses copied from a backtrace, you can also read from stdin. The command scans each
+line for the first hex token:
+
+```bash
+printf '#0  0x401234 in main\n' | native-js addr2line --stdin /tmp/out
+```
+
 If the executable was built as PIE and the address comes from a running process, you may need to
 subtract the load base:
 
