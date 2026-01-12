@@ -1,6 +1,12 @@
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine as _;
-use fastrender::api::FastRender;
+use fastrender::geometry::Point;
+use fastrender::image_loader::ImageCache;
+use fastrender::paint::display_list_renderer::PaintParallelism;
+use fastrender::paint::painter::{paint_tree_with_resources_scaled_offset_backend, PaintBackend};
+use fastrender::scroll::ScrollState;
+use fastrender::style::color::Rgba;
+use fastrender::{FastRender, Pixmap};
 use image::codecs::png::PngEncoder;
 use image::ExtendedColorType;
 use image::ImageEncoder;
@@ -11,6 +17,29 @@ fn solid_color_png(r: u8, g: u8, b: u8, a: u8) -> String {
     .write_image(&[r, g, b, a], 1, 1, ExtendedColorType::Rgba8)
     .expect("encode png");
   format!("data:image/png;base64,{}", BASE64_STANDARD.encode(&buf))
+}
+
+fn render_with_backend(html: &str, width: u32, height: u32, backend: PaintBackend) -> Pixmap {
+  let mut renderer = FastRender::new().expect("renderer");
+  let dom = renderer.parse_html(html).expect("parse html");
+  let fragments = renderer
+    .layout_document(&dom, width, height)
+    .expect("layout document");
+
+  paint_tree_with_resources_scaled_offset_backend(
+    &fragments,
+    width,
+    height,
+    Rgba::RED,
+    renderer.font_context().clone(),
+    ImageCache::new(),
+    1.0,
+    Point::ZERO,
+    PaintParallelism::default(),
+    &ScrollState::default(),
+    backend,
+  )
+  .expect("paint")
 }
 
 #[test]
@@ -27,13 +56,21 @@ fn img_srcset_decode_failure_does_not_fallback_to_src() {
     "#
   );
 
-  let mut renderer = FastRender::new().expect("renderer");
-  let pixmap = renderer.render_html(&html, 30, 30).expect("render html");
+  let legacy = render_with_backend(&html, 30, 30, PaintBackend::Legacy);
+  let display = render_with_backend(&html, 30, 30, PaintBackend::DisplayList);
 
-  let px = pixmap.pixel(10, 10).expect("inside pixel");
+  for (label, pixmap) in [("legacy", &legacy), ("display list", &display)] {
+    let px = pixmap.pixel(10, 10).expect("inside pixel");
+    assert_eq!(
+      (px.red(), px.green(), px.blue()),
+      (255, 0, 0),
+      "{label}: should not fall back to the `src` image when the selected `srcset` candidate fails to decode"
+    );
+  }
+
   assert_eq!(
-    (px.red(), px.green(), px.blue()),
-    (255, 0, 0),
-    "should not fall back to the `src` image when the selected `srcset` candidate fails to decode"
+    legacy.data(),
+    display.data(),
+    "rendered output diverged between backends"
   );
 }

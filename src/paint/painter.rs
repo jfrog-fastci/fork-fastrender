@@ -8856,8 +8856,9 @@ impl Painter {
             root_font_size: style.map(|s| s.root_font_size),
             base_url: cache_base.as_deref(),
           });
+        let primary = sources.first();
         if *decoding == ImageDecodingAttribute::Async {
-          if let Some(primary) = sources.first() {
+          if let Some(primary) = primary {
             if self.should_defer_async_image_decode(
               content_rect.width(),
               content_rect.height(),
@@ -8871,9 +8872,9 @@ impl Painter {
             }
           }
         }
-        for candidate in sources {
+        if let Some(primary) = primary {
           if self.paint_image_from_src_reject_placeholder(
-            &candidate,
+            primary,
             *crossorigin,
             *referrer_policy,
             style,
@@ -12866,6 +12867,130 @@ impl Painter {
     );
   }
 
+  fn paint_solid_rect_simple_no_aa(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+      return;
+    }
+    let device_rect = self.device_rect(rect);
+    let Some(sk_rect) = SkiaRect::from_xywh(
+      device_rect.x(),
+      device_rect.y(),
+      device_rect.width(),
+      device_rect.height(),
+    ) else {
+      return;
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+    paint.anti_alias = false;
+    self
+      .pixmap
+      .fill_rect(sk_rect, &paint, Transform::identity(), clip_mask);
+  }
+
+  fn missing_image_icon_size(content_rect: Rect) -> f32 {
+    if !content_rect.width().is_finite() || !content_rect.height().is_finite() {
+      return 0.0;
+    }
+    let icon_inset = 2.0;
+    let max_icon_size = 16.0;
+    let available_w = (content_rect.width() - icon_inset * 2.0).max(0.0);
+    let available_h = (content_rect.height() - icon_inset * 2.0).max(0.0);
+    let icon_size = (available_w.min(available_h) * 0.5)
+      .floor()
+      .clamp(0.0, max_icon_size);
+    if icon_size >= 8.0 {
+      icon_size
+    } else {
+      0.0
+    }
+  }
+
+  fn paint_inside_border_rect(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    if !rect.width().is_finite() || !rect.height().is_finite() {
+      return;
+    }
+    let w = rect.width().max(0.0);
+    let h = rect.height().max(0.0);
+    if w <= 0.0 || h <= 0.0 {
+      return;
+    }
+
+    let thickness: f32 = 1.0;
+    let th = thickness.min(h);
+    let tw = thickness.min(w);
+    let x = rect.x();
+    let y = rect.y();
+    let bottom_y = y + h - th;
+    let right_x = x + w - tw;
+
+    self.paint_solid_rect_simple_no_aa(Rect::from_xywh(x, y, w, th), color, clip_mask);
+    if bottom_y > y {
+      self.paint_solid_rect_simple_no_aa(
+        Rect::from_xywh(x, bottom_y, w, th),
+        color,
+        clip_mask,
+      );
+    }
+
+    self.paint_solid_rect_simple_no_aa(Rect::from_xywh(x, y, tw, h), color, clip_mask);
+    if right_x > x {
+      self.paint_solid_rect_simple_no_aa(
+        Rect::from_xywh(right_x, y, tw, h),
+        color,
+        clip_mask,
+      );
+    }
+  }
+
+  fn paint_broken_image_icon(&mut self, icon_rect: Rect, clip_mask: Option<&Mask>) {
+    let inner_rect = Rect::from_xywh(
+      icon_rect.x() + 1.0,
+      icon_rect.y() + 1.0,
+      (icon_rect.width() - 2.0).max(0.0),
+      (icon_rect.height() - 2.0).max(0.0),
+    );
+
+    if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+      self.paint_solid_rect_simple_no_aa(inner_rect, Rgba::WHITE, clip_mask);
+
+      let sky_h = (inner_rect.height() * 0.62)
+        .floor()
+        .clamp(0.0, inner_rect.height());
+      if sky_h > 0.0 {
+        self.paint_solid_rect_simple_no_aa(
+          Rect::from_xywh(inner_rect.x(), inner_rect.y(), inner_rect.width(), sky_h),
+          Rgba::rgb(198, 216, 244),
+          clip_mask,
+        );
+      }
+
+      let ground_h = (inner_rect.height() * 0.3)
+        .floor()
+        .clamp(0.0, inner_rect.height());
+      if ground_h > 0.0 {
+        self.paint_solid_rect_simple_no_aa(
+          Rect::from_xywh(
+            inner_rect.x(),
+            inner_rect.y() + inner_rect.height() - ground_h,
+            inner_rect.width(),
+            ground_h,
+          ),
+          Rgba::rgb(88, 174, 57),
+          clip_mask,
+        );
+      }
+
+      self.paint_solid_rect_simple_no_aa(
+        Rect::from_xywh(inner_rect.x() + 2.0, inner_rect.y() + 2.0, 3.0, 3.0),
+        Rgba::WHITE,
+        clip_mask,
+      );
+    }
+
+    self.paint_inside_border_rect(icon_rect, Rgba::rgb(192, 192, 192), clip_mask);
+  }
+
   fn paint_play_triangle_icon(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
     let w = rect.width().max(0.0);
     let h = rect.height().max(0.0);
@@ -12987,6 +13112,23 @@ impl Painter {
         ..
       }
     ) {
+      return;
+    }
+
+    if matches!(replaced_type, ReplacedType::Image { .. }) {
+      self.paint_inside_border_rect(rect, Rgba::rgb(192, 192, 192), clip_mask);
+
+      let icon_inset = 2.0;
+      let icon_size = Self::missing_image_icon_size(rect);
+      if icon_size > 0.0 {
+        let icon_rect = Rect::from_xywh(
+          rect.x() + icon_inset,
+          rect.y() + icon_inset,
+          icon_size,
+          icon_size,
+        );
+        self.paint_broken_image_icon(icon_rect, clip_mask);
+      }
       return;
     }
     // For `<video controls>` without a poster/frame, browsers still paint a dark video surface and

@@ -4855,6 +4855,7 @@ impl DisplayListBuilder {
         CrossOriginAttribute::None,
         None,
         false,
+        None,
       )?;
 
       // The mask image should keep its intrinsic size in CSS px (for `mask-size: auto`), but be
@@ -4872,6 +4873,7 @@ impl DisplayListBuilder {
       CrossOriginAttribute::None,
       None,
       false,
+      None,
     )
   }
 
@@ -4892,6 +4894,7 @@ impl DisplayListBuilder {
           CrossOriginAttribute::None,
           None,
           false,
+          None,
         );
       }
       // Fragment-only URLs (`url(#id)`) refer to in-document SVG resources. If we cannot resolve
@@ -4974,6 +4977,7 @@ impl DisplayListBuilder {
       CrossOriginAttribute::None,
       None,
       false,
+      None,
     )
   }
 
@@ -5126,6 +5130,7 @@ impl DisplayListBuilder {
           CrossOriginAttribute::None,
           None,
           false,
+          None,
         )
         .map(|image| BorderImageSourceItem::Raster((*image).clone())),
       BackgroundImage::LinearGradient { .. }
@@ -7217,6 +7222,7 @@ impl DisplayListBuilder {
               crossorigin,
               referrer_policy,
               reject_placeholder_image,
+              source.density,
             )
           });
           if let Some(image) = decoded {
@@ -9573,6 +9579,7 @@ impl DisplayListBuilder {
               CrossOriginAttribute::None,
               None,
               false,
+              None,
             ) else {
               break 'paint_url;
             };
@@ -9911,6 +9918,7 @@ impl DisplayListBuilder {
               CrossOriginAttribute::None,
               None,
               false,
+              None,
             )
             .map(|image| BorderImageSourceItem::Raster((*image).clone())),
           BackgroundImage::LinearGradient { .. }
@@ -15308,6 +15316,7 @@ impl DisplayListBuilder {
     crossorigin: CrossOriginAttribute,
     referrer_policy: Option<crate::resource::ReferrerPolicy>,
     reject_placeholder: bool,
+    override_resolution: Option<f32>,
   ) -> Option<Arc<ImageData>> {
     let image_cache = self.image_cache.as_ref()?;
     let trimmed = trim_ascii_whitespace_start(src);
@@ -15346,8 +15355,11 @@ impl DisplayListBuilder {
       .map(|s| s.image_orientation.resolve(image.orientation, decorative))
       .unwrap_or_else(|| ImageOrientation::default().resolve(image.orientation, decorative));
     let has_intrinsic_ratio = image.intrinsic_ratio(orientation).is_some();
-    let used_resolution =
-      image_resolution.used_resolution(None, image.resolution, self.device_pixel_ratio);
+    let used_resolution = image_resolution.used_resolution(
+      override_resolution,
+      image.resolution,
+      self.device_pixel_ratio,
+    );
     let key = ImageKey::new(
       resolved_src,
       crossorigin,
@@ -15374,7 +15386,7 @@ impl DisplayListBuilder {
         orientation,
         &image_resolution,
         self.device_pixel_ratio,
-        None,
+        override_resolution,
       );
       (w.unwrap_or(0.0), h.unwrap_or(0.0))
     } else {
@@ -15382,7 +15394,7 @@ impl DisplayListBuilder {
         orientation,
         &image_resolution,
         self.device_pixel_ratio,
-        None,
+        override_resolution,
       ) {
         Some(dimensions) => dimensions,
         None => {
@@ -19303,7 +19315,7 @@ mod tests {
     let builder = DisplayListBuilder::new();
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="black"/></svg>"#;
     let decoded = builder
-      .decode_image(svg, None, true, CrossOriginAttribute::None, None, false)
+      .decode_image(svg, None, true, CrossOriginAttribute::None, None, false, None)
       .expect("decoded viewBox-only svg");
 
     assert_eq!(decoded.css_width, 0.0);
@@ -19320,10 +19332,10 @@ mod tests {
     let mut builder = DisplayListBuilder::new();
 
     let first = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, None)
       .expect("first decode");
     let second = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, None)
       .expect("cached decode");
     assert!(Arc::ptr_eq(&first, &second));
 
@@ -19340,17 +19352,18 @@ mod tests {
         CrossOriginAttribute::None,
         None,
         false,
+        None,
       )
       .expect("rotated decode");
     assert!(!Arc::ptr_eq(&first, &rotated));
 
     builder.set_device_pixel_ratio(2.0);
     let hidpi = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, None)
       .expect("hi-dpi decode");
     assert!(!Arc::ptr_eq(&first, &hidpi));
     let hidpi_cached = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false, None)
       .expect("cached hi-dpi decode");
     assert!(Arc::ptr_eq(&hidpi, &hidpi_cached));
   }
@@ -19430,7 +19443,7 @@ mod tests {
         // Baseline: no-cors loads should succeed and populate the decode cache.
         assert!(
           builder
-            .decode_image(url, None, false, CrossOriginAttribute::None, None, false)
+            .decode_image(url, None, false, CrossOriginAttribute::None, None, false, None)
             .is_some(),
           "expected no-cors decode to succeed"
         );
@@ -19445,7 +19458,8 @@ mod tests {
               false,
               CrossOriginAttribute::Anonymous,
               None,
-              false
+              false,
+              None,
             )
             .is_none(),
           "expected crossorigin decode to fail without ACAO"

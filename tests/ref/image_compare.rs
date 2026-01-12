@@ -202,7 +202,7 @@ pub fn compare_pngs(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::r#ref::test_utils::EnvVarGuard;
+  use super::super::test_utils::EnvVarGuard;
 
   #[test]
   fn compare_config_from_env_supports_fixture_ignore_alpha_and_perceptual_distance() {
