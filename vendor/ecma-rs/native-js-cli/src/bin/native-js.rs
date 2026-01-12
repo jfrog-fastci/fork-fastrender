@@ -24,6 +24,13 @@ mod type_libs;
 #[path = "../project_load.rs"]
 mod project_load;
 
+fn emit_bench_json(payload: &bench::BenchJsonOutput) {
+  let stdout = std::io::stdout();
+  let mut handle = stdout.lock();
+  let _ = serde_json::to_writer_pretty(&mut handle, payload);
+  let _ = writeln!(&mut handle);
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Compile TypeScript to native executables via native-js (LLVM)")]
 struct Cli {
@@ -176,10 +183,40 @@ fn main() -> ExitCode {
     Some(raw) => match raw.parse::<target_lexicon::Triple>() {
       Ok(triple) => Some(triple),
       Err(err) => {
-        return exit_internal_without_program(
-          cli.json,
-          format!("invalid --target={raw} (expected a target triple like `x86_64-unknown-linux-gnu`): {err}"),
+        let message = format!(
+          "invalid --target={raw} (expected a target triple like `x86_64-unknown-linux-gnu`): {err}"
         );
+        if cli.json {
+          // Ensure `native-js --json bench ...` always emits the bench schema, even on early errors
+          // that happen before we can dispatch into `cmd_bench`.
+          if let Commands::Bench(args) = &cli.command {
+            let bench_args: Vec<String> = args
+              .args
+              .iter()
+              .map(|a| a.to_string_lossy().into_owned())
+              .collect();
+            let diagnostic = host_error(None, message.clone());
+            let payload = bench::BenchJsonOutput {
+              schema_version: bench::JSON_SCHEMA_VERSION,
+              command: "bench",
+              diagnostics: vec![diagnostic],
+              error: Some(message),
+              entry: args.entry.display().to_string(),
+              args: bench_args,
+              warmup: args.warmup,
+              iters: args.iters,
+              timeout_ms: args.timeout_ms,
+              compile_time_ms: 0.0,
+              run_times_ms: Vec::new(),
+              run_exit_codes: Vec::new(),
+              stats: bench::stats(&[]),
+              exit_code: 2,
+            };
+            emit_bench_json(&payload);
+            return ExitCode::from(2);
+          }
+        }
+        return exit_internal_without_program(cli.json, message);
       }
     },
     None => None,
@@ -378,13 +415,6 @@ fn cmd_bench(
   target: &Option<target_lexicon::Triple>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
-  fn emit_json(payload: &bench::BenchJsonOutput) {
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
-    let _ = serde_json::to_writer_pretty(&mut handle, payload);
-    let _ = writeln!(&mut handle);
-  }
-
   let entry = args.entry.display().to_string();
   let bench_args: Vec<String> = args
     .args
@@ -414,7 +444,7 @@ fn cmd_bench(
           stats: bench::stats(&[]),
           exit_code: 2,
         };
-        emit_json(&payload);
+        emit_bench_json(&payload);
       } else {
         eprintln!("{message}");
       }
@@ -450,7 +480,7 @@ fn cmd_bench(
           stats: bench::stats(&[]),
           exit_code: 2,
         };
-        emit_json(&payload);
+        emit_bench_json(&payload);
         return ExitCode::from(2);
       }
       return exit_internal_without_program(false, err);
@@ -478,7 +508,7 @@ fn cmd_bench(
           stats: bench::stats(&[]),
           exit_code,
         };
-        emit_json(&payload);
+        emit_bench_json(&payload);
       } else {
         let _ = output::emit_diagnostics(&program, diagnostics, false, render);
       }
@@ -508,7 +538,7 @@ fn cmd_bench(
           stats: bench::stats(&[]),
           exit_code: 2,
         };
-        emit_json(&payload);
+        emit_bench_json(&payload);
         return ExitCode::from(2);
       }
       return exit_internal(&program, false, render, err);
@@ -545,7 +575,7 @@ fn cmd_bench(
           stats: bench::stats(&[]),
           exit_code,
         };
-        emit_json(&payload);
+        emit_bench_json(&payload);
       } else {
         let _ = output::emit_diagnostics(&program, diags.to_vec(), false, render);
       }
@@ -571,7 +601,7 @@ fn cmd_bench(
         stats: bench::stats(&[]),
         exit_code: 2,
       };
-      emit_json(&payload);
+      emit_bench_json(&payload);
       return ExitCode::from(2);
     }
     return exit_internal(&program, false, render, message);
@@ -604,7 +634,7 @@ fn cmd_bench(
             stats: bench::stats(&[]),
             exit_code: 2,
           };
-          emit_json(&payload);
+          emit_bench_json(&payload);
         } else {
           eprintln!("{err}");
         }
@@ -632,7 +662,7 @@ fn cmd_bench(
           stats: bench::stats(&[]),
           exit_code: run.exit_code,
         };
-        emit_json(&payload);
+        emit_bench_json(&payload);
       }
       return ExitCode::from(run.exit_code);
     }
@@ -668,7 +698,7 @@ fn cmd_bench(
             stats,
             exit_code: 2,
           };
-          emit_json(&payload);
+          emit_bench_json(&payload);
         } else {
           eprintln!("{err}");
         }
@@ -703,11 +733,11 @@ fn cmd_bench(
       timeout_ms: args.timeout_ms,
       compile_time_ms,
       run_times_ms,
-      run_exit_codes,
-      stats,
-      exit_code,
-    };
-    emit_json(&payload);
+    run_exit_codes,
+    stats,
+    exit_code,
+  };
+    emit_bench_json(&payload);
   } else {
     println!("compile_time_ms: {compile_time_ms:.3}");
     println!("run_times_ms: {run_times_ms:?}");

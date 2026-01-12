@@ -341,6 +341,45 @@ fn json_bench_success_contains_schema_version_command_and_timings() {
 }
 
 #[test]
+fn json_bench_invalid_target_still_uses_bench_schema() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let assert = native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--json")
+    .arg("--target")
+    .arg("not-a-triple")
+    .arg("bench")
+    .arg(&entry)
+    .arg("--warmup")
+    .arg("0")
+    .arg("--iters")
+    .arg("1")
+    .assert()
+    .failure()
+    .code(2);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["schema_version"], 1);
+  assert_eq!(value["command"], "bench");
+  assert!(value["error"].as_str().is_some());
+  assert!(
+    value["diagnostics"].as_array().is_some_and(|arr| !arr.is_empty()),
+    "expected non-empty diagnostics, got: {}",
+    value["diagnostics"]
+  );
+}
+
+#[test]
 fn build_and_run_returns_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
