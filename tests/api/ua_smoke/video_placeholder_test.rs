@@ -8,7 +8,7 @@ fn pixel(pixmap: &fastrender::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 #[test]
 fn video_without_poster_does_not_paint_placeholder() -> Result<()> {
   let mut renderer = FastRender::new()?;
-  let html = include_str!("../pages/fixtures/video_element_placeholder/index.html");
+  let html = include_str!("../../pages/fixtures/video_element_placeholder/index.html");
 
   let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(1040, 700))?;
   let pixmap = prepared.paint_with_options(PreparedPaintOptions::new())?;
@@ -22,7 +22,7 @@ fn video_without_poster_does_not_paint_placeholder() -> Result<()> {
 #[test]
 fn video_with_controls_without_poster_paints_placeholder() -> Result<()> {
   let mut renderer = FastRender::new()?;
-  let html = include_str!("../pages/fixtures/video_element_controls_placeholder/index.html");
+  let html = include_str!("../../pages/fixtures/video_element_controls_placeholder/index.html");
 
   let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(140, 100))?;
   let pixmap = prepared.paint_with_options(PreparedPaintOptions::new())?;

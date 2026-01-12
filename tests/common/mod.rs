@@ -3,6 +3,7 @@
 pub(crate) mod accessibility;
 pub(crate) mod env;
 pub(crate) mod global_state;
+pub(crate) mod locks;
 pub(crate) mod net;
 pub(crate) mod rayon;
 pub(crate) mod stack;
