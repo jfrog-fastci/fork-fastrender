@@ -49,6 +49,40 @@ export const x = import(missing);
 }
 
 #[test]
+fn import_expr_visits_attributes_expression() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+
+  let mut host = MemoryHost::with_options(options);
+  host.add_lib(common::core_globals_lib());
+
+  let entry = FileKey::new("entry.ts");
+  host.insert(
+    entry.clone(),
+    Arc::from(
+      r#"
+export const x = import("x", missing);
+"#
+      .to_string(),
+    ),
+  );
+
+  let dep = FileKey::new("x.ts");
+  host.insert(dep.clone(), "export {};\n");
+  host.link(entry.clone(), "x", dep);
+
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::UNKNOWN_IDENTIFIER.as_str()
+        && diag.message.contains("missing")
+    }),
+    "expected unknown identifier diagnostic from import() attributes argument, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn import_expr_returns_promise_unknown_when_promise_exists() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
