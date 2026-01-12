@@ -6,15 +6,15 @@
 //! - a listener registry decoupled from `dom2::Node`
 //! - a deterministic, spec-shaped `dispatch_event` algorithm
 //!
-//! Shadow DOM retargeting and composed-path semantics are implemented at a minimal spec-shaped
-//! level:
+//! Shadow DOM is supported for event path construction, retargeting, and `Event.composedPath()`.
 //! - `Event.target` is retargeted while dispatch is in progress.
 //! - `Event.eventPhase` reports `AT_TARGET` for "shadow-adjusted targets" (e.g. the shadow host)
 //!   even when invoked from the capture/bubble loops.
-//! - `Event::composed_path()` implements closed-shadow-root filtering based on `currentTarget`.
+//! - `Event::composed_path()` implements the spec's composed-path algorithm, including filtering
+//!   closed shadow trees based on `currentTarget`.
 
-use crate::dom2;
 use crate::dom::ShadowRootMode;
+use crate::dom2;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -405,9 +405,7 @@ impl Event {
     self.default_prevented = true;
   }
 
-  /// Spec-shaped `Event.composedPath()` helper.
-  ///
-  /// Returns the current dispatch path in target → root order.
+  /// Spec-accurate `Event.composedPath()` implementation.
   ///
   /// Notes:
   /// - This is only meaningful while dispatch is in progress (i.e. while `event.path` is
@@ -415,53 +413,103 @@ impl Event {
   /// - Closed shadow roots are filtered based on `event.currentTarget` (callers outside a closed
   ///   shadow tree must not observe its internal nodes).
   pub fn composed_path(&self) -> Vec<EventTargetId> {
-    if self.path.is_empty() {
+    use std::collections::VecDeque;
+
+    let path = &self.path;
+    if path.is_empty() {
       return Vec::new();
     }
 
     let Some(current_target) = self.current_target else {
-      // If no currentTarget is set (e.g. not dispatching), return the raw path.
-      return self.path.iter().rev().map(|entry| entry.target).collect();
+      // Outside dispatch, `currentTarget` is null and `path` should have been cleared. Prefer a
+      // defensive empty result over panicking.
+      return Vec::new();
     };
 
-    // Find the current target within the dispatch path.
-    //
-    // During dispatch, `currentTarget` must always be an entry in `path`, but keep the algorithm
-    // defensive for host callers that may query `composed_path()` on partially-initialized events.
-    let Some(current_idx) = self
-      .path
-      .iter()
-      .position(|entry| entry.target == current_target)
-    else {
-      return self.path.iter().rev().map(|entry| entry.target).collect();
+    let mut composed_path: VecDeque<EventTargetId> = VecDeque::new();
+    composed_path.push_back(current_target);
+
+    let mut current_target_index: Option<usize> = None;
+    let mut current_target_hidden_subtree_level: i32 = 0;
+
+    let mut index: isize = path.len() as isize - 1;
+    while index >= 0 {
+      let entry = &path[index as usize];
+      if entry.root_of_closed_tree {
+        current_target_hidden_subtree_level += 1;
+      }
+      if entry.invocation_target == current_target {
+        current_target_index = Some(index as usize);
+        break;
+      }
+      if entry.slot_in_closed_tree {
+        current_target_hidden_subtree_level -= 1;
+      }
+      index -= 1;
+    }
+
+    let Some(current_target_index) = current_target_index else {
+      // If `currentTarget` is not in `path` (should be impossible), fall back to the trivial list.
+      return composed_path.into_iter().collect();
     };
 
-    // Closed shadow roots hide everything "below" them (toward the original target) from
-    // `currentTarget` when `currentTarget` is outside that closed tree. This minimal algorithm is:
-    // - Find the first closed shadow root entry after `currentTarget` (toward the original target).
-    // - Drop that closed shadow root and everything deeper.
-    let cutoff = self
-      .path
-      .iter()
-      .enumerate()
-      .skip(current_idx + 1)
-      .find_map(|(idx, entry)| entry.is_closed_shadow_root.then_some(idx))
-      .unwrap_or(self.path.len());
+    let mut current_hidden_level: i32 = current_target_hidden_subtree_level;
+    let mut max_hidden_level: i32 = current_target_hidden_subtree_level;
 
-    self
-      .path
-      .iter()
-      .take(cutoff)
-      .rev()
-      .map(|entry| entry.target)
-      .collect()
+    index = current_target_index as isize - 1;
+    while index >= 0 {
+      let entry = &path[index as usize];
+      if entry.root_of_closed_tree {
+        current_hidden_level += 1;
+      }
+      if current_hidden_level <= max_hidden_level {
+        composed_path.push_front(entry.invocation_target);
+      }
+      if entry.slot_in_closed_tree {
+        current_hidden_level -= 1;
+        if current_hidden_level < max_hidden_level {
+          max_hidden_level = current_hidden_level;
+        }
+      }
+      index -= 1;
+    }
+
+    current_hidden_level = current_target_hidden_subtree_level;
+    max_hidden_level = current_target_hidden_subtree_level;
+
+    index = current_target_index as isize + 1;
+    while (index as usize) < path.len() {
+      let entry = &path[index as usize];
+      if entry.slot_in_closed_tree {
+        current_hidden_level += 1;
+      }
+      if current_hidden_level <= max_hidden_level {
+        composed_path.push_back(entry.invocation_target);
+      }
+      if entry.root_of_closed_tree {
+        current_hidden_level -= 1;
+        if current_hidden_level < max_hidden_level {
+          max_hidden_level = current_hidden_level;
+        }
+      }
+      index += 1;
+    }
+
+    composed_path.into_iter().collect()
   }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventPathEntry {
-  pub target: EventTargetId,
-  pub is_closed_shadow_root: bool,
+  /// The object whose listeners are invoked.
+  pub invocation_target: EventTargetId,
+  /// The "shadow-adjusted target" for this path struct (DOM spec).
+  ///
+  /// A non-null value indicates an at-target invocation (including across shadow boundaries).
+  pub shadow_adjusted_target: Option<EventTargetId>,
+  pub invocation_target_in_shadow_tree: bool,
+  pub root_of_closed_tree: bool,
+  pub slot_in_closed_tree: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,36 +636,37 @@ impl EventListenerRegistry {
         .is_some_and(|listeners| listeners.iter().any(|l| l.options.capture == capture))
     }
 
-    let is_load_event = type_ == "load";
-    let shadow_root_boundary = match target.normalize() {
-      EventTargetId::Node(node_id) => dom.containing_shadow_root(node_id),
-      _ => None,
-    };
-    let path = build_event_path(target, dom, self, composed, shadow_root_boundary, is_load_event);
+    let event = Event::new(
+      type_,
+      EventInit {
+        bubbles,
+        cancelable: false,
+        composed,
+      },
+    );
+    let path = build_event_path(target, &event, dom, self);
     if path.is_empty() {
       return false;
     }
-    let target_index = path.len() - 1;
 
-    // Capturing phase: only capture listeners on ancestors are invoked.
-    for idx in 0..target_index {
-      if has_matching_listener(self, path[idx].target, type_, /* capture */ true) {
+    // Capturing pass: iterate path in reverse order.
+    for entry in path.iter().rev() {
+      if has_matching_listener(self, entry.invocation_target, type_, /* capture */ true) {
         return true;
       }
     }
 
-    // At-target phase invokes both capture and bubble listeners (regardless of `bubbles`).
-    if self.has_event_listeners(path[target_index].target, type_) {
-      return true;
-    }
-
-    // Bubbling phase: only bubble listeners on ancestors are invoked, and only if the event
-    // actually bubbles.
-    if bubbles {
-      for idx in (0..target_index).rev() {
-        if has_matching_listener(self, path[idx].target, type_, /* capture */ false) {
+    // Bubbling pass: iterate path forward.
+    for entry in &path {
+      if entry.shadow_adjusted_target.is_some() {
+        // At-target invocations always run bubble listeners, even when `bubbles=false`.
+        if has_matching_listener(self, entry.invocation_target, type_, /* capture */ false) {
           return true;
         }
+      } else if bubbles
+        && has_matching_listener(self, entry.invocation_target, type_, /* capture */ false)
+      {
+        return true;
       }
     }
 
@@ -840,121 +889,133 @@ impl Clone for EventListenerRegistry {
 
 fn event_target_parent(
   target: EventTargetId,
+  event: &Event,
+  first_invocation_root: Option<dom2::NodeId>,
   dom: &dom2::Document,
   registry: &EventListenerRegistry,
-  composed: bool,
-  shadow_root_boundary: Option<dom2::NodeId>,
-  is_load_event: bool,
 ) -> Option<EventTargetId> {
   match target.normalize() {
     EventTargetId::Window => None,
-    EventTargetId::Document => (!is_load_event && dom.has_window_event_parent())
+    // HTML: `load` does not propagate from `document` to `window`.
+    EventTargetId::Document => (event.type_ != "load" && dom.has_window_event_parent())
       .then_some(EventTargetId::Window),
-    EventTargetId::Node(node_id) => {
-      // DOM: a shadow root's "get the parent" algorithm returns `null` when the event is not
-      // composed and the shadow root is the tree root of the original target's node tree.
-      if !composed && shadow_root_boundary == Some(node_id) {
-        return None;
-      }
-
-      dom.dom_parent_for_event_path(node_id).map(|parent| {
+    EventTargetId::Node(node_id) => dom
+      .get_parent_for_event(node_id, event, first_invocation_root)
+      .map(|parent| {
         if parent.index() == 0 {
           EventTargetId::Document
         } else {
           EventTargetId::Node(parent)
         }
-      })
-    }
+      }),
     EventTargetId::Opaque(id) => registry.opaque_parent(id),
   }
 }
 
 fn build_event_path(
   target: EventTargetId,
+  event: &Event,
   dom: &dom2::Document,
   registry: &EventListenerRegistry,
-  composed: bool,
-  shadow_root_boundary: Option<dom2::NodeId>,
-  is_load_event: bool,
 ) -> Vec<EventPathEntry> {
-  let mut rev: Vec<EventTargetId> = Vec::new();
-  let mut seen: FxHashSet<EventTargetId> = FxHashSet::default();
-  let mut current = target.normalize();
+  fn append_to_event_path(
+    path: &mut Vec<EventPathEntry>,
+    invocation_target: EventTargetId,
+    shadow_adjusted_target: Option<EventTargetId>,
+    slot_in_closed_tree: bool,
+    dom: &dom2::Document,
+  ) {
+    let invocation_target = invocation_target.normalize();
+    let shadow_adjusted_target = shadow_adjusted_target.map(|t| t.normalize());
 
-  // Defensive against accidental cycles (e.g. `new EventTarget(self)`).
-  // Bound the path to keep dispatch deterministic even under malicious inputs.
-  for _ in 0..1024 {
-    if !seen.insert(current) {
-      break;
-    }
-    rev.push(current);
-    let Some(parent) = event_target_parent(
-      current,
-      dom,
-      registry,
-      composed,
-      shadow_root_boundary,
-      is_load_event,
-    ) else {
-      break;
-    };
-    current = parent.normalize();
-  }
-
-  rev.reverse();
-  rev
-    .into_iter()
-    .map(|target| {
-      let is_closed_shadow_root = match target {
-        EventTargetId::Node(node_id) => matches!(
-          dom.node(node_id).kind,
-          dom2::NodeKind::ShadowRoot {
-            mode: ShadowRootMode::Closed,
-            ..
-          }
-        ),
-        _ => false,
-      };
-      EventPathEntry {
-        target,
-        is_closed_shadow_root,
-      }
-    })
-    .collect()
-}
-
-fn retarget_shadow_dom(
-  dom: &dom2::Document,
-  original_target: EventTargetId,
-  current_target: EventTargetId,
-) -> EventTargetId {
-  let mut candidate = original_target.normalize();
-  let current_target = current_target.normalize();
-
-  loop {
-    let EventTargetId::Node(candidate_node) = candidate else {
-      return candidate;
-    };
-
-    let Some(shadow_root) = dom.containing_shadow_root(candidate_node) else {
-      return candidate;
-    };
-
-    // If the current target is inside the same shadow root, do not retarget.
-    let current_inside_same_root = match current_target {
-      EventTargetId::Node(current_node) => dom.containing_shadow_root(current_node) == Some(shadow_root),
+    let invocation_target_in_shadow_tree = match invocation_target {
+      EventTargetId::Node(node_id) => dom.is_shadow_root(dom.event_tree_root(node_id)),
       _ => false,
     };
-    if current_inside_same_root {
-      return candidate;
+    let root_of_closed_tree = match invocation_target {
+      EventTargetId::Node(node_id) => dom
+        .shadow_root_mode(node_id)
+        .is_some_and(|mode| mode == ShadowRootMode::Closed),
+      _ => false,
+    };
+
+    path.push(EventPathEntry {
+      invocation_target,
+      shadow_adjusted_target,
+      invocation_target_in_shadow_tree,
+      root_of_closed_tree,
+      slot_in_closed_tree,
+    });
+  }
+
+  let target = target.normalize();
+  let target_override = target;
+
+  let first_invocation_root = match target {
+    EventTargetId::Node(node_id) => Some(dom.event_tree_root(node_id)),
+    _ => None,
+  };
+
+  let mut path: Vec<EventPathEntry> = Vec::new();
+  let mut seen: FxHashSet<EventTargetId> = FxHashSet::default();
+
+  append_to_event_path(
+    &mut path,
+    target,
+    Some(target_override),
+    /* slot_in_closed_tree */ false,
+    dom,
+  );
+  seen.insert(target);
+
+  // Spec-driven path construction, with a hard bound + cycle detection for host-defined parent
+  // chains (e.g. `new EventTarget(self)`).
+  let mut target_var = target;
+  let mut slot_in_closed_tree = false;
+  let mut parent = event_target_parent(target_var, event, first_invocation_root, dom, registry);
+
+  for _ in 0..1024 {
+    let Some(parent_target) = parent else {
+      break;
+    };
+    let parent_target = parent_target.normalize();
+    if !seen.insert(parent_target) {
+      break;
     }
 
-    // Otherwise, retarget to the shadow root's host.
-    let Some(host) = dom.node(shadow_root).parent else {
-      return candidate;
+    // Shadow DOM retargeting only applies to node targets. For other parent chains (including
+    // `EventTargetId::Opaque`), behave like a normal ancestor chain so there is only a single
+    // at-target invocation.
+    let same_tree_root = match parent_target {
+      EventTargetId::Window => true,
+      EventTargetId::Node(parent_node_id) => match target_var {
+        EventTargetId::Node(target_node_id) => {
+          let target_root = dom.event_tree_root(target_node_id);
+          dom.is_shadow_including_inclusive_ancestor(target_root, parent_node_id)
+        }
+        _ => true,
+      },
+      _ => true,
     };
-    candidate = EventTargetId::Node(host);
+
+    if same_tree_root {
+      append_to_event_path(&mut path, parent_target, None, slot_in_closed_tree, dom);
+    } else {
+      target_var = parent_target;
+      append_to_event_path(
+        &mut path,
+        parent_target,
+        Some(target_var),
+        slot_in_closed_tree,
+        dom,
+      );
+    }
+
+    parent = event_target_parent(parent_target, event, first_invocation_root, dom, registry);
+    slot_in_closed_tree = false;
   }
+
+  path
 }
 
 fn invoke_listeners(
@@ -1004,100 +1065,111 @@ pub fn dispatch_event(
   invoker: &mut dyn EventListenerInvoker,
 ) -> std::result::Result<bool, DomError> {
   let target = target.normalize();
-  let original_target = target;
   // Reset per-dispatch state. DOM permits re-dispatching the same Event instance; state from prior
   // dispatches must not leak.
-  event.target = Some(target);
+  event.target = None;
   event.current_target = None;
   event.event_phase = EventPhase::None;
   event.propagation_stopped = false;
   event.immediate_propagation_stopped = false;
   event.in_passive_listener = false;
 
-  let is_load_event = event.type_ == "load";
-  let shadow_root_boundary = match target {
-    EventTargetId::Node(node_id) => dom.containing_shadow_root(node_id),
-    _ => None,
-  };
-  event.path = build_event_path(
-    target,
-    dom,
-    registry,
-    event.composed,
-    shadow_root_boundary,
-    is_load_event,
-  );
-  let dispatch_res = (|| {
-    if event.path.is_empty() {
-      return Ok(());
-    }
+  event.path = build_event_path(target, event, dom, registry);
+  if event.path.is_empty() {
+    return Ok(!event.default_prevented);
+  }
 
-    let target_index = event.path.len() - 1;
-    // Capturing phase: Window → ... → parent
-    for idx in 0..target_index {
+  // Precompute the "effective" event.target for each path entry per the DOM `invoke` algorithm.
+  //
+  // This implements per-invocation retargeting across shadow boundaries: for a given invocation
+  // struct, the event's `target` is the last path entry at or before that struct whose
+  // `shadow_adjusted_target` is non-null.
+  let mut last_shadow_adjusted_target: Option<EventTargetId> = None;
+  let mut shadow_adjusted_prefix: Vec<Option<EventTargetId>> = Vec::with_capacity(event.path.len());
+  for entry in &event.path {
+    if let Some(t) = entry.shadow_adjusted_target {
+      last_shadow_adjusted_target = Some(t);
+    }
+    shadow_adjusted_prefix.push(last_shadow_adjusted_target);
+  }
+
+  let mut reached_dispatch_target = false;
+
+  let dispatch_res: std::result::Result<(), DomError> = (|| {
+    // Capturing pass: iterate path in reverse order.
+    for idx in (0..event.path.len()).rev() {
       if event.propagation_stopped {
         break;
       }
-      let current_target = event.path[idx].target;
-      let retargeted = retarget_shadow_dom(dom, original_target, current_target);
-      event.target = Some(retargeted);
-      event.current_target = Some(current_target);
-      event.event_phase = if retargeted == current_target {
+      let entry = event.path[idx];
+      event.target = shadow_adjusted_prefix[idx];
+      event.current_target = Some(entry.invocation_target);
+      event.event_phase = if entry.shadow_adjusted_target.is_some() {
         EventPhase::AtTarget
       } else {
         EventPhase::Capturing
       };
-      invoke_listeners(current_target, event, registry, invoker, /* capture */ true)?;
-    }
-
-    // At-target phase: capture listeners then bubble listeners.
-    if !event.propagation_stopped {
-      let current_target = event.path[target_index].target;
-      let retargeted = retarget_shadow_dom(dom, original_target, current_target);
-      event.target = Some(retargeted);
-      event.event_phase = EventPhase::AtTarget;
-      event.current_target = Some(current_target);
-
-      invoke_listeners(current_target, event, registry, invoker, /* capture */ true)?;
-
-      if !event.propagation_stopped && !event.immediate_propagation_stopped {
-        invoke_listeners(current_target, event, registry, invoker, /* capture */ false)?;
-
-        // EventHandler IDL attribute / handler property (e.g. `node.onclick = fn`).
-        //
-        // This runs after the regular at-target bubble listeners so:
-        // - it participates in propagation control (`stopPropagation` / `stopImmediatePropagation`), and
-        // - it can observe state changes made by `addEventListener` callbacks.
-        if !event.immediate_propagation_stopped {
-          invoker.invoke_event_handler_property(current_target, event)?;
-        }
+      invoke_listeners(
+        entry.invocation_target,
+        event,
+        registry,
+        invoker,
+        /* capture */ true,
+      )?;
+      if idx == 0 {
+        reached_dispatch_target = true;
       }
     }
 
-    // Bubbling phase: parent → ... → Window (only if bubbles)
-    if event.bubbles && !event.propagation_stopped {
-      for idx in (0..target_index).rev() {
-        if event.propagation_stopped {
-          break;
+    // If propagation was stopped before reaching the dispatch target, the event never enters the
+    // at-target/bubbling steps.
+    if !reached_dispatch_target {
+      return Ok(());
+    }
+
+    // Bubbling pass: iterate path in tree order.
+    for idx in 0..event.path.len() {
+      // `stopPropagation()` should not prevent bubble listeners on the dispatch target itself, but
+      // must prevent reaching subsequent targets.
+      if event.propagation_stopped && idx > 0 {
+        break;
+      }
+
+      let entry = event.path[idx];
+      if entry.shadow_adjusted_target.is_some() {
+        event.event_phase = EventPhase::AtTarget;
+      } else {
+        if !event.bubbles {
+          continue;
         }
-        let current_target = event.path[idx].target;
-        let retargeted = retarget_shadow_dom(dom, original_target, current_target);
-        event.target = Some(retargeted);
-        event.current_target = Some(current_target);
-        event.event_phase = if retargeted == current_target {
-          EventPhase::AtTarget
-        } else {
-          EventPhase::Bubbling
-        };
-        invoke_listeners(current_target, event, registry, invoker, /* capture */ false)?;
+        event.event_phase = EventPhase::Bubbling;
+      }
+
+      event.target = shadow_adjusted_prefix[idx];
+      event.current_target = Some(entry.invocation_target);
+      invoke_listeners(
+        entry.invocation_target,
+        event,
+        registry,
+        invoker,
+        /* capture */ false,
+      )?;
+
+      // EventHandler IDL attribute / handler property (e.g. `node.onclick = fn`).
+      //
+      // This runs after the regular at-target bubble listeners so:
+      // - it participates in propagation control (`stopPropagation` / `stopImmediatePropagation`), and
+      // - it can observe state changes made by `addEventListener` callbacks.
+      if entry.shadow_adjusted_target.is_some() && !event.immediate_propagation_stopped {
+        invoker.invoke_event_handler_property(entry.invocation_target, event)?;
       }
     }
 
     Ok(())
   })();
 
-  // Restore `target` to the original dispatch target for post-dispatch observers.
-  event.target = Some(original_target);
+  let default_not_prevented = !event.default_prevented;
+
   event.event_phase = EventPhase::None;
   event.current_target = None;
   event.propagation_stopped = false;
@@ -1106,10 +1178,10 @@ pub fn dispatch_event(
   event.path.clear();
   event.propagation_stopped = false;
   event.immediate_propagation_stopped = false;
+  event.in_passive_listener = false;
 
   dispatch_res?;
-
-  Ok(!event.default_prevented)
+  Ok(default_not_prevented)
 }
 
 impl EventListenerRegistry {

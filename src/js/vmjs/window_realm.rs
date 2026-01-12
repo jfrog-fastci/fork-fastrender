@@ -11561,9 +11561,9 @@ fn event_prototype_composed_path_native(
     // path from the Rust `Event`.
     let mut path_targets: Vec<web_events::EventTargetId> = Vec::new();
     if let Some(event_id) = event_active_event_id(scope, event_obj)? {
-      if let Some(targets) = with_active_event_for_host(host, event_id, |event| {
-        event.composed_path()
-      }) {
+      if let Some(targets) =
+        with_active_event_for_host(host, event_id, |event| event.composed_path())
+      {
         path_targets = targets;
       }
     }
@@ -16256,46 +16256,53 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       scope.define_property(event_obj, related_target_key, data_desc(related_target_v))?;
     }
 
-    // Cache the dispatch path on the JS Event object so `Event.prototype.composedPath()` works even
+    // Cache the composed path on the JS Event object so `Event.prototype.composedPath()` works even
     // when the embedder does not provide an `ActiveEventStack`.
-    let composed_path = scope.alloc_array(0)?;
-    scope.push_root(Value::Object(composed_path))?;
-    if let Some(intrinsics) = vm.intrinsics() {
-      scope
-        .heap_mut()
-        .object_set_prototype(composed_path, Some(intrinsics.array_prototype()))?;
-    }
-    for (idx, entry) in event.path.iter().rev().enumerate() {
-      let key = alloc_key(scope, &idx.to_string())?;
-      let value = Self::js_value_for_target(
-        vm,
-        scope,
-        window_obj,
-        document_obj,
-        dom,
-        Some(entry.target),
-      )?;
-      scope.define_property(composed_path, key, data_desc(value))?;
-    }
-    let length_key = alloc_key(scope, "length")?;
-    scope.define_property(
-      composed_path,
-      length_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: false,
-        kind: PropertyKind::Data {
-          value: Value::Number(event.path.len() as f64),
-          writable: true,
+    //
+    // `web_events::dispatch_event` clears `event.path` once dispatch finishes, but the JS
+    // `Event.composedPath()` API is still callable on the event object afterward. Keeping a cached
+    // copy here preserves the path without exposing the internal `event.path` list.
+    if !event.path.is_empty() {
+      let composed = event.composed_path();
+      let composed_path = scope.alloc_array(0)?;
+      scope.push_root(Value::Object(composed_path))?;
+      if let Some(intrinsics) = vm.intrinsics() {
+        scope
+          .heap_mut()
+          .object_set_prototype(composed_path, Some(intrinsics.array_prototype()))?;
+      }
+      for (idx, target) in composed.iter().copied().enumerate() {
+        let key = alloc_key(scope, &idx.to_string())?;
+        let value = Self::js_value_for_target(
+          vm,
+          scope,
+          window_obj,
+          document_obj,
+          dom,
+          Some(target),
+        )?;
+        scope.define_property(composed_path, key, data_desc(value))?;
+      }
+      let length_key = alloc_key(scope, "length")?;
+      scope.define_property(
+        composed_path,
+        length_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Number(composed.len() as f64),
+            writable: true,
+          },
         },
-      },
-    )?;
-    let composed_path_key = alloc_key(scope, EVENT_COMPOSED_PATH_KEY)?;
-    scope.define_property(
-      event_obj,
-      composed_path_key,
-      data_desc(Value::Object(composed_path)),
-    )?;
+      )?;
+      let composed_path_key = alloc_key(scope, EVENT_COMPOSED_PATH_KEY)?;
+      scope.define_property(
+        event_obj,
+        composed_path_key,
+        data_desc(Value::Object(composed_path)),
+      )?;
+    }
 
     Ok(())
   }
@@ -16684,43 +16691,49 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
       data_desc(Value::Bool(event.immediate_propagation_stopped)),
     )?;
 
-    // Cache the dispatch path on the JS Event object so `Event.prototype.composedPath()` can return
+    // Cache the composed path on the JS Event object so `Event.prototype.composedPath()` can return
     // it without needing host-side access to the Rust `Event`.
-    let composed_path = scope.alloc_array(0)?;
-    scope.push_root(Value::Object(composed_path))?;
-    {
-      // Avoid holding a mutable borrow of the VM while `self.js_value_for_target(..)` re-borrows it.
-      let vm = unsafe { &mut *self.vm };
-      if let Some(intrinsics) = vm.intrinsics() {
-        scope
-          .heap_mut()
-          .object_set_prototype(composed_path, Some(intrinsics.array_prototype()))?;
+    //
+    // If `event.path` is empty we are outside the dispatch algorithm; keep any previously cached
+    // path so `composedPath()` can continue to return it after dispatch completes.
+    if !event.path.is_empty() {
+      let composed = event.composed_path();
+      let composed_path = scope.alloc_array(0)?;
+      scope.push_root(Value::Object(composed_path))?;
+      {
+        // Avoid holding a mutable borrow of the VM while `self.js_value_for_target(..)` re-borrows it.
+        let vm = unsafe { &mut *self.vm };
+        if let Some(intrinsics) = vm.intrinsics() {
+          scope
+            .heap_mut()
+            .object_set_prototype(composed_path, Some(intrinsics.array_prototype()))?;
+        }
       }
-    }
-    for (idx, entry) in event.path.iter().rev().enumerate() {
-      let key = alloc_key(scope, &idx.to_string())?;
-      let value = self.js_value_for_target(Some(entry.target))?;
-      scope.define_property(composed_path, key, data_desc(value))?;
-    }
-    let length_key = alloc_key(scope, "length")?;
-    scope.define_property(
-      composed_path,
-      length_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: false,
-        kind: PropertyKind::Data {
-          value: Value::Number(event.path.len() as f64),
-          writable: true,
+      for (idx, target) in composed.iter().copied().enumerate() {
+        let key = alloc_key(scope, &idx.to_string())?;
+        let value = self.js_value_for_target(Some(target))?;
+        scope.define_property(composed_path, key, data_desc(value))?;
+      }
+      let length_key = alloc_key(scope, "length")?;
+      scope.define_property(
+        composed_path,
+        length_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Number(composed.len() as f64),
+            writable: true,
+          },
         },
-      },
-    )?;
-    let composed_path_key = alloc_key(scope, EVENT_COMPOSED_PATH_KEY)?;
-    scope.define_property(
-      self.event_obj,
-      composed_path_key,
-      data_desc(Value::Object(composed_path)),
-    )?;
+      )?;
+      let composed_path_key = alloc_key(scope, EVENT_COMPOSED_PATH_KEY)?;
+      scope.define_property(
+        self.event_obj,
+        composed_path_key,
+        data_desc(Value::Object(composed_path)),
+      )?;
+    }
 
     if let Some(detail) = event.detail {
       let detail_key = alloc_key(scope, "detail")?;
@@ -18059,54 +18072,12 @@ pub(crate) fn event_target_dispatch_event_dom2(
       data_desc(Value::Bool(rust_event.default_prevented)),
     )?;
 
-    // Persist the composed path computed by `dispatch_event` so `ev.composedPath()` works after
+    // `Event.composedPath()` reads the cached path stored under `EVENT_COMPOSED_PATH_KEY`.
+    //
+    // The cache is populated during dispatch by `VmJsDomEventInvoker::sync_event_object` (which runs
+    // before each listener invocation, while `rust_event.path` is still available). Do not attempt
+    // to derive a composed path here: `web_events::dispatch_event` clears `rust_event.path` once
     // dispatch completes.
-    let composed_path = scope.alloc_array(0)?;
-    scope.push_root(Value::Object(composed_path))?;
-    if let Some(intrinsics) = vm.intrinsics() {
-      scope
-        .heap_mut()
-        .object_set_prototype(composed_path, Some(intrinsics.array_prototype()))?;
-    }
-    // SAFETY: `dom_ptr` is derived from the current `VmHost` context and remains valid for the
-    // duration of this native call.
-    let dom = unsafe { dom_ptr.as_ref() };
-    let registry = dom.events();
-    for (idx, entry) in rust_event.path.iter().rev().enumerate() {
-      let key = alloc_key(scope, &idx.to_string())?;
-      let value = match entry.target {
-        web_events::EventTargetId::Window => Value::Object(resolved.window_obj),
-        web_events::EventTargetId::Document => Value::Object(resolved.document_obj),
-        web_events::EventTargetId::Node(node_id) => {
-          get_or_create_node_wrapper(vm, scope, resolved.document_obj, Some(dom), node_id)?
-        }
-        web_events::EventTargetId::Opaque(id) => match registry.opaque_target_object(scope.heap(), id)
-        {
-          Some(obj) => Value::Object(obj),
-          None => Value::Null,
-        },
-      };
-      scope.define_property(composed_path, key, data_desc(value))?;
-    }
-    let length_key = alloc_key(scope, "length")?;
-    scope.define_property(
-      composed_path,
-      length_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: false,
-        kind: PropertyKind::Data {
-          value: Value::Number(rust_event.path.len() as f64),
-          writable: true,
-        },
-      },
-    )?;
-    let composed_path_key = alloc_key(scope, EVENT_COMPOSED_PATH_KEY)?;
-    scope.define_property(
-      event_obj,
-      composed_path_key,
-      data_desc(Value::Object(composed_path)),
-    )?;
   }
 
   Ok(Value::Bool(result))

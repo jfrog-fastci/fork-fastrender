@@ -1,4 +1,5 @@
 use super::{Document, NodeId, NodeKind};
+use crate::dom::ShadowRootMode;
 
 impl Document {
   #[inline]
@@ -51,6 +52,109 @@ impl Document {
     // `inert_subtree=true` on that `<template>`. Nodes inside that inert subtree behave like they
     // are disconnected from the document for common web-platform algorithms (e.g., events,
     // scripting).
+    if self.node(parent).inert_subtree {
+      return None;
+    }
+    Some(parent)
+  }
+
+  /// Returns true if `node` is a `ShadowRoot` node.
+  pub fn is_shadow_root(&self, node: NodeId) -> bool {
+    self
+      .get_node(node)
+      .is_some_and(|node| matches!(node.kind, NodeKind::ShadowRoot { .. }))
+  }
+
+  /// Returns the mode of a `ShadowRoot` node, if `node` is a shadow root.
+  pub fn shadow_root_mode(&self, node: NodeId) -> Option<ShadowRootMode> {
+    match &self.get_node(node)?.kind {
+      NodeKind::ShadowRoot { mode, .. } => Some(*mode),
+      _ => None,
+    }
+  }
+
+  /// Returns the host element of a `ShadowRoot` node.
+  ///
+  /// In dom2's tree representation, shadow roots are stored as children of their host element (at
+  /// index 0).
+  pub fn shadow_root_host(&self, shadow_root: NodeId) -> Option<NodeId> {
+    if !self.is_shadow_root(shadow_root) {
+      return None;
+    }
+    let host = self.parent_node(shadow_root)?;
+    match self.get_node(host).map(|n| &n.kind) {
+      Some(NodeKind::Element { .. } | NodeKind::Slot { .. }) => Some(host),
+      _ => None,
+    }
+  }
+
+  /// Returns the "tree root" used for WHATWG DOM event dispatch.
+  ///
+  /// Differences from `Node.getRootNode()` / naive ancestor traversal:
+  /// - Treats `ShadowRoot` as a root boundary (nodes inside a shadow tree have that `ShadowRoot` as
+  ///   their tree root, even though dom2 stores ShadowRoot as a child of its host).
+  /// - Treats inert `<template>` contents as disconnected: traversal stops before the inert template
+  ///   boundary.
+  pub fn event_tree_root(&self, node: NodeId) -> NodeId {
+    if !self.contains_node(node) {
+      return node;
+    }
+
+    let mut current = node;
+    // Defensive bound against accidental cycles.
+    for _ in 0..=self.nodes.len() {
+      if self.is_shadow_root(current) {
+        return current;
+      }
+
+      let Some(parent) = self.parent_node(current) else {
+        return current;
+      };
+      if self.node(parent).inert_subtree {
+        return current;
+      }
+      current = parent;
+    }
+    current
+  }
+
+  /// Returns true if `ancestor` is a shadow-including inclusive ancestor of `node`.
+  ///
+  /// dom2 models shadow roots as children of their host elements, so the shadow-including ancestor
+  /// relationship is equivalent to the normal ancestor relationship.
+  pub fn is_shadow_including_inclusive_ancestor(&self, ancestor: NodeId, node: NodeId) -> bool {
+    if !self.contains_node(ancestor) || !self.contains_node(node) {
+      return false;
+    }
+    self.ancestors(node).any(|a| a == ancestor)
+  }
+
+  /// Returns the parent for a node when building a DOM Events dispatch path.
+  ///
+  /// This implements the relevant subset of WHATWG DOM's `get the parent` algorithms for
+  /// `Node`/`ShadowRoot`:
+  /// - For `Node`: parent (TODO: assigned slot), but stops at inert `<template>` boundaries.
+  /// - For `ShadowRoot`: returns null iff `!event.composed` and this shadow root is the tree root of
+  ///   the first invocation target; otherwise returns the host element.
+  pub fn get_parent_for_event(
+    &self,
+    node: NodeId,
+    event: &crate::web::events::Event,
+    first_invocation_root: Option<NodeId>,
+  ) -> Option<NodeId> {
+    if !self.contains_node(node) {
+      return None;
+    }
+
+    if self.is_shadow_root(node) {
+      if !event.composed && first_invocation_root == Some(node) {
+        return None;
+      }
+      return self.shadow_root_host(node);
+    }
+
+    // TODO: Handle slottables by returning the assigned slot when assigned.
+    let parent = self.parent_node(node)?;
     if self.node(parent).inert_subtree {
       return None;
     }

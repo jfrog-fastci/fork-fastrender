@@ -722,6 +722,14 @@ fn document_bubbling_event_reaches_window_by_default() {
       ..Default::default()
     },
   );
+  assert_eq!(
+    build_event_path(EventTargetId::Document, &event, &doc, &registry)
+      .into_iter()
+      .map(|entry| entry.invocation_target)
+      .collect::<Vec<_>>(),
+    vec![EventTargetId::Document, EventTargetId::Window],
+    "expected document events to reach window when `has_window_event_parent` is enabled"
+  );
   dispatch_event(
     EventTargetId::Document,
     &mut event,
@@ -732,10 +740,6 @@ fn document_bubbling_event_reaches_window_by_default() {
   .unwrap();
 
   assert_eq!(invoker.calls.as_slice(), &["document", "window_bubble"]);
-  assert_eq!(
-    event.path.iter().map(|e| e.target).collect::<Vec<_>>(),
-    vec![EventTargetId::Window, EventTargetId::Document]
-  );
 }
 
 #[test]
@@ -783,6 +787,14 @@ fn document_without_window_event_parent_does_not_reach_window() {
       ..Default::default()
     },
   );
+  assert_eq!(
+    build_event_path(EventTargetId::Document, &event, &doc, &registry)
+      .into_iter()
+      .map(|entry| entry.invocation_target)
+      .collect::<Vec<_>>(),
+    vec![EventTargetId::Document],
+    "document events must not reach window when `has_window_event_parent` is disabled"
+  );
   dispatch_event(
     EventTargetId::Document,
     &mut event,
@@ -793,10 +805,6 @@ fn document_without_window_event_parent_does_not_reach_window() {
   .unwrap();
 
   assert_eq!(invoker.calls.as_slice(), &["document"]);
-  assert_eq!(
-    event.path.iter().map(|e| e.target).collect::<Vec<_>>(),
-    vec![EventTargetId::Document]
-  );
 }
 
 #[test]
@@ -843,6 +851,19 @@ fn connected_node_event_does_not_reach_window_without_window_event_parent() {
       ..Default::default()
     },
   );
+  assert_eq!(
+    build_event_path(EventTargetId::Node(c), &event, &doc, &registry)
+      .into_iter()
+      .map(|entry| entry.invocation_target)
+      .collect::<Vec<_>>(),
+    vec![
+      EventTargetId::Node(c),
+      EventTargetId::Node(b),
+      EventTargetId::Node(a),
+      EventTargetId::Document,
+    ],
+    "connected nodes must not include window in their event path when `has_window_event_parent` is disabled"
+  );
   dispatch_event(
     EventTargetId::Node(c),
     &mut event,
@@ -853,15 +874,6 @@ fn connected_node_event_does_not_reach_window_without_window_event_parent() {
   .unwrap();
 
   assert_eq!(invoker.calls.as_slice(), &["document_bubble"]);
-  assert_eq!(
-    event.path.iter().map(|e| e.target).collect::<Vec<_>>(),
-    vec![
-      EventTargetId::Document,
-      EventTargetId::Node(a),
-      EventTargetId::Node(b),
-      EventTargetId::Node(c)
-    ]
-  );
 }
 
 #[test]
@@ -2750,6 +2762,277 @@ fn dispatch_event_clears_event_path_after_dispatch() {
   );
 }
 
+fn node_id_attribute(kind: &NodeKind) -> Option<&str> {
+  match kind {
+    NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
+      .iter()
+      .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+      .map(|(_, v)| v.as_str()),
+    _ => None,
+  }
+}
+
+fn find_node_by_id(doc: &Document, root: NodeId, id: &str) -> Option<NodeId> {
+  doc.subtree_preorder(root).find(|&node_id| node_id_attribute(&doc.node(node_id).kind) == Some(id))
+}
+
+fn find_shadow_root(doc: &Document, host: NodeId) -> Option<NodeId> {
+  doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| doc.node(child).parent == Some(host) && matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+}
+
+#[derive(Debug)]
+struct TraceCall {
+  label: &'static str,
+  target: Option<EventTargetId>,
+  current_target: Option<EventTargetId>,
+  event_phase: EventPhase,
+  composed_path: Vec<EventTargetId>,
+}
+
+struct TraceInvoker {
+  labels: HashMap<ListenerId, &'static str>,
+  calls: Vec<TraceCall>,
+}
+
+impl EventListenerInvoker for TraceInvoker {
+  fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> Result<(), DomError> {
+    let label = *self
+      .labels
+      .get(&listener_id)
+      .unwrap_or_else(|| panic!("unknown listener_id: {listener_id:?}"));
+    self.calls.push(TraceCall {
+      label,
+      target: event.target,
+      current_target: event.current_target,
+      event_phase: event.event_phase,
+      composed_path: event.composed_path(),
+    });
+    Ok(())
+  }
+}
+
+#[test]
+fn shadow_dom_composed_false_does_not_cross_shadow_root() {
+  let html = "<!doctype html><div id=host><template shadowroot=open><span id=inner></span></template></div>";
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let host = find_node_by_id(&doc, doc.root(), "host").expect("host not found");
+  let shadow_root = find_shadow_root(&doc, host).expect("shadow root not found");
+  let inner = find_node_by_id(&doc, shadow_root, "inner").expect("inner not found");
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+  let id_inner = ListenerId::new(1);
+  let id_shadow_root = ListenerId::new(2);
+  let id_host = ListenerId::new(3);
+  let id_document = ListenerId::new(4);
+  let id_window = ListenerId::new(5);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(inner),
+    type_,
+    id_inner,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(shadow_root),
+    type_,
+    id_shadow_root,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(host),
+    type_,
+    id_host,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = TraceInvoker {
+    labels: HashMap::from([
+      (id_inner, "inner"),
+      (id_shadow_root, "shadow_root"),
+      (id_host, "host"),
+      (id_document, "document"),
+      (id_window, "window"),
+    ]),
+    calls: Vec::new(),
+  };
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      composed: false,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(inner),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  // `composed=false` must not invoke listeners outside the shadow root.
+  assert_eq!(
+    invoker.calls.iter().map(|c| c.label).collect::<Vec<_>>(),
+    vec!["inner", "shadow_root"]
+  );
+  assert_eq!(invoker.calls[0].target, Some(EventTargetId::Node(inner)));
+  assert_eq!(invoker.calls[0].current_target, Some(EventTargetId::Node(inner)));
+  assert_eq!(invoker.calls[0].event_phase, EventPhase::AtTarget);
+
+  assert_eq!(invoker.calls[1].target, Some(EventTargetId::Node(inner)));
+  assert_eq!(
+    invoker.calls[1].current_target,
+    Some(EventTargetId::Node(shadow_root))
+  );
+  assert_eq!(invoker.calls[1].event_phase, EventPhase::Bubbling);
+}
+
+#[test]
+fn shadow_dom_composed_true_retargets_target_outside_shadow_tree() {
+  let html = "<!doctype html><div id=host><template shadowroot=open><span id=inner></span></template></div>";
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let host = find_node_by_id(&doc, doc.root(), "host").expect("host not found");
+  let shadow_root = find_shadow_root(&doc, host).expect("shadow root not found");
+  let inner = find_node_by_id(&doc, shadow_root, "inner").expect("inner not found");
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+  let id_inner = ListenerId::new(1);
+  let id_shadow_root = ListenerId::new(2);
+  let id_host = ListenerId::new(3);
+  let id_document = ListenerId::new(4);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(inner),
+    type_,
+    id_inner,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(shadow_root),
+    type_,
+    id_shadow_root,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(host),
+    type_,
+    id_host,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = TraceInvoker {
+    labels: HashMap::from([
+      (id_inner, "inner"),
+      (id_shadow_root, "shadow_root"),
+      (id_host, "host"),
+      (id_document, "document"),
+    ]),
+    calls: Vec::new(),
+  };
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      composed: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(inner),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  // `composed=true` must invoke listeners outside the shadow root and retarget `event.target` to the
+  // host for those listeners.
+  assert!(
+    invoker.calls.iter().any(|c| c.label == "host"),
+    "expected host listener to be invoked"
+  );
+  assert!(
+    invoker.calls.iter().any(|c| c.label == "document"),
+    "expected document listener to be invoked"
+  );
+
+  let inner_call = invoker
+    .calls
+    .iter()
+    .find(|c| c.label == "inner")
+    .expect("inner listener not invoked");
+  assert_eq!(inner_call.target, Some(EventTargetId::Node(inner)));
+  assert_eq!(inner_call.event_phase, EventPhase::AtTarget);
+
+  let shadow_root_call = invoker
+    .calls
+    .iter()
+    .find(|c| c.label == "shadow_root")
+    .expect("shadow root listener not invoked");
+  assert_eq!(shadow_root_call.target, Some(EventTargetId::Node(inner)));
+  assert_eq!(shadow_root_call.event_phase, EventPhase::Bubbling);
+
+  let host_call = invoker
+    .calls
+    .iter()
+    .find(|c| c.label == "host")
+    .expect("host listener not invoked");
+  assert_eq!(host_call.target, Some(EventTargetId::Node(host)));
+  assert_eq!(host_call.event_phase, EventPhase::AtTarget);
+
+  let document_call = invoker
+    .calls
+    .iter()
+    .find(|c| c.label == "document")
+    .expect("document listener not invoked");
+  assert_eq!(document_call.target, Some(EventTargetId::Node(host)));
+  assert_eq!(document_call.event_phase, EventPhase::Bubbling);
+
+  // For open shadow roots, composedPath() is allowed to expose the shadow tree to outside listeners.
+  assert_eq!(document_call.composed_path.first(), Some(EventTargetId::Node(inner)));
+  assert!(
+    document_call
+      .composed_path
+      .contains(&EventTargetId::Node(shadow_root)),
+    "expected composedPath() to include the shadow root for open mode"
+  );
+  assert_eq!(
+    document_call.composed_path.last(),
+    Some(EventTargetId::Window),
+    "expected composedPath() to end at Window"
+  );
+}
+
 #[test]
 fn transfer_node_listeners_moves_listeners_between_registries_and_remaps_node_ids() {
   let (src_doc, _a, _b, old_node_id) = make_dom_abc();
@@ -3142,5 +3425,66 @@ fn transfer_node_listeners_moves_listeners_between_registries_and_remaps_node_id
   assert_eq!(
     invoker_collision_check.calls.as_slice(),
     &["capture_1", "bubble_1", "new_1", "new_2", "new_3", "new_4", "new_5"]
+  );
+}
+
+#[test]
+fn composed_path_hides_closed_shadow_tree_from_outside() {
+  let html = "<!doctype html><div id=host><template shadowroot=closed><span id=inner></span></template></div>";
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let host = find_node_by_id(&doc, doc.root(), "host").expect("host not found");
+  let shadow_root = find_shadow_root(&doc, host).expect("shadow root not found");
+  let inner = find_node_by_id(&doc, shadow_root, "inner").expect("inner not found");
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+  let id_document = ListenerId::new(1);
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = TraceInvoker {
+    labels: HashMap::from([(id_document, "document")]),
+    calls: Vec::new(),
+  };
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      composed: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(inner),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  let document_call = invoker.calls.first().expect("document listener not invoked");
+  assert_eq!(document_call.target, Some(EventTargetId::Node(host)));
+  assert_eq!(document_call.event_phase, EventPhase::Bubbling);
+
+  assert_eq!(
+    document_call.composed_path.first(),
+    Some(EventTargetId::Node(host)),
+    "closed shadow tree nodes should be hidden from outside listeners"
+  );
+  assert!(
+    !document_call
+      .composed_path
+      .contains(&EventTargetId::Node(shadow_root)),
+    "closed shadow root should be hidden from outside listeners"
+  );
+  assert!(
+    !document_call.composed_path.contains(&EventTargetId::Node(inner)),
+    "closed shadow tree target should be hidden from outside listeners"
   );
 }
