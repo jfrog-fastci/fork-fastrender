@@ -583,6 +583,10 @@ impl Intrinsics {
     let object_prototype_to_string = vm.register_native_call(builtins::object_prototype_to_string)?;
     let object_prototype_has_own_property =
       vm.register_native_call(builtins::object_prototype_has_own_property)?;
+    let object_prototype_proto_get =
+      vm.register_native_call(builtins::object_prototype___proto___get)?;
+    let object_prototype_proto_set =
+      vm.register_native_call(builtins::object_prototype___proto___set)?;
     let function_prototype_call_method =
       vm.register_native_call(builtins::function_prototype_call_method)?;
     let function_prototype_apply_method =
@@ -848,6 +852,40 @@ impl Intrinsics {
          data_desc(Value::Object(func), true, false, true),
        )?;
      }
+
+    // Object.prototype.__proto__ (Annex B)
+    {
+      let key_s = scope.alloc_string("__proto__")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get __proto__")?;
+      let get = scope.alloc_native_function(object_prototype_proto_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      let set_name = scope.alloc_string("set __proto__")?;
+      let set = scope.alloc_native_function(object_prototype_proto_set, None, set_name, 1)?;
+      scope.push_root(Value::Object(set))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(set, Some(function_prototype))?;
+
+      scope.define_property(
+        object_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
+        },
+      )?;
+    }
 
     // `%Function%`
     let function_call = vm.register_native_call(builtins::function_constructor_call)?;

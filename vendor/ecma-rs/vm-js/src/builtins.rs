@@ -6844,6 +6844,53 @@ pub fn object_prototype_has_own_property(
   Ok(Value::Bool(has))
 }
 
+/// `Object.prototype.__proto__` getter (Annex B).
+#[allow(non_snake_case)]
+pub fn object_prototype___proto___get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  match scope.heap().object_prototype(obj)? {
+    Some(proto) => Ok(Value::Object(proto)),
+    None => Ok(Value::Null),
+  }
+}
+
+/// `Object.prototype.__proto__` setter (Annex B).
+#[allow(non_snake_case)]
+pub fn object_prototype___proto___set(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  let proto_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let proto = match proto_arg {
+    Value::Object(o) => Some(o),
+    Value::Null => None,
+    // Spec: ignore attempts to set `[[Prototype]]` to non-object/non-null values.
+    _ => return Ok(Value::Undefined),
+  };
+
+  // Spec: `Object.prototype.__proto__` returns `undefined` even when setting the prototype fails.
+  // We swallow known prototype mutation failures and only propagate unexpected VM errors.
+  match scope.heap_mut().object_set_prototype(obj, proto) {
+    Ok(()) => Ok(Value::Undefined),
+    Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Undefined),
+    Err(err) => Err(err),
+  }
+}
+
 fn get_array_length(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result<usize, VmError> {
   let length_key = string_key(scope, "length")?;
   Ok(match get_data_property_value(vm, scope, obj, &length_key)? {
