@@ -230,6 +230,21 @@ pub fn async_iterator_next(
         Ok(p) => p,
         Err(err) => {
           if !done {
+            // `AsyncFromSyncIteratorContinuation` calls
+            // `IteratorClose(syncIteratorRecord, valueWrapper)` where `valueWrapper` is a throw
+            // completion (`PromiseResolve` failed).
+            //
+            // Root the pending thrown value across `IteratorClose`, which can allocate and trigger
+            // GC. Values on the Rust stack are not traced by the GC.
+            let original_is_throw = err.is_throw_completion();
+            if original_is_throw {
+              if let Some(thrown) = err.thrown_value() {
+                if let Err(root_err) = next_scope.push_root(thrown) {
+                  return Err(root_err);
+                }
+              }
+            }
+
             let record = iterator::IteratorRecord {
               iterator: sync.iterator,
               next_method: Value::Undefined,
@@ -243,7 +258,11 @@ pub fn async_iterator_next(
               &record,
               iterator::CloseCompletionKind::Throw,
             ) {
-              return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, close_err);
+              // Never let iterator-close errors replace fatal VM failures (termination, OOM, etc).
+              // For throw completions, a fatal close error overrides the original throw.
+              if original_is_throw {
+                return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, close_err);
+              }
             }
           }
           return reject_promise_from_vm_error(vm, host, hooks, &mut next_scope, err);
@@ -324,4 +343,272 @@ pub fn async_iterator_close(
   let result =
     vm.call_with_host_and_hooks(host, &mut close_scope, hooks, return_method, iterator, &[])?;
   Ok(Some(result))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::GcObject;
+  use crate::property::{PropertyDescriptor, PropertyKind};
+  use crate::{Heap, HeapLimits, MicrotaskQueue, Realm, VmOptions};
+
+  fn method_returns_slot0(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    let Some(v) = slots.get(0).copied() else {
+      return Err(VmError::InvariantViolation("expected native slot 0"));
+    };
+    Ok(v)
+  }
+
+  fn throw_new_object_with_tag_promise_resolve(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    // Allocate a fresh object each call so the thrown value is *not* reachable from any other root.
+    // This lets the test detect missing rooting by forcing a GC during `IteratorClose`.
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "throw_new_object_with_tag_promise_resolve requires intrinsics (create a Realm first)",
+    ))?;
+    let mut scope = scope.reborrow();
+
+    let obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(obj))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(obj, Some(intr.object_prototype()))?;
+
+    let tag_key_s = scope.alloc_string("tag")?;
+    scope.push_root(Value::String(tag_key_s))?;
+    let tag_key = PropertyKey::from_string(tag_key_s);
+
+    let tag_value_s = scope.alloc_string("promiseResolve")?;
+    scope.push_root(Value::String(tag_value_s))?;
+    scope.create_data_property_or_throw(obj, tag_key, Value::String(tag_value_s))?;
+
+    Err(VmError::Throw(Value::Object(obj)))
+  }
+
+  fn gc_and_return_object(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    // Force a full GC cycle during `IteratorClose` so thrown values that are not rooted (values on
+    // the Rust stack are not traced) will be collected.
+    scope.heap_mut().collect_garbage();
+
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "gc_and_return_object requires intrinsics (create a Realm first)",
+    ))?;
+    let mut scope = scope.reborrow();
+    let obj = scope.alloc_object()?;
+    scope
+      .heap_mut()
+      .object_set_prototype(obj, Some(intr.object_prototype()))?;
+    Ok(Value::Object(obj))
+  }
+
+  #[test]
+  fn async_from_sync_iterator_continuation_roots_thrown_value_during_iterator_close() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let mut host_ctx = ();
+    let mut hooks = MicrotaskQueue::new();
+
+    let result: Result<(), VmError> = (|| {
+      let intr = realm.intrinsics();
+      let mut scope = heap.scope();
+
+      // Promise used as the iterator result `value`.
+      let promise = promise_ops::promise_resolve_with_host_and_hooks(
+        &mut vm,
+        &mut scope,
+        &mut host_ctx,
+        &mut hooks,
+        Value::Number(1.0),
+      )?;
+      scope.push_root(promise)?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("expected promise object"));
+      };
+
+      // Define a throwing `constructor` getter on the promise. The getter throws a *fresh object*
+      // with `tag: "promiseResolve"`.
+      let throw_id = vm.register_native_call(throw_new_object_with_tag_promise_resolve)?;
+      let getter_name = scope.alloc_string("")?;
+      let getter_fn = scope.alloc_native_function(throw_id, None, getter_name, 0)?;
+      scope.push_root(Value::Object(getter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(getter_fn, Some(intr.function_prototype()))?;
+
+      let ctor_key_s = scope.alloc_string("constructor")?;
+      scope.push_root(Value::String(ctor_key_s))?;
+      scope.define_property(
+        promise_obj,
+        PropertyKey::from_string(ctor_key_s),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(getter_fn),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+
+      // Build a sync iterator result object `{ value: promise, done: false }`.
+      let iter_result_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(iter_result_obj))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_result_obj, Some(intr.object_prototype()))?;
+
+      let value_key_s = scope.alloc_string("value")?;
+      scope.push_root(Value::String(value_key_s))?;
+      scope.create_data_property_or_throw(
+        iter_result_obj,
+        PropertyKey::from_string(value_key_s),
+        promise,
+      )?;
+
+      let done_key_s = scope.alloc_string("done")?;
+      scope.push_root(Value::String(done_key_s))?;
+      scope.create_data_property_or_throw(
+        iter_result_obj,
+        PropertyKey::from_string(done_key_s),
+        Value::Bool(false),
+      )?;
+
+      // Create a sync iterator object with:
+      // - `next()` returning `iter_result_obj`, and
+      // - `return()` forcing a GC.
+      let sync_iter = scope.alloc_object()?;
+      scope.push_root(Value::Object(sync_iter))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(sync_iter, Some(intr.object_prototype()))?;
+
+      let returns_slot0_id = vm.register_native_call(method_returns_slot0)?;
+      let next_name = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_name))?;
+      let next_fn = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        next_name,
+        0,
+        &[Value::Object(iter_result_obj)],
+      )?;
+      scope.push_root(Value::Object(next_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(next_fn, Some(intr.function_prototype()))?;
+      scope.create_data_property_or_throw(
+        sync_iter,
+        PropertyKey::from_string(next_name),
+        Value::Object(next_fn),
+      )?;
+
+      let return_call_id = vm.register_native_call(gc_and_return_object)?;
+      let return_name = scope.alloc_string("return")?;
+      scope.push_root(Value::String(return_name))?;
+      let return_fn = scope.alloc_native_function(return_call_id, None, return_name, 0)?;
+      scope.push_root(Value::Object(return_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(return_fn, Some(intr.function_prototype()))?;
+      scope.create_data_property_or_throw(
+        sync_iter,
+        PropertyKey::from_string(return_name),
+        Value::Object(return_fn),
+      )?;
+
+      // Create an iterable that returns `sync_iter` from @@iterator.
+      let iterable = scope.alloc_object()?;
+      scope.push_root(Value::Object(iterable))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iterable, Some(intr.object_prototype()))?;
+
+      let iter_name = scope.alloc_string("iter")?;
+      scope.push_root(Value::String(iter_name))?;
+      let iter_fn = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        iter_name,
+        0,
+        &[Value::Object(sync_iter)],
+      )?;
+      scope.push_root(Value::Object(iter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_fn, Some(intr.function_prototype()))?;
+      let iter_key = PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+      scope.create_data_property_or_throw(iterable, iter_key, Value::Object(iter_fn))?;
+
+      // Create the async-from-sync wrapper and call `next()`.
+      let mut record = get_async_iterator(
+        &mut vm,
+        &mut host_ctx,
+        &mut hooks,
+        &mut scope,
+        Value::Object(iterable),
+      )?;
+      let next_promise = async_iterator_next(&mut vm, &mut host_ctx, &mut hooks, &mut scope, &mut record)?;
+
+      let Value::Object(next_promise_obj) = next_promise else {
+        return Err(VmError::InvariantViolation("expected promise object"));
+      };
+      assert_eq!(scope.heap().promise_state(next_promise_obj)?, crate::PromiseState::Rejected);
+      let Some(reason) = scope.heap().promise_result(next_promise_obj)? else {
+        return Err(VmError::InvariantViolation("expected rejected promise reason"));
+      };
+
+      // Validate that the rejection reason object survived the GC performed during iterator close.
+      let Value::Object(reason_obj) = reason else {
+        return Err(VmError::InvariantViolation("expected object rejection reason"));
+      };
+      let mut check_scope = scope.reborrow();
+      check_scope.push_root(reason)?;
+
+      let tag_key = super::string_key(&mut check_scope, "tag")?;
+      let tag = check_scope.get_with_host_and_hooks(
+        &mut vm,
+        &mut host_ctx,
+        &mut hooks,
+        reason_obj,
+        tag_key,
+        Value::Object(reason_obj),
+      )?;
+      let Value::String(tag_s) = tag else {
+        return Err(VmError::InvariantViolation("expected string tag"));
+      };
+      let tag = check_scope.heap().get_string(tag_s)?.to_utf8_lossy();
+      assert_eq!(tag, "promiseResolve");
+
+      Ok(())
+    })();
+
+    realm.teardown(&mut heap);
+    result
+  }
 }
