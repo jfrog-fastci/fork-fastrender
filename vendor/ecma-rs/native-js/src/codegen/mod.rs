@@ -1347,17 +1347,21 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .unwrap_or(0),
     );
 
-    // Prefer the stable LLVM symbol name; it includes the original TS identifier when available.
-    let name = crate::llvm_symbol_for_def(self.cg.program, def);
+    let linkage_name = crate::llvm_symbol_for_def(self.cg.program, def);
+    // Prefer a friendly TS name for debuggers, but still attach the stable symbol as `linkageName`.
+    let name = self.cg.program.def_name(def).unwrap_or_else(|| linkage_name.clone());
+    let is_local_to_unit = self.func.get_linkage() == Linkage::Internal;
 
     let sp = debug.create_subprogram(
       self.cg.program,
       self.file,
       &name,
+      Some(&linkage_name),
       line,
       sig.ret,
       &sig.params,
       self.func,
+      is_local_to_unit,
     );
     self.debug_subprogram = Some(sp);
 
@@ -1376,16 +1380,19 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       return;
     };
 
-    let name = crate::llvm_symbol_for_file_init(self.file);
+    let linkage_name = crate::llvm_symbol_for_file_init(self.file);
+    let name = format!("<module init> {}", file_label(self.cg.program, self.file));
     let (line, _col) = debuginfo::line_col(self.cg.program, self.file, 0);
     let sp = debug.create_subprogram(
       self.cg.program,
       self.file,
       &name,
+      Some(&linkage_name),
       line,
       TsAbiKind::Void,
       &[],
       self.func,
+      true,
     );
     self.debug_subprogram = Some(sp);
 

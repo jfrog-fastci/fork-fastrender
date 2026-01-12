@@ -142,10 +142,12 @@ impl<'ctx> CodegenDebug<'ctx> {
     program: &Program,
     file: FileId,
     name: &str,
+    linkage_name: Option<&str>,
     line: u32,
     return_type: TsAbiKind,
     param_types: &[TsAbiKind],
     function: inkwell::values::FunctionValue<'ctx>,
+    is_local_to_unit: bool,
   ) -> DISubprogram<'ctx> {
     let di_file = self.file(program, file);
 
@@ -162,15 +164,15 @@ impl<'ctx> CodegenDebug<'ctx> {
     let sp = self.builder.create_function(
       di_file.as_debug_info_scope(),
       name,
-      None,
+      linkage_name,
       di_file,
       line,
       subroutine_type,
-      true,
+      is_local_to_unit,
       true,
       line,
       0,
-      false,
+      self.optimized,
     );
     function.set_subprogram(sp);
 
