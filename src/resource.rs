@@ -13328,6 +13328,65 @@ mod tests {
   }
 
   #[test]
+  fn merge_user_request_headers_drops_forbidden_headers() {
+    let mut headers = vec![
+      ("User-Agent".to_string(), "Default-UA".to_string()),
+      ("Accept".to_string(), "*/*".to_string()),
+    ];
+    let user_headers = vec![
+      ("Cookie".to_string(), "a=b".to_string()),
+      ("Origin".to_string(), "https://evil.example".to_string()),
+      ("User-Agent".to_string(), "Spoof-UA".to_string()),
+      ("Access-Control-Request-Method".to_string(), "PUT".to_string()),
+      ("Access-Control-Request-Headers".to_string(), "x-test".to_string()),
+      (
+        "Access-Control-Request-Private-Network".to_string(),
+        "true".to_string(),
+      ),
+      ("X-Ok".to_string(), "1".to_string()),
+    ];
+
+    merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
+      .expect("merge user headers");
+
+    // Forbidden headers are dropped and must not override existing headers.
+    assert_eq!(header_value(&headers, "User-Agent"), Some("Default-UA"));
+    assert_eq!(header_value(&headers, "Origin"), None);
+    assert_eq!(header_value(&headers, "Cookie"), None);
+    assert_eq!(header_value(&headers, "Access-Control-Request-Method"), None);
+    assert_eq!(header_value(&headers, "Access-Control-Request-Headers"), None);
+    assert_eq!(header_value(&headers, "Access-Control-Request-Private-Network"), None);
+
+    // Allowed user headers are preserved.
+    assert_eq!(header_value(&headers, "X-Ok"), Some("1"));
+  }
+
+  #[test]
+  fn merge_user_request_headers_sanitizes_values_and_overrides() {
+    let mut headers = vec![
+      ("X-Test".to_string(), "old".to_string()),
+      ("Other".to_string(), "keep".to_string()),
+    ];
+    let user_headers = vec![
+      // Should override the existing X-Test, sanitize newlines/NUL, and trim HTTP whitespace.
+      ("x-test".to_string(), "  hello\rworld\0\t".to_string()),
+      // Additional entries with the same name should be preserved (duplicates allowed).
+      ("X-Test".to_string(), "second".to_string()),
+    ];
+
+    merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
+      .expect("merge user headers");
+
+    let x_test_values: Vec<&str> = headers
+      .iter()
+      .filter(|(name, _)| name.eq_ignore_ascii_case("x-test"))
+      .map(|(_, value)| value.as_str())
+      .collect();
+    assert_eq!(x_test_values, vec!["hello world", "second"]);
+    assert_eq!(header_value(&headers, "Other"), Some("keep"));
+  }
+
+  #[test]
   fn http_headers_iframe_navigation_profile_sets_iframe_dest_and_omits_user() {
     let req = FetchRequest::new("https://www.example.com/frame", FetchDestination::Iframe)
       .with_referrer_url("https://www.example.com/page");
