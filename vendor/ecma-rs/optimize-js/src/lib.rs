@@ -140,11 +140,6 @@ pub struct CompileCfgOptions {
   pub enable_licm: bool,
   /// Options controlling interprocedural inlining on SSA CFGs.
   pub inline: InlineOptions,
-  /// Enable loop-invariant code motion (LICM).
-  ///
-  /// Default off. When enabled, LICM runs as part of the optimization fixpoint
-  /// loop after DVN/DCE and CFG pruning.
-  pub enable_licm: bool,
   /// Enable additional loop optimizations (induction variable analysis, strength reduction,
   /// conservative unrolling).
   ///
@@ -184,7 +179,6 @@ impl Default for CompileCfgOptions {
       run_opt_passes: true,
       enable_licm: false,
       inline: InlineOptions::default(),
-      enable_licm: false,
       enable_loop_opts: false,
     }
   }
@@ -697,23 +691,39 @@ pub(crate) fn build_program_function_with_options(
       iteration_result.merge(optpass_dvn(&mut cfg, dom));
       dbg_checkpoint(&format!("opt{}_dvn", i), &cfg);
       if options.enable_licm {
+        // LICM uses `InstMeta` effect/purity annotations to decide whether certain
+        // instructions (notably calls) can be hoisted safely.
+        //
+        // Keep this behind a flag; most `optimize-js` consumers do not want to pay
+        // the analysis cost unless explicitly requested.
+        let effect_summaries = analysis::effect::FnEffectMap::default();
+        analysis::effect::annotate_cfg_effects(&mut cfg, &effect_summaries);
+        let purity_summaries = analysis::purity::FnPurityMap::default();
+        analysis::purity::annotate_cfg_purity(
+          &mut cfg,
+          &purity_summaries,
+          effect_summaries.constant_foreign_fns(),
+        );
+
         let licm_before = cfg.graph.labels().max().unwrap_or(cfg.entry);
         let licm_result = optpass_licm(&mut cfg, dom);
         // LICM may insert loop preheaders and rewrite CFG edges.
         dom_cache.maybe_invalidate(&licm_result);
-        if licm_result.cfg_changed {
-          let licm_after = cfg.graph.labels().max().unwrap_or(cfg.entry);
-          // LICM allocates new bblock labels internally based on the CFG's current max label.
-          // Ensure later phases that allocate labels (SSA deconstruction) do not collide with
-          // those newly created labels by advancing the shared label counter.
-          if licm_after > licm_before {
-            for _ in 0..(licm_after - licm_before) {
-              let _ = c_label.bump();
-            }
-          }
-        }
         iteration_result.merge(licm_result);
         dbg_checkpoint(&format!("opt{}_licm", i), &cfg);
+
+        // `optpass_licm` may create new CFG blocks with fresh labels. SSA deconstruction allocates
+        // more labels using `c_label`, so keep the counter in sync to avoid collisions.
+        if licm_result.cfg_changed {
+          let licm_after = cfg.graph.labels().max().unwrap_or(cfg.entry);
+          let next = licm_after
+            .checked_add(1)
+            .expect("label overflow in build_program_function");
+          // Only advance when LICM actually created new labels.
+          if next > licm_before {
+            c_label = Counter::new(next);
+          }
+        }
       }
       iteration_result.merge(optpass_trivial_dce(&mut cfg));
       dbg_checkpoint(&format!("opt{}_dce", i), &cfg);
@@ -728,38 +738,6 @@ pub(crate) fn build_program_function_with_options(
       dom_cache.maybe_invalidate(&cfg_prune_result);
       iteration_result.merge(cfg_prune_result);
       dbg_checkpoint(&format!("opt{}_cfg_prune", i), &cfg);
-
-      if options.enable_licm {
-        // LICM needs effect/purity metadata to make correct decisions for call hoisting.
-        // We intentionally keep this behind a flag; the default compilation pipeline avoids
-        // running analyses during optimization.
-        let effect_summaries = analysis::effect::FnEffectMap::default();
-        analysis::effect::annotate_cfg_effects(&mut cfg, &effect_summaries);
-        let purity_summaries = analysis::purity::FnPurityMap::default();
-        analysis::purity::annotate_cfg_purity(
-          &mut cfg,
-          &purity_summaries,
-          effect_summaries.constant_foreign_fns(),
-        );
-
-        let licm_result = optpass_licm(&mut cfg);
-        dom_cache.maybe_invalidate(&licm_result);
-        iteration_result.merge(licm_result);
-        dbg_checkpoint(&format!("opt{}_licm", i), &cfg);
-
-        // `optpass_licm` may create new CFG blocks with fresh labels. SSA deconstruction allocates
-        // more labels using `c_label`, so keep the counter in sync to avoid collisions.
-        if licm_result.cfg_changed {
-          let next = cfg
-            .graph
-            .labels()
-            .max()
-            .unwrap_or(cfg.entry)
-            .checked_add(1)
-            .expect("label overflow in build_program_function");
-          c_label = Counter::new(next);
-        }
-      }
 
       if options.enable_loop_opts {
         let loop_opts_result = optpass_loop_opts(&mut cfg);
