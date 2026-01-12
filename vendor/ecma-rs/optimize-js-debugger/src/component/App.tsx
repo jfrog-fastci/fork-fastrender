@@ -419,7 +419,7 @@ export const App = () => {
               </p>
             )}
           </div>
-          <InstMetaPanel inst={hoveredInst} />
+          <InstMetaPanel inst={hoveredInst} source={source} />
           <div className="editor">
             <div className="controls">
               <label>

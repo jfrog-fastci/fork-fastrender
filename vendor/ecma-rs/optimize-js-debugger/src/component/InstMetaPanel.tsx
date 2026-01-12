@@ -1,6 +1,29 @@
 import { useMemo, useState } from "react";
 import type { GraphInst } from "./schema";
 
+const utf8ByteOffsetToUtf16Offset = (text: string, byteOffset: number): number => {
+  // `diagnostics::TextRange` uses UTF-8 byte offsets.
+  // Monaco/JS string indices are UTF-16 code units.
+  let bytes = 0;
+  for (let i = 0; i < text.length; ) {
+    const cp = text.codePointAt(i);
+    if (cp == undefined) {
+      break;
+    }
+    const utf16Units = cp > 0xffff ? 2 : 1;
+    const utf8Bytes = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if (bytes + utf8Bytes > byteOffset) {
+      return i;
+    }
+    bytes += utf8Bytes;
+    i += utf16Units;
+    if (bytes === byteOffset) {
+      return i;
+    }
+  }
+  return text.length;
+};
+
 const formatExternallyTagged = (value: unknown): string => {
   if (value == undefined) {
     return "n/a";
@@ -84,7 +107,13 @@ const formatMaybeStableId = (id: unknown): string => {
   return JSON.stringify(id);
 };
 
-export const InstMetaPanel = ({ inst }: { inst?: GraphInst }) => {
+export const InstMetaPanel = ({
+  inst,
+  source,
+}: {
+  inst?: GraphInst;
+  source?: string;
+}) => {
   const [showEffects, setShowEffects] = useState(true);
   const [showOwnership, setShowOwnership] = useState(true);
   const [showFacts, setShowFacts] = useState(true);
@@ -92,6 +121,31 @@ export const InstMetaPanel = ({ inst }: { inst?: GraphInst }) => {
   const [showRaw, setShowRaw] = useState(false);
 
   const meta: any = (inst as any)?.meta;
+
+  const span: { start: number; end: number } | undefined = useMemo(() => {
+    const span = meta?.span;
+    if (
+      span &&
+      typeof span === "object" &&
+      typeof span.start === "number" &&
+      typeof span.end === "number"
+    ) {
+      return { start: span.start, end: span.end };
+    }
+    return undefined;
+  }, [meta]);
+
+  const sourceSlice = useMemo(() => {
+    if (!source || !span) {
+      return undefined;
+    }
+    if (span.end <= span.start) {
+      return "";
+    }
+    const start = utf8ByteOffsetToUtf16Offset(source, span.start);
+    const end = utf8ByteOffsetToUtf16Offset(source, span.end);
+    return source.slice(start, end);
+  }, [source, span]);
 
   const rawJson = useMemo(
     () => (meta ? JSON.stringify(meta, null, 2) : ""),
@@ -226,6 +280,14 @@ export const InstMetaPanel = ({ inst }: { inst?: GraphInst }) => {
             <section>
               <h2>Value facts</h2>
               <ul>
+                {span && (
+                  <li>
+                    span:{" "}
+                    <code>
+                      {span.start}..{span.end}
+                    </code>
+                  </li>
+                )}
                 <li>
                   range: <code>{formatRange(meta.range)}</code>
                 </li>
@@ -251,6 +313,12 @@ export const InstMetaPanel = ({ inst }: { inst?: GraphInst }) => {
                   </code>
                 </li>
               </ul>
+              {sourceSlice != undefined && (
+                <>
+                  <h3>Source</h3>
+                  <pre className="source">{sourceSlice}</pre>
+                </>
+              )}
             </section>
           )}
 

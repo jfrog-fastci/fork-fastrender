@@ -265,9 +265,24 @@
   margin: 0.5rem 0 0.25rem;
 }
 
+.InstMetaPanel h3 {
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0.25rem;
+}
+
 .InstMetaPanel ul {
   margin: 0;
   padding-left: 1.25rem;
+}
+
+.InstMetaPanel .source {
+  margin: 0;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  background: #fafafa;
+  padding: 0.35rem;
+  border: 1px solid #eee;
+  border-radius: 4px;
 }
 
 .InstMetaPanel .raw {
