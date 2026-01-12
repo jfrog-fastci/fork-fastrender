@@ -294,10 +294,13 @@ fn ensure_current_thread_registered() {
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
+  // Capture the frame pointer of this runtime entrypoint before entering `abort_on_panic`, which
+  // uses `catch_unwind` in `panic=unwind` builds and may not preserve a reliable frame-pointer chain.
+  let entry_fp = crate::stackwalk::current_frame_pointer();
   abort_on_panic(|| {
     #[cfg(feature = "gc_stats")]
     crate::gc_stats::record_alloc(size);
-    crate::rt_alloc::alloc(size, shape)
+    crate::rt_alloc::alloc(size, shape, entry_fp)
   })
 }
 
@@ -307,12 +310,14 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
-  abort_on_panic(|| crate::rt_alloc::alloc_pinned(size, shape))
+  let entry_fp = crate::stackwalk::current_frame_pointer();
+  abort_on_panic(|| crate::rt_alloc::alloc_pinned(size, shape, entry_fp))
 }
 
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::GcPtr {
+  let entry_fp = crate::stackwalk::current_frame_pointer();
   abort_on_panic(|| {
     let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
       crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
@@ -320,7 +325,7 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::
     #[cfg(feature = "gc_stats")]
     crate::gc_stats::record_alloc_array(len, spec.elem_size);
     let _ = spec;
-    crate::rt_alloc::alloc_array(len, elem_size)
+    crate::rt_alloc::alloc_array(len, elem_size, entry_fp)
   })
 }
 
@@ -1000,6 +1005,49 @@ pub extern "C" fn rt_gc_collect_major() {
   let entry_fp = crate::stackwalk::current_frame_pointer();
   let fallback_ctx = crate::arch::capture_safepoint_context();
   abort_on_panic(|| rt_gc_collect_impl(GcCollectKind::Major, "rt_gc_collect_major", entry_fp, fallback_ctx))
+}
+
+#[inline]
+fn safepoint_context_from_entry_fp(entry_fp: u64) -> crate::arch::SafepointContext {
+  if entry_fp == 0 {
+    return crate::arch::SafepointContext::default();
+  }
+
+  // SAFETY: `entry_fp` was captured from a runtime entrypoint frame compiled with frame pointers.
+  // Under the forced-frame-pointer ABI:
+  // - [entry_fp + 0] is the caller's frame pointer (managed frame)
+  // - [entry_fp + WORD_SIZE] is the return address into the managed frame (callsite PC)
+  let outer_fp = unsafe { (entry_fp as *const u64).read() };
+  let outer_ip = unsafe { ((entry_fp + crate::arch::WORD_SIZE as u64) as *const u64).read() };
+
+  // Caller SP at the callsite into the runtime entrypoint is `entry_fp + 2 * WORD_SIZE` for both
+  // x86_64 and aarch64 under forced frame pointers.
+  let sp_callsite = entry_fp.saturating_add((crate::arch::WORD_SIZE * 2) as u64);
+  #[cfg(target_arch = "x86_64")]
+  let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
+  #[cfg(not(target_arch = "x86_64"))]
+  let sp_entry = sp_callsite;
+
+  crate::arch::SafepointContext {
+    sp_entry: sp_entry as usize,
+    sp: sp_callsite as usize,
+    fp: outer_fp as usize,
+    ip: outer_ip as usize,
+    regs: core::ptr::null_mut(),
+  }
+}
+
+pub(crate) fn gc_collect_minor_for_alloc(entry_name: &'static str, entry_fp: u64) {
+  // Do not wrap this helper in `abort_on_panic`: it is always called from within a runtime
+  // entrypoint that already aborts on panic, and avoiding an extra `catch_unwind` layer keeps the
+  // frame-pointer chain usable for stackmap fixups.
+  let fallback_ctx = safepoint_context_from_entry_fp(entry_fp);
+  rt_gc_collect_impl(GcCollectKind::Minor, entry_name, entry_fp, fallback_ctx)
+}
+
+pub(crate) fn gc_collect_major_for_alloc(entry_name: &'static str, entry_fp: u64) {
+  let fallback_ctx = safepoint_context_from_entry_fp(entry_fp);
+  rt_gc_collect_impl(GcCollectKind::Major, entry_name, entry_fp, fallback_ctx)
 }
 
 fn rt_gc_collect_impl(
