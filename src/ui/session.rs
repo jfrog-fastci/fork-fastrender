@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 const SESSION_ENV_PATH: &str = "FASTR_BROWSER_SESSION_PATH";
 const SESSION_FILE_NAME: &str = "fastrender_session.json";
@@ -132,10 +134,15 @@ pub struct BrowserSession {
   pub windows: Vec<BrowserSessionWindow>,
   #[serde(default)]
   pub active_window_index: usize,
-  /// Crash recovery hint: false when the last run did not exit cleanly.
+  /// Whether the previous browser process believes it shut down cleanly.
   ///
-  /// This is currently informational only; future UI code can flip the bit on startup and set it
-  /// back to true during a graceful shutdown.
+  /// This is used as a lightweight crash marker:
+  /// - On startup, the windowed UI should autosave `did_exit_cleanly=false` as soon as the session
+  ///   is restored so unexpected crashes can be detected on next launch.
+  /// - On clean shutdown, the UI should write `did_exit_cleanly=true`.
+  ///
+  /// When loading a legacy session file that does not contain this field, we default to `true` to
+  /// preserve the old semantics (sessions were only written on clean shutdown).
   #[serde(default = "default_did_exit_cleanly", skip_serializing_if = "is_true")]
   pub did_exit_cleanly: bool,
 }
@@ -826,5 +833,165 @@ pub fn acquire_session_lock(session_path: &Path) -> Result<SessionFileLock, Sess
       Err(SessionLockError::AlreadyLocked { lock_path })
     }
     Err(error) => Err(SessionLockError::Io { lock_path, error }),
+  }
+}
+
+/// Background debounced writer for browser session persistence.
+///
+/// The windowed browser UI should call [`SessionAutosave::request_save`] whenever session-relevant
+/// state changes (tabs, active tab, zoom, window geometry, etc). Writes are debounced on a
+/// background thread so the UI thread never blocks on disk IO.
+///
+/// This is intentionally lightweight and does not attempt to guarantee durability on abrupt
+/// termination; instead we rely on frequent autosaves + the `did_exit_cleanly` crash marker.
+#[derive(Debug)]
+pub struct SessionAutosave {
+  tx: mpsc::Sender<AutosaveCmd>,
+  join: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+enum AutosaveCmd {
+  Save {
+    session: BrowserSession,
+    immediate: bool,
+  },
+  Shutdown,
+}
+
+impl SessionAutosave {
+  const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(500);
+
+  pub fn new(session_path: PathBuf) -> Result<Self, String> {
+    let (tx, rx) = mpsc::channel::<AutosaveCmd>();
+    let join = std::thread::Builder::new()
+      .name("session_autosave".to_string())
+      .spawn(move || autosave_thread_main(session_path, rx))
+      .map_err(|err| format!("failed to spawn session autosave thread: {err}"))?;
+
+    Ok(Self {
+      tx,
+      join: Some(join),
+    })
+  }
+
+  /// Request an autosave (debounced).
+  pub fn request_save(&self, session: BrowserSession) {
+    let _ = self.tx.send(AutosaveCmd::Save {
+      session,
+      immediate: false,
+    });
+  }
+
+  /// Request an autosave that should be written as soon as possible (bypassing debounce).
+  pub fn request_save_immediate(&self, session: BrowserSession) {
+    let _ = self.tx.send(AutosaveCmd::Save {
+      session,
+      immediate: true,
+    });
+  }
+
+  /// Shut down the autosave thread best-effort.
+  ///
+  /// This is intended to be called during clean shutdown. The caller should have already issued a
+  /// final `request_save_immediate` with `did_exit_cleanly=true`.
+  pub fn shutdown(self, timeout: Duration) {
+    let SessionAutosave { tx, join } = self;
+    let _ = tx.send(AutosaveCmd::Shutdown);
+    // Dropping the sender ensures the worker can observe disconnection even if the Shutdown message
+    // is dropped.
+    drop(tx);
+
+    let Some(join) = join else {
+      return;
+    };
+
+    let (done_tx, done_rx) = mpsc::channel::<std::thread::Result<()>>();
+    let _ = std::thread::spawn(move || {
+      let _ = done_tx.send(join.join());
+    });
+
+    match done_rx.recv_timeout(timeout) {
+      Ok(Ok(())) => {}
+      Ok(Err(_)) => {
+        eprintln!("session autosave thread panicked during shutdown");
+      }
+      Err(mpsc::RecvTimeoutError::Timeout) => {
+        eprintln!("timed out waiting for session autosave thread to exit; shutting down anyway");
+      }
+      Err(mpsc::RecvTimeoutError::Disconnected) => {
+        eprintln!("session autosave join helper thread disconnected during shutdown");
+      }
+    }
+  }
+}
+
+fn autosave_thread_main(session_path: PathBuf, rx: mpsc::Receiver<AutosaveCmd>) {
+  let debounce = SessionAutosave::DEFAULT_DEBOUNCE;
+  let mut pending: Option<BrowserSession> = None;
+  let mut deadline: Option<Instant> = None;
+
+  loop {
+    // Flush any pending save if its deadline has elapsed.
+    if let Some(at) = deadline {
+      if Instant::now() >= at {
+        if let Some(session) = pending.take() {
+          if let Err(err) = save_session_atomic(&session_path, &session) {
+            eprintln!(
+              "failed to autosave session to {}: {err}",
+              session_path.display()
+            );
+          }
+        }
+        deadline = None;
+        continue;
+      }
+    }
+
+    let msg = match deadline {
+      Some(at) => {
+        let timeout = at.saturating_duration_since(Instant::now());
+        rx.recv_timeout(timeout)
+      }
+      None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+    };
+
+    match msg {
+      Ok(AutosaveCmd::Save { session, immediate }) => {
+        pending = Some(session);
+        if immediate {
+          // Flush ASAP.
+          deadline = Some(Instant::now());
+        } else {
+          deadline = Some(Instant::now() + debounce);
+        }
+      }
+      Ok(AutosaveCmd::Shutdown) => {
+        if let Some(session) = pending.take() {
+          if let Err(err) = save_session_atomic(&session_path, &session) {
+            eprintln!(
+              "failed to autosave session to {} during shutdown: {err}",
+              session_path.display()
+            );
+          }
+        }
+        break;
+      }
+      Err(mpsc::RecvTimeoutError::Timeout) => {
+        // Loop around to flush pending session.
+      }
+      Err(mpsc::RecvTimeoutError::Disconnected) => {
+        // Sender dropped unexpectedly; best-effort flush.
+        if let Some(session) = pending.take() {
+          if let Err(err) = save_session_atomic(&session_path, &session) {
+            eprintln!(
+              "failed to autosave session to {} after channel disconnect: {err}",
+              session_path.display()
+            );
+          }
+        }
+        break;
+      }
+    }
   }
 }
