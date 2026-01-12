@@ -6853,7 +6853,10 @@ fn get_array_length(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result
 }
 
 fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
+  // Root the marker string while interning it: `symbol_for` can allocate and trigger GC.
+  let mut scope = scope.reborrow();
   let marker = scope.alloc_string(s)?;
+  scope.push_root(Value::String(marker))?;
   let marker_sym = scope.heap_mut().symbol_for(marker)?;
   Ok(PropertyKey::from_symbol(marker_sym))
 }
@@ -8972,25 +8975,33 @@ pub fn array_iterator_next(
   Ok(Value::Object(out))
 }
 
-fn require_generator_object(vm: &mut Vm, scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
-  let this_obj = match this {
-    Value::Object(o) => o,
-    _ => return Err(VmError::TypeError("Generator method called on non-object")),
+fn require_generator_object(
+  scope: &mut Scope<'_>,
+  this: Value,
+  non_object_message: &'static str,
+  incompatible_receiver_message: &'static str,
+) -> Result<GcObject, VmError> {
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError(non_object_message));
   };
 
-  // Root `this` across the internal symbol allocation and property lookup.
+  // Root `this` across the internal symbol allocation and the own-property lookup.
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(this_obj))?;
 
   let marker_key = internal_symbol_key(&mut scope, GENERATOR_STATE_MARKER)?;
-  let marker_value = get_data_property_value(vm, &mut scope, this_obj, &marker_key)?
-    .ok_or(VmError::TypeError("Generator method called on incompatible receiver"))?;
+  let has_state = match scope
+    .heap()
+    .object_get_own_data_property_value(this_obj, &marker_key)
+  {
+    Ok(Some(_)) => true,
+    Ok(None) => false,
+    Err(VmError::PropertyNotData) => false,
+    Err(e) => return Err(e),
+  };
 
-  // The marker must be present and not `undefined`; the exact value is engine-internal for now.
-  if matches!(marker_value, Value::Undefined) {
-    return Err(VmError::TypeError(
-      "Generator method called on incompatible receiver",
-    ));
+  if !has_state {
+    return Err(VmError::TypeError(incompatible_receiver_message));
   }
 
   Ok(this_obj)
@@ -8998,7 +9009,7 @@ fn require_generator_object(vm: &mut Vm, scope: &mut Scope<'_>, this: Value) -> 
 
 /// `%GeneratorPrototype%.next` (validation + stub).
 pub fn generator_prototype_next(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -9006,13 +9017,18 @@ pub fn generator_prototype_next(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let _ = require_generator_object(vm, scope, this)?;
-  Err(VmError::Unimplemented("Generator.prototype.next"))
+  let _ = require_generator_object(
+    scope,
+    this,
+    "Generator.prototype.next called on non-object",
+    "Generator.prototype.next called on incompatible receiver",
+  )?;
+  Err(VmError::Unimplemented("GeneratorResume"))
 }
 
 /// `%GeneratorPrototype%.return` (validation + stub).
 pub fn generator_prototype_return(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -9020,13 +9036,18 @@ pub fn generator_prototype_return(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let _ = require_generator_object(vm, scope, this)?;
-  Err(VmError::Unimplemented("Generator.prototype.return"))
+  let _ = require_generator_object(
+    scope,
+    this,
+    "Generator.prototype.return called on non-object",
+    "Generator.prototype.return called on incompatible receiver",
+  )?;
+  Err(VmError::Unimplemented("GeneratorResumeAbrupt"))
 }
 
 /// `%GeneratorPrototype%.throw` (validation + stub).
 pub fn generator_prototype_throw(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -9034,8 +9055,13 @@ pub fn generator_prototype_throw(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let _ = require_generator_object(vm, scope, this)?;
-  Err(VmError::Unimplemented("Generator.prototype.throw"))
+  let _ = require_generator_object(
+    scope,
+    this,
+    "Generator.prototype.throw called on non-object",
+    "Generator.prototype.throw called on incompatible receiver",
+  )?;
+  Err(VmError::Unimplemented("GeneratorResumeAbrupt"))
 }
 
 /// `String` constructor called as a function.
