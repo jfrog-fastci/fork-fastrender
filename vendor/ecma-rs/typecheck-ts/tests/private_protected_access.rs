@@ -276,3 +276,76 @@ const { x } = new Base();
   let offset = source.find("{ x }").expect("pattern property") as u32 + 2;
   assert_eq!(diag.primary.range, TextRange::new(offset, offset + 1));
 }
+
+#[test]
+fn private_access_errors_via_computed_member_literal() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let source = r#"class C { private x: number = 1; }
+const y = new C()["x"];
+"#;
+  let file = FileKey::new("entry.ts");
+  host.insert(file.clone(), Arc::from(source.to_string()));
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.severity == Severity::Error && d.code.as_str() == codes::PRIVATE_MEMBER_ACCESS.as_str()),
+    "diagnostics: {:?}",
+    diagnostics
+  );
+}
+
+#[test]
+fn private_access_allowed_via_computed_member_literal_within_class() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let source = r#"class C { private x: number = 1; get() { return this["x"]; } }
+const y = new C().get();
+"#;
+  let file = FileKey::new("entry.ts");
+  host.insert(file.clone(), Arc::from(source.to_string()));
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.iter().all(|d| d.severity != Severity::Error),
+    "diagnostics: {:?}",
+    diagnostics
+  );
+}
+
+#[test]
+fn protected_access_errors_via_computed_member_literal() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let source = r#"class Base { protected x: number = 1; }
+const y = new Base()["x"];
+"#;
+  let file = FileKey::new("entry.ts");
+  host.insert(file.clone(), Arc::from(source.to_string()));
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.severity == Severity::Error && d.code.as_str() == codes::PROTECTED_MEMBER_ACCESS.as_str()),
+    "diagnostics: {:?}",
+    diagnostics
+  );
+}
