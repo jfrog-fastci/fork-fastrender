@@ -2181,6 +2181,22 @@ fn inline_svg_image_references<'a>(
       continue;
     }
 
+    // Some real-world SVGs use the nonstandard `src` attribute on `<image>` instead of `href`.
+    // Only consider `src` when there is no `href` attribute present on the element (including
+    // namespaced `xlink:href`), so we don't override the standard form when both are present.
+    let mut element_has_href = false;
+    for attr in node.attributes() {
+      let raw_name = attr.name();
+      let local_name = raw_name
+        .rsplit_once(':')
+        .map(|(_, local)| local)
+        .unwrap_or(raw_name);
+      if local_name.eq_ignore_ascii_case("href") {
+        element_has_href = true;
+        break;
+      }
+    }
+
     let node_range = node.range();
     if node_range.end > svg_content.len() || node_range.start >= node_range.end {
       continue;
@@ -2248,7 +2264,18 @@ fn inline_svg_image_references<'a>(
         .map(|(_, local)| local)
         .unwrap_or(attr_name);
 
-      let is_candidate = local_name.eq_ignore_ascii_case("href");
+      let is_href_attr = local_name.eq_ignore_ascii_case("href");
+      let is_src_attr = is_image
+        && !element_has_href
+        && !attr_name.contains(':')
+        && attr_name.eq_ignore_ascii_case("src");
+      let is_candidate = is_href_attr || is_src_attr;
+      let name_range = (node_range.start + name_start)..(node_range.start + name_end);
+      let name_growth = if is_src_attr {
+        "href".len().saturating_sub(name_range.end.saturating_sub(name_range.start))
+      } else {
+        0
+      };
 
       while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
@@ -2404,7 +2431,9 @@ fn inline_svg_image_references<'a>(
 
           let prefix_len = "data:".len() + mime.len() + ";base64,".len();
           let total_len = prefix_len.saturating_add(base64_len);
-          let growth = total_len.saturating_sub(original_value_len);
+          let growth = total_len
+            .saturating_sub(original_value_len)
+            .saturating_add(name_growth);
           if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
             break 'node_loop;
           }
@@ -2428,11 +2457,17 @@ fn inline_svg_image_references<'a>(
           Cow::Owned(escaped) => escaped,
         };
 
-        let growth = replacement.len().saturating_sub(original_value_len);
+        let growth = replacement
+          .len()
+          .saturating_sub(original_value_len)
+          .saturating_add(name_growth);
         if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
           break 'node_loop;
         }
         injected_bytes = injected_bytes.saturating_add(growth);
+        if is_src_attr {
+          replacements.push((name_range, "href".to_string()));
+        }
         replacements.push((value_range, replacement));
         continue;
       }
@@ -2573,7 +2608,9 @@ fn inline_svg_image_references<'a>(
 
         let prefix_len = "data:".len() + mime.len() + ";base64,".len();
         let total_len = prefix_len.saturating_add(base64_len);
-        let growth = total_len.saturating_sub(original_value_len);
+        let growth = total_len
+          .saturating_sub(original_value_len)
+          .saturating_add(name_growth);
         if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
           break 'node_loop;
         }
@@ -2597,11 +2634,17 @@ fn inline_svg_image_references<'a>(
         Cow::Owned(escaped) => escaped,
       };
 
-      let growth = replacement.len().saturating_sub(original_value_len);
+      let growth = replacement
+        .len()
+        .saturating_sub(original_value_len)
+        .saturating_add(name_growth);
       if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
         break 'node_loop;
       }
       injected_bytes = injected_bytes.saturating_add(growth);
+      if is_src_attr {
+        replacements.push((name_range, "href".to_string()));
+      }
       replacements.push((value_range, replacement));
     }
   }
@@ -14990,6 +15033,46 @@ mod tests_inline {
         .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for xml:base image href {img_url}, got: {requests:?}"
     );
+
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
+    );
+  }
+
+  #[test]
+  fn inline_svg_image_src_is_rewritten_to_href_and_renders() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image src="https://example.test/img.png" width="1" height="1"/></svg>"#;
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
+    let inlined = inline_svg_image_references(svg, main_url, &fetcher, None).expect("inlined svg");
+    assert!(
+      inlined.as_ref().contains("href=\"data:image/png;base64,"),
+      "expected href data URL rewrite, got: {}",
+      inlined.as_ref()
+    );
+    assert!(
+      !inlined.as_ref().contains("src=\"https://example.test/img.png\""),
+      "expected src attribute to be rewritten, got: {}",
+      inlined.as_ref()
+    );
+
+    // Verify the rewritten SVG is self-contained and renders without any network access.
+    let cache = ImageCache::with_fetcher(Arc::new(MapFetcher::default()));
+    let pixmap = cache
+      .render_svg_pixmap_at_size(inlined.as_ref(), 1, 1, "inline-svg", 1.0)
+      .expect("rendered pixmap");
 
     let pixel = pixmap.pixel(0, 0).expect("pixel");
     assert_eq!(
