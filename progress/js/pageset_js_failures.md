@@ -1,5 +1,8 @@
 # pageset_progress JavaScript failure report
 
+Generated from committed `progress/pages/*.json` via:
+`pageset_progress report --top-js-errors 32`
+
 - pages_total: 150
 - pages_with_js: 0
 - scripts_executed: 0
