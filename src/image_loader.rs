@@ -16181,6 +16181,88 @@ mod tests_inline {
   }
 
   #[test]
+  fn svg_style_import_wraps_media_list_in_output() {
+    let main_url = "https://example.test/main.svg";
+    let style_url = "https://example.test/style.css";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><style>@import url("style.css") screen;</style></svg>"#;
+
+    let mut css_res = FetchedResource::new(
+      b".r{fill:red !important;}".to_vec(),
+      Some("text/css".to_string()),
+    );
+    css_res.status = Some(200);
+    css_res.final_url = Some(style_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(style_url.to_string(), css_res)]);
+    let out = inline_svg_style_imports(svg, main_url, &fetcher, None).expect("inlined svg CSS");
+    assert!(
+      out.as_ref().contains("@media screen"),
+      "expected media list to be preserved via @media wrapper, got: {}",
+      out.as_ref()
+    );
+    assert!(
+      out.as_ref().contains(".r{fill:red !important;}"),
+      "expected imported CSS to be inlined, got: {}",
+      out.as_ref()
+    );
+    assert!(
+      !out.as_ref().contains("@import"),
+      "expected @import rule to be replaced, got: {}",
+      out.as_ref()
+    );
+  }
+
+  #[test]
+  fn svg_style_import_cycle_is_bounded() {
+    let main_url = "https://example.test/main.svg";
+    let a_url = "https://example.test/a/a.css";
+    let b_url = "https://example.test/a/b.css";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><style>@import url("a/a.css");</style><rect class="r" width="1" height="1" fill="blue"/></svg>"#;
+
+    let mut a_res = FetchedResource::new(
+      b"@import \"b.css\";".to_vec(),
+      Some("text/css".to_string()),
+    );
+    a_res.status = Some(200);
+    a_res.final_url = Some(a_url.to_string());
+
+    let mut b_res = FetchedResource::new(
+      b"@import \"a.css\"; .r{fill:red !important;}".to_vec(),
+      Some("text/css".to_string()),
+    );
+    b_res.status = Some(200);
+    b_res.final_url = Some(b_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (a_url.to_string(), a_res),
+      (b_url.to_string(), b_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(svg, 1, 1, main_url, 1.0)
+      .expect("rendered pixmap");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255),
+      "expected non-cyclic portion of the import chain to apply"
+    );
+
+    let requests = fetcher.requests();
+    let style_requests = requests
+      .iter()
+      .filter(|(_, dest, _)| *dest == FetchDestination::Style)
+      .count();
+    assert_eq!(
+      style_requests, 2,
+      "expected cyclic @import to be skipped (only a.css and b.css fetched), got: {requests:?}"
+    );
+  }
+
+  #[test]
   fn inline_svg_external_image_uses_document_url_as_base() {
     let doc_url = "https://example.test/page.html";
     let img_url = "https://example.test/img.png";
