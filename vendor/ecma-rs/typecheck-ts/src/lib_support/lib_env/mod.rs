@@ -6,6 +6,8 @@ use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use super::{CompilerOptions, FileKind, LibFile, LibSet};
 use crate::codes;
 
+pub(crate) mod prepared;
+
 /// Loaded libraries for a particular set of options.
 #[derive(Clone, Debug)]
 pub struct LoadedLibs {
@@ -286,7 +288,7 @@ mod bundled {
   // so it does not trigger `dead_code` warnings in downstream builds.
   const _: &str = generated::TYPESCRIPT_VERSION;
 
-  fn bundled_lib_text(filename: &str) -> Option<&'static str> {
+  pub(super) fn bundled_lib_text(filename: &str) -> Option<&'static str> {
     match generated::LIBS.binary_search_by(|(name, _)| name.cmp(&filename)) {
       Ok(idx) => Some(generated::LIBS[idx].1),
       Err(_) => None,

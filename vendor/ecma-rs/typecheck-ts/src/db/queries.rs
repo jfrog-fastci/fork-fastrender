@@ -27,7 +27,9 @@ use crate::db::spans::{expr_at_from_spans, FileSpanIndex};
 use crate::db::symbols::{LocalSymbolInfo, SymbolIndex};
 use crate::db::types::{DeclTypes, SharedDeclTypes};
 use crate::db::{symbols, Db};
+use crate::files::FileOrigin;
 use crate::lib_support::{CacheOptions, CompilerOptions, FileKind};
+use crate::lib_support::lib_env::prepared as prepared_libs;
 use crate::lower_metrics;
 use crate::parse_metrics;
 use crate::profile::{CacheKind, QueryKind, QueryStatsCollector};
@@ -123,6 +125,15 @@ fn file_kind_for(db: &dyn Db, file: FileInput) -> FileKind {
 #[salsa::tracked]
 fn file_text_for(db: &dyn Db, file: FileInput) -> Arc<str> {
   file.text(db)
+}
+
+#[salsa::tracked]
+fn file_text_hash_for(db: &dyn Db, file: FileInput) -> u64 {
+  // Keep hashes deterministic so cache keys are stable across runs.
+  let text = file.text(db);
+  let mut hasher = StableHasher::new();
+  hasher.write_bytes(text.as_ref().as_bytes());
+  hasher.finish()
 }
 
 #[salsa::tracked]
@@ -1655,13 +1666,38 @@ pub fn reset_parse_query_count() {
 #[salsa::tracked]
 fn parse_for(db: &dyn Db, file: FileInput) -> parser::ParseResult {
   panic_if_cancelled(db);
+  let file_id = file.file_id(db);
+  let kind = file.kind(db);
+
+  let cache_key = if db.file_origin(file_id) == Some(FileOrigin::Lib) {
+    let file_key = file.key(db);
+    prepared_libs::bundled_lib_expected_hash(&file_key, kind).and_then(|expected_hash| {
+      let text_hash = file_text_hash_for(db, file);
+      (text_hash == expected_hash).then_some(prepared_libs::PreparedLibKey {
+        file_id,
+        file_key,
+        file_kind: kind,
+        text_hash,
+      })
+    })
+  } else {
+    None
+  };
+
+  if let Some(cache_key) = cache_key.as_ref() {
+    if let Some(cached) = prepared_libs::get_parsed(cache_key) {
+      let _timer = db
+        .profiler()
+        .map(|profiler| profiler.timer(QueryKind::Parse, true));
+      return cached;
+    }
+  }
+
   let _timer = db
     .profiler()
     .map(|profiler| profiler.timer(QueryKind::Parse, false));
   parse_metrics::record_parse_call();
-  let kind = file.kind(db);
   let source = file.text(db);
-  let file_id = file.file_id(db);
   let dialect = match kind {
     FileKind::Js => Dialect::Js,
     FileKind::Ts => Dialect::Ts,
@@ -1670,7 +1706,7 @@ fn parse_for(db: &dyn Db, file: FileInput) -> parser::ParseResult {
     FileKind::Dts => Dialect::Dts,
   };
   let cancel = cancelled(db);
-  match parse_with_options_cancellable(
+  let result = match parse_with_options_cancellable(
     &source,
     ParseOptions {
       dialect,
@@ -1685,25 +1721,65 @@ fn parse_for(db: &dyn Db, file: FileInput) -> parser::ParseResult {
       }
       parser::ParseResult::error(err.to_diagnostic(file_id))
     }
+  };
+
+  if let Some(cache_key) = cache_key {
+    prepared_libs::store_parsed(cache_key, result.clone());
   }
+
+  result
 }
 
 #[salsa::tracked]
 fn lower_hir_for(db: &dyn Db, file: FileInput) -> LowerResultWithDiagnostics {
   panic_if_cancelled(db);
+  let file_id = file.file_id(db);
+  let file_kind = file.kind(db);
+
+  let cache_key = if db.file_origin(file_id) == Some(FileOrigin::Lib) {
+    let file_key = file.key(db);
+    prepared_libs::bundled_lib_expected_hash(&file_key, file_kind).and_then(|expected_hash| {
+      let text_hash = file_text_hash_for(db, file);
+      (text_hash == expected_hash).then_some(prepared_libs::PreparedLibKey {
+        file_id,
+        file_key,
+        file_kind,
+        text_hash,
+      })
+    })
+  } else {
+    None
+  };
+
+  if let Some(cache_key) = cache_key.as_ref() {
+    if let Some(cached) = prepared_libs::get_lowered(cache_key) {
+      let _timer = db
+        .profiler()
+        .map(|profiler| profiler.timer(QueryKind::LowerHir, true));
+      debug_assert!(
+        cached
+          .lowered
+          .as_ref()
+          .map(|lowered| lowered.hir.file == file_id)
+          .unwrap_or(true),
+        "cached bundled-lib lowering has mismatched file id"
+      );
+      return cached;
+    }
+  }
+
   let _timer = db
     .profiler()
     .map(|profiler| profiler.timer(QueryKind::LowerHir, false));
   lower_metrics::record_lower_call();
   let parsed = parse_for(db, file);
   panic_if_cancelled(db);
-  let file_kind = file.kind(db);
   let mut diagnostics = parsed.diagnostics.clone();
   let cancelled_flag = cancelled(db);
   let lowered = parsed.ast.as_ref().map(|ast| {
     panic_if_cancelled(db);
     let (lowered, mut lower_diags) = lower_file_with_diagnostics_with_cancellation(
-      file.file_id(db),
+      file_id,
       map_hir_file_kind(file_kind),
       ast,
       Some(Arc::clone(&cancelled_flag)),
@@ -1712,11 +1788,17 @@ fn lower_hir_for(db: &dyn Db, file: FileInput) -> LowerResultWithDiagnostics {
     Arc::new(lowered)
   });
 
-  LowerResultWithDiagnostics {
+  let result = LowerResultWithDiagnostics {
     lowered,
     diagnostics,
     file_kind,
+  };
+
+  if let Some(cache_key) = cache_key {
+    prepared_libs::store_lowered(cache_key, result.clone());
   }
+
+  result
 }
 
 #[salsa::tracked]
