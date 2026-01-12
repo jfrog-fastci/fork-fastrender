@@ -6819,41 +6819,6 @@ impl<'a> Scope<'a> {
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
-  /// Allocates a bound function object using explicitly provided call/construct handlers.
-  ///
-  /// This is used for exotic callable targets (e.g. callable Proxies) where the target is not a
-  /// real `HeapObject::Function` and therefore does not have cloneable handlers.
-  ///
-  /// The handlers are placeholders: the VM's bound-function forwarding logic performs the actual
-  /// call/construct via `[[BoundTargetFunction]]`, but `Vm::call` / `Vm::construct` still require
-  /// the bound function itself to appear callable/constructable during prechecks.
-  pub(crate) fn alloc_bound_function_with_handlers(
-    &mut self,
-    call: CallHandler,
-    construct: Option<ConstructHandler>,
-    target: GcObject,
-    bound_this: Value,
-    bound_args: &[Value],
-    name: GcString,
-    length: u32,
-  ) -> Result<GcObject, VmError> {
-    let bound_args_len = bound_args.len();
-    let bound_args = if bound_args.is_empty() {
-      None
-    } else {
-      // Allocate the bound args buffer fallibly so hostile inputs cannot abort the host process
-      // on allocator OOM.
-      let mut buf: Vec<Value> = Vec::new();
-      buf
-        .try_reserve_exact(bound_args_len)
-        .map_err(|_| VmError::OutOfMemory)?;
-      buf.extend_from_slice(bound_args);
-      Some(buf.into_boxed_slice())
-    };
-
-    self.alloc_bound_function_raw(call, construct, name, length, target, bound_this, bound_args)
-  }
-
   /// Allocates a user-defined JavaScript function object on the heap.
   pub fn alloc_user_function(
     &mut self,
@@ -6939,9 +6904,31 @@ impl<'a> Scope<'a> {
   ) -> Result<GcObject, VmError> {
     // Extract call/construct handlers from `target` without holding a heap borrow across
     // allocations.
+    //
+    // `target` may be a callable/constructable Proxy, so unwrap Proxy chains until we reach the
+    // underlying function object for handler metadata, but preserve the original `target` object as
+    // `[[BoundTargetFunction]]`.
     let (target_call, target_construct) = {
-      let f = self.heap().get_function(target)?;
-      (f.call.clone(), f.construct)
+      let mut obj = target;
+      let mut remaining = MAX_PROTOTYPE_CHAIN;
+      loop {
+        if remaining == 0 {
+          return Err(VmError::NotCallable);
+        }
+        remaining -= 1;
+        match self.heap().get_heap_object(obj.0)? {
+          HeapObject::Function(f) => break (f.call.clone(), f.construct),
+          HeapObject::Proxy(p) => {
+            let (Some(next), Some(_handler)) = (p.target, p.handler) else {
+              return Err(VmError::TypeError(
+                "Cannot create bound function for a proxy that has been revoked",
+              ));
+            };
+            obj = next;
+          }
+          _ => return Err(VmError::NotCallable),
+        }
+      }
     };
 
     let bound_args_len = bound_args.len();

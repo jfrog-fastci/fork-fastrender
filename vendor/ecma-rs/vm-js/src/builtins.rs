@@ -7949,60 +7949,30 @@ pub fn function_prototype_bind(
     return Err(VmError::TypeError("Function.prototype.bind called on non-object"));
   };
   if !scope.heap().is_callable(Value::Object(target))? {
+    // Includes revoked proxies (which do not have `[[Call]]`).
     return Err(VmError::TypeError("Function.prototype.bind called on non-callable"));
   }
-  let is_constructor = scope.heap().is_constructor(Value::Object(target))?;
-
-  // Read metadata via `Get` so Proxy traps / host exotic hooks are respected.
-  let length_key = string_key(scope, "length")?;
-  let target_len_value = vm.get_with_host_and_hooks(host, scope, hooks, target, length_key)?;
-  let target_len = u32::try_from(to_length_usize(vm, scope, host, hooks, target_len_value)?).unwrap_or(u32::MAX);
-
-  let name_key = string_key(scope, "name")?;
-  let target_name_value = vm.get_with_host_and_hooks(host, scope, hooks, target, name_key)?;
-  let target_name = match target_name_value {
-    Value::String(s) => {
-      scope.push_root(Value::String(s))?;
-      s
-    }
-    _ => {
-      let s = scope.alloc_string("")?;
-      scope.push_root(Value::String(s))?;
-      s
-    }
-  };
 
   let bound_this = args.first().copied().unwrap_or(Value::Undefined);
   let bound_args = args.get(1..).unwrap_or(&[]);
 
-  let bound_args_len_u32 = u32::try_from(bound_args.len()).unwrap_or(u32::MAX);
-  let bound_len = target_len.saturating_sub(bound_args_len_u32);
+  let mut scope = scope.reborrow();
+  // Root target/bound_this across `Get` and metadata coercions (which can invoke user code).
+  scope.push_root(Value::Object(target))?;
+  scope.push_root(bound_this)?;
 
+  // Spec: https://tc39.es/ecma262/#sec-function.prototype.bind
+  // `targetLen = ToLength(Get(target, "length"))` where `Get` is Proxy-trap-observable.
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, target, length_key)?;
+  scope.push_root(len_value)?;
+  let target_len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
+  let bound_len = target_len.saturating_sub(bound_args.len());
+  let bound_len = u32::try_from(bound_len).unwrap_or(u32::MAX);
+
+  // Create the bound function object (ordinary function with bound internal slots).
   let name = scope.alloc_string("bound")?;
-
-  // `Scope::alloc_bound_function` requires the target to be a real `HeapObject::Function` so it can
-  // clone handlers. When binding callable Proxies (or other exotic callables), use placeholder
-  // handlers and rely on the VM's bound-function forwarding logic to delegate via
-  // `[[BoundTargetFunction]]`.
-  let placeholder_call = {
-    let f = scope.heap().get_function(intr.function_prototype())?;
-    f.call.clone()
-  };
-  let placeholder_construct = if is_constructor {
-    let f = scope.heap().get_function(intr.object_constructor())?;
-    f.construct
-  } else {
-    None
-  };
-  let func = scope.alloc_bound_function_with_handlers(
-    placeholder_call,
-    placeholder_construct,
-    target,
-    bound_this,
-    bound_args,
-    name,
-    bound_len,
-  )?;
+  let func = scope.alloc_bound_function(target, bound_this, bound_args, name, bound_len)?;
 
   // Bound functions are ordinary function objects: their `[[Prototype]]` is `%Function.prototype%`.
   scope
@@ -8010,16 +7980,49 @@ pub fn function_prototype_bind(
     .object_set_prototype(func, Some(intr.function_prototype()))?;
 
   // Define standard function metadata properties (`name`, `length`).
+  // `targetName = Get(target, "name")`, non-string => empty string. `Get` is Proxy-trap-observable.
+  let name_key = string_key(&mut scope, "name")?;
+  let name_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, target, name_key)?;
+  scope.push_root(name_value)?;
+  let target_name = match name_value {
+    Value::String(s) => s,
+    _ => {
+      let s = scope.alloc_string("")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
+  };
+
   crate::function_properties::set_function_name(
-    scope,
+    &mut scope,
     func,
     PropertyKey::String(target_name),
     Some("bound"),
   )?;
-  crate::function_properties::set_function_length(scope, func, bound_len)?;
+  crate::function_properties::set_function_length(&mut scope, func, bound_len)?;
 
-  // Best-effort realm propagation: exotic callables may not have `[[Realm]]`.
-  if let Ok(Some(realm)) = scope.heap().get_function_realm(target) {
+  // Best-effort realm propagation: follow proxy chains to the underlying function when possible.
+  let target_realm = {
+    let mut obj = target;
+    let mut remaining = crate::heap::MAX_PROTOTYPE_CHAIN;
+    loop {
+      if remaining == 0 {
+        break None;
+      }
+      remaining -= 1;
+      if let Ok(realm) = scope.heap().get_function_realm(obj) {
+        break realm;
+      }
+      let Some(proxy) = scope.heap().get_proxy_data(obj)? else {
+        break None;
+      };
+      let (Some(next), Some(_handler)) = (proxy.target, proxy.handler) else {
+        break None;
+      };
+      obj = next;
+    }
+  };
+  if let Some(realm) = target_realm {
     scope.heap_mut().set_function_realm(func, realm)?;
   }
 
