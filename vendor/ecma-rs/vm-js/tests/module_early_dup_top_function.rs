@@ -14,6 +14,11 @@ fn assert_module_syntax_error(source: &str) {
 // - language/module-code/early-dup-top-function-async-generator.js
 // - language/module-code/parse-err-hoist-lex-fun.js
 // - language/module-code/parse-err-hoist-lex-gen.js
+// - language/module-code/parse-err-export-dflt-expr.js
+// - language/module-code/parse-err-semi-export-star.js
+// - language/module-code/parse-err-semi-name-space-export.js
+// - language/module-code/parse-err-semi-named-export.js
+// - language/module-code/parse-err-semi-named-export-from.js
 // - language/module-code/early-lex-and-var.js
 // - language/module-code/early-dup-lex.js
 // - language/module-code/early-import-eval.js
@@ -93,6 +98,33 @@ fn rejects_var_and_top_level_generator_function_name_collision() {
       function* g() {}
     "#,
   );
+}
+
+#[test]
+fn rejects_export_default_sequence_expression() {
+  // `export default` parses an AssignmentExpression, so `,` is not permitted unless
+  // parenthesized.
+  assert_module_syntax_error("export default null, null;");
+}
+
+#[test]
+fn rejects_export_star_without_semicolon_or_line_terminator() {
+  assert_module_syntax_error(r#"export * from "./m.js" null;"#);
+}
+
+#[test]
+fn rejects_export_star_as_namespace_without_semicolon_or_line_terminator() {
+  assert_module_syntax_error(r#"export * as ns from "./m.js" null;"#);
+}
+
+#[test]
+fn rejects_export_named_exports_without_semicolon_or_line_terminator() {
+  assert_module_syntax_error("export {} null;");
+}
+
+#[test]
+fn rejects_export_named_exports_from_clause_without_semicolon_or_line_terminator() {
+  assert_module_syntax_error(r#"export {} from "./m.js" null;"#);
 }
 
 #[test]

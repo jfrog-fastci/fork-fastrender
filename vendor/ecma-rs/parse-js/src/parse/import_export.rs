@@ -30,6 +30,7 @@ use crate::lex::LexMode;
 use crate::lex::KEYWORDS_MAPPING;
 use crate::parse::stmt::decl::VarDeclParseMode;
 use crate::token::TT;
+use crate::{operator::OperatorName, operator::OPERATORS};
 use crate::utf16::is_string_well_formed_unicode;
 
 impl<'a> Parser<'a> {
@@ -544,6 +545,14 @@ impl<'a> Parser<'a> {
     if let Some(from_escape) = from_escape {
       node.assoc.set(LegacyOctalEscapeSequence(from_escape));
     }
+
+    // Allow ASI - semicolon not required at EOF or before line terminator.
+    let t = self.peek();
+    if t.typ != TT::EOF && !t.preceded_by_line_terminator {
+      self.require(TT::Semicolon)?;
+    } else {
+      let _ = self.consume_if(TT::Semicolon);
+    }
     Ok(node)
   }
 
@@ -555,7 +564,19 @@ impl<'a> Parser<'a> {
       p.require(TT::KeywordExport)?;
       p.require(TT::KeywordDefault)?;
       let mut asi = Asi::can();
-      let expression = p.expr_with_asi(ctx, [TT::Semicolon], &mut asi)?;
+
+      // `export default <expr>` must parse an `AssignmentExpression`, not a full
+      // `Expression` (i.e. the comma operator is not permitted unless
+      // parenthesized).
+      let expression = p.expr_with_min_prec(
+        ctx,
+        OPERATORS[&OperatorName::ConditionalAlternate].precedence,
+        [TT::Semicolon],
+        &mut asi,
+      )?;
+      if !asi.did_end_with_asi {
+        p.require(TT::Semicolon)?;
+      }
       Ok(ExportDefaultExprStmt { expression })
     })
   }
