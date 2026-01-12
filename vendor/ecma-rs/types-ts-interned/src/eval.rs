@@ -2351,21 +2351,25 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
       TypeKind::NumberLiteral(num) => TemplateStringComputation::Finite(vec![num.0.to_string()]),
       TypeKind::BooleanLiteral(val) => TemplateStringComputation::Finite(vec![val.to_string()]),
       TypeKind::BigIntLiteral(val) => TemplateStringComputation::Finite(vec![val.to_string()]),
-      TypeKind::Boolean => {
-        TemplateStringComputation::Finite(vec!["false".into(), "true".into()])
-      }
+      TypeKind::Boolean => TemplateStringComputation::Finite(vec!["false".into(), "true".into()]),
+      TypeKind::Null => TemplateStringComputation::Finite(vec!["null".into()]),
+      TypeKind::Undefined => TemplateStringComputation::Finite(vec!["undefined".into()]),
       TypeKind::TemplateLiteral(tpl) => self.compute_template_strings(&tpl, subst, depth + 1),
       TypeKind::Union(members) => {
-        let mut out = Vec::new();
         let mut saw_too_large = false;
+        let mut out: AHashSet<String> = AHashSet::new();
         for member in members {
           match self.template_atom_strings(member, subst, depth + 1) {
-            TemplateStringComputation::Finite(mut vals) => {
-              if !saw_too_large {
-                out.append(&mut vals);
+            TemplateStringComputation::Finite(vals) => {
+              if saw_too_large {
+                continue;
+              }
+              for val in vals {
+                out.insert(val);
                 if out.len() > self.limits.max_template_strings {
                   saw_too_large = true;
                   out.clear();
+                  break;
                 }
               }
             }
@@ -2376,6 +2380,9 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
         if saw_too_large {
           TemplateStringComputation::TooLarge
         } else {
+          let mut out: Vec<String> = out.into_iter().collect();
+          out.sort();
+          out.dedup();
           TemplateStringComputation::Finite(out)
         }
       }

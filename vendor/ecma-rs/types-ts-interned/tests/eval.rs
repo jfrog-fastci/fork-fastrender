@@ -2433,6 +2433,116 @@ fn template_literal_distributes_over_union_parts() {
 }
 
 #[test]
+fn template_literal_expands_boolean_to_true_false_union() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: primitives.boolean,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::Union(members) = store.type_kind(result) else {
+    panic!("expected union, got {:?}", store.type_kind(result));
+  };
+
+  let mut strings: Vec<_> = members
+    .iter()
+    .map(|m| match store.type_kind(*m) {
+      TypeKind::StringLiteral(id) => store.name(id),
+      other => panic!("unexpected member {:?}", other),
+    })
+    .collect();
+  strings.sort();
+  assert_eq!(strings, vec!["false".to_string(), "true".to_string()]);
+}
+
+#[test]
+fn template_literal_expands_null_to_literal() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: primitives.null,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::StringLiteral(id) = store.type_kind(result) else {
+    panic!("expected string literal, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(store.name(id), "null".to_string());
+}
+
+#[test]
+fn template_literal_expands_undefined_to_literal() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: primitives.undefined,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::StringLiteral(id) = store.type_kind(result) else {
+    panic!("expected string literal, got {:?}", store.type_kind(result));
+  };
+  assert_eq!(store.name(id), "undefined".to_string());
+}
+
+#[test]
+fn template_literal_expands_boolean_in_mixed_template() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "x_".into(),
+    spans: vec![TemplateChunk {
+      literal: "".into(),
+      ty: primitives.boolean,
+    }],
+  }));
+
+  let default_expander = MockExpander::default();
+  let mut eval = evaluator(store.clone(), &default_expander);
+  let result = eval.evaluate(tpl);
+
+  let TypeKind::Union(members) = store.type_kind(result) else {
+    panic!("expected union, got {:?}", store.type_kind(result));
+  };
+
+  let mut strings: Vec<_> = members
+    .iter()
+    .map(|m| match store.type_kind(*m) {
+      TypeKind::StringLiteral(id) => store.name(id),
+      other => panic!("unexpected member {:?}", other),
+    })
+    .collect();
+  strings.sort();
+  assert_eq!(strings, vec!["x_false".to_string(), "x_true".to_string()]);
+}
+
+#[test]
 fn template_literal_pattern_is_preserved() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
