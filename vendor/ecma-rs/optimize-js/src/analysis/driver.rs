@@ -832,7 +832,19 @@ pub fn annotate_program_typed(
   let Some(type_program) = types.program.as_deref() else {
     return annotate_program(program);
   };
+  annotate_program_with_typecheck(program, type_program)
+}
 
+/// Typed variant of [`annotate_program`] when the caller already has access to the `typecheck-ts`
+/// program.
+///
+/// This enables strict-native field-level effect modeling (see `analysis/effect.rs`) while keeping
+/// the rest of the analysis pipeline identical.
+#[cfg(feature = "typed")]
+pub fn annotate_program_with_typecheck(
+  program: &mut Program,
+  type_program: &typecheck_ts::Program,
+) -> ProgramAnalyses {
   let keys = function_keys(program);
   let call_summaries = call_summary::summarize_program(program);
 

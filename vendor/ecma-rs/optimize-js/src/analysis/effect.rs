@@ -69,6 +69,10 @@ fn collect_insts(cfg: &Cfg) -> Vec<&Inst> {
 // - the property key is a constant (string/number), and
 // - the receiver has a known, finite set of object shapes (from `typecheck-ts` + `types-ts-interned`).
 //
+// Note: `native_strict` still permits computed property access with dynamic *numeric* keys when the
+// receiver has a numeric index signature. This pass currently only refines constant-key accesses;
+// dynamic indexer cases conservatively fall back to `EffectLocation::Heap`.
+//
 // When those conditions are met, we can model effects at field granularity via
 // `EffectLocation::Field { shape, key }`, enabling safe reordering and better load/store elimination.
 
