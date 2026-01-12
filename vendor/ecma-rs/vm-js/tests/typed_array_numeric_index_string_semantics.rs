@@ -1,0 +1,72 @@
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+fn new_runtime() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
+#[test]
+fn typed_array_canonical_numeric_index_string_keys_do_not_fall_back_to_prototype() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      (function () {
+        // Poison the prototype chain with numeric-looking keys. TypedArrays must not consult the
+        // prototype chain for canonical numeric index string keys.
+        Object.prototype["-1"] = 123;
+        Object.prototype["1.5"] = 456;
+
+        let u = new Uint8Array(2);
+
+        let ok_get = u["-1"] === undefined && u["1.5"] === undefined;
+        let ok_in = ("-1" in u) === false && ("1.5" in u) === false;
+
+        // Invalid numeric indices should be ignored (and therefore not throw in strict mode).
+        let ok_set_strict = (function () {
+          "use strict";
+          try {
+            u["-1"] = 1;
+            u["1.5"] = 1;
+            return true;
+          } catch (e) {
+            return false;
+          }
+        })();
+
+        let ok_no_own_props =
+          u.hasOwnProperty("-1") === false &&
+          u.hasOwnProperty("1.5") === false;
+
+        return ok_get && ok_in && ok_set_strict && ok_no_own_props;
+      })()
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn typed_array_set_receiver_semantics_match_spec() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      {
+        let u = new Uint8Array(1);
+        let receiver = {};
+
+        // When receiver != target and the key is a valid integer index, fall back to ordinary set
+        // semantics (define on receiver rather than writing through the typed array).
+        let ok_valid = Reflect.set(u, "0", 7, receiver) === true && u[0] === 0 && receiver[0] === 7;
+
+        // When the key is a canonical numeric index string but not a valid integer index, the set
+        // is a no-op that still reports success.
+        let ok_invalid = Reflect.set(u, "-1", 9, receiver) === true && receiver["-1"] === undefined;
+
+        ok_valid && ok_invalid
+      }
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

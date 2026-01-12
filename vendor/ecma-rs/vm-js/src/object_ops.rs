@@ -736,12 +736,12 @@ impl<'a> Scope<'a> {
   }
 
   /// ECMAScript `[[HasProperty]]` for ordinary objects.
-  pub fn ordinary_has_property(&self, obj: GcObject, key: PropertyKey) -> Result<bool, VmError> {
+  pub fn ordinary_has_property(&mut self, obj: GcObject, key: PropertyKey) -> Result<bool, VmError> {
     self.ordinary_has_property_with_tick(obj, key, || Ok(()))
   }
 
   pub fn ordinary_has_property_with_tick(
-    &self,
+    &mut self,
     obj: GcObject,
     key: PropertyKey,
     mut tick: impl FnMut() -> Result<(), VmError>,
@@ -758,7 +758,12 @@ impl<'a> Scope<'a> {
 
       let Some(numeric_index) = self.heap().canonical_numeric_index_string(s)? else {
         // Non-numeric keys use ordinary `[[HasProperty]]` semantics.
-        return Ok(self.heap().get_property_with_tick(obj, &PropertyKey::String(s), &mut tick)?.is_some());
+        return Ok(
+          self
+            .heap()
+            .get_property_with_tick(obj, &PropertyKey::String(s), &mut tick)?
+            .is_some(),
+        );
       };
 
       // `IsValidIntegerIndex`
@@ -1009,10 +1014,15 @@ impl<'a> Scope<'a> {
       return Ok(value);
     }
 
-    // Integer-indexed exotic objects (typed arrays): numeric index keys do not consult the
-    // prototype chain. If we didn't find an own property above, this is an out-of-bounds index.
-    if self.heap().is_typed_array_object(obj) && self.heap().array_index(&key).is_some() {
-      return Ok(Value::Undefined);
+    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys do not
+    // consult the prototype chain. If we didn't find an own property above, this is an invalid
+    // integer index.
+    if self.heap().is_typed_array_object(obj) {
+      if let PropertyKey::String(s) = key {
+        if self.heap_mut().canonical_numeric_index_string(s)?.is_some() {
+          return Ok(Value::Undefined);
+        }
+      }
     }
 
     let Some(desc) = self
@@ -1090,11 +1100,15 @@ impl<'a> Scope<'a> {
       return Ok(value);
     }
 
-    // Integer-indexed exotic objects (typed arrays): numeric index keys do not consult the
-    // prototype chain or host exotic hooks. If we didn't find an own property above, this is an
-    // out-of-bounds index.
-    if scope.heap().is_typed_array_object(obj) && scope.heap().array_index(&key).is_some() {
-      return Ok(Value::Undefined);
+    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys do not
+    // consult the prototype chain or host exotic hooks. If we didn't find an own property above,
+    // this is an invalid integer index.
+    if scope.heap().is_typed_array_object(obj) {
+      if let PropertyKey::String(s) = key {
+        if scope.heap_mut().canonical_numeric_index_string(s)?.is_some() {
+          return Ok(Value::Undefined);
+        }
+      }
     }
 
     // Host hook for "exotic" property getters (e.g. DOM named properties) runs before walking the
@@ -1219,11 +1233,15 @@ impl<'a> Scope<'a> {
         return Ok(value);
       }
 
-      // Integer-indexed exotic objects (typed arrays): numeric index keys do not consult the
-      // prototype chain or host exotic hooks. If we didn't find an own property above, this is an
-      // out-of-bounds index.
-      if scope.heap().is_typed_array_object(current) && scope.heap().array_index(&key).is_some() {
-        return Ok(Value::Undefined);
+      // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys do not
+      // consult the prototype chain or host exotic hooks. If we didn't find an own property above,
+      // this is an invalid integer index.
+      if scope.heap().is_typed_array_object(current) {
+        if let PropertyKey::String(s) = key {
+          if scope.heap_mut().canonical_numeric_index_string(s)?.is_some() {
+            return Ok(Value::Undefined);
+          }
+        }
       }
 
       // Host hook for "exotic" property getters (e.g. DOM named properties) runs before walking the
@@ -1259,28 +1277,32 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    // Integer-indexed exotic objects (typed arrays): numeric index keys do not consult the
-    // prototype chain.
-    if self.heap().is_typed_array_object(obj) && self.heap().array_index(&key).is_some() {
-      if let Some(desc) = self
-        .heap()
-        .object_get_own_property_with_tick(obj, &key, || vm.tick())?
-      {
-        return match desc.kind {
-          PropertyKind::Data { value, .. } => Ok(value),
-          PropertyKind::Accessor { get, .. } => {
-            if matches!(get, Value::Undefined) {
-              Ok(Value::Undefined)
-            } else {
-              if !self.heap().is_callable(get)? {
-                return Err(VmError::TypeError("accessor getter is not callable"));
+    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys do not
+    // consult the prototype chain.
+    if self.heap().is_typed_array_object(obj) {
+      if let PropertyKey::String(s) = key {
+        if self.heap_mut().canonical_numeric_index_string(s)?.is_some() {
+          if let Some(desc) = self
+            .heap()
+            .object_get_own_property_with_tick(obj, &key, || vm.tick())?
+          {
+            return match desc.kind {
+              PropertyKind::Data { value, .. } => Ok(value),
+              PropertyKind::Accessor { get, .. } => {
+                if matches!(get, Value::Undefined) {
+                  Ok(Value::Undefined)
+                } else {
+                  if !self.heap().is_callable(get)? {
+                    return Err(VmError::TypeError("accessor getter is not callable"));
+                  }
+                  vm.call_with_host(self, host, get, receiver, &[])
+                }
               }
-              vm.call_with_host(self, host, get, receiver, &[])
-            }
+            };
           }
-        };
+          return Ok(Value::Undefined);
+        }
       }
-      return Ok(Value::Undefined);
     }
 
     let Some(desc) = self
@@ -1333,25 +1355,49 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
-    // Integer-indexed exotic objects (typed arrays): numeric index writes update the view's backing
-    // buffer.
-    //
-    // Per `IntegerIndexedExoticObject.[[Set]]`, numeric index writes:
-    // - return `false` if `receiver` is not the typed array itself,
-    // - silently no-op for detached/out-of-bounds,
-    // - and report success so strict-mode assignments do not throw.
+    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys use
+    // TypedArray `[[Set]]` semantics.
     if self.heap().is_typed_array_object(obj) {
-      if let Some(index) = self.heap().array_index(&key) {
-        let Value::Object(receiver_obj) = receiver else {
-          return Ok(false);
-        };
-        if receiver_obj != obj {
-          return Ok(false);
+      if let PropertyKey::String(s) = key {
+        if let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? {
+          // `SameValue(O, Receiver)` check: element writes only happen when `receiver` is the typed
+          // array object itself.
+          if let Value::Object(receiver_obj) = receiver {
+            if receiver_obj == obj {
+              // `TypedArraySetElement`: no-op for invalid integer indices, out-of-bounds, or
+              // detached buffers.
+              if numeric_index.is_finite()
+                && numeric_index.fract() == 0.0
+                && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
+                && numeric_index >= 0.0
+              {
+                let _ = self
+                  .heap_mut()
+                  .typed_array_set_element_value(obj, numeric_index as usize, value)?;
+              }
+              return Ok(true);
+            }
+          }
+
+          // If `receiver` is not the typed array itself, only fall back to ordinary `[[Set]]` when
+          // the numeric index is a valid integer index.
+          //
+          // Spec: https://tc39.es/ecma262/#sec-typedarray-set
+          if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
+            return Ok(true);
+          }
+          if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+            return Ok(true);
+          }
+          if numeric_index < 0.0 {
+            return Ok(true);
+          }
+          let len = self.heap().typed_array_length(obj)?;
+          if numeric_index >= len as f64 {
+            return Ok(true);
+          }
+          // Valid integer index: continue with ordinary `[[Set]]` semantics below.
         }
-        let _ = self
-          .heap_mut()
-          .typed_array_set_element_value(obj, index as usize, value)?;
-        return Ok(true);
       }
     }
 
@@ -1450,20 +1496,49 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
-    // Integer-indexed exotic objects (typed arrays): numeric index keys never consult host exotic
-    // setters or the prototype chain.
+    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys use
+    // TypedArray `[[Set]]` semantics.
     if self.heap().is_typed_array_object(obj) {
-      if let Some(index) = self.heap().array_index(&key) {
-        let Value::Object(receiver_obj) = receiver else {
-          return Ok(false);
-        };
-        if receiver_obj != obj {
-          return Ok(false);
+      if let PropertyKey::String(s) = key {
+        if let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? {
+          // `SameValue(O, Receiver)` check: element writes only happen when `receiver` is the typed
+          // array object itself.
+          if let Value::Object(receiver_obj) = receiver {
+            if receiver_obj == obj {
+              // `TypedArraySetElement`: no-op for invalid integer indices, out-of-bounds, or
+              // detached buffers.
+              if numeric_index.is_finite()
+                && numeric_index.fract() == 0.0
+                && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
+                && numeric_index >= 0.0
+              {
+                let _ = self
+                  .heap_mut()
+                  .typed_array_set_element_value(obj, numeric_index as usize, value)?;
+              }
+              return Ok(true);
+            }
+          }
+
+          // If `receiver` is not the typed array itself, only fall back to ordinary `[[Set]]` when
+          // the numeric index is a valid integer index.
+          //
+          // Spec: https://tc39.es/ecma262/#sec-typedarray-set
+          if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
+            return Ok(true);
+          }
+          if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+            return Ok(true);
+          }
+          if numeric_index < 0.0 {
+            return Ok(true);
+          }
+          let len = self.heap().typed_array_length(obj)?;
+          if numeric_index >= len as f64 {
+            return Ok(true);
+          }
+          // Valid integer index: continue with ordinary `[[Set]]` semantics below.
         }
-        let _ = self
-          .heap_mut()
-          .typed_array_set_element_value(obj, index as usize, value)?;
-        return Ok(true);
       }
     }
 
@@ -1471,17 +1546,6 @@ impl<'a> Scope<'a> {
     // `[[Set]]` processing so it can override prototype-chain properties like `constructor`.
     if let Some(result) = hooks.host_exotic_set(self, obj, key, value, receiver)? {
       return Ok(result);
-    }
-
-    // Integer-indexed exotic objects (typed arrays): numeric index writes update the underlying
-    // ArrayBuffer when in-bounds, but are otherwise a no-op that still reports success.
-    if self.heap().is_typed_array_object(obj) {
-      if let Some(index) = self.heap().array_index(&key) {
-        let _ = self
-          .heap_mut()
-          .typed_array_set_element_value(obj, index as usize, value)?;
-        return Ok(true);
-      }
     }
 
     let mut desc = self
@@ -1569,12 +1633,24 @@ impl<'a> Scope<'a> {
       return Ok(false);
     }
 
-    // Integer-indexed exotic objects (typed arrays): in-range numeric index properties are
-    // non-configurable and cannot be deleted.
+    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys are
+    // non-deletable when they refer to a valid integer index.
     if self.heap().is_typed_array_object(obj) {
-      if let Some(idx) = self.heap().array_index(&key) {
-        if (idx as usize) < self.heap().typed_array_length(obj)? {
-          return Ok(false);
+      if let PropertyKey::String(s) = key {
+        if let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? {
+          // `IsValidIntegerIndex`
+          if numeric_index.is_finite()
+            && numeric_index.fract() == 0.0
+            && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
+            && numeric_index >= 0.0
+          {
+            let len = self.heap().typed_array_length(obj)?;
+            if numeric_index < len as f64 {
+              return Ok(false);
+            }
+          }
+          // Invalid integer index: treated as non-existent.
+          return Ok(true);
         }
       }
     }
@@ -1610,12 +1686,24 @@ impl<'a> Scope<'a> {
       return Ok(false);
     }
 
-    // Integer-indexed exotic objects (typed arrays): in-range numeric index properties are
-    // non-configurable and cannot be deleted.
+    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys are
+    // non-deletable when they refer to a valid integer index.
     if self.heap().is_typed_array_object(obj) {
-      if let Some(idx) = self.heap().array_index(&key) {
-        if (idx as usize) < self.heap().typed_array_length(obj)? {
-          return Ok(false);
+      if let PropertyKey::String(s) = key {
+        if let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? {
+          // `IsValidIntegerIndex`
+          if numeric_index.is_finite()
+            && numeric_index.fract() == 0.0
+            && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
+            && numeric_index >= 0.0
+          {
+            let len = self.heap().typed_array_length(obj)?;
+            if numeric_index < len as f64 {
+              return Ok(false);
+            }
+          }
+          // Invalid integer index: treated as non-existent.
+          return Ok(true);
         }
       }
     }
