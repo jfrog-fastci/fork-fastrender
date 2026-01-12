@@ -3,6 +3,38 @@ use crate::web::events::EventTargetId;
 use std::collections::HashMap;
 use vm_js::{GcObject, Heap, Realm, RealmId, RootId, Scope, Value, VmError, WeakGcObject};
 
+/// Uniquely identifies a `dom2::Document` within a JS realm.
+///
+/// Note: `dom2::NodeId` values are only unique within a document, not across documents.
+pub type DocumentId = u64;
+
+/// Unique identity for a `dom2` node in a realm.
+///
+/// This is the cache key used by `DomPlatform` when maintaining stable wrapper identity across
+/// multiple documents inside the same realm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DomNodeKey {
+  pub document_id: DocumentId,
+  pub node_id: NodeId,
+}
+
+impl DomNodeKey {
+  pub const fn new(document_id: DocumentId, node_id: NodeId) -> Self {
+    Self {
+      document_id,
+      node_id,
+    }
+  }
+}
+
+impl From<NodeId> for DomNodeKey {
+  fn from(node_id: NodeId) -> Self {
+    // Legacy single-document call sites still pass bare `NodeId` values. Treat those as belonging
+    // to document 0 until callers are updated to pass an explicit `DocumentId`.
+    Self::new(0, node_id)
+  }
+}
+
 /// Primary interface brand for a `dom2` platform object wrapper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomInterface {
@@ -44,6 +76,7 @@ impl DomInterface {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DomWrapperMeta {
+  pub document_id: DocumentId,
   pub node_id: NodeId,
   pub primary_interface: DomInterface,
   pub realm_id: RealmId,
@@ -62,7 +95,7 @@ struct DomPrototypes {
 /// Per-realm platform-object registry for `dom2` node wrappers inside a `vm-js` realm.
 ///
 /// The registry provides:
-/// - stable wrapper identity via `NodeId -> WeakGcObject` caching,
+/// - stable wrapper identity via `DomNodeKey -> WeakGcObject` caching,
 /// - host-owned wrapper metadata via `WeakGcObject -> DomWrapperMeta` tables, and
 /// - pre-allocated prototype objects with a WebIDL-shaped inheritance chain.
 ///
@@ -72,7 +105,7 @@ pub struct DomPlatform {
   realm_id: RealmId,
   prototypes: DomPrototypes,
   prototype_roots: Vec<RootId>,
-  wrappers_by_node: HashMap<NodeId, WeakGcObject>,
+  wrappers_by_node: HashMap<DomNodeKey, WeakGcObject>,
   meta_by_wrapper: HashMap<WeakGcObject, DomWrapperMeta>,
   last_gc_runs: u64,
 }
@@ -193,16 +226,18 @@ impl DomPlatform {
     &mut self,
     heap: &Heap,
     wrapper: GcObject,
-    node_id: NodeId,
+    node: impl Into<DomNodeKey>,
     primary_interface: DomInterface,
   ) {
     self.sweep_dead_wrappers_if_needed(heap);
+    let key = node.into();
     let weak = WeakGcObject::from(wrapper);
-    self.wrappers_by_node.insert(node_id, weak);
+    self.wrappers_by_node.insert(key, weak);
     self.meta_by_wrapper.insert(
       weak,
       DomWrapperMeta {
-        node_id,
+        document_id: key.document_id,
+        node_id: key.node_id,
         primary_interface,
         realm_id: self.realm_id,
       },
@@ -210,11 +245,12 @@ impl DomPlatform {
   }
 
   /// Return an existing wrapper for `node_id` if still alive.
-  pub fn get_existing_wrapper(&mut self, heap: &Heap, node_id: NodeId) -> Option<GcObject> {
+  pub fn get_existing_wrapper(&mut self, heap: &Heap, node: impl Into<DomNodeKey>) -> Option<GcObject> {
     self.sweep_dead_wrappers_if_needed(heap);
+    let key = node.into();
     self
       .wrappers_by_node
-      .get(&node_id)
+      .get(&key)
       .copied()
       .and_then(|weak| weak.upgrade(heap))
   }
@@ -222,10 +258,11 @@ impl DomPlatform {
   pub fn get_or_create_wrapper(
     &mut self,
     scope: &mut Scope<'_>,
-    node_id: NodeId,
+    node: impl Into<DomNodeKey>,
     primary_interface: DomInterface,
   ) -> Result<GcObject, VmError> {
-    if let Some(existing) = self.get_existing_wrapper(scope.heap(), node_id) {
+    let key = node.into();
+    if let Some(existing) = self.get_existing_wrapper(scope.heap(), key) {
       return Ok(existing);
     }
 
@@ -233,7 +270,7 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(wrapper, Some(self.prototype_for(primary_interface)))?;
-    self.register_wrapper(scope.heap(), wrapper, node_id, primary_interface);
+    self.register_wrapper(scope.heap(), wrapper, key, primary_interface);
     Ok(wrapper)
   }
 
@@ -254,43 +291,43 @@ impl DomPlatform {
       .ok_or(VmError::TypeError("Illegal invocation"))
   }
 
-  pub fn require_node_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+  pub fn require_node_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
     if !meta.primary_interface.implements(DomInterface::Node) {
       return Err(VmError::TypeError("Illegal invocation"));
     }
-    Ok(meta.node_id)
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
   }
 
-  pub fn require_element_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+  pub fn require_element_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
     if !meta.primary_interface.implements(DomInterface::Element) {
       return Err(VmError::TypeError("Illegal invocation"));
     }
-    Ok(meta.node_id)
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
   }
 
-  pub fn require_text_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+  pub fn require_text_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
     if !meta.primary_interface.implements(DomInterface::Text) {
       return Err(VmError::TypeError("Illegal invocation"));
     }
-    Ok(meta.node_id)
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
   }
 
-  pub fn require_document_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+  pub fn require_document_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
     if !meta.primary_interface.implements(DomInterface::Document) {
       return Err(VmError::TypeError("Illegal invocation"));
     }
-    Ok(meta.node_id)
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
   }
 
-  pub fn require_document_fragment_id(
+  pub fn require_document_fragment_handle(
     &mut self,
     heap: &Heap,
     value: Value,
-  ) -> Result<NodeId, VmError> {
+  ) -> Result<DomNodeKey, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
     if !meta
       .primary_interface
@@ -298,7 +335,31 @@ impl DomPlatform {
     {
       return Err(VmError::TypeError("Illegal invocation"));
     }
-    Ok(meta.node_id)
+    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+  }
+
+  pub fn require_node_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+    Ok(self.require_node_handle(heap, value)?.node_id)
+  }
+
+  pub fn require_element_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+    Ok(self.require_element_handle(heap, value)?.node_id)
+  }
+
+  pub fn require_text_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+    Ok(self.require_text_handle(heap, value)?.node_id)
+  }
+
+  pub fn require_document_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
+    Ok(self.require_document_handle(heap, value)?.node_id)
+  }
+
+  pub fn require_document_fragment_id(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<NodeId, VmError> {
+    Ok(self.require_document_fragment_handle(heap, value)?.node_id)
   }
 
   pub fn event_target_id_for_value(
@@ -313,7 +374,7 @@ impl DomPlatform {
 
 #[cfg(test)]
 mod tests {
-  use super::{DomInterface, DomPlatform};
+  use super::{DomInterface, DomNodeKey, DomPlatform};
   use crate::dom2::NodeId;
   use vm_js::{Heap, HeapLimits, Realm, Value, Vm, VmError, VmOptions, WeakGcObject};
 
@@ -338,14 +399,36 @@ mod tests {
     let mut scope = heap.scope();
     let mut platform = DomPlatform::new(&mut scope, realm)?;
 
-    let node_id = NodeId::from_index(1);
-    let wrapper1 = platform.get_or_create_wrapper(&mut scope, node_id, DomInterface::Element)?;
+    let key = DomNodeKey::new(1, NodeId::from_index(1));
+    let wrapper1 = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
     let root = scope.heap_mut().add_root(Value::Object(wrapper1))?;
 
-    let wrapper2 = platform.get_or_create_wrapper(&mut scope, node_id, DomInterface::Element)?;
+    let wrapper2 = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
     assert_eq!(wrapper1, wrapper2);
 
     scope.heap_mut().remove_root(root);
+    Ok(())
+  }
+
+  #[test]
+  fn wrapping_same_node_id_in_different_documents_does_not_collide() -> Result<(), VmError> {
+    let mut runtime = make_runtime()?;
+    let (realm, heap) = split_runtime_realm(&mut runtime);
+    let mut scope = heap.scope();
+    let mut platform = DomPlatform::new(&mut scope, realm)?;
+
+    let key1 = DomNodeKey::new(1, NodeId::from_index(1));
+    let wrapper1 = platform.get_or_create_wrapper(&mut scope, key1, DomInterface::Element)?;
+    let root1 = scope.heap_mut().add_root(Value::Object(wrapper1))?;
+
+    let key2 = DomNodeKey::new(2, NodeId::from_index(1));
+    let wrapper2 = platform.get_or_create_wrapper(&mut scope, key2, DomInterface::Element)?;
+    let root2 = scope.heap_mut().add_root(Value::Object(wrapper2))?;
+
+    assert_ne!(wrapper1, wrapper2);
+
+    scope.heap_mut().remove_root(root2);
+    scope.heap_mut().remove_root(root1);
     Ok(())
   }
 
@@ -356,8 +439,8 @@ mod tests {
     let mut scope = heap.scope();
     let mut platform = DomPlatform::new(&mut scope, realm)?;
 
-    let node_id = NodeId::from_index(1);
-    let wrapper = platform.get_or_create_wrapper(&mut scope, node_id, DomInterface::Element)?;
+    let key = DomNodeKey::new(1, NodeId::from_index(1));
+    let wrapper = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
     let weak = WeakGcObject::from(wrapper);
     let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
@@ -367,7 +450,7 @@ mod tests {
     assert!(weak.upgrade(scope.heap()).is_none());
 
     // Re-wrapping after collection should succeed; identity may change.
-    let wrapper2 = platform.get_or_create_wrapper(&mut scope, node_id, DomInterface::Element)?;
+    let wrapper2 = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
     assert_ne!(wrapper, wrapper2);
     Ok(())
   }
@@ -379,27 +462,27 @@ mod tests {
     let mut scope = heap.scope();
     let mut platform = DomPlatform::new(&mut scope, realm)?;
 
-    let node_id = NodeId::from_index(1);
-    let wrapper = platform.get_or_create_wrapper(&mut scope, node_id, DomInterface::Element)?;
+    let key = DomNodeKey::new(1, NodeId::from_index(1));
+    let wrapper = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
     let _root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
     assert_eq!(
-      platform.require_node_id(scope.heap(), Value::Object(wrapper))?,
-      node_id
+      platform.require_node_handle(scope.heap(), Value::Object(wrapper))?,
+      key
     );
     assert_eq!(
-      platform.require_element_id(scope.heap(), Value::Object(wrapper))?,
-      node_id
+      platform.require_element_handle(scope.heap(), Value::Object(wrapper))?,
+      key
     );
 
-    let err = platform.require_document_id(scope.heap(), Value::Object(wrapper));
+    let err = platform.require_document_handle(scope.heap(), Value::Object(wrapper));
     assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
 
     let obj = scope.alloc_object()?;
-    let err = platform.require_node_id(scope.heap(), Value::Object(obj));
+    let err = platform.require_node_handle(scope.heap(), Value::Object(obj));
     assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
 
-    let err = platform.require_node_id(scope.heap(), Value::Undefined);
+    let err = platform.require_node_handle(scope.heap(), Value::Undefined);
     assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
     Ok(())
   }
