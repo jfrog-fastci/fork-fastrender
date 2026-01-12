@@ -261,6 +261,15 @@ pub enum UiToWorker {
   Reload {
     tab_id: TabId,
   },
+  /// Cancel the current in-flight navigation and/or paint work for a tab.
+  ///
+  /// This mirrors the "Stop loading" browser chrome action:
+  /// - Keep the currently committed document visible (do not navigate to an error page).
+  /// - Clear any provisional/pending navigation state (including provisional history entries).
+  /// - Set `loading=false` promptly so the chrome can toggle from stop → reload.
+  StopLoading {
+    tab_id: TabId,
+  },
   /// Periodic "tick" from the UI thread used to drive the tab's event loop and repaint pipeline.
   ///
   /// The render worker should execute a bounded slice of JS/event-loop work (timers, microtasks)
@@ -647,6 +656,7 @@ mod tests {
       UiToWorker::GoBack { tab_id },
       UiToWorker::GoForward { tab_id },
       UiToWorker::Reload { tab_id },
+      UiToWorker::StopLoading { tab_id },
     ];
 
     for msg in msgs {

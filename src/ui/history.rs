@@ -25,6 +25,14 @@ impl HistoryEntry {
 pub struct TabHistory {
   entries: Vec<HistoryEntry>,
   index: Option<usize>,
+  /// Index of the last committed history entry.
+  ///
+  /// The worker can advance `index` optimistically while a navigation is in-flight (for example
+  /// `GoBack`/`GoForward`, or provisional entries pushed for typed navigations). `committed_index`
+  /// tracks the entry that still corresponds to the currently committed document so that
+  /// cancellation (StopLoading) can restore back/forward invariants and avoid leaving cancelled
+  /// navigations as the active history entry.
+  committed_index: Option<usize>,
 }
 
 impl TabHistory {
@@ -36,6 +44,7 @@ impl TabHistory {
     Self {
       entries: vec![HistoryEntry::new(url)],
       index: Some(0),
+      committed_index: Some(0),
     }
   }
 
@@ -91,6 +100,78 @@ impl TabHistory {
         };
         entry.url = url;
       }
+    }
+  }
+
+  /// Mark the current history entry as committed.
+  pub fn mark_committed(&mut self) {
+    self.committed_index = self.index;
+  }
+
+  /// Restore `index` back to the last committed entry.
+  pub fn revert_to_committed(&mut self) {
+    let Some(committed) = self.committed_index else {
+      return;
+    };
+    if committed < self.entries.len() {
+      self.index = Some(committed);
+    } else if self.entries.is_empty() {
+      self.index = None;
+      self.committed_index = None;
+    } else {
+      // Defensive: clamp to the last entry and consider it committed so invariants stay sane.
+      let last = self.entries.len().saturating_sub(1);
+      self.index = Some(last);
+      self.committed_index = Some(last);
+    }
+  }
+
+  /// Cancel a provisional history entry for an in-flight navigation.
+  ///
+  /// This is intended for typed/link-click navigations that optimistically pushed a provisional
+  /// history entry before commit. On cancellation, we remove that entry entirely so it does not
+  /// appear as the current entry (or as a forward entry).
+  pub fn cancel_pending_navigation_entry(&mut self) {
+    let Some(i) = self.index else {
+      return;
+    };
+    if i >= self.entries.len() {
+      debug_assert!(false, "TabHistory invariant violated: index out of bounds");
+      self.revert_to_committed();
+      return;
+    }
+
+    self.entries.remove(i);
+
+    // Update the committed index when removing entries before it (defensive; stop-loading should
+    // only remove provisional entries that were appended after the committed entry).
+    if let Some(committed) = self.committed_index {
+      if committed == i {
+        self.committed_index = None;
+      } else if committed > i {
+        self.committed_index = Some(committed - 1);
+      }
+    }
+
+    if self.entries.is_empty() {
+      self.index = None;
+      self.committed_index = None;
+      return;
+    }
+
+    // Prefer restoring to the last committed entry when available.
+    if let Some(committed) = self.committed_index {
+      if committed < self.entries.len() {
+        self.index = Some(committed);
+        return;
+      }
+    }
+
+    // Otherwise, fall back to the nearest remaining entry.
+    if i > 0 {
+      self.index = Some(i - 1);
+    } else {
+      self.index = Some(0);
     }
   }
 
@@ -187,18 +268,25 @@ impl TabHistory {
     let Some(i) = self.index else {
       return None;
     };
-    let Some(final_url) = final_url else {
-      return self.current();
-    };
     let Some(entry) = self.entries.get_mut(i) else {
       debug_assert!(false, "TabHistory invariant violated: index out of bounds");
       return None;
     };
 
-    if entry.url == original_url && final_url != original_url {
-      entry.url = final_url.to_string();
+    // Guard against stale completions: do not mark a navigation as committed unless the current
+    // entry still matches the navigation's original URL.
+    if entry.url != original_url {
+      return self.current();
     }
 
+    if let Some(final_url) = final_url {
+      if final_url != original_url {
+        entry.url = final_url.to_string();
+      }
+    }
+
+    entry.timestamp = Some(SystemTime::now());
+    self.committed_index = self.index;
     self.current()
   }
 }

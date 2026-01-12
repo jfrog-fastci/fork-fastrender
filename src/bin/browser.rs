@@ -2292,6 +2292,7 @@ impl App {
       | UiToWorker::GoBack { tab_id }
       | UiToWorker::GoForward { tab_id }
       | UiToWorker::Reload { tab_id }
+      | UiToWorker::StopLoading { tab_id }
       | UiToWorker::Tick { tab_id }
       | UiToWorker::ViewportChanged { tab_id, .. }
       | UiToWorker::Scroll { tab_id, .. }
@@ -2326,7 +2327,8 @@ impl App {
           UiToWorker::Navigate { .. }
           | UiToWorker::GoBack { .. }
           | UiToWorker::GoForward { .. }
-          | UiToWorker::Reload { .. } => cancel.bump_nav(),
+          | UiToWorker::Reload { .. }
+          | UiToWorker::StopLoading { .. } => cancel.bump_nav(),
           // Repaint-driving events should cancel in-flight paints so we don't waste time rendering
           // intermediate frames (e.g. rapid scroll/resize/typing).
           UiToWorker::ViewportChanged { .. }
@@ -4746,16 +4748,12 @@ impl App {
           }
 
           if matches!(key, VirtualKeyCode::PageUp) {
-            self.update_open_select_dropdown_selection_by_enabled_delta(
-              -Self::SELECT_DROPDOWN_PAGE_STEP,
-            );
+            self.update_open_select_dropdown_selection_by_enabled_delta(-Self::SELECT_DROPDOWN_PAGE_STEP);
             self.window.request_redraw();
             return;
           }
           if matches!(key, VirtualKeyCode::PageDown) {
-            self.update_open_select_dropdown_selection_by_enabled_delta(
-              Self::SELECT_DROPDOWN_PAGE_STEP,
-            );
+            self.update_open_select_dropdown_selection_by_enabled_delta(Self::SELECT_DROPDOWN_PAGE_STEP);
             self.window.request_redraw();
             return;
           }
@@ -4813,6 +4811,34 @@ impl App {
           // (e.g. Tab focus navigation, browser shortcuts).
           self.cancel_select_dropdown();
           self.window.request_redraw();
+        }
+
+        if matches!(key, VirtualKeyCode::Escape) {
+          // Escape should:
+          // - dismiss popups (handled above for `<select>`; handled elsewhere for context menus),
+          // - cancel address bar editing (handled inside the egui frame),
+          // - otherwise act as "Stop loading" when a navigation is in-flight.
+          //
+          // Only trigger stop when egui is not actively editing text and when no popups are open,
+          // matching typical browser UX.
+          if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
+            // Let the context menu consume Escape (close it), rather than interpreting it as stop.
+            self.close_context_menu();
+            self.window.request_redraw();
+            return;
+          }
+
+          if !self.egui_ctx.wants_keyboard_input() {
+            if self
+              .browser_state
+              .active_tab()
+              .is_some_and(|tab| tab.loading)
+            {
+              self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::StopLoading]);
+              self.window.request_redraw();
+              return;
+            }
+          }
         }
 
         // Centralised shortcut handling: interpret as a browser shortcut first, and only forward
@@ -5399,6 +5425,23 @@ impl App {
           }
 
           self.send_worker_msg(UiToWorker::Reload { tab_id });
+        }
+        ChromeAction::StopLoading => {
+          let Some(tab_id) = self.browser_state.active_tab_id() else {
+            continue;
+          };
+          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+            tab.loading = false;
+            tab.stage = None;
+            // Restore optimistic URL/title back to the last committed state.
+            if let Some(committed_url) = tab.committed_url.clone() {
+              tab.current_url = Some(committed_url);
+            }
+            tab.title = tab.committed_title.clone();
+          }
+          self.browser_state.sync_address_bar_to_active();
+ 
+          self.send_worker_msg(UiToWorker::StopLoading { tab_id });
         }
         ChromeAction::Back => {
           self.force_send_viewport_now();

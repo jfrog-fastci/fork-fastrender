@@ -100,6 +100,7 @@ mod ui_worker_scroll;
 mod ui_worker_scroll_hit_test;
 mod ui_worker_shutdown;
 mod ui_worker_stage_listener_scoping;
+mod ui_worker_stop_loading;
 mod ui_worker_tab_resource_isolation;
 mod ui_worker_tab_scroll_preservation;
 mod ui_worker_tabs;

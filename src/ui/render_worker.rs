@@ -1127,6 +1127,48 @@ impl BrowserRuntime {
           );
         }
       }
+      UiToWorker::StopLoading { tab_id } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+
+        // No-op when there is nothing to cancel.
+        if !tab.loading && tab.pending_navigation.is_none() {
+          return;
+        }
+
+        // Defensive: the windowed UI bumps cancel gens before sending stop, but tests and other
+        // callers may send this message directly.
+        tab.cancel.bump_nav();
+
+        tab.pending_navigation = None;
+        tab.loading = false;
+
+        if tab.pending_history_entry {
+          tab.history.cancel_pending_navigation_entry();
+        } else {
+          tab.history.revert_to_committed();
+        }
+        tab.pending_history_entry = false;
+
+        let can_go_back = tab.history.can_go_back();
+        let can_go_forward = tab.history.can_go_forward();
+
+        let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+          tab_id,
+          loading: false,
+        });
+
+        if let Some(entry) = tab.history.current() {
+          let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
+            tab_id,
+            url: entry.url.clone(),
+            title: entry.title.clone(),
+            can_go_back,
+            can_go_forward,
+          });
+        }
+      }
       UiToWorker::Tick { tab_id } => {
         self.handle_tick(tab_id);
       }
@@ -1663,6 +1705,7 @@ impl BrowserRuntime {
             if let Some(title) = title.as_deref() {
               tab.history.set_title(title.to_string());
             }
+            tab.history.mark_committed();
             let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
               tab_id,
               url: url_string,
@@ -2924,6 +2967,7 @@ impl BrowserRuntime {
           };
           tab.loading = false;
           tab.pending_history_entry = false;
+          tab.history.mark_committed();
           return Some(JobOutput {
             tab_id,
             snapshot,
@@ -3062,6 +3106,7 @@ impl BrowserRuntime {
           };
           tab.loading = false;
           tab.pending_history_entry = false;
+          tab.history.mark_committed();
           return Some(JobOutput {
             tab_id,
             snapshot,
@@ -3535,6 +3580,7 @@ impl BrowserRuntime {
       }
       tab.loading = false;
       tab.pending_history_entry = false;
+      tab.history.mark_committed();
       return Some(JobOutput {
         tab_id,
         snapshot,
@@ -3579,6 +3625,7 @@ impl BrowserRuntime {
         }
         tab.loading = false;
         tab.pending_history_entry = false;
+        tab.history.mark_committed();
         return Some(JobOutput {
           tab_id,
           snapshot,
@@ -3604,6 +3651,7 @@ impl BrowserRuntime {
         }
         tab.loading = false;
         tab.pending_history_entry = false;
+        tab.history.mark_committed();
         return Some(JobOutput {
           tab_id,
           snapshot,
@@ -3633,6 +3681,7 @@ impl BrowserRuntime {
 
     tab.loading = false;
     tab.pending_history_entry = false;
+    tab.history.mark_committed();
 
     Some(JobOutput {
       tab_id,

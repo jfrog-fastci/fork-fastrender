@@ -40,6 +40,7 @@ pub enum ChromeAction {
   Back,
   Forward,
   Reload,
+  StopLoading,
   AddressBarFocusChanged(bool),
 }
 
@@ -391,7 +392,11 @@ pub fn chrome_ui(
       if icon_button(ui, BrowserIcon::Forward, "Forward (Alt+Right)", can_forward).clicked() {
         actions.push(ChromeAction::Forward);
       }
-      if icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true).clicked() {
+      if loading {
+        if icon_button(ui, BrowserIcon::CloseTab, "Stop loading (Esc)", true).clicked() {
+          actions.push(ChromeAction::StopLoading);
+        }
+      } else if icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true).clicked() {
         actions.push(ChromeAction::Reload);
       }
 
