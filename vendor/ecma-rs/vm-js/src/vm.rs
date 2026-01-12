@@ -47,6 +47,24 @@ use std::{mem, ops};
 
 const ARG_HANDLING_CHUNK_SIZE: usize = 256;
 
+#[derive(Debug, Clone)]
+struct CallSite {
+  source: Arc<str>,
+  line: u32,
+  col: u32,
+}
+
+impl CallSite {
+  fn from_source_offset(source: &SourceText, offset: u32) -> Self {
+    let (line, col) = source.line_col(offset);
+    Self {
+      source: source.name.clone(),
+      line,
+      col,
+    }
+  }
+}
+
 /// Converts internal `VmError` variants that represent spec `ThrowCompletion`s (TypeError, etc.)
 /// into `VmError::Throw` by allocating a minimal `TypeError` instance.
 ///
@@ -1387,6 +1405,14 @@ impl Vm {
     self.stack.iter().cloned().rev().collect()
   }
 
+  fn update_top_frame_location(&mut self, call_site: &CallSite) {
+    if let Some(top) = self.stack.last_mut() {
+      top.source = call_site.source.clone();
+      top.line = call_site.line;
+      top.col = call_site.col;
+    }
+  }
+
   /// Pushes an [`ExecutionContext`] onto the execution context stack.
   pub fn push_execution_context(&mut self, ctx: ExecutionContext) {
     self.execution_context_stack.push(ctx);
@@ -1628,12 +1654,38 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
+    self.call_entry(host, scope, callee, this, args, None)
+  }
+
+  pub fn call_at_location(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+    call_site_source: &SourceText,
+    call_site_offset: u32,
+  ) -> Result<Value, VmError> {
+    let call_site = CallSite::from_source_offset(call_site_source, call_site_offset);
+    self.call_entry(host, scope, callee, this, args, Some(call_site))
+  }
+
+  fn call_entry(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+    call_site: Option<CallSite>,
+  ) -> Result<Value, VmError> {
     if let Some(hooks_ptr) = self.host_hooks_override {
       // SAFETY: `host_hooks_override` is only set while a host hooks implementation is mutably
       // borrowed by an embedder entry point (for example `Vm::call_with_host_and_hooks` or
       // `JsRuntime::exec_script_source_with_hooks`).
       let hooks = unsafe { &mut *hooks_ptr };
-      return self.call_impl(host, scope, hooks, callee, this, args);
+      return self.call_impl(host, scope, hooks, callee, this, args, call_site);
     }
 
     // `call_with_host_and_hooks` requires `&mut self` plus an independent `&mut hooks`, but `Vm`
@@ -1641,7 +1693,7 @@ impl Vm {
     // the host hook implementation for this call.
     let mut hooks = mem::take(&mut self.microtasks);
     let prev_hooks = self.push_active_host_hooks(&mut hooks);
-    let result = self.call_impl(host, scope, &mut hooks, callee, this, args);
+    let result = self.call_impl(host, scope, &mut hooks, callee, this, args, call_site);
     self.pop_active_host_hooks(prev_hooks);
     // If a native handler enqueued jobs directly onto the VM-owned microtask queue while it was
     // temporarily moved out (via `vm.microtask_queue_mut()`), merge them back before restoring.
@@ -1712,7 +1764,25 @@ impl Vm {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let prev_hooks = self.push_active_host_hooks(hooks);
-    let result = self.call_impl(host, scope, hooks, callee, this, args);
+    let result = self.call_impl(host, scope, hooks, callee, this, args, None);
+    self.pop_active_host_hooks(prev_hooks);
+    result
+  }
+
+  pub(crate) fn call_with_host_and_hooks_at_location(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+    call_site_source: &SourceText,
+    call_site_offset: u32,
+  ) -> Result<Value, VmError> {
+    let call_site = CallSite::from_source_offset(call_site_source, call_site_offset);
+    let prev_hooks = self.push_active_host_hooks(hooks);
+    let result = self.call_impl(host, scope, hooks, callee, this, args, Some(call_site));
     self.pop_active_host_hooks(prev_hooks);
     result
   }
@@ -1765,6 +1835,7 @@ impl Vm {
     callee: Value,
     this: Value,
     args: &[Value],
+    call_site: Option<CallSite>,
   ) -> Result<Value, VmError> {
     // Promise jobs / host callbacks can call back into the VM when there is no active
     // `ExecutionContext` on the stack. Some spec operations (notably dynamic `import()`) require an
@@ -1778,12 +1849,12 @@ impl Vm {
             script_or_module: None,
           };
           let mut vm_ctx = self.execution_context_guard(ctx);
-          return vm_ctx.call_impl_inner(host, scope, hooks, callee, this, args);
+          return vm_ctx.call_impl_inner(host, scope, hooks, callee, this, args, call_site);
         }
       }
     }
 
-    self.call_impl_inner(host, scope, hooks, callee, this, args)
+    self.call_impl_inner(host, scope, hooks, callee, this, args, call_site)
   }
 
   fn call_impl_inner(
@@ -1794,7 +1865,12 @@ impl Vm {
     callee: Value,
     this: Value,
     args: &[Value],
+    call_site: Option<CallSite>,
   ) -> Result<Value, VmError> {
+    if let Some(call_site) = call_site.as_ref() {
+      self.update_top_frame_location(call_site);
+    }
+
     let mut scope = scope.reborrow();
     let callee_obj = match callee {
       Value::Object(obj) => obj,
@@ -1830,16 +1906,20 @@ impl Vm {
       .filter(|name| !name.is_empty())
       .map(Arc::<str>::from);
 
-    let (source, line, col) = match &call_handler {
-      CallHandler::Native(_) => (Arc::<str>::from("<native>"), 0, 0),
-      CallHandler::Ecma(code_id) => match self.ecma_functions.get(code_id.0 as usize) {
-        Some(code) => {
-          let (line, col) = code.source.line_col(code.span_start);
-          (code.source.name.clone(), line, col)
-        }
-        None => (Arc::<str>::from("<call>"), 0, 0),
-      },
-      CallHandler::User(_) => (Arc::<str>::from("<user>"), 0, 0),
+    let (source, line, col) = if let Some(call_site) = call_site.as_ref() {
+      (call_site.source.clone(), call_site.line, call_site.col)
+    } else {
+      match &call_handler {
+        CallHandler::Native(_) => (Arc::<str>::from("<native>"), 0, 0),
+        CallHandler::Ecma(code_id) => match self.ecma_functions.get(code_id.0 as usize) {
+          Some(code) => {
+            let (line, col) = code.source.line_col(code.span_start);
+            (code.source.name.clone(), line, col)
+          }
+          None => (Arc::<str>::from("<call>"), 0, 0),
+        },
+        CallHandler::User(_) => (Arc::<str>::from("<user>"), 0, 0),
+      }
     };
     let frame = StackFrame {
       function: function_name,
@@ -1886,6 +1966,7 @@ impl Vm {
           Value::Object(bound_target),
           bound_this,
           &combined,
+          call_site.clone(),
         );
       }
     }
@@ -2068,15 +2149,41 @@ impl Vm {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
+    self.construct_entry(host, scope, callee, args, new_target, None)
+  }
+
+  pub fn construct_at_location(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    callee: Value,
+    args: &[Value],
+    new_target: Value,
+    call_site_source: &SourceText,
+    call_site_offset: u32,
+  ) -> Result<Value, VmError> {
+    let call_site = CallSite::from_source_offset(call_site_source, call_site_offset);
+    self.construct_entry(host, scope, callee, args, new_target, Some(call_site))
+  }
+
+  fn construct_entry(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    callee: Value,
+    args: &[Value],
+    new_target: Value,
+    call_site: Option<CallSite>,
+  ) -> Result<Value, VmError> {
     if let Some(hooks_ptr) = self.host_hooks_override {
       // SAFETY: see `Vm::call` for the safety contract of `host_hooks_override`.
       let hooks = unsafe { &mut *hooks_ptr };
-      return self.construct_impl(host, scope, hooks, callee, args, new_target);
+      return self.construct_impl(host, scope, hooks, callee, args, new_target, call_site);
     }
 
     let mut hooks = mem::take(&mut self.microtasks);
     let prev_hooks = self.push_active_host_hooks(&mut hooks);
-    let result = self.construct_impl(host, scope, &mut hooks, callee, args, new_target);
+    let result = self.construct_impl(host, scope, &mut hooks, callee, args, new_target, call_site);
     self.pop_active_host_hooks(prev_hooks);
     while let Some((realm, job)) = self.microtasks.pop_front() {
       hooks.enqueue_promise_job(job, realm);
@@ -2141,7 +2248,25 @@ impl Vm {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let prev_hooks = self.push_active_host_hooks(hooks);
-    let result = self.construct_impl(host, scope, hooks, callee, args, new_target);
+    let result = self.construct_impl(host, scope, hooks, callee, args, new_target, None);
+    self.pop_active_host_hooks(prev_hooks);
+    result
+  }
+
+  pub(crate) fn construct_with_host_and_hooks_at_location(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    callee: Value,
+    args: &[Value],
+    new_target: Value,
+    call_site_source: &SourceText,
+    call_site_offset: u32,
+  ) -> Result<Value, VmError> {
+    let call_site = CallSite::from_source_offset(call_site_source, call_site_offset);
+    let prev_hooks = self.push_active_host_hooks(hooks);
+    let result = self.construct_impl(host, scope, hooks, callee, args, new_target, Some(call_site));
     self.pop_active_host_hooks(prev_hooks);
     result
   }
@@ -2154,6 +2279,7 @@ impl Vm {
     callee: Value,
     args: &[Value],
     new_target: Value,
+    call_site: Option<CallSite>,
   ) -> Result<Value, VmError> {
     // Like `Vm::call_impl`, construct operations can be invoked from Promise jobs / host callbacks
     // without an active execution context. Use the constructor's `[[JobRealm]]` as a best-effort
@@ -2166,12 +2292,12 @@ impl Vm {
             script_or_module: None,
           };
           let mut vm_ctx = self.execution_context_guard(ctx);
-          return vm_ctx.construct_impl_inner(host, scope, hooks, callee, args, new_target);
+          return vm_ctx.construct_impl_inner(host, scope, hooks, callee, args, new_target, call_site);
         }
       }
     }
 
-    self.construct_impl_inner(host, scope, hooks, callee, args, new_target)
+    self.construct_impl_inner(host, scope, hooks, callee, args, new_target, call_site)
   }
 
   fn construct_impl_inner(
@@ -2182,7 +2308,12 @@ impl Vm {
     callee: Value,
     args: &[Value],
     new_target: Value,
+    call_site: Option<CallSite>,
   ) -> Result<Value, VmError> {
+    if let Some(call_site) = call_site.as_ref() {
+      self.update_top_frame_location(call_site);
+    }
+
     let mut scope = scope.reborrow();
     let callee_obj = match callee {
       Value::Object(obj) => obj,
@@ -2229,15 +2360,19 @@ impl Vm {
       .filter(|name| !name.is_empty())
       .map(Arc::<str>::from);
 
-    let (source, line, col) = match construct_handler {
-      ConstructHandler::Native(_) => (Arc::<str>::from("<native>"), 0, 0),
-      ConstructHandler::Ecma(code_id) => match self.ecma_functions.get(code_id.0 as usize) {
-        Some(code) => {
-          let (line, col) = code.source.line_col(code.span_start);
-          (code.source.name.clone(), line, col)
-        }
-        None => (Arc::<str>::from("<call>"), 0, 0),
-      },
+    let (source, line, col) = if let Some(call_site) = call_site.as_ref() {
+      (call_site.source.clone(), call_site.line, call_site.col)
+    } else {
+      match construct_handler {
+        ConstructHandler::Native(_) => (Arc::<str>::from("<native>"), 0, 0),
+        ConstructHandler::Ecma(code_id) => match self.ecma_functions.get(code_id.0 as usize) {
+          Some(code) => {
+            let (line, col) = code.source.line_col(code.span_start);
+            (code.source.name.clone(), line, col)
+          }
+          None => (Arc::<str>::from("<call>"), 0, 0),
+        },
+      }
     };
     let frame = StackFrame {
       function: function_name,
@@ -2288,6 +2423,7 @@ impl Vm {
           Value::Object(bound_target),
           &combined,
           forwarded_new_target,
+          call_site.clone(),
         );
       }
     }

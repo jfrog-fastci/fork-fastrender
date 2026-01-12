@@ -1237,24 +1237,6 @@ impl<'a> Evaluator<'a> {
       .call_with_host_and_hooks(&mut *self.host, scope, &mut *self.hooks, callee, this, args)
   }
 
-  #[inline]
-  fn construct(
-    &mut self,
-    scope: &mut Scope<'_>,
-    callee: Value,
-    args: &[Value],
-    new_target: Value,
-  ) -> Result<Value, VmError> {
-    self.vm.construct_with_host_and_hooks(
-      &mut *self.host,
-      scope,
-      &mut *self.hooks,
-      callee,
-      args,
-      new_target,
-    )
-  }
-
   fn function_length(&mut self, func: &parse_js::ast::func::Func) -> Result<u32, VmError> {
     // ECMA-262 `length` is the number of parameters before the first one with a default/rest.
     //
@@ -4293,14 +4275,14 @@ impl<'a> Evaluator<'a> {
       Expr::NewTarget(_) => Ok(self.new_target),
       Expr::Id(node) => self.eval_id(scope, &node.stx),
       Expr::ImportMeta(_) => self.eval_import_meta(scope),
-      Expr::Call(node) => self.eval_call(scope, &node.stx),
+      Expr::Call(node) => self.eval_call(scope, &node.stx, node.loc),
       Expr::Import(node) => self.eval_import(scope, &node.stx),
       Expr::Func(node) => self.eval_func_expr(scope, node),
       Expr::ArrowFunc(node) => self.eval_arrow_func_expr(scope, node),
       Expr::Class(node) => self.eval_class_expr(scope, node),
       Expr::Member(node) => self.eval_member(scope, &node.stx),
       Expr::ComputedMember(node) => self.eval_computed_member(scope, &node.stx),
-      Expr::Unary(node) => self.eval_unary(scope, &node.stx),
+      Expr::Unary(node) => self.eval_unary(scope, &node.stx, node.loc),
       Expr::UnaryPostfix(node) => self.eval_unary_postfix(scope, &node.stx),
       Expr::Binary(node) => self.eval_binary(scope, &node.stx),
       Expr::Cond(node) => self.eval_cond(scope, &node.stx),
@@ -5532,7 +5514,12 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn eval_unary(&mut self, scope: &mut Scope<'_>, expr: &UnaryExpr) -> Result<Value, VmError> {
+  fn eval_unary(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &UnaryExpr,
+    loc: parse_js::loc::Loc,
+  ) -> Result<Value, VmError> {
     match expr.operator {
       OperatorName::PrefixIncrement => self.eval_update_expression(scope, &expr.argument, 1, true),
       OperatorName::PrefixDecrement => self.eval_update_expression(scope, &expr.argument, -1, true),
@@ -5851,7 +5838,20 @@ impl<'a> Evaluator<'a> {
         }
 
         // For `new`, the `newTarget` is the same as the constructor.
-        match self.construct(&mut new_scope, callee, &args, callee) {
+        let source = self.env.source();
+        let rel_start = loc.start_u32().saturating_sub(self.env.prefix_len());
+        let abs_offset = self.env.base_offset().saturating_add(rel_start);
+
+        match self.vm.construct_with_host_and_hooks_at_location(
+          &mut *self.host,
+          &mut new_scope,
+          &mut *self.hooks,
+          callee,
+          &args,
+          callee,
+          source.as_ref(),
+          abs_offset,
+        ) {
           Ok(v) => Ok(v),
           Err(VmError::NotConstructable) => Err(throw_type_error(
             self.vm,
@@ -5926,7 +5926,12 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn eval_call(&mut self, scope: &mut Scope<'_>, expr: &CallExpr) -> Result<Value, VmError> {
+  fn eval_call(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &CallExpr,
+    loc: parse_js::loc::Loc,
+  ) -> Result<Value, VmError> {
     // Special-case direct `eval(...)` calls.
     //
     // `vm-js` does not yet expose a global `eval` builtin, but unit tests (and real-world scripts)
@@ -6044,13 +6049,19 @@ impl<'a> Evaluator<'a> {
         args.push(value);
       }
     }
-    self.vm.call_with_host_and_hooks(
+    let source = self.env.source();
+    let rel_start = loc.start_u32().saturating_sub(self.env.prefix_len());
+    let abs_offset = self.env.base_offset().saturating_add(rel_start);
+
+    self.vm.call_with_host_and_hooks_at_location(
       &mut *self.host,
       &mut call_scope,
       &mut *self.hooks,
       callee_value,
       this_value,
       &args,
+      source.as_ref(),
+      abs_offset,
     )
   }
 

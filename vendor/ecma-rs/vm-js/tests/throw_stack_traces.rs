@@ -104,3 +104,62 @@ fn thrown_exceptions_include_top_level_source_location() -> Result<(), VmError> 
   assert_eq!((frame.line, frame.col), (2, 1));
   Ok(())
 }
+
+#[test]
+fn thrown_exceptions_include_js_call_site_locations() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let err = rt
+    .exec_script(
+      r#"function a() {
+  b();
+}
+function b() {
+  c();
+}
+function c() {
+  throw "x";
+}
+a();"#,
+    )
+    .unwrap_err();
+
+  let VmError::ThrowWithStack { stack, .. } = err else {
+    panic!("expected ThrowWithStack, got {err:?}");
+  };
+
+  assert_eq!(stack.len(), 4);
+  assert_eq!(stack[0].function.as_deref(), Some("c"));
+  assert_eq!(stack[0].source.as_ref(), "<inline>");
+  assert_eq!((stack[0].line, stack[0].col), (8, 3));
+
+  assert_eq!(stack[1].function.as_deref(), Some("b"));
+  assert_eq!(stack[1].source.as_ref(), "<inline>");
+  assert_eq!((stack[1].line, stack[1].col), (5, 3));
+
+  assert_eq!(stack[2].function.as_deref(), Some("a"));
+  assert_eq!(stack[2].source.as_ref(), "<inline>");
+  assert_eq!((stack[2].line, stack[2].col), (2, 3));
+
+  assert_eq!(stack[3].function, None);
+  assert_eq!(stack[3].source.as_ref(), "<inline>");
+  assert_eq!((stack[3].line, stack[3].col), (10, 1));
+  Ok(())
+}
+
+#[test]
+fn native_builtin_throw_reports_js_call_site_location() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // `JSON.parse` is a native builtin; its internal errors should be attributed to the call site,
+  // not the start of the statement.
+  let err = rt.exec_script(r#"1 + JSON.parse("{");"#).unwrap_err();
+  let VmError::ThrowWithStack { stack, .. } = err else {
+    panic!("expected ThrowWithStack, got {err:?}");
+  };
+
+  assert!(!stack.is_empty());
+  assert_eq!(stack[0].source.as_ref(), "<inline>");
+  assert_eq!((stack[0].line, stack[0].col), (1, 5));
+  Ok(())
+}
