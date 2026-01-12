@@ -184,7 +184,7 @@ jobs:
             echo "::error::Missing TypeScript conformance suite directory (${suite}). Did the submodule checkout fail?" >&2
             exit 1
           fi
-          if ! find "${suite}" -type f | head -n 1 | rg -q .; then
+          if [[ -z "$(find "${suite}" -type f -print -quit)" ]]; then
             echo "::error::TypeScript conformance suite appears empty (${suite}). Did the submodule checkout fail?" >&2
             exit 1
           fi
