@@ -219,7 +219,7 @@ Host-provided `lib_files()` are still included even when `no_default_lib` is set
 - If resolving `name` fails, the checker tries a TypeScript-style fallback:
   - `name` → `@types/name`
   - `@scope/pkg` → `@types/scope__pkg`
-- Unresolved type packages produce an `unresolved module` diagnostic.
+- Unresolved type packages produce `TS2688` (`TYPE_DEFINITION_FILE_NOT_FOUND`) diagnostics.
 
 Triple-slash `/// <reference types="..." />` directives behave similarly, but are resolved
 relative to the referencing file.
