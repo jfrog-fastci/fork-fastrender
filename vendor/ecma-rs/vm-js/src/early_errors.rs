@@ -798,6 +798,24 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           self.push_error(loc, "await is only valid in async functions and modules")?;
         }
       }
+      OperatorName::Delete => {
+        // `delete IdentifierReference` is a strict mode early error (ECMA-262 14.5.1 / 13.5.1.1).
+        //
+        // The evaluator also checks this at runtime as a safety net, but spec-compliant behavior
+        // requires rejecting such code before any statements in the containing Script/FunctionBody
+        // execute (so earlier side effects do not occur).
+        if ctx.strict {
+          match &*expr.argument.stx {
+            Expr::Id(_) | Expr::IdPat(_) => {
+              self.push_error(
+                expr.argument.loc,
+                "Delete of an unqualified identifier in strict mode.",
+              )?;
+            }
+            _ => {}
+          }
+        }
+      }
       OperatorName::PrefixIncrement | OperatorName::PrefixDecrement => {
         if let Some(loc) = Self::optional_chain_in_assignment_target_expr(&expr.argument) {
           self.push_error(loc, "optional chaining cannot appear in assignment targets")?;

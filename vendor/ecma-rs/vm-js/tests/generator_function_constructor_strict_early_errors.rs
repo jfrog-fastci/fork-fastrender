@@ -46,6 +46,35 @@ fn generator_function_constructor_rejects_strict_mode_with_at_creation_time() {
     )
     .unwrap();
   assert_value_is_utf8(&rt, value, "function");
+
+  let value = rt
+    .exec_script(
+      r#"
+        (function () {
+          const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+          try {
+            GeneratorFunction('"use strict"; delete x;');
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+
+  let value = rt
+    .exec_script(
+      r#"
+        (function () {
+          const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+          return typeof GeneratorFunction('delete x;');
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "function");
 }
 
 #[test]
@@ -67,5 +96,22 @@ fn function_constructor_rejects_strict_mode_with_at_creation_time() {
   assert_value_is_utf8(&rt, value, "SyntaxError");
 
   let value = rt.exec_script(r#"typeof Function('with (x) return foo;')"#).unwrap();
+  assert_value_is_utf8(&rt, value, "function");
+
+  let value = rt
+    .exec_script(
+      r#"
+        try {
+          Function('"use strict"; delete x;');
+          "no";
+        } catch (e) {
+          e.name;
+        }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+
+  let value = rt.exec_script(r#"typeof Function('delete x;')"#).unwrap();
   assert_value_is_utf8(&rt, value, "function");
 }
