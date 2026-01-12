@@ -114,7 +114,7 @@ fn promise_all_fetch_is_recognized() {
   let pats: Vec<_> = patterns
     .iter()
     .filter_map(|pat| match pat {
-      SemanticPattern::PromiseAllFetch { urls } => Some(*urls),
+      SemanticPattern::PromiseAllFetch { urls, .. } => Some(*urls),
       _ => None,
     })
     .collect();

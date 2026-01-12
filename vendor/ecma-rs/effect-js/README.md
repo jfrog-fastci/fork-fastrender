@@ -70,7 +70,7 @@ The easiest way to get a `hir-js::LowerResult` (and, optionally, types) is via
 `typecheck-ts`:
 
 ```rust
-use effect_js::{load_default_api_database, recognize_patterns_best_effort_untyped};
+use effect_js::{analyze_patterns, load_default_api_database};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 let key = FileKey::new("index.ts");
@@ -85,12 +85,26 @@ let lowered = program.hir_lowered(file_id).unwrap();
 let kb = load_default_api_database();
 
 for body_id in lowered.hir.bodies.iter().copied() {
-  let patterns = recognize_patterns_best_effort_untyped(&kb, &lowered, body_id);
-  for pat in patterns {
+  let body = lowered.body(body_id).expect("body exists");
+  let result = analyze_patterns(&lowered, body_id, body, &kb, None);
+  for pat in &result.tables.recognized {
     println!("{body_id:?}: {pat:?}");
   }
 }
 ```
+
+### Canonical pattern API (`analyze_patterns`)
+
+`effect-js`'s canonical pattern engine is the table-based API exposed via:
+
+- `effect_js::analyze_patterns` (façade), and
+- `effect_js::semantic_patterns` (engine + pattern types).
+
+The returned `PatternEngineResult` contains `tables` with:
+
+- `resolved_call: Vec<Option<ApiId>>` aligned to `body.exprs` for per-expression
+  canonical API IDs, and
+- `patterns`/`recognized` for higher-level recognized patterns (`SemanticPattern`).
 
 ### Untyped vs best-effort
 
@@ -109,14 +123,17 @@ Enable `effect-js`'s `typed` feature and pass a `TypeProvider`:
 ```rust
 use std::sync::Arc;
 use effect_js::typed::TypedProgram;
-use effect_js::{load_default_api_database, recognize_patterns_typed};
+use effect_js::{analyze_patterns, load_default_api_database};
 use typecheck_ts::Program;
 
 // `TypedProgram` snapshots per-body typing tables out of `typecheck-ts`.
 let program = Arc::new(program);
 let types = TypedProgram::from_program(program.clone(), file_id);
 let kb = load_default_api_database();
-let patterns = recognize_patterns_typed(&kb, &lowered, lowered.root_body(), &types);
+
+let body_id = lowered.root_body();
+let body = lowered.body(body_id).expect("body exists");
+let result = analyze_patterns(&lowered, body_id, body, &kb, Some(&types));
 ```
 
 ## Runnable example

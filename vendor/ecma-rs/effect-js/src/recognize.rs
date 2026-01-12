@@ -922,15 +922,19 @@ pub fn recognize_patterns_untyped(
     return Vec::new();
   };
 
-  let resolver = ApiCallResolver::new(kb, lowered);
+  let engine = crate::pattern_engine::analyze_patterns(lowered, body, body_ref, kb, None);
+  let resolved_call = &engine.tables.resolved_call;
   let json_parse = kb.id_of("JSON.parse");
   let mut patterns = Vec::new();
 
   // 1) Canonical call sites that are safe to resolve from HIR alone (e.g. JSON.parse).
-  for (idx, _expr) in body_ref.exprs.iter().enumerate() {
+  for (idx, api) in resolved_call.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
-    if let Some(api) = resolver.resolve_call_untyped(body, expr_id) {
-      patterns.push(RecognizedPattern::CanonicalCall { call: expr_id, api });
+    if let Some(api) = api {
+      patterns.push(RecognizedPattern::CanonicalCall {
+        call: expr_id,
+        api: *api,
+      });
     }
   }
 
@@ -947,7 +951,9 @@ pub fn recognize_patterns_untyped(
         let Some(init) = decl.init else {
           continue;
         };
-        if json_parse.is_some_and(|id| resolver.resolve_call_untyped(body, init) == Some(id)) {
+        if json_parse
+          .is_some_and(|id| resolved_call.get(init.0 as usize).copied().flatten() == Some(id))
+        {
           patterns.push(RecognizedPattern::JsonParseTyped { call: init, target });
         }
       }
@@ -956,211 +962,6 @@ pub fn recognize_patterns_untyped(
 
   sort_patterns_by_span(body_ref, &mut patterns);
   patterns
-}
-
-#[cfg(feature = "typed")]
-fn promise_all_fetch_match_typed(
-  kb: &KnowledgeBase,
-  lowered: &LowerResult,
-  body: BodyId,
-  call_expr: ExprId,
-  types: &impl crate::types::TypeProvider,
-) -> Option<PromiseAllFetchMatch> {
-  let body_ref = lowered.body(body)?;
-  let promise_all = kb.id_of("Promise.all")?;
-  let fetch = kb.id_of("fetch")?;
-  let array_map = kb.id_of("Array.prototype.map")?;
-
-  let resolver = ApiCallResolver::new(kb, lowered);
-
-  let call_node = body_ref.exprs.get(call_expr.0 as usize)?;
-
-  #[cfg(feature = "hir-semantic-ops")]
-  if let ExprKind::PromiseAll { promises } = &call_node.kind {
-    let fetch_call_count = promises
-      .iter()
-      .filter(|expr_id| resolver.resolve_call_untyped(body, **expr_id) == Some(fetch))
-      .count();
-    return (fetch_call_count > 0).then_some(PromiseAllFetchMatch {
-      // `hir-js` lowers `Promise.all([..])` into a `PromiseAll { promises }` node
-      // and drops the array-literal wrapper. Use the `PromiseAll` expr itself as
-      // the "urls expression" marker.
-      urls_expr: call_expr,
-      map_call: None,
-      fetch_call_count,
-    });
-  }
-
-  if resolver.resolve_call_typed(body, call_expr, types) != Some(promise_all) {
-    return None;
-  }
-
-  let ExprKind::Call(call) = &call_node.kind else {
-    return None;
-  };
-  if call.optional || call.is_new {
-    return None;
-  }
-
-  let arg0 = call.args.first()?;
-  if arg0.spread {
-    return None;
-  }
-
-  let arg_expr_id = strip_transparent_wrappers(body_ref, arg0.expr);
-  let arg_expr = body_ref.exprs.get(arg_expr_id.0 as usize)?;
-  match &arg_expr.kind {
-    ExprKind::Array(array) => {
-      let mut fetch_call_count = 0usize;
-      for element in &array.elements {
-        match element {
-          ArrayElement::Expr(expr_id) => {
-            let expr_id = strip_transparent_wrappers(body_ref, *expr_id);
-            if resolver.resolve_call_untyped(body, expr_id) == Some(fetch) {
-              fetch_call_count += 1;
-            }
-          }
-          ArrayElement::Empty => {}
-          ArrayElement::Spread(_) => return None,
-        }
-      }
-      (fetch_call_count > 0).then_some(PromiseAllFetchMatch {
-        urls_expr: arg_expr_id,
-        map_call: None,
-        fetch_call_count,
-      })
-    }
-    ExprKind::Call(map_call) => {
-      if map_call.optional || map_call.is_new {
-        return None;
-      }
-      if resolver.resolve_call_typed(body, arg_expr_id, types) != Some(array_map) {
-        return None;
-      }
-
-      let callee = body_ref.exprs.get(map_call.callee.0 as usize)?;
-      let ExprKind::Member(member) = &callee.kind else {
-        return None;
-      };
-      if member.optional {
-        return None;
-      }
-
-      let cb_arg = map_call.args.first()?;
-      if cb_arg.spread {
-        return None;
-      }
-      let cb_expr_id = strip_transparent_wrappers(body_ref, cb_arg.expr);
-      let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
-
-      match &cb_expr.kind {
-        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => {
-          Some(PromiseAllFetchMatch {
-            urls_expr: strip_transparent_wrappers(body_ref, member.object),
-            map_call: Some(arg_expr_id),
-            fetch_call_count: 1,
-          })
-        }
-        ExprKind::FunctionExpr { body: cb_body, .. } => {
-          let cb_body_id = *cb_body;
-          let cb_body = lowered.body(cb_body_id)?;
-          let func = cb_body.function.as_ref()?;
-          let ret_expr = match &func.body {
-            hir_js::FunctionBody::Expr(expr) => Some(*expr),
-            hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
-              let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
-              let StmtKind::Return(Some(expr)) = &stmt.kind else {
-                return None;
-              };
-              Some(*expr)
-            }
-            _ => None,
-          }?;
-
-          let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
-          let fetch_call_count =
-            if resolver.resolve_call_untyped(cb_body_id, ret_expr) == Some(fetch) {
-              1
-            } else if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
-              let expr = strip_transparent_wrappers(cb_body, expr);
-              if resolver.resolve_call_untyped(cb_body_id, expr) == Some(fetch) {
-                1
-              } else {
-                return None;
-              }
-            } else {
-              return None;
-            };
-
-          Some(PromiseAllFetchMatch {
-            urls_expr: strip_transparent_wrappers(body_ref, member.object),
-            map_call: Some(arg_expr_id),
-            fetch_call_count,
-          })
-        }
-        _ => None,
-      }
-    }
-    #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::ArrayMap { array, callback } => {
-      let urls_expr = strip_transparent_wrappers(body_ref, *array);
-      if !types.expr_is_array(body, urls_expr) {
-        return None;
-      }
-
-      let cb_expr_id = strip_transparent_wrappers(body_ref, *callback);
-      let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
-
-      match &cb_expr.kind {
-        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => {
-          Some(PromiseAllFetchMatch {
-            urls_expr,
-            map_call: Some(arg_expr_id),
-            fetch_call_count: 1,
-          })
-        }
-        ExprKind::FunctionExpr { body: cb_body, .. } => {
-          let cb_body_id = *cb_body;
-          let cb_body = lowered.body(cb_body_id)?;
-          let func = cb_body.function.as_ref()?;
-          let ret_expr = match &func.body {
-            hir_js::FunctionBody::Expr(expr) => Some(*expr),
-            hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
-              let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
-              let StmtKind::Return(Some(expr)) = &stmt.kind else {
-                return None;
-              };
-              Some(*expr)
-            }
-            _ => None,
-          }?;
-
-          let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
-          let fetch_call_count =
-            if resolver.resolve_call_untyped(cb_body_id, ret_expr) == Some(fetch) {
-              1
-            } else if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
-              let expr = strip_transparent_wrappers(cb_body, expr);
-              if resolver.resolve_call_untyped(cb_body_id, expr) == Some(fetch) {
-                1
-              } else {
-                return None;
-              }
-            } else {
-              return None;
-            };
-
-          Some(PromiseAllFetchMatch {
-            urls_expr,
-            map_call: Some(arg_expr_id),
-            fetch_call_count,
-          })
-        }
-        _ => None,
-      }
-    }
-    _ => None,
-  }
 }
 
 fn call_chain(
@@ -1667,254 +1468,6 @@ fn promise_all_fetch_match_untyped(
 }
 
 #[cfg(feature = "typed")]
-enum ArrayCallNode {
-  Op(ArrayChainOp),
-  Terminal(ArrayTerminal),
-}
-
-#[cfg(feature = "typed")]
-fn classify_array_call(
-  lowered: &LowerResult,
-  body: &hir_js::Body,
-  call_expr: ExprId,
-) -> Option<(ExprId, ArrayCallNode)> {
-  let call = body.exprs.get(call_expr.0 as usize)?;
-  let ExprKind::Call(call) = &call.kind else {
-    return None;
-  };
-  if call.optional || call.is_new {
-    return None;
-  }
-  if call.args.iter().any(|arg| arg.spread) {
-    return None;
-  }
-
-  let callee_expr = body.exprs.get(call.callee.0 as usize)?;
-  let ExprKind::Member(member) = &callee_expr.kind else {
-    return None;
-  };
-  if member.optional {
-    return None;
-  }
-  let prop = static_object_key_name(lowered, body, &member.property)?;
-
-  let callback = call.args.first()?.expr;
-  match prop.as_str() {
-    "map" => Some((
-      member.object,
-      ArrayCallNode::Op(ArrayChainOp::Map { callback }),
-    )),
-    "filter" => Some((
-      member.object,
-      ArrayCallNode::Op(ArrayChainOp::Filter { callback }),
-    )),
-    "flatMap" => Some((
-      member.object,
-      ArrayCallNode::Op(ArrayChainOp::FlatMap { callback }),
-    )),
-    "reduce" => Some((
-      member.object,
-      ArrayCallNode::Terminal(ArrayTerminal::Reduce {
-        callback,
-        init: call.args.get(1).map(|arg| arg.expr),
-      }),
-    )),
-    "find" => Some((
-      member.object,
-      ArrayCallNode::Terminal(ArrayTerminal::Find { callback }),
-    )),
-    "every" => Some((
-      member.object,
-      ArrayCallNode::Terminal(ArrayTerminal::Every { callback }),
-    )),
-    "some" => Some((
-      member.object,
-      ArrayCallNode::Terminal(ArrayTerminal::Some { callback }),
-    )),
-    "forEach" => Some((
-      member.object,
-      ArrayCallNode::Terminal(ArrayTerminal::ForEach { callback }),
-    )),
-    _ => None,
-  }
-}
-
-#[cfg(all(feature = "typed", feature = "hir-semantic-ops"))]
-fn convert_hir_array_chain_ops(
-  ops: &[hir_js::ArrayChainOp],
-) -> Option<(Vec<ArrayChainOp>, Option<ArrayTerminal>)> {
-  let mut out_ops = Vec::new();
-  let mut terminal = None;
-  for (idx, op) in ops.iter().enumerate() {
-    match op {
-      hir_js::ArrayChainOp::Map(callback) => {
-        if terminal.is_some() {
-          return None;
-        }
-        out_ops.push(ArrayChainOp::Map {
-          callback: *callback,
-        });
-      }
-      hir_js::ArrayChainOp::Filter(callback) => {
-        if terminal.is_some() {
-          return None;
-        }
-        out_ops.push(ArrayChainOp::Filter {
-          callback: *callback,
-        });
-      }
-      hir_js::ArrayChainOp::Reduce(callback, init) => {
-        if idx != ops.len().saturating_sub(1) {
-          return None;
-        }
-        terminal = Some(ArrayTerminal::Reduce {
-          callback: *callback,
-          init: *init,
-        });
-      }
-      hir_js::ArrayChainOp::Find(callback) => {
-        if idx != ops.len().saturating_sub(1) {
-          return None;
-        }
-        terminal = Some(ArrayTerminal::Find {
-          callback: *callback,
-        });
-      }
-      hir_js::ArrayChainOp::Every(callback) => {
-        if idx != ops.len().saturating_sub(1) {
-          return None;
-        }
-        terminal = Some(ArrayTerminal::Every {
-          callback: *callback,
-        });
-      }
-      hir_js::ArrayChainOp::Some(callback) => {
-        if idx != ops.len().saturating_sub(1) {
-          return None;
-        }
-        terminal = Some(ArrayTerminal::Some {
-          callback: *callback,
-        });
-      }
-    }
-  }
-  Some((out_ops, terminal))
-}
-
-#[cfg(feature = "typed")]
-fn parse_array_chain(
-  lowered: &LowerResult,
-  body_id: BodyId,
-  body: &hir_js::Body,
-  types: &impl crate::types::TypeProvider,
-  expr_id: ExprId,
-) -> Option<RecognizedPattern> {
-  #[cfg(feature = "hir-semantic-ops")]
-  {
-    let expr = body.exprs.get(expr_id.0 as usize)?;
-    if let ExprKind::ArrayChain { array, ops } = &expr.kind {
-      let base = strip_transparent_wrappers(body, *array);
-      if !types.expr_is_array(body_id, base) {
-        return None;
-      }
-      let (ops, terminal) = convert_hir_array_chain_ops(ops)?;
-      let ok_len = if terminal.is_some() {
-        ops.len() >= 1
-      } else {
-        ops.len() >= 2
-      };
-      return ok_len.then_some(RecognizedPattern::ArrayChain {
-        base,
-        ops,
-        terminal,
-      });
-    }
-  }
-
-  let mut ops_rev = Vec::new();
-  let mut terminal = None;
-
-  let (mut recv, node) = classify_array_call(lowered, body, expr_id)?;
-  match node {
-    ArrayCallNode::Op(op) => ops_rev.push(op),
-    ArrayCallNode::Terminal(term) => terminal = Some(term),
-  }
-
-  loop {
-    recv = strip_transparent_wrappers(body, recv);
-    let recv_expr = body.exprs.get(recv.0 as usize)?;
-    match &recv_expr.kind {
-      ExprKind::Call(_) => {
-        let (next_recv, node) = classify_array_call(lowered, body, recv)?;
-        match node {
-          ArrayCallNode::Op(op) => ops_rev.push(op),
-          // Terminal methods must be the final call in the chain.
-          ArrayCallNode::Terminal(_) => return None,
-        }
-        recv = next_recv;
-      }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayMap { array, callback } => {
-        ops_rev.push(ArrayChainOp::Map {
-          callback: *callback,
-        });
-        recv = *array;
-      }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayFilter { array, callback } => {
-        ops_rev.push(ArrayChainOp::Filter {
-          callback: *callback,
-        });
-        recv = *array;
-      }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayChain { array, ops } => {
-        let (prefix_ops, prefix_terminal) = convert_hir_array_chain_ops(ops)?;
-        // Terminal methods must be the final call in the chain.
-        if prefix_terminal.is_some() {
-          return None;
-        }
-        for op in prefix_ops.into_iter().rev() {
-          ops_rev.push(op);
-        }
-        recv = *array;
-      }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayReduce { .. }
-      | ExprKind::ArrayFind { .. }
-      | ExprKind::ArrayEvery { .. }
-      | ExprKind::ArraySome { .. } => {
-        // Terminal methods must be the final call in the chain.
-        return None;
-      }
-      _ => {
-        let base = recv;
-        if !types.expr_is_array(body_id, base) {
-          return None;
-        }
-
-        ops_rev.reverse();
-
-        let ok_len = if terminal.is_some() {
-          ops_rev.len() >= 1
-        } else {
-          ops_rev.len() >= 2
-        };
-        if !ok_len {
-          return None;
-        }
-
-        return Some(RecognizedPattern::ArrayChain {
-          base,
-          ops: ops_rev,
-          terminal,
-        });
-      }
-    }
-  }
-}
-
-#[cfg(feature = "typed")]
 pub fn recognize_patterns_typed(
   kb: &KnowledgeBase,
   lowered: &LowerResult,
@@ -1925,11 +1478,10 @@ pub fn recognize_patterns_typed(
     return Vec::new();
   };
 
-  let resolver = ApiCallResolver::new(kb, lowered);
-  let array_map = kb.id_of("Array.prototype.map");
-  let map_has = kb.id_of("Map.prototype.has");
-  let map_get = kb.id_of("Map.prototype.get");
+  let engine = crate::pattern_engine::analyze_patterns(lowered, body, body_ref, kb, Some(types));
+  let resolved_call = &engine.tables.resolved_call;
   let mut patterns = Vec::new();
+
   // `hir-js/semantic-ops` may lower a source expression into a semantic-op node
   // (e.g. `ExprKind::ArrayChain`) and leave the original `Call`/`Member` nodes in
   // the arena but unreachable from the root statements. Filter to the reachable
@@ -2043,95 +1595,137 @@ pub fn recognize_patterns_typed(
   }
 
   // 1) Canonical call sites, using types to gate prototype/instance methods.
-  for (idx, _expr) in body_ref.exprs.iter().enumerate() {
+  for (idx, api) in resolved_call.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
     if !reachable_exprs.contains(&expr_id) {
       continue;
     }
-    if let Some(api) = resolver.resolve_call_typed(body, expr_id, types) {
-      patterns.push(RecognizedPattern::CanonicalCall { call: expr_id, api });
-    }
-  }
-
-  // 2) Typed-only higher-level patterns.
-  //
-  // These are intentionally conservative: if typing is missing or the chain
-  // includes unknown/any/union receivers, we do not emit the pattern.
-  let mut non_outermost_array_exprs = std::collections::HashSet::<ExprId>::new();
-  for (idx, _expr) in body_ref.exprs.iter().enumerate() {
-    let expr_id = ExprId(idx as u32);
-    if !reachable_exprs.contains(&expr_id) {
-      continue;
-    }
-    let Some((recv, _node)) = classify_array_call(lowered, body_ref, expr_id) else {
+    let Some(api) = api else {
       continue;
     };
-    let recv_kind = body_ref.exprs.get(recv.0 as usize).map(|e| &e.kind);
-    let mark = matches!(recv_kind, Some(ExprKind::Call(_))) || {
-      #[cfg(feature = "hir-semantic-ops")]
-      {
-        matches!(recv_kind, Some(ExprKind::ArrayChain { .. }))
-      }
-      #[cfg(not(feature = "hir-semantic-ops"))]
-      {
-        false
-      }
-    };
-    if mark {
-      non_outermost_array_exprs.insert(recv);
+    #[cfg(feature = "hir-semantic-ops")]
+    if matches!(
+      body_ref.exprs.get(expr_id.0 as usize).map(|e| &e.kind),
+      Some(ExprKind::ArrayChain { .. })
+    ) {
+      // `ArrayChain` nodes are not call expressions, but `effect-js`'s semantic
+      // engine maps them to the terminal array API to support higher-level
+      // patterns. Keep them out of the legacy `CanonicalCall` stream.
+      continue;
     }
+    patterns.push(RecognizedPattern::CanonicalCall {
+      call: expr_id,
+      api: *api,
+    });
   }
 
-  #[cfg(feature = "hir-semantic-ops")]
-  {
-    // `hir-js` may lower chained array operations into nested `ExprKind::ArrayChain` nodes. The
-    // outer chain node does not retain the intermediate receiver expression, so use spans to
-    // suppress inner chains and keep `ArrayChain` recognition outermost-only.
-    let mut max_end_by_start = std::collections::BTreeMap::<u32, u32>::new();
-    for expr in &body_ref.exprs {
-      if matches!(expr.kind, ExprKind::ArrayChain { .. }) {
-        max_end_by_start
-          .entry(expr.span.start)
-          .and_modify(|end| *end = (*end).max(expr.span.end))
-          .or_insert(expr.span.end);
-      }
+  // 2) Typed-only higher-level patterns, translated from the canonical semantic engine.
+  for (idx, pat_ids) in engine.tables.patterns.iter().enumerate() {
+    let root_expr = ExprId(idx as u32);
+    if !reachable_exprs.contains(&root_expr) {
+      continue;
     }
-    for (idx, expr) in body_ref.exprs.iter().enumerate() {
-      if matches!(expr.kind, ExprKind::ArrayChain { .. }) {
-        if let Some(max_end) = max_end_by_start.get(&expr.span.start) {
-          if expr.span.end < *max_end {
-            non_outermost_array_exprs.insert(ExprId(idx as u32));
-          }
+    for pat_id in pat_ids {
+      let Some(pat) = engine.tables.recognized.get(pat_id.0 as usize) else {
+        continue;
+      };
+      match pat {
+        crate::semantic_patterns::RecognizedPattern::ArrayChain { base, ops, terminal } => {
+          let ops = ops
+            .iter()
+            .map(|op| match op {
+              crate::semantic_patterns::ArrayChainOp::Map { callback } => ArrayChainOp::Map {
+                callback: *callback,
+              },
+              crate::semantic_patterns::ArrayChainOp::Filter { callback } => ArrayChainOp::Filter {
+                callback: *callback,
+              },
+              crate::semantic_patterns::ArrayChainOp::FlatMap { callback } => ArrayChainOp::FlatMap {
+                callback: *callback,
+              },
+            })
+            .collect();
+
+          let terminal = terminal.as_ref().map(|t| match t {
+            crate::semantic_patterns::ArrayTerminal::Reduce { callback, init } => {
+              ArrayTerminal::Reduce {
+                callback: *callback,
+                init: *init,
+              }
+            }
+            crate::semantic_patterns::ArrayTerminal::Find { callback } => ArrayTerminal::Find {
+              callback: *callback,
+            },
+            crate::semantic_patterns::ArrayTerminal::Every { callback } => ArrayTerminal::Every {
+              callback: *callback,
+            },
+            crate::semantic_patterns::ArrayTerminal::Some { callback } => ArrayTerminal::Some {
+              callback: *callback,
+            },
+            crate::semantic_patterns::ArrayTerminal::ForEach { callback } => ArrayTerminal::ForEach {
+              callback: *callback,
+            },
+          });
+
+          patterns.push(RecognizedPattern::ArrayChain {
+            base: *base,
+            ops,
+            terminal,
+          });
         }
+        crate::semantic_patterns::RecognizedPattern::PromiseAllFetch { urls } => {
+          // Derive the intermediate `urls.map(...)` call expression from the Promise.all call's
+          // first argument. This stays consistent with the legacy `PromiseAllFetch` pattern's
+          // `map_call: Option<ExprId>` field without requiring the canonical engine to store it.
+          let map_call = match body_ref.exprs.get(root_expr.0 as usize).map(|e| &e.kind) {
+            Some(ExprKind::Call(call)) => {
+              if call.optional || call.is_new || call.args.len() != 1 {
+                None
+              } else {
+                call
+                  .args
+                  .first()
+                  .filter(|a| !a.spread)
+                  .map(|a| strip_transparent_wrappers(body_ref, a.expr))
+              }
+            }
+            _ => None,
+          };
+          patterns.push(RecognizedPattern::PromiseAllFetch {
+            promise_all_call: root_expr,
+            urls_expr: *urls,
+            map_call,
+            fetch_call_count: 1,
+          });
+        }
+        crate::semantic_patterns::RecognizedPattern::MapGetOrDefault {
+          conditional,
+          map,
+          key,
+          default,
+        } => {
+          patterns.push(RecognizedPattern::MapGetOrDefault {
+            conditional: *conditional,
+            map: *map,
+            key: *key,
+            default: *default,
+          });
+        }
+        _ => {}
       }
     }
   }
 
+  // 3) MapFilterReduce (legacy): this pattern needs the per-call `ExprId`s, which the canonical
+  // semantic engine intentionally does not store.
+  let array_map = kb.id_of("Array.prototype.map");
   for (idx, expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
     if !reachable_exprs.contains(&expr_id) {
       continue;
     }
 
-    // ArrayChain: recognize only at the outermost chain call.
-    if !non_outermost_array_exprs.contains(&expr_id) {
-      match &expr.kind {
-        ExprKind::Call(_) => {
-          if let Some(pat) = parse_array_chain(lowered, body, body_ref, types, expr_id) {
-            patterns.push(pat);
-          }
-        }
-        #[cfg(feature = "hir-semantic-ops")]
-        ExprKind::ArrayChain { .. } => {
-          if let Some(pat) = parse_array_chain(lowered, body, body_ref, types, expr_id) {
-            patterns.push(pat);
-          }
-        }
-        _ => {}
-      }
-    }
-
-    // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
+    // Recognize only at the terminal `reduce(...)` call.
     if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
       if chain.len() == 3
         && chain[2].1 == "reduce"
@@ -2140,7 +1734,13 @@ pub fn recognize_patterns_typed(
         // Only require the *base* receiver to be a proven array. The checker may
         // leave intermediate call result types as `unknown`, but the chain is
         // still safe if it starts from a known array/readonly-array.
-        && array_map.is_some_and(|id| resolver.resolve_call_typed(body, chain[0].0, types) == Some(id))
+        && array_map.is_some_and(|id| {
+          resolved_call
+            .get(chain[0].0 .0 as usize)
+            .copied()
+            .flatten()
+            == Some(id)
+        })
       {
         patterns.push(RecognizedPattern::MapFilterReduce {
           base,
@@ -2200,14 +1800,13 @@ pub fn recognize_patterns_typed(
         }
       }
     }
+  }
 
-    if let Some(m) = promise_all_fetch_match_typed(kb, lowered, body, expr_id, types) {
-      patterns.push(RecognizedPattern::PromiseAllFetch {
-        promise_all_call: expr_id,
-        urls_expr: m.urls_expr,
-        map_call: m.map_call,
-        fetch_call_count: m.fetch_call_count,
-      });
+  // 4) Additional syntactic patterns not represented in the semantic engine.
+  for (idx, expr) in body_ref.exprs.iter().enumerate() {
+    let expr_id = ExprId(idx as u32);
+    if !reachable_exprs.contains(&expr_id) {
+      continue;
     }
 
     if let ExprKind::Template(template) = &expr.kind {
@@ -2244,77 +1843,9 @@ pub fn recognize_patterns_typed(
         });
       }
     }
-
-    // MapGetOrDefault: `map.has(k) ? map.get(k) : default`.
-    if let ExprKind::Conditional {
-      test,
-      consequent,
-      alternate,
-    } = &expr.kind
-    {
-      let test = strip_transparent_wrappers(body_ref, *test);
-      let consequent = strip_transparent_wrappers(body_ref, *consequent);
-
-      if map_has.is_some_and(|id| resolver.resolve_call_typed(body, test, types) == Some(id))
-        && map_get
-          .is_some_and(|id| resolver.resolve_call_typed(body, consequent, types) == Some(id))
-      {
-        if let Some((map, key)) =
-          map_get_or_default_conditional(lowered, body_ref, body, test, consequent, types)
-        {
-          patterns.push(RecognizedPattern::MapGetOrDefault {
-            conditional: expr_id,
-            map,
-            key,
-            default: *alternate,
-          });
-        }
-      }
-    }
-
-    // MapGetOrDefault: `map.get(k)! ?? default`.
-    if let ExprKind::Binary { op, left, right } = &expr.kind {
-      if !matches!(op, hir_js::BinaryOp::NullishCoalescing) {
-        continue;
-      }
-      let Some(map_get) = map_get else {
-        continue;
-      };
-      let left = strip_transparent_wrappers(body_ref, *left);
-      if resolver.resolve_call_typed(body, left, types) != Some(map_get) {
-        continue;
-      }
-
-      let Some(left_expr) = body_ref.exprs.get(left.0 as usize) else {
-        continue;
-      };
-      let ExprKind::Call(call) = &left_expr.kind else {
-        continue;
-      };
-      if call.optional || call.is_new || call.args.len() != 1 || call.args[0].spread {
-        continue;
-      }
-
-      let Some(callee) = body_ref.exprs.get(call.callee.0 as usize) else {
-        continue;
-      };
-      let ExprKind::Member(member) = &callee.kind else {
-        continue;
-      };
-      if member.optional {
-        continue;
-      }
-
-      patterns.push(RecognizedPattern::MapGetOrDefault {
-        conditional: expr_id,
-        map: member.object,
-        key: call.args[0].expr,
-        default: *right,
-      });
-    }
   }
 
-  // 3) Annotation-driven patterns (same as untyped).
+  // 5) Annotation-driven patterns (same as untyped).
   patterns.extend(
     recognize_patterns_untyped(kb, lowered, body)
       .into_iter()
@@ -2323,114 +1854,4 @@ pub fn recognize_patterns_typed(
 
   sort_patterns_by_span(body_ref, &mut patterns);
   patterns
-}
-
-#[cfg(feature = "typed")]
-fn expr_equivalent(lowered: &LowerResult, body: &hir_js::Body, a: ExprId, b: ExprId) -> bool {
-  let a = strip_transparent_wrappers(body, a);
-  let b = strip_transparent_wrappers(body, b);
-  let Some(a_expr) = body.exprs.get(a.0 as usize) else {
-    return false;
-  };
-  let Some(b_expr) = body.exprs.get(b.0 as usize) else {
-    return false;
-  };
-
-  match (&a_expr.kind, &b_expr.kind) {
-    (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
-    (ExprKind::Literal(a), ExprKind::Literal(b)) => a == b,
-    (ExprKind::Member(a), ExprKind::Member(b)) => {
-      if a.optional || b.optional {
-        return false;
-      }
-      let Some(a_key) = static_object_key_name(lowered, body, &a.property) else {
-        return false;
-      };
-      let Some(b_key) = static_object_key_name(lowered, body, &b.property) else {
-        return false;
-      };
-      if a_key != b_key {
-        return false;
-      }
-      expr_equivalent(lowered, body, a.object, b.object)
-    }
-    _ => false,
-  }
-}
-
-#[cfg(feature = "typed")]
-fn match_single_arg_member_call<'a>(
-  lowered: &'a LowerResult,
-  body: &hir_js::Body,
-  call_expr: ExprId,
-) -> Option<(ExprId, String, ExprId)> {
-  let call_expr = strip_transparent_wrappers(body, call_expr);
-  let call = body.exprs.get(call_expr.0 as usize)?;
-  let ExprKind::Call(call) = &call.kind else {
-    return None;
-  };
-  if call.optional || call.is_new || call.args.len() != 1 {
-    return None;
-  }
-  let arg0 = call.args.first()?;
-  if arg0.spread {
-    return None;
-  }
-
-  let callee = strip_transparent_wrappers(body, call.callee);
-  let callee = body.exprs.get(callee.0 as usize)?;
-  let ExprKind::Member(member) = &callee.kind else {
-    return None;
-  };
-  if member.optional {
-    return None;
-  }
-  let prop = static_object_key_name(lowered, body, &member.property)?;
-
-  Some((member.object, prop, arg0.expr))
-}
-
-#[cfg(feature = "typed")]
-fn map_get_or_default_conditional(
-  lowered: &LowerResult,
-  body_ref: &hir_js::Body,
-  body_id: BodyId,
-  test: ExprId,
-  consequent: ExprId,
-  types: &impl crate::types::TypeProvider,
-) -> Option<(ExprId, ExprId)> {
-  let (has_recv, has_prop, has_key) = match_single_arg_member_call(lowered, body_ref, test)?;
-  if has_prop != "has" {
-    return None;
-  }
-  if !types.expr_is_named_ref(
-    body_id,
-    strip_transparent_wrappers(body_ref, has_recv),
-    "Map",
-  ) {
-    return None;
-  }
-
-  let (get_recv, get_prop, get_key) = match_single_arg_member_call(lowered, body_ref, consequent)?;
-  if get_prop != "get" {
-    return None;
-  }
-  if !types.expr_is_named_ref(
-    body_id,
-    strip_transparent_wrappers(body_ref, get_recv),
-    "Map",
-  ) {
-    return None;
-  }
-
-  if !expr_equivalent(lowered, body_ref, has_recv, get_recv)
-    || !expr_equivalent(lowered, body_ref, has_key, get_key)
-  {
-    return None;
-  }
-
-  Some((
-    strip_transparent_wrappers(body_ref, has_recv),
-    strip_transparent_wrappers(body_ref, has_key),
-  ))
 }

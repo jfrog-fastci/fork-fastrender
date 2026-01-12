@@ -7,7 +7,9 @@ pub mod effects;
 pub mod encoding;
 pub mod eval;
 mod js_string;
+#[deprecated(note = "Legacy AST-level patterns; use `effect_js::pattern_engine` (canonical) or `effect_js::recognize_patterns_*` (legacy) instead.")]
 pub mod pattern;
+pub mod pattern_engine;
 mod recognize;
 mod resolve;
 pub mod target;
@@ -52,6 +54,7 @@ pub use patterns::{
   recognize_patterns, ExprPatternTables, RecognizePatternsResult, RecognizedPatternId,
   StmtPatternTables,
 };
+pub use pattern_engine::{analyze_patterns, PatternEngineResult};
 pub use recognize::{
   recognize_patterns_best_effort_untyped, recognize_patterns_untyped, ArrayChainOp, ArrayTerminal,
   GuardKind, RecognizedPattern,
@@ -59,7 +62,8 @@ pub use recognize::{
 pub use resolver::{collect_require_bindings, resolve_api_call, RequireBindings};
 pub use semantic_patterns::{
   recognize_pattern_tables as recognize_semantic_pattern_tables,
-  recognize_patterns as recognize_semantic_patterns, ArrayOp as SemanticArrayOp,
+  recognize_patterns as recognize_semantic_patterns, ArrayChainOp as SemanticArrayChainOp,
+  ArrayOp as SemanticArrayOp, ArrayTerminal as SemanticArrayTerminal,
   PatternTables as SemanticPatternTables, PromiseCombinatorKind as SemanticPromiseCombinatorKind,
   PromiseInputPattern as SemanticPromiseInputPattern, RecognizedPattern as SemanticPattern,
   RecognizedPatternId as SemanticPatternId,

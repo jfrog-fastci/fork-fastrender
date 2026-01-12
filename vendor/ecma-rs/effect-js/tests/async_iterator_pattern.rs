@@ -84,3 +84,4 @@ fn recognizes_for_await_of_loops() {
     vec![RecognizedPatternId(0)]
   );
 }
+

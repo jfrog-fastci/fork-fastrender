@@ -1,6 +1,6 @@
 use hir_js::{ArrayElement, Body, BodyId, ExprId, ExprKind, LowerResult};
 #[cfg(feature = "typed")]
-use hir_js::{FunctionBody, StmtId, StmtKind};
+use hir_js::{BinaryOp, FunctionBody, ObjectKey, StmtId, StmtKind};
 use knowledge_base::{ApiDatabase, ApiId};
 
 use crate::resolve::resolve_call;
@@ -35,6 +35,22 @@ pub enum ArrayOp {
   Map { callback: ExprId },
   Filter { callback: ExprId },
   Reduce { callback: ExprId, init: ExprId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayChainOp {
+  Map { callback: ExprId },
+  Filter { callback: ExprId },
+  FlatMap { callback: ExprId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayTerminal {
+  Reduce { callback: ExprId, init: Option<ExprId> },
+  Find { callback: ExprId },
+  Every { callback: ExprId },
+  Some { callback: ExprId },
+  ForEach { callback: ExprId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +91,19 @@ pub enum RecognizedPattern {
   PromiseAllFetch { urls: ExprId },
   /// `const x: T = JSON.parse(input)` (typed only; uses inferred `TypeId`).
   TypedJsonParse { input: ExprId, target: TypeId },
+  /// Array prototype call chain such as `arr.map(f).filter(g).reduce(h, init)` (typed only).
+  ArrayChain {
+    base: ExprId,
+    ops: Vec<ArrayChainOp>,
+    terminal: Option<ArrayTerminal>,
+  },
+  /// `map.has(key) ? map.get(key) : default` or `map.get(key) ?? default` (typed only).
+  MapGetOrDefault {
+    conditional: ExprId,
+    map: ExprId,
+    key: ExprId,
+    default: ExprId,
+  },
 }
 
 /// Stable identifier for a recognized pattern within a single [`PatternTables`].
@@ -122,6 +151,10 @@ pub fn recognize_pattern_tables(
   let mut patterns: Vec<Vec<RecognizedPatternId>> = vec![Vec::new(); body.exprs.len()];
   let mut recognized: Vec<RecognizedPattern> = Vec::new();
 
+  #[cfg(feature = "typed")]
+  let non_outermost_array_exprs =
+    collect_non_outermost_array_exprs(body_id, body, &resolved_call, types);
+
   for expr_idx in 0..body.exprs.len() {
     let expr_id = ExprId(expr_idx as u32);
 
@@ -130,6 +163,18 @@ pub fn recognize_pattern_tables(
       let pat_id = RecognizedPatternId(recognized.len() as u32);
       recognized.push(RecognizedPattern::TypedJsonParse { input, target });
       patterns[expr_idx].push(pat_id);
+    }
+
+    // ArrayChain.
+    #[cfg(feature = "typed")]
+    if !non_outermost_array_exprs.contains(&expr_id) {
+      if let Some(pattern_rec) =
+        recognize_array_chain(body_id, body, expr_id, &resolved_call, types)
+      {
+        let pat_id = RecognizedPatternId(recognized.len() as u32);
+        recognized.push(pattern_rec);
+        patterns[expr_idx].push(pat_id);
+      }
     }
 
     // MapFilterReduce.
@@ -175,6 +220,16 @@ pub fn recognize_pattern_tables(
         recognized.push(pattern_rec);
         patterns[expr_idx].push(pat_id);
       }
+    }
+
+    // MapGetOrDefault.
+    #[cfg(feature = "typed")]
+    if let Some(pattern_rec) =
+      recognize_map_get_or_default(lowered, body_id, body, expr_id, &resolved_call, types)
+    {
+      let pat_id = RecognizedPatternId(recognized.len() as u32);
+      recognized.push(pattern_rec);
+      patterns[expr_idx].push(pat_id);
     }
   }
 
@@ -615,16 +670,12 @@ fn recognize_map_filter_reduce(
       }
       #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayMap { array, callback } => {
-        ops_rev.push(ArrayOp::Map {
-          callback: *callback,
-        });
+        ops_rev.push(ArrayOp::Map { callback: *callback });
         cur = *array;
       }
       #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayFilter { array, callback } => {
-        ops_rev.push(ArrayOp::Filter {
-          callback: *callback,
-        });
+        ops_rev.push(ArrayOp::Filter { callback: *callback });
         cur = *array;
       }
       #[cfg(feature = "hir-semantic-ops")]
@@ -693,7 +744,7 @@ fn recognize_promise_all_fetch(
   if promise_all.args[0].spread {
     return None;
   }
-  let promises_expr = promise_all.args[0].expr;
+  let promises_expr = strip_transparent_wrappers(body, promise_all.args[0].expr);
 
   // Promise.all(arg0) where arg0 is `urls.map(...)`.
   if resolved_call
@@ -733,6 +784,15 @@ fn recognize_promise_all_fetch(
   let urls = strip_transparent_wrappers(body, urls);
   if !types.expr_is_array(body_id, urls) {
     return None;
+  }
+
+  let callback_expr = strip_transparent_wrappers(body, callback_expr);
+  match &body.exprs.get(callback_expr.0 as usize)?.kind {
+    ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => {
+      return Some(RecognizedPattern::PromiseAllFetch { urls });
+    }
+    ExprKind::FunctionExpr { .. } => {}
+    _ => return None,
   }
 
   let ExprKind::FunctionExpr {
@@ -792,5 +852,525 @@ fn recognize_promise_all_fetch(
   _resolved_call: &[Option<ApiId>],
   _types: Option<&dyn TypeProvider>,
 ) -> Option<RecognizedPattern> {
+  None
+}
+
+#[cfg(feature = "typed")]
+#[derive(Debug)]
+enum ArrayCallNode {
+  Op(ArrayChainOp),
+  Terminal(ArrayTerminal),
+}
+
+#[cfg(feature = "typed")]
+fn classify_array_call(
+  body: &Body,
+  call_expr: ExprId,
+  resolved_call: &[Option<ApiId>],
+) -> Option<(ExprId, ArrayCallNode)> {
+  let api = resolved_call.get(call_expr.0 as usize).copied().flatten()?;
+
+  let array_map = ApiId::from_name("Array.prototype.map");
+  let array_filter = ApiId::from_name("Array.prototype.filter");
+  let array_flat_map = ApiId::from_name("Array.prototype.flatMap");
+  let array_reduce = ApiId::from_name("Array.prototype.reduce");
+  let array_find = ApiId::from_name("Array.prototype.find");
+  let array_every = ApiId::from_name("Array.prototype.every");
+  let array_some = ApiId::from_name("Array.prototype.some");
+  let array_for_each = ApiId::from_name("Array.prototype.forEach");
+
+  let expr = body.exprs.get(call_expr.0 as usize)?;
+
+  match &expr.kind {
+    ExprKind::Call(call) => {
+      if call.optional || call.is_new || call.args.iter().any(|arg| arg.spread) {
+        return None;
+      }
+
+      let callee_expr = body.exprs.get(call.callee.0 as usize)?;
+      let ExprKind::Member(member) = &callee_expr.kind else {
+        return None;
+      };
+      if member.optional {
+        return None;
+      }
+
+      let arg0 = call.args.first().map(|a| a.expr);
+      match api {
+        id if id == array_map => Some((
+          member.object,
+          ArrayCallNode::Op(ArrayChainOp::Map {
+            callback: arg0?,
+          }),
+        )),
+        id if id == array_filter => Some((
+          member.object,
+          ArrayCallNode::Op(ArrayChainOp::Filter {
+            callback: arg0?,
+          }),
+        )),
+        id if id == array_flat_map => Some((
+          member.object,
+          ArrayCallNode::Op(ArrayChainOp::FlatMap {
+            callback: arg0?,
+          }),
+        )),
+        id if id == array_reduce => Some((
+          member.object,
+          ArrayCallNode::Terminal(ArrayTerminal::Reduce {
+            callback: arg0?,
+            init: call.args.get(1).map(|a| a.expr),
+          }),
+        )),
+        id if id == array_find => Some((
+          member.object,
+          ArrayCallNode::Terminal(ArrayTerminal::Find { callback: arg0? }),
+        )),
+        id if id == array_every => Some((
+          member.object,
+          ArrayCallNode::Terminal(ArrayTerminal::Every { callback: arg0? }),
+        )),
+        id if id == array_some => Some((
+          member.object,
+          ArrayCallNode::Terminal(ArrayTerminal::Some { callback: arg0? }),
+        )),
+        id if id == array_for_each => Some((
+          member.object,
+          ArrayCallNode::Terminal(ArrayTerminal::ForEach { callback: arg0? }),
+        )),
+        _ => None,
+      }
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayMap { array, callback } if api == array_map => Some((
+      *array,
+      ArrayCallNode::Op(ArrayChainOp::Map {
+        callback: *callback,
+      }),
+    )),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayFilter { array, callback } if api == array_filter => Some((
+      *array,
+      ArrayCallNode::Op(ArrayChainOp::Filter {
+        callback: *callback,
+      }),
+    )),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayReduce { array, callback, init } if api == array_reduce => Some((
+      *array,
+      ArrayCallNode::Terminal(ArrayTerminal::Reduce {
+        callback: *callback,
+        init: *init,
+      }),
+    )),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayFind { array, callback } if api == array_find => Some((
+      *array,
+      ArrayCallNode::Terminal(ArrayTerminal::Find {
+        callback: *callback,
+      }),
+    )),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayEvery { array, callback } if api == array_every => Some((
+      *array,
+      ArrayCallNode::Terminal(ArrayTerminal::Every {
+        callback: *callback,
+      }),
+    )),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArraySome { array, callback } if api == array_some => Some((
+      *array,
+      ArrayCallNode::Terminal(ArrayTerminal::Some {
+        callback: *callback,
+      }),
+    )),
+    _ => None,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn collect_non_outermost_array_exprs(
+  _body_id: BodyId,
+  body: &Body,
+  resolved_call: &[Option<ApiId>],
+  types: Option<&dyn TypeProvider>,
+) -> std::collections::HashSet<ExprId> {
+  if types.is_none() {
+    return std::collections::HashSet::new();
+  }
+
+  let mut non_outermost_array_exprs = std::collections::HashSet::<ExprId>::new();
+  for idx in 0..body.exprs.len() {
+    let expr_id = ExprId(idx as u32);
+    let Some((recv, _node)) = classify_array_call(body, expr_id, resolved_call) else {
+      continue;
+    };
+
+    let recv_kind = body.exprs.get(recv.0 as usize).map(|e| &e.kind);
+    let mark = matches!(recv_kind, Some(ExprKind::Call(_)))
+      || {
+        #[cfg(feature = "hir-semantic-ops")]
+        {
+          matches!(recv_kind, Some(ExprKind::ArrayChain { .. }))
+        }
+        #[cfg(not(feature = "hir-semantic-ops"))]
+        {
+          false
+        }
+      };
+    if mark {
+      non_outermost_array_exprs.insert(recv);
+    }
+  }
+
+  #[cfg(feature = "hir-semantic-ops")]
+  {
+    // `hir-js` may lower chained array operations into nested `ExprKind::ArrayChain` nodes. The
+    // outer chain node does not retain the intermediate receiver expression, so use spans to
+    // suppress inner chains and keep `ArrayChain` recognition outermost-only.
+    let mut max_end_by_start = std::collections::BTreeMap::<u32, u32>::new();
+    for expr in &body.exprs {
+      if matches!(expr.kind, ExprKind::ArrayChain { .. }) {
+        max_end_by_start
+          .entry(expr.span.start)
+          .and_modify(|end| *end = (*end).max(expr.span.end))
+          .or_insert(expr.span.end);
+      }
+    }
+    for (idx, expr) in body.exprs.iter().enumerate() {
+      if matches!(expr.kind, ExprKind::ArrayChain { .. }) {
+        if let Some(max_end) = max_end_by_start.get(&expr.span.start) {
+          if expr.span.end < *max_end {
+            non_outermost_array_exprs.insert(ExprId(idx as u32));
+          }
+        }
+      }
+    }
+  }
+
+  non_outermost_array_exprs
+}
+
+#[cfg(feature = "typed")]
+fn recognize_array_chain(
+  body_id: BodyId,
+  body: &Body,
+  root_expr: ExprId,
+  resolved_call: &[Option<ApiId>],
+  types: Option<&dyn TypeProvider>,
+) -> Option<RecognizedPattern> {
+  let Some(types) = types else {
+    return None;
+  };
+
+  #[cfg(feature = "hir-semantic-ops")]
+  {
+    let expr = body.exprs.get(root_expr.0 as usize)?;
+    if let ExprKind::ArrayChain { array, ops } = &expr.kind {
+      let base = strip_transparent_wrappers(body, *array);
+      if !types.expr_is_array(body_id, base) {
+        return None;
+      }
+
+      let mut out_ops = Vec::new();
+      let mut terminal = None;
+      for (idx, op) in ops.iter().enumerate() {
+        match op {
+          hir_js::ArrayChainOp::Map(callback) => {
+            if terminal.is_some() {
+              return None;
+            }
+            out_ops.push(ArrayChainOp::Map { callback: *callback });
+          }
+          hir_js::ArrayChainOp::Filter(callback) => {
+            if terminal.is_some() {
+              return None;
+            }
+            out_ops.push(ArrayChainOp::Filter { callback: *callback });
+          }
+          hir_js::ArrayChainOp::Reduce(callback, init) => {
+            if idx != ops.len().saturating_sub(1) {
+              return None;
+            }
+            terminal = Some(ArrayTerminal::Reduce {
+              callback: *callback,
+              init: *init,
+            });
+          }
+          hir_js::ArrayChainOp::Find(callback) => {
+            if idx != ops.len().saturating_sub(1) {
+              return None;
+            }
+            terminal = Some(ArrayTerminal::Find {
+              callback: *callback,
+            });
+          }
+          hir_js::ArrayChainOp::Every(callback) => {
+            if idx != ops.len().saturating_sub(1) {
+              return None;
+            }
+            terminal = Some(ArrayTerminal::Every {
+              callback: *callback,
+            });
+          }
+          hir_js::ArrayChainOp::Some(callback) => {
+            if idx != ops.len().saturating_sub(1) {
+              return None;
+            }
+            terminal = Some(ArrayTerminal::Some {
+              callback: *callback,
+            });
+          }
+        }
+      }
+
+      let ok_len = if terminal.is_some() {
+        out_ops.len() >= 1
+      } else {
+        out_ops.len() >= 2
+      };
+      if !ok_len {
+        return None;
+      }
+
+      return Some(RecognizedPattern::ArrayChain {
+        base,
+        ops: out_ops,
+        terminal,
+      });
+    }
+  }
+
+  let (mut recv, node) = classify_array_call(body, root_expr, resolved_call)?;
+  let mut ops_rev = Vec::<ArrayChainOp>::new();
+  let mut terminal = None::<ArrayTerminal>;
+  match node {
+    ArrayCallNode::Op(op) => ops_rev.push(op),
+    ArrayCallNode::Terminal(term) => terminal = Some(term),
+  }
+
+  loop {
+    recv = strip_transparent_wrappers(body, recv);
+
+    #[cfg(feature = "hir-semantic-ops")]
+    if let Some(expr) = body.exprs.get(recv.0 as usize) {
+      if let ExprKind::ArrayChain { array, ops } = &expr.kind {
+        // Terminal methods must be the final call in the chain.
+        for op in ops.iter().rev() {
+          match op {
+            hir_js::ArrayChainOp::Map(callback) => {
+              ops_rev.push(ArrayChainOp::Map { callback: *callback })
+            }
+            hir_js::ArrayChainOp::Filter(callback) => {
+              ops_rev.push(ArrayChainOp::Filter { callback: *callback })
+            }
+            hir_js::ArrayChainOp::Reduce(..)
+            | hir_js::ArrayChainOp::Find(_)
+            | hir_js::ArrayChainOp::Every(_)
+            | hir_js::ArrayChainOp::Some(_) => return None,
+          }
+        }
+        recv = *array;
+        continue;
+      }
+    }
+
+    if let Some((next_recv, node)) = classify_array_call(body, recv, resolved_call) {
+      match node {
+        ArrayCallNode::Op(op) => {
+          ops_rev.push(op);
+          recv = next_recv;
+          continue;
+        }
+        ArrayCallNode::Terminal(_) => {
+          // Terminal methods must be the final call in the chain.
+          return None;
+        }
+      }
+    }
+
+    break;
+  }
+
+  let base = recv;
+  if !types.expr_is_array(body_id, base) {
+    return None;
+  }
+
+  ops_rev.reverse();
+
+  let ok_len = if terminal.is_some() {
+    ops_rev.len() >= 1
+  } else {
+    ops_rev.len() >= 2
+  };
+  if !ok_len {
+    return None;
+  }
+
+  Some(RecognizedPattern::ArrayChain {
+    base,
+    ops: ops_rev,
+    terminal,
+  })
+}
+
+#[cfg(feature = "typed")]
+fn static_object_key_name(
+  lowered: &LowerResult,
+  body: &Body,
+  key: &ObjectKey,
+) -> Option<String> {
+  match key {
+    ObjectKey::Ident(id) => lowered.names.resolve(*id).map(|s| s.to_string()),
+    ObjectKey::String(s) => Some(s.clone()),
+    ObjectKey::Number(n) => Some(crate::js_string::number_literal_to_js_string(n)),
+    ObjectKey::Computed(expr) => {
+      let expr = strip_transparent_wrappers(body, *expr);
+      let expr = body.exprs.get(expr.0 as usize)?;
+      match &expr.kind {
+        ExprKind::Literal(hir_js::Literal::String(lit)) => Some(lit.lossy.clone()),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => {
+          Some(crate::js_string::number_literal_to_js_string(n))
+        }
+        ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
+        _ => None,
+      }
+    }
+  }
+}
+
+#[cfg(feature = "typed")]
+fn expr_equivalent(lowered: &LowerResult, body: &Body, a: ExprId, b: ExprId) -> bool {
+  let a = strip_transparent_wrappers(body, a);
+  let b = strip_transparent_wrappers(body, b);
+  let Some(a_expr) = body.exprs.get(a.0 as usize) else {
+    return false;
+  };
+  let Some(b_expr) = body.exprs.get(b.0 as usize) else {
+    return false;
+  };
+
+  match (&a_expr.kind, &b_expr.kind) {
+    (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+    (ExprKind::Literal(a), ExprKind::Literal(b)) => a == b,
+    (ExprKind::Member(a), ExprKind::Member(b)) => {
+      if a.optional || b.optional {
+        return false;
+      }
+      let Some(a_key) = static_object_key_name(lowered, body, &a.property) else {
+        return false;
+      };
+      let Some(b_key) = static_object_key_name(lowered, body, &b.property) else {
+        return false;
+      };
+      if a_key != b_key {
+        return false;
+      }
+      expr_equivalent(lowered, body, a.object, b.object)
+    }
+    _ => false,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn match_single_arg_member_call(body: &Body, call_expr: ExprId) -> Option<(ExprId, ExprId)> {
+  let call_expr = strip_transparent_wrappers(body, call_expr);
+  let call = body.exprs.get(call_expr.0 as usize)?;
+  let ExprKind::Call(call) = &call.kind else {
+    return None;
+  };
+  if call.optional || call.is_new || call.args.len() != 1 {
+    return None;
+  }
+  let arg0 = call.args.first()?;
+  if arg0.spread {
+    return None;
+  }
+
+  let callee = strip_transparent_wrappers(body, call.callee);
+  let callee = body.exprs.get(callee.0 as usize)?;
+  let ExprKind::Member(member) = &callee.kind else {
+    return None;
+  };
+  if member.optional {
+    return None;
+  }
+
+  Some((member.object, arg0.expr))
+}
+
+#[cfg(feature = "typed")]
+fn recognize_map_get_or_default(
+  lowered: &LowerResult,
+  _body_id: BodyId,
+  body: &Body,
+  expr_id: ExprId,
+  resolved_call: &[Option<ApiId>],
+  types: Option<&dyn TypeProvider>,
+) -> Option<RecognizedPattern> {
+  let Some(_types) = types else {
+    return None;
+  };
+
+  let map_has = ApiId::from_name("Map.prototype.has");
+  let map_get = ApiId::from_name("Map.prototype.get");
+
+  let expr = body.exprs.get(expr_id.0 as usize)?;
+
+  // `map.has(key) ? map.get(key) : default`.
+  if let ExprKind::Conditional {
+    test,
+    consequent,
+    alternate,
+  } = &expr.kind
+  {
+    let test = strip_transparent_wrappers(body, *test);
+    let consequent = strip_transparent_wrappers(body, *consequent);
+
+    if resolved_call.get(test.0 as usize).copied().flatten() != Some(map_has) {
+      return None;
+    }
+    if resolved_call.get(consequent.0 as usize).copied().flatten() != Some(map_get) {
+      return None;
+    }
+
+    let (map_in_has, key_in_has) = match_single_arg_member_call(body, test)?;
+    let (map_in_get, key_in_get) = match_single_arg_member_call(body, consequent)?;
+    if !expr_equivalent(lowered, body, map_in_has, map_in_get) {
+      return None;
+    }
+    if !expr_equivalent(lowered, body, key_in_has, key_in_get) {
+      return None;
+    }
+
+    return Some(RecognizedPattern::MapGetOrDefault {
+      conditional: expr_id,
+      map: map_in_has,
+      key: key_in_has,
+      default: *alternate,
+    });
+  }
+
+  // `map.get(key) ?? default`.
+  if let ExprKind::Binary {
+    op: BinaryOp::NullishCoalescing,
+    left,
+    right,
+  } = &expr.kind
+  {
+    let left = strip_transparent_wrappers(body, *left);
+    if resolved_call.get(left.0 as usize).copied().flatten() != Some(map_get) {
+      return None;
+    }
+    let (map, key) = match_single_arg_member_call(body, left)?;
+    return Some(RecognizedPattern::MapGetOrDefault {
+      conditional: expr_id,
+      map,
+      key,
+      default: *right,
+    });
+  }
+
   None
 }

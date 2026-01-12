@@ -460,6 +460,47 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
   }
 }
 
+#[cfg(feature = "hir-semantic-ops")]
+fn semantic_op_receiver_is_array(
+  body: &Body,
+  body_id: BodyId,
+  receiver: ExprId,
+  types: Option<&dyn TypeProvider>,
+) -> bool {
+  let receiver = strip_transparent_wrappers(body, receiver);
+  let Some(expr) = body.exprs.get(receiver.0 as usize) else {
+    return false;
+  };
+
+  // Typed mode: trust the type provider when available.
+  #[cfg(feature = "typed")]
+  if let Some(types) = types {
+    if types.expr_is_array(body_id, receiver) {
+      return true;
+    }
+  }
+  #[cfg(not(feature = "typed"))]
+  {
+    let _ = (body_id, types);
+  }
+
+  // Untyped fallback: only accept receivers that are *syntactically* known to be arrays,
+  // or are derived from a known array via array-returning semantic ops.
+  match &expr.kind {
+    ExprKind::Array(_) => true,
+    ExprKind::ArrayMap { array, .. } | ExprKind::ArrayFilter { array, .. } => {
+      semantic_op_receiver_is_array(body, body_id, *array, types)
+    }
+    ExprKind::ArrayChain { array, ops } => match ops.last() {
+      Some(hir_js::ArrayChainOp::Map(_) | hir_js::ArrayChainOp::Filter(_)) => {
+        semantic_op_receiver_is_array(body, body_id, *array, types)
+      }
+      _ => false,
+    },
+    _ => false,
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCall {
   pub call: ExprId,
@@ -554,24 +595,36 @@ pub fn resolve_call_for_target(
       });
     }
     ExprKind::ArrayMap { array, callback } => {
+      let receiver = strip_transparent_wrappers(body, *array);
+      // Typed mode: ensure the receiver is truly an array (avoid resolving `anyVal.map(...)`).
+      //
+      // Untyped mode: `hir-js` has already opted into a semantic-op node, so treat it as
+      // best-effort `Array.prototype.*` for effect inference and downstream heuristics.
+      if types.is_some() && !semantic_op_receiver_is_array(body, body_id, receiver, types) {
+        return None;
+      }
       let api = kb.get("Array.prototype.map")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
         api_id,
-        receiver: Some(*array),
+        receiver: Some(receiver),
         args: vec![*callback],
       });
     }
     ExprKind::ArrayFilter { array, callback } => {
+      let receiver = strip_transparent_wrappers(body, *array);
+      if types.is_some() && !semantic_op_receiver_is_array(body, body_id, receiver, types) {
+        return None;
+      }
       let api = kb.get("Array.prototype.filter")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
         api_id,
-        receiver: Some(*array),
+        receiver: Some(receiver),
         args: vec![*callback],
       });
     }
@@ -580,6 +633,10 @@ pub fn resolve_call_for_target(
       callback,
       init,
     } => {
+      let receiver = strip_transparent_wrappers(body, *array);
+      if types.is_some() && !semantic_op_receiver_is_array(body, body_id, receiver, types) {
+        return None;
+      }
       let api = kb.get("Array.prototype.reduce")?;
       let api_id = api.id;
       let mut args = vec![*callback];
@@ -590,117 +647,87 @@ pub fn resolve_call_for_target(
         call: call_expr,
         api: api.name.clone(),
         api_id,
-        receiver: Some(*array),
+        receiver: Some(receiver),
         args,
       });
     }
     ExprKind::ArrayFind { array, callback } => {
+      let receiver = strip_transparent_wrappers(body, *array);
+      if types.is_some() && !semantic_op_receiver_is_array(body, body_id, receiver, types) {
+        return None;
+      }
       let api = kb.get("Array.prototype.find")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
         api_id,
-        receiver: Some(*array),
+        receiver: Some(receiver),
         args: vec![*callback],
       });
     }
     ExprKind::ArrayEvery { array, callback } => {
+      let receiver = strip_transparent_wrappers(body, *array);
+      if types.is_some() && !semantic_op_receiver_is_array(body, body_id, receiver, types) {
+        return None;
+      }
       let api = kb.get("Array.prototype.every")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
         api_id,
-        receiver: Some(*array),
+        receiver: Some(receiver),
         args: vec![*callback],
       });
     }
     ExprKind::ArraySome { array, callback } => {
+      let receiver = strip_transparent_wrappers(body, *array);
+      if types.is_some() && !semantic_op_receiver_is_array(body, body_id, receiver, types) {
+        return None;
+      }
       let api = kb.get("Array.prototype.some")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
         api_id,
-        receiver: Some(*array),
+        receiver: Some(receiver),
         args: vec![*callback],
       });
     }
     ExprKind::ArrayChain { array, ops } => {
-      let terminal = ops.last()?;
-      match terminal {
-        ArrayChainOp::Map(callback) => {
-          let api = db.get("Array.prototype.map")?;
-          let api_id = api.id;
-          return Some(ResolvedCall {
-            call: call_expr,
-            api: api.name.clone(),
-            api_id,
-            receiver: Some(*array),
-            args: vec![*callback],
-          });
-        }
-        ArrayChainOp::Filter(callback) => {
-          let api = db.get("Array.prototype.filter")?;
-          let api_id = api.id;
-          return Some(ResolvedCall {
-            call: call_expr,
-            api: api.name.clone(),
-            api_id,
-            receiver: Some(*array),
-            args: vec![*callback],
-          });
-        }
+      let receiver = strip_transparent_wrappers(body, *array);
+      if types.is_some() && !semantic_op_receiver_is_array(body, body_id, receiver, types) {
+        return None;
+      }
+
+      let last = ops.last()?;
+
+      let (api_name, args) = match last {
+        ArrayChainOp::Map(callback) => ("Array.prototype.map", vec![*callback]),
+        ArrayChainOp::Filter(callback) => ("Array.prototype.filter", vec![*callback]),
         ArrayChainOp::Reduce(callback, init) => {
-          let api = db.get("Array.prototype.reduce")?;
-          let api_id = api.id;
           let mut args = vec![*callback];
           if let Some(init) = init {
             args.push(*init);
           }
-          return Some(ResolvedCall {
-            call: call_expr,
-            api: api.name.clone(),
-            api_id,
-            receiver: Some(*array),
-            args,
-          });
+          ("Array.prototype.reduce", args)
         }
-        ArrayChainOp::Find(callback) => {
-          let api = db.get("Array.prototype.find")?;
-          let api_id = api.id;
-          return Some(ResolvedCall {
-            call: call_expr,
-            api: api.name.clone(),
-            api_id,
-            receiver: Some(*array),
-            args: vec![*callback],
-          });
-        }
-        ArrayChainOp::Every(callback) => {
-          let api = db.get("Array.prototype.every")?;
-          let api_id = api.id;
-          return Some(ResolvedCall {
-            call: call_expr,
-            api: api.name.clone(),
-            api_id,
-            receiver: Some(*array),
-            args: vec![*callback],
-          });
-        }
-        ArrayChainOp::Some(callback) => {
-          let api = db.get("Array.prototype.some")?;
-          let api_id = api.id;
-          return Some(ResolvedCall {
-            call: call_expr,
-            api: api.name.clone(),
-            api_id,
-            receiver: Some(*array),
-            args: vec![*callback],
-          });
-        }
-      }
+        ArrayChainOp::Find(callback) => ("Array.prototype.find", vec![*callback]),
+        ArrayChainOp::Every(callback) => ("Array.prototype.every", vec![*callback]),
+        ArrayChainOp::Some(callback) => ("Array.prototype.some", vec![*callback]),
+      };
+
+      let api = kb.get(api_name)?;
+      let api_id = api.id;
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id,
+        receiver: Some(receiver),
+        args,
+      });
     }
     ExprKind::KnownApiCall { api: hir_api, args } => {
       let api_id = ApiId::from_raw(hir_api.raw());
