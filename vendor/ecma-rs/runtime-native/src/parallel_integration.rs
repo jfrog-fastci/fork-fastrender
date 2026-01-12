@@ -7,6 +7,23 @@ use crate::roots::Root as StackRoot;
 use crate::threading::ThreadKind;
 use core::sync::atomic::Ordering;
 
+#[inline]
+fn maybe_clear_external_pending(promise: PromiseRef) {
+  if promise.is_null() {
+    return;
+  }
+  // `PromiseRef` is an opaque handle, but by contract it must point to a `PromiseHeader` prefix at
+  // offset 0 of the allocation.
+  let header = promise.0.cast::<PromiseHeader>();
+  if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+  let prev = unsafe { &(*header).flags }.fetch_and(!PROMISE_FLAG_EXTERNAL_PENDING, Ordering::AcqRel);
+  if (prev & PROMISE_FLAG_EXTERNAL_PENDING) != 0 {
+    crate::async_rt::external_pending_dec();
+  }
+}
+
 /// Heap-allocated wrapper passed through the join-based parallel scheduler.
 ///
 /// The scheduler's public `rt_parallel_spawn` API expects tasks of the form
@@ -23,16 +40,34 @@ struct PromiseTask {
 extern "C" fn promise_task_trampoline(ptr: *mut u8) {
   // Safety: allocated by `spawn_promise` as a `Box<PromiseTask>`.
   let task = unsafe { Box::from_raw(ptr as *mut PromiseTask) };
-  let data_for_cb = task
-    .data_root
-    .as_ref()
-    .map(|r| r.ptr())
-    .unwrap_or(task.data);
+
+  // Resolve promise/data pointers in a moving-GC-safe way under handle-table lock contention:
+  // root the promise pointer in an addressable slot while we resolve the optional rooted task
+  // context (`data_root`).
+  {
+    let mut promise_ptr: *mut u8 = task.promise_root.ptr();
+    let mut scope = crate::roots::RootScope::new();
+    scope.push(&mut promise_ptr as *mut *mut u8);
+
+    let data_for_cb = task
+      .data_root
+      .as_ref()
+      .map(|r| r.ptr())
+      .unwrap_or(task.data);
+    let promise_for_cb = PromiseRef(promise_ptr.cast());
+
+    drop(scope);
+
+    // `task.func` comes from generated code / the embedder and is typed as `extern "C"`. If it
+    // panics we must not unwind across the `extern "C"` boundary (UB); instead, allow unwinding into
+    // Rust (`extern "C-unwind"`) and abort deterministically.
+    crate::ffi::invoke_cb2_promise(task.func, data_for_cb, promise_for_cb);
+  }
+
+  // If the callback forgot to settle the promise, ensure we don't leak the "external pending" count
+  // and keep the event loop alive forever.
   let promise = PromiseRef(task.promise_root.ptr().cast());
-  // `task.func` comes from generated code / the embedder and is typed as `extern "C"`. If it
-  // panics we must not unwind across the `extern "C"` boundary (UB); instead, allow unwinding into
-  // Rust (`extern "C-unwind"`) and abort deterministically.
-  crate::ffi::invoke_cb2_promise(task.func, data_for_cb, promise);
+  maybe_clear_external_pending(promise);
   // Box dropped here.
 }
 
@@ -148,18 +183,30 @@ extern "C" fn gc_promise_task_trampoline(ptr: *mut u8) {
   // Safety: allocated by `spawn_promise_with_shape_impl` as a `Box<GcPromiseTask>`.
   let task = unsafe { Box::from_raw(ptr as *mut GcPromiseTask) };
 
-  let data_for_cb = task
-    .data_root
-    .as_ref()
-    .map(|r| r.ptr())
-    .unwrap_or(task.data);
+  // Resolve pointers under possible handle-table lock contention without holding unrooted raw GC
+  // pointers across potential GC-safe regions.
+  {
+    let mut promise_ptr: *mut u8 = task.promise_root.ptr();
+    let mut scope = crate::roots::RootScope::new();
+    scope.push(&mut promise_ptr as *mut *mut u8);
 
-  let promise_for_cb = PromiseRef(task.promise_root.ptr().cast());
+    let data_for_cb = task
+      .data_root
+      .as_ref()
+      .map(|r| r.ptr())
+      .unwrap_or(task.data);
+    let promise_for_cb = PromiseRef(promise_ptr.cast());
 
-  // `task.func` comes from generated code / the embedder and is typed as `extern "C"`. If it panics
-  // we must not unwind across the `extern "C"` boundary (UB); instead, allow unwinding into Rust
-  // (`extern "C-unwind"`) and abort deterministically.
-  crate::ffi::invoke_cb2_promise(task.func, data_for_cb, promise_for_cb);
+    drop(scope);
+
+    // `task.func` comes from generated code / the embedder and is typed as `extern "C"`. If it panics
+    // we must not unwind across the `extern "C"` boundary (UB); instead, allow unwinding into Rust
+    // (`extern "C-unwind"`) and abort deterministically.
+    crate::ffi::invoke_cb2_promise(task.func, data_for_cb, promise_for_cb);
+  }
+
+  let promise = PromiseRef(task.promise_root.ptr().cast());
+  maybe_clear_external_pending(promise);
   // Box dropped here.
 }
 
