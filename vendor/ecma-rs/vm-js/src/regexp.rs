@@ -712,7 +712,7 @@ impl RegExpProgram {
           RegExpCompileError::Syntax(_) => {
             VmError::InvariantViolation("RegExpProgram clone syntax error")
           }
-          RegExpCompileError::Vm(e) => e,
+          RegExpCompileError::Vm(err) => err,
         })?),
         Inst::AssertStart => Inst::AssertStart,
         Inst::AssertEnd => Inst::AssertEnd,

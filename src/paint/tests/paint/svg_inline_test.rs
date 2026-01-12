@@ -1,42 +1,12 @@
-use crate::css::parser::extract_css;
 use crate::debug::runtime::RuntimeToggles;
-use crate::dom;
-use crate::style::cascade::apply_styles_with_media;
-use crate::style::media::MediaContext;
-use crate::tree::box_generation::generate_box_tree;
-use crate::tree::box_tree::{BoxNode, BoxType, ReplacedType, SvgContent};
 use crate::{DiagnosticsLevel, FastRender, FastRenderConfig, RenderOptions};
 use resvg::tiny_skia::Pixmap;
 use std::collections::HashMap;
 
-pub(super) fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
+fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
   let idx = (y as usize * pixmap.width() as usize + x as usize) * 4;
   let data = pixmap.data();
   [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
-}
-
-pub(super) fn serialized_inline_svg(html: &str, width: f32, height: f32) -> Option<SvgContent> {
-  let dom = dom::parse_html(html).ok()?;
-  let stylesheet = extract_css(&dom).ok()?;
-  let media = MediaContext::screen(width, height);
-  let styled = apply_styles_with_media(&dom, &stylesheet, &media);
-  let box_tree = generate_box_tree(&styled).ok()?;
-
-  fn find_svg(node: &BoxNode) -> Option<SvgContent> {
-    if let BoxType::Replaced(repl) = &node.box_type {
-      if let ReplacedType::Svg { content } = &repl.replaced_type {
-        return Some(content.clone());
-      }
-    }
-    for child in node.children.iter() {
-      if let Some(content) = find_svg(child) {
-        return Some(content);
-      }
-    }
-    None
-  }
-
-  find_svg(&box_tree.root)
 }
 
 fn render_html_with_svg_document_css_injection_disabled(
@@ -207,18 +177,6 @@ fn inline_svg_malformed_style_attribute_does_not_break_inlined_presentation_styl
         </g>
       </svg>
       "#;
-
-      let content = serialized_inline_svg(html, 30.0, 30.0).expect("svg content");
-      assert!(
-        !content.svg.contains("var(--c"),
-        "serialized SVG should drop malformed authored style before appending computed declarations; got: {}",
-        content.svg
-      );
-      assert!(
-        content.svg.contains("fill: none"),
-        "serialized SVG should include computed fill: none; got: {}",
-        content.svg
-      );
 
       let mut renderer = FastRender::new().expect("renderer");
       let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
@@ -1213,21 +1171,6 @@ fn inline_svg_renders_gradients_with_clip_and_mask() {
       </svg>
       "#;
 
-      let serialized = serialized_inline_svg(html, 30.0, 30.0).expect("serialize svg");
-      assert!(serialized.svg.contains("mask=\"url(#fade)\""));
-
-      let cache = crate::image_loader::ImageCache::new();
-      let svg_image = cache
-        .render_svg(&serialized.svg)
-        .expect("render serialized svg");
-      let svg_rgba = svg_image.image.to_rgba8();
-      let left_alpha = svg_rgba.get_pixel(8, 10)[3];
-      let right_alpha = svg_rgba.get_pixel(14, 10)[3];
-      assert!(
-        left_alpha < right_alpha,
-        "mask should reduce alpha in standalone rendering"
-      );
-
       let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
       assert_eq!(
         pixel(&pixmap, 13, 3),
@@ -1726,35 +1669,6 @@ fn foreign_object_background_alpha_is_applied_once() {
 }
 
 #[test]
-fn foreign_object_background_from_svg_style_attribute_is_captured() {
-  let html = r#"
-  <svg width="16" height="16" viewBox="0 0 16 16">
-    <foreignObject x="0" y="0" width="16" height="16" style="background: rgba(255, 0, 0, 0.5);">
-      <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;"></div>
-    </foreignObject>
-  </svg>
-  "#;
-
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
-  assert_eq!(
-    serialized.foreign_objects.len(),
-    1,
-    "expected one foreignObject to be captured"
-  );
-  let bg = serialized.foreign_objects[0]
-    .background
-    .expect("foreignObject background should be captured");
-  assert_eq!(bg.r, 255);
-  assert_eq!(bg.g, 0);
-  assert_eq!(bg.b, 0);
-  assert!(
-    (bg.a - 0.5).abs() < 0.01,
-    "expected alpha ~0.5, got {:?}",
-    bg
-  );
-}
-
-#[test]
 fn foreign_object_renders_nested_html_children() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
@@ -1945,95 +1859,6 @@ fn foreign_object_display_none_prevents_replacement_rendering() {
 }
 
 #[test]
-fn foreign_object_without_dimensions_uses_placeholder_comment() {
-  let html = r#"
-  <svg width="16" height="12" viewBox="0 0 16 12">
-    <foreignObject>
-      <div xmlns="http://www.w3.org/1999/xhtml" style="width:10px;height:12px;background: rgb(255, 0, 0);"></div>
-    </foreignObject>
-  </svg>
-  "#;
-
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
-  assert!(
-    serialized
-      .svg
-      .contains("FASTRENDER_FOREIGN_OBJECT_UNRESOLVED"),
-    "missing dimensions should keep placeholder path"
-  );
-}
-
-#[test]
-fn foreign_object_with_dimensions_emits_marker() {
-  let html = r#"
-  <svg width="16" height="12" viewBox="0 0 16 12">
-    <foreignObject x="0" y="0" width="10" height="12">
-      <div xmlns="http://www.w3.org/1999/xhtml" style="width:10px;height:12px;background: rgb(0, 255, 0);"></div>
-    </foreignObject>
-  </svg>
-  "#;
-
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
-  assert!(
-    serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
-    "foreignObject should be replaced with marker for nested rendering"
-  );
-  assert!(
-    !serialized
-      .svg
-      .contains("FASTRENDER_FOREIGN_OBJECT_UNRESOLVED"),
-    "valid dimensions should avoid unresolved placeholder comments"
-  );
-}
-
-#[test]
-fn foreign_object_display_none_does_not_emit_foreign_object_info() {
-  let html = r#"
-  <style>
-    foreignObject{display:none}
-  </style>
-  <svg width="16" height="12" viewBox="0 0 16 12">
-    <foreignObject x="0" y="0" width="10" height="12">
-      <div xmlns="http://www.w3.org/1999/xhtml" style="width:10px;height:12px;background: rgb(0, 0, 255);"></div>
-    </foreignObject>
-  </svg>
-  "#;
-
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
-  assert!(
-    serialized.foreign_objects.is_empty(),
-    "display:none foreignObject should not allocate foreign object info"
-  );
-  assert!(
-    !serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
-    "display:none foreignObject should not emit a placeholder marker"
-  );
-}
-
-#[test]
-fn foreign_object_accepts_absolute_units_for_dimensions() {
-  let html = r#"
-  <svg width="2in" height="2in" viewBox="0 0 192 192">
-    <foreignObject x="1in" y="0" width="1in" height="1in">
-      <div xmlns="http://www.w3.org/1999/xhtml" style="width:96px;height:96px;background: rgb(0, 255, 0);"></div>
-    </foreignObject>
-  </svg>
-  "#;
-
-  let serialized = serialized_inline_svg(html, 200.0, 200.0).expect("serialize svg");
-  assert!(
-    serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
-    "absolute units should resolve to a valid foreignObject"
-  );
-  assert!(
-    !serialized
-      .svg
-      .contains("FASTRENDER_FOREIGN_OBJECT_UNRESOLVED"),
-    "converted dimensions should avoid unresolved placeholder"
-  );
-}
-
-#[test]
 fn foreign_object_accepts_percentage_units_for_dimensions() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
@@ -2099,29 +1924,6 @@ fn foreign_object_overflow_hidden_clips_filter_effects() {
     .unwrap()
     .join()
     .unwrap();
-}
-
-#[test]
-fn foreign_object_percentage_units_do_not_emit_unresolved_placeholder() {
-  let html = r#"
-  <svg width="16" height="12" viewBox="0 0 16 12">
-    <foreignObject x="0" y="0" width="100%" height="100%">
-      <div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;background: rgb(0, 0, 255);"></div>
-    </foreignObject>
-  </svg>
-  "#;
-
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
-  assert!(
-    serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
-    "percentage dimensions should resolve to a valid foreignObject"
-  );
-  assert!(
-    !serialized
-      .svg
-      .contains("FASTRENDER_FOREIGN_OBJECT_UNRESOLVED"),
-    "percentage dimensions should avoid unresolved placeholder comments"
-  );
 }
 
 #[test]
