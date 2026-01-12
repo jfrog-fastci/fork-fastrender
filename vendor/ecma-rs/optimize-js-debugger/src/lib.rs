@@ -910,17 +910,30 @@ mod tests {
       .await
       .expect("read body");
     let parsed: ProgramDump = from_slice(&bytes).expect("decode msgpack body");
+
+    // `optimize-js` emits additional `VarAssign` copies in `--features typed` builds to preserve
+    // per-expression metadata (see `InstMeta.preserve_var_assign`). This intentionally changes the
+    // CFG/IL snapshot emitted by the debugger, so we keep separate fixtures for typed vs untyped
+    // builds.
+    let snapshot_path = if cfg!(feature = "typed") {
+      "tests/fixtures/debug_input.typed.snapshot.json"
+    } else {
+      "tests/fixtures/debug_input.snapshot.json"
+    };
     if std::env::var_os("UPDATE_SNAPSHOT").is_some() {
       std::fs::write(
-        "tests/fixtures/debug_input.snapshot.json",
+        snapshot_path,
         serde_json::to_string_pretty(&parsed).expect("serialize snapshot"),
       )
       .expect("write snapshot");
       return;
     }
-    let expected: ProgramDump =
-      serde_json::from_str(include_str!("../tests/fixtures/debug_input.snapshot.json"))
-        .expect("parse snapshot");
+    let expected_json = if cfg!(feature = "typed") {
+      include_str!("../tests/fixtures/debug_input.typed.snapshot.json")
+    } else {
+      include_str!("../tests/fixtures/debug_input.snapshot.json")
+    };
+    let expected: ProgramDump = serde_json::from_str(expected_json).expect("parse snapshot");
     assert_eq!(
       parsed, expected,
       "debugger response should match recorded snapshot"
