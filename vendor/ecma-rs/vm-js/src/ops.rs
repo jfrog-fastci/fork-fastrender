@@ -481,6 +481,7 @@ fn is_ecma_whitespace_unit(unit: u16) -> bool {
   ) || matches!(unit, 0x2000..=0x200A)
 }
 
+#[allow(dead_code)]
 pub(crate) fn is_ecma_whitespace(c: char) -> bool {
   // ECMA-262 WhiteSpace + LineTerminator (used by TrimString / StringToNumber).
   matches!(

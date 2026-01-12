@@ -1,4 +1,5 @@
 use crate::VmError;
+use std::cmp::Ordering;
 
 /// Default tick cadence for tight internal loops that process attacker-controlled input.
 ///
@@ -53,4 +54,46 @@ pub(crate) fn vec_try_extend_from_slice_with_ticks<T: Copy>(
   }
 
   Ok(())
+}
+
+/// Compare two UTF-16 code unit slices for equality with periodic ticks.
+pub(crate) fn code_units_eq_with_ticks(
+  a: &[u16],
+  b: &[u16],
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<bool, VmError> {
+  if a.len() != b.len() {
+    return Ok(false);
+  }
+  for (i, (&au, &bu)) in a.iter().zip(b.iter()).enumerate() {
+    // Avoid ticking on the first iteration so short string comparisons don't effectively
+    // double-charge fuel (the surrounding expression evaluation already ticks).
+    if i != 0 {
+      tick_every(i, DEFAULT_TICK_EVERY, &mut tick)?;
+    }
+    if au != bu {
+      return Ok(false);
+    }
+  }
+  Ok(true)
+}
+
+/// Lexicographically compare two UTF-16 code unit slices with periodic ticks.
+pub(crate) fn code_units_cmp_with_ticks(
+  a: &[u16],
+  b: &[u16],
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<Ordering, VmError> {
+  let min_len = a.len().min(b.len());
+  for i in 0..min_len {
+    if i != 0 {
+      tick_every(i, DEFAULT_TICK_EVERY, &mut tick)?;
+    }
+    let au = a[i];
+    let bu = b[i];
+    if au != bu {
+      return Ok(au.cmp(&bu));
+    }
+  }
+  Ok(a.len().cmp(&b.len()))
 }

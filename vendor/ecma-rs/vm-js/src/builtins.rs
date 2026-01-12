@@ -7050,7 +7050,9 @@ pub fn array_prototype_index_of(
       (Value::Number(a), Value::Number(b)) => a == b,
       (Value::BigInt(a), Value::BigInt(b)) => a == b,
       (Value::String(a), Value::String(b)) => {
-        iter_scope.heap().get_string(a)? == iter_scope.heap().get_string(b)?
+        let a_units = iter_scope.heap().get_string(a)?.as_code_units();
+        let b_units = iter_scope.heap().get_string(b)?.as_code_units();
+        crate::tick::code_units_eq_with_ticks(a_units, b_units, || vm.tick())?
       }
       (Value::Symbol(a), Value::Symbol(b)) => a == b,
       (Value::Object(a), Value::Object(b)) => a == b,
@@ -7114,7 +7116,9 @@ pub fn array_prototype_includes(
       (Value::Number(a), Value::Number(b)) => (a == b) || (a.is_nan() && b.is_nan()),
       (Value::BigInt(a), Value::BigInt(b)) => a == b,
       (Value::String(a), Value::String(b)) => {
-        iter_scope.heap().get_string(a)? == iter_scope.heap().get_string(b)?
+        let a_units = iter_scope.heap().get_string(a)?.as_code_units();
+        let b_units = iter_scope.heap().get_string(b)?.as_code_units();
+        crate::tick::code_units_eq_with_ticks(a_units, b_units, || vm.tick())?
       }
       (Value::Symbol(a), Value::Symbol(b)) => a == b,
       (Value::Object(a), Value::Object(b)) => a == b,

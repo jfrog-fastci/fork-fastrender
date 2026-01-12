@@ -4967,7 +4967,8 @@ impl<'a> Evaluator<'a> {
 
             if !found {
               let case_value = self.eval_expr(&mut switch_scope, case_expr)?;
-              found = strict_equal(switch_scope.heap(), discriminant, case_value)?;
+              let mut tick = || self.tick();
+              found = strict_equal_with_tick(switch_scope.heap(), discriminant, case_value, &mut tick)?;
             }
 
             if found {
@@ -4999,7 +5000,8 @@ impl<'a> Evaluator<'a> {
 
             if !found {
               let case_value = self.eval_expr(&mut switch_scope, case_expr)?;
-              found = strict_equal(switch_scope.heap(), discriminant, case_value)?;
+              let mut tick = || self.tick();
+              found = strict_equal_with_tick(switch_scope.heap(), discriminant, case_value, &mut tick)?;
             }
 
             if found {
@@ -5024,10 +5026,12 @@ impl<'a> Evaluator<'a> {
                 continue;
               };
 
-              if !found_in_b {
-                let case_value = self.eval_expr(&mut switch_scope, case_expr)?;
-                found_in_b = strict_equal(switch_scope.heap(), discriminant, case_value)?;
-              }
+                if !found_in_b {
+                  let case_value = self.eval_expr(&mut switch_scope, case_expr)?;
+                  let mut tick = || self.tick();
+                  found_in_b =
+                    strict_equal_with_tick(switch_scope.heap(), discriminant, case_value, &mut tick)?;
+                }
 
               if found_in_b {
                 let r = self.eval_stmt_list(&mut switch_scope, &branch.stx.body)?;
@@ -7138,7 +7142,13 @@ impl<'a> Evaluator<'a> {
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(left)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        Ok(Value::Bool(strict_equal(rhs_scope.heap(), left, right)?))
+        let mut tick = || self.tick();
+        Ok(Value::Bool(strict_equal_with_tick(
+          rhs_scope.heap(),
+          left,
+          right,
+          &mut tick,
+        )?))
       }
       OperatorName::StrictInequality => {
         let left = self.eval_expr(scope, &expr.left)?;
@@ -7146,7 +7156,13 @@ impl<'a> Evaluator<'a> {
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(left)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        Ok(Value::Bool(!strict_equal(rhs_scope.heap(), left, right)?))
+        let mut tick = || self.tick();
+        Ok(Value::Bool(!strict_equal_with_tick(
+          rhs_scope.heap(),
+          left,
+          right,
+          &mut tick,
+        )?))
       }
       OperatorName::Equality => {
         let left = self.eval_expr(scope, &expr.left)?;
@@ -7727,7 +7743,11 @@ impl<'a> Evaluator<'a> {
         (Bool(ax), Bool(by)) => return Ok(ax == by),
         (Number(ax), Number(by)) => return Ok(ax == by),
         (BigInt(ax), BigInt(by)) => return Ok(ax == by),
-        (String(ax), String(by)) => return Ok(scope.heap().get_string(ax)? == scope.heap().get_string(by)?),
+        (String(ax), String(by)) => {
+          let a = scope.heap().get_string(ax)?.as_code_units();
+          let b = scope.heap().get_string(by)?.as_code_units();
+          return Ok(crate::tick::code_units_eq_with_ticks(a, b, || self.tick())?);
+        }
         (Symbol(ax), Symbol(by)) => return Ok(ax == by),
         (Object(ax), Object(by)) => return Ok(ax == by),
 
@@ -7821,7 +7841,8 @@ impl<'a> Evaluator<'a> {
     if let (Value::String(sx), Value::String(sy)) = (px, py) {
       let a = scope.heap().get_string(sx)?.as_code_units();
       let b = scope.heap().get_string(sy)?.as_code_units();
-      return Ok(Some(a < b));
+      let ord = crate::tick::code_units_cmp_with_ticks(a, b, || self.tick())?;
+      return Ok(Some(ord == Ordering::Less));
     }
 
     // 3. Otherwise => ToNumeric then numeric comparison.
@@ -11996,9 +12017,10 @@ fn async_switch_scan_and_exec_from(
       continue;
     };
 
-    match async_eval_expr(evaluator, scope, case_expr) {
+      match async_eval_expr(evaluator, scope, case_expr) {
       Ok(AsyncEval::Complete(case_value)) => {
-        let matches = match strict_equal(scope.heap(), discriminant, case_value) {
+        let mut tick = || evaluator.tick();
+        let matches = match strict_equal_with_tick(scope.heap(), discriminant, case_value, &mut tick) {
           Ok(m) => m,
           Err(err) => {
             async_switch_cleanup(scope, discriminant_root, v_root);
@@ -14368,8 +14390,24 @@ fn async_apply_binary_operator(
         .addition_operator(&mut op_scope, left, right)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))
     }
-    OperatorName::StrictEquality => Ok(Value::Bool(strict_equal(scope.heap(), left, right)?)),
-    OperatorName::StrictInequality => Ok(Value::Bool(!strict_equal(scope.heap(), left, right)?)),
+    OperatorName::StrictEquality => {
+      let mut tick = || evaluator.tick();
+      Ok(Value::Bool(strict_equal_with_tick(
+        scope.heap(),
+        left,
+        right,
+        &mut tick,
+      )?))
+    }
+    OperatorName::StrictInequality => {
+      let mut tick = || evaluator.tick();
+      Ok(Value::Bool(!strict_equal_with_tick(
+        scope.heap(),
+        left,
+        right,
+        &mut tick,
+      )?))
+    }
     OperatorName::Equality => {
       let mut op_scope = scope.reborrow();
       op_scope.push_roots(&[left, right])?;
@@ -17992,7 +18030,8 @@ fn async_resume_from_frames(
               }
             };
 
-            let matches = match strict_equal(scope.heap(), discriminant, case_value) {
+            let mut tick = || evaluator.tick();
+            let matches = match strict_equal_with_tick(scope.heap(), discriminant, case_value, &mut tick) {
               Ok(m) => m,
               Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
                 let completion = completion_from_expr_result(Err(err))?;
@@ -18961,18 +19000,35 @@ fn typeof_name(heap: &Heap, value: Value) -> Result<&'static str, VmError> {
   })
 }
 
-fn strict_equal(heap: &Heap, a: Value, b: Value) -> Result<bool, VmError> {
+fn strict_equal_with_tick(
+  heap: &Heap,
+  a: Value,
+  b: Value,
+  tick: &mut impl FnMut() -> Result<(), VmError>,
+) -> Result<bool, VmError> {
   Ok(match (a, b) {
     (Value::Undefined, Value::Undefined) => true,
     (Value::Null, Value::Null) => true,
     (Value::Bool(x), Value::Bool(y)) => x == y,
     (Value::Number(x), Value::Number(y)) => x == y,
     (Value::BigInt(x), Value::BigInt(y)) => x == y,
-    (Value::String(x), Value::String(y)) => heap.get_string(x)? == heap.get_string(y)?,
+    (Value::String(x), Value::String(y)) => {
+      let a = heap.get_string(x)?.as_code_units();
+      let b = heap.get_string(y)?.as_code_units();
+      crate::tick::code_units_eq_with_ticks(a, b, || tick())?
+    }
     (Value::Symbol(x), Value::Symbol(y)) => x == y,
     (Value::Object(x), Value::Object(y)) => x == y,
     _ => false,
   })
+}
+
+#[allow(dead_code)]
+fn strict_equal(heap: &Heap, a: Value, b: Value) -> Result<bool, VmError> {
+  // For internal callers that don't have access to a `Vm` tick, keep the old behavior by using a
+  // no-op budget hook.
+  let mut tick = || Ok(());
+  strict_equal_with_tick(heap, a, b, &mut tick)
 }
 
 #[cfg(test)]

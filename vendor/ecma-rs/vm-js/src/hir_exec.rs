@@ -3,6 +3,7 @@ use crate::conversion_ops::ToPrimitiveHint;
 use crate::exec::RuntimeEnv;
 use crate::function::ThisMode;
 use crate::property::PropertyKey;
+use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -52,7 +53,12 @@ fn root_property_key(scope: &mut Scope<'_>, key: PropertyKey) -> Result<(), VmEr
   Ok(())
 }
 
-fn concat_strings(scope: &mut Scope<'_>, a: crate::GcString, b: crate::GcString) -> Result<crate::GcString, VmError> {
+fn concat_strings(
+  scope: &mut Scope<'_>,
+  a: crate::GcString,
+  b: crate::GcString,
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<crate::GcString, VmError> {
   // Root both inputs while allocating the concatenated string.
   let mut scope = scope.reborrow();
   scope.push_roots(&[Value::String(a), Value::String(b)])?;
@@ -76,8 +82,8 @@ fn concat_strings(scope: &mut Scope<'_>, a: crate::GcString, b: crate::GcString)
 
   {
     let heap = scope.heap();
-    units.extend_from_slice(heap.get_string(a)?.as_code_units());
-    units.extend_from_slice(heap.get_string(b)?.as_code_units());
+    vec_try_extend_from_slice_with_ticks(&mut units, heap.get_string(a)?.as_code_units(), || tick())?;
+    vec_try_extend_from_slice_with_ticks(&mut units, heap.get_string(b)?.as_code_units(), || tick())?;
   }
 
   scope.alloc_string_from_u16_vec(units)
@@ -754,8 +760,22 @@ impl<'vm> HirEvaluator<'vm> {
     let v = self.eval_expr(scope, body, expr)?;
     match op {
       hir_js::UnaryOp::Not => Ok(Value::Bool(!scope.heap().to_boolean(v)?)),
-      hir_js::UnaryOp::Plus => Ok(Value::Number(crate::ops::to_number(scope.heap_mut(), v)?)),
-      hir_js::UnaryOp::Minus => Ok(Value::Number(-crate::ops::to_number(scope.heap_mut(), v)?)),
+      hir_js::UnaryOp::Plus => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(crate::ops::to_number_with_tick(
+          scope.heap_mut(),
+          v,
+          &mut tick,
+        )?))
+      }
+      hir_js::UnaryOp::Minus => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(-crate::ops::to_number_with_tick(
+          scope.heap_mut(),
+          v,
+          &mut tick,
+        )?))
+      }
       hir_js::UnaryOp::Void => {
         let _ = v;
         Ok(Value::Undefined)
@@ -824,42 +844,75 @@ impl<'vm> HirEvaluator<'vm> {
         if matches!(lp, Value::String(_)) || matches!(rp, Value::String(_)) {
           let ls = scope.heap_mut().to_string(lp)?;
           let rs = scope.heap_mut().to_string(rp)?;
-          let out = concat_strings(&mut scope, ls, rs)?;
+          let out = concat_strings(&mut scope, ls, rs, || self.vm.tick())?;
           Ok(Value::String(out))
         } else {
-          let ln = crate::ops::to_number(scope.heap_mut(), lp)?;
-          let rn = crate::ops::to_number(scope.heap_mut(), rp)?;
+          let mut tick = || self.vm.tick();
+          let ln = crate::ops::to_number_with_tick(scope.heap_mut(), lp, &mut tick)?;
+          let rn = crate::ops::to_number_with_tick(scope.heap_mut(), rp, &mut tick)?;
           Ok(Value::Number(ln + rn))
         }
       }
-      hir_js::BinaryOp::Subtract => Ok(Value::Number(
-        crate::ops::to_number(scope.heap_mut(), l)? - crate::ops::to_number(scope.heap_mut(), r)?,
-      )),
-      hir_js::BinaryOp::Multiply => Ok(Value::Number(
-        crate::ops::to_number(scope.heap_mut(), l)? * crate::ops::to_number(scope.heap_mut(), r)?,
-      )),
-      hir_js::BinaryOp::Divide => Ok(Value::Number(
-        crate::ops::to_number(scope.heap_mut(), l)? / crate::ops::to_number(scope.heap_mut(), r)?,
-      )),
-      hir_js::BinaryOp::Remainder => Ok(Value::Number(
-        crate::ops::to_number(scope.heap_mut(), l)? % crate::ops::to_number(scope.heap_mut(), r)?,
-      )),
+      hir_js::BinaryOp::Subtract => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(
+          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
+            - crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
+        ))
+      }
+      hir_js::BinaryOp::Multiply => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(
+          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
+            * crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
+        ))
+      }
+      hir_js::BinaryOp::Divide => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(
+          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
+            / crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
+        ))
+      }
+      hir_js::BinaryOp::Remainder => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(
+          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
+            % crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
+        ))
+      }
       hir_js::BinaryOp::Equality => Ok(Value::Bool(self.abstract_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::Inequality => Ok(Value::Bool(!self.abstract_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::StrictEquality => Ok(Value::Bool(l == r)),
       hir_js::BinaryOp::StrictInequality => Ok(Value::Bool(l != r)),
-      hir_js::BinaryOp::LessThan => Ok(Value::Bool(
-        crate::ops::to_number(scope.heap_mut(), l)? < crate::ops::to_number(scope.heap_mut(), r)?,
-      )),
-      hir_js::BinaryOp::LessEqual => Ok(Value::Bool(
-        crate::ops::to_number(scope.heap_mut(), l)? <= crate::ops::to_number(scope.heap_mut(), r)?,
-      )),
-      hir_js::BinaryOp::GreaterThan => Ok(Value::Bool(
-        crate::ops::to_number(scope.heap_mut(), l)? > crate::ops::to_number(scope.heap_mut(), r)?,
-      )),
-      hir_js::BinaryOp::GreaterEqual => Ok(Value::Bool(
-        crate::ops::to_number(scope.heap_mut(), l)? >= crate::ops::to_number(scope.heap_mut(), r)?,
-      )),
+      hir_js::BinaryOp::LessThan => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Bool(
+          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
+            < crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
+        ))
+      }
+      hir_js::BinaryOp::LessEqual => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Bool(
+          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
+            <= crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
+        ))
+      }
+      hir_js::BinaryOp::GreaterThan => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Bool(
+          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
+            > crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
+        ))
+      }
+      hir_js::BinaryOp::GreaterEqual => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Bool(
+          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
+            >= crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
+        ))
+      }
       hir_js::BinaryOp::Comma => {
         let _ = l;
         Ok(r)
@@ -893,7 +946,11 @@ impl<'vm> HirEvaluator<'vm> {
         (Bool(ax), Bool(by)) => return Ok(ax == by),
         (Number(ax), Number(by)) => return Ok(ax == by),
         (BigInt(ax), BigInt(by)) => return Ok(ax == by),
-        (String(ax), String(by)) => return Ok(scope.heap().get_string(ax)? == scope.heap().get_string(by)?),
+        (String(ax), String(by)) => {
+          let a = scope.heap().get_string(ax)?.as_code_units();
+          let b = scope.heap().get_string(by)?.as_code_units();
+          return Ok(crate::tick::code_units_eq_with_ticks(a, b, || self.vm.tick())?);
+        }
         (Symbol(ax), Symbol(by)) => return Ok(ax == by),
         (Object(ax), Object(by)) => return Ok(ax == by),
 
@@ -902,23 +959,25 @@ impl<'vm> HirEvaluator<'vm> {
 
         // Number/string.
         (Number(_), String(_)) => {
-          let n = scope.heap_mut().to_number(y)?;
+          let n = scope.heap_mut().to_number_with_tick(y, || self.vm.tick())?;
           y = Number(n);
         }
         (String(_), Number(_)) => {
-          let n = scope.heap_mut().to_number(x)?;
+          let n = scope.heap_mut().to_number_with_tick(x, || self.vm.tick())?;
           x = Number(n);
         }
 
         // BigInt/string.
         (BigInt(ax), String(bs)) => {
-          let Some(bi) = string_to_bigint(scope.heap(), bs)? else {
+          let mut tick = || self.vm.tick();
+          let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
             return Ok(false);
           };
           return Ok(ax == bi);
         }
         (String(as_), BigInt(by)) => {
-          let Some(bi) = string_to_bigint(scope.heap(), as_)? else {
+          let mut tick = || self.vm.tick();
+          let Some(bi) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
             return Ok(false);
           };
           return Ok(bi == by);
@@ -1220,44 +1279,103 @@ impl<'vm> HirEvaluator<'vm> {
   }
 }
 
-fn string_to_bigint(heap: &crate::Heap, s: crate::GcString) -> Result<Option<crate::JsBigInt>, VmError> {
-  let raw = heap.get_string(s)?.to_utf8_lossy();
-  let trimmed = raw.trim_matches(crate::ops::is_ecma_whitespace);
+fn is_ecma_whitespace_unit(unit: u16) -> bool {
+  matches!(
+    unit,
+    // WhiteSpace (ECMA-262)
+    0x0009
+      | 0x000B
+      | 0x000C
+      | 0x0020
+      | 0x00A0
+      | 0x1680
+      | 0x202F
+      | 0x205F
+      | 0x3000
+      | 0xFEFF
+      // LineTerminator (ECMA-262)
+      | 0x000A
+      | 0x000D
+      | 0x2028
+      | 0x2029
+  ) || matches!(unit, 0x2000..=0x200A)
+}
+
+fn string_to_bigint(
+  heap: &crate::Heap,
+  s: crate::GcString,
+  tick: &mut impl FnMut() -> Result<(), VmError>,
+) -> Result<Option<crate::JsBigInt>, VmError> {
+  let units = heap.get_string(s)?.as_code_units();
+
+  // TrimString (ECMA-262): trim ECMAScript WhiteSpace + LineTerminator.
+  let mut start = 0usize;
+  let mut steps = 0usize;
+  while start < units.len() && is_ecma_whitespace_unit(units[start]) {
+    if steps % 1024 == 0 {
+      tick()?;
+    }
+    steps += 1;
+    start += 1;
+  }
+  let mut end = units.len();
+  while end > start && is_ecma_whitespace_unit(units[end - 1]) {
+    if steps % 1024 == 0 {
+      tick()?;
+    }
+    steps += 1;
+    end -= 1;
+  }
+
+  let trimmed = &units[start..end];
   if trimmed.is_empty() {
     return Ok(None);
   }
 
-  let (negative, rest) = match trimmed.strip_prefix('-') {
-    Some(rest) => (true, rest),
-    None => match trimmed.strip_prefix('+') {
-      Some(rest) => (false, rest),
-      None => (false, trimmed),
-    },
-  };
-  if rest.is_empty() {
+  let mut negative = false;
+  let mut idx = 0usize;
+  if trimmed[idx] == b'+' as u16 {
+    idx += 1;
+  } else if trimmed[idx] == b'-' as u16 {
+    negative = true;
+    idx += 1;
+  }
+  if idx >= trimmed.len() {
     return Ok(None);
   }
 
-  let (radix, digits) = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-    (16u32, hex)
-  } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
-    (2u32, bin)
-  } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-    (8u32, oct)
-  } else {
-    (10u32, rest)
-  };
-  if digits.is_empty() {
+  let mut radix: u32 = 10;
+  if idx + 1 < trimmed.len() && trimmed[idx] == b'0' as u16 {
+    match trimmed[idx + 1] {
+      u if u == b'x' as u16 || u == b'X' as u16 => {
+        radix = 16;
+        idx += 2;
+      }
+      u if u == b'b' as u16 || u == b'B' as u16 => {
+        radix = 2;
+        idx += 2;
+      }
+      u if u == b'o' as u16 || u == b'O' as u16 => {
+        radix = 8;
+        idx += 2;
+      }
+      _ => {}
+    }
+  }
+  if idx >= trimmed.len() {
     return Ok(None);
   }
 
   let radix_bi = crate::JsBigInt::from_u128(radix as u128);
   let mut out = crate::JsBigInt::zero();
-  for b in digits.bytes() {
-    let digit = match b {
-      b'0'..=b'9' => (b - b'0') as u32,
-      b'a'..=b'z' => (b - b'a' + 10) as u32,
-      b'A'..=b'Z' => (b - b'A' + 10) as u32,
+  for (i, &u) in trimmed[idx..].iter().enumerate() {
+    if i % 1024 == 0 {
+      tick()?;
+    }
+    let digit = match u {
+      u if (b'0' as u16..=b'9' as u16).contains(&u) => (u - b'0' as u16) as u32,
+      u if (b'a' as u16..=b'z' as u16).contains(&u) => (u - b'a' as u16 + 10) as u32,
+      u if (b'A' as u16..=b'Z' as u16).contains(&u) => (u - b'A' as u16 + 10) as u32,
       _ => return Ok(None),
     };
     if digit >= radix {
