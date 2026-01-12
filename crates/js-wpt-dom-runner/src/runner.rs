@@ -135,7 +135,7 @@ impl Runner {
     }
 
     match backend_kind {
-      BackendKind::VmJs => {
+      BackendKind::VmJs | BackendKind::VmJsRendered => {
         #[cfg(feature = "vmjs")]
         {
           self.run_html_test_in_browser_tab(test, &html_source, timeout)
