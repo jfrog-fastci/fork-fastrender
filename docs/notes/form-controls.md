@@ -82,12 +82,14 @@ When `appearance:none` is computed, the control stops using the native form-cont
   - `src/tree/box_generation.rs::button_appearance_none_preserves_dom_children`
   - `src/tree/box_generation.rs::range_appearance_none_generates_slider_track_and_thumb_boxes`
   - `src/tree/box_generation.rs::file_input_appearance_none_generates_file_selector_button_box`
-- Paint integration tests:
-  - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
-  - `tests/misc/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
-  - `tests/paint/range_track_pseudo_element.rs` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
-  - `tests/paint/range_pseudo_opacity.rs` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
-  - `tests/paint/file_selector_button_pseudo_element.rs` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
+- Paint tests:
+  - Unit tests in `src/paint/`:
+    - `appearance_none_suppresses_number_spinner_glyphs` / `appearance_none_suppresses_date_dropdown_glyph` assert `appearance:none` suppresses number/date affordance glyphs.
+    - `range_track_pseudo_element_paints_under_appearance_none` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
+    - `range_slider_track_and_thumb_pseudo_opacity_is_applied` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
+    - `file_selector_button_pseudo_element_paints_under_appearance_none` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
+  - Integration tests:
+    - `tests/misc/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
 - Offline page fixtures:
   - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including vendor slider pseudos like `::-webkit-slider-thumb` / `::-moz-range-thumb`).
 
