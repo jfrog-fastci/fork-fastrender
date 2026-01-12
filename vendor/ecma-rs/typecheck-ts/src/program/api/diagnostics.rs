@@ -30,6 +30,7 @@ impl Program {
           let (cache_stats, results) = super::super::diagnostics::check_bodies_for_program(
             plan.shared_context,
             plan.body_ids,
+            plan.cached_seed_results,
           );
           let mut state = self.lock_state();
           state.finish_program_diagnostics(cache_stats, results)

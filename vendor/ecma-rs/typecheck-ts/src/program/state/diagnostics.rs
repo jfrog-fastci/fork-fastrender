@@ -8,30 +8,39 @@ pub(super) enum ProgramDiagnosticsWork {
 pub(super) struct ProgramDiagnosticsPlan {
   pub(super) body_ids: Vec<BodyId>,
   pub(super) shared_context: Arc<BodyCheckContext>,
+  pub(super) cached_seed_results: Vec<(BodyId, Arc<BodyCheckResult>)>,
 }
 
 pub(super) fn check_bodies_for_program(
   shared_context: Arc<BodyCheckContext>,
   body_ids: Vec<BodyId>,
+  cached_seed_results: Vec<(BodyId, Arc<BodyCheckResult>)>,
 ) -> (CheckerCacheStats, Vec<(BodyId, Arc<BodyCheckResult>)>) {
   // Parent body results (especially top-level bodies) are needed to seed bindings for many
   // child bodies. Compute these sequentially once and seed each parallel worker with the
   // results to avoid redundant work (and pathological contention) during parallel checking.
-  let mut seed_results: Vec<(BodyId, Arc<BodyCheckResult>)> = Vec::new();
+  let mut seed_results = cached_seed_results;
+  let mut seeded_ids: HashSet<BodyId> = seed_results.iter().map(|(id, _)| *id).collect();
   let mut remaining: Vec<BodyId> = Vec::with_capacity(body_ids.len());
-  let seed_db = BodyCheckDb::from_shared_context(Arc::clone(&shared_context));
+  let seed_db = BodyCheckDb::from_shared_context_with_seed_results(
+    Arc::clone(&shared_context),
+    seed_results.as_slice(),
+  );
   for body in body_ids.iter().copied() {
     let is_top_level = shared_context
       .body_info
       .get(&body)
-      .map(|info| matches!(info.kind, HirBodyKind::TopLevel))
-      .unwrap_or(false);
+      .is_some_and(|info| matches!(info.kind, HirBodyKind::TopLevel));
     if is_top_level {
-      seed_results.push((body, db::queries::body_check::check_body(&seed_db, body)));
+      if seeded_ids.insert(body) {
+        seed_results.push((body, db::queries::body_check::check_body(&seed_db, body)));
+      }
     } else {
       remaining.push(body);
     }
   }
+  // Preserve determinism regardless of which top-level results were already cached.
+  seed_results.sort_by_key(|(id, _)| id.0);
   let seed_cache_stats = seed_db.into_cache_stats();
   let seed_results = Arc::new(seed_results);
 
@@ -137,9 +146,10 @@ impl ProgramState {
     }
     self.check_cancelled()?;
     self.ensure_analyzed_result(host, roots)?;
+    let prev_decl_fingerprint = self.decl_types_fingerprint;
     self.ensure_interned_types(host, roots)?;
-    self.body_results.clear();
     self.set_extra_diagnostics_input();
+    let can_reuse_cached_bodies = self.decl_types_fingerprint == prev_decl_fingerprint;
 
     let body_ids: Vec<_> = {
       let db = self.typecheck_db.clone();
@@ -155,9 +165,27 @@ impl ProgramState {
     };
 
     let shared_context = self.body_check_context();
+    let mut cached_seed_results: Vec<(BodyId, Arc<BodyCheckResult>)> = Vec::new();
+    if can_reuse_cached_bodies {
+      for body in body_ids.iter().copied() {
+        let is_top_level = shared_context
+          .body_info
+          .get(&body)
+          .is_some_and(|info| matches!(info.kind, HirBodyKind::TopLevel));
+        if !is_top_level {
+          continue;
+        }
+        if let Some(res) = self.body_results.get(&body) {
+          cached_seed_results.push((body, Arc::clone(res)));
+        }
+      }
+    }
+
+    self.body_results.clear();
     Ok(ProgramDiagnosticsWork::Check(ProgramDiagnosticsPlan {
       body_ids,
       shared_context,
+      cached_seed_results,
     }))
   }
 
