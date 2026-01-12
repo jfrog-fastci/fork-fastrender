@@ -1319,9 +1319,9 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
-    // Integer-indexed exotic objects (typed arrays): numeric index keys never consult the prototype
-    // chain, and out-of-bounds / detached writes are silently ignored (but still considered
-    // successful so strict-mode assignments do not throw).
+    // Integer-indexed exotic objects (typed arrays): numeric index writes update the view's backing
+    // buffer. Out-of-bounds / detached writes are silently ignored, but still considered
+    // successful so strict-mode assignments do not throw.
     if self.heap().is_typed_array_object(obj) {
       if let Some(index) = self.heap().array_index(&key) {
         let _ = self
