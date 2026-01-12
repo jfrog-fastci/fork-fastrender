@@ -788,6 +788,20 @@ pub const JSX_NAMESPACE_MISSING: Code = Code::new(
   &[],
 );
 
+/// TS2607: JSX element class does not support attributes because it is missing
+/// the expected props member (as specified by `JSX.ElementAttributesProperty`).
+///
+/// - Primary span: the JSX opening element.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_ELEMENT_CLASS_DOES_NOT_SUPPORT_ATTRIBUTES: Code = Code::new(
+  "TS2607",
+  "JSX element class does not support attributes",
+  "JSX opening element when the class instance is missing the expected props member",
+  &["primary: JSX opening element"],
+  &[],
+);
+
 /// TS2609: JSX spread child must be an array type.
 ///
 /// TypeScript emits this diagnostic when a JSX child expression container uses

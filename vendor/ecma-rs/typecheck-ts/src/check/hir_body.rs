@@ -1164,6 +1164,17 @@ enum ArrayLiteralContext {
 struct JsxActualProps {
   ty: TypeId,
   props: HashSet<String>,
+  explicit_attr_count: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum JsxAttributesPropertyName {
+  /// `JSX.ElementAttributesProperty` does not exist.
+  Missing,
+  /// `JSX.ElementAttributesProperty` exists but has no properties.
+  Empty,
+  /// `JSX.ElementAttributesProperty` has exactly one property.
+  Name(TsNameId),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1187,7 +1198,7 @@ struct Checker<'a> {
   jsx_intrinsic_elements_ty: Option<TypeId>,
   jsx_intrinsic_attributes_ty: Option<TypeId>,
   jsx_intrinsic_class_attributes_def: Option<Option<DefId>>,
-  jsx_element_attributes_prop_name: Option<Option<TsNameId>>,
+  jsx_element_attributes_prop_name: Option<JsxAttributesPropertyName>,
   jsx_library_managed_attributes_def: Option<Option<DefId>>,
   jsx_children_prop_name: Option<TsNameId>,
   jsx_namespace_missing_reported: bool,
@@ -3987,7 +3998,7 @@ impl<'a> Checker<'a> {
             }
           }
           let expected_props_ty = self
-            .jsx_expected_props_for_value_tag(component_ty, elem.loc)
+            .jsx_expected_props_for_value_tag(component_ty, elem.loc, !elem.stx.attributes.is_empty())
             .map(|expected| self.jsx_apply_intrinsic_attributes(expected));
           let actual_props = self.jsx_actual_props(
             elem.loc,
@@ -4074,7 +4085,7 @@ impl<'a> Checker<'a> {
             }
           }
           let expected_props_ty = self
-            .jsx_expected_props_for_value_tag(current, elem.loc)
+            .jsx_expected_props_for_value_tag(current, elem.loc, !elem.stx.attributes.is_empty())
             .map(|expected| self.jsx_apply_intrinsic_attributes(expected));
           let actual_props = self.jsx_actual_props(
             elem.loc,
@@ -4150,7 +4161,12 @@ impl<'a> Checker<'a> {
     }
   }
 
-  fn jsx_expected_props_for_value_tag(&mut self, tag_ty: TypeId, elem_loc: Loc) -> Option<TypeId> {
+  fn jsx_expected_props_for_value_tag(
+    &mut self,
+    tag_ty: TypeId,
+    elem_loc: Loc,
+    has_explicit_attrs: bool,
+  ) -> Option<TypeId> {
     let prim = self.store.primitive_ids();
     if matches!(
       self.store.type_kind(tag_ty),
@@ -4161,14 +4177,14 @@ impl<'a> Checker<'a> {
 
     let expanded = self.expand_for_props(tag_ty);
     if expanded != tag_ty {
-      return self.jsx_expected_props_for_value_tag(expanded, elem_loc);
+      return self.jsx_expected_props_for_value_tag(expanded, elem_loc, has_explicit_attrs);
     }
 
     match self.store.type_kind(tag_ty) {
       TypeKind::Union(members) => {
         let mut collected = Vec::new();
         for member in members {
-          let props_ty = self.jsx_expected_props_for_value_tag(member, elem_loc)?;
+          let props_ty = self.jsx_expected_props_for_value_tag(member, elem_loc, has_explicit_attrs)?;
           collected.push(props_ty);
         }
         if collected.is_empty() {
@@ -4217,12 +4233,20 @@ impl<'a> Checker<'a> {
           let ret_ty = sig.ret;
 
           if is_construct {
-            if let Some(attrs_prop) = self.jsx_element_attributes_prop_key() {
-              let prop_name = self.store.name(attrs_prop);
-              if self.type_has_prop(ret_ty, &prop_name) {
-                props_ty = self.member_type(ret_ty, &prop_name);
+            match self.jsx_element_attributes_prop_name(elem_loc) {
+              JsxAttributesPropertyName::Missing => {}
+              JsxAttributesPropertyName::Empty => {
+                props_ty = ret_ty;
               }
-            }
+              JsxAttributesPropertyName::Name(attrs_prop) => {
+                let prop_name = self.store.name(attrs_prop);
+                if self.type_has_prop(ret_ty, &prop_name) {
+                  props_ty = self.member_type(ret_ty, &prop_name);
+                } else if has_explicit_attrs {
+                  return None;
+                }
+              }
+            };
           }
 
           props_ty = self.jsx_apply_library_managed_attributes(tag_ty, props_ty);
@@ -4280,6 +4304,7 @@ impl<'a> Checker<'a> {
     expected: Option<TypeId>,
   ) -> JsxActualProps {
     let prim = self.store.primitive_ids();
+    let explicit_attr_count = attrs.len();
     let mut props = HashSet::new();
     let mut shape = Shape::new();
     let mut spreads = Vec::new();
@@ -4389,6 +4414,7 @@ impl<'a> Checker<'a> {
     JsxActualProps {
       ty,
       props,
+      explicit_attr_count,
     }
   }
 
@@ -4885,12 +4911,26 @@ impl<'a> Checker<'a> {
         }
       }
       if is_construct {
-        if let Some(attrs_prop) = self.jsx_element_attributes_prop_key() {
-          let prop_name = self.store.name(attrs_prop);
-          if self.type_has_prop(ret_ty, &prop_name) {
-            props_ty = self.member_type(ret_ty, &prop_name);
+        match self.jsx_element_attributes_prop_name(loc) {
+          JsxAttributesPropertyName::Missing => {}
+          JsxAttributesPropertyName::Empty => {
+            props_ty = ret_ty;
           }
-        }
+          JsxAttributesPropertyName::Name(attrs_prop) => {
+            let prop_name = self.store.name(attrs_prop);
+            if self.type_has_prop(ret_ty, &prop_name) {
+              props_ty = self.member_type(ret_ty, &prop_name);
+            } else if actual_props.explicit_attr_count > 0 {
+              self.diagnostics.push(codes::JSX_ELEMENT_CLASS_DOES_NOT_SUPPORT_ATTRIBUTES.error(
+                format!(
+                  "JSX element class does not support attributes because it does not have a '{prop_name}' property.",
+                ),
+                span,
+              ));
+              return;
+            }
+          }
+        };
       }
       props_ty = self.jsx_apply_library_managed_attributes(component_ty, props_ty);
       if is_construct {
@@ -5191,25 +5231,37 @@ impl<'a> Checker<'a> {
     }))
   }
 
-  fn jsx_element_attributes_prop_key(&mut self) -> Option<TsNameId> {
-    if let Some(cached) = self.jsx_element_attributes_prop_name.as_ref() {
-      return *cached;
+  fn jsx_element_attributes_prop_name(&mut self, loc: Loc) -> JsxAttributesPropertyName {
+    if let Some(cached) = self.jsx_element_attributes_prop_name {
+      return cached;
     }
     let Some(attrs_ty) = self.resolve_type_ref(&["JSX", "ElementAttributesProperty"]) else {
-      self.jsx_element_attributes_prop_name = Some(None);
-      return None;
+      let name = JsxAttributesPropertyName::Missing;
+      self.jsx_element_attributes_prop_name = Some(name);
+      return name;
     };
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
     self.jsx_collect_children_attribute_keys(attrs_ty, &mut candidates, &mut seen);
     candidates.sort();
     candidates.dedup();
-    let selected = candidates
-      .into_iter()
-      .next()
-      .map(|name| self.store.intern_name(name));
-    self.jsx_element_attributes_prop_name = Some(selected);
-    selected
+
+    let resolved = match candidates.len() {
+      0 => JsxAttributesPropertyName::Empty,
+      1 => JsxAttributesPropertyName::Name(self.store.intern_name(candidates[0].clone())),
+      _ => {
+        self.diagnostics.push(
+          codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
+            "The global type 'JSX.ElementAttributesProperty' may not have more than one property.",
+            Span::new(self.file, loc_to_range(self.file, loc)),
+          ),
+        );
+        JsxAttributesPropertyName::Missing
+      }
+    };
+
+    self.jsx_element_attributes_prop_name = Some(resolved);
+    resolved
   }
 
   fn jsx_children_prop_key(&mut self, loc: Loc) -> TsNameId {

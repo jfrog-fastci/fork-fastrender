@@ -1665,6 +1665,125 @@ const bad = <Foo y={1} />;
 }
 
 #[test]
+fn element_attributes_property_empty_uses_instance_type() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementAttributesProperty {}
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+declare const Foo: { new(): { x: number } };
+const ok = <Foo x={1} />;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics for empty ElementAttributesProperty (instance type is props), got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn element_attributes_property_multiple_properties_errors() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementAttributesProperty { a: {}; b: {} }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+declare const Foo: { new(): {} };
+const el = <Foo />;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.iter().any(|d| {
+      d.code.as_str() == codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.as_str()
+    }),
+    "expected TS2608 for ElementAttributesProperty with multiple properties, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn missing_required_props_member_errors_ts2607() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementAttributesProperty { props: {} }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+declare const Foo: { new(): {} };
+const el = <Foo x={1} />;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert_eq!(
+    diagnostics.len(),
+    1,
+    "expected exactly one diagnostic, got {diagnostics:?}"
+  );
+  assert_eq!(
+    diagnostics[0].code.as_str(),
+    codes::JSX_ELEMENT_CLASS_DOES_NOT_SUPPORT_ATTRIBUTES.as_str(),
+    "expected TS2607, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn library_managed_attributes_are_applied_to_component_props() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
