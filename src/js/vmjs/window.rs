@@ -1649,6 +1649,109 @@ mod tests {
   }
 
   #[test]
+  fn handcrafted_dom_attribute_descriptors_match_webidl_defaults() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    // vm-js does not currently expose `Object.getOwnPropertyDescriptor`, so inspect the underlying
+    // `vm_js::PropertyDescriptor` directly.
+    let window = host.host_mut().window_mut();
+    let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope
+      .push_root(Value::Object(global))
+      .map_err(|err| Error::Other(err.to_string()))?;
+
+    let get_proto = |scope: &mut Scope<'_>, global: GcObject, name: &str| -> Result<GcObject> {
+      let ctor_key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+      scope
+        .push_root(Value::String(ctor_key_s))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let ctor_key = PropertyKey::from_string(ctor_key_s);
+      let ctor_val = scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)
+        .map_err(|err| Error::Other(err.to_string()))?
+        .unwrap_or(Value::Undefined);
+      let Value::Object(ctor_obj) = ctor_val else {
+        return Err(Error::Other(format!("missing global constructor {name}")));
+      };
+      scope
+        .push_root(Value::Object(ctor_obj))
+        .map_err(|err| Error::Other(err.to_string()))?;
+
+      let proto_key_s =
+        scope.alloc_string("prototype").map_err(|err| Error::Other(err.to_string()))?;
+      scope
+        .push_root(Value::String(proto_key_s))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let proto_key = PropertyKey::from_string(proto_key_s);
+      let proto_val = scope
+        .heap()
+        .object_get_own_data_property_value(ctor_obj, &proto_key)
+        .map_err(|err| Error::Other(err.to_string()))?
+        .unwrap_or(Value::Undefined);
+      let Value::Object(proto_obj) = proto_val else {
+        return Err(Error::Other(format!("missing {name}.prototype")));
+      };
+      scope
+        .push_root(Value::Object(proto_obj))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      Ok(proto_obj)
+    };
+
+    let node_proto = get_proto(&mut scope, global, "Node")?;
+    let text_proto = get_proto(&mut scope, global, "Text")?;
+
+    for attr in ["nodeType", "nodeName"] {
+      let key_s = scope.alloc_string(attr).map_err(|err| Error::Other(err.to_string()))?;
+      scope
+        .push_root(Value::String(key_s))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let key = PropertyKey::from_string(key_s);
+      let desc = scope
+        .heap()
+        .object_get_own_property(node_proto, &key)
+        .map_err(|err| Error::Other(err.to_string()))?
+        .ok_or_else(|| Error::Other(format!("missing Node.prototype.{attr}")))?;
+      assert!(desc.enumerable, "expected Node.prototype.{attr} to be enumerable");
+      assert!(
+        desc.configurable,
+        "expected Node.prototype.{attr} to be configurable"
+      );
+      match desc.kind {
+        PropertyKind::Accessor { get, set } => {
+          assert!(matches!(get, Value::Object(_)));
+          assert!(matches!(set, Value::Undefined));
+        }
+        other => panic!("expected accessor descriptor for Node.prototype.{attr}, got {other:?}"),
+      }
+    }
+
+    let text_data_key_s = scope.alloc_string("data").map_err(|err| Error::Other(err.to_string()))?;
+    scope
+      .push_root(Value::String(text_data_key_s))
+      .map_err(|err| Error::Other(err.to_string()))?;
+    let text_data_key = PropertyKey::from_string(text_data_key_s);
+    let desc = scope
+      .heap()
+      .object_get_own_property(text_proto, &text_data_key)
+      .map_err(|err| Error::Other(err.to_string()))?
+      .ok_or_else(|| Error::Other("missing Text.prototype.data".to_string()))?;
+    assert!(desc.enumerable, "expected Text.prototype.data to be enumerable");
+    match desc.kind {
+      PropertyKind::Accessor { get, set } => {
+        assert!(matches!(get, Value::Object(_)));
+        assert!(matches!(set, Value::Object(_)));
+      }
+      other => panic!("expected accessor descriptor for Text.prototype.data, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
   fn window_host_state_exec_script_in_event_loop_sets_webidl_bindings_host_slot() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

@@ -1513,6 +1513,16 @@ fn const_desc(value: Value) -> PropertyDescriptor {
     },
   }
 }
+
+fn idl_attribute_desc(get: Value, set: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    // Keep handcrafted DOM attributes aligned with the WebIDL vm-js runtime defaults
+    // (`AccessorPropertyAttributes::ATTRIBUTE`).
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Accessor { get, set },
+  }
+}
 fn create_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -25436,14 +25446,7 @@ fn init_window_globals(
     scope.define_property(
       node_proto,
       node_type_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(node_type_get_func),
-          set: Value::Undefined,
-        },
-      },
+      idl_attribute_desc(Value::Object(node_type_get_func), Value::Undefined),
     )?;
 
     let node_name_get_call_id = vm.register_native_call(node_node_name_get_native)?;
@@ -25460,14 +25463,7 @@ fn init_window_globals(
     scope.define_property(
       node_proto,
       node_name_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(node_name_get_func),
-          set: Value::Undefined,
-        },
-      },
+      idl_attribute_desc(Value::Object(node_name_get_func), Value::Undefined),
     )?;
 
     let owner_document_get_call_id = vm.register_native_call(node_owner_document_get_native)?;
@@ -25484,14 +25480,7 @@ fn init_window_globals(
     scope.define_property(
       node_proto,
       owner_document_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(owner_document_get_func),
-          set: Value::Undefined,
-        },
-      },
+      idl_attribute_desc(Value::Object(owner_document_get_func), Value::Undefined),
     )?;
 
     let base_uri_get_call_id = vm.register_native_call(node_base_uri_get_native)?;
@@ -25532,14 +25521,7 @@ fn init_window_globals(
     scope.define_property(
       node_proto,
       is_connected_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(is_connected_get_func),
-          set: Value::Undefined,
-        },
-      },
+      idl_attribute_desc(Value::Object(is_connected_get_func), Value::Undefined),
     )?;
 
     let child_nodes_get_call_id = vm.register_native_call(node_child_nodes_get_native)?;
@@ -25556,14 +25538,7 @@ fn init_window_globals(
     scope.define_property(
       node_proto,
       child_nodes_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(child_nodes_get_func),
-          set: Value::Undefined,
-        },
-      },
+      idl_attribute_desc(Value::Object(child_nodes_get_func), Value::Undefined),
     )?;
 
     let parent_element_get_call_id = vm.register_native_call(node_parent_element_get_native)?;
@@ -25580,14 +25555,7 @@ fn init_window_globals(
     scope.define_property(
       node_proto,
       parent_element_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(parent_element_get_func),
-          set: Value::Undefined,
-        },
-      },
+      idl_attribute_desc(Value::Object(parent_element_get_func), Value::Undefined),
     )?;
 
     let last_child_get_call_id = vm.register_native_call(node_last_child_get_native)?;
@@ -25604,14 +25572,7 @@ fn init_window_globals(
     scope.define_property(
       node_proto,
       last_child_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(last_child_get_func),
-          set: Value::Undefined,
-        },
-      },
+      idl_attribute_desc(Value::Object(last_child_get_func), Value::Undefined),
     )?;
 
     let contains_call_id = vm.register_native_call(node_contains_native)?;
@@ -25678,14 +25639,7 @@ fn init_window_globals(
     scope.define_property(
       element_proto,
       tag_name_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(tag_name_get_func),
-          set: Value::Undefined,
-        },
-      },
+      idl_attribute_desc(Value::Object(tag_name_get_func), Value::Undefined),
     )?;
 
     // Element.namespaceURI
@@ -25995,14 +25949,10 @@ fn init_window_globals(
     scope.define_property(
       text_proto,
       text_data_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(text_data_get_func),
-          set: Value::Object(text_data_set_func),
-        },
-      },
+      idl_attribute_desc(
+        Value::Object(text_data_get_func),
+        Value::Object(text_data_set_func),
+      ),
     )?;
   }
 
