@@ -40,6 +40,7 @@ pub mod motion;
 pub mod loading_overlay;
 // Viewport-change throttling is used only by the windowed browser UI.
 pub mod viewport_throttle;
+pub mod notifications;
 
 // egui widget accessibility helpers (AccessKit).
 #[cfg(feature = "browser_ui")]
@@ -127,6 +128,8 @@ pub use zoom::{
   clamp_zoom, viewport_css_and_dpr_for_zoom, zoom_in, zoom_out, zoom_percent, zoom_reset,
   DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,
 };
+
+pub use notifications::{WarningToast, WarningToastState, WARNING_TOAST_DEFAULT_TTL};
 
 pub use frame_upload::FrameUploadCoalescer;
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};

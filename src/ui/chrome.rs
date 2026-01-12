@@ -370,7 +370,7 @@ pub fn chrome_ui(
     // Navigation + address bar row.
     ui.horizontal(|ui| {
       let is_compact = ui.available_width() < COMPACT_MODE_THRESHOLD_PX;
-      let (can_back, can_forward, loading, stage, load_progress, warning, error, zoom_factor) = app
+      let (can_back, can_forward, loading, stage, load_progress, zoom_factor) = app
         .active_tab()
         .map(|t| {
           (
@@ -379,12 +379,10 @@ pub fn chrome_ui(
             t.loading,
             t.load_stage,
             t.load_progress,
-            t.warning.clone(),
-            t.error.clone(),
             t.zoom,
           )
         })
-        .unwrap_or((false, false, false, None, None, None, None, zoom::DEFAULT_ZOOM));
+        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
 
       if icon_button(ui, BrowserIcon::Back, "Back (Alt+Left)", can_back).clicked() {
         actions.push(ChromeAction::Back);
@@ -505,41 +503,6 @@ pub fn chrome_ui(
         // Right-to-left layout ensures the URL text doesn't consume the entire width before we get a
         // chance to place status indicators on the right edge.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-          if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
-            let err_fg = ui.visuals().error_fg_color;
-            let err_bg =
-              egui::Color32::from_rgba_unmultiplied(err_fg.r(), err_fg.g(), err_fg.b(), 40);
-            let resp = egui::Frame::none()
-              .fill(err_bg)
-              .rounding(egui::Rounding::same(3.0))
-              .inner_margin(egui::Margin::same(2.0))
-              .show(ui, |ui| {
-                let _ = icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
-              })
-              .response;
-            let _ = resp.on_hover_text(err);
-          }
-
-          if let Some(warn) = warning.as_deref().filter(|s| !s.trim().is_empty()) {
-            let warn_fg = ui.visuals().warn_fg_color;
-            let warn_bg =
-              egui::Color32::from_rgba_unmultiplied(warn_fg.r(), warn_fg.g(), warn_fg.b(), 40);
-            let resp = egui::Frame::none()
-              .fill(warn_bg)
-              .rounding(egui::Rounding::same(3.0))
-              .inner_margin(egui::Margin::same(2.0))
-              .show(ui, |ui| {
-                let _ = icon_tinted(
-                  ui,
-                  BrowserIcon::WarningInsecure,
-                  ui.spacing().icon_width,
-                  warn_fg,
-                );
-              })
-              .response;
-            let _ = resp.on_hover_text(warn);
-          }
-
           if loading {
             let _ = spinner(ui, ui.spacing().icon_width).on_hover_text(loading_text.clone());
             if !is_compact {

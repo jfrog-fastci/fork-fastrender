@@ -1447,6 +1447,29 @@ impl BrowserHud {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Default)]
+struct TabNotificationUiState {
+  warning_toast: fastrender::ui::WarningToastState,
+  warning_toast_expanded: bool,
+  last_error: Option<String>,
+  error_details_open: bool,
+}
+
+#[cfg(feature = "browser_ui")]
+impl TabNotificationUiState {
+  fn sync_error(&mut self, error: Option<&str>) {
+    let error = error.map(str::to_string).filter(|s| !s.trim().is_empty());
+    if error != self.last_error {
+      self.last_error = error;
+      self.error_details_open = false;
+    }
+    if self.last_error.is_none() {
+      self.error_details_open = false;
+    }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PageTextureFilterPolicy {
   /// Use nearest-neighbour filtering when the page image is drawn at ~1:1, otherwise use linear.
@@ -1651,6 +1674,10 @@ struct App {
   /// for the active tab.
   pending_frame_uploads: fastrender::ui::FrameUploadCoalescer,
 
+  /// Rect of the central content panel (in egui points) from the last painted frame.
+  ///
+  /// Used to position transient overlays (toasts/infobars) without affecting layout.
+  content_rect_points: Option<egui::Rect>,
   page_rect_points: Option<egui::Rect>,
   page_viewport_css: Option<(u32, u32)>,
   page_input_tab: Option<fastrender::ui::TabId>,
@@ -1716,6 +1743,10 @@ struct App {
   debug_log_ui_open: bool,
   debug_log_filter: String,
   hud: Option<BrowserHud>,
+
+  tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
+  warning_toast_rect: Option<egui::Rect>,
+  error_infobar_rect: Option<egui::Rect>,
 
   /// Deadline for the next egui-driven repaint (derived from `egui::FullOutput::repaint_after`).
   ///
@@ -1784,6 +1815,21 @@ impl App {
     };
 
     true
+  }
+
+  fn cursor_over_egui_overlay(&self, pos_points: egui::Pos2) -> bool {
+    self
+      .open_select_dropdown_rect
+      .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_context_menu_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .warning_toast_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .error_infobar_rect
+        .is_some_and(|rect| rect.contains(pos_points))
   }
 
   fn cursor_over_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
@@ -1972,6 +2018,7 @@ impl App {
       tab_cancel: std::collections::HashMap::new(),
       pending_scroll_restores: std::collections::HashMap::new(),
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
+      content_rect_points: None,
       page_rect_points: None,
       page_viewport_css: None,
       page_input_tab: None,
@@ -2015,6 +2062,9 @@ impl App {
       } else {
         None
       },
+      tab_notifications: std::collections::HashMap::new(),
+      warning_toast_rect: None,
+      error_infobar_rect: None,
       next_egui_repaint: None,
       last_egui_redraw_request: None,
       animation_tick_tab: None,
@@ -2245,6 +2295,14 @@ impl App {
       });
     }
 
+    // Warning toast expiry (auto-dismiss).
+    if let Some(toast_deadline) = self.next_warning_toast_deadline_for_active_tab() {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(toast_deadline),
+        None => toast_deadline,
+      });
+    }
+
     // Viewport debounce wakeups (resize settling).
     if let Some(vp_deadline) = self.viewport_throttle.next_deadline() {
       deadline = Some(match deadline {
@@ -2257,13 +2315,26 @@ impl App {
   }
 
   fn maybe_request_redraw_for_ui_timers(&mut self) {
+    let now = std::time::Instant::now();
+    let mut needs_redraw = false;
+
     let cfg = fastrender::ui::scrollbars::OverlayScrollbarVisibilityConfig::default();
     let force_visible = self.overlay_scrollbars_force_visible();
-    if self.overlay_scrollbar_visibility.needs_repaint(
-      std::time::Instant::now(),
-      cfg,
-      force_visible,
-    ) {
+    if self
+      .overlay_scrollbar_visibility
+      .needs_repaint(now, cfg, force_visible)
+    {
+      needs_redraw = true;
+    }
+
+    if self
+      .next_warning_toast_deadline_for_active_tab()
+      .is_some_and(|deadline| now >= deadline)
+    {
+      needs_redraw = true;
+    }
+
+    if needs_redraw {
       self.window.request_redraw();
     }
   }
@@ -2428,13 +2499,7 @@ impl App {
       return;
     }
     if let Some(pos) = self.last_cursor_pos_points {
-      if self
-        .open_select_dropdown_rect
-        .is_some_and(|rect| rect.contains(pos))
-        || self
-          .open_context_menu_rect
-          .is_some_and(|rect| rect.contains(pos))
-      {
+      if !self.pointer_captured && self.cursor_over_egui_overlay(pos) {
         // Avoid updating page hover state while the pointer is interacting with a popup.
         return;
       }
@@ -2446,16 +2511,12 @@ impl App {
     use fastrender::ui::CursorKind;
     use winit::window::CursorIcon;
 
-    let popup_intercepts = self.last_cursor_pos_points.is_some_and(|pos| {
-      self
-        .open_select_dropdown_rect
-        .is_some_and(|rect| rect.contains(pos))
-        || self
-          .open_context_menu_rect
-          .is_some_and(|rect| rect.contains(pos))
-    });
+    let overlay_intercepts = !self.pointer_captured
+      && self
+        .last_cursor_pos_points
+        .is_some_and(|pos| self.cursor_over_egui_overlay(pos));
 
-    if !self.cursor_in_page || popup_intercepts {
+    if !self.cursor_in_page || overlay_intercepts {
       self.page_cursor_override = None;
       return;
     }
@@ -3046,6 +3107,281 @@ impl App {
     let now = std::time::Instant::now();
     if let Some(update) = self.viewport_throttle.force_send_now(now) {
       self.send_viewport_changed_clamped_if_needed(tab_id, update.viewport_css, update.dpr());
+    }
+  }
+
+  fn sync_tab_notifications(&mut self, now: std::time::Instant) {
+    use fastrender::ui::WARNING_TOAST_DEFAULT_TTL;
+    use std::collections::HashSet;
+
+    let live_tabs: HashSet<fastrender::ui::TabId> =
+      self.browser_state.tabs.iter().map(|t| t.id).collect();
+    self
+      .tab_notifications
+      .retain(|tab_id, _| live_tabs.contains(tab_id));
+
+    for tab in &self.browser_state.tabs {
+      let state = self.tab_notifications.entry(tab.id).or_default();
+      let shown = state.warning_toast.update(
+        tab.warning.as_deref(),
+        now,
+        WARNING_TOAST_DEFAULT_TTL,
+      );
+      if shown {
+        state.warning_toast_expanded = false;
+      }
+      if state.warning_toast.toast().is_none() {
+        state.warning_toast_expanded = false;
+      }
+
+      state.sync_error(tab.error.as_deref());
+    }
+  }
+
+  fn next_warning_toast_deadline_for_active_tab(&self) -> Option<std::time::Instant> {
+    let tab_id = self.browser_state.active_tab_id()?;
+    let state = self.tab_notifications.get(&tab_id)?;
+    state.warning_toast.next_deadline()
+  }
+
+  fn render_warning_toast(&mut self, ctx: &egui::Context) {
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      self.warning_toast_rect = None;
+      return;
+    };
+
+    let (toast_text, expanded_initial) = {
+      let Some(state) = self.tab_notifications.get(&tab_id) else {
+        self.warning_toast_rect = None;
+        return;
+      };
+      let Some(toast) = state.warning_toast.toast() else {
+        self.warning_toast_rect = None;
+        return;
+      };
+      (toast.text.clone(), state.warning_toast_expanded)
+    };
+
+    let theme_colors = self.theme.colors.clone();
+    let theme_sizing = self.theme.sizing.clone();
+
+    let with_alpha = |color: egui::Color32, alpha: u8| {
+      egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+    };
+
+    // Position relative to the central content area so the toast doesn't cover the status bar.
+    let screen_rect = ctx.screen_rect();
+    let content_rect = self.content_rect_points.unwrap_or(screen_rect);
+    let bottom_inset = (screen_rect.max.y - content_rect.max.y).max(0.0);
+    let right_inset = (screen_rect.max.x - content_rect.max.x).max(0.0);
+    let margin = theme_sizing.padding.max(8.0) + 4.0;
+    let anchor_offset = egui::vec2(-margin - right_inset, -margin - bottom_inset);
+
+    let mut expanded = expanded_initial;
+    let popup = egui::Area::new(egui::Id::new(("fastr_warning_toast", tab_id.0)))
+      .order(egui::Order::Foreground)
+      .anchor(egui::Align2::RIGHT_BOTTOM, anchor_offset)
+      .show(ctx, |ui| {
+        let mut dismiss = false;
+
+        let fill = with_alpha(theme_colors.raised, 240);
+        let stroke = egui::Stroke::new(theme_sizing.stroke_width, theme_colors.warn);
+        let frame = egui::Frame::none()
+          .fill(fill)
+          .stroke(stroke)
+          .rounding(egui::Rounding::same(theme_sizing.corner_radius))
+          .inner_margin(egui::Margin::symmetric(
+            theme_sizing.padding * 1.25,
+            theme_sizing.padding,
+          ));
+
+        frame.show(ui, |ui| {
+          ui.set_min_width(320.0);
+
+          ui.horizontal(|ui| {
+            let icon_side = ui.spacing().icon_width;
+            let _ = fastrender::ui::icon_tinted(
+              ui,
+              fastrender::ui::BrowserIcon::WarningInsecure,
+              icon_side,
+              theme_colors.warn,
+            );
+
+            let title = ui
+              .add(
+                egui::Label::new(
+                  egui::RichText::new("Viewport clamped")
+                    .strong()
+                    .color(theme_colors.text_primary),
+                )
+                .sense(egui::Sense::click()),
+              )
+              .on_hover_text(&toast_text);
+            if title.clicked() {
+              expanded = !expanded;
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+              if ui
+                .add(
+                  egui::Button::new(
+                    egui::RichText::new("×").color(theme_colors.text_secondary),
+                  )
+                  .frame(false),
+                )
+                .clicked()
+              {
+                dismiss = true;
+              }
+            });
+          });
+
+          if expanded {
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(
+              egui::RichText::new(&toast_text)
+                .small()
+                .color(theme_colors.text_primary),
+            );
+          }
+        });
+
+        dismiss
+      });
+
+    self.warning_toast_rect = Some(popup.response.rect);
+
+    if let Some(state) = self.tab_notifications.get_mut(&tab_id) {
+      if popup.inner {
+        state.warning_toast.dismiss();
+        state.warning_toast_expanded = false;
+        self.window.request_redraw();
+      } else {
+        state.warning_toast_expanded = expanded;
+      }
+    }
+  }
+
+  fn render_error_infobar(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::ChromeAction;
+
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      self.error_infobar_rect = None;
+      return;
+    };
+    let Some(tab) = self.browser_state.tab(tab_id) else {
+      self.error_infobar_rect = None;
+      return;
+    };
+    let Some(error) = tab.error.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+      self.error_infobar_rect = None;
+      return;
+    };
+
+    let details_open_initial = self
+      .tab_notifications
+      .get(&tab_id)
+      .is_some_and(|state| state.error_details_open);
+
+    let theme_colors = self.theme.colors.clone();
+    let theme_sizing = self.theme.sizing.clone();
+
+    let with_alpha = |color: egui::Color32, alpha: u8| {
+      egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+    };
+
+    let screen_rect = ctx.screen_rect();
+    let content_rect = self.content_rect_points.unwrap_or(screen_rect);
+    let margin = theme_sizing.padding.max(8.0) + 4.0;
+    let pos = egui::pos2(content_rect.min.x + margin, content_rect.min.y + margin);
+    let available_width = (content_rect.width() - margin * 2.0).max(240.0);
+
+    let first_line = error.lines().next().unwrap_or(error).trim();
+    let short_error = if first_line.chars().count() > 160 {
+      format!("{}…", first_line.chars().take(160).collect::<String>())
+    } else {
+      first_line.to_string()
+    };
+    let error = error.to_string();
+
+    let mut details_open = details_open_initial;
+
+    let popup = egui::Area::new(egui::Id::new(("fastr_error_infobar", tab_id.0)))
+      .order(egui::Order::Foreground)
+      .fixed_pos(pos)
+      .show(ctx, |ui| {
+        let mut retry = false;
+
+        let fill = with_alpha(theme_colors.raised, 245);
+        let stroke = egui::Stroke::new(theme_sizing.stroke_width, theme_colors.danger);
+        let frame = egui::Frame::none()
+          .fill(fill)
+          .stroke(stroke)
+          .rounding(egui::Rounding::same(theme_sizing.corner_radius))
+          .inner_margin(egui::Margin::symmetric(
+            theme_sizing.padding * 1.25,
+            theme_sizing.padding,
+          ));
+
+        frame.show(ui, |ui| {
+          ui.set_min_width(available_width);
+
+          ui.vertical(|ui| {
+            ui.horizontal_wrapped(|ui| {
+              let icon_side = ui.spacing().icon_width;
+              let _ = fastrender::ui::icon_tinted(
+                ui,
+                fastrender::ui::BrowserIcon::Error,
+                icon_side,
+                theme_colors.danger,
+              );
+
+              ui.label(
+                egui::RichText::new("Navigation failed")
+                  .strong()
+                  .color(theme_colors.text_primary),
+              );
+              ui.label(egui::RichText::new(&short_error).color(theme_colors.text_primary));
+
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Retry").clicked() {
+                  retry = true;
+                }
+
+                let details_label = if details_open {
+                  "Hide details"
+                } else {
+                  "Details"
+                };
+                if ui.button(details_label).clicked() {
+                  details_open = !details_open;
+                }
+              });
+            });
+
+            if details_open {
+              ui.add_space(6.0);
+              ui.separator();
+              ui.add_space(6.0);
+              ui.label(egui::RichText::new(&error).small().color(theme_colors.text_primary));
+            }
+          });
+        });
+
+        retry
+      });
+
+    self.error_infobar_rect = Some(popup.response.rect);
+
+    if let Some(state) = self.tab_notifications.get_mut(&tab_id) {
+      state.error_details_open = details_open;
+    }
+
+    if popup.inner {
+      self.handle_chrome_actions(vec![ChromeAction::Reload]);
+      self.window.request_redraw();
     }
   }
 
@@ -4014,14 +4350,8 @@ impl App {
       return;
     };
 
-    // Avoid updating page hover state while the pointer is interacting with a dropdown popup.
-    if self
-      .open_select_dropdown_rect
-      .is_some_and(|rect| rect.contains(pos_points))
-      || self
-        .open_context_menu_rect
-        .is_some_and(|rect| rect.contains(pos_points))
-    {
+    // Avoid updating page hover state while the pointer is interacting with egui-owned overlays.
+    if self.cursor_over_egui_overlay(pos_points) {
       self.hover_sync_pending = false;
       self.cursor_in_page = false;
       return;
@@ -4339,13 +4669,7 @@ impl App {
           return;
         }
 
-        if self
-          .open_select_dropdown_rect
-          .is_some_and(|rect| rect.contains(pos_points))
-          || self
-            .open_context_menu_rect
-            .is_some_and(|rect| rect.contains(pos_points))
-        {
+        if !self.pointer_captured && self.cursor_over_egui_overlay(pos_points) {
           return;
         }
 
@@ -4487,6 +4811,17 @@ impl App {
           if clicked_select_control {
             return;
           }
+        }
+
+        if !self.pointer_captured
+          && (self
+            .warning_toast_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+            || self
+              .error_infobar_rect
+              .is_some_and(|rect| rect.contains(pos_points)))
+        {
+          return;
         }
 
         match state {
@@ -5682,7 +6017,7 @@ impl App {
       self.handle_chrome_actions(panel_actions);
     }
 
-    egui::CentralPanel::default().show(&ctx, |ui| {
+    let central_response = egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
 
       // Browser-like zoom: keep the drawn page size constant (in egui points) while scaling the
@@ -6203,6 +6538,13 @@ impl App {
         });
       }
     });
+
+    self.content_rect_points = Some(central_response.response.rect);
+
+    let now = std::time::Instant::now();
+    self.sync_tab_notifications(now);
+    self.render_error_infobar(&ctx);
+    self.render_warning_toast(&ctx);
 
     self.render_hud(&ctx);
     self.render_debug_log_overlay(&ctx);
