@@ -675,8 +675,10 @@ fn urlsp_init_pair_from_sequence(
   let mut record = iterator::get_iterator(vm, host, hooks, scope, value)?;
 
   let Some(name_value) = iterator::iterator_step_value(vm, host, hooks, scope, &mut record)? else {
-    if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
-      return Err(err);
+    if !record.done {
+      if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
+        return Err(err);
+      }
     }
     return Err(vm_js::throw_type_error(
       scope,
@@ -685,8 +687,10 @@ fn urlsp_init_pair_from_sequence(
     ));
   };
   let Some(value_value) = iterator::iterator_step_value(vm, host, hooks, scope, &mut record)? else {
-    if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
-      return Err(err);
+    if !record.done {
+      if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
+        return Err(err);
+      }
     }
     return Err(vm_js::throw_type_error(
       scope,
@@ -695,8 +699,10 @@ fn urlsp_init_pair_from_sequence(
     ));
   };
   if iterator::iterator_step_value(vm, host, hooks, scope, &mut record)?.is_some() {
-    if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
-      return Err(err);
+    if !record.done {
+      if let Err(err) = iterator::iterator_close(vm, host, hooks, scope, &record) {
+        return Err(err);
+      }
     }
     return Err(vm_js::throw_type_error(
       scope,
