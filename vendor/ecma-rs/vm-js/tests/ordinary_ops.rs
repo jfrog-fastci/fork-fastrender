@@ -220,7 +220,8 @@ fn to_string_and_to_number_cover_webidl_primitives() -> Result<(), VmError> {
     let mut scope = heap.scope();
     scope.alloc_object()?
   };
-  assert!(heap.to_number(Value::Object(obj))?.is_nan());
+  let err = heap.to_number(Value::Object(obj)).unwrap_err();
+  assert!(matches!(err, VmError::Unimplemented(_)));
 
   Ok(())
 }

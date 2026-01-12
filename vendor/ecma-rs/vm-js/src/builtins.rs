@@ -10870,11 +10870,14 @@ pub fn json_stringify(
         if i > 0 {
           out.push_unit(b',' as u16)?;
         }
-        let key_s = scope.alloc_string(&i.to_string())?;
-        scope.push_root(Value::String(key_s))?;
-        let element = prepare_json_value_for_property(vm, scope, host, hooks, state, obj, key_s)?
-          .unwrap_or(Value::Null);
-        serialize_json_value(vm, scope, host, hooks, state, out, element)?;
+        let mut el_scope = scope.reborrow();
+        let key_s = el_scope.alloc_string(&i.to_string())?;
+        el_scope.push_root(Value::String(key_s))?;
+        let element =
+          prepare_json_value_for_property(vm, &mut el_scope, host, hooks, state, obj, key_s)?
+            .unwrap_or(Value::Null);
+        el_scope.push_root(element)?;
+        serialize_json_value(vm, &mut el_scope, host, hooks, state, out, element)?;
       }
       out.push_unit(b']' as u16)?;
     } else {
@@ -10888,11 +10891,14 @@ pub fn json_stringify(
           out.push_ascii(b",\n")?;
           out.push_units(&state.indent)?;
         }
-        let key_s = scope.alloc_string(&i.to_string())?;
-        scope.push_root(Value::String(key_s))?;
-        let element = prepare_json_value_for_property(vm, scope, host, hooks, state, obj, key_s)?
-          .unwrap_or(Value::Null);
-        serialize_json_value(vm, scope, host, hooks, state, out, element)?;
+        let mut el_scope = scope.reborrow();
+        let key_s = el_scope.alloc_string(&i.to_string())?;
+        el_scope.push_root(Value::String(key_s))?;
+        let element =
+          prepare_json_value_for_property(vm, &mut el_scope, host, hooks, state, obj, key_s)?
+            .unwrap_or(Value::Null);
+        el_scope.push_root(element)?;
+        serialize_json_value(vm, &mut el_scope, host, hooks, state, out, element)?;
       }
       out.push_unit(b'\n' as u16)?;
       out.push_units(&state.indent[..stepback_len])?;
@@ -10953,7 +10959,6 @@ pub fn json_stringify(
           continue;
         };
         if desc.enumerable {
-          scope.push_root(Value::String(s))?;
           out_keys.push(s);
         }
       }
@@ -10968,16 +10973,21 @@ pub fn json_stringify(
         if i % 1024 == 0 {
           vm.tick()?;
         }
-        let Some(prop_value) = prepare_json_value_for_property(vm, scope, host, hooks, state, obj, p)? else {
+        let mut p_scope = scope.reborrow();
+        p_scope.push_root(Value::String(p))?;
+        let Some(prop_value) =
+          prepare_json_value_for_property(vm, &mut p_scope, host, hooks, state, obj, p)?
+        else {
           continue;
         };
+        p_scope.push_root(prop_value)?;
         if wrote_any {
           out.push_unit(b',' as u16)?;
         }
         wrote_any = true;
-        quote_json_string(vm, scope, out, p)?;
+        quote_json_string(vm, &mut p_scope, out, p)?;
         out.push_unit(b':' as u16)?;
-        serialize_json_value(vm, scope, host, hooks, state, out, prop_value)?;
+        serialize_json_value(vm, &mut p_scope, host, hooks, state, out, prop_value)?;
       }
       out.push_unit(b'}' as u16)?;
     } else {
@@ -10986,9 +10996,14 @@ pub fn json_stringify(
         if i % 1024 == 0 {
           vm.tick()?;
         }
-        let Some(prop_value) = prepare_json_value_for_property(vm, scope, host, hooks, state, obj, p)? else {
+        let mut p_scope = scope.reborrow();
+        p_scope.push_root(Value::String(p))?;
+        let Some(prop_value) =
+          prepare_json_value_for_property(vm, &mut p_scope, host, hooks, state, obj, p)?
+        else {
           continue;
         };
+        p_scope.push_root(prop_value)?;
         if !wrote_any {
           out.push_unit(b'\n' as u16)?;
           out.push_units(&state.indent)?;
@@ -10997,9 +11012,9 @@ pub fn json_stringify(
           out.push_units(&state.indent)?;
         }
         wrote_any = true;
-        quote_json_string(vm, scope, out, p)?;
+        quote_json_string(vm, &mut p_scope, out, p)?;
         out.push_ascii(b": ")?;
-        serialize_json_value(vm, scope, host, hooks, state, out, prop_value)?;
+        serialize_json_value(vm, &mut p_scope, host, hooks, state, out, prop_value)?;
       }
       if wrote_any {
         out.push_unit(b'\n' as u16)?;
@@ -11071,19 +11086,25 @@ pub fn json_stringify(
         )?;
         scope.push_root(v)?;
 
+        let mut needs_root = false;
         let item_string: Option<crate::GcString> = match v {
           Value::String(s) => Some(s),
-          Value::Number(n) => Some(scope.heap_mut().to_string(Value::Number(n))?),
+          Value::Number(n) => {
+            needs_root = true;
+            Some(scope.heap_mut().to_string(Value::Number(n))?)
+          }
           Value::Object(o) => match unbox_primitive_wrapper(&mut scope, o, wrapper_markers)? {
             Some(Value::String(s)) => Some(s),
-            Some(Value::Number(n)) => Some(scope.heap_mut().to_string(Value::Number(n))?),
+            Some(Value::Number(n)) => {
+              needs_root = true;
+              Some(scope.heap_mut().to_string(Value::Number(n))?)
+            }
             _ => None,
           },
           _ => None,
         };
 
         let Some(s) = item_string else { continue };
-        scope.push_root(Value::String(s))?;
 
         // Deduplicate by string contents.
         let s_units = scope.heap().get_string(s)?.as_code_units();
@@ -11098,6 +11119,11 @@ pub fn json_stringify(
           }
         }
         if !exists {
+          if needs_root {
+            // Strings created via `ToString(number)` are not referenced by the JS heap, so keep them
+            // alive for the duration of the stringify operation.
+            scope.push_root(Value::String(s))?;
+          }
           vec_try_push(&mut list, s)?;
         }
       }
