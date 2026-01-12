@@ -2,7 +2,7 @@
 mod x86_64 {
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
-  use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_SP};
+  use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
   use runtime_native::threading::registry;
@@ -55,15 +55,28 @@ mod x86_64 {
         else {
           panic!("unexpected root location kind in fixture: base={base_loc:?} derived={derived_loc:?}");
         };
-        assert_eq!(*base_reg, X86_64_DWARF_REG_SP, "fixture roots must be [SP + off]");
-        assert_eq!(
-          *derived_reg,
-          X86_64_DWARF_REG_SP,
-          "fixture roots must be [SP + off]"
+        assert!(
+          *base_reg == X86_64_DWARF_REG_SP || *base_reg == X86_64_DWARF_REG_FP,
+          "expected SP/FP-relative root slot, got dwarf_reg={base_reg}"
+        );
+        assert!(
+          *derived_reg == X86_64_DWARF_REG_SP || *derived_reg == X86_64_DWARF_REG_FP,
+          "expected SP/FP-relative root slot, got dwarf_reg={derived_reg}"
         );
 
-        let base_addr = add_signed_u64(caller_sp as u64, *base_off).expect("slot addr");
-        let derived_addr = add_signed_u64(caller_sp as u64, *derived_off).expect("slot addr");
+        let base_base = if *base_reg == X86_64_DWARF_REG_SP {
+          caller_sp as u64
+        } else {
+          caller_fp as u64
+        };
+        let derived_base = if *derived_reg == X86_64_DWARF_REG_SP {
+          caller_sp as u64
+        } else {
+          caller_fp as u64
+        };
+
+        let base_addr = add_signed_u64(base_base, *base_off).expect("slot addr");
+        let derived_addr = add_signed_u64(derived_base, *derived_off).expect("slot addr");
 
         // Seed slot values so the walker can compute derived fixups.
         unsafe {
@@ -120,7 +133,7 @@ mod x86_64 {
 mod aarch64 {
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
-  use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
+  use runtime_native::statepoints::{AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, StatepointRecord};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
   use runtime_native::threading::registry;
@@ -170,19 +183,28 @@ mod aarch64 {
         else {
           panic!("unexpected root location kind in fixture: base={base_loc:?} derived={derived_loc:?}");
         };
-        assert_eq!(
-          *base_reg,
-          AARCH64_DWARF_REG_SP,
-          "fixture roots must be [SP + off]"
+        assert!(
+          *base_reg == AARCH64_DWARF_REG_SP || *base_reg == AARCH64_DWARF_REG_FP,
+          "expected SP/FP-relative root slot, got dwarf_reg={base_reg}"
         );
-        assert_eq!(
-          *derived_reg,
-          AARCH64_DWARF_REG_SP,
-          "fixture roots must be [SP + off]"
+        assert!(
+          *derived_reg == AARCH64_DWARF_REG_SP || *derived_reg == AARCH64_DWARF_REG_FP,
+          "expected SP/FP-relative root slot, got dwarf_reg={derived_reg}"
         );
 
-        let base_addr = add_signed_u64(caller_sp as u64, *base_off).expect("slot addr");
-        let derived_addr = add_signed_u64(caller_sp as u64, *derived_off).expect("slot addr");
+        let base_base = if *base_reg == AARCH64_DWARF_REG_SP {
+          caller_sp as u64
+        } else {
+          caller_fp as u64
+        };
+        let derived_base = if *derived_reg == AARCH64_DWARF_REG_SP {
+          caller_sp as u64
+        } else {
+          caller_fp as u64
+        };
+
+        let base_addr = add_signed_u64(base_base, *base_off).expect("slot addr");
+        let derived_addr = add_signed_u64(derived_base, *derived_off).expect("slot addr");
 
         unsafe {
           write_u64(base_addr as usize, 0x1111_2222_3333_4444);
