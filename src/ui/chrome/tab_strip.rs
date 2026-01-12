@@ -177,21 +177,21 @@ fn tab_ui(
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
-  let tooltip = if err.is_none() && warn.is_none() {
-    title.clone()
-  } else {
-    let mut lines = vec![title.clone()];
-    if let Some(err) = err {
-      lines.push(format!("Error: {err}"));
+  let mut response = ui.interact(tab_rect, tab_id, Sense::click_and_drag());
+  if response.hovered() {
+    if err.is_none() && warn.is_none() {
+      response = response.on_hover_text(title.as_str());
+    } else {
+      let mut lines = vec![title.clone()];
+      if let Some(err) = err {
+        lines.push(format!("Error: {err}"));
+      }
+      if let Some(warn) = warn {
+        lines.push(format!("Warning: {warn}"));
+      }
+      response = response.on_hover_text(lines.join("\n"));
     }
-    if let Some(warn) = warn {
-      lines.push(format!("Warning: {warn}"));
-    }
-    lines.join("\n")
-  };
-  let response = ui
-    .interact(tab_rect, tab_id, Sense::click_and_drag())
-    .on_hover_text(tooltip);
+  }
   response.widget_info({
     let title = title.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
@@ -387,21 +387,21 @@ fn pinned_tab_ui(
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
-  let tooltip = if err.is_none() && warn.is_none() {
-    title.clone()
-  } else {
-    let mut lines = vec![title.clone()];
-    if let Some(err) = err {
-      lines.push(format!("Error: {err}"));
+  let mut response = ui.interact(tab_rect, tab_id, Sense::click_and_drag());
+  if response.hovered() {
+    if err.is_none() && warn.is_none() {
+      response = response.on_hover_text(title.as_str());
+    } else {
+      let mut lines = vec![title.clone()];
+      if let Some(err) = err {
+        lines.push(format!("Error: {err}"));
+      }
+      if let Some(warn) = warn {
+        lines.push(format!("Warning: {warn}"));
+      }
+      response = response.on_hover_text(lines.join("\n"));
     }
-    if let Some(warn) = warn {
-      lines.push(format!("Warning: {warn}"));
-    }
-    lines.join("\n")
-  };
-  let response = ui
-    .interact(tab_rect, tab_id, Sense::click_and_drag())
-    .on_hover_text(tooltip);
+  }
   response.widget_info({
     let title = title.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
