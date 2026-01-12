@@ -32,11 +32,11 @@ section in sync with `ls tests/*.rs`.
 |---|---|---|---|---|
 | `tests/allocation_failure.rs` | special | keep | Contains `#[global_allocator]` (via `tests/allocation_failure_tests/mod.rs`); must remain separate. | DONE |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
-| `tests/style_tests.rs` | integration | keep | Compatibility shim so `cargo test --test style_tests` can run targeted style regression modules without building the full integration suite. | DONE |
 ### Completed (top-level crate removed)
 
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
+| `tests/style_tests.rs` | integration (shim) | delete | Compatibility shim for `--test style_tests` (extra binary). Removed to satisfy the end-state invariant `ls tests/*.rs | wc -l == 2` and to avoid `#[path]` shims under `tests/`. | DONE |
 | `tests/browser_integration_tests.rs` | integration (shim) | delete | Compatibility shim for `--test browser_integration_tests` (extra binary). Suite runs via `tests/integration.rs::browser_integration` (`--features browser_ui`). Removed to satisfy the [end-state invariant](#end-state-invariants-to-verify) <code>ls tests/*.rs &#124; wc -l == 2</code>. | DONE |
 | `tests/accessibility_tests.rs` | integration | `tests/integration.rs::accessibility` | Top-level harness removed; suite now lives under `tests/accessibility/**` and uses `tests/common/accessibility`. | DONE |
 | `tests/bin_tests.rs` | integration | `tests/integration.rs::bin` | Top-level harness removed; suite now lives under `tests/bin/**`. | DONE |
