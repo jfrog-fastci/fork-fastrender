@@ -611,7 +611,7 @@ fn get_async_iterator_from_method(
   next_scope.push_root(iterator)?;
 
   let next_key = string_key(&mut next_scope, "next")?;
-  let next = next_scope.ordinary_get_with_host_and_hooks(
+  let next = next_scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,

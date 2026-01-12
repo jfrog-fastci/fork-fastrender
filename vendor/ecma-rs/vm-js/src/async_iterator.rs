@@ -1,4 +1,3 @@
-use crate::error_object::new_type_error_object;
 use crate::property::PropertyKey;
 use crate::{iterator, promise_ops, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
@@ -52,57 +51,6 @@ fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
   Ok(PropertyKey::from_string(key_s))
 }
 
-fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-  let err = new_type_error_object(scope, &intr, message)?;
-  Ok(VmError::Throw(err))
-}
-
-fn get_method(
-  vm: &mut Vm,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  scope: &mut Scope<'_>,
-  obj: Value,
-  key: PropertyKey,
-) -> Result<Option<Value>, VmError> {
-  // `GetMethod(V, P)` uses `GetV(V, P)`, which performs `ToObject(V)` for the property lookup but
-  // still uses the original `V` as the `receiver`/`this` value for accessor getters.
-  let mut scope = scope.reborrow();
-  let (obj, receiver) = match obj {
-    Value::Object(obj) => {
-      scope.push_root(Value::Object(obj))?;
-      (obj, Value::Object(obj))
-    }
-    Value::Null | Value::Undefined => {
-      return Err(throw_type_error(
-        vm,
-        &mut scope,
-        "GetMethod: cannot convert null/undefined to object",
-      )?);
-    }
-    other => {
-      // Root `other` across boxing + property access; for primitives like String, the receiver is
-      // still the primitive value.
-      scope.push_root(other)?;
-      let wrapped_obj = scope.to_object(vm, host, hooks, other)?;
-      scope.push_root(Value::Object(wrapped_obj))?;
-      (wrapped_obj, other)
-    }
-  };
-
-  let func = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, receiver)?;
-  if matches!(func, Value::Undefined | Value::Null) {
-    return Ok(None);
-  }
-  if !scope.heap().is_callable(func)? {
-    return Err(throw_type_error(vm, &mut scope, "GetMethod: target is not callable")?);
-  }
-  Ok(Some(func))
-}
-
 /// `GetAsyncIterator` (ECMA-262).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-getasynciterator>
@@ -118,9 +66,14 @@ pub fn get_async_iterator(
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
   let async_iterator_sym = intr.well_known_symbols().async_iterator;
-  let method =
-    get_method(vm, host, hooks, scope, iterable, PropertyKey::from_symbol(async_iterator_sym))?;
-  if let Some(method) = method {
+  if let Some(method) = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    iterable,
+    PropertyKey::from_symbol(async_iterator_sym),
+  )? {
     return get_async_iterator_from_method(vm, host, hooks, scope, iterable, method);
   }
 
@@ -140,11 +93,9 @@ pub fn get_async_iterator_from_method(
 ) -> Result<AsyncIteratorRecord, VmError> {
   let iterator = vm.call_with_host_and_hooks(host, scope, hooks, method, iterable, &[])?;
   let Value::Object(iterator_obj) = iterator else {
-    return Err(throw_type_error(
-      vm,
-      scope,
+    return Err(VmError::TypeError(
       "GetAsyncIteratorFromMethod: async iterator method did not return an object",
-    )?);
+    ));
   };
 
   // Root the iterator object while allocating/reading the `next` method in case those operations
@@ -153,7 +104,7 @@ pub fn get_async_iterator_from_method(
   next_scope.push_root(iterator)?;
 
   let next_key = string_key(&mut next_scope, "next")?;
-  let next = next_scope.ordinary_get_with_host_and_hooks(
+  let next = next_scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,
@@ -162,11 +113,9 @@ pub fn get_async_iterator_from_method(
     Value::Object(iterator_obj),
   )?;
   if !next_scope.heap().is_callable(next)? {
-    return Err(throw_type_error(
-      vm,
-      &mut next_scope,
+    return Err(VmError::TypeError(
       "GetAsyncIteratorFromMethod: iterator.next is not callable",
-    )?);
+    ));
   }
 
   Ok(AsyncIteratorRecord::Protocol {
@@ -257,7 +206,15 @@ pub fn async_iterator_close(
   close_scope.push_root(iterator)?;
 
   let return_key = string_key(&mut close_scope, "return")?;
-  let Some(return_method) = get_method(vm, host, hooks, &mut close_scope, iterator, return_key)? else {
+  let Some(return_method) = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut close_scope,
+    host,
+    hooks,
+    iterator,
+    return_key,
+  )?
+  else {
     return Ok(None);
   };
 

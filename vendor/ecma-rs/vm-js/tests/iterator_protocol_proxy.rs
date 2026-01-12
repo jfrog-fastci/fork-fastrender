@@ -224,3 +224,90 @@ fn revoked_proxy_iterable_throws_type_error_in_for_of() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn for_await_of_observes_proxy_get_trap_for_next_method() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  let global = rt.realm().global_object();
+
+  // Create a `get` trap that counts `next` lookups and forwards to the target.
+  let trap = rt.exec_script(
+    r#"
+      globalThis.nextGets = 0;
+      (function (target, prop, receiver) {
+        if (prop === "next") globalThis.nextGets++;
+        return Reflect.get(target, prop, receiver);
+      })
+    "#,
+  )?;
+
+  // Async iterator target: yields one value then completes.
+  let target = rt.exec_script(
+    r#"
+      (() => {
+        let i = 0;
+        return {
+          next: function () {
+            i++;
+            if (i === 1) return Promise.resolve({ value: "a", done: false });
+            return Promise.resolve({ value: undefined, done: true });
+          }
+        };
+      })()
+    "#,
+  )?;
+
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(target)?;
+    scope.push_root(trap)?;
+
+    let Value::Object(target_obj) = target else {
+      panic!("expected target object, got {target:?}");
+    };
+
+    let handler = scope.alloc_object()?;
+    scope.push_root(Value::Object(handler))?;
+
+    let get_key_s = scope.alloc_string("get")?;
+    scope.push_root(Value::String(get_key_s))?;
+    let get_key = PropertyKey::from_string(get_key_s);
+    scope.define_property(handler, get_key, data_desc(trap))?;
+
+    let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
+    define_global(&mut scope, global, "proxyAsyncIterator", Value::Object(proxy))?;
+  }
+
+  // Kick off async iteration (resolved via microtasks).
+  let out = rt.exec_script(
+    r#"
+      globalThis.out = "";
+      async function f() {
+        let log = "";
+        const iterable = {
+          [Symbol.asyncIterator]: function () {
+            return proxyAsyncIterator;
+          }
+        };
+        for await (const x of iterable) {
+          log += x;
+        }
+        return log;
+      }
+      f().then(function (v) { globalThis.out = v; });
+      globalThis.out
+    "#,
+  )?;
+  assert_eq!(expect_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("globalThis.out")?;
+  assert_eq!(expect_string(&rt, out), "a");
+
+  let next_gets = rt.exec_script("globalThis.nextGets")?;
+  assert_eq!(next_gets, Value::Number(1.0));
+  Ok(())
+}
