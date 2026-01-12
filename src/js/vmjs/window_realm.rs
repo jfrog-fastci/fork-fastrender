@@ -24914,13 +24914,12 @@ fn element_attach_shadow_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
-
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "Element.attachShadow requires a DOM-backed document",
-  ))?;
+  let handle = element_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Element.attachShadow requires a DOM-backed document",
+    ))?;
 
   let init_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(init_obj) = init_value else {
@@ -24928,6 +24927,7 @@ fn element_attach_shadow_native(
       "Element.attachShadow requires a ShadowRootInit object",
     ));
   };
+  scope.push_root(Value::Object(init_obj))?;
 
   let mode = {
     let key = alloc_key(scope, "mode")?;
@@ -24992,13 +24992,17 @@ fn element_attach_shadow_native(
     }
   };
 
-  let shadow_root = match dom.attach_shadow_root(node_id, mode, delegates_focus, slot_assignment) {
-    Ok(id) => id,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  let shadow_root = {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    match dom.attach_shadow_root(handle.node_id, mode, delegates_focus, slot_assignment) {
+      Ok(id) => id,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    }
   };
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
-  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), shadow_root)
+  let dom = unsafe { dom_ptr.as_ref() };
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), shadow_root)
 }
 
 fn element_shadow_root_get_native(
@@ -25014,15 +25018,16 @@ fn element_shadow_root_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let handle = element_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Element.shadowRoot requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "Element.shadowRoot requires a DOM-backed document",
-  ))?;
-
-  let Some(shadow_root) = dom.shadow_root_for_host(node_id) else {
+  let Some(shadow_root) = dom.shadow_root_for_host(handle.node_id) else {
     return Ok(Value::Null);
   };
 
@@ -25033,8 +25038,7 @@ fn element_shadow_root_get_native(
     return Ok(Value::Null);
   }
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
-  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), shadow_root)
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), shadow_root)
 }
 
 fn slottable_assigned_slot_get_native(
@@ -25050,27 +25054,27 @@ fn slottable_assigned_slot_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "Slottable.assignedSlot requires a DOM-backed document",
-  ))?;
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Slottable.assignedSlot requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   if !matches!(
-    dom.node(node_id).kind,
+    dom.node(handle.node_id).kind,
     NodeKind::Element { .. } | NodeKind::Slot { .. } | NodeKind::Text { .. }
   ) {
     return Err(VmError::TypeError("Illegal invocation"));
   }
 
-  let Some(slot_id) = dom.find_slot_for_slottable(node_id, /* open */ true) else {
+  let Some(slot_id) = dom.find_slot_for_slottable(handle.node_id, /* open */ true) else {
     return Ok(Value::Null);
   };
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
-  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), slot_id)
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), slot_id)
 }
 
 fn html_slot_element_assigned_nodes_native(
@@ -25086,14 +25090,15 @@ fn html_slot_element_assigned_nodes_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "HTMLSlotElement.assignedNodes requires a DOM-backed document",
-  ))?;
-  if !matches!(dom.node(node_id).kind, NodeKind::Slot { .. }) {
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "HTMLSlotElement.assignedNodes requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  if !matches!(dom.node(handle.node_id).kind, NodeKind::Slot { .. }) {
     return Err(VmError::TypeError("Illegal invocation"));
   }
 
@@ -25118,9 +25123,9 @@ fn html_slot_element_assigned_nodes_native(
   };
 
   let assigned = if flatten {
-    dom.find_flattened_slottables_for_slot(node_id)
+    dom.find_flattened_slottables_for_slot(handle.node_id)
   } else {
-    dom.find_slottables_for_slot(node_id)
+    dom.find_slottables_for_slot(handle.node_id)
   };
 
   let array = scope.alloc_array(0)?;
@@ -25131,10 +25136,9 @@ fn html_slot_element_assigned_nodes_native(
       .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
   }
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
   for (idx, node_id) in assigned.iter().copied().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
-    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)?;
     scope.define_property(array, key, data_desc(wrapper))?;
   }
   let length_key = alloc_key(scope, "length")?;
@@ -25166,14 +25170,15 @@ fn html_slot_element_assigned_elements_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "HTMLSlotElement.assignedElements requires a DOM-backed document",
-  ))?;
-  if !matches!(dom.node(node_id).kind, NodeKind::Slot { .. }) {
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "HTMLSlotElement.assignedElements requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  if !matches!(dom.node(handle.node_id).kind, NodeKind::Slot { .. }) {
     return Err(VmError::TypeError("Illegal invocation"));
   }
 
@@ -25198,9 +25203,9 @@ fn html_slot_element_assigned_elements_native(
   };
 
   let assigned = if flatten {
-    dom.find_flattened_slottables_for_slot(node_id)
+    dom.find_flattened_slottables_for_slot(handle.node_id)
   } else {
-    dom.find_slottables_for_slot(node_id)
+    dom.find_slottables_for_slot(handle.node_id)
   };
   let assigned: Vec<NodeId> = assigned
     .into_iter()
@@ -25215,10 +25220,9 @@ fn html_slot_element_assigned_elements_native(
       .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
   }
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
   for (idx, node_id) in assigned.iter().copied().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
-    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)?;
     scope.define_property(array, key, data_desc(wrapper))?;
   }
   let length_key = alloc_key(scope, "length")?;
@@ -25250,20 +25254,21 @@ fn html_slot_element_assign_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "HTMLSlotElement.assign requires a DOM-backed document",
-  ))?;
-  if !matches!(dom.node(node_id).kind, NodeKind::Slot { .. }) {
-    return Err(VmError::TypeError("Illegal invocation"));
+  let slot_handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, slot_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "HTMLSlotElement.assign requires a DOM-backed document",
+    ))?;
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    if !matches!(dom.node(slot_handle.node_id).kind, NodeKind::Slot { .. }) {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
   }
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
-
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
   let mut node_ids: Vec<NodeId> = Vec::new();
   node_ids
     .try_reserve(args.len())
@@ -25275,32 +25280,22 @@ fn html_slot_element_assign_native(
         "HTMLSlotElement.assign requires (Element or Text) arguments",
       ));
     };
-    let node_index = match scope
-      .heap()
-      .object_get_own_data_property_value(arg_obj, &node_id_key)?
-    {
-      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-      _ => {
-        return Err(VmError::TypeError(
-          "HTMLSlotElement.assign requires (Element or Text) arguments",
-        ));
-      }
-    };
-    let arg_node_id = dom
-      .node_id_from_index(node_index)
-      .map_err(|_| VmError::TypeError("HTMLSlotElement.assign received an unknown node"))?;
-
+    let arg_handle = platform
+      .require_node_handle(scope.heap(), Value::Object(arg_obj))
+      .map_err(|_| {
+        VmError::TypeError("HTMLSlotElement.assign requires (Element or Text) arguments")
+      })?;
     // Prevent assigning nodes across documents (matches other DOM mutation checks).
-    let arg_document_obj = node_wrapper_document_obj(scope, arg_obj, arg_node_id)
-      .map_err(|_| VmError::TypeError("HTMLSlotElement.assign received an unknown node"))?;
-    if arg_document_obj != document_obj {
+    if arg_handle.document_id != slot_handle.document_id {
       return Err(VmError::TypeError(
         "HTMLSlotElement.assign cannot assign nodes from a different document",
       ));
     }
 
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
     if !matches!(
-      dom.node(arg_node_id).kind,
+      dom.node(arg_handle.node_id).kind,
       NodeKind::Element { .. } | NodeKind::Slot { .. } | NodeKind::Text { .. }
     ) {
       return Err(VmError::TypeError(
@@ -25308,12 +25303,16 @@ fn html_slot_element_assign_native(
       ));
     }
 
-    node_ids.push(arg_node_id);
+    node_ids.push(arg_handle.node_id);
   }
 
-  dom
-    .slot_assign(node_id, &node_ids)
-    .map_err(|_| VmError::TypeError("HTMLSlotElement.assign failed"))?;
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    dom
+      .slot_assign(slot_handle.node_id, &node_ids)
+      .map_err(|_| VmError::TypeError("HTMLSlotElement.assign failed"))?;
+  }
 
   Ok(Value::Undefined)
 }
