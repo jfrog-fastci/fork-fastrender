@@ -15720,7 +15720,7 @@ pub(crate) fn alloc_intersection_observer_entry_object_with_dom_rects(
   Ok(obj)
 }
 
-fn alloc_intersection_observer_entry_object(
+pub(crate) fn alloc_intersection_observer_entry_object(
   scope: &mut Scope<'_>,
   global: GcObject,
   root_bounds: Option<(f64, f64, f64, f64)>,
