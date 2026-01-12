@@ -2049,10 +2049,19 @@ fn template_literal_number_atom_is_constrained() {
   assert!(ctx.is_assignable(ok, template));
   assert!(!ctx.is_assignable(bad, template));
 
-  // We choose to reject leading zeros for multi-digit decimals, which matches
-  // JS/TS decimal literal grammar under strict mode.
+  // `${number}` follows JS ToNumber semantics, so it accepts many more forms
+  // than TS numeric literal syntax: leading zeros, leading `+`, and base
+  // prefixes (but base prefixes can't be signed).
   let leading_zero = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("01%")));
-  assert!(!ctx.is_assignable(leading_zero, template));
+  assert!(ctx.is_assignable(leading_zero, template));
+  let plus_one = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("+1%")));
+  assert!(ctx.is_assignable(plus_one, template));
+  let hex = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("0xF%")));
+  assert!(ctx.is_assignable(hex, template));
+  let signed_hex = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("-0xF%")));
+  assert!(!ctx.is_assignable(signed_hex, template));
+  let whitespace = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref(" %")));
+  assert!(ctx.is_assignable(whitespace, template));
 }
 
 #[test]
@@ -2151,6 +2160,9 @@ fn template_literal_bigint_atom_is_constrained() {
 
   let ok = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("10")));
   let bad = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("10n")));
+  let hex = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("0xF")));
+  let signed_hex = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("-0xF")));
+  let leading_zero = store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("01")));
 
   let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
     head: "".into(),
@@ -2161,6 +2173,9 @@ fn template_literal_bigint_atom_is_constrained() {
   }));
 
   assert!(ctx.is_assignable(ok, template));
+  assert!(ctx.is_assignable(hex, template));
+  assert!(ctx.is_assignable(signed_hex, template));
+  assert!(!ctx.is_assignable(leading_zero, template));
   assert!(!ctx.is_assignable(bad, template));
 }
 

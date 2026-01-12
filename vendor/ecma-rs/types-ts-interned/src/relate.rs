@@ -1960,90 +1960,112 @@ impl<'a> RelateCtx<'a> {
       }
 
       let mut idx = 0usize;
-      if bytes[0] == b'-' {
-        idx += 1;
-        if idx == bytes.len() {
-          return false;
-        }
-      }
-
-      let digits = &bytes[idx..];
-      if digits.len() > 1 && digits[0] == b'0' {
-        return false;
-      }
-      digits.iter().all(|b| b.is_ascii_digit())
-    }
-
-    fn is_valid_number_string(s: &str) -> bool {
-      let bytes = s.as_bytes();
-      if bytes.is_empty() {
-        return false;
-      }
-
-      let mut idx = 0usize;
-      if bytes[0] == b'-' {
-        idx += 1;
-        if idx == bytes.len() {
-          return false;
-        }
-      }
-
-      if idx == bytes.len() {
-        return false;
-      }
-
-      if bytes[idx] == b'.' {
-        // Decimal literal in `.5` form.
-        idx += 1;
-        let frac_start = idx;
-        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-          idx += 1;
-        }
-        if idx == frac_start {
-          return false;
-        }
-      } else {
-        // Decimal literal in `1` / `1.` / `1.5` forms.
-        let int_start = idx;
-        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-          idx += 1;
-        }
-        if idx == int_start {
-          return false;
-        }
-        if idx - int_start > 1 && bytes[int_start] == b'0' {
-          return false;
-        }
-        if idx < bytes.len() && bytes[idx] == b'.' {
-          idx += 1;
-          while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-            idx += 1;
-          }
-        }
-      }
-
-      // Optional exponent part.
-      if idx < bytes.len() && (bytes[idx] == b'e' || bytes[idx] == b'E') {
-        idx += 1;
-        if idx == bytes.len() {
-          return false;
-        }
-        if bytes[idx] == b'+' || bytes[idx] == b'-' {
+      match bytes[0] {
+        b'+' => return false,
+        b'-' => {
           idx += 1;
           if idx == bytes.len() {
             return false;
           }
         }
-        let exp_start = idx;
-        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-          idx += 1;
-        }
-        if idx == exp_start {
-          return false;
+        _ => {}
+      }
+
+      let digits = &bytes[idx..];
+      if digits.len() >= 2 && digits[0] == b'0' {
+        match digits[1] {
+          b'x' | b'X' => {
+            let hex = &digits[2..];
+            if hex.is_empty() {
+              return false;
+            }
+            return hex.iter().all(|b| b.is_ascii_hexdigit());
+          }
+          b'b' | b'B' => {
+            let bin = &digits[2..];
+            if bin.is_empty() {
+              return false;
+            }
+            return bin.iter().all(|b| matches!(*b, b'0' | b'1'));
+          }
+          b'o' | b'O' => {
+            let oct = &digits[2..];
+            if oct.is_empty() {
+              return false;
+            }
+            return oct.iter().all(|b| matches!(*b, b'0'..=b'7'));
+          }
+          _ => {}
         }
       }
 
-      idx == bytes.len()
+      // Decimal bigint literal string: `0` or `[1-9][0-9]*` (no leading zeros).
+      match digits {
+        [b'0'] => true,
+        [b'1'..=b'9', rest @ ..] => rest.iter().all(|b| b.is_ascii_digit()),
+        _ => false,
+      }
+    }
+
+    fn is_valid_number_string(s: &str) -> bool {
+      if s.is_empty() {
+        return false;
+      }
+
+      // TypeScript treats `${number}` as "anything `+s` can parse to a finite
+      // number", where `+` is JS unary-plus (ToNumber). This means it accepts:
+      // - leading/trailing whitespace,
+      // - leading zeros (e.g. "01"),
+      // - signed decimals, and
+      // - base-prefixed integers like "0xF" (but *not* with an explicit sign).
+      let trimmed = s.trim_matches(|c: char| c.is_whitespace());
+      if trimmed.is_empty() {
+        // Whitespace-only strings coerce to 0 in JS; `s` was non-empty.
+        return true;
+      }
+
+      let bytes = trimmed.as_bytes();
+      if matches!(bytes[0], b'+' | b'-') {
+        let rest = &trimmed[1..];
+        let rest_bytes = rest.as_bytes();
+        if rest_bytes.len() >= 2
+          && rest_bytes[0] == b'0'
+          && matches!(rest_bytes[1], b'x' | b'X' | b'b' | b'B' | b'o' | b'O')
+        {
+          // `Number("-0xF")` is NaN, unlike `Number("0xF")`.
+          return false;
+        }
+        return trimmed.parse::<f64>().map_or(false, |n| n.is_finite());
+      }
+
+      if bytes.len() >= 2 && bytes[0] == b'0' {
+        match bytes[1] {
+          b'x' | b'X' => {
+            let hex = &bytes[2..];
+            if hex.is_empty() {
+              return false;
+            }
+            return hex.iter().all(|b| b.is_ascii_hexdigit());
+          }
+          b'b' | b'B' => {
+            let bin = &bytes[2..];
+            if bin.is_empty() {
+              return false;
+            }
+            return bin.iter().all(|b| matches!(*b, b'0' | b'1'));
+          }
+          b'o' | b'O' => {
+            let oct = &bytes[2..];
+            if oct.is_empty() {
+              return false;
+            }
+            return oct.iter().all(|b| matches!(*b, b'0'..=b'7'));
+          }
+          _ => {}
+        }
+      }
+
+      trimmed.parse::<f64>().map_or(false, |n| n.is_finite())
     }
 
     let mut span_atoms: Vec<TemplateAtom> = Vec::with_capacity(tpl.spans.len());
