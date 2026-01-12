@@ -395,6 +395,15 @@ pub fn print_manifest_suggestions_toml(
     return Ok(());
   }
 
+  writeln!(
+    out,
+    "# Suggested manifest entries from `typecheck-ts-harness triage` (review before committing)."
+  )?;
+  writeln!(
+    out,
+    "# Note: ids/globs are relative to the suite root and must use forward slashes."
+  )?;
+
   let snippet = ManifestSnippet {
     expectations: report
       .suggestions
@@ -418,6 +427,7 @@ pub fn print_manifest_suggestions_toml(
   if !rendered.ends_with('\n') {
     rendered.push('\n');
   }
+  writeln!(out)?;
   write!(out, "{rendered}")?;
   Ok(())
 }
