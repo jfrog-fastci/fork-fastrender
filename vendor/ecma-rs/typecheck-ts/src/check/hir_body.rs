@@ -9176,6 +9176,25 @@ impl<'a> Checker<'a> {
           let name = v.stx.value.trim_end_matches('n').to_string();
           Some((PropKey::String(checker.store.intern_name_ref(&name)), name))
         }
+        AstExpr::Member(member)
+          if !member.stx.optional_chaining
+            && matches!(member.stx.left.stx.as_ref(), AstExpr::Id(id) if id.stx.name == "Symbol") =>
+        {
+          let name = member.stx.right.clone();
+          Some((PropKey::Symbol(checker.store.intern_name_ref(&name)), name))
+        }
+        AstExpr::ComputedMember(member)
+          if !member.stx.optional_chaining
+            && matches!(member.stx.object.stx.as_ref(), AstExpr::Id(id) if id.stx.name == "Symbol") =>
+        {
+          match member.stx.member.stx.as_ref() {
+            AstExpr::LitStr(lit) => {
+              let name = lit.stx.value.clone();
+              Some((PropKey::Symbol(checker.store.intern_name_ref(&name)), name))
+            }
+            _ => None,
+          }
+        }
         _ => match checker.store.type_kind(key_ty) {
           TypeKind::StringLiteral(id) => {
             Some((PropKey::String(id), checker.store.name(id).to_string()))
@@ -9373,6 +9392,25 @@ impl<'a> Checker<'a> {
         AstExpr::LitBigInt(v) => {
           let name = v.stx.value.trim_end_matches('n').to_string();
           Some((PropKey::String(checker.store.intern_name_ref(&name)), name))
+        }
+        AstExpr::Member(member)
+          if !member.stx.optional_chaining
+            && matches!(member.stx.left.stx.as_ref(), AstExpr::Id(id) if id.stx.name == "Symbol") =>
+        {
+          let name = member.stx.right.clone();
+          Some((PropKey::Symbol(checker.store.intern_name_ref(&name)), name))
+        }
+        AstExpr::ComputedMember(member)
+          if !member.stx.optional_chaining
+            && matches!(member.stx.object.stx.as_ref(), AstExpr::Id(id) if id.stx.name == "Symbol") =>
+        {
+          match member.stx.member.stx.as_ref() {
+            AstExpr::LitStr(lit) => {
+              let name = lit.stx.value.clone();
+              Some((PropKey::Symbol(checker.store.intern_name_ref(&name)), name))
+            }
+            _ => None,
+          }
         }
         _ => match checker.store.type_kind(key_ty) {
           TypeKind::StringLiteral(id) => {

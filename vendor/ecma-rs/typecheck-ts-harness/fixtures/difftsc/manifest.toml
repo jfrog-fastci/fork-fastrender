@@ -23,11 +23,6 @@ status = "xfail"
 reason = "type narrowing parity gap"
 
 [[expectations]]
-id = "difftsc/triple_slash_lib_imported"
-status = "xfail"
-reason = "triple-slash lib reference typing parity gap"
-
-[[expectations]]
 id = "difftsc/narrowing_types"
 status = "xfail"
 reason = "type narrowing + marker type-facts parity gap"
