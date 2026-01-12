@@ -7674,6 +7674,28 @@ fn alloc_string_from_usize(scope: &mut Scope<'_>, n: usize) -> Result<crate::GcS
   scope.alloc_string(s)
 }
 
+fn alloc_string_from_u64(scope: &mut Scope<'_>, n: u64) -> Result<crate::GcString, VmError> {
+  // Avoid intermediate Rust `String` allocations (which are infallible and can abort the process on
+  // allocator OOM).
+  if n == 0 {
+    return scope.alloc_string("0");
+  }
+
+  // `u64::MAX` is at most 20 decimal digits; keep a larger buffer for safety.
+  let mut buf = [0u8; 32];
+  let mut pos = buf.len();
+  let mut x = n;
+  while x > 0 {
+    let digit = (x % 10) as u8;
+    x /= 10;
+    pos -= 1;
+    buf[pos] = b'0' + digit;
+  }
+
+  let s = std::str::from_utf8(&buf[pos..]).unwrap_or("0");
+  scope.alloc_string(s)
+}
+
 fn iterator_result_object(
   scope: &mut Scope<'_>,
   object_prototype: GcObject,
@@ -10128,8 +10150,7 @@ pub fn array_prototype_concat(
             Value::Object(source_obj),
           )?;
 
-          let to_idx = usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?;
-          let to_s = alloc_string_from_usize(&mut iter_scope, to_idx)?;
+          let to_s = alloc_string_from_u64(&mut iter_scope, *n)?;
           iter_scope.push_root(Value::String(to_s))?;
           let to_key = PropertyKey::from_string(to_s);
           iter_scope.create_data_property_or_throw(out, to_key, value)?;
@@ -10146,8 +10167,7 @@ pub fn array_prototype_concat(
       ));
     }
     let mut iter_scope = scope.reborrow();
-    let to_idx = usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?;
-    let to_s = alloc_string_from_usize(&mut iter_scope, to_idx)?;
+    let to_s = alloc_string_from_u64(&mut iter_scope, *n)?;
     iter_scope.push_root(Value::String(to_s))?;
     let to_key = PropertyKey::from_string(to_s);
     iter_scope.create_data_property_or_throw(out, to_key, item)?;
