@@ -16,9 +16,13 @@
 
 ## Top unimplemented
 
+Top `VmError::Unimplemented` reasons (by count).
+
 (none)
 
 ## Top exceptions
+
+Top uncaught exception types/messages (by count).
 
 (none)
 
