@@ -390,13 +390,41 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 
 - `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
   for module resolution.
-- `--json`: emit versioned JSON diagnostics to stdout (`schema_version = 1`).
-  - not supported with `run` (it would mix with program stdout)
-- `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
-- `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
-- `--opt=0|1|2|3`: set the LLVM target machine optimization level.
-- `--debug`: best-effort debug build (passes `-g` to the system linker).
-- `--extra-strict`: also run the legacy strict validator (`native_js::strict::validate`).
+ - `--json`: emit versioned JSON diagnostics to stdout (`schema_version = 1`).
+   - not supported with `run` (it would mix with program stdout)
+ - `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
+ - `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
+ - `--opt=0|1|2|3`: set the LLVM target machine optimization level.
+   - default: `2`
+   - when `--debug` is set and `--opt` is not explicitly provided, defaults to `0`
+ - `--debug`: emit DWARF debug info in the generated executable (line tables / function names).
+   - as the backend grows, this will include more source-level information (e.g. local variables)
+ - `--extra-strict`: also run the legacy strict validator (`native_js::strict::validate`).
+
+### Debugging generated executables (gdb / lldb)
+
+Build an executable with debug info:
+
+```bash
+native-js --debug build path/to/entry.ts -o /tmp/out
+```
+
+Then run it under a debugger and set breakpoints by **TypeScript source file**:
+
+```bash
+gdb --args /tmp/out
+(gdb) break entry.ts:1
+(gdb) run
+```
+
+```bash
+lldb /tmp/out
+(lldb) breakpoint set --file entry.ts --line 1
+(lldb) run
+```
+
+If the breakpoint does not resolve, try using the absolute path (matching the path embedded in the
+DWARF debug info).
 
 ### Diagnostics
 

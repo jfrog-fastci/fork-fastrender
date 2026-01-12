@@ -52,6 +52,9 @@ struct Cli {
   /// Optimization level (0-3).
   ///
   /// Defaults to `2` for most commands, but `bench` defaults to `3` unless explicitly overridden.
+  ///
+  /// When `--debug` is enabled and `--opt` is not explicitly provided, defaults to `0` for easier
+  /// source-level debugging.
   #[arg(long, global = true)]
   opt: Option<u8>,
 
@@ -62,7 +65,7 @@ struct Cli {
   #[arg(long, value_name = "TRIPLE", global = true)]
   target: Option<String>,
 
-  /// Best-effort debug build (passes `-g` to the system linker).
+  /// Emit DWARF debug info in the generated executable (line tables / function names).
   #[arg(long, global = true)]
   debug: bool,
 
@@ -253,7 +256,8 @@ fn cmd_build(
   opts.debug = cli.debug;
   opts.pie = cli.pie;
   opts.target = target.clone();
-  opts.opt_level = match opt_level(cli.opt.unwrap_or(2)) {
+  let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
+  opts.opt_level = match opt_level(opt_raw) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
   };
@@ -302,7 +306,8 @@ fn cmd_emit_ir(
   opts.output = Some(output_ll.to_path_buf());
   opts.debug = cli.debug;
   opts.target = target.clone();
-  opts.opt_level = match opt_level(cli.opt.unwrap_or(2)) {
+  let opt_raw = cli.opt.unwrap_or(if cli.debug { 0 } else { 2 });
+  opts.opt_level = match opt_level(opt_raw) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
   };

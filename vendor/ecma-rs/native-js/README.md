@@ -690,6 +690,36 @@ If you only have unversioned tools, ensure they’re LLVM 18:
 llvm-config --version
 ```
 
+### Debugging generated executables (gdb / lldb)
+
+The `native-js` CLI (`native-js-cli --bin native-js`) supports `--debug`, which emits DWARF debug
+info in the generated executable.
+
+Build an executable with debug info:
+
+```bash
+# From repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  --debug build path/to/entry.ts -o /tmp/out
+```
+
+Then run the generated executable under a debugger and set breakpoints by TypeScript file/line:
+
+```bash
+gdb --args /tmp/out
+(gdb) break entry.ts:1
+(gdb) run
+```
+
+```bash
+lldb /tmp/out
+(lldb) breakpoint set --file entry.ts --line 1
+(lldb) run
+```
+
+If the breakpoint does not resolve, try using the absolute source path (matching the path embedded
+in the DWARF debug info).
+
 ### Common LLVM environment issues
 
 - **Build error: “No suitable version of LLVM found”**
