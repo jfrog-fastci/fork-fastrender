@@ -265,14 +265,27 @@ unsafe fn init_object(obj: *mut u8, size: usize, desc: &'static TypeDescriptor, 
 }
 
 pub(crate) fn on_thread_registered(_id: ThreadId) {
-  TLS_ALLOC_REGISTERED.with(|flag| {
-    if flag.get() {
-      return;
-    }
-    flag.set(true);
-  });
+  // The thread-local allocator bookkeeping is best-effort. `threading::unregister_current_thread`
+  // can be called from other TLS destructors during thread teardown; if this TLS key has already
+  // been destroyed, `LocalKey::with` would panic with `AccessError` and abort the process
+  // (`abort_on_dtor_unwind`).
+  //
+  // Treat `AccessError` as "already registered" and skip TLS updates.
+  let should_init = TLS_ALLOC_REGISTERED
+    .try_with(|flag| {
+      if flag.get() {
+        false
+      } else {
+        flag.set(true);
+        true
+      }
+    })
+    .unwrap_or(false);
+  if !should_init {
+    return;
+  }
 
-  TLS_ALLOC.with(|alloc| unsafe {
+  let _ = TLS_ALLOC.try_with(|alloc| unsafe {
     let alloc = &mut *alloc.get();
     alloc.nursery_epoch = NURSERY_EPOCH.load(Ordering::Relaxed);
     alloc.major_epoch = MAJOR_EPOCH.load(Ordering::Relaxed);
@@ -286,8 +299,10 @@ pub(crate) fn on_thread_registered(_id: ThreadId) {
 }
 
 pub(crate) fn on_thread_unregistered(_id: ThreadId) {
-  TLS_ALLOC_REGISTERED.with(|flag| flag.set(false));
-  TLS_ALLOC.with(|alloc| unsafe {
+  // Like `on_thread_registered`, unregistration can run during TLS destruction (see
+  // `tests/alloc_tls_teardown_unregister.rs`). Avoid panicking with `AccessError` in that case.
+  let _ = TLS_ALLOC_REGISTERED.try_with(|flag| flag.set(false));
+  let _ = TLS_ALLOC.try_with(|alloc| unsafe {
     (*alloc.get()).clear_after_major();
   });
 }
