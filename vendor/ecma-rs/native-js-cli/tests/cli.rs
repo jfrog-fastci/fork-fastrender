@@ -1654,6 +1654,36 @@ export function main(): number { print(4); return 0; }
 }
 
 #[test]
+fn export_all_namespace_reexports_and_imports_run_in_declaration_order() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(&dep, "print(1);\nexport let x: number = 0;\n").unwrap();
+
+  let other = tmp.path().join("other.ts");
+  fs::write(&other, "print(2);\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"export * as ns from "./dep";
+import "./other";
+print(99);
+export function main(): number { print(4); return 0; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("1\n2\n99\n4\n"));
+}
+
+#[test]
 fn export_all_reexport_initializes_dependency() {
   let tmp = TempDir::new().unwrap();
 

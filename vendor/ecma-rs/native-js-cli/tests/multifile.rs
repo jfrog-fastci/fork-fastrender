@@ -270,6 +270,31 @@ fn runs_export_all_reexports_and_imports_in_declaration_order() {
 }
 
 #[test]
+fn runs_export_all_namespace_reexports_and_imports_in_declaration_order() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let other = dir.path().join("other.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&dep, "console.log(\"dep\");\nexport const x = 0;\n").unwrap();
+  fs::write(&other, "console.log(\"other\");\n").unwrap();
+  fs::write(
+    &main,
+    "export * as ns from './dep';\nimport './other';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nother\nmain\n"));
+}
+
+#[test]
 fn supports_non_number_function_signatures_across_modules() {
   let dir = tempdir().unwrap();
   let util = dir.path().join("util.ts");
