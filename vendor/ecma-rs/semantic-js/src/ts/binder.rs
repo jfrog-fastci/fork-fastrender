@@ -461,8 +461,22 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         match hir.file_kind {
           FileKind::Ts => {
             // In `.ts` external modules, `declare module "..."` is a module
-            // augmentation, so the target must already exist.
-            self.invalid_module_name_in_augmentation(hir.file_id, &ambient.name, ambient.name_span);
+            // augmentation. Even when the host resolver returns `None`, the
+            // target may still be satisfiable via an ambient module (including
+            // wildcard ambient module patterns).
+            state.module_edges.push(ModuleEdge {
+              kind: ModuleEdgeKind::ModuleAugmentation,
+              specifier: ambient.name.clone(),
+              target: ModuleRef::Unresolved(ambient.name.clone()),
+              span: augmentation_span,
+              is_type_only: false,
+            });
+            self.pending_augmentations.push(PendingModuleAugmentation {
+              target: AugmentationTarget::Ambient(ambient.name.clone()),
+              origin: hir.file_id,
+              origin_file_kind: hir.file_kind,
+              module: ambient.clone(),
+            });
           }
           FileKind::Dts => {
             // If the module specifier does not resolve to a file and is
@@ -533,7 +547,21 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               continue;
             }
             let owner = SymbolOwner::Module(*target);
-            self.report_module_augmentation_imports_and_exports(aug.origin, &aug.module);
+            let allow_imports_and_exports =
+              aug.origin_file_kind == FileKind::Dts && *target == aug.origin;
+            if !allow_imports_and_exports {
+              self.report_module_augmentation_imports_and_exports(aug.origin, &aug.module);
+            }
+            let imports: &[Import] = if allow_imports_and_exports {
+              &aug.module.imports
+            } else {
+              &[]
+            };
+            let exports: &[Export] = if allow_imports_and_exports {
+              &aug.module.exports
+            } else {
+              &[]
+            };
             self.bind_module_items(
               &mut state,
               &owner,
@@ -544,9 +572,9 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
               true,
               &aug.module.decls,
               &aug.module.type_imports,
-              &[],
+              imports,
               &aug.module.import_equals,
-              &aug.module.exports,
+              exports,
               &aug.module.export_as_namespace,
               &aug.module.ambient_modules,
               &mut deps,
@@ -563,7 +591,21 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           }
         }
         AugmentationTarget::Ambient(specifier) => {
-          if let Some(mut state) = self.ambient_modules.remove(specifier) {
+          let mut state = if let Some(state) = self.ambient_modules.remove(specifier) {
+            state
+          } else if !is_pattern(specifier) && self.best_matching_pattern_ref(specifier).is_some() {
+            // `declare module "a.foo"` inside an external module is a module
+            // augmentation, but wildcard ambient modules (`declare module
+            // "*.foo"`) should satisfy the existence check and allow the
+            // augmentation to create a concrete ambient module.
+            let owner = SymbolOwner::AmbientModule(specifier.clone());
+            ModuleState::new(owner, aug.origin, aug.origin_file_kind, false)
+          } else {
+            remaining.push(aug);
+            continue;
+          };
+
+          {
             let owner = SymbolOwner::AmbientModule(specifier.clone());
             self.report_module_augmentation_imports_and_exports(aug.origin, &aug.module);
             self.bind_module_items(
@@ -590,8 +632,6 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
 
             self.ambient_modules.insert(specifier.clone(), state);
             applied_any = true;
-          } else {
-            remaining.push(aug);
           }
         }
       }
@@ -1720,7 +1760,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
 
     for edge in state.module_edges.iter_mut() {
       if let ModuleRef::Unresolved(spec) = &edge.target {
-        if self.ambient_modules.contains_key(spec) {
+        if self.ambient_modules.contains_key(spec) || self.best_matching_pattern_ref(spec).is_some() {
           edge.target = ModuleRef::Ambient(spec.clone());
         }
       }
@@ -1738,7 +1778,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     seen: &mut BTreeSet<(FileId, TextRange)>,
   ) {
     if let ModuleRef::Unresolved(spec) = reference {
-      if self.ambient_modules.contains_key(spec) {
+      if self.ambient_modules.contains_key(spec) || self.best_matching_pattern_ref(spec).is_some() {
         *reference = ModuleRef::Ambient(spec.clone());
       } else if seen.insert((span.file, span.range)) {
         let message = format!(
@@ -1921,7 +1961,26 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       return ModuleRef::Ambient(spec.to_string());
     }
 
+    if self.best_matching_pattern_ref(spec).is_some()
+      || has_ambient_module_pattern_matching(spec, ambient_modules)
+    {
+      return ModuleRef::Ambient(spec.to_string());
+    }
+
     ModuleRef::Unresolved(spec.to_string())
+  }
+
+  fn best_matching_pattern_ref<'s>(&'s self, spec: &str) -> Option<&'s str> {
+    best_matching_pattern_for(
+      self.ambient_modules.keys().map(|name| name.as_str()),
+      spec,
+    )
+  }
+
+  fn best_matching_pattern(&self, spec: &str) -> Option<String> {
+    self
+      .best_matching_pattern_ref(spec)
+      .map(|pattern| pattern.to_string())
   }
 
   fn base_exports_for(&mut self, file: FileId) -> ExportMap {
@@ -2273,6 +2332,29 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         ExportStatus::Base(_) => {}
       }
     }
+    if !self.ambient_modules.contains_key(name) {
+      if !is_pattern(name) {
+        if let Some(pattern) = self.best_matching_pattern(name) {
+          // Seed to break cycles (e.g. a wildcard module that re-exports from a
+          // concrete specifier that itself resolves through the pattern).
+          self.ambient_export_cache.insert(
+            name.to_string(),
+            ExportStatus::Computing(ExportMap::new()),
+          );
+          let map = self.exports_for_ambient(&pattern);
+          self
+            .ambient_export_cache
+            .insert(name.to_string(), ExportStatus::Done(map.clone()));
+          return map;
+        }
+      }
+
+      let empty = ExportMap::new();
+      self
+        .ambient_export_cache
+        .insert(name.to_string(), ExportStatus::Done(empty.clone()));
+      return empty;
+    }
 
     let base = self.base_exports_for_ambient(name);
     if let Some(ExportStatus::Done(m)) = self.ambient_export_cache.get(name) {
@@ -2321,15 +2403,25 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         );
       }
 
+      // If this ambient module specifier is matched by a wildcard module
+      // pattern, merge the wildcard's exports into this module's export map.
+      // This allows `declare module "a.foo"` to extend a base `declare module
+      // "*.foo"` without leaking `a.foo`'s exports into other matches.
+      if !is_pattern(name) {
+        if let Some(pattern) = self.best_matching_pattern(name) {
+          let base = self.exports_for_ambient(&pattern);
+          merge_exports_with_pattern_base(&mut map, &base, &module.owner, &mut self.symbols);
+        }
+      }
+
       if let Some(module) = self.ambient_modules.get_mut(name) {
         module.export_spans = export_spans.clone();
       }
     }
 
-    self.ambient_export_cache.insert(
-      name.to_string(),
-      ExportStatus::Done(map.clone()),
-    );
+    self
+      .ambient_export_cache
+      .insert(name.to_string(), ExportStatus::Done(map.clone()));
     if let Some(module) = self.ambient_modules.get_mut(name) {
       module.exports = map.clone();
     }
@@ -2455,6 +2547,17 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     let mut seen: HashMap<StarExportKey, u8> = HashMap::new();
 
     while let Some((current, mask)) = stack.pop() {
+      let current = match current {
+        ModuleRef::Ambient(name) if !self.ambient_modules.contains_key(&name) && !is_pattern(&name) => {
+          if let Some(pattern) = self.best_matching_pattern(&name) {
+            ModuleRef::Ambient(pattern)
+          } else {
+            ModuleRef::Ambient(name)
+          }
+        }
+        other => other,
+      };
+
       let Some(key) = StarExportKey::from_ref(&current) else {
         continue;
       };
@@ -3004,6 +3107,98 @@ fn import_statement_is_type_only(import: &Import) -> bool {
   }
 
   has_any_binding
+}
+
+pub(super) fn is_pattern(spec: &str) -> bool {
+  spec.contains('*')
+}
+
+pub(super) fn pattern_matches(pattern: &str, spec: &str) -> bool {
+  if !is_pattern(pattern) {
+    return pattern == spec;
+  }
+
+  let parts: Vec<&str> = pattern.split('*').filter(|part| !part.is_empty()).collect();
+  if parts.is_empty() {
+    return true;
+  }
+
+  let mut pos = 0usize;
+  let starts_with_star = pattern.starts_with('*');
+  let ends_with_star = pattern.ends_with('*');
+
+  for (idx, part) in parts.iter().enumerate() {
+    if idx == 0 && !starts_with_star {
+      if !spec.starts_with(part) {
+        return false;
+      }
+      pos = part.len();
+      continue;
+    }
+
+    if idx == parts.len() - 1 && !ends_with_star {
+      if !spec.ends_with(part) {
+        return false;
+      }
+      let start = spec.len().saturating_sub(part.len());
+      return start >= pos;
+    }
+
+    let Some(found) = spec[pos..].find(part) else {
+      return false;
+    };
+    pos += found + part.len();
+  }
+
+  true
+}
+
+fn pattern_specificity(pattern: &str) -> (usize, usize) {
+  let non_star = pattern
+    .as_bytes()
+    .iter()
+    .filter(|b| **b != b'*')
+    .count();
+  (non_star, pattern.len())
+}
+
+pub(super) fn best_matching_pattern_for<'a>(
+  patterns: impl IntoIterator<Item = &'a str>,
+  spec: &str,
+) -> Option<&'a str> {
+  let mut best: Option<&'a str> = None;
+  for pattern in patterns {
+    if !is_pattern(pattern) {
+      continue;
+    }
+    if !pattern_matches(pattern, spec) {
+      continue;
+    }
+    best = match best {
+      None => Some(pattern),
+      Some(current) => {
+        let (cand_non_star, cand_len) = pattern_specificity(pattern);
+        let (best_non_star, best_len) = pattern_specificity(current);
+        if cand_non_star > best_non_star
+          || (cand_non_star == best_non_star
+            && (cand_len > best_len || (cand_len == best_len && pattern < current)))
+        {
+          Some(pattern)
+        } else {
+          Some(current)
+        }
+      }
+    };
+  }
+  best
+}
+
+fn has_ambient_module_pattern_matching(specifier: &str, modules: &[AmbientModule]) -> bool {
+  modules.iter().any(|m| {
+    (is_pattern(&m.name) && pattern_matches(&m.name, specifier))
+      || (!m.ambient_modules.is_empty()
+        && has_ambient_module_pattern_matching(specifier, &m.ambient_modules))
+  })
 }
 
 fn is_relative_module_specifier(specifier: &str) -> bool {
@@ -3761,6 +3956,101 @@ fn merge_groups(a: SymbolGroup, b: SymbolGroup, symbols: &mut SymbolTable) -> Sy
       .or(namespace)
       .and_then(|id| symbols.symbols.get(&id).cloned())
       .expect("mergeable symbol present");
+    let merged = merge_group_symbols(&result, &base_symbol, symbols);
+    return SymbolGroup::merged(merged);
+  }
+
+  result
+}
+
+fn merge_exports_with_pattern_base(
+  target: &mut ExportMap,
+  base: &ExportMap,
+  prefer_owner: &SymbolOwner,
+  symbols: &mut SymbolTable,
+) {
+  for (name, base_group) in base.iter() {
+    match target.get_mut(name) {
+      Some(target_group) => {
+        let merged = merge_group_prefer_owner(target_group, base_group, prefer_owner, symbols);
+        *target_group = merged;
+      }
+      None => {
+        target.insert(name.clone(), base_group.clone());
+      }
+    }
+  }
+}
+
+fn merge_symbol_decls(target: SymbolId, source: SymbolId, ns: Namespace, symbols: &mut SymbolTable) {
+  let decls: Vec<DeclId> = symbols.symbol(source).decls_for(ns).iter().copied().collect();
+  for decl in decls {
+    symbols.add_decl_to_symbol(target, decl, ns);
+  }
+}
+
+fn merge_group_prefer_owner(
+  target: &SymbolGroup,
+  base: &SymbolGroup,
+  prefer_owner: &SymbolOwner,
+  symbols: &mut SymbolTable,
+) -> SymbolGroup {
+  let mut value = symbol_for_namespace(target, Namespace::VALUE, symbols);
+  let mut ty = symbol_for_namespace(target, Namespace::TYPE, symbols);
+  let mut namespace = symbol_for_namespace(target, Namespace::NAMESPACE, symbols);
+
+  let base_value = symbol_for_namespace(base, Namespace::VALUE, symbols);
+  let base_ty = symbol_for_namespace(base, Namespace::TYPE, symbols);
+  let base_namespace = symbol_for_namespace(base, Namespace::NAMESPACE, symbols);
+
+  match (value, base_value) {
+    (Some(target_sym), Some(base_sym)) => {
+      merge_symbol_decls(target_sym, base_sym, Namespace::VALUE, symbols);
+    }
+    (None, Some(base_sym)) => value = Some(base_sym),
+    _ => {}
+  }
+
+  match (ty, base_ty) {
+    (Some(target_sym), Some(base_sym)) => {
+      merge_symbol_decls(target_sym, base_sym, Namespace::TYPE, symbols);
+    }
+    (None, Some(base_sym)) => ty = Some(base_sym),
+    _ => {}
+  }
+
+  match (namespace, base_namespace) {
+    (Some(target_sym), Some(base_sym)) => {
+      merge_symbol_decls(target_sym, base_sym, Namespace::NAMESPACE, symbols);
+    }
+    (None, Some(base_sym)) => namespace = Some(base_sym),
+    _ => {}
+  }
+
+  // If all namespaces use the same symbol and it contains them, keep merged.
+  let same_symbol = value == ty && ty == namespace && value.is_some();
+  if same_symbol {
+    return SymbolGroup::merged(value.unwrap());
+  }
+
+  let result = SymbolGroup {
+    kind: SymbolGroupKind::Separate {
+      value,
+      ty,
+      namespace,
+    },
+  };
+
+  // Namespace + namespace merging happens automatically by using the same slot.
+  // Value + namespace merges for specific declaration kinds.
+  if should_merge_value_namespace(&value, &namespace, symbols) {
+    let base_sym = [value, namespace, ty]
+      .into_iter()
+      .flatten()
+      .find(|sym| symbols.symbol(*sym).owner == *prefer_owner)
+      .or_else(|| value.or(namespace).or(ty))
+      .expect("mergeable symbol present");
+    let base_symbol = symbols.symbol(base_sym).clone();
     let merged = merge_group_symbols(&result, &base_symbol, symbols);
     return SymbolGroup::merged(merged);
   }

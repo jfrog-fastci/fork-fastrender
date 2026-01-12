@@ -221,3 +221,66 @@ export const x: 1 = foo;
     .expect("type for exported x");
   assert_eq!(program.display_type(x_ty).to_string(), "1");
 }
+
+#[test]
+fn ambient_module_wildcard_patterns_resolve_without_host_mapping() {
+  let options = CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  };
+
+  let types = FileKey::new("types.ts");
+  let afoo = FileKey::new("afoo.ts");
+  let entry = FileKey::new("test.ts");
+
+  let mut host = ModuleHost::new(options);
+  host.insert(
+    types.clone(),
+    r#"
+declare module "*.foo" {
+  export const everywhere: string;
+}
+"#,
+  );
+  host.insert(
+    afoo.clone(),
+    r#"
+declare module "a.foo" {
+  export const onlyInA: number;
+}
+"#,
+  );
+
+  host.insert(
+    entry.clone(),
+    r#"
+import { everywhere } from "b.foo";
+import { everywhere as fromA, onlyInA } from "a.foo";
+export const y = everywhere;
+export const ya = fromA;
+export const z = onlyInA;
+"#,
+  );
+
+  // Intentionally provide no `Host::resolve` mapping for `b.foo`/`a.foo`; the
+  // wildcard ambient module patterns should satisfy resolution.
+  let program = Program::new(host, vec![entry.clone(), types.clone(), afoo.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics when resolving through wildcard ambient modules: {diagnostics:?}"
+  );
+
+  let entry_id = program.file_id(&entry).expect("test.ts id");
+  let exports = program.exports_of(entry_id);
+  let get_export_type = |name: &str| {
+    exports
+      .get(name)
+      .and_then(|entry| entry.type_id.or_else(|| entry.def.map(|def| program.type_of_def(def))))
+      .map(|ty| program.display_type(ty).to_string())
+  };
+
+  assert_eq!(get_export_type("y").as_deref(), Some("string"));
+  assert_eq!(get_export_type("ya").as_deref(), Some("string"));
+  assert_eq!(get_export_type("z").as_deref(), Some("number"));
+}

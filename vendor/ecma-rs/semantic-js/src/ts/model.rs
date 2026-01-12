@@ -884,7 +884,15 @@ impl TsProgramSemantics {
   }
 
   pub fn exports_of_ambient_module(&self, specifier: &str) -> Option<&ExportMap> {
-    self.ambient_module_exports.get(specifier)
+    if let Some(exports) = self.ambient_module_exports.get(specifier) {
+      return Some(exports);
+    }
+
+    let pattern = super::binder::best_matching_pattern_for(
+      self.ambient_module_exports.keys().map(|name| name.as_str()),
+      specifier,
+    )?;
+    self.ambient_module_exports.get(pattern)
   }
 
   /// Look up the canonical symbol containing the provided HIR declaration.

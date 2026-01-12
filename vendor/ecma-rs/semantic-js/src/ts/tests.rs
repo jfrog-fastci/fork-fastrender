@@ -3696,6 +3696,360 @@ fn ambient_module_interfaces_merge_deterministically() {
 }
 
 #[test]
+fn ambient_module_pattern_merges_with_specific_module_exports() {
+  let file_types = FileId(5000);
+  let file_a = FileId(5001);
+  let file_b = FileId(5002);
+
+  let mut types = HirFile::script(file_types);
+  let mut everywhere = mk_decl(0, "everywhere", DeclKind::Var, Exported::No);
+  everywhere.is_ambient = true;
+  types.ambient_modules.push(AmbientModule {
+    name: "*.foo".to_string(),
+    name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: vec![everywhere],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let mut test_a = HirFile::module(file_a);
+  test_a.imports.push(Import {
+    specifier: "a.foo".to_string(),
+    specifier_span: span(10),
+    default: None,
+    namespace: None,
+    named: vec![
+      ImportNamed {
+        imported: "everywhere".to_string(),
+        local: "everywhere".to_string(),
+        is_type_only: false,
+        imported_span: span(11),
+        local_span: span(12),
+      },
+      ImportNamed {
+        imported: "onlyInA".to_string(),
+        local: "onlyInA".to_string(),
+        is_type_only: false,
+        imported_span: span(13),
+        local_span: span(14),
+      },
+    ],
+    is_type_only: false,
+  });
+  let mut only_in_a = mk_decl(1, "onlyInA", DeclKind::Var, Exported::No);
+  only_in_a.is_ambient = true;
+  test_a.ambient_modules.push(AmbientModule {
+    name: "a.foo".to_string(),
+    name_span: span(20),
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: vec![only_in_a],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let mut test_b = HirFile::module(file_b);
+  test_b.imports.push(Import {
+    specifier: "b.foo".to_string(),
+    specifier_span: span(30),
+    default: None,
+    namespace: None,
+    named: vec![
+      ImportNamed {
+        imported: "everywhere".to_string(),
+        local: "everywhere".to_string(),
+        is_type_only: false,
+        imported_span: span(31),
+        local_span: span(32),
+      },
+      ImportNamed {
+        imported: "onlyInA".to_string(),
+        local: "onlyInA".to_string(),
+        is_type_only: false,
+        imported_span: span(33),
+        local_span: span(34),
+      },
+    ],
+    is_type_only: false,
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_types => Arc::new(types),
+    file_a => Arc::new(test_a),
+    file_b => Arc::new(test_b),
+  };
+  let resolver = StaticResolver::new(HashMap::new());
+
+  // Ensure wildcard ambient modules resolve even when the defining file is bound
+  // after the importers.
+  let (semantics, diags) = bind_ts_program(&[file_a, file_b, file_types], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let a_exports = semantics
+    .exports_of_ambient_module("a.foo")
+    .expect("a.foo exports present");
+  assert!(a_exports.contains_key("everywhere"));
+  assert!(a_exports.contains_key("onlyInA"));
+
+  let b_exports = semantics
+    .exports_of_ambient_module("b.foo")
+    .expect("b.foo exports present via pattern");
+  assert!(b_exports.contains_key("everywhere"));
+  assert!(!b_exports.contains_key("onlyInA"));
+}
+
+#[test]
+fn ambient_module_pattern_merges_multiple_specific_fragments() {
+  let file_types = FileId(5003);
+  let file_a = FileId(5004);
+  let file_b = FileId(5005);
+
+  let mut types = HirFile::script(file_types);
+  let mut everywhere = mk_decl(0, "everywhere", DeclKind::Var, Exported::No);
+  everywhere.is_ambient = true;
+  types.ambient_modules.push(AmbientModule {
+    name: "*.foo".to_string(),
+    name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: vec![everywhere],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let mut test_a = HirFile::module(file_a);
+  test_a.imports.push(Import {
+    specifier: "a.foo".to_string(),
+    specifier_span: span(10),
+    default: None,
+    namespace: None,
+    named: vec![
+      ImportNamed {
+        imported: "everywhere".to_string(),
+        local: "everywhere".to_string(),
+        is_type_only: false,
+        imported_span: span(11),
+        local_span: span(12),
+      },
+      ImportNamed {
+        imported: "onlyInA".to_string(),
+        local: "onlyInA".to_string(),
+        is_type_only: false,
+        imported_span: span(13),
+        local_span: span(14),
+      },
+      ImportNamed {
+        imported: "alsoOnlyInA".to_string(),
+        local: "alsoOnlyInA".to_string(),
+        is_type_only: false,
+        imported_span: span(15),
+        local_span: span(16),
+      },
+    ],
+    is_type_only: false,
+  });
+  let mut only_in_a = mk_decl(1, "onlyInA", DeclKind::Var, Exported::No);
+  only_in_a.is_ambient = true;
+  test_a.ambient_modules.push(AmbientModule {
+    name: "a.foo".to_string(),
+    name_span: span(20),
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: vec![only_in_a],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let mut test_b = HirFile::module(file_b);
+  test_b.imports.push(Import {
+    specifier: "b.foo".to_string(),
+    specifier_span: span(30),
+    default: None,
+    namespace: None,
+    named: vec![
+      ImportNamed {
+        imported: "everywhere".to_string(),
+        local: "everywhere".to_string(),
+        is_type_only: false,
+        imported_span: span(31),
+        local_span: span(32),
+      },
+      ImportNamed {
+        imported: "onlyInA".to_string(),
+        local: "onlyInA".to_string(),
+        is_type_only: false,
+        imported_span: span(33),
+        local_span: span(34),
+      },
+      ImportNamed {
+        imported: "alsoOnlyInA".to_string(),
+        local: "alsoOnlyInA".to_string(),
+        is_type_only: false,
+        imported_span: span(35),
+        local_span: span(36),
+      },
+    ],
+    is_type_only: false,
+  });
+  let mut also_only_in_a = mk_decl(2, "alsoOnlyInA", DeclKind::Var, Exported::No);
+  also_only_in_a.is_ambient = true;
+  test_b.ambient_modules.push(AmbientModule {
+    name: "a.foo".to_string(),
+    name_span: span(40),
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: vec![also_only_in_a],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_types => Arc::new(types),
+    file_a => Arc::new(test_a),
+    file_b => Arc::new(test_b),
+  };
+  let resolver = StaticResolver::new(HashMap::new());
+
+  let (semantics, diags) = bind_ts_program(&[file_a, file_b, file_types], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let a_exports = semantics
+    .exports_of_ambient_module("a.foo")
+    .expect("a.foo exports present");
+  assert!(a_exports.contains_key("everywhere"));
+  assert!(a_exports.contains_key("onlyInA"));
+  assert!(a_exports.contains_key("alsoOnlyInA"));
+
+  let b_exports = semantics
+    .exports_of_ambient_module("b.foo")
+    .expect("b.foo exports present via pattern");
+  assert!(b_exports.contains_key("everywhere"));
+  assert!(!b_exports.contains_key("onlyInA"));
+  assert!(!b_exports.contains_key("alsoOnlyInA"));
+}
+
+#[test]
+fn ambient_module_pattern_merges_symbols_without_leaking() {
+  let file_types = FileId(5006);
+  let file_test = FileId(5007);
+
+  let mut types = HirFile::script(file_types);
+  let mut oh_no_star = mk_decl(0, "OhNo", DeclKind::Interface, Exported::No);
+  oh_no_star.is_ambient = true;
+  types.ambient_modules.push(AmbientModule {
+    name: "*.foo".to_string(),
+    name_span: span(0),
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: vec![oh_no_star],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+
+  let mut test = HirFile::module(file_test);
+  let mut oh_no_a = mk_decl(1, "OhNo", DeclKind::Interface, Exported::No);
+  oh_no_a.is_ambient = true;
+  test.ambient_modules.push(AmbientModule {
+    name: "a.foo".to_string(),
+    name_span: span(10),
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: vec![oh_no_a],
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  });
+  test.imports.push(Import {
+    specifier: "b.foo".to_string(),
+    specifier_span: span(20),
+    default: None,
+    namespace: None,
+    named: vec![ImportNamed {
+      imported: "OhNo".to_string(),
+      local: "OhNo".to_string(),
+      is_type_only: false,
+      imported_span: span(21),
+      local_span: span(22),
+    }],
+    is_type_only: false,
+  });
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_types => Arc::new(types),
+    file_test => Arc::new(test),
+  };
+  let resolver = StaticResolver::new(HashMap::new());
+
+  let (semantics, diags) = bind_ts_program(&[file_test, file_types], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let symbols = semantics.symbols();
+
+  let b_exports = semantics
+    .exports_of_ambient_module("b.foo")
+    .expect("b.foo exports present via pattern");
+  let b_oh_no = b_exports
+    .get("OhNo")
+    .expect("OhNo exported from pattern module")
+    .symbol_for(Namespace::TYPE, symbols)
+    .expect("type namespace for OhNo");
+  assert_eq!(
+    semantics.symbol_decls(b_oh_no, Namespace::TYPE).len(),
+    1,
+    "b.foo should only see the wildcard declaration"
+  );
+
+  let a_exports = semantics
+    .exports_of_ambient_module("a.foo")
+    .expect("a.foo exports present");
+  let a_oh_no = a_exports
+    .get("OhNo")
+    .expect("OhNo exported from a.foo")
+    .symbol_for(Namespace::TYPE, symbols)
+    .expect("type namespace for OhNo");
+  let a_decls = semantics.symbol_decls(a_oh_no, Namespace::TYPE);
+  assert_eq!(a_decls.len(), 2, "a.foo should merge wildcard + exact decls");
+  let mut decl_files: Vec<_> = a_decls.iter().map(|decl| symbols.decl(*decl).file).collect();
+  decl_files.sort();
+  assert_eq!(decl_files, vec![file_types, file_test]);
+}
+
+#[test]
 fn ambient_module_import_reexports_without_resolver_mapping() {
   let file = FileId(120);
   let mut hir = HirFile::module(file);
