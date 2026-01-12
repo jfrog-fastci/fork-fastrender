@@ -164,6 +164,82 @@ fn await_in_destructuring_assignment_computed_key_and_result() -> Result<(), VmE
 }
 
 #[test]
+fn await_in_new_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        function C(x) { this.x = x; }
+        return new C(await Promise.resolve("ok")).x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_delete_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let obj = { k: 1 };
+        delete obj[await Promise.resolve("k")];
+        return String("k" in obj);
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "false");
+  Ok(())
+}
+
+#[test]
+fn await_in_delete_expression_optional_chain_skips_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var hit = "no";
+        var ok = delete (await Promise.resolve(null))?.[
+          (hit = "yes", await Promise.resolve("k"))
+        ];
+        return String(ok) + hit;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "trueno");
+  Ok(())
+}
+
+#[test]
 fn await_in_comma_expression() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
