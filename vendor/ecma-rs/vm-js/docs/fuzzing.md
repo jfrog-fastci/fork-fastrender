@@ -38,8 +38,13 @@ timeout -k 10 600 bash scripts/cargo_agent.sh install cargo-fuzz
 #
 # Use the repo's cargo wrapper: it bumps RLIMIT_AS for fuzz runs (ASan shadow memory),
 # and it automatically runs Cargo from the right workspace root.
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run parse_js vm-js/fuzz/corpus/parse_js -- -max_total_time=10
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run vm_js_exec vm-js/fuzz/corpus/vm_js_exec -- -max_total_time=10
+#
+# IMPORTANT: the **first** corpus directory passed to libFuzzer is treated as the output corpus
+# (new inputs are written into it). Use the gitignored `vendor/ecma-rs/fuzz/corpus/...` as the
+# output corpus, and pass the tracked regression seeds (`vm-js/fuzz/corpus/...`) as an additional
+# read-only corpus.
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run parse_js fuzz/corpus/parse_js vm-js/fuzz/corpus/parse_js -- -max_total_time=10
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run vm_js_exec fuzz/corpus/vm_js_exec vm-js/fuzz/corpus/vm_js_exec -- -max_total_time=10
 ```
 
 Tip: add `-- -max_len=8192` to cap libFuzzer's generated input size (the harness also caps).
