@@ -121,6 +121,8 @@ pub mod window_realm;
 pub mod window_timers;
 #[path = "vmjs/window_url.rs"]
 pub mod window_url;
+#[path = "vmjs/window_websocket.rs"]
+pub mod window_websocket;
 #[path = "vmjs/window_worker.rs"]
 pub mod window_worker;
 #[path = "vmjs/window_xhr.rs"]
@@ -268,6 +270,10 @@ pub use window_url::install_window_url_bindings;
 pub use window_xhr::{
   install_window_xhr_bindings, install_window_xhr_bindings_with_guard, unregister_window_xhr_env,
   WindowXhrBindings, WindowXhrEnv,
+};
+pub use window_websocket::{
+  install_window_websocket_bindings, install_window_websocket_bindings_with_guard,
+  unregister_window_websocket_env, WindowWebSocketBindings, WindowWebSocketEnv,
 };
 
 /// The script processing mode for a `<script>` element.

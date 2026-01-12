@@ -5,14 +5,15 @@ use crate::js::vm_error_format;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{
+  install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
+  install_window_timers_bindings, install_window_websocket_bindings_with_guard,
+  install_window_xhr_bindings_with_guard,
   import_maps::{
     create_import_map_parse_result_with_limits, register_import_map_with_limits, ImportMapError,
     ImportMapWarningKind,
   },
-  install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
-  install_window_timers_bindings, install_window_xhr_bindings_with_guard, CurrentScriptStateHandle,
-  JsExecutionOptions, LocationNavigationRequest, ModuleKey, ScriptElementSpec, WindowFetchBindings,
-  WindowFetchEnv, WindowXhrBindings, WindowXhrEnv,
+  CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ModuleKey, ScriptElementSpec,
+  WindowFetchBindings, WindowFetchEnv, WindowWebSocketBindings, WindowWebSocketEnv, WindowXhrBindings, WindowXhrEnv,
 };
 use crate::resource::{origin_from_url, CorsMode, ReferrerPolicy, ResourceFetcher};
 use crate::style::media::{MediaContext, MediaType};
@@ -61,6 +62,7 @@ pub struct VmJsBrowserTabExecutor {
   realm: Option<WindowRealm>,
   fetch_bindings: Option<WindowFetchBindings>,
   xhr_bindings: Option<WindowXhrBindings>,
+  websocket_bindings: Option<WindowWebSocketBindings>,
   js_execution_options: JsExecutionOptions,
   inline_module_id_counter: u64,
   document_url: String,
@@ -84,6 +86,7 @@ impl VmJsBrowserTabExecutor {
       realm: None,
       fetch_bindings: None,
       xhr_bindings: None,
+      websocket_bindings: None,
       js_execution_options: JsExecutionOptions::default(),
       inline_module_id_counter: 0,
       document_url: "about:blank".to_string(),
@@ -146,6 +149,7 @@ impl Drop for VmJsBrowserTabExecutor {
     // Drop the realm first so any remaining JS globals stop referencing the document host.
     self.fetch_bindings = None;
     self.xhr_bindings = None;
+    self.websocket_bindings = None;
     self.realm = None;
   }
 }
@@ -203,6 +207,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // navigations.
     self.fetch_bindings = None;
     self.xhr_bindings = None;
+    self.websocket_bindings = None;
     self.realm = None;
     self.js_execution_options = js_execution_options;
     self.inline_module_id_counter = 0;
@@ -258,7 +263,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     }
 
     // Install EventLoop-backed Web APIs (`setTimeout`, `queueMicrotask`, `requestAnimationFrame`, `fetch`).
-    let (fetch_bindings, xhr_bindings) = {
+    let (fetch_bindings, xhr_bindings, websocket_bindings) = {
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       install_window_timers_bindings::<BrowserTabHost>(vm, realm_ref, heap)
         .map_err(|err| Error::Other(err.to_string()))?;
@@ -280,11 +285,20 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       )
       .map_err(|err| Error::Other(err.to_string()))?;
 
-      (fetch_bindings, xhr_bindings)
+      let websocket_bindings = install_window_websocket_bindings_with_guard::<BrowserTabHost>(
+        vm,
+        realm_ref,
+        heap,
+        WindowWebSocketEnv::for_document(Some(url.to_string())),
+      )
+      .map_err(|err| Error::Other(err.to_string()))?;
+
+      (fetch_bindings, xhr_bindings, websocket_bindings)
     };
 
     self.fetch_bindings = Some(fetch_bindings);
     self.xhr_bindings = Some(xhr_bindings);
+    self.websocket_bindings = Some(websocket_bindings);
     self.realm = Some(realm);
     Ok(())
   }

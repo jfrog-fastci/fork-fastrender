@@ -11,9 +11,10 @@ use crate::js::window_file_reader::install_window_file_reader_bindings;
 use crate::js::window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
-  install_window_timers_bindings, install_window_xhr_bindings_with_guard, DomHost, EventLoop,
-  JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, WindowFetchBindings,
-  WindowFetchEnv, WindowXhrBindings, WindowXhrEnv,
+  install_window_timers_bindings, install_window_websocket_bindings_with_guard,
+  install_window_xhr_bindings_with_guard, DomHost, EventLoop, JsExecutionOptions, RunLimits,
+  RunUntilIdleOutcome, TaskSource, WindowFetchBindings, WindowFetchEnv, WindowWebSocketBindings,
+  WindowWebSocketEnv, WindowXhrBindings, WindowXhrEnv,
 };
 use crate::js::{Clock, RealClock};
 use crate::resource::{origin_from_url, HttpFetcher, ResourceFetcher};
@@ -265,6 +266,7 @@ pub struct WindowHostState {
   fetcher: Arc<dyn ResourceFetcher>,
   _fetch_bindings: WindowFetchBindings,
   _xhr_bindings: WindowXhrBindings,
+  _websocket_bindings: WindowWebSocketBindings,
   webidl_bindings_host: VmJsWebIdlBindingsHostDispatch<WindowHostState>,
   js_execution_options: JsExecutionOptions,
 }
@@ -352,7 +354,7 @@ impl WindowHostState {
 
     // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
     // this host can schedule work onto the accompanying `EventLoop`.
-    let (fetch_bindings, xhr_bindings) = {
+    let (fetch_bindings, xhr_bindings, websocket_bindings) = {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       if let Err(err) = install_window_timers_bindings::<WindowHostState>(vm, realm, heap) {
         return Err(Error::Other(err.to_string()));
@@ -388,7 +390,19 @@ impl WindowHostState {
         }
       };
 
-      (fetch_bindings, xhr_bindings)
+      let websocket_bindings = match install_window_websocket_bindings_with_guard::<WindowHostState>(
+        vm,
+        realm,
+        heap,
+        WindowWebSocketEnv::for_document(Some(document_url.clone())),
+      ) {
+        Ok(bindings) => bindings,
+        Err(err) => {
+          return Err(Error::Other(err.to_string()));
+        }
+      };
+
+      (fetch_bindings, xhr_bindings, websocket_bindings)
     };
 
     let webidl_bindings_host =
@@ -405,6 +419,7 @@ impl WindowHostState {
       fetcher: host_fetcher,
       _fetch_bindings: fetch_bindings,
       _xhr_bindings: xhr_bindings,
+      _websocket_bindings: websocket_bindings,
       webidl_bindings_host,
       js_execution_options,
     })

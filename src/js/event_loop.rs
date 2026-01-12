@@ -4,7 +4,7 @@ use crate::render_control::{self, record_stage, StageGuard, StageHeartbeat};
 use smallvec::SmallVec;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::clock::{Clock, RealClock};
@@ -40,6 +40,98 @@ fn task_source_name(source: TaskSource) -> &'static str {
 }
 
 type Runnable<Host> = Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
+type ExternalRunnable<Host> =
+  Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static>;
+
+struct ExternalTask<Host: 'static> {
+  source: TaskSource,
+  runnable: ExternalRunnable<Host>,
+}
+
+struct ExternalTaskQueueState<Host: 'static> {
+  queue: VecDeque<ExternalTask<Host>>,
+  max_pending_tasks: usize,
+  closed: bool,
+}
+
+/// Thread-safe handle for queueing tasks onto an [`EventLoop`] from other threads.
+///
+/// This exists for Web APIs like WebSocket where network I/O runs off-thread but callbacks must be
+/// delivered through the HTML event loop.
+///
+/// Tasks queued through this handle are buffered in a thread-safe queue and drained into the event
+/// loop's normal task queues when the loop is driven (`run_until_idle`, `run_next_task`, etc).
+pub struct ExternalTaskQueueHandle<Host: 'static> {
+  inner: Arc<Mutex<ExternalTaskQueueState<Host>>>,
+}
+
+impl<Host: 'static> Clone for ExternalTaskQueueHandle<Host> {
+  fn clone(&self) -> Self {
+    Self {
+      inner: Arc::clone(&self.inner),
+    }
+  }
+}
+
+impl<Host: 'static> ExternalTaskQueueHandle<Host> {
+  fn new(max_pending_tasks: usize) -> Self {
+    Self {
+      inner: Arc::new(Mutex::new(ExternalTaskQueueState {
+        queue: VecDeque::new(),
+        max_pending_tasks,
+        closed: false,
+      })),
+    }
+  }
+
+  fn set_max_pending_tasks(&self, max_pending_tasks: usize) {
+    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.max_pending_tasks = max_pending_tasks;
+    // If the cap shrinks below the current queue length, we keep existing entries; subsequent
+    // enqueue attempts will fail until the event loop drains enough work.
+  }
+
+  fn close(&self) {
+    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.closed = true;
+    lock.queue.clear();
+  }
+
+  fn is_empty(&self) -> bool {
+    let lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.queue.is_empty()
+  }
+
+  fn drain(&self) -> Vec<ExternalTask<Host>> {
+    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.queue.drain(..).collect()
+  }
+
+  /// Queue a task from any thread.
+  ///
+  /// This is non-blocking. If the external task buffer is full (or has been closed because the
+  /// event loop was dropped/reset), this returns an error.
+  pub fn queue_task<F>(&self, source: TaskSource, runnable: F) -> Result<()>
+  where
+    F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static,
+  {
+    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if lock.closed {
+      return Err(Error::Other("EventLoop external task queue is closed".to_string()));
+    }
+    if lock.queue.len() >= lock.max_pending_tasks {
+      return Err(Error::Other(format!(
+        "EventLoop exceeded max pending external tasks (limit={})",
+        lock.max_pending_tasks
+      )));
+    }
+    lock.queue.push_back(ExternalTask {
+      source,
+      runnable: Box::new(runnable),
+    });
+    Ok(())
+  }
+}
 
 /// A single runnable unit of work (task or microtask).
 pub struct Task<Host: 'static> {
@@ -228,6 +320,7 @@ pub struct EventLoop<Host: 'static> {
   default_deadline_stage: RenderStage,
   queue_limits: QueueLimits,
   trace: TraceHandle,
+  external_task_queue: ExternalTaskQueueHandle<Host>,
   microtask_checkpoint_hooks: MicrotaskCheckpointHooks<Host>,
   pub(crate) promise_rejection_tracker: PromiseRejectionTrackerState,
   task_queues: BTreeMap<TaskSource, VecDeque<Task<Host>>>,
@@ -247,11 +340,13 @@ pub struct EventLoop<Host: 'static> {
 
 impl<Host: 'static> Default for EventLoop<Host> {
   fn default() -> Self {
+    let queue_limits = QueueLimits::default();
     Self {
       clock: Arc::new(RealClock::default()),
       default_deadline_stage: RenderStage::Script,
-      queue_limits: QueueLimits::default(),
+      queue_limits,
       trace: TraceHandle::default(),
+      external_task_queue: ExternalTaskQueueHandle::new(queue_limits.max_pending_tasks),
       microtask_checkpoint_hooks: SmallVec::new(),
       promise_rejection_tracker: PromiseRejectionTrackerState::default(),
       task_queues: BTreeMap::new(),
@@ -325,18 +420,19 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
-    Self {
-      clock,
-      ..Self::default()
-    }
+    let mut event_loop = Self::default();
+    event_loop.clock = clock;
+    event_loop
   }
 
   pub fn with_clock_and_queue_limits(clock: Arc<dyn Clock>, queue_limits: QueueLimits) -> Self {
-    Self {
-      clock,
-      queue_limits,
-      ..Self::default()
-    }
+    let mut event_loop = Self::default();
+    event_loop.clock = clock;
+    event_loop.queue_limits = queue_limits;
+    event_loop
+      .external_task_queue
+      .set_max_pending_tasks(queue_limits.max_pending_tasks);
+    event_loop
   }
 
   pub(crate) fn reset_for_navigation(&mut self, trace: TraceHandle, queue_limits: QueueLimits) {
@@ -387,6 +483,9 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn set_queue_limits(&mut self, limits: QueueLimits) {
     self.queue_limits = limits;
+    self
+      .external_task_queue
+      .set_max_pending_tasks(limits.max_pending_tasks);
   }
 
   pub fn currently_running_task(&self) -> Option<RunningTask> {
@@ -397,7 +496,7 @@ impl<Host: 'static> EventLoop<Host> {
   ///
   /// This does *not* consider future timers that are not yet due.
   pub fn is_idle(&self) -> bool {
-    self.task_queues.is_empty() && self.microtask_queue.is_empty()
+    self.task_queues.is_empty() && self.microtask_queue.is_empty() && self.external_task_queue.is_empty()
   }
 
   pub fn has_pending_animation_frame_callbacks(&self) -> bool {
@@ -422,6 +521,23 @@ impl<Host: 'static> EventLoop<Host> {
     self.timer_nesting_level = 0;
     self.animation_frame_callbacks.clear();
     self.animation_frame_queue.clear();
+    let _ = self.external_task_queue.drain();
+  }
+
+  /// Returns a thread-safe handle for queueing tasks from other threads.
+  pub fn external_task_queue_handle(&self) -> ExternalTaskQueueHandle<Host> {
+    self.external_task_queue.clone()
+  }
+
+  fn drain_external_tasks(&mut self) -> Result<()> {
+    let tasks = self.external_task_queue.drain();
+    for task in tasks {
+      let source = task.source;
+      let runnable = task.runnable;
+      // `EventLoop::queue_task` does not require `Send`, so wrap the Send task in a local closure.
+      self.queue_task(source, move |host, event_loop| runnable(host, event_loop))?;
+    }
+    Ok(())
   }
 
   pub fn queue_task<F>(&mut self, source: TaskSource, runnable: F) -> Result<()>
@@ -1494,6 +1610,9 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   fn queue_due_timers(&mut self) -> Result<()> {
+    // Drain any tasks queued from other threads (e.g. WebSocket network callbacks) into the normal
+    // task queues before determining what work is runnable.
+    self.drain_external_tasks()?;
     let now = self.clock.now();
     while let Some(Reverse((due, schedule_seq, id))) = self.timer_queue.peek().copied() {
       if due > now {
@@ -1637,6 +1756,14 @@ impl<Host: 'static> EventLoop<Host> {
 
       return Ok(SpinOutcome::Idle);
     }
+  }
+}
+
+impl<Host: 'static> Drop for EventLoop<Host> {
+  fn drop(&mut self) {
+    // Ensure tasks queued from other threads cannot accumulate unboundedly after the event loop is
+    // dropped (for example during navigation resets).
+    self.external_task_queue.close();
   }
 }
 
