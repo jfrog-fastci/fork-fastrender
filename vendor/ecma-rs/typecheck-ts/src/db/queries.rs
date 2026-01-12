@@ -182,6 +182,70 @@ fn module_deps_for(db: &dyn Db, file: FileInput) -> Arc<[FileId]> {
 }
 
 #[salsa::tracked]
+fn module_reverse_deps_map_for(db: &dyn Db) -> Arc<BTreeMap<FileId, Arc<[FileId]>>> {
+  panic_if_cancelled(db);
+  let files = all_files_for(db);
+
+  // Collect a reverse adjacency map (target -> importers) deterministically.
+  let mut reverse: BTreeMap<FileId, Vec<FileId>> = BTreeMap::new();
+  for from in files.iter().copied() {
+    panic_if_cancelled(db);
+    let handle = db
+      .file_input(from)
+      .expect("file must be seeded before computing reverse deps");
+    for target in module_deps_for(db, handle).iter().copied() {
+      reverse.entry(target).or_default().push(from);
+    }
+  }
+
+  let mut out: BTreeMap<FileId, Arc<[FileId]>> = BTreeMap::new();
+  for (target, mut importers) in reverse {
+    importers.sort_unstable_by_key(|id| id.0);
+    importers.dedup();
+    out.insert(target, Arc::from(importers.into_boxed_slice()));
+  }
+
+  Arc::new(out)
+}
+
+#[salsa::tracked]
+fn module_reverse_deps_for(db: &dyn Db, file: FileInput) -> Arc<[FileId]> {
+  let file_id = file.file_id(db);
+  module_reverse_deps_map_for(db)
+    .get(&file_id)
+    .cloned()
+    .unwrap_or_else(|| Arc::from([]))
+}
+
+#[salsa::tracked]
+fn module_transitive_reverse_deps_for(db: &dyn Db, file: FileInput) -> Arc<Vec<FileId>> {
+  panic_if_cancelled(db);
+  let start = file.file_id(db);
+  let map = module_reverse_deps_map_for(db);
+  let mut visited: AHashSet<FileId> = AHashSet::new();
+  let mut queue: VecDeque<FileId> = VecDeque::new();
+
+  visited.insert(start);
+  queue.push_back(start);
+
+  while let Some(current) = queue.pop_front() {
+    panic_if_cancelled(db);
+    let Some(importers) = map.get(&current) else {
+      continue;
+    };
+    for importer in importers.iter().copied() {
+      if visited.insert(importer) {
+        queue.push_back(importer);
+      }
+    }
+  }
+
+  let mut out: Vec<FileId> = visited.into_iter().collect();
+  out.sort_unstable_by_key(|id| id.0);
+  Arc::new(out)
+}
+
+#[salsa::tracked]
 fn module_dep_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagnostic]> {
   panic_if_cancelled(db);
   unresolved_module_diagnostics_for(db, file)
@@ -2341,6 +2405,20 @@ pub fn module_deps(db: &dyn Db, file: FileId) -> Arc<[FileId]> {
     .file_input(file)
     .expect("file must be seeded before querying module deps");
   module_deps_for(db, handle)
+}
+
+pub fn module_reverse_deps(db: &dyn Db, file: FileId) -> Arc<[FileId]> {
+  let handle = db
+    .file_input(file)
+    .expect("file must be seeded before querying reverse module deps");
+  module_reverse_deps_for(db, handle)
+}
+
+pub fn module_transitive_reverse_deps(db: &dyn Db, file: FileId) -> Arc<Vec<FileId>> {
+  let handle = db
+    .file_input(file)
+    .expect("file must be seeded before querying transitive reverse module deps");
+  module_transitive_reverse_deps_for(db, handle)
 }
 
 pub fn module_dep_diagnostics(db: &dyn Db, file: FileId) -> Arc<[Diagnostic]> {

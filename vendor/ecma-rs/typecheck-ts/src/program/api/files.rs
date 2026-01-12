@@ -254,6 +254,37 @@ impl Program {
       }
     }
   }
+
+  /// All files that directly depend on `file` via file-backed module imports.
+  ///
+  /// The result is deterministic and sorted by [`FileId`]. Ambient module specifiers are excluded
+  /// (only edges that resolved to a file are considered).
+  pub fn reverse_module_deps(&self, file: FileId) -> Vec<FileId> {
+    match self.with_analyzed_state(|state| {
+      Ok(state.typecheck_db.module_reverse_deps(file).iter().copied().collect())
+    }) {
+      Ok(files) => files,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        Vec::new()
+      }
+    }
+  }
+
+  /// Reverse dependency closure for `file`, including `file` itself.
+  ///
+  /// The result is deterministic and sorted by [`FileId`]. Ambient module specifiers are excluded
+  /// (only edges that resolved to a file are considered).
+  pub fn transitive_reverse_module_deps(&self, file: FileId) -> Vec<FileId> {
+    match self.with_analyzed_state(|state| Ok(state.typecheck_db.module_transitive_reverse_deps(file)))
+    {
+      Ok(files) => files.as_ref().clone(),
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        Vec::new()
+      }
+    }
+  }
 }
 
 impl Host for Program {
