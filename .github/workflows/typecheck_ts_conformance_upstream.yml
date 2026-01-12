@@ -97,6 +97,7 @@ jobs:
             echo "::error::Invalid shard_total '${shard_total}' (expected a positive integer)." >&2
             exit 1
           fi
+          export shard_total
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             if [[ -n "${UPSTREAM_CONFORMANCE_SHARDS_INPUT:-}" ]]; then
