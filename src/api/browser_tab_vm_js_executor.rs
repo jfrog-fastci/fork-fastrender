@@ -244,6 +244,16 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       media = media.with_device_pixel_ratio(dpr);
     }
 
+    // Keep the session storage namespace registered for the lifetime of this tab executor.
+    //
+    // Registering before `WindowRealm` creation ensures we don't leak session storage areas if realm
+    // initialization fails midway (the realm constructor allocates Web Storage areas early).
+    if self.session_storage_guard.is_none() {
+      self.session_storage_guard = Some(with_default_hub_mut(|hub| {
+        hub.register_window(SessionNamespaceId(self.session_storage_namespace))
+      }));
+    }
+
     let mut config = WindowRealmConfig::new(url)
       .with_media_context(media)
       .with_current_script_state(current_script.clone())
@@ -317,11 +327,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.xhr_bindings = Some(xhr_bindings);
     self.websocket_bindings = Some(websocket_bindings);
     self.realm = Some(realm);
-    if self.session_storage_guard.is_none() {
-      self.session_storage_guard = Some(with_default_hub_mut(|hub| {
-        hub.register_window(SessionNamespaceId(self.session_storage_namespace))
-      }));
-    }
     Ok(())
   }
 
