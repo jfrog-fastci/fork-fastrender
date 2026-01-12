@@ -127,6 +127,46 @@ pub fn make_constructor(scope: &mut Scope<'_>, func: GcObject) -> Result<GcObjec
   Ok(prototype)
 }
 
+/// ECMA-262-like helper for creating a generator function's per-function `.prototype` object.
+///
+/// Generator functions are not constructors, but still get an own `prototype` data property whose
+/// value is an object that inherits from `%GeneratorPrototype%`.
+///
+/// This defines:
+/// - `F.prototype` as a writable, non-enumerable, non-configurable data property
+///
+/// Unlike [`make_constructor`], this intentionally does **not** define
+/// `F.prototype.constructor`.
+pub fn make_generator_function_instance_prototype(
+  scope: &mut Scope<'_>,
+  func: GcObject,
+  generator_prototype: GcObject,
+) -> Result<GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  // Root inputs across allocation/GC during prototype creation + property definition.
+  scope.push_root(Value::Object(func))?;
+  scope.push_root(Value::Object(generator_prototype))?;
+
+  let prototype = scope.alloc_object_with_prototype(Some(generator_prototype))?;
+  scope.push_root(Value::Object(prototype))?;
+
+  let prototype_key = scope.alloc_string("prototype")?;
+  scope.define_property(
+    func,
+    PropertyKey::String(prototype_key),
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(prototype),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(prototype)
+}
+
 fn compute_function_name(
   scope: &mut Scope<'_>,
   name: PropertyKey,

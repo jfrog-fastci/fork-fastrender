@@ -2116,13 +2116,10 @@ impl<'a> Evaluator<'a> {
     use crate::vm::EcmaFunctionKind;
 
     let func = &decl.stx.function.stx;
-    if func.generator {
-      return Err(VmError::Unimplemented(if func.async_ {
-        "async generator functions"
-      } else {
-        "generator functions"
-      }));
+    if func.async_ && func.generator {
+      return Err(VmError::Unimplemented("async generator functions"));
     }
+    let is_generator = func.generator;
     let is_strict = self.strict
       || match &func.body {
         Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
@@ -2154,7 +2151,7 @@ impl<'a> Evaluator<'a> {
     )?;
     let func_obj = scope.alloc_ecma_function(
       code_id,
-      /* is_constructable */ !func.async_,
+      /* is_constructable */ if is_generator { false } else { !func.async_ },
       name_s,
       length,
       this_mode,
@@ -2167,7 +2164,21 @@ impl<'a> Evaluator<'a> {
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
     scope
       .heap_mut()
-      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      .object_set_prototype(
+        func_obj,
+        Some(if is_generator {
+          intr.generator_function_prototype()
+        } else {
+          intr.function_prototype()
+        }),
+      )?;
+    if is_generator {
+      crate::function_properties::make_generator_function_instance_prototype(
+        scope,
+        func_obj,
+        intr.generator_prototype(),
+      )?;
+    }
     scope
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
@@ -4841,13 +4852,10 @@ impl<'a> Evaluator<'a> {
     use crate::function::ThisMode;
     use crate::vm::EcmaFunctionKind;
 
-    if func.generator {
-      return Err(VmError::Unimplemented(if func.async_ {
-        "async generator functions"
-      } else {
-        "generator functions"
-      }));
+    if func.async_ && func.generator {
+      return Err(VmError::Unimplemented("async generator functions"));
     }
+    let is_generator = func.generator;
     let is_strict = self.strict
       || match &func.body {
         Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
@@ -4881,7 +4889,7 @@ impl<'a> Evaluator<'a> {
     )?;
     let func_obj = scope.alloc_ecma_function(
       code_id,
-      /* is_constructable */ !func.async_,
+      /* is_constructable */ if is_generator { false } else { !func.async_ },
       name_s,
       length,
       this_mode,
@@ -4894,7 +4902,21 @@ impl<'a> Evaluator<'a> {
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
     scope
       .heap_mut()
-      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      .object_set_prototype(
+        func_obj,
+        Some(if is_generator {
+          intr.generator_function_prototype()
+        } else {
+          intr.function_prototype()
+        }),
+      )?;
+    if is_generator {
+      crate::function_properties::make_generator_function_instance_prototype(
+        scope,
+        func_obj,
+        intr.generator_prototype(),
+      )?;
+    }
     scope
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
@@ -12991,9 +13013,9 @@ pub(crate) fn run_ecma_function(
 ) -> Result<Value, VmError> {
   if func.stx.generator {
     return Err(VmError::Unimplemented(if func.stx.async_ {
-      "async generator functions"
+      "async generator function call"
     } else {
-      "generator functions"
+      "generator function call"
     }));
   }
   env.set_source_info(source, base_offset, prefix_len);
