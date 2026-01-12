@@ -168,9 +168,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
   fn step(&mut self) -> Result<(), VmError> {
     self.steps = self.steps.wrapping_add(1);
-    if self.steps % 256 == 0 {
-      (self.tick)()?;
-    }
+    (self.tick)()?;
     Ok(())
   }
 
