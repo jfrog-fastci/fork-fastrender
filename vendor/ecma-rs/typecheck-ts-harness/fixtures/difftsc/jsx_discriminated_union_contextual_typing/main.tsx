@@ -11,8 +11,8 @@ function Foo(props: Props): JSX.Element {
   return null as any;
 }
 
-<Foo kind="a" onClick={(ev) => { const n: number = ev.x; }} />;
-<Foo kind="b" onClick={(ev) => { const s: string = ev.y; }} />;
+<Foo key="k" kind="a" onClick={(ev) => { const n: number = ev.x; }} />;
+<Foo key="k" kind="b" onClick={(ev) => { const s: string = ev.y; }} />;
 
 type PropsWithChildren =
   | { kind: "a"; children: (ev: { x: number }) => void }
@@ -22,5 +22,5 @@ function FooWithChildren(props: PropsWithChildren): JSX.Element {
   return null as any;
 }
 
-<FooWithChildren kind="a">{(ev) => { const n: number = ev.x; }}</FooWithChildren>;
-<FooWithChildren kind="b">{(ev) => { const s: string = ev.y; }}</FooWithChildren>;
+<FooWithChildren key="k" kind="a">{(ev) => { const n: number = ev.x; }}</FooWithChildren>;
+<FooWithChildren key="k" kind="b">{(ev) => { const s: string = ev.y; }}</FooWithChildren>;

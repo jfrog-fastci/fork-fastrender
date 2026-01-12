@@ -6259,32 +6259,38 @@ impl<'a> Checker<'a> {
       return expected;
     }
 
-    let mut filtered: Vec<TypeId> = Vec::new();
-    for member in members.iter().copied() {
-      let mut matches = true;
-      for (name, lit_ty) in discriminants.iter() {
+    // Narrow the contextual type incrementally. If a candidate discriminant
+    // would eliminate *all* union members (e.g. React's `key` attribute, which
+    // typically comes from `JSX.IntrinsicAttributes` and is not present on the
+    // raw props union), ignore it so other discriminants can still refine.
+    let mut current: Vec<TypeId> = members.clone();
+    for (name, lit_ty) in discriminants.iter() {
+      let mut subset: Vec<TypeId> = Vec::new();
+      for member in current.iter().copied() {
         let prop_ty = self.member_type(member, name.as_str());
-        if prop_ty == prim.unknown || !self.relate.is_assignable(*lit_ty, prop_ty) {
-          matches = false;
-          break;
+        if prop_ty != prim.unknown && self.relate.is_assignable(*lit_ty, prop_ty) {
+          subset.push(member);
         }
       }
-      if matches {
-        filtered.push(member);
+      if subset.is_empty() {
+        continue;
+      }
+      subset.sort_by(|a, b| self.store.type_cmp(*a, *b));
+      subset.dedup();
+      current = subset;
+      if current.len() <= 1 {
+        break;
       }
     }
 
-    if filtered.is_empty() {
-      return expected;
-    }
+    current.sort_by(|a, b| self.store.type_cmp(*a, *b));
+    current.dedup();
 
-    filtered.sort_by(|a, b| self.store.type_cmp(*a, *b));
-    filtered.dedup();
-
-    match filtered.len() {
+    match current.len() {
       0 => expected,
-      1 => filtered[0],
-      _ => self.store.union(filtered),
+      1 => current[0],
+      _ if current.len() == members.len() => expected,
+      _ => self.store.union(current),
     }
   }
 

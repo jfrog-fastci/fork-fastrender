@@ -747,6 +747,67 @@ function Foo(props: Props): JSX.Element { return null as any; }
 }
 
 #[test]
+fn jsx_discriminated_union_props_contextual_typing_with_intrinsic_key() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+  options.no_implicit_any = true;
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface IntrinsicAttributes { key?: string }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+type Props =
+  | { kind: "a"; onClick: (ev: { x: number }) => void }
+  | { kind: "b"; onClick: (ev: { y: string }) => void };
+function Foo(props: Props): JSX.Element { return null as any; }
+<Foo key="k" kind="a" onClick={(ev) => { const n: number = ev.x; }} />;
+"#;
+  let host = TestHost::new(options.clone())
+    .with_lib(jsx.clone())
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry.clone()]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics (including implicit any) for discriminated union JSX props with intrinsic key, got {diagnostics:?}"
+  );
+
+  let negative = r#"
+type Props =
+  | { kind: "a"; onClick: (ev: { x: number }) => void }
+  | { kind: "b"; onClick: (ev: { y: string }) => void };
+function Foo(props: Props): JSX.Element { return null as any; }
+<Foo key="k" kind="a" onClick={(ev) => { const s = ev.y; }} />;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), negative);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::PROPERTY_DOES_NOT_EXIST.as_str()),
+    "expected PROPERTY_DOES_NOT_EXIST (TS2339) for wrong discriminated union JSX prop usage with intrinsic key, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn jsx_discriminated_union_children_contextual_typing() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
