@@ -49,6 +49,32 @@ fn span(start: u32) -> TextRange {
   TextRange::new(start, start + 1)
 }
 
+fn export_spec(local: &str, local_span: TextRange) -> ExportSpecifier {
+  ExportSpecifier {
+    local: local.to_string(),
+    exported: None,
+    is_type_only: false,
+    local_span,
+    exported_span: None,
+  }
+}
+
+fn ambient_module(name: &str, name_span: TextRange) -> AmbientModule {
+  AmbientModule {
+    name: name.to_string(),
+    name_span,
+    export_modifier: false,
+    export_modifier_span: None,
+    decls: Vec::new(),
+    imports: Vec::new(),
+    type_imports: Vec::new(),
+    import_equals: Vec::new(),
+    exports: Vec::new(),
+    export_as_namespace: Vec::new(),
+    ambient_modules: Vec::new(),
+  }
+}
+
 fn positions(source: &str, needle: &str) -> Vec<u32> {
   let mut positions = Vec::new();
   let mut start = 0usize;
@@ -387,13 +413,7 @@ fn reexport_chain_uses_original_symbols() {
   b.exports.push(Export::Named(NamedExport {
     specifier: Some("a".to_string()),
     specifier_span: Some(span(10)),
-    items: vec![ExportSpecifier {
-      local: "foo".to_string(),
-      exported: None,
-      is_type_only: false,
-      local_span: span(11),
-      exported_span: None,
-    }],
+    items: vec![export_spec("foo", span(11))],
     is_type_only: false,
   }));
 
@@ -597,13 +617,7 @@ fn export_all_cycle_includes_late_local_export_of_import() {
   a.exports.push(Export::Named(NamedExport {
     specifier: None,
     specifier_span: None,
-    items: vec![ExportSpecifier {
-      local: "Foo".to_string(),
-      exported: None,
-      is_type_only: false,
-      local_span: span(20),
-      exported_span: None,
-    }],
+    items: vec![export_spec("Foo", span(20))],
     is_type_only: false,
   }));
 
@@ -682,25 +696,11 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
   let mut foo_decl = mk_decl(0, "Foo", DeclKind::Function, Exported::No);
   foo_decl.is_ambient = true;
   let ambient_c = AmbientModule {
-    name: "c".to_string(),
-    name_span: span(1),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![foo_decl],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("c", span(1))
   };
 
   let ambient_a = AmbientModule {
-    name: "a".to_string(),
-    name_span: span(10),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
     imports: vec![Import {
       specifier: "c".to_string(),
       specifier_span: span(2),
@@ -715,8 +715,6 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
       }],
       is_type_only: false,
     }],
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
     exports: vec![
       // Force the `export *` to be processed before the local export spec.
       Export::All(ExportAll {
@@ -729,31 +727,17 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
       Export::Named(NamedExport {
         specifier: None,
         specifier_span: None,
-        items: vec![ExportSpecifier {
-          local: "Foo".to_string(),
-          exported: None,
-          is_type_only: false,
-          local_span: span(12),
-          exported_span: None,
-        }],
+        items: vec![export_spec("Foo", span(12))],
         is_type_only: false,
       }),
     ],
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("a", span(10))
   };
 
   let mut bar_decl = mk_decl(30, "Bar", DeclKind::Var, Exported::Named);
   bar_decl.is_ambient = true;
   let ambient_b = AmbientModule {
-    name: "b".to_string(),
-    name_span: span(20),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![bar_decl],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
     exports: vec![Export::All(ExportAll {
       specifier: "a".to_string(),
       is_type_only: false,
@@ -761,8 +745,7 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
       alias: None,
       alias_span: None,
     })],
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("b", span(20))
   };
 
   hir.ambient_modules.push(ambient_a);
@@ -835,13 +818,7 @@ fn type_only_import_export_isolated() {
   b.exports.push(Export::Named(NamedExport {
     specifier: None,
     specifier_span: None,
-    items: vec![ExportSpecifier {
-      local: "Foo".to_string(),
-      exported: None,
-      is_type_only: false,
-      local_span: span(33),
-      exported_span: None,
-    }],
+    items: vec![export_spec("Foo", span(33))],
     is_type_only: false,
   }));
 
@@ -881,19 +858,10 @@ fn mixed_type_only_reexport_respects_per_specifier_flags() {
     specifier_span: Some(span(10)),
     items: vec![
       ExportSpecifier {
-        local: "Foo".to_string(),
-        exported: None,
         is_type_only: true,
-        local_span: span(11),
-        exported_span: None,
+        ..export_spec("Foo", span(11))
       },
-      ExportSpecifier {
-        local: "Bar".to_string(),
-        exported: None,
-        is_type_only: false,
-        local_span: span(12),
-        exported_span: None,
-      },
+      export_spec("Bar", span(12)),
     ],
     is_type_only: false,
   }));
@@ -970,19 +938,10 @@ fn mixed_type_only_local_export_respects_per_specifier_flags() {
     specifier_span: None,
     items: vec![
       ExportSpecifier {
-        local: "Foo".to_string(),
-        exported: None,
         is_type_only: true,
-        local_span: span(35),
-        exported_span: None,
+        ..export_spec("Foo", span(35))
       },
-      ExportSpecifier {
-        local: "Bar".to_string(),
-        exported: None,
-        is_type_only: false,
-        local_span: span(36),
-        exported_span: None,
-      },
+      export_spec("Bar", span(36)),
     ],
     is_type_only: false,
   }));
@@ -1136,25 +1095,8 @@ fn module_graph_exposes_edges_for_imports_reexports_type_imports_and_augmentatio
     alias: None,
     alias_span: None,
   }));
+  c.ambient_modules.push(ambient_module("./a", span(22)));
   c.ambient_modules.push(AmbientModule {
-    name: "./a".to_string(),
-    name_span: span(22),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
-  });
-  c.ambient_modules.push(AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(30),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
     imports: vec![Import {
       specifier: "a".to_string(),
       specifier_span: span(31),
@@ -1163,11 +1105,7 @@ fn module_graph_exposes_edges_for_imports_reexports_type_imports_and_augmentatio
       named: Vec::new(),
       is_type_only: false,
     }],
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(30))
   });
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
@@ -1285,25 +1223,8 @@ fn module_graph_is_deterministic_across_root_orders() {
     alias: None,
     alias_span: None,
   }));
+  c.ambient_modules.push(ambient_module("./a", span(22)));
   c.ambient_modules.push(AmbientModule {
-    name: "./a".to_string(),
-    name_span: span(22),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
-  });
-  c.ambient_modules.push(AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(30),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
     imports: vec![Import {
       specifier: "a".to_string(),
       specifier_span: span(31),
@@ -1312,11 +1233,7 @@ fn module_graph_is_deterministic_across_root_orders() {
       named: Vec::new(),
       is_type_only: false,
     }],
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(30))
   });
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
@@ -1483,20 +1400,11 @@ fn ambient_module_type_imports_are_traversed() {
 
   let mut host = HirFile::script(file_host);
   host.ambient_modules.push(AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(0),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
-    imports: Vec::new(),
     type_imports: vec![TypeImport {
       specifier: "dep".to_string(),
       specifier_span: span(1),
     }],
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(0))
   });
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
@@ -1545,13 +1453,7 @@ fn export_namespace_import_uses_local_binding() {
   b.exports.push(Export::Named(NamedExport {
     specifier: None,
     specifier_span: None,
-    items: vec![ExportSpecifier {
-      local: "NS".to_string(),
-      exported: None,
-      is_type_only: false,
-      local_span: span(42),
-      exported_span: None,
-    }],
+    items: vec![export_spec("NS", span(42))],
     is_type_only: false,
   }));
 
@@ -1627,11 +1529,8 @@ fn declaration_merging_orders_deterministically() {
     specifier: None,
     specifier_span: None,
     items: vec![ExportSpecifier {
-      local: "Classy".to_string(),
-      exported: None,
       is_type_only: true,
-      local_span: span(50),
-      exported_span: None,
+      ..export_spec("Classy", span(50))
     }],
     is_type_only: true,
   }));
@@ -2643,24 +2542,17 @@ fn binder_is_deterministic_across_orders_and_threads() {
     specifier: Some("a".to_string()),
     specifier_span: Some(span(13)),
     items: vec![ExportSpecifier {
-      local: "Foo".to_string(),
       exported: Some("Bar".to_string()),
-      is_type_only: false,
-      local_span: span(14),
       exported_span: Some(span(15)),
+      is_type_only: false,
+      ..export_spec("Foo", span(14))
     }],
     is_type_only: false,
   }));
   b.exports.push(Export::Named(NamedExport {
     specifier: None,
     specifier_span: None,
-    items: vec![ExportSpecifier {
-      local: "LocalB".to_string(),
-      exported: None,
-      is_type_only: false,
-      local_span: span(18),
-      exported_span: None,
-    }],
+    items: vec![export_spec("LocalB", span(18))],
     is_type_only: false,
   }));
 
@@ -2676,11 +2568,8 @@ fn binder_is_deterministic_across_orders_and_threads() {
     specifier: Some("a".to_string()),
     specifier_span: Some(span(19)),
     items: vec![ExportSpecifier {
-      local: "TypeOnly".to_string(),
-      exported: None,
       is_type_only: true,
-      local_span: span(20),
-      exported_span: None,
+      ..export_spec("TypeOnly", span(20))
     }],
     is_type_only: true,
   }));
@@ -2907,11 +2796,10 @@ fn duplicate_export_has_two_labels() {
     specifier: None,
     specifier_span: None,
     items: vec![ExportSpecifier {
-      local: "FromA".to_string(),
       exported: Some("Dup".to_string()),
-      is_type_only: false,
-      local_span: span(64),
       exported_span: Some(TextRange::new(200, 203)),
+      is_type_only: false,
+      ..export_spec("FromA", span(64))
     }],
     is_type_only: false,
   }));
@@ -3392,17 +3280,8 @@ fn ambient_modules_collect_exports() {
   let mut decl = mk_decl(0, "AmbientValue", DeclKind::Function, Exported::No);
   decl.is_ambient = true;
   let ambient = AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(100),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![decl],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(100))
   };
   hir.ambient_modules.push(ambient);
 
@@ -3432,11 +3311,6 @@ fn ambient_import_diagnostic_points_to_specifier() {
 
   let import_span = span(25);
   hir.ambient_modules.push(AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(10),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
     imports: vec![Import {
       specifier: "missing".to_string(),
       specifier_span: import_span,
@@ -3445,11 +3319,7 @@ fn ambient_import_diagnostic_points_to_specifier() {
       named: Vec::new(),
       is_type_only: false,
     }],
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(10))
   });
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
@@ -3624,39 +3494,21 @@ fn ambient_module_export_as_namespace_fragments_preserve_decl_files() {
   let mut a = HirFile::module(file_a);
   a.file_kind = FileKind::Dts;
   a.ambient_modules.push(AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(0),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
     export_as_namespace: vec![ExportAsNamespace {
       name: "Foo".to_string(),
       span: span(0),
     }],
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(0))
   });
 
   let mut b = HirFile::module(file_b);
   b.file_kind = FileKind::Dts;
   b.ambient_modules.push(AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(0),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
     export_as_namespace: vec![ExportAsNamespace {
       name: "Foo".to_string(),
       span: span(0),
     }],
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(0))
   });
 
   let files: HashMap<FileId, Arc<HirFile>> =
@@ -3698,19 +3550,7 @@ fn ambient_module_fragments_merge_exports() {
   let mut hir = HirFile::module(file);
   hir.file_kind = FileKind::Dts;
 
-  let mut part1 = AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(0),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
-  };
+  let mut part1 = ambient_module("pkg", span(0));
   let mut func = mk_decl(0, "Aug", DeclKind::Function, Exported::No);
   func.is_ambient = true;
   part1.decls.push(func);
@@ -3748,19 +3588,7 @@ fn ambient_module_interfaces_merge_deterministically() {
   let mut hir = HirFile::module(file);
   hir.file_kind = FileKind::Dts;
 
-  let mut part1 = AmbientModule {
-    name: "lib".to_string(),
-    name_span: span(0),
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
-  };
+  let mut part1 = ambient_module("lib", span(0));
   let mut part2 = part1.clone();
 
   let mut iface_a = mk_decl(0, "Merged", DeclKind::Interface, Exported::No);
@@ -3803,17 +3631,8 @@ fn ambient_module_import_reexports_without_resolver_mapping() {
   let mut decl = mk_decl(0, "x", DeclKind::Var, Exported::No);
   decl.is_ambient = true;
   let ambient = AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(0),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![decl],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(0))
   };
   hir.ambient_modules.push(ambient);
 
@@ -3834,13 +3653,7 @@ fn ambient_module_import_reexports_without_resolver_mapping() {
   hir.exports.push(Export::Named(NamedExport {
     specifier: None,
     specifier_span: None,
-    items: vec![ExportSpecifier {
-      local: "x".to_string(),
-      exported: None,
-      is_type_only: false,
-      local_span: span(13),
-      exported_span: None,
-    }],
+    items: vec![export_spec("x", span(13))],
     is_type_only: false,
   }));
 
@@ -3889,30 +3702,15 @@ fn ambient_module_reexport_chain() {
   let mut decl = mk_decl(0, "foo", DeclKind::Function, Exported::No);
   decl.is_ambient = true;
   pkg.ambient_modules.push(AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(0),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![decl],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(0))
   });
 
   let mut reexport = HirFile::module(file_reexport);
   reexport.exports.push(Export::Named(NamedExport {
     specifier: Some("pkg".to_string()),
     specifier_span: Some(span(20)),
-    items: vec![ExportSpecifier {
-      local: "foo".to_string(),
-      exported: None,
-      is_type_only: false,
-      local_span: span(21),
-      exported_span: None,
-    }],
+    items: vec![export_spec("foo", span(21))],
     is_type_only: false,
   }));
 
@@ -3958,17 +3756,8 @@ fn external_module_augmentation_merges_and_exports_new_names() {
   let mut only_aug = mk_decl(2, "OnlyInAugmentation", DeclKind::Interface, Exported::No);
   only_aug.is_ambient = true;
   aug.ambient_modules.push(AmbientModule {
-    name: "./a".to_string(),
-    name_span: span(10),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![augmented_request, only_aug],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("./a", span(10))
   });
 
   let files: HashMap<FileId, Arc<HirFile>> =
@@ -4024,17 +3813,8 @@ fn module_augmentation_exports_new_names_and_merges_with_class() {
   let mut bar = mk_decl(2, "Bar", DeclKind::Class, Exported::No);
   bar.is_ambient = true;
   aug.ambient_modules.push(AmbientModule {
-    name: "./observable".to_string(),
-    name_span: span(10),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![observable_iface, bar],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("./observable", span(10))
   });
 
   let files: HashMap<FileId, Arc<HirFile>> =
@@ -4083,19 +3863,9 @@ fn unresolved_module_augmentation_reports_diagnostic() {
 
   let mut hir = HirFile::module(file);
   hir.file_kind = FileKind::Dts;
-  hir.ambient_modules.push(AmbientModule {
-    name: "./missing".to_string(),
-    name_span: module_name_span,
-    export_modifier: false,
-    export_modifier_span: None,
-    decls: Vec::new(),
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
-  });
+  hir
+    .ambient_modules
+    .push(ambient_module("./missing", module_name_span));
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
   let resolver = StaticResolver::new(HashMap::new());
@@ -4251,10 +4021,6 @@ fn module_augmentation_rejects_imports_and_exports() {
 
   let mut aug = HirFile::module(file_aug);
   aug.ambient_modules.push(AmbientModule {
-    name: "./a".to_string(),
-    name_span: span(10),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![mk_decl(1, "Augmented", DeclKind::Interface, Exported::No)],
     imports: vec![Import {
       specifier: "./dep".to_string(),
@@ -4270,8 +4036,6 @@ fn module_augmentation_rejects_imports_and_exports() {
       }],
       is_type_only: false,
     }],
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
     exports: vec![Export::All(ExportAll {
       specifier: "./dep".to_string(),
       is_type_only: false,
@@ -4279,8 +4043,7 @@ fn module_augmentation_rejects_imports_and_exports() {
       alias: None,
       alias_span: None,
     })],
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("./a", span(10))
   });
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
@@ -4459,17 +4222,8 @@ fn imports_use_ambient_modules_when_file_missing() {
   let mut ambient_decl = mk_decl(0, "Foo", DeclKind::Interface, Exported::No);
   ambient_decl.is_ambient = true;
   let ambient = AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(4),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![ambient_decl],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(4))
   };
   let mut ambient_file = HirFile::module(file_ambient);
   ambient_file.file_kind = FileKind::Dts;
@@ -4510,30 +4264,15 @@ fn reexports_from_ambient_modules_are_resolved() {
   exporter.exports.push(Export::Named(NamedExport {
     specifier: Some("pkg".to_string()),
     specifier_span: Some(span(5)),
-    items: vec![ExportSpecifier {
-      local: "Foo".to_string(),
-      exported: None,
-      is_type_only: false,
-      local_span: span(6),
-      exported_span: None,
-    }],
+    items: vec![export_spec("Foo", span(6))],
     is_type_only: false,
   }));
 
   let mut ambient_decl = mk_decl(0, "Foo", DeclKind::Interface, Exported::No);
   ambient_decl.is_ambient = true;
   let ambient = AmbientModule {
-    name: "pkg".to_string(),
-    name_span: span(7),
-    export_modifier: false,
-    export_modifier_span: None,
     decls: vec![ambient_decl],
-    imports: Vec::new(),
-    type_imports: Vec::new(),
-    import_equals: Vec::new(),
-    exports: Vec::new(),
-    export_as_namespace: Vec::new(),
-    ambient_modules: Vec::new(),
+    ..ambient_module("pkg", span(7))
   };
   let mut ambient_file = HirFile::module(file_ambient);
   ambient_file.file_kind = FileKind::Dts;
