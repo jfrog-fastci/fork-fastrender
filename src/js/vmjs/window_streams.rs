@@ -1,23 +1,30 @@
-//! Minimal WHATWG `ReadableStream` (byte-oriented) implementation for `vm-js` Window realms.
+//! Minimal WHATWG Streams implementation (`ReadableStream`, `WritableStream`, `TransformStream`)
+//! for `vm-js` Window realms.
 //!
-//! This is a deliberately small subset used by streaming consumers in Fetch/Blob-like APIs.
-//! The only supported chunk type is `Uint8Array`.
+//! This is a deliberately small subset used by streaming consumers in Fetch/Blob-like APIs and by
+//! encoding helpers like `TextEncoderStream`.
+//!
+//! The `ReadableStream` implementation is byte-oriented: the only supported chunk type is
+//! `Uint8Array`.
 //!
 //! Notably absent:
-//! - underlying source/controller APIs (`start`, `pull`, `enqueue`, backpressure)
+//! - `ReadableStream` underlying source/controller APIs (`start`, `pull`, `enqueue`, backpressure)
 //! - BYOB readers
 //! - piping/teeing
 //!
-//! The goal is to provide just enough surface area for real-world code that expects `ReadableStream`
-//! to exist and for host-owned byte sources to be consumed via `getReader().read()`.
+//! The goal is to provide just enough surface area for real-world code that expects streams
+//! constructors to exist and for host-owned byte sources to be consumed via
+//! `readable.getReader().read()`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 use vm_js::{
-  new_promise_capability_with_host_and_hooks, new_type_error_object, GcObject, Heap,
-  NativeConstructId, NativeFunctionId, PromiseCapability, PropertyDescriptor, PropertyKey,
-  PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  new_promise_capability_with_host_and_hooks, new_type_error_object,
+  perform_promise_then_with_host_and_hooks, promise_resolve_with_host_and_hooks, GcObject, Heap,
+  Intrinsics, NativeConstructId, NativeFunctionId, PromiseCapability, PropertyDescriptor,
+  PropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  WeakGcObject,
 };
 
 const STREAM_REALM_ID_SLOT: usize = 0;
@@ -27,6 +34,61 @@ const STREAM_REALM_ID_SLOT: usize = 0;
 /// This is an internal chunking detail; it bounds per-read allocation while still being reasonably
 /// large for network payloads.
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
+
+// --- Hidden, internal property keys -----------------------------------------------------------
+
+const READABLE_STREAM_READER_PENDING_RESOLVE_KEY: &str = "__fastrender_readable_stream_pending_read_resolve";
+const READABLE_STREAM_READER_PENDING_REJECT_KEY: &str = "__fastrender_readable_stream_pending_read_reject";
+
+const WRITABLE_STREAM_BRAND_KEY: &str = "__fastrender_writable_stream";
+const WRITABLE_STREAM_SINK_KEY: &str = "__fastrender_writable_stream_sink";
+const WRITABLE_STREAM_SINK_WRITE_KEY: &str = "__fastrender_writable_stream_sink_write";
+const WRITABLE_STREAM_SINK_CLOSE_KEY: &str = "__fastrender_writable_stream_sink_close";
+const WRITABLE_STREAM_SINK_ABORT_KEY: &str = "__fastrender_writable_stream_sink_abort";
+
+const WRITABLE_STREAM_WRITER_BRAND_KEY: &str = "__fastrender_writable_stream_default_writer";
+const WRITABLE_STREAM_WRITER_STREAM_KEY: &str = "__fastrender_writable_stream_default_writer_stream";
+
+const TRANSFORM_CONTROLLER_BRAND_KEY: &str = "__fastrender_transform_stream_default_controller";
+const TRANSFORM_CONTROLLER_READABLE_STREAM_KEY: &str =
+  "__fastrender_transform_stream_default_controller_readable_stream";
+
+const TRANSFORM_SINK_BRAND_KEY: &str = "__fastrender_transform_stream_sink";
+const TRANSFORM_SINK_TRANSFORMER_KEY: &str = "__fastrender_transform_stream_sink_transformer";
+const TRANSFORM_SINK_TRANSFORM_KEY: &str = "__fastrender_transform_stream_sink_transform";
+const TRANSFORM_SINK_FLUSH_KEY: &str = "__fastrender_transform_stream_sink_flush";
+const TRANSFORM_SINK_CONTROLLER_KEY: &str = "__fastrender_transform_stream_sink_controller";
+
+const WRITABLE_STREAM_GET_WRITER_SLOT_WRITER_PROTO: usize = 1;
+
+const TRANSFORM_STREAM_CTOR_SLOT_SINK_WRITE_FN: usize = 1;
+const TRANSFORM_STREAM_CTOR_SLOT_SINK_CLOSE_FN: usize = 2;
+const TRANSFORM_STREAM_CTOR_SLOT_SINK_ABORT_FN: usize = 3;
+const TRANSFORM_STREAM_CTOR_SLOT_CONTROLLER_PROTO: usize = 4;
+
+fn chunk_sizes_for_len(mut len: usize) -> VecDeque<usize> {
+  let mut queue = VecDeque::new();
+  while len > 0 {
+    let take = len.min(STREAM_CHUNK_BYTES);
+    queue.push_back(take);
+    len -= take;
+  }
+  queue
+}
+
+fn push_chunk_sizes(queue: &mut VecDeque<usize>, len: usize) {
+  if len == 0 {
+    queue.push_back(0);
+    return;
+  }
+
+  let mut remaining = len;
+  while remaining > 0 {
+    let take = remaining.min(STREAM_CHUNK_BYTES);
+    queue.push_back(take);
+    remaining -= take;
+  }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamLifecycleState {
@@ -40,21 +102,54 @@ type LazyInit = Box<dyn FnOnce() -> Result<Vec<u8>, VmError> + Send + 'static>;
 struct StreamState {
   locked: bool,
   state: StreamLifecycleState,
+  /// `true` if no more bytes will be enqueued into the stream.
+  ///
+  /// For fixed-byte streams (e.g. `create_readable_byte_stream_from_bytes`), this is `true` from
+  /// creation.
+  ///
+  /// For dynamic streams (e.g. `new ReadableStream()` or `TransformStream.readable`), this is set
+  /// by internal close/terminate paths.
+  close_requested: bool,
   error_message: Option<String>,
   bytes: Vec<u8>,
+  /// Queue of chunk sizes (in bytes) remaining in the stream.
+  ///
+  /// For dynamic streams (`TransformStream.readable`), this preserves enqueue boundaries and
+  /// ensures empty chunks (`Uint8Array(0)`) still resolve pending reads.
+  queue: VecDeque<usize>,
   init: Option<LazyInit>,
   offset: usize,
+  /// A pending `reader.read()` call waiting for bytes (only used for dynamic streams).
+  pending_reader: Option<WeakGcObject>,
 }
 
 impl StreamState {
-  fn new_from_bytes(bytes: Vec<u8>) -> Self {
+  fn new_empty() -> Self {
     Self {
       locked: false,
       state: StreamLifecycleState::Readable,
+      close_requested: false,
       error_message: None,
-      bytes,
+      bytes: Vec::new(),
+      queue: VecDeque::new(),
       init: None,
       offset: 0,
+      pending_reader: None,
+    }
+  }
+
+  fn new_from_bytes(bytes: Vec<u8>) -> Self {
+    let queue = chunk_sizes_for_len(bytes.len());
+    Self {
+      locked: false,
+      state: StreamLifecycleState::Readable,
+      close_requested: true,
+      error_message: None,
+      bytes,
+      queue,
+      init: None,
+      offset: 0,
+      pending_reader: None,
     }
   }
 
@@ -62,10 +157,13 @@ impl StreamState {
     Self {
       locked: false,
       state: StreamLifecycleState::Readable,
+      close_requested: true,
       error_message: None,
       bytes: Vec::new(),
+      queue: VecDeque::new(),
       init: Some(init),
       offset: 0,
+      pending_reader: None,
     }
   }
 }
@@ -84,6 +182,12 @@ struct StreamRegistry {
 struct StreamRealmState {
   readable_stream_proto: GcObject,
   reader_proto: GcObject,
+  writable_stream_proto: GcObject,
+  writer_proto: GcObject,
+  transform_stream_proto: GcObject,
+  transform_controller_proto: GcObject,
+  transform_close_after_flush_fulfilled_call_id: NativeFunctionId,
+  transform_close_after_flush_rejected_call_id: NativeFunctionId,
   streams: HashMap<WeakGcObject, StreamState>,
   readers: HashMap<WeakGcObject, ReaderState>,
   last_gc_runs: u64,
@@ -103,6 +207,10 @@ fn data_desc(value: Value, writable: bool) -> PropertyDescriptor {
   }
 }
 
+fn read_only_data_desc(value: Value) -> PropertyDescriptor {
+  data_desc(value, false)
+}
+
 fn result_data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: true,
@@ -118,6 +226,35 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   let s = scope.alloc_string(name)?;
   scope.push_root(Value::String(s))?;
   Ok(PropertyKey::from_string(s))
+}
+
+fn get_data_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<Value, VmError> {
+  let key = alloc_key(scope, name)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(obj, &key)?
+      .unwrap_or(Value::Undefined),
+  )
+}
+
+fn set_data_prop(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  name: &str,
+  value: Value,
+  writable: bool,
+) -> Result<(), VmError> {
+  // Root inputs while allocating the key (`alloc_key` can trigger GC).
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  scope.push_root(value)?;
+  let key = alloc_key(&mut scope, name)?;
+  scope.define_property(obj, key, data_desc(value, writable))
+}
+
+fn require_intrinsics(vm: &Vm, err: &'static str) -> Result<Intrinsics, VmError> {
+  vm.intrinsics().ok_or(VmError::Unimplemented(err))
 }
 
 fn realm_id_from_slot(value: Value) -> Option<RealmId> {
@@ -211,7 +348,7 @@ fn readable_stream_ctor_construct(
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state
       .streams
-      .insert(WeakGcObject::from(obj), StreamState::new_from_bytes(Vec::new()));
+      .insert(WeakGcObject::from(obj), StreamState::new_empty());
     Ok(())
   })?;
 
@@ -292,10 +429,13 @@ fn readable_stream_cancel_native(
     }
 
     stream_state.state = StreamLifecycleState::Closed;
+    stream_state.close_requested = true;
     stream_state.error_message = None;
     stream_state.bytes.clear();
+    stream_state.queue.clear();
     stream_state.init = None;
     stream_state.offset = 0;
+    stream_state.pending_reader = None;
     Ok(())
   });
 
@@ -373,6 +513,139 @@ enum ReadOutcome {
   Chunk(Vec<u8>),
   Done,
   Error(String),
+  Pending,
+}
+
+fn settle_read_promise(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  intr: &Intrinsics,
+  resolve: Value,
+  reject: Value,
+  outcome: ReadOutcome,
+) -> Result<(), VmError> {
+  match outcome {
+    ReadOutcome::Chunk(chunk) => {
+      // Create `Uint8Array` value.
+      let byte_len = chunk.len();
+      let ab = scope.alloc_array_buffer_from_u8_vec(chunk)?;
+      scope.push_root(Value::Object(ab))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+
+      let view = scope.alloc_uint8_array(ab, 0, byte_len)?;
+      scope.push_root(Value::Object(view))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+
+      // Resolve to `{ value, done }`.
+      let result = scope.alloc_object()?;
+      scope.push_root(Value::Object(result))?;
+
+      let value_key = alloc_key(scope, "value")?;
+      let done_key = alloc_key(scope, "done")?;
+
+      scope.define_property(result, value_key, result_data_desc(Value::Object(view)))?;
+      scope.define_property(result, done_key, result_data_desc(Value::Bool(false)))?;
+
+      vm.call_with_host_and_hooks(
+        host,
+        scope,
+        hooks,
+        resolve,
+        Value::Undefined,
+        &[Value::Object(result)],
+      )?;
+    }
+    ReadOutcome::Done => {
+      let result = scope.alloc_object()?;
+      scope.push_root(Value::Object(result))?;
+
+      let value_key = alloc_key(scope, "value")?;
+      let done_key = alloc_key(scope, "done")?;
+
+      scope.define_property(result, value_key, result_data_desc(Value::Undefined))?;
+      scope.define_property(result, done_key, result_data_desc(Value::Bool(true)))?;
+
+      vm.call_with_host_and_hooks(
+        host,
+        scope,
+        hooks,
+        resolve,
+        Value::Undefined,
+        &[Value::Object(result)],
+      )?;
+    }
+    ReadOutcome::Error(msg) => {
+      let err = new_type_error_object(scope, intr, &msg)?;
+      scope.push_root(err)?;
+      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[err])?;
+    }
+    ReadOutcome::Pending => {
+      // Promise capability is stored on the reader object and will be resolved later by internal
+      // enqueue/close/error operations.
+    }
+  }
+
+  Ok(())
+}
+
+struct PendingReadSettle {
+  reader: WeakGcObject,
+  outcome: ReadOutcome,
+}
+
+fn take_pending_read_capability(
+  scope: &mut Scope<'_>,
+  reader_obj: GcObject,
+) -> Result<Option<(Value, Value)>, VmError> {
+  let resolve = get_data_prop(scope, reader_obj, READABLE_STREAM_READER_PENDING_RESOLVE_KEY)?;
+  let reject = get_data_prop(scope, reader_obj, READABLE_STREAM_READER_PENDING_REJECT_KEY)?;
+
+  // Clear stored capability regardless of shape.
+  set_data_prop(
+    scope,
+    reader_obj,
+    READABLE_STREAM_READER_PENDING_RESOLVE_KEY,
+    Value::Undefined,
+    true,
+  )?;
+  set_data_prop(
+    scope,
+    reader_obj,
+    READABLE_STREAM_READER_PENDING_REJECT_KEY,
+    Value::Undefined,
+    true,
+  )?;
+
+  match (resolve, reject) {
+    (Value::Object(_), Value::Object(_)) => Ok(Some((resolve, reject))),
+    _ => Ok(None),
+  }
+}
+
+fn settle_pending_read(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  reader: WeakGcObject,
+  outcome: ReadOutcome,
+) -> Result<(), VmError> {
+  let Some(reader_obj) = reader.upgrade(scope.heap()) else {
+    return Ok(());
+  };
+
+  let Some((resolve, reject)) = take_pending_read_capability(scope, reader_obj)? else {
+    return Ok(());
+  };
+
+  let intr = require_intrinsics(vm, "ReadableStream requires intrinsics")?;
+  settle_read_promise(vm, scope, host, hooks, &intr, resolve, reject, outcome)
 }
 
 fn reader_read_native(
@@ -431,12 +704,19 @@ fn reader_read_native(
       }
     }
 
+    if stream_state.pending_reader.is_some() {
+      return Ok(ReadOutcome::Error(
+        "ReadableStreamDefaultReader.read: another read is pending".to_string(),
+      ));
+    }
+
     // Lazily populate bytes from the host init closure on the first `read()`.
     if let Some(init) = stream_state.init.take() {
       match init() {
         Ok(bytes) => {
           stream_state.bytes = bytes;
           stream_state.offset = 0;
+          stream_state.queue = chunk_sizes_for_len(stream_state.bytes.len());
         }
         Err(err) => {
           stream_state.state = StreamLifecycleState::Errored;
@@ -447,88 +727,62 @@ fn reader_read_native(
       }
     }
 
-    if stream_state.offset >= stream_state.bytes.len() {
-      stream_state.state = StreamLifecycleState::Closed;
-      return Ok(ReadOutcome::Done);
+    if stream_state.queue.is_empty() {
+      if stream_state.close_requested {
+        stream_state.state = StreamLifecycleState::Closed;
+        return Ok(ReadOutcome::Done);
+      }
+
+      // No bytes available yet: keep the promise pending and resolve it when bytes are enqueued.
+      stream_state.pending_reader = Some(WeakGcObject::from(reader_obj));
+      return Ok(ReadOutcome::Pending);
     }
 
-    let remaining = stream_state.bytes.len() - stream_state.offset;
-    let read_len = remaining.min(STREAM_CHUNK_BYTES);
-    let start = stream_state.offset;
-    let end = start + read_len;
-    let chunk = stream_state
-      .bytes
-      .get(start..end)
-      .unwrap_or(&[])
-      .to_vec();
-    stream_state.offset = end;
-    if stream_state.offset >= stream_state.bytes.len() {
+    let Some(next_size) = stream_state.queue.pop_front() else {
+      return Ok(ReadOutcome::Error(
+        "ReadableStream internal queue invariant violated".to_string(),
+      ));
+    };
+
+    let chunk = if next_size == 0 {
+      Vec::new()
+    } else {
+      let start = stream_state.offset;
+      let end = start + next_size;
+      let chunk = stream_state
+        .bytes
+        .get(start..end)
+        .unwrap_or(&[])
+        .to_vec();
+      stream_state.offset = end;
+      chunk
+    };
+
+    if stream_state.close_requested && stream_state.queue.is_empty() {
       stream_state.state = StreamLifecycleState::Closed;
     }
 
     Ok(ReadOutcome::Chunk(chunk))
   })?;
 
-  match outcome {
-    ReadOutcome::Chunk(chunk) => {
-      // Create `Uint8Array` value.
-      let byte_len = chunk.len();
-      let ab = scope.alloc_array_buffer_from_u8_vec(chunk)?;
-      scope.push_root(Value::Object(ab))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-
-      let view = scope.alloc_uint8_array(ab, 0, byte_len)?;
-      scope.push_root(Value::Object(view))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
-
-      // Resolve to `{ value, done }`.
-      let result = scope.alloc_object()?;
-      scope.push_root(Value::Object(result))?;
-
-      let value_key = alloc_key(scope, "value")?;
-      let done_key = alloc_key(scope, "done")?;
-
-      scope.define_property(result, value_key, result_data_desc(Value::Object(view)))?;
-      scope.define_property(result, done_key, result_data_desc(Value::Bool(false)))?;
-
-      vm.call_with_host_and_hooks(
-        host,
-        scope,
-        hooks,
-        resolve,
-        Value::Undefined,
-        &[Value::Object(result)],
-      )?;
-    }
-    ReadOutcome::Done => {
-      let result = scope.alloc_object()?;
-      scope.push_root(Value::Object(result))?;
-
-      let value_key = alloc_key(scope, "value")?;
-      let done_key = alloc_key(scope, "done")?;
-
-      scope.define_property(result, value_key, result_data_desc(Value::Undefined))?;
-      scope.define_property(result, done_key, result_data_desc(Value::Bool(true)))?;
-
-      vm.call_with_host_and_hooks(
-        host,
-        scope,
-        hooks,
-        resolve,
-        Value::Undefined,
-        &[Value::Object(result)],
-      )?;
-    }
-    ReadOutcome::Error(msg) => {
-      let err = new_type_error_object(scope, &intr, &msg)?;
-      scope.push_root(err)?;
-      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[err])?;
-    }
+  if matches!(&outcome, ReadOutcome::Pending) {
+    set_data_prop(
+      scope,
+      reader_obj,
+      READABLE_STREAM_READER_PENDING_RESOLVE_KEY,
+      resolve,
+      true,
+    )?;
+    set_data_prop(
+      scope,
+      reader_obj,
+      READABLE_STREAM_READER_PENDING_REJECT_KEY,
+      reject,
+      true,
+    )?;
   }
+
+  settle_read_promise(vm, scope, host, hooks, &intr, resolve, reject, outcome)?;
 
   Ok(promise)
 }
@@ -536,8 +790,8 @@ fn reader_read_native(
 fn reader_release_lock_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -548,7 +802,7 @@ fn reader_release_lock_native(
     ));
   };
 
-  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+  let pending = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
       .readers
       .get_mut(&WeakGcObject::from(reader_obj))
@@ -557,14 +811,29 @@ fn reader_release_lock_native(
       ))?;
 
     let Some(stream_weak) = reader_state.stream.take() else {
-      return Ok(Value::Undefined);
+      return Ok(None);
     };
     if let Some(stream_state) = state.streams.get_mut(&stream_weak) {
       stream_state.locked = false;
+      let pending_reader = stream_state.pending_reader.take();
+      if let Some(pending_reader) = pending_reader {
+        return Ok(Some(PendingReadSettle {
+          reader: pending_reader,
+          outcome: ReadOutcome::Error(
+            "ReadableStreamDefaultReader has no stream (lock released)".to_string(),
+          ),
+        }));
+      }
     }
 
-    Ok(Value::Undefined)
-  })
+    Ok(None)
+  })?;
+
+  if let Some(pending) = pending {
+    settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+  }
+
+  Ok(Value::Undefined)
 }
 
 fn reader_cancel_native(
@@ -591,7 +860,7 @@ fn reader_cancel_native(
     .intrinsics()
     .ok_or(VmError::Unimplemented("ReadableStream requires intrinsics"))?;
 
-  let outcome = with_realm_state_mut(vm, scope, callee, |state, _heap| {
+  let (outcome, pending_read) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
       .readers
       .get_mut(&WeakGcObject::from(reader_obj))
@@ -599,19 +868,27 @@ fn reader_cancel_native(
         "ReadableStreamDefaultReader.cancel: illegal invocation",
       ))?;
     let Some(stream_weak) = reader_state.stream else {
-      return Ok(ReadOutcome::Done);
+      return Ok((ReadOutcome::Done, None));
     };
     let Some(stream_state) = state.streams.get_mut(&stream_weak) else {
-      return Ok(ReadOutcome::Done);
+      return Ok((ReadOutcome::Done, None));
     };
 
     stream_state.state = StreamLifecycleState::Closed;
+    stream_state.close_requested = true;
     stream_state.error_message = None;
     stream_state.bytes.clear();
+    stream_state.queue.clear();
     stream_state.init = None;
     stream_state.offset = 0;
+    let pending_reader = stream_state.pending_reader.take();
 
-    Ok(ReadOutcome::Done)
+    let pending_read = pending_reader.map(|reader| PendingReadSettle {
+      reader,
+      outcome: ReadOutcome::Done,
+    });
+
+    Ok((ReadOutcome::Done, pending_read))
   })?;
 
   match outcome {
@@ -623,9 +900,152 @@ fn reader_cancel_native(
       scope.push_root(err)?;
       vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[err])?;
     }
+    ReadOutcome::Pending => {
+      vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[])?;
+    }
+  }
+
+  if let Some(pending_read) = pending_read {
+    settle_pending_read(vm, scope, host, hooks, pending_read.reader, pending_read.outcome)?;
   }
 
   Ok(promise)
+}
+
+fn create_readable_byte_stream_dynamic(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  callee: GcObject,
+) -> Result<GcObject, VmError> {
+  let proto =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| Ok(state.readable_stream_proto))?;
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+    state
+      .streams
+      .insert(WeakGcObject::from(obj), StreamState::new_empty());
+    Ok(())
+  })?;
+
+  Ok(obj)
+}
+
+fn enqueue_bytes_into_readable_stream(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  callee: GcObject,
+  stream_obj: GcObject,
+  bytes: Vec<u8>,
+) -> Result<Option<PendingReadSettle>, VmError> {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+    let stream_state = state
+      .streams
+      .get_mut(&WeakGcObject::from(stream_obj))
+      .ok_or(VmError::TypeError("ReadableStream enqueue: invalid stream"))?;
+
+    if stream_state.state != StreamLifecycleState::Readable || stream_state.close_requested {
+      return Err(VmError::TypeError("ReadableStream is closed"));
+    }
+
+    // Append bytes (may be empty).
+    if !bytes.is_empty() {
+      stream_state
+        .bytes
+        .try_reserve(bytes.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      stream_state.bytes.extend_from_slice(&bytes);
+    }
+    push_chunk_sizes(&mut stream_state.queue, bytes.len());
+
+    let pending_reader = stream_state.pending_reader.take();
+    let Some(pending_reader) = pending_reader else {
+      return Ok(None);
+    };
+
+    let Some(next_size) = stream_state.queue.pop_front() else {
+      return Ok(Some(PendingReadSettle {
+        reader: pending_reader,
+        outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
+      }));
+    };
+
+    let chunk = if next_size == 0 {
+      Vec::new()
+    } else {
+      let start = stream_state.offset;
+      let end = start + next_size;
+      let chunk = stream_state.bytes.get(start..end).unwrap_or(&[]).to_vec();
+      stream_state.offset = end;
+      chunk
+    };
+
+    Ok(Some(PendingReadSettle {
+      reader: pending_reader,
+      outcome: ReadOutcome::Chunk(chunk),
+    }))
+  })
+}
+
+fn close_readable_stream(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  callee: GcObject,
+  stream_obj: GcObject,
+) -> Result<Option<PendingReadSettle>, VmError> {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+    let stream_state = state
+      .streams
+      .get_mut(&WeakGcObject::from(stream_obj))
+      .ok_or(VmError::TypeError("ReadableStream close: invalid stream"))?;
+
+    if stream_state.state != StreamLifecycleState::Readable {
+      return Ok(None);
+    }
+
+    stream_state.close_requested = true;
+    if stream_state.queue.is_empty() {
+      stream_state.state = StreamLifecycleState::Closed;
+    }
+
+    let pending_reader = stream_state.pending_reader.take();
+    Ok(pending_reader.map(|reader| PendingReadSettle {
+      reader,
+      outcome: ReadOutcome::Done,
+    }))
+  })
+}
+
+fn error_readable_stream(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  callee: GcObject,
+  stream_obj: GcObject,
+  error_message: String,
+) -> Result<Option<PendingReadSettle>, VmError> {
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+    let stream_state = state
+      .streams
+      .get_mut(&WeakGcObject::from(stream_obj))
+      .ok_or(VmError::TypeError("ReadableStream error: invalid stream"))?;
+
+    stream_state.state = StreamLifecycleState::Errored;
+    stream_state.close_requested = true;
+    stream_state.error_message = Some(error_message.clone());
+    stream_state.bytes.clear();
+    stream_state.queue.clear();
+    stream_state.init = None;
+    stream_state.offset = 0;
+
+    let pending_reader = stream_state.pending_reader.take();
+    Ok(pending_reader.map(|reader| PendingReadSettle {
+      reader,
+      outcome: ReadOutcome::Error(error_message),
+    }))
+  })
 }
 
 pub(crate) fn create_readable_byte_stream_from_bytes(
@@ -711,6 +1131,895 @@ pub(crate) fn is_readable_stream_object(vm: &Vm, heap: &Heap, obj: GcObject) -> 
     }
   }
   false
+}
+
+fn require_object(this: Value, err: &'static str) -> Result<GcObject, VmError> {
+  match this {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::TypeError(err)),
+  }
+}
+
+fn require_writable_stream(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let obj = require_object(this, "WritableStream: illegal invocation")?;
+  match get_data_prop(scope, obj, WRITABLE_STREAM_BRAND_KEY)? {
+    Value::Bool(true) => Ok(obj),
+    _ => Err(VmError::TypeError("WritableStream: illegal invocation")),
+  }
+}
+
+fn require_writable_stream_writer(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let obj = require_object(this, "WritableStreamDefaultWriter: illegal invocation")?;
+  match get_data_prop(scope, obj, WRITABLE_STREAM_WRITER_BRAND_KEY)? {
+    Value::Bool(true) => Ok(obj),
+    _ => Err(VmError::TypeError(
+      "WritableStreamDefaultWriter: illegal invocation",
+    )),
+  }
+}
+
+fn require_transform_controller(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let obj = require_object(this, "TransformStreamDefaultController: illegal invocation")?;
+  match get_data_prop(scope, obj, TRANSFORM_CONTROLLER_BRAND_KEY)? {
+    Value::Bool(true) => Ok(obj),
+    _ => Err(VmError::TypeError(
+      "TransformStreamDefaultController: illegal invocation",
+    )),
+  }
+}
+
+fn require_transform_sink(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let obj = require_object(this, "TransformStream sink: illegal invocation")?;
+  match get_data_prop(scope, obj, TRANSFORM_SINK_BRAND_KEY)? {
+    Value::Bool(true) => Ok(obj),
+    _ => Err(VmError::TypeError("TransformStream sink: illegal invocation")),
+  }
+}
+
+fn vm_error_to_rejection_value(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm, "streams require intrinsics (create a Realm first)")?;
+  match err {
+    VmError::Throw(value) => Ok(value),
+    VmError::ThrowWithStack { value, .. } => Ok(value),
+    VmError::TypeError(message) => new_type_error_object(scope, &intr, message),
+    VmError::NotCallable => new_type_error_object(scope, &intr, "value is not callable"),
+    VmError::NotConstructable => new_type_error_object(scope, &intr, "value is not a constructor"),
+    other => Err(other),
+  }
+}
+
+fn promise_reject_with_reason(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  reason: Value,
+) -> Result<Value, VmError> {
+  let cap: PromiseCapability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
+  let promise = scope.push_root(cap.promise)?;
+  let reject = scope.push_root(cap.reject)?;
+  scope.push_root(reason)?;
+  vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+  Ok(promise)
+}
+
+fn create_writable_stream_from_sink(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  callee: GcObject,
+  sink_obj: GcObject,
+  sink_write: Value,
+  sink_close: Value,
+  sink_abort: Value,
+) -> Result<GcObject, VmError> {
+  let proto =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| Ok(state.writable_stream_proto))?;
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+
+  set_data_prop(scope, obj, WRITABLE_STREAM_BRAND_KEY, Value::Bool(true), false)?;
+  set_data_prop(scope, obj, WRITABLE_STREAM_SINK_KEY, Value::Object(sink_obj), false)?;
+  set_data_prop(scope, obj, WRITABLE_STREAM_SINK_WRITE_KEY, sink_write, false)?;
+  set_data_prop(scope, obj, WRITABLE_STREAM_SINK_CLOSE_KEY, sink_close, false)?;
+  set_data_prop(scope, obj, WRITABLE_STREAM_SINK_ABORT_KEY, sink_abort, false)?;
+
+  Ok(obj)
+}
+
+// === WritableStream ===========================================================
+
+fn writable_stream_ctor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "WritableStream constructor requires 'new'",
+  ))
+}
+
+fn writable_stream_ctor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm, "WritableStream requires intrinsics")?;
+
+  // Determine instance prototype.
+  let proto = {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(callee))?;
+    let key = alloc_key(&mut scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(callee, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => intr.object_prototype(),
+    }
+  };
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+
+  set_data_prop(scope, obj, WRITABLE_STREAM_BRAND_KEY, Value::Bool(true), false)?;
+
+  let sink_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let sink_obj = match sink_val {
+    Value::Object(obj) => obj,
+    _ => {
+      let o = scope.alloc_object()?;
+      scope.push_root(Value::Object(o))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(o, Some(intr.object_prototype()))?;
+      o
+    }
+  };
+
+  let mut sink_write = Value::Undefined;
+  let mut sink_close = Value::Undefined;
+  let mut sink_abort = Value::Undefined;
+
+  if matches!(sink_val, Value::Object(_)) {
+    scope.push_root(Value::Object(sink_obj))?;
+    let write_key = alloc_key(scope, "write")?;
+    let close_key = alloc_key(scope, "close")?;
+    let abort_key = alloc_key(scope, "abort")?;
+
+    let write_val = vm.get_with_host_and_hooks(host, scope, hooks, sink_obj, write_key)?;
+    if scope.heap().is_callable(write_val)? {
+      sink_write = write_val;
+    }
+    let close_val = vm.get_with_host_and_hooks(host, scope, hooks, sink_obj, close_key)?;
+    if scope.heap().is_callable(close_val)? {
+      sink_close = close_val;
+    }
+    let abort_val = vm.get_with_host_and_hooks(host, scope, hooks, sink_obj, abort_key)?;
+    if scope.heap().is_callable(abort_val)? {
+      sink_abort = abort_val;
+    }
+  }
+
+  set_data_prop(scope, obj, WRITABLE_STREAM_SINK_KEY, Value::Object(sink_obj), false)?;
+  set_data_prop(scope, obj, WRITABLE_STREAM_SINK_WRITE_KEY, sink_write, false)?;
+  set_data_prop(scope, obj, WRITABLE_STREAM_SINK_CLOSE_KEY, sink_close, false)?;
+  set_data_prop(scope, obj, WRITABLE_STREAM_SINK_ABORT_KEY, sink_abort, false)?;
+
+  Ok(Value::Object(obj))
+}
+
+fn writable_stream_get_writer_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let stream_obj = require_writable_stream(scope, this)?;
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let writer_proto = match slots
+    .get(WRITABLE_STREAM_GET_WRITER_SLOT_WRITER_PROTO)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "WritableStream.getWriter missing writer prototype slot",
+      ))
+    }
+  };
+
+  let writer_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(writer_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writer_obj, Some(writer_proto))?;
+
+  set_data_prop(
+    scope,
+    writer_obj,
+    WRITABLE_STREAM_WRITER_BRAND_KEY,
+    Value::Bool(true),
+    false,
+  )?;
+  set_data_prop(
+    scope,
+    writer_obj,
+    WRITABLE_STREAM_WRITER_STREAM_KEY,
+    Value::Object(stream_obj),
+    false,
+  )?;
+
+  Ok(Value::Object(writer_obj))
+}
+
+fn writer_call_sink(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  sink_obj: GcObject,
+  method: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let result = vm.call_with_host_and_hooks(host, scope, hooks, method, Value::Object(sink_obj), args);
+  match result {
+    Ok(value) => promise_resolve_with_host_and_hooks(vm, scope, host, hooks, value),
+    Err(err) => {
+      let reason = vm_error_to_rejection_value(vm, scope, err)?;
+      promise_reject_with_reason(vm, scope, host, hooks, reason)
+    }
+  }
+}
+
+fn writer_write_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let writer_obj = require_writable_stream_writer(scope, this)?;
+  let stream = match get_data_prop(scope, writer_obj, WRITABLE_STREAM_WRITER_STREAM_KEY)? {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("WritableStreamDefaultWriter: illegal invocation")),
+  };
+
+  let sink_obj = match get_data_prop(scope, stream, WRITABLE_STREAM_SINK_KEY)? {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("WritableStreamDefaultWriter: illegal invocation")),
+  };
+  let sink_write = get_data_prop(scope, stream, WRITABLE_STREAM_SINK_WRITE_KEY)?;
+
+  if matches!(sink_write, Value::Undefined) {
+    return promise_resolve_with_host_and_hooks(vm, scope, host, hooks, Value::Undefined);
+  }
+
+  let chunk = args.get(0).copied().unwrap_or(Value::Undefined);
+  writer_call_sink(vm, scope, host, hooks, sink_obj, sink_write, &[chunk])
+}
+
+fn writer_close_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let writer_obj = require_writable_stream_writer(scope, this)?;
+  let stream = match get_data_prop(scope, writer_obj, WRITABLE_STREAM_WRITER_STREAM_KEY)? {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("WritableStreamDefaultWriter: illegal invocation")),
+  };
+
+  let sink_obj = match get_data_prop(scope, stream, WRITABLE_STREAM_SINK_KEY)? {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("WritableStreamDefaultWriter: illegal invocation")),
+  };
+  let sink_close = get_data_prop(scope, stream, WRITABLE_STREAM_SINK_CLOSE_KEY)?;
+
+  if matches!(sink_close, Value::Undefined) {
+    return promise_resolve_with_host_and_hooks(vm, scope, host, hooks, Value::Undefined);
+  }
+
+  writer_call_sink(vm, scope, host, hooks, sink_obj, sink_close, &[])
+}
+
+fn writer_abort_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let writer_obj = require_writable_stream_writer(scope, this)?;
+  let stream = match get_data_prop(scope, writer_obj, WRITABLE_STREAM_WRITER_STREAM_KEY)? {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("WritableStreamDefaultWriter: illegal invocation")),
+  };
+
+  let sink_obj = match get_data_prop(scope, stream, WRITABLE_STREAM_SINK_KEY)? {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::TypeError("WritableStreamDefaultWriter: illegal invocation")),
+  };
+  let sink_abort = get_data_prop(scope, stream, WRITABLE_STREAM_SINK_ABORT_KEY)?;
+
+  if matches!(sink_abort, Value::Undefined) {
+    return promise_resolve_with_host_and_hooks(vm, scope, host, hooks, Value::Undefined);
+  }
+
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  writer_call_sink(vm, scope, host, hooks, sink_obj, sink_abort, &[reason])
+}
+
+// === TransformStream ==========================================================
+
+fn transform_stream_ctor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "TransformStream constructor requires 'new'",
+  ))
+}
+
+fn transform_controller_readable_stream(scope: &mut Scope<'_>, controller: GcObject) -> Result<GcObject, VmError> {
+  match get_data_prop(scope, controller, TRANSFORM_CONTROLLER_READABLE_STREAM_KEY)? {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::TypeError(
+      "TransformStreamDefaultController: illegal invocation",
+    )),
+  }
+}
+
+fn transform_controller_enqueue_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let controller_obj = require_transform_controller(scope, this)?;
+  let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
+
+  let chunk = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(chunk_obj) = chunk else {
+    return Err(VmError::TypeError(
+      "TransformStreamDefaultController.enqueue expects a Uint8Array",
+    ));
+  };
+  if !scope.heap().is_uint8_array_object(chunk_obj) {
+    return Err(VmError::TypeError(
+      "TransformStreamDefaultController.enqueue expects a Uint8Array",
+    ));
+  }
+
+  let bytes = scope.heap().uint8_array_data(chunk_obj)?.to_vec();
+  let pending = enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?;
+  if let Some(pending) = pending {
+    settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn transform_controller_error_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let controller_obj = require_transform_controller(scope, this)?;
+  let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
+
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  let reason_string = scope.heap_mut().to_string(reason)?;
+  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+
+  let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
+  if let Some(pending) = pending {
+    settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn transform_controller_terminate_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let controller_obj = require_transform_controller(scope, this)?;
+  let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
+
+  let pending = close_readable_stream(vm, scope, callee, stream_obj)?;
+  if let Some(pending) = pending {
+    settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn transform_sink_controller(scope: &mut Scope<'_>, sink_obj: GcObject) -> Result<GcObject, VmError> {
+  match get_data_prop(scope, sink_obj, TRANSFORM_SINK_CONTROLLER_KEY)? {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::TypeError("TransformStream sink: illegal invocation")),
+  }
+}
+
+fn transform_sink_write_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sink_obj = require_transform_sink(scope, this)?;
+
+  let controller_obj = transform_sink_controller(scope, sink_obj)?;
+  let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
+
+  let transformer = get_data_prop(scope, sink_obj, TRANSFORM_SINK_TRANSFORMER_KEY)?;
+  let transform = get_data_prop(scope, sink_obj, TRANSFORM_SINK_TRANSFORM_KEY)?;
+
+  let chunk = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  if scope.heap().is_callable(transform)? {
+    let receiver = match transformer {
+      Value::Object(obj) => Value::Object(obj),
+      _ => Value::Undefined,
+    };
+    let call_res = vm.call_with_host_and_hooks(
+      host,
+      scope,
+      hooks,
+      transform,
+      receiver,
+      &[chunk, Value::Object(controller_obj)],
+    );
+    return match call_res {
+      Ok(value) => Ok(value),
+      Err(err) => {
+        // Error the readable side and propagate the thrown error to the writer.
+        let pending = error_readable_stream(vm, scope, callee, stream_obj, err.to_string())?;
+        if let Some(pending) = pending {
+          settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+        }
+        Err(err)
+      }
+    };
+  }
+
+  // Default transform is pass-through: `controller.enqueue(chunk)`.
+  let pending = match chunk {
+    Value::Object(obj) if scope.heap().is_uint8_array_object(obj) => {
+      let bytes = scope.heap().uint8_array_data(obj)?.to_vec();
+      enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
+    }
+    _ => {
+      return Err(VmError::TypeError(
+        "TransformStream default transform expects Uint8Array chunks",
+      ))
+    }
+  };
+
+  if let Some(pending) = pending {
+    settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn transform_close_after_flush_fulfilled_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let stream_obj = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TransformStream close-after-flush callback missing stream slot",
+      ))
+    }
+  };
+
+  let pending = close_readable_stream(vm, scope, callee, stream_obj)?;
+  if let Some(pending) = pending {
+    settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn transform_close_after_flush_rejected_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let stream_obj = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TransformStream close-after-flush callback missing stream slot",
+      ))
+    }
+  };
+
+  let reason_string = scope.heap_mut().to_string(reason)?;
+  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+  let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
+  if let Some(pending) = pending {
+    settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+  }
+
+  Err(VmError::Throw(reason))
+}
+
+fn transform_sink_close_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let sink_obj = require_transform_sink(scope, this)?;
+  let controller_obj = transform_sink_controller(scope, sink_obj)?;
+  let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
+
+  let transformer = get_data_prop(scope, sink_obj, TRANSFORM_SINK_TRANSFORMER_KEY)?;
+  let flush = get_data_prop(scope, sink_obj, TRANSFORM_SINK_FLUSH_KEY)?;
+
+  if !scope.heap().is_callable(flush)? {
+    let pending = close_readable_stream(vm, scope, callee, stream_obj)?;
+    if let Some(pending) = pending {
+      settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+    }
+    return Ok(Value::Undefined);
+  }
+
+  let receiver = match transformer {
+    Value::Object(obj) => Value::Object(obj),
+    _ => Value::Undefined,
+  };
+  let flush_result = match vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    flush,
+    receiver,
+    &[Value::Object(controller_obj)],
+  ) {
+    Ok(value) => value,
+    Err(err) => {
+      let pending = error_readable_stream(vm, scope, callee, stream_obj, err.to_string())?;
+      if let Some(pending) = pending {
+        settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+      }
+      return Err(err);
+    }
+  };
+
+  let flush_promise = promise_resolve_with_host_and_hooks(vm, scope, host, hooks, flush_result)?;
+  let Value::Object(flush_promise_obj) = flush_promise else {
+    return Err(VmError::InvariantViolation("PromiseResolve must return an object"));
+  };
+
+  let (fulfilled_call_id, rejected_call_id) =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| {
+      Ok((
+        state.transform_close_after_flush_fulfilled_call_id,
+        state.transform_close_after_flush_rejected_call_id,
+      ))
+    })?;
+
+  let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
+  let realm_slot = Value::Number(realm_id.to_raw() as f64);
+
+  // Root stream and promise across callback allocation.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(stream_obj))?;
+  scope.push_root(flush_promise)?;
+
+  let on_fulfilled_name = scope.alloc_string("TransformStream flush fulfilled")?;
+  scope.push_root(Value::String(on_fulfilled_name))?;
+  let on_fulfilled = scope.alloc_native_function_with_slots(
+    fulfilled_call_id,
+    None,
+    on_fulfilled_name,
+    1,
+    &[realm_slot, Value::Object(stream_obj)],
+  )?;
+  scope.push_root(Value::Object(on_fulfilled))?;
+
+  let on_rejected_name = scope.alloc_string("TransformStream flush rejected")?;
+  scope.push_root(Value::String(on_rejected_name))?;
+  let on_rejected = scope.alloc_native_function_with_slots(
+    rejected_call_id,
+    None,
+    on_rejected_name,
+    1,
+    &[realm_slot, Value::Object(stream_obj)],
+  )?;
+  scope.push_root(Value::Object(on_rejected))?;
+
+  let derived = perform_promise_then_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(flush_promise_obj),
+    Some(Value::Object(on_fulfilled)),
+    Some(Value::Object(on_rejected)),
+  )?;
+
+  Ok(derived)
+}
+
+fn transform_sink_abort_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sink_obj = require_transform_sink(scope, this)?;
+  let controller_obj = transform_sink_controller(scope, sink_obj)?;
+  let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
+
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  let reason_string = scope.heap_mut().to_string(reason)?;
+  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+
+  let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
+  if let Some(pending) = pending {
+    settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn transform_stream_ctor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm, "TransformStream requires intrinsics")?;
+
+  // Determine instance prototype.
+  let proto = {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(callee))?;
+    let key = alloc_key(&mut scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(callee, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => intr.object_prototype(),
+    }
+  };
+
+  let ts_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(ts_obj))?;
+  scope.heap_mut().object_set_prototype(ts_obj, Some(proto))?;
+
+  // Allocate `readable` and the internal controller for enqueuing.
+  let readable = create_readable_byte_stream_dynamic(vm, scope, callee)?;
+  scope.push_root(Value::Object(readable))?;
+
+  let (controller_proto, sink_write, sink_close, sink_abort) = {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    let controller_proto = match slots
+      .get(TRANSFORM_STREAM_CTOR_SLOT_CONTROLLER_PROTO)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "TransformStream constructor missing controller prototype slot",
+        ))
+      }
+    };
+
+    let sink_write = match slots
+      .get(TRANSFORM_STREAM_CTOR_SLOT_SINK_WRITE_FN)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => Value::Object(obj),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "TransformStream constructor missing sink write function slot",
+        ))
+      }
+    };
+    let sink_close = match slots
+      .get(TRANSFORM_STREAM_CTOR_SLOT_SINK_CLOSE_FN)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => Value::Object(obj),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "TransformStream constructor missing sink close function slot",
+        ))
+      }
+    };
+    let sink_abort = match slots
+      .get(TRANSFORM_STREAM_CTOR_SLOT_SINK_ABORT_FN)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => Value::Object(obj),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "TransformStream constructor missing sink abort function slot",
+        ))
+      }
+    };
+
+    (controller_proto, sink_write, sink_close, sink_abort)
+  };
+
+  let controller_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(controller_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(controller_obj, Some(controller_proto))?;
+
+  set_data_prop(
+    scope,
+    controller_obj,
+    TRANSFORM_CONTROLLER_BRAND_KEY,
+    Value::Bool(true),
+    false,
+  )?;
+  set_data_prop(
+    scope,
+    controller_obj,
+    TRANSFORM_CONTROLLER_READABLE_STREAM_KEY,
+    Value::Object(readable),
+    false,
+  )?;
+
+  // Parse transformer `{ transform, flush }`.
+  let transformer_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut transformer_obj = Value::Undefined;
+  let mut transform_fn = Value::Undefined;
+  let mut flush_fn = Value::Undefined;
+
+  if let Value::Object(obj) = transformer_val {
+    transformer_obj = Value::Object(obj);
+
+    scope.push_root(transformer_val)?;
+    let transform_key = alloc_key(scope, "transform")?;
+    let flush_key = alloc_key(scope, "flush")?;
+    let t = vm.get_with_host_and_hooks(host, scope, hooks, obj, transform_key)?;
+    if scope.heap().is_callable(t)? {
+      transform_fn = t;
+    }
+    let f = vm.get_with_host_and_hooks(host, scope, hooks, obj, flush_key)?;
+    if scope.heap().is_callable(f)? {
+      flush_fn = f;
+    }
+  }
+
+  // Create the internal sink object for the writable side.
+  let sink_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(sink_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(sink_obj, Some(intr.object_prototype()))?;
+
+  set_data_prop(
+    scope,
+    sink_obj,
+    TRANSFORM_SINK_BRAND_KEY,
+    Value::Bool(true),
+    false,
+  )?;
+  set_data_prop(
+    scope,
+    sink_obj,
+    TRANSFORM_SINK_TRANSFORMER_KEY,
+    transformer_obj,
+    false,
+  )?;
+  set_data_prop(
+    scope,
+    sink_obj,
+    TRANSFORM_SINK_TRANSFORM_KEY,
+    transform_fn,
+    false,
+  )?;
+  set_data_prop(scope, sink_obj, TRANSFORM_SINK_FLUSH_KEY, flush_fn, false)?;
+  set_data_prop(
+    scope,
+    sink_obj,
+    TRANSFORM_SINK_CONTROLLER_KEY,
+    Value::Object(controller_obj),
+    false,
+  )?;
+
+  // Attach sink methods to the object so `WritableStreamDefaultWriter` can call them.
+  let write_key = alloc_key(scope, "write")?;
+  let close_key = alloc_key(scope, "close")?;
+  let abort_key = alloc_key(scope, "abort")?;
+  scope.define_property(sink_obj, write_key, data_desc(sink_write, true))?;
+  scope.define_property(sink_obj, close_key, data_desc(sink_close, true))?;
+  scope.define_property(sink_obj, abort_key, data_desc(sink_abort, true))?;
+
+  let writable = create_writable_stream_from_sink(vm, scope, callee, sink_obj, sink_write, sink_close, sink_abort)?;
+  scope.push_root(Value::Object(writable))?;
+
+  let readable_key = alloc_key(scope, "readable")?;
+  let writable_key = alloc_key(scope, "writable")?;
+  scope.define_property(ts_obj, readable_key, read_only_data_desc(Value::Object(readable)))?;
+  scope.define_property(ts_obj, writable_key, read_only_data_desc(Value::Object(writable)))?;
+
+  Ok(Value::Object(ts_obj))
 }
 
 pub fn install_window_streams_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) -> Result<(), VmError> {
@@ -931,6 +2240,323 @@ pub fn install_window_streams_bindings(vm: &mut Vm, realm: &Realm, heap: &mut He
   let reader_ctor_key = alloc_key(&mut scope, "ReadableStreamDefaultReader")?;
   scope.define_property(global, reader_ctor_key, data_desc(Value::Object(reader_ctor), true))?;
 
+  // --- WritableStream ---------------------------------------------------------
+  let writable_stream_call_id: NativeFunctionId = vm.register_native_call(writable_stream_ctor_call)?;
+  let writable_stream_construct_id: NativeConstructId =
+    vm.register_native_construct(writable_stream_ctor_construct)?;
+
+  let writable_stream_name = scope.alloc_string("WritableStream")?;
+  scope.push_root(Value::String(writable_stream_name))?;
+  let writable_stream_ctor = scope.alloc_native_function_with_slots(
+    writable_stream_call_id,
+    Some(writable_stream_construct_id),
+    writable_stream_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(writable_stream_ctor))?;
+  scope.heap_mut().object_set_prototype(
+    writable_stream_ctor,
+    Some(intr.function_prototype()),
+  )?;
+
+  let writable_stream_proto = {
+    let key = alloc_key(&mut scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(writable_stream_ctor, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "WritableStream constructor missing prototype object",
+        ))
+      }
+    }
+  };
+  scope.push_root(Value::Object(writable_stream_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writable_stream_proto, Some(intr.object_prototype()))?;
+
+  // WritableStreamDefaultWriter prototype (not exposed as a global constructor).
+  let writer_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(writer_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writer_proto, Some(intr.object_prototype()))?;
+
+  let writer_write_call_id: NativeFunctionId = vm.register_native_call(writer_write_native)?;
+  let writer_write_name = scope.alloc_string("write")?;
+  scope.push_root(Value::String(writer_write_name))?;
+  let writer_write_fn =
+    scope.alloc_native_function(writer_write_call_id, None, writer_write_name, 1)?;
+  scope.push_root(Value::Object(writer_write_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writer_write_fn, Some(intr.function_prototype()))?;
+  let writer_write_key = alloc_key(&mut scope, "write")?;
+  scope.define_property(
+    writer_proto,
+    writer_write_key,
+    data_desc(Value::Object(writer_write_fn), true),
+  )?;
+
+  let writer_close_call_id: NativeFunctionId = vm.register_native_call(writer_close_native)?;
+  let writer_close_name = scope.alloc_string("close")?;
+  scope.push_root(Value::String(writer_close_name))?;
+  let writer_close_fn =
+    scope.alloc_native_function(writer_close_call_id, None, writer_close_name, 0)?;
+  scope.push_root(Value::Object(writer_close_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writer_close_fn, Some(intr.function_prototype()))?;
+  let writer_close_key = alloc_key(&mut scope, "close")?;
+  scope.define_property(
+    writer_proto,
+    writer_close_key,
+    data_desc(Value::Object(writer_close_fn), true),
+  )?;
+
+  let writer_abort_call_id: NativeFunctionId = vm.register_native_call(writer_abort_native)?;
+  let writer_abort_name = scope.alloc_string("abort")?;
+  scope.push_root(Value::String(writer_abort_name))?;
+  let writer_abort_fn =
+    scope.alloc_native_function(writer_abort_call_id, None, writer_abort_name, 1)?;
+  scope.push_root(Value::Object(writer_abort_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writer_abort_fn, Some(intr.function_prototype()))?;
+  let writer_abort_key = alloc_key(&mut scope, "abort")?;
+  scope.define_property(
+    writer_proto,
+    writer_abort_key,
+    data_desc(Value::Object(writer_abort_fn), true),
+  )?;
+
+  let writer_tag_key = PropertyKey::from_symbol(to_string_tag);
+  let writer_tag_val = scope.alloc_string("WritableStreamDefaultWriter")?;
+  scope.push_root(Value::String(writer_tag_val))?;
+  scope.define_property(
+    writer_proto,
+    writer_tag_key,
+    data_desc(Value::String(writer_tag_val), false),
+  )?;
+
+  let get_writer_call_id: NativeFunctionId = vm.register_native_call(writable_stream_get_writer_native)?;
+  let get_writer_name = scope.alloc_string("getWriter")?;
+  scope.push_root(Value::String(get_writer_name))?;
+  let get_writer_fn = scope.alloc_native_function_with_slots(
+    get_writer_call_id,
+    None,
+    get_writer_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64), Value::Object(writer_proto)],
+  )?;
+  scope.push_root(Value::Object(get_writer_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(get_writer_fn, Some(intr.function_prototype()))?;
+  let get_writer_key = alloc_key(&mut scope, "getWriter")?;
+  scope.define_property(
+    writable_stream_proto,
+    get_writer_key,
+    data_desc(Value::Object(get_writer_fn), true),
+  )?;
+
+  let writable_stream_tag_key = PropertyKey::from_symbol(to_string_tag);
+  let writable_stream_tag_val = scope.alloc_string("WritableStream")?;
+  scope.push_root(Value::String(writable_stream_tag_val))?;
+  scope.define_property(
+    writable_stream_proto,
+    writable_stream_tag_key,
+    data_desc(Value::String(writable_stream_tag_val), false),
+  )?;
+
+  let writable_stream_ctor_key = alloc_key(&mut scope, "WritableStream")?;
+  scope.define_property(
+    global,
+    writable_stream_ctor_key,
+    data_desc(Value::Object(writable_stream_ctor), true),
+  )?;
+
+  // --- TransformStream --------------------------------------------------------
+  // TransformStreamDefaultController prototype (not exposed as a global constructor).
+  let controller_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(controller_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(controller_proto, Some(intr.object_prototype()))?;
+
+  let controller_enqueue_call_id: NativeFunctionId = vm.register_native_call(transform_controller_enqueue_native)?;
+  let controller_enqueue_name = scope.alloc_string("enqueue")?;
+  scope.push_root(Value::String(controller_enqueue_name))?;
+  let controller_enqueue_fn = scope.alloc_native_function_with_slots(
+    controller_enqueue_call_id,
+    None,
+    controller_enqueue_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(controller_enqueue_fn))?;
+  scope.heap_mut().object_set_prototype(
+    controller_enqueue_fn,
+    Some(intr.function_prototype()),
+  )?;
+  let controller_enqueue_key = alloc_key(&mut scope, "enqueue")?;
+  scope.define_property(
+    controller_proto,
+    controller_enqueue_key,
+    data_desc(Value::Object(controller_enqueue_fn), true),
+  )?;
+
+  let controller_error_call_id: NativeFunctionId = vm.register_native_call(transform_controller_error_native)?;
+  let controller_error_name = scope.alloc_string("error")?;
+  scope.push_root(Value::String(controller_error_name))?;
+  let controller_error_fn = scope.alloc_native_function_with_slots(
+    controller_error_call_id,
+    None,
+    controller_error_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(controller_error_fn))?;
+  scope.heap_mut().object_set_prototype(
+    controller_error_fn,
+    Some(intr.function_prototype()),
+  )?;
+  let controller_error_key = alloc_key(&mut scope, "error")?;
+  scope.define_property(
+    controller_proto,
+    controller_error_key,
+    data_desc(Value::Object(controller_error_fn), true),
+  )?;
+
+  let controller_terminate_call_id: NativeFunctionId =
+    vm.register_native_call(transform_controller_terminate_native)?;
+  let controller_terminate_name = scope.alloc_string("terminate")?;
+  scope.push_root(Value::String(controller_terminate_name))?;
+  let controller_terminate_fn = scope.alloc_native_function_with_slots(
+    controller_terminate_call_id,
+    None,
+    controller_terminate_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(controller_terminate_fn))?;
+  scope.heap_mut().object_set_prototype(
+    controller_terminate_fn,
+    Some(intr.function_prototype()),
+  )?;
+  let controller_terminate_key = alloc_key(&mut scope, "terminate")?;
+  scope.define_property(
+    controller_proto,
+    controller_terminate_key,
+    data_desc(Value::Object(controller_terminate_fn), true),
+  )?;
+
+  let sink_write_call_id: NativeFunctionId = vm.register_native_call(transform_sink_write_native)?;
+  let sink_write_name = scope.alloc_string("write")?;
+  scope.push_root(Value::String(sink_write_name))?;
+  let sink_write_fn = scope.alloc_native_function_with_slots(
+    sink_write_call_id,
+    None,
+    sink_write_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(sink_write_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(sink_write_fn, Some(intr.function_prototype()))?;
+
+  let sink_close_call_id: NativeFunctionId = vm.register_native_call(transform_sink_close_native)?;
+  let sink_close_name = scope.alloc_string("close")?;
+  scope.push_root(Value::String(sink_close_name))?;
+  let sink_close_fn = scope.alloc_native_function_with_slots(
+    sink_close_call_id,
+    None,
+    sink_close_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(sink_close_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(sink_close_fn, Some(intr.function_prototype()))?;
+
+  let sink_abort_call_id: NativeFunctionId = vm.register_native_call(transform_sink_abort_native)?;
+  let sink_abort_name = scope.alloc_string("abort")?;
+  scope.push_root(Value::String(sink_abort_name))?;
+  let sink_abort_fn = scope.alloc_native_function_with_slots(
+    sink_abort_call_id,
+    None,
+    sink_abort_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(sink_abort_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(sink_abort_fn, Some(intr.function_prototype()))?;
+
+  let transform_close_after_flush_fulfilled_call_id: NativeFunctionId =
+    vm.register_native_call(transform_close_after_flush_fulfilled_native)?;
+  let transform_close_after_flush_rejected_call_id: NativeFunctionId =
+    vm.register_native_call(transform_close_after_flush_rejected_native)?;
+
+  let ts_call_id: NativeFunctionId = vm.register_native_call(transform_stream_ctor_call)?;
+  let ts_construct_id: NativeConstructId = vm.register_native_construct(transform_stream_ctor_construct)?;
+
+  let ts_name = scope.alloc_string("TransformStream")?;
+  scope.push_root(Value::String(ts_name))?;
+  let ts_ctor = scope.alloc_native_function_with_slots(
+    ts_call_id,
+    Some(ts_construct_id),
+    ts_name,
+    1,
+    &[
+      Value::Number(realm_id.to_raw() as f64),
+      Value::Object(sink_write_fn),
+      Value::Object(sink_close_fn),
+      Value::Object(sink_abort_fn),
+      Value::Object(controller_proto),
+    ],
+  )?;
+  scope.push_root(Value::Object(ts_ctor))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(ts_ctor, Some(intr.function_prototype()))?;
+
+  let ts_proto = {
+    let key = alloc_key(&mut scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(ts_ctor, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "TransformStream constructor missing prototype object",
+        ))
+      }
+    }
+  };
+  scope.push_root(Value::Object(ts_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(ts_proto, Some(intr.object_prototype()))?;
+
+  let ts_tag_key = PropertyKey::from_symbol(to_string_tag);
+  let ts_tag_val = scope.alloc_string("TransformStream")?;
+  scope.push_root(Value::String(ts_tag_val))?;
+  scope.define_property(ts_proto, ts_tag_key, data_desc(Value::String(ts_tag_val), false))?;
+
+  let ts_ctor_key = alloc_key(&mut scope, "TransformStream")?;
+  scope.define_property(global, ts_ctor_key, data_desc(Value::Object(ts_ctor), true))?;
+
   // Register per-realm state.
   let mut registry = registry()
     .lock()
@@ -940,6 +2566,12 @@ pub fn install_window_streams_bindings(vm: &mut Vm, realm: &Realm, heap: &mut He
     StreamRealmState {
       readable_stream_proto: stream_proto,
       reader_proto,
+      writable_stream_proto,
+      writer_proto,
+      transform_stream_proto: ts_proto,
+      transform_controller_proto: controller_proto,
+      transform_close_after_flush_fulfilled_call_id,
+      transform_close_after_flush_rejected_call_id,
       streams: HashMap::new(),
       readers: HashMap::new(),
       last_gc_runs: scope.heap().gc_runs(),
@@ -1123,6 +2755,128 @@ mod tests {
     // Second read should not re-run init.
     let _ = realm.exec_script("lazyReader.read()")?;
     assert_eq!(init_calls.load(Ordering::SeqCst), 1);
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn writable_stream_is_installed_and_writer_write_resolves() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ty = realm.exec_script("typeof WritableStream")?;
+    assert_eq!(get_string(realm.heap(), ty), "function");
+
+    let p = realm.exec_script("new WritableStream().getWriter().write('x')")?;
+    let Value::Object(p_obj) = p else {
+      return Err(VmError::InvariantViolation(
+        "WritableStreamDefaultWriter.write must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(p_obj)?, PromiseState::Fulfilled);
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn transform_stream_can_enqueue_into_readable() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ty = realm.exec_script("typeof TransformStream")?;
+    assert_eq!(get_string(realm.heap(), ty), "function");
+
+    let _ = realm.exec_script(
+      "globalThis.ts = new TransformStream({ transform(chunk, controller) { controller.enqueue(chunk); } });",
+    )?;
+    let _ = realm.exec_script("globalThis.reader = ts.readable.getReader();")?;
+    let read_p = realm.exec_script("globalThis.readPromise = reader.read();")?;
+    let Value::Object(read_p_obj) = read_p else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(read_p_obj)?, PromiseState::Pending);
+
+    let _ = realm.exec_script("globalThis.writer = ts.writable.getWriter();")?;
+    let write_p =
+      realm.exec_script("globalThis.writePromise = writer.write(new Uint8Array([1,2,3]));")?;
+    let Value::Object(write_p_obj) = write_p else {
+      return Err(VmError::InvariantViolation(
+        "WritableStreamDefaultWriter.write must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(write_p_obj)?, PromiseState::Fulfilled);
+
+    // Enqueue should have resolved the pending read.
+    assert_eq!(realm.heap().promise_state(read_p_obj)?, PromiseState::Fulfilled);
+    let Some(result_val) = realm.heap().promise_result(read_p_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Value::Object(result_obj) = result_val else {
+      return Err(VmError::InvariantViolation("read() must resolve to an object"));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+      let done = read_result_prop(&mut scope, result_obj, "done")?;
+      assert_eq!(done, Value::Bool(false));
+      let value = read_result_prop(&mut scope, result_obj, "value")?;
+      let Value::Object(value_obj) = value else {
+        return Err(VmError::InvariantViolation("read() result.value must be an object"));
+      };
+      assert!(scope.heap().is_uint8_array_object(value_obj));
+      assert_eq!(scope.heap().uint8_array_data(value_obj)?, &[1, 2, 3]);
+    }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn text_encoder_stream_can_encode_into_readable() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let _ = realm.exec_script("globalThis.tes = new TextEncoderStream();")?;
+    let _ = realm.exec_script("globalThis.reader = tes.readable.getReader();")?;
+    let read_p = realm.exec_script("globalThis.readPromise = reader.read();")?;
+    let Value::Object(read_p_obj) = read_p else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(read_p_obj)?, PromiseState::Pending);
+
+    let _ = realm.exec_script("globalThis.writer = tes.writable.getWriter();")?;
+    let write_p = realm.exec_script("globalThis.writePromise = writer.write('hi');")?;
+    let Value::Object(write_p_obj) = write_p else {
+      return Err(VmError::InvariantViolation(
+        "WritableStreamDefaultWriter.write must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(write_p_obj)?, PromiseState::Fulfilled);
+
+    assert_eq!(realm.heap().promise_state(read_p_obj)?, PromiseState::Fulfilled);
+    let Some(result_val) = realm.heap().promise_result(read_p_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Value::Object(result_obj) = result_val else {
+      return Err(VmError::InvariantViolation("read() must resolve to an object"));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+      let done = read_result_prop(&mut scope, result_obj, "done")?;
+      assert_eq!(done, Value::Bool(false));
+      let value = read_result_prop(&mut scope, result_obj, "value")?;
+      let Value::Object(value_obj) = value else {
+        return Err(VmError::InvariantViolation("read() result.value must be an object"));
+      };
+      assert!(scope.heap().is_uint8_array_object(value_obj));
+      assert_eq!(scope.heap().uint8_array_data(value_obj)?, b"hi");
+    }
 
     realm.teardown();
     Ok(())
