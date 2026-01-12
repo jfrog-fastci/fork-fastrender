@@ -97,6 +97,90 @@ fn for_of_throw_calls_iterator_return_on_custom_array_iterator() {
 }
 
 #[test]
+fn for_of_over_array_observes_overridden_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log=[];
+      var orig = Array.prototype[Symbol.iterator];
+      Array.prototype[Symbol.iterator] = function(){
+        log.push('called');
+        return orig.call(this);
+      };
+      var s=0; for (var x of [1,2]) { s+=x; }
+      s===3 && log.join(',')==='called'
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn for_of_over_array_observes_callable_proxy_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log=[];
+      var orig = Array.prototype[Symbol.iterator];
+      Array.prototype[Symbol.iterator] = new Proxy(orig, {
+        apply: function(t, thisArg, args){
+          log.push('apply');
+          return t.call(thisArg);
+        }
+      });
+      for (var _ of [1]) {}
+      log[0] === 'apply'
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_spread_over_array_observes_overridden_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log=[];
+      var orig = Array.prototype[Symbol.iterator];
+      Array.prototype[Symbol.iterator] = function(){
+        log.push('called');
+        return orig.call(this);
+      };
+      var out = [...[1,2]].join(',');
+      out === "1,2" && log.join(',') === 'called'
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_spread_over_array_observes_callable_proxy_iterator() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log=[];
+      var orig = Array.prototype[Symbol.iterator];
+      Array.prototype[Symbol.iterator] = new Proxy(orig, {
+        apply: function(t, thisArg, args){
+          log.push('apply');
+          return t.call(thisArg);
+        }
+      });
+      var out = [...[1]];
+      out.length === 1 && out[0] === 1 && log[0] === 'apply'
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn for_of_break_does_not_call_array_return_getter_with_default_iterator() {
   let mut rt = new_runtime();
   let value = rt
