@@ -3731,6 +3731,264 @@ fn location_set_unimplemented_native(
   ))
 }
 
+fn throw_data_clone_error(scope: &mut Scope<'_>) -> Result<VmError, VmError> {
+  Ok(VmError::Throw(make_dom_exception(
+    scope,
+    "DataCloneError",
+    "",
+  )?))
+}
+
+fn history_state_is_uncloneable_dom_object(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+) -> Result<bool, VmError> {
+  // Treat DOM/platform wrapper objects as uncloneable. This is a subset of what the HTML structured
+  // clone algorithm rejects, but is sufficient for `history.pushState` / `history.replaceState`:
+  // Node wrappers, Document wrappers, and host-backed helper objects like DOMStringMap.
+
+  // Fast path: any host slots indicate a host/platform object (e.g. DOMStringMap, TextEncoder).
+  if scope.heap().object_host_slots(obj)?.is_some() {
+    return Ok(true);
+  }
+
+  // DOM wrappers created by `window_realm` use internal, non-enumerable properties as brands.
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  if scope
+    .heap()
+    .object_get_own_data_property_value(obj, &node_id_key)?
+    .is_some()
+  {
+    return Ok(true);
+  }
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  if scope
+    .heap()
+    .object_get_own_data_property_value(obj, &wrapper_document_key)?
+    .is_some()
+  {
+    return Ok(true);
+  }
+  let document_window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+  if scope
+    .heap()
+    .object_get_own_data_property_value(obj, &document_window_key)?
+    .is_some()
+  {
+    return Ok(true);
+  }
+
+  Ok(false)
+}
+
+fn history_state_structured_clone(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<Value, VmError> {
+  // Root the input value so the source graph stays live for the duration of the clone.
+  scope.push_root(value)?;
+
+  let mut seen: HashMap<GcObject, Value> = HashMap::new();
+  history_state_structured_clone_inner(vm, scope, host, hooks, value, &mut seen)
+}
+
+fn history_state_structured_clone_inner(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+  seen: &mut HashMap<GcObject, Value>,
+) -> Result<Value, VmError> {
+  match value {
+    Value::Undefined
+    | Value::Null
+    | Value::Bool(_)
+    | Value::Number(_)
+    | Value::BigInt(_)
+    | Value::String(_) => Ok(value),
+    Value::Symbol(_) => Err(throw_data_clone_error(scope)?),
+    Value::Object(obj) => {
+      if let Some(cloned) = seen.get(&obj).copied() {
+        return Ok(cloned);
+      }
+
+      // Uncloneable types (subset).
+      if scope.heap().is_callable(value)? {
+        return Err(throw_data_clone_error(scope)?);
+      }
+      if scope.heap().is_promise_object(obj) {
+        return Err(throw_data_clone_error(scope)?);
+      }
+      if history_state_is_uncloneable_dom_object(scope, obj)? {
+        return Err(throw_data_clone_error(scope)?);
+      }
+
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::InvariantViolation("structured clone requires intrinsics"))?;
+
+      // ArrayBuffer.
+      if scope.heap().is_array_buffer_object(obj) {
+        let bytes: Vec<u8> = scope.heap().array_buffer_data(obj)?.to_vec();
+        let cloned_buf = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+        scope.push_root(Value::Object(cloned_buf))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(cloned_buf, Some(intr.array_buffer_prototype()))?;
+        let out = Value::Object(cloned_buf);
+        seen.insert(obj, out);
+        return Ok(out);
+      }
+
+      // Uint8Array (minimal): clone visible bytes into a new backing ArrayBuffer.
+      if scope.heap().is_uint8_array_object(obj) {
+        let bytes: Vec<u8> = {
+          let data = scope.heap().uint8_array_data(obj)?;
+          data.to_vec()
+        };
+        let len = bytes.len();
+        let cloned_buf = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+        scope.push_root(Value::Object(cloned_buf))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(cloned_buf, Some(intr.array_buffer_prototype()))?;
+
+        let cloned_view = scope.alloc_uint8_array(cloned_buf, 0, len)?;
+        scope.push_root(Value::Object(cloned_view))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(cloned_view, Some(intr.uint8_array_prototype()))?;
+
+        let out = Value::Object(cloned_view);
+        seen.insert(obj, out);
+        return Ok(out);
+      }
+
+      // Date objects in `vm-js` store an internal numeric payload on a global symbol
+      // "vm-js.internal.DateData".
+      let date_data_value = {
+        let marker = scope.alloc_string("vm-js.internal.DateData")?;
+        scope.push_root(Value::String(marker))?;
+        let marker_sym = scope.heap_mut().symbol_for(marker)?;
+        let marker_key = PropertyKey::from_symbol(marker_sym);
+        scope
+          .heap()
+          .object_get_own_data_property_value(obj, &marker_key)?
+      };
+
+      // Allocate the clone now and insert into `seen` before cloning properties so cyclic graphs are
+      // supported.
+      let (cloned_obj, is_array) = if scope.heap().object_is_array(obj)? {
+        // Preserve Array `length` (including holes) by reading the non-enumerable own data
+        // property directly (avoids getter invocation).
+        let len_key = alloc_key(scope, "length")?;
+        let len = match scope.heap().object_get_own_data_property_value(obj, &len_key)? {
+          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+          _ => 0,
+        };
+        let arr = scope.alloc_array(len)?;
+        scope.push_root(Value::Object(arr))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(arr, Some(intr.array_prototype()))?;
+        (arr, true)
+      } else {
+        let cloned = scope.alloc_object()?;
+        scope.push_root(Value::Object(cloned))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(cloned, Some(intr.object_prototype()))?;
+        (cloned, false)
+      };
+
+      let out = Value::Object(cloned_obj);
+      seen.insert(obj, out);
+
+      // Re-create Date internal slots before copying enumerable properties.
+      if let Some(Value::Number(time)) = date_data_value {
+        let marker = scope.alloc_string("vm-js.internal.DateData")?;
+        scope.push_root(Value::String(marker))?;
+        let marker_sym = scope.heap_mut().symbol_for(marker)?;
+        let marker_key = PropertyKey::from_symbol(marker_sym);
+        scope.define_property(
+          cloned_obj,
+          marker_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Number(time),
+              writable: true,
+            },
+          },
+        )?;
+        scope
+          .heap_mut()
+          .object_set_prototype(cloned_obj, Some(intr.date_prototype()))?;
+      }
+
+      // Copy own enumerable string-keyed properties.
+      //
+      // Note: This intentionally ignores non-enumerable and symbol keys. This covers the common
+      // subset used by History state in the wild.
+      let keys = scope.heap().own_property_keys(obj)?;
+      for key in keys {
+        let PropertyKey::String(_) = key else {
+          continue;
+        };
+        let Some(desc) = scope.heap().object_get_own_property(obj, &key)? else {
+          continue;
+        };
+        if !desc.enumerable {
+          continue;
+        }
+
+        // Obtain the source value. For accessors, invoke `Get` so we clone the observed value.
+        let src_value = match desc.kind {
+          PropertyKind::Data { value, .. } => value,
+          PropertyKind::Accessor { .. } => vm.get_with_host_and_hooks(host, scope, hooks, obj, key)?,
+        };
+
+        let cloned_value = history_state_structured_clone_inner(vm, scope, host, hooks, src_value, seen)?;
+
+        let new_desc = match desc.kind {
+          PropertyKind::Data { writable, .. } => PropertyDescriptor {
+            enumerable: true,
+            configurable: desc.configurable,
+            kind: PropertyKind::Data {
+              value: cloned_value,
+              writable,
+            },
+          },
+          PropertyKind::Accessor { .. } => PropertyDescriptor {
+            enumerable: true,
+            configurable: desc.configurable,
+            kind: PropertyKind::Data {
+              value: cloned_value,
+              writable: true,
+            },
+          },
+        };
+
+        // Root the receiver while defining properties: `define_property` can allocate.
+        {
+          let mut scope = scope.reborrow();
+          scope.push_root(Value::Object(cloned_obj))?;
+          scope.define_property(cloned_obj, key, new_desc)?;
+        }
+      }
+
+      // Silence unused variable warning; `is_array` is only used for clarity when reading.
+      let _ = is_array;
+      Ok(out)
+    }
+  }
+}
+
 fn history_state_change_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3778,6 +4036,7 @@ fn history_state_change_native(
     Value::Undefined => Value::Null,
     other => other,
   };
+  let cloned_state_value = history_state_structured_clone(vm, scope, host, hooks, state_value)?;
 
   // The optional URL argument is resolved against the document URL (not `document.baseURI`).
   let url_value = args.get(2).copied().unwrap_or(Value::Undefined);
@@ -3914,7 +4173,7 @@ fn history_state_change_native(
     if replace {
       if let Some(entry) = data.session_history.entries.get_mut(idx) {
         entry.url = url;
-        scope.heap_mut().set_root(entry.state_root, state_value);
+        scope.heap_mut().set_root(entry.state_root, cloned_state_value);
       }
     } else {
       // Discard any forward history entries.
@@ -3929,7 +4188,7 @@ fn history_state_change_native(
         .entries
         .try_reserve(1)
         .map_err(|_| VmError::OutOfMemory)?;
-      let state_root = scope.heap_mut().add_root(state_value)?;
+      let state_root = scope.heap_mut().add_root(cloned_state_value)?;
       data
         .session_history
         .entries
@@ -3945,9 +4204,14 @@ fn history_state_change_native(
     // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
     let mut scope = scope.reborrow();
     scope.push_root(Value::Object(history_obj))?;
-    scope.push_root(state_value)?;
+    scope.push_root(cloned_state_value)?;
     let state_key = alloc_key(&mut scope, "state")?;
-    scope.define_property(history_obj, state_key, read_only_data_desc(state_value))?;
+    scope.define_property(
+      history_obj,
+      state_key,
+      read_only_data_desc(cloned_state_value),
+    )?;
+  }
 
     let length_key = alloc_key(&mut scope, "length")?;
     scope.define_property(

@@ -897,6 +897,93 @@ fn history_push_state_updates_location_without_navigation() -> Result<()> {
 }
 
 #[test]
+fn history_push_state_clones_objects() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script(
+      r#"(function () {
+  const s = { a: 1 };
+  history.pushState(s, '');
+  s.a = 2;
+  return history.state.a === 1 && history.state !== s;
+})()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn history_push_state_preserves_cycles() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script(
+      r#"(function () {
+  const a = {};
+  a.self = a;
+  history.pushState(a, '');
+  return history.state.self === history.state;
+})()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn history_push_state_throws_data_clone_error_and_does_not_update_url() -> Result<()> {
+  let url = "https://example.com/original";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+
+  let before = realm
+    .exec_script("location.href + '|' + document.URL + '|' + (history.state === null)")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  let before_s = get_string(realm.heap(), before);
+  assert_eq!(before_s, format!("{url}|{url}|true"));
+
+  let err = realm
+    .exec_script("history.pushState(function () {}, '', '/next')")
+    .expect_err("expected DataCloneError");
+  let err_msg = {
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    format_vm_error(heap, err)
+  };
+  assert_eq!(err_msg, "DataCloneError");
+
+  let after = realm
+    .exec_script("location.href + '|' + document.URL + '|' + (history.state === null)")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  let after_s = get_string(realm.heap(), after);
+  assert_eq!(after_s, before_s, "URL/state must not change after DataCloneError");
+
+  let err = realm
+    .exec_script("history.pushState({ f: function () {} }, '', '/next2')")
+    .expect_err("expected DataCloneError");
+  let err_msg = {
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    format_vm_error(heap, err)
+  };
+  assert_eq!(err_msg, "DataCloneError");
+
+  let after2 = realm
+    .exec_script("location.href + '|' + document.URL + '|' + (history.state === null)")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  let after2_s = get_string(realm.heap(), after2);
+  assert_eq!(
+    after2_s, before_s,
+    "URL/state must not change after nested DataCloneError"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn history_go_zero_requests_reload_and_interrupts() -> Result<()> {
   let mut realm = WindowRealm::new_with_js_execution_options(
     WindowRealmConfig::new("https://example.com/"),
