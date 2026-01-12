@@ -135,7 +135,7 @@ test-all: test test-typecheck test-minify
 # - stable hash sharding: --shard-strategy hash
 # - CI gate: --fail-on new (and XPASS is treated as failure)
 conformance-upstream shard="0/16":
-  bash "{{justfile_directory()}}/scripts/cargo_agent.sh" run -p typecheck-ts-harness --release -- \
+  timeout -k 10 1800 bash "{{justfile_directory()}}/scripts/cargo_agent.sh" run -p typecheck-ts-harness --release -- \
   conformance \
   --root parse-js/tests/TypeScript/tests/cases/conformance \
   --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
