@@ -1356,6 +1356,47 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     debug.insert_value(self.cg.context, &self.builder, &self.cg.module, scope, var, value, line, col);
   }
 
+  fn dbg_value_locals_from_slots(&self, span: TextRange) {
+    let Some(debug) = self.cg.debug.as_ref() else {
+      return;
+    };
+    if !debug.optimized() {
+      return;
+    }
+    // Emit `dbg.value` only for currently visible locals (per lexical scopes in `self.env`), to
+    // avoid producing debug loads for out-of-scope variables (which can be uninitialized along some
+    // control-flow paths).
+    let mut seen_names: HashSet<NameId> = HashSet::new();
+    for scope in self.env.scopes.iter().rev() {
+      for (&name, &binding) in scope.iter() {
+        if !seen_names.insert(name) {
+          continue;
+        }
+        let Some(slot) = self.locals.get(&binding).copied() else {
+          continue;
+        };
+      let loaded = match slot.kind {
+        TsAbiKind::Number => NativeValue::Number(
+          self
+            .builder
+            .build_load(self.cg.f64_ty, slot.ptr, "dbg.load")
+            .expect("failed to build dbg load")
+            .into_float_value(),
+        ),
+        TsAbiKind::Boolean => NativeValue::Boolean(
+          self
+            .builder
+            .build_load(self.cg.i1_ty, slot.ptr, "dbg.load")
+            .expect("failed to build dbg load")
+            .into_int_value(),
+        ),
+        TsAbiKind::Void => continue,
+      };
+      self.dbg_value(binding, loaded, span);
+    }
+    }
+  }
+
   fn with_body<R>(
     &mut self,
     body_id: hir_js::BodyId,
@@ -1889,6 +1930,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build logical-and rhs branch");
 
     self.builder.position_at_end(end_bb);
+    self.dbg_value_locals_from_slots(span.range);
     match expected {
       TsAbiKind::Void => {
         if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
@@ -1964,6 +2006,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build logical-or rhs branch");
 
     self.builder.position_at_end(end_bb);
+    self.dbg_value_locals_from_slots(span.range);
     match expected {
       TsAbiKind::Void => {
         if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
@@ -2015,6 +2058,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     consequent: StmtId,
     alternate: Option<StmtId>,
   ) -> Result<bool, Vec<Diagnostic>> {
+    let test_span = self.expr_data(test)?.span;
     let cond_val = self.codegen_expr(test)?;
     let cond_i1 = self.is_truthy_i1(cond_val);
 
@@ -2038,6 +2082,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       }
 
       self.builder.position_at_end(cont_bb);
+      self.dbg_value_locals_from_slots(test_span);
       return Ok(true);
     }
 
@@ -2073,6 +2118,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
     if let Some(cont) = cont_bb {
       self.builder.position_at_end(cont);
+      self.dbg_value_locals_from_slots(test_span);
       Ok(true)
     } else {
       Ok(false)
@@ -2085,6 +2131,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     test: ExprId,
     body: StmtId,
   ) -> Result<bool, Vec<Diagnostic>> {
+    let test_span = self.expr_data(test)?.span;
     let cond_bb = self.cg.context.append_basic_block(self.func, "while.cond");
     let body_bb = self.cg.context.append_basic_block(self.func, "while.body");
     let latch_bb = self.cg.context.append_basic_block(self.func, "while.latch");
@@ -2096,6 +2143,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build branch");
 
     self.builder.position_at_end(cond_bb);
+    self.dbg_value_locals_from_slots(test_span);
     let cond_val = self.codegen_expr(test)?;
     let cond_i1 = self.is_truthy_i1(cond_val);
     self
@@ -2125,6 +2173,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build while backedge branch");
 
     self.builder.position_at_end(end_bb);
+    self.dbg_value_locals_from_slots(test_span);
     Ok(true)
   }
 
@@ -2134,6 +2183,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     test: ExprId,
     body: StmtId,
   ) -> Result<bool, Vec<Diagnostic>> {
+    let test_span = self.expr_data(test)?.span;
     let body_bb = self.cg.context.append_basic_block(self.func, "do.body");
     let cond_bb = self.cg.context.append_basic_block(self.func, "do.cond");
     let latch_bb = self.cg.context.append_basic_block(self.func, "do.latch");
@@ -2160,6 +2210,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
 
     self.builder.position_at_end(cond_bb);
+    self.dbg_value_locals_from_slots(test_span);
     let cond_val = self.codegen_expr(test)?;
     let cond_i1 = self.is_truthy_i1(cond_val);
     self
@@ -2176,6 +2227,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build do-while backedge branch");
 
     self.builder.position_at_end(end_bb);
+    self.dbg_value_locals_from_slots(test_span);
     Ok(true)
   }
 
@@ -2223,6 +2275,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .expect("failed to build branch");
 
       self.builder.position_at_end(cond_bb);
+      self.dbg_value_locals_from_slots(span.range);
       let cond_i1 = if let Some(test) = test {
         let v = self.codegen_expr(test)?;
         self.is_truthy_i1(v)
@@ -2250,6 +2303,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       self.loop_stack.pop();
 
       self.builder.position_at_end(update_bb);
+      self.dbg_value_locals_from_slots(span.range);
       if let Some(update) = update {
         let _ = self.codegen_expr(update)?;
       }
@@ -2259,6 +2313,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         .expect("failed to build branch");
 
       self.builder.position_at_end(end_bb);
+      self.dbg_value_locals_from_slots(span.range);
       Ok(true)
     })();
 
