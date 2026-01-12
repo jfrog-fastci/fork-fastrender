@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate};
 use hir_js::{
-  ArrayElement, ArrayLiteral, Body, BodyId, CallExpr, Expr, ExprId, ExprKind, LowerResult, MemberExpr,
-  ObjectKey, ObjectLiteral, ObjectProperty,
+  ArrayElement, ArrayLiteral, Body, BodyId, CallExpr, Expr, ExprId, ExprKind, LowerResult,
+  MemberExpr, ObjectKey, ObjectLiteral, ObjectProperty,
 };
-use knowledge_base::{Api, KnowledgeBase};
+use knowledge_base::{Api, ApiDatabase, KnowledgeBase, TargetEnv};
 
-use crate::callback::analyze_inline_callback;
+use crate::callback::analyze_inline_callback_with_kb;
 use crate::eval::{eval_api_call, CallSiteInfo as EvalCallSiteInfo};
+use crate::target::TargetedKb;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectsTables {
@@ -20,7 +21,16 @@ pub fn analyze_effects_untyped(
   kb: &KnowledgeBase,
   lowered: &LowerResult,
 ) -> HashMap<BodyId, EffectsTables> {
-  analyze_effects_inner(kb, lowered, None)
+  analyze_effects_untyped_for_target(kb, lowered, &TargetEnv::Unknown)
+}
+
+pub fn analyze_effects_untyped_for_target(
+  db: &ApiDatabase,
+  lowered: &LowerResult,
+  target: &TargetEnv,
+) -> HashMap<BodyId, EffectsTables> {
+  let kb = TargetedKb::new(db, target.clone());
+  analyze_effects_inner(&kb, lowered, None)
 }
 
 #[cfg(feature = "typed")]
@@ -29,11 +39,22 @@ pub fn analyze_effects_typed(
   lowered: &LowerResult,
   types: &dyn crate::types::TypeProvider,
 ) -> HashMap<BodyId, EffectsTables> {
-  analyze_effects_inner(kb, lowered, Some(types))
+  analyze_effects_typed_for_target(kb, lowered, &TargetEnv::Unknown, types)
+}
+
+#[cfg(feature = "typed")]
+pub fn analyze_effects_typed_for_target(
+  db: &ApiDatabase,
+  lowered: &LowerResult,
+  target: &TargetEnv,
+  types: &dyn crate::types::TypeProvider,
+) -> HashMap<BodyId, EffectsTables> {
+  let kb = TargetedKb::new(db, target.clone());
+  analyze_effects_inner(&kb, lowered, Some(types))
 }
 
 fn analyze_effects_inner(
-  kb: &KnowledgeBase,
+  kb: &TargetedKb<'_>,
   lowered: &LowerResult,
   #[cfg(feature = "typed")] types: Option<&dyn crate::types::TypeProvider>,
   #[cfg(not(feature = "typed"))] _types: Option<&()>,
@@ -67,8 +88,8 @@ enum VisitState {
   Done,
 }
 
-struct EffectsAnalyzer<'a> {
-  kb: &'a KnowledgeBase,
+struct EffectsAnalyzer<'a, 'db> {
+  kb: &'a TargetedKb<'db>,
   lowered: &'a LowerResult,
   body_id: BodyId,
   body: &'a Body,
@@ -79,8 +100,13 @@ struct EffectsAnalyzer<'a> {
   state: Vec<VisitState>,
 }
 
-impl<'a> EffectsAnalyzer<'a> {
-  fn new(kb: &'a KnowledgeBase, lowered: &'a LowerResult, body_id: BodyId, body: &'a Body) -> Self {
+impl<'a, 'db> EffectsAnalyzer<'a, 'db> {
+  fn new(
+    kb: &'a TargetedKb<'db>,
+    lowered: &'a LowerResult,
+    body_id: BodyId,
+    body: &'a Body,
+  ) -> Self {
     let exprs_len = body.exprs.len();
     Self {
       kb,
@@ -133,13 +159,17 @@ impl<'a> EffectsAnalyzer<'a> {
     match &expr.kind {
       ExprKind::Missing => (EffectSet::UNKNOWN_CALL, Purity::Impure),
 
-      ExprKind::Ident(_) | ExprKind::This | ExprKind::Literal(_) => (EffectSet::empty(), Purity::Pure),
+      ExprKind::Ident(_) | ExprKind::This | ExprKind::Literal(_) => {
+        (EffectSet::empty(), Purity::Pure)
+      }
 
       // These are runtime values but do not perform observable effects on their own.
-      ExprKind::Super | ExprKind::ImportMeta | ExprKind::NewTarget => (EffectSet::empty(), Purity::Pure),
+      ExprKind::Super | ExprKind::ImportMeta | ExprKind::NewTarget => {
+        (EffectSet::empty(), Purity::Pure)
+      }
 
-      ExprKind::TypeAssertion { expr, .. }
-      | ExprKind::Instantiation { expr, .. }
+      ExprKind::Instantiation { expr, .. }
+      | ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.analyze_expr(*expr),
 
@@ -206,7 +236,10 @@ impl<'a> EffectsAnalyzer<'a> {
 
       ExprKind::FunctionExpr { .. } => (EffectSet::ALLOCATES, Purity::Allocating),
 
-      ExprKind::ClassExpr { .. } => (EffectSet::UNKNOWN_CALL | EffectSet::ALLOCATES, Purity::Impure),
+      ExprKind::ClassExpr { .. } => (
+        EffectSet::UNKNOWN_CALL | EffectSet::ALLOCATES,
+        Purity::Impure,
+      ),
 
       ExprKind::Template(tmpl) => {
         let mut effects = EffectSet::ALLOCATES;
@@ -229,11 +262,16 @@ impl<'a> EffectsAnalyzer<'a> {
       }
 
       ExprKind::Yield { expr, .. } => {
-        let (child_e, child_p) = expr.map(|e| self.analyze_expr(e)).unwrap_or((EffectSet::empty(), Purity::Pure));
+        let (child_e, child_p) = expr
+          .map(|e| self.analyze_expr(e))
+          .unwrap_or((EffectSet::empty(), Purity::Pure));
         (child_e | EffectSet::NONDETERMINISTIC, child_p)
       }
 
-      ExprKind::ImportCall { argument, attributes } => {
+      ExprKind::ImportCall {
+        argument,
+        attributes,
+      } => {
         let (arg_e, arg_p) = self.analyze_expr(*argument);
         let (attr_e, attr_p) = attributes
           .map(|e| self.analyze_expr(e))
@@ -309,12 +347,13 @@ impl<'a> EffectsAnalyzer<'a> {
   }
 
   fn eval_resolved_call(&mut self, expr_id: ExprId, call: &CallExpr) -> (EffectSet, Purity) {
-    let resolved = crate::resolve::resolve_call(
+    let resolved = crate::resolve::resolve_call_for_target(
       self.lowered,
       self.body_id,
       self.body,
       expr_id,
-      self.kb,
+      self.kb.db(),
+      self.kb.target(),
       self.types_opt(),
     );
     let Some(resolved) = resolved else {
@@ -340,7 +379,7 @@ impl<'a> EffectsAnalyzer<'a> {
       self.body,
       expr_id,
       self.lowered.names.as_ref(),
-      self.kb,
+      self.kb.db(),
     );
 
     if let Some(resolved) = resolved {
@@ -371,7 +410,10 @@ impl<'a> EffectsAnalyzer<'a> {
     let Some(node) = self.body.exprs.get(callee.0 as usize) else {
       return false;
     };
-    matches!(&node.kind, ExprKind::Member(MemberExpr { optional: true, .. }))
+    matches!(
+      &node.kind,
+      ExprKind::Member(MemberExpr { optional: true, .. })
+    )
   }
 
   fn analyze_member_expr(&mut self, expr_id: ExprId, member: &MemberExpr) -> (EffectSet, Purity) {
@@ -398,7 +440,14 @@ impl<'a> EffectsAnalyzer<'a> {
     // Typed-only: resolve known property getters (e.g. `arr.length`).
     #[cfg(feature = "typed")]
     if let Some(types) = self.types {
-      if let Some(resolved) = crate::resolve::resolve_member(self.kb, self.lowered, self.body_id, expr_id, types) {
+      if let Some(resolved) = crate::resolve::resolve_member_for_target(
+        self.kb.db(),
+        self.kb.target(),
+        self.lowered,
+        self.body_id,
+        expr_id,
+        types,
+      ) {
         if let Some(api) = self.kb.get_by_id(resolved.api_id) {
           let sem = eval_api_call(api, &EvalCallSiteInfo::default());
           effects |= sem.effects;
@@ -527,7 +576,10 @@ impl<'a> EffectsAnalyzer<'a> {
     };
     match &pat.kind {
       hir_js::PatKind::Ident(_) => (EffectSet::empty(), Purity::Pure),
-      hir_js::PatKind::Assign { target, default_value } => {
+      hir_js::PatKind::Assign {
+        target,
+        default_value,
+      } => {
         let (t_e, t_p) = self.analyze_pat_eval(*target);
         let (d_e, d_p) = self.analyze_expr(*default_value);
         (t_e | d_e, Purity::join(t_p, d_p))
@@ -582,7 +634,7 @@ impl<'a> EffectsAnalyzer<'a> {
 
   fn resolve_global_member_api(&self, expr_id: ExprId) -> Option<&Api> {
     let path = self.member_path_string(expr_id)?;
-    let canonical = canonical_name_with_global_prefix_stripping(self.kb, &path)?;
+    let canonical = canonical_name_with_global_prefix_stripping(self.kb.db(), &path)?;
     // Only accept global/static paths (including `Foo.prototype.bar`).
     let api = self.kb.get(canonical)?;
     Some(api)
@@ -621,7 +673,9 @@ impl<'a> EffectsAnalyzer<'a> {
         let expr = self.body.exprs.get(expr.0 as usize)?;
         match &expr.kind {
           ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.clone()),
-          ExprKind::Literal(hir_js::Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
+          ExprKind::Literal(hir_js::Literal::Number(n)) => {
+            Some(crate::js_string::number_literal_to_js_string(n))
+          }
           ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
           ExprKind::Template(tmpl) if tmpl.spans.is_empty() => Some(tmpl.head.clone()),
           _ => None,
@@ -636,17 +690,20 @@ impl<'a> EffectsAnalyzer<'a> {
         return expr;
       };
       match &node.kind {
-        ExprKind::TypeAssertion { expr: inner, .. }
-        | ExprKind::Instantiation { expr: inner, .. }
+        ExprKind::Instantiation { expr: inner, .. }
+        | ExprKind::TypeAssertion { expr: inner, .. }
         | ExprKind::NonNull { expr: inner }
-        | ExprKind::Instantiation { expr: inner, .. }
         | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
         _ => return expr,
       }
     }
   }
 
-  fn build_callsite_info_from_call_args(&self, api: &Api, args: &[hir_js::CallArg]) -> EvalCallSiteInfo {
+  fn build_callsite_info_from_call_args(
+    &self,
+    api: &Api,
+    args: &[hir_js::CallArg],
+  ) -> EvalCallSiteInfo {
     let mut referenced = referenced_arg_indices(api);
 
     let mut len = args.len();
@@ -672,7 +729,9 @@ impl<'a> EffectsAnalyzer<'a> {
       if arg.spread {
         continue;
       }
-      if let Some(cb) = analyze_inline_callback(self.lowered, self.body_id, arg.expr, self.kb) {
+      if let Some(cb) =
+        analyze_inline_callback_with_kb(self.lowered, self.body_id, arg.expr, self.kb)
+      {
         arg_effects[idx] = cb.effects;
         arg_purity[idx] = cb.purity;
         if idx == 0 {
@@ -714,7 +773,7 @@ impl<'a> EffectsAnalyzer<'a> {
       let Some(expr) = args.get(idx).copied() else {
         continue;
       };
-      if let Some(cb) = analyze_inline_callback(self.lowered, self.body_id, expr, self.kb) {
+      if let Some(cb) = analyze_inline_callback_with_kb(self.lowered, self.body_id, expr, self.kb) {
         arg_effects[idx] = cb.effects;
         arg_purity[idx] = cb.purity;
         if idx == 0 {
@@ -798,12 +857,13 @@ impl<'a> EffectsAnalyzer<'a> {
     }
 
     // Model the call itself via KB semantics.
-    let resolved = crate::resolve::resolve_call(
+    let resolved = crate::resolve::resolve_call_for_target(
       self.lowered,
       self.body_id,
       self.body,
       expr_id,
-      self.kb,
+      self.kb.db(),
+      self.kb.target(),
       self.types_opt(),
     );
     let Some(resolved) = resolved else {
@@ -826,7 +886,11 @@ impl<'a> EffectsAnalyzer<'a> {
   }
 
   #[cfg(feature = "hir-semantic-ops")]
-  fn analyze_array_chain(&mut self, array: ExprId, ops: &[hir_js::ArrayChainOp]) -> (EffectSet, Purity) {
+  fn analyze_array_chain(
+    &mut self,
+    array: ExprId,
+    ops: &[hir_js::ArrayChainOp],
+  ) -> (EffectSet, Purity) {
     let mut effects = EffectSet::empty();
     let mut purity = Purity::Pure;
 
@@ -941,7 +1005,10 @@ fn referenced_arg_indices(api: &Api) -> Vec<usize> {
   referenced
 }
 
-fn canonical_name_with_global_prefix_stripping<'a>(kb: &'a KnowledgeBase, name_or_alias: &str) -> Option<&'a str> {
+fn canonical_name_with_global_prefix_stripping<'a>(
+  kb: &'a KnowledgeBase,
+  name_or_alias: &str,
+) -> Option<&'a str> {
   if let Some(canonical) = kb.canonical_name(name_or_alias) {
     return Some(canonical);
   }

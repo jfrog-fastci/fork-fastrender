@@ -1,8 +1,9 @@
 use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 #[cfg(feature = "hir-semantic-ops")]
 use hir_js::{ArrayChainOp, ArrayElement};
-use knowledge_base::{ApiDatabase, ApiId, KnowledgeBase};
+use knowledge_base::{ApiDatabase, ApiId, KnowledgeBase, TargetEnv};
 
+use crate::target::TargetedKb;
 use crate::types::TypeProvider;
 
 fn expr<'a>(lowered: &'a LowerResult, body: BodyId, id: ExprId) -> Option<&'a hir_js::Expr> {
@@ -37,13 +38,25 @@ fn static_object_key_name<'a>(
 }
 
 pub(crate) struct ApiCallResolver<'a> {
-  kb: &'a KnowledgeBase,
+  kb: &'a ApiDatabase,
+  #[cfg(feature = "typed")]
+  target: TargetEnv,
   lowered: &'a LowerResult,
 }
 
 impl<'a> ApiCallResolver<'a> {
-  pub(crate) fn new(kb: &'a KnowledgeBase, lowered: &'a LowerResult) -> Self {
-    Self { kb, lowered }
+  pub(crate) fn new(kb: &'a ApiDatabase, lowered: &'a LowerResult) -> Self {
+    Self {
+      kb,
+      lowered,
+      #[cfg(feature = "typed")]
+      target: TargetEnv::Unknown,
+    }
+  }
+
+  #[cfg(feature = "typed")]
+  pub(crate) fn new_for_target(kb: &'a ApiDatabase, lowered: &'a LowerResult, target: TargetEnv) -> Self {
+    Self { kb, target, lowered }
   }
 
   fn callee_segments(&self, body: BodyId, id: ExprId) -> Option<Vec<String>> {
@@ -256,7 +269,7 @@ impl<'a> ApiCallResolver<'a> {
     // we're resolving call expressions here.
     let resolve_prototype_call = |prefix: &str| -> Option<ApiId> {
       let candidate = format!("{prefix}.prototype.{prop}");
-      let api = self.kb.get(&candidate)?;
+      let api = self.kb.api_for_target(&candidate, &self.target)?;
       if !matches!(api.kind, knowledge_base::ApiKind::Function) {
         return None;
       }
@@ -438,20 +451,22 @@ pub struct ResolvedCall {
   pub args: Vec<ExprId>,
 }
 
-pub fn resolve_call(
+pub fn resolve_call_for_target(
   lower: &LowerResult,
   body_id: BodyId,
   body: &Body,
   call_expr: ExprId,
   db: &ApiDatabase,
+  target: &TargetEnv,
   types: Option<&dyn TypeProvider>,
 ) -> Option<ResolvedCall> {
+  let kb = TargetedKb::new(db, target.clone());
   let expr = body.exprs.get(call_expr.0 as usize)?;
 
   #[cfg(feature = "hir-semantic-ops")]
   match &expr.kind {
     ExprKind::PromiseAll { promises } => {
-      let api = db.get("Promise.all")?;
+      let api = kb.get("Promise.all")?;
       let api_id = api.id;
 
       // `hir-js` lowers `Promise.all([..])` into `PromiseAll { promises }`,
@@ -489,7 +504,7 @@ pub fn resolve_call(
       });
     }
     ExprKind::PromiseRace { promises } => {
-      let api = db.get("Promise.race")?;
+      let api = kb.get("Promise.race")?;
       let api_id = api.id;
 
       // `hir-js` lowers `Promise.race([..])` into `PromiseRace { promises }`,
@@ -527,7 +542,7 @@ pub fn resolve_call(
       });
     }
     ExprKind::ArrayMap { array, callback } => {
-      let api = db.get("Array.prototype.map")?;
+      let api = kb.get("Array.prototype.map")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
@@ -538,7 +553,7 @@ pub fn resolve_call(
       });
     }
     ExprKind::ArrayFilter { array, callback } => {
-      let api = db.get("Array.prototype.filter")?;
+      let api = kb.get("Array.prototype.filter")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
@@ -553,7 +568,7 @@ pub fn resolve_call(
       callback,
       init,
     } => {
-      let api = db.get("Array.prototype.reduce")?;
+      let api = kb.get("Array.prototype.reduce")?;
       let api_id = api.id;
       let mut args = vec![*callback];
       if let Some(init) = init {
@@ -568,7 +583,7 @@ pub fn resolve_call(
       });
     }
     ExprKind::ArrayFind { array, callback } => {
-      let api = db.get("Array.prototype.find")?;
+      let api = kb.get("Array.prototype.find")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
@@ -579,7 +594,7 @@ pub fn resolve_call(
       });
     }
     ExprKind::ArrayEvery { array, callback } => {
-      let api = db.get("Array.prototype.every")?;
+      let api = kb.get("Array.prototype.every")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
@@ -590,7 +605,7 @@ pub fn resolve_call(
       });
     }
     ExprKind::ArraySome { array, callback } => {
-      let api = db.get("Array.prototype.some")?;
+      let api = kb.get("Array.prototype.some")?;
       let api_id = api.id;
       return Some(ResolvedCall {
         call: call_expr,
@@ -677,7 +692,7 @@ pub fn resolve_call(
     }
     ExprKind::KnownApiCall { api: hir_api, args } => {
       let api_id = ApiId::from_raw(hir_api.raw());
-      let api = db.get_by_id(api_id)?;
+      let api = kb.get_by_id(api_id)?;
 
       return Some(ResolvedCall {
         call: call_expr,
@@ -699,6 +714,9 @@ pub fn resolve_call(
     return None;
   }
 
+  #[cfg(feature = "typed")]
+  let resolver = ApiCallResolver::new_for_target(db, lower, target.clone());
+  #[cfg(not(feature = "typed"))]
   let resolver = ApiCallResolver::new(db, lower);
 
   #[cfg(feature = "typed")]
@@ -714,7 +732,7 @@ pub fn resolve_call(
   };
 
   let api_id = api_id?;
-  let api = db.get_by_id(api_id)?.name.clone();
+  let api = kb.get_by_id(api_id)?.name.clone();
 
   let callee = strip_transparent_wrappers(body, call.callee);
   let receiver = match body.exprs.get(callee.0 as usize).map(|e| &e.kind) {
@@ -729,6 +747,17 @@ pub fn resolve_call(
     receiver,
     args: call.args.iter().map(|arg| arg.expr).collect(),
   })
+}
+
+pub fn resolve_call(
+  lower: &LowerResult,
+  body_id: BodyId,
+  body: &Body,
+  call_expr: ExprId,
+  db: &ApiDatabase,
+  types: Option<&dyn TypeProvider>,
+) -> Option<ResolvedCall> {
+  resolve_call_for_target(lower, body_id, body, call_expr, db, &TargetEnv::Unknown, types)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -747,13 +776,15 @@ pub struct ResolvedMember {
 /// - skips optional chaining (`obj?.prop`)
 /// - skips computed keys unless the key expression is a literal (`obj["prop"]`)
 #[cfg(feature = "typed")]
-pub fn resolve_member(
-  kb: &KnowledgeBase,
+pub fn resolve_member_for_target(
+  kb: &ApiDatabase,
+  target: &TargetEnv,
   lowered: &LowerResult,
   body: BodyId,
   member_expr_id: ExprId,
   types: &dyn crate::types::TypeProvider,
 ) -> Option<ResolvedMember> {
+  let kb = TargetedKb::new(kb, target.clone());
   let body_ref = lowered.body(body)?;
   let member_expr = body_ref.exprs.get(member_expr_id.0 as usize)?;
   let ExprKind::Member(member) = &member_expr.kind else {
@@ -771,7 +802,7 @@ pub fn resolve_member(
     matches!(api.kind, knowledge_base::ApiKind::Getter).then_some(api)
   };
 
-  let api = if receiver_is_array_method_receiver(lowered, body, member.object, types) {
+  let entry = if receiver_is_array_method_receiver(lowered, body, member.object, types) {
     resolve_prototype_get("Array")
   } else if receiver_is_string(types, body, member.object) {
     resolve_prototype_get("String")
@@ -797,15 +828,23 @@ pub fn resolve_member(
     None
   }?;
 
-  let api_id = api.id;
-  let api = api.name.clone();
-
   Some(ResolvedMember {
     member: member_expr_id,
-    api,
-    api_id,
+    api: entry.name.clone(),
+    api_id: entry.id,
     receiver: member.object,
   })
+}
+
+#[cfg(feature = "typed")]
+pub fn resolve_member(
+  kb: &KnowledgeBase,
+  lowered: &LowerResult,
+  body: BodyId,
+  member_expr_id: ExprId,
+  types: &dyn crate::types::TypeProvider,
+) -> Option<ResolvedMember> {
+  resolve_member_for_target(kb, &TargetEnv::Unknown, lowered, body, member_expr_id, types)
 }
 
 #[cfg(test)]

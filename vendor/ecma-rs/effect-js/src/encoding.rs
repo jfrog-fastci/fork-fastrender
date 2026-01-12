@@ -1,8 +1,9 @@
 use hir_js::{BinaryOp, BodyId, ExprId, ExprKind, Literal, ObjectKey};
-use knowledge_base::{Api, ApiId, KnowledgeBase};
+use knowledge_base::{Api, ApiDatabase, ApiId, KnowledgeBase, TargetEnv};
 use std::collections::HashMap;
 
 use crate::{resolve_api_use, ApiUseKind};
+use crate::target::TargetedKb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringEncoding {
@@ -22,7 +23,16 @@ pub fn analyze_string_encodings(
   result: &hir_js::LowerResult,
   kb: &KnowledgeBase,
 ) -> HashMap<hir_js::BodyId, EncodingResult> {
-  analyze_string_encodings_impl(result, kb, UntypedOracle)
+  analyze_string_encodings_for_target(result, kb, &TargetEnv::Unknown)
+}
+
+pub fn analyze_string_encodings_for_target(
+  result: &hir_js::LowerResult,
+  db: &ApiDatabase,
+  target: &TargetEnv,
+) -> HashMap<hir_js::BodyId, EncodingResult> {
+  let kb = TargetedKb::new(db, target.clone());
+  analyze_string_encodings_impl(result, &kb, UntypedOracle)
 }
 
 #[cfg(feature = "typed")]
@@ -31,12 +41,23 @@ pub fn analyze_string_encodings_typed(
   kb: &KnowledgeBase,
   types: &impl crate::types::TypeProvider,
 ) -> HashMap<hir_js::BodyId, EncodingResult> {
-  analyze_string_encodings_impl(result, kb, TypedOracle { types })
+  analyze_string_encodings_typed_for_target(result, kb, &TargetEnv::Unknown, types)
+}
+
+#[cfg(feature = "typed")]
+pub fn analyze_string_encodings_typed_for_target(
+  result: &hir_js::LowerResult,
+  db: &ApiDatabase,
+  target: &TargetEnv,
+  types: &impl crate::types::TypeProvider,
+) -> HashMap<hir_js::BodyId, EncodingResult> {
+  let kb = TargetedKb::new(db, target.clone());
+  analyze_string_encodings_impl(result, &kb, TypedOracle { types })
 }
 
 fn analyze_string_encodings_impl<O: TypeOracle + Copy>(
   result: &hir_js::LowerResult,
-  kb: &KnowledgeBase,
+  kb: &TargetedKb<'_>,
   oracle: O,
 ) -> HashMap<hir_js::BodyId, EncodingResult> {
   let mut out = HashMap::new();
@@ -140,16 +161,16 @@ fn type_is_number(types: &dyn crate::types::TypeProvider, body: BodyId, expr: Ex
   }
 }
 
-struct BodyAnalyzer<'a, O> {
+struct BodyAnalyzer<'a, 'db, O> {
   lowered: &'a hir_js::LowerResult,
   body_id: BodyId,
   body: &'a hir_js::Body,
-  kb: &'a KnowledgeBase,
+  kb: &'a TargetedKb<'db>,
   oracle: O,
   cache: Vec<Option<StringEncoding>>,
 }
 
-impl<O: TypeOracle> BodyAnalyzer<'_, O> {
+impl<'a, 'db, O: TypeOracle> BodyAnalyzer<'a, 'db, O> {
   fn encoding_of(&mut self, expr_id: ExprId) -> StringEncoding {
     let idx = expr_id.0 as usize;
     if let Some(Some(encoding)) = self.cache.get(idx).copied() {
@@ -214,7 +235,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
     // to Unknown.
 
     if let Some(resolved) =
-      resolve_api_use(&self.lowered.hir, self.body, expr_id, &self.lowered.names, self.kb)
+      resolve_api_use(&self.lowered.hir, self.body, expr_id, &self.lowered.names, self.kb.db())
     {
       if matches!(resolved.kind, ApiUseKind::Call | ApiUseKind::Construct) {
         let input = call
@@ -296,7 +317,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
 
   fn encoding_of_member(&mut self, expr_id: ExprId) -> StringEncoding {
     if let Some(resolved) =
-      resolve_api_use(&self.lowered.hir, self.body, expr_id, &self.lowered.names, self.kb)
+      resolve_api_use(&self.lowered.hir, self.body, expr_id, &self.lowered.names, self.kb.db())
     {
       if resolved.kind != ApiUseKind::Get {
         return StringEncoding::Unknown;
@@ -312,9 +333,14 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
     #[cfg(feature = "typed")]
     {
       if let Some(types) = self.oracle.type_provider() {
-        if let Some(resolved) =
-          crate::resolve::resolve_member(self.kb, self.lowered, self.body_id, expr_id, types)
-        {
+        if let Some(resolved) = crate::resolve::resolve_member_for_target(
+          self.kb.db(),
+          self.kb.target(),
+          self.lowered,
+          self.body_id,
+          expr_id,
+          types,
+        ) {
           return self
             .encoding_via_kb_id(resolved.api_id, StringEncoding::Unknown)
             .unwrap_or(StringEncoding::Unknown);

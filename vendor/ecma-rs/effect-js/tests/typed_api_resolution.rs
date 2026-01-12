@@ -11,10 +11,6 @@ use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 const INDEX_TS: &str = r#"
-declare module "node:fs" {
-  export function readFile(path: string, cb: (err: any, data: any) => void): void;
-}
-
 declare function fetch(input: string): Promise<unknown>;
 
 import { readFile } from "node:fs";
@@ -78,6 +74,13 @@ anyVal.map((x: number) => x);
 const parsed: { x: number } = JSON.parse("{\"x\": 1}");
 "#;
 
+const NODE_FS_TS: &str = r#"
+export function readFile(path: string, cb: (err: any, data: any) => void): void {
+  void path;
+  void cb;
+}
+"#;
+
 fn es2015_host() -> MemoryHost {
   MemoryHost::with_options(TsCompilerOptions {
     libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
@@ -88,9 +91,12 @@ fn es2015_host() -> MemoryHost {
 #[test]
 fn typed_resolves_instance_apis_and_gates_patterns() {
   let index_key = FileKey::new("index.ts");
+  let node_fs_key = FileKey::new("node_fs.ts");
 
   let mut host = es2015_host();
   host.insert(index_key.clone(), INDEX_TS);
+  host.insert(node_fs_key.clone(), NODE_FS_TS);
+  host.link(index_key.clone(), "node:fs", node_fs_key);
 
   let program = Arc::new(Program::new(host, vec![index_key.clone()]));
   let diagnostics = program.check();

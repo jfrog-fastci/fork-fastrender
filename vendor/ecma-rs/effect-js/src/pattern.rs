@@ -1,9 +1,9 @@
+#[cfg(feature = "hir-semantic-ops")]
+use hir_js::ArrayChainOp;
 use hir_js::{
   Body, BodyId, ExprId, ExprKind, LowerResult, NameId, NameInterner, ObjectKey, ObjectProperty,
   PatId, PatKind, StmtId, StmtKind, TypeExprId, UnaryOp, VarDeclarator,
 };
-#[cfg(feature = "hir-semantic-ops")]
-use hir_js::ArrayChainOp;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecognizedPattern {
@@ -194,7 +194,10 @@ fn visit_stmt(
       }
       visit_stmt(lowered, names, body_id, body, *inner, out);
     }
-    StmtKind::Switch { discriminant, cases } => {
+    StmtKind::Switch {
+      discriminant,
+      cases,
+    } => {
       visit_expr(lowered, names, body_id, body, *discriminant, out);
       for case in cases {
         if let Some(test) = case.test {
@@ -354,7 +357,8 @@ fn visit_expr(
       consequent,
       alternate,
     } => {
-      if let Some(pattern) = match_map_get_or_default(body, names, expr_id, *test, *consequent, *alternate)
+      if let Some(pattern) =
+        match_map_get_or_default(body, names, expr_id, *test, *consequent, *alternate)
       {
         out.push(pattern.with_body(body_id));
       }
@@ -453,7 +457,9 @@ fn visit_expr(
           | ArrayChainOp::Filter(callback)
           | ArrayChainOp::Find(callback)
           | ArrayChainOp::Every(callback)
-          | ArrayChainOp::Some(callback) => visit_expr(lowered, names, body_id, body, callback, out),
+          | ArrayChainOp::Some(callback) => {
+            visit_expr(lowered, names, body_id, body, callback, out)
+          }
           ArrayChainOp::Reduce(callback, init) => {
             visit_expr(lowered, names, body_id, body, callback, out);
             if let Some(init) = init {
@@ -535,12 +541,15 @@ fn visit_expr(
     ExprKind::Await { expr } | ExprKind::NonNull { expr } => {
       visit_expr(lowered, names, body_id, body, *expr, out)
     }
-    ExprKind::Instantiation { expr, .. } => visit_expr(lowered, names, body_id, body, *expr, out),
     ExprKind::Yield { expr: Some(expr), .. } => visit_expr(lowered, names, body_id, body, *expr, out),
     ExprKind::Yield { expr: None, .. } => {}
+    ExprKind::Instantiation { expr, .. } => visit_expr(lowered, names, body_id, body, *expr, out),
     ExprKind::TypeAssertion { expr, .. } => visit_expr(lowered, names, body_id, body, *expr, out),
     ExprKind::Satisfies { expr, .. } => visit_expr(lowered, names, body_id, body, *expr, out),
-    ExprKind::ImportCall { argument, attributes } => {
+    ExprKind::ImportCall {
+      argument,
+      attributes,
+    } => {
       visit_expr(lowered, names, body_id, body, *argument, out);
       if let Some(attributes) = attributes {
         visit_expr(lowered, names, body_id, body, *attributes, out);
@@ -634,7 +643,11 @@ impl PartialMapFilterReduce {
   }
 }
 
-fn match_map_filter_reduce(body: &Body, names: &NameInterner, root: ExprId) -> Option<PartialMapFilterReduce> {
+fn match_map_filter_reduce(
+  body: &Body,
+  names: &NameInterner,
+  root: ExprId,
+) -> Option<PartialMapFilterReduce> {
   #[cfg(feature = "hir-semantic-ops")]
   if let Some(pattern) = match_map_filter_reduce_semantic_ops(body, root) {
     return Some(pattern);
@@ -706,7 +719,10 @@ fn match_map_filter_reduce(body: &Body, names: &NameInterner, root: ExprId) -> O
 }
 
 #[cfg(feature = "hir-semantic-ops")]
-fn match_map_filter_reduce_semantic_ops(body: &Body, root: ExprId) -> Option<PartialMapFilterReduce> {
+fn match_map_filter_reduce_semantic_ops(
+  body: &Body,
+  root: ExprId,
+) -> Option<PartialMapFilterReduce> {
   let ExprKind::ArrayChain { array, ops } = &body.exprs.get(root.0 as usize)?.kind else {
     return None;
   };
@@ -811,7 +827,8 @@ fn match_promise_all_fetch(
   let ExprKind::Call(fetch_call) = &callback_body.exprs.get(returned.0 as usize)?.kind else {
     return None;
   };
-  let ExprKind::Ident(fetch_ident) = &callback_body.exprs.get(fetch_call.callee.0 as usize)?.kind else {
+  let ExprKind::Ident(fetch_ident) = &callback_body.exprs.get(fetch_call.callee.0 as usize)?.kind
+  else {
     return None;
   };
   if names.resolve(*fetch_ident) != Some("fetch") {
@@ -876,8 +893,10 @@ fn match_map_get_or_default(
   consequent: ExprId,
   alternate: ExprId,
 ) -> Option<PartialMapGetOrDefault> {
-  let (map_has_call, map_ident, key_in_has) = match_member_call_with_single_ident_arg(body, names, test, "has")?;
-  let (map_get_call, map_ident2, key_in_get) = match_member_call_with_single_ident_arg(body, names, consequent, "get")?;
+  let (map_has_call, map_ident, key_in_has) =
+    match_member_call_with_single_ident_arg(body, names, test, "has")?;
+  let (map_get_call, map_ident2, key_in_get) =
+    match_member_call_with_single_ident_arg(body, names, consequent, "get")?;
   if map_ident != map_ident2 {
     return None;
   }
@@ -944,7 +963,13 @@ mod tests {
   #[test]
   fn recognizes_map_filter_reduce_chain() {
     let pats = patterns("const r = arr.map(f).filter(g).reduce(h, 0);");
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::MapFilterReduceChain { reduce_init: Some(_), .. })));
+    assert!(pats.iter().any(|p| matches!(
+      p,
+      RecognizedPattern::MapFilterReduceChain {
+        reduce_init: Some(_),
+        ..
+      }
+    )));
   }
 
   #[test]
@@ -956,7 +981,9 @@ async function main(urls: string[]) {
 }
 "#,
     );
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::PromiseAllFetch { .. })));
+    assert!(pats
+      .iter()
+      .any(|p| matches!(p, RecognizedPattern::PromiseAllFetch { .. })));
   }
 
   #[test]
@@ -970,7 +997,9 @@ async function main(iter: AsyncIterable<number>) {
 }
 "#,
     );
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::AsyncIteratorForAwait { .. })));
+    assert!(pats
+      .iter()
+      .any(|p| matches!(p, RecognizedPattern::AsyncIteratorForAwait { .. })));
   }
 
   #[test]
@@ -982,32 +1011,48 @@ const a: T = JSON.parse("{}");
 const b = JSON.parse("{}") as T;
 "#,
     );
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::JsonParseTypedVar { .. })));
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::JsonParseTypedAssertion { .. })));
+    assert!(pats
+      .iter()
+      .any(|p| matches!(p, RecognizedPattern::JsonParseTypedVar { .. })));
+    assert!(pats
+      .iter()
+      .any(|p| matches!(p, RecognizedPattern::JsonParseTypedAssertion { .. })));
   }
 
   #[test]
   fn recognizes_string_template() {
     let pats = patterns("const s = `${a} ${b}`;");
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::StringTemplate { span_count: 2, .. })));
+    assert!(pats
+      .iter()
+      .any(|p| matches!(p, RecognizedPattern::StringTemplate { span_count: 2, .. })));
   }
 
   #[test]
   fn recognizes_object_spread() {
     let pats = patterns("const o = { ...a, b: 1 };");
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::ObjectSpread { spread_count: 1, .. })));
+    assert!(pats.iter().any(|p| matches!(
+      p,
+      RecognizedPattern::ObjectSpread {
+        spread_count: 1,
+        ..
+      }
+    )));
   }
 
   #[test]
   fn recognizes_array_destructure() {
     let pats = patterns("const [a, b] = arr;");
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::ArrayDestructure { arity: 2, .. })));
+    assert!(pats
+      .iter()
+      .any(|p| matches!(p, RecognizedPattern::ArrayDestructure { arity: 2, .. })));
   }
 
   #[test]
   fn recognizes_map_get_or_default() {
     let pats = patterns("const v = map.has(k) ? map.get(k) : 0;");
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::MapGetOrDefault { .. })));
+    assert!(pats
+      .iter()
+      .any(|p| matches!(p, RecognizedPattern::MapGetOrDefault { .. })));
   }
 
   #[test]
@@ -1020,6 +1065,8 @@ function f(x?: number) {
 }
 "#,
     );
-    assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::GuardClause { .. })));
+    assert!(pats
+      .iter()
+      .any(|p| matches!(p, RecognizedPattern::GuardClause { .. })));
   }
 }

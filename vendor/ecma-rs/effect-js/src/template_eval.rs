@@ -3,11 +3,12 @@ use hir_js::{
   Body, BodyId, ExprId, ExprKind, ForHead, ForInit, LowerResult, NameId, ObjectKey, PatId, PatKind,
   StmtId, StmtKind,
 };
-use knowledge_base::{ApiSemantics, KnowledgeBase};
+use knowledge_base::ApiSemantics;
 use std::collections::HashSet;
 
-use crate::callback::analyze_inline_callback;
+use crate::callback::analyze_inline_callback_with_kb;
 use crate::eval::{eval_api_call, CallSiteInfo as EvalCallSiteInfo};
+use crate::target::TargetedKb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CallEval {
@@ -16,7 +17,7 @@ pub(crate) struct CallEval {
 }
 
 pub(crate) fn eval_call_expr(
-  kb: &KnowledgeBase,
+  kb: &TargetedKb<'_>,
   lowered: &LowerResult,
   body: BodyId,
   call_expr: ExprId,
@@ -87,7 +88,7 @@ fn build_arg_models(
   call: &hir_js::CallExpr,
   lowered: &LowerResult,
   body: BodyId,
-  kb: &KnowledgeBase,
+  kb: &TargetedKb<'_>,
 ) -> (Vec<EffectSet>, Vec<Purity>) {
   let mut referenced: Vec<usize> = Vec::new();
   if let EffectTemplate::DependsOnArgs { args, .. } = &api.effects {
@@ -117,7 +118,7 @@ fn build_arg_models(
     if arg.spread {
       continue;
     }
-    if let Some(cb) = analyze_inline_callback(lowered, body, arg.expr, kb) {
+    if let Some(cb) = analyze_inline_callback_with_kb(lowered, body, arg.expr, kb) {
       arg_effects[idx] = cb.effects;
       arg_purity[idx] = cb.purity;
     }
@@ -127,12 +128,12 @@ fn build_arg_models(
 }
 
 fn resolve_api_semantics<'a>(
-  kb: &'a KnowledgeBase,
+  kb: &'a TargetedKb<'_>,
   lowered: &LowerResult,
   body: BodyId,
   call_expr: ExprId,
 ) -> Option<&'a ApiSemantics> {
-  if let Some(name) = crate::resolver::resolve_api_call(kb, lowered, body, call_expr) {
+  if let Some(name) = crate::resolver::resolve_api_call(kb.db(), lowered, body, call_expr) {
     return kb.get(name);
   }
 
@@ -143,9 +144,7 @@ fn resolve_api_semantics<'a>(
   let path = static_callee_path(lowered, body_ref, call.callee)?;
   let api = kb
     .get(&path)
-    .or_else(|| strip_global_prefixes(&path).and_then(|p| kb.get(p)))
-    .or_else(|| resolve_api_alias(kb, &path))
-    .or_else(|| strip_global_prefixes(&path).and_then(|p| resolve_api_alias(kb, p)))?;
+    .or_else(|| strip_global_prefixes(&path).and_then(|p| kb.get(p)))?;
 
   // Avoid treating unknown shadowed bindings as trusted *pure* builtins.
   //
@@ -167,16 +166,6 @@ fn resolve_api_semantics<'a>(
   }
 
   Some(api)
-}
-
-fn resolve_api_alias<'a>(kb: &'a KnowledgeBase, alias: &str) -> Option<&'a ApiSemantics> {
-  kb.iter().find_map(|(_, api)| {
-    api
-      .aliases
-      .iter()
-      .any(|a| a == alias)
-      .then_some(api)
-  })
 }
 
 fn strip_global_prefixes<'a>(mut path: &'a str) -> Option<&'a str> {
@@ -449,7 +438,8 @@ mod tests {
 
   #[test]
   fn does_not_panic_when_depends_on_args_argument_is_missing() {
-    let kb = crate::load_default_api_database();
+    let db = crate::load_default_api_database();
+    let kb = crate::TargetedKb::new(&db, crate::TargetEnv::Unknown);
     let lowered =
       hir_js::lower_from_source_with_kind(FileKind::Js, "Array.prototype.map();").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
@@ -486,7 +476,8 @@ mod tests {
       kind: ApiKind::Function,
       properties: BTreeMap::new(),
     });
-    let kb = ApiDatabase::from_entries(entries);
+    let db = ApiDatabase::from_entries(entries);
+    let kb = crate::TargetedKb::new(&db, crate::TargetEnv::Unknown);
 
     let lowered =
       hir_js::lower_from_source_with_kind(FileKind::Js, "cbApi(0, () => Date.now());").unwrap();
@@ -498,7 +489,8 @@ mod tests {
 
   #[test]
   fn uses_kb_effect_summary_for_depends_on_callback_templates() {
-    let kb = crate::load_default_api_database();
+    let db = crate::load_default_api_database();
+    let kb = crate::TargetedKb::new(&db, crate::TargetEnv::Unknown);
     let lowered =
       hir_js::lower_from_source_with_kind(FileKind::Js, "Promise.prototype.then(x => x);").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
@@ -512,7 +504,8 @@ mod tests {
 
   #[test]
   fn global_this_constructor_resolves_via_prefix_stripping() {
-    let kb = crate::load_default_api_database();
+    let db = crate::load_default_api_database();
+    let kb = crate::TargetedKb::new(&db, crate::TargetEnv::Unknown);
     let lowered = hir_js::lower_from_source_with_kind(
       FileKind::Js,
       r#"new globalThis.URL("https://example.com");"#,
@@ -527,7 +520,8 @@ mod tests {
 
   #[test]
   fn global_this_fetch_resolves_via_computed_key() {
-    let kb = crate::load_default_api_database();
+    let db = crate::load_default_api_database();
+    let kb = crate::TargetedKb::new(&db, crate::TargetEnv::Unknown);
     let lowered = hir_js::lower_from_source_with_kind(
       FileKind::Js,
       r#"globalThis["fetch"]("https://example.com");"#,
@@ -542,7 +536,8 @@ mod tests {
 
   #[test]
   fn global_this_fetch_resolves_via_computed_template_key() {
-    let kb = crate::load_default_api_database();
+    let db = crate::load_default_api_database();
+    let kb = crate::TargetedKb::new(&db, crate::TargetEnv::Unknown);
     let lowered = hir_js::lower_from_source_with_kind(
       FileKind::Js,
       r#"globalThis[`fetch`]("https://example.com");"#,

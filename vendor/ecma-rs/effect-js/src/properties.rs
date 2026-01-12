@@ -10,10 +10,7 @@ pub enum OutputLengthRelation {
   Unknown,
 }
 
-fn get_path<'a>(
-  props: &'a BTreeMap<String, JsonValue>,
-  path: &[&str],
-) -> Option<&'a JsonValue> {
+fn get_path<'a>(props: &'a BTreeMap<String, JsonValue>, path: &[&str]) -> Option<&'a JsonValue> {
   let (first, rest) = path.split_first()?;
   if let Some(mut cur) = props.get(*first) {
     let mut ok = true;
@@ -87,7 +84,9 @@ fn callback_is_pure(callsite: &CallSiteInfo) -> Option<bool> {
 
 fn callback_may_throw(callsite: &CallSiteInfo) -> Option<bool> {
   if let Some(effects) = callsite.callback_effects {
-    return Some(effects.contains(EffectSet::MAY_THROW) || effects.contains(EffectSet::UNKNOWN_CALL));
+    return Some(
+      effects.contains(EffectSet::MAY_THROW) || effects.contains(EffectSet::UNKNOWN_CALL),
+    );
   }
   callsite.callback_may_throw
 }
@@ -117,16 +116,18 @@ pub fn is_parallelizable(api: &Api, callsite: &CallSiteInfo) -> bool {
   // Associativity is required for safe parallel reduction/aggregation. Prefer the
   // canonical `parallel.requires_callback_associative` key but accept the legacy
   // `reduce.associative_if_callback_associative` too.
-  let requires_callback_associative =
-    get_path(&api.properties, &["parallel", "requires_callback_associative"])
-      .and_then(get_bool)
-      .unwrap_or(false)
-      || get_path(
-        &api.properties,
-        &["reduce", "associative_if_callback_associative"],
-      )
-      .and_then(get_bool)
-      .unwrap_or(false);
+  let requires_callback_associative = get_path(
+    &api.properties,
+    &["parallel", "requires_callback_associative"],
+  )
+  .and_then(get_bool)
+  .unwrap_or(false)
+    || get_path(
+      &api.properties,
+      &["reduce", "associative_if_callback_associative"],
+    )
+    .and_then(get_bool)
+    .unwrap_or(false);
   if requires_callback_associative && callsite.callback_is_associative != Some(true) {
     return false;
   }
@@ -313,7 +314,13 @@ mod tests {
     let map = db.get("Array.prototype.map").unwrap();
     let filter = db.get("Array.prototype.filter").unwrap();
 
-    assert_eq!(output_length_relation(map), OutputLengthRelation::SameAsInput);
-    assert_eq!(output_length_relation(filter), OutputLengthRelation::LeInput);
+    assert_eq!(
+      output_length_relation(map),
+      OutputLengthRelation::SameAsInput
+    );
+    assert_eq!(
+      output_length_relation(filter),
+      OutputLengthRelation::LeInput
+    );
   }
 }

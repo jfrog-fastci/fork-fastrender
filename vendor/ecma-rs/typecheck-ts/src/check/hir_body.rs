@@ -2739,17 +2739,15 @@ impl<'a> Checker<'a> {
               let span = Span::new(self.file, loc_to_range(self.file, expr.loc));
               let inner = self.store.canon(inner);
               let target = self.store.canon(target);
-                if inner == prim.any || target == prim.any {
-                  self
-                    .diagnostics
-                    .push(codes::FORBIDDEN_ANY.error(
-                      "`any` is forbidden when `native_strict` is enabled",
-                      span,
-                    ));
-                } else if !self.relate.is_assignable(inner, target) {
-                  self.diagnostics.push(codes::UNSAFE_TYPE_ASSERTION.error(
-                    format!(
-                      "Type '{}' is not assignable to type '{}'.",
+              if inner == prim.any || target == prim.any {
+                self.diagnostics.push(
+                  codes::FORBIDDEN_ANY
+                    .error("`any` is forbidden when `native_strict` is enabled", span),
+                );
+              } else if !self.relate.is_assignable(inner, target) {
+                self.diagnostics.push(codes::UNSAFE_TYPE_ASSERTION.error(
+                  format!(
+                    "Type '{}' is not assignable to type '{}'.",
                     TypeDisplay::new(self.store.as_ref(), inner),
                     TypeDisplay::new(self.store.as_ref(), target)
                   ),
@@ -2763,9 +2761,7 @@ impl<'a> Checker<'a> {
           }
         }
       }
-      AstExpr::NonNullAssertion(assert) => {
-        self.check_expr(&assert.stx.expression)
-      }
+      AstExpr::NonNullAssertion(assert) => self.check_expr(&assert.stx.expression),
       AstExpr::SatisfiesExpr(expr) => {
         let target_ty = self.lowerer.lower_type_expr(&expr.stx.type_annotation);
         let value_ty = self.check_expr_with_expected(&expr.stx.expression, target_ty);
@@ -3441,7 +3437,10 @@ impl<'a> Checker<'a> {
         }
       }
 
-      self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
+      self.record_call_signature(
+        call.loc,
+        resolution.signature.or(resolution.contextual_signature),
+      );
       resolution.return_type
     };
 
@@ -3840,9 +3839,9 @@ impl<'a> Checker<'a> {
       .signature
       .or(resolution.contextual_signature)
       .or_else(|| candidate_sigs.first().copied());
-      if let Some(sig_id) = contextual_sig {
-        let sig = self.store.signature(sig_id);
-        for (idx, arg) in arg_exprs.iter().enumerate() {
+    if let Some(sig_id) = contextual_sig {
+      let sig = self.store.signature(sig_id);
+      for (idx, arg) in arg_exprs.iter().enumerate() {
         let Some(param_index) = param_index_map.get(idx).and_then(|idx| *idx) else {
           continue;
         };
@@ -3861,7 +3860,10 @@ impl<'a> Checker<'a> {
         self.record_expr_type(arg.stx.value.loc, contextual);
       }
     }
-    self.record_call_signature(expr_loc, resolution.signature.or(resolution.contextual_signature));
+    self.record_call_signature(
+      expr_loc,
+      resolution.signature.or(resolution.contextual_signature),
+    );
     resolution.return_type
   }
 
@@ -9209,8 +9211,8 @@ impl<'a> BindingCollector<'a> {
           self.visit_expr(*expr);
         }
       }
-      ExprKind::TypeAssertion { expr, .. }
-      | ExprKind::Instantiation { expr, .. }
+      ExprKind::Instantiation { expr, .. }
+      | ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.visit_expr(*expr),
       ExprKind::ImportCall {
@@ -10085,14 +10087,9 @@ impl<'a> FlowBodyChecker<'a> {
         }
       }
       #[cfg(feature = "semantic-ops")]
-      ExprKind::ArrayMap { array, callback } => self.eval_known_member_call_on_expr(
-        expr_id,
-        *array,
-        "map",
-        &[*callback],
-        env,
-        &mut facts,
-      ),
+      ExprKind::ArrayMap { array, callback } => {
+        self.eval_known_member_call_on_expr(expr_id, *array, "map", &[*callback], env, &mut facts)
+      }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayFilter { array, callback } => self.eval_known_member_call_on_expr(
         expr_id,
@@ -10115,32 +10112,17 @@ impl<'a> FlowBodyChecker<'a> {
         self.eval_known_member_call_on_expr(expr_id, *array, "reduce", &args, env, &mut facts)
       }
       #[cfg(feature = "semantic-ops")]
-      ExprKind::ArrayFind { array, callback } => self.eval_known_member_call_on_expr(
-        expr_id,
-        *array,
-        "find",
-        &[*callback],
-        env,
-        &mut facts,
-      ),
+      ExprKind::ArrayFind { array, callback } => {
+        self.eval_known_member_call_on_expr(expr_id, *array, "find", &[*callback], env, &mut facts)
+      }
       #[cfg(feature = "semantic-ops")]
-      ExprKind::ArrayEvery { array, callback } => self.eval_known_member_call_on_expr(
-        expr_id,
-        *array,
-        "every",
-        &[*callback],
-        env,
-        &mut facts,
-      ),
+      ExprKind::ArrayEvery { array, callback } => {
+        self.eval_known_member_call_on_expr(expr_id, *array, "every", &[*callback], env, &mut facts)
+      }
       #[cfg(feature = "semantic-ops")]
-      ExprKind::ArraySome { array, callback } => self.eval_known_member_call_on_expr(
-        expr_id,
-        *array,
-        "some",
-        &[*callback],
-        env,
-        &mut facts,
-      ),
+      ExprKind::ArraySome { array, callback } => {
+        self.eval_known_member_call_on_expr(expr_id, *array, "some", &[*callback], env, &mut facts)
+      }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayChain { array, ops } => {
         let _ = self.eval_expr(*array, env);
@@ -10175,7 +10157,9 @@ impl<'a> FlowBodyChecker<'a> {
               if let Some(init) = init {
                 args.push(*init);
               }
-              current = self.resolve_known_member_call(expr_id, None, current, "reduce", &args, env, &mut facts);
+              current = self.resolve_known_member_call(
+                expr_id, None, current, "reduce", &args, env, &mut facts,
+              );
             }
             hir_js::ArrayChainOp::Find(callback) => {
               current = self.resolve_known_member_call(
@@ -10424,10 +10408,12 @@ impl<'a> FlowBodyChecker<'a> {
         if self.strict_native {
           let (_, nullish) = narrow_non_nullish(inner_ty, &self.store);
           if self.store.canon(nullish) != prim.never {
-            self.diagnostics.push(codes::INVALID_NON_NULL_ASSERTION.error(
-              "non-null assertion discards `null` or `undefined`",
-              Span::new(self.file, expr.span),
-            ));
+            self
+              .diagnostics
+              .push(codes::INVALID_NON_NULL_ASSERTION.error(
+                "non-null assertion discards `null` or `undefined`",
+                Span::new(self.file, expr.span),
+              ));
           }
         }
         let (_, nonnull) = narrow_by_nullish_equality(
@@ -10893,7 +10879,8 @@ impl<'a> FlowBodyChecker<'a> {
                     .get(target_idx)
                     .map(|arg| arg.ty)
                     .unwrap_or(prim.unknown);
-                  let (yes, no) = narrow_by_assignability(arg_ty, asserted, &self.store, &self.relate);
+                  let (yes, no) =
+                    narrow_by_assignability(arg_ty, asserted, &self.store, &self.relate);
                   if asserts {
                     env.set(binding, yes);
                     out.assertions.insert(FlowKey::root(binding), yes);

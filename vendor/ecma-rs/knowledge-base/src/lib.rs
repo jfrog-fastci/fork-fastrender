@@ -313,6 +313,7 @@ impl ApiDatabase {
     self.api_for_target(name, &TargetEnv::Unknown)
   }
 
+  /// Return the best matching API entry for a given [`ApiId`] and target environment.
   pub fn get_by_id_for_target(&self, id: ApiId, target: &TargetEnv) -> Option<&ApiSemantics> {
     let name = self.ids.get(&id)?;
     self.api_for_target(name, target)

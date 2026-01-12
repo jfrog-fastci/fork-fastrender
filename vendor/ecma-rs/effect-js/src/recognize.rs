@@ -3,8 +3,8 @@ use hir_js::{
   StmtId, StmtKind, UnaryOp, VarDeclKind,
 };
 
-use knowledge_base::{ApiId, KnowledgeBase};
 use crate::resolve::ApiCallResolver;
+use knowledge_base::{ApiId, KnowledgeBase};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ExprFingerprint {
@@ -43,13 +43,17 @@ fn expr_fingerprint(lowered: &LowerResult, body: BodyId, expr: ExprId) -> Option
       let key = match &member.property {
         hir_js::ObjectKey::Ident(id) => MemberKey::String(lowered.names.resolve(*id)?.to_string()),
         hir_js::ObjectKey::String(s) => MemberKey::String(s.clone()),
-        hir_js::ObjectKey::Number(n) => MemberKey::Number(crate::js_string::number_literal_to_js_string(n)),
+        hir_js::ObjectKey::Number(n) => {
+          MemberKey::Number(crate::js_string::number_literal_to_js_string(n))
+        }
         hir_js::ObjectKey::Computed(expr) => {
           let expr = strip_transparent_wrappers(body_ref, *expr);
           let expr = body_ref.exprs.get(expr.0 as usize)?;
           match &expr.kind {
             ExprKind::Literal(hir_js::Literal::String(lit)) => MemberKey::String(lit.lossy.clone()),
-            ExprKind::Literal(hir_js::Literal::Number(n)) => MemberKey::Number(crate::js_string::number_literal_to_js_string(n)),
+            ExprKind::Literal(hir_js::Literal::Number(n)) => {
+              MemberKey::Number(crate::js_string::number_literal_to_js_string(n))
+            }
             ExprKind::Literal(hir_js::Literal::BigInt(n)) => MemberKey::Number(n.clone()),
             _ => return None,
           }
@@ -119,7 +123,9 @@ fn static_object_key_name(
       let expr = body.exprs.get(expr.0 as usize)?;
       match &expr.kind {
         ExprKind::Literal(hir_js::Literal::String(lit)) => Some(lit.lossy.clone()),
-        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => {
+          Some(crate::js_string::number_literal_to_js_string(n))
+        }
         ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
         _ => None,
       }
@@ -140,7 +146,11 @@ fn is_null_or_undefined_expr(lowered: &LowerResult, body: &hir_js::Body, expr: E
   }
 }
 
-fn guard_clause_subject(lowered: &LowerResult, body: &hir_js::Body, test: ExprId) -> Option<ExprId> {
+fn guard_clause_subject(
+  lowered: &LowerResult,
+  body: &hir_js::Body,
+  test: ExprId,
+) -> Option<ExprId> {
   let test = strip_transparent_wrappers(body, test);
   let test_expr = body.exprs.get(test.0 as usize)?;
   match &test_expr.kind {
@@ -255,11 +265,22 @@ pub enum ArrayChainOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArrayTerminal {
-  Reduce { callback: ExprId, init: Option<ExprId> },
-  Find { callback: ExprId },
-  Every { callback: ExprId },
-  Some { callback: ExprId },
-  ForEach { callback: ExprId },
+  Reduce {
+    callback: ExprId,
+    init: Option<ExprId>,
+  },
+  Find {
+    callback: ExprId,
+  },
+  Every {
+    callback: ExprId,
+  },
+  Some {
+    callback: ExprId,
+  },
+  ForEach {
+    callback: ExprId,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,7 +351,10 @@ pub enum RecognizedPattern {
   },
 
   /// `const x: T = JSON.parse(input)` (untyped; uses declared annotation).
-  JsonParseTyped { call: ExprId, target: hir_js::TypeExprId },
+  JsonParseTyped {
+    call: ExprId,
+    target: hir_js::TypeExprId,
+  },
 }
 fn walk_stmt(body: &hir_js::Body, stmt_id: StmtId, mut f: impl FnMut(StmtId, &StmtKind)) {
   fn walk(body: &hir_js::Body, stmt_id: StmtId, f: &mut impl FnMut(StmtId, &StmtKind)) {
@@ -442,9 +466,7 @@ fn sort_patterns_by_span(body: &hir_js::Body, patterns: &mut Vec<RecognizedPatte
         .map(|(s, e)| (s, e, 1, call.0))
         .unwrap_or((u32::MAX, u32::MAX, 1, call.0)),
       RecognizedPattern::MapFilterReduce {
-        base,
-        reduce_call,
-        ..
+        base, reduce_call, ..
       } => {
         let start = expr_span(body, *base).map(|(s, _)| s).unwrap_or(u32::MAX);
         let end = expr_span(body, *reduce_call)
@@ -459,7 +481,9 @@ fn sort_patterns_by_span(body: &hir_js::Body, patterns: &mut Vec<RecognizedPatte
       } => {
         let start = expr_span(body, *base).map(|(s, _)| s).unwrap_or(u32::MAX);
         let end_expr = match terminal {
-          Some(ArrayTerminal::Reduce { init: Some(init), .. }) => Some(*init),
+          Some(ArrayTerminal::Reduce {
+            init: Some(init), ..
+          }) => Some(*init),
           Some(ArrayTerminal::Reduce { callback, .. }) => Some(*callback),
           Some(ArrayTerminal::Find { callback })
           | Some(ArrayTerminal::Every { callback })
@@ -639,7 +663,10 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
         visit_expr(body, *right, reachable);
         visit_stmt(body, *inner, reachable);
       }
-      StmtKind::Switch { discriminant, cases } => {
+      StmtKind::Switch {
+        discriminant,
+        cases,
+      } => {
         visit_expr(body, *discriminant, reachable);
         for case in cases {
           if let Some(test) = case.test {
@@ -670,7 +697,10 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
       StmtKind::Break(_) | StmtKind::Continue(_) => {}
       StmtKind::Var(var) => visit_var_decl(body, var, reachable),
       StmtKind::Labeled { body: inner, .. } => visit_stmt(body, *inner, reachable),
-      StmtKind::With { object, body: inner } => {
+      StmtKind::With {
+        object,
+        body: inner,
+      } => {
         visit_expr(body, *object, reachable);
         visit_stmt(body, *inner, reachable);
       }
@@ -678,7 +708,11 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
     }
   }
 
-  fn visit_expr(body: &hir_js::Body, expr_id: ExprId, reachable: &mut std::collections::HashSet<ExprId>) {
+  fn visit_expr(
+    body: &hir_js::Body,
+    expr_id: ExprId,
+    reachable: &mut std::collections::HashSet<ExprId>,
+  ) {
     if !reachable.insert(expr_id) {
       return;
     }
@@ -696,7 +730,6 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
       ExprKind::Unary { expr, .. }
       | ExprKind::Update { expr, .. }
       | ExprKind::Await { expr }
-      | ExprKind::Instantiation { expr, .. }
       | ExprKind::NonNull { expr } => {
         visit_expr(body, *expr, reachable);
       }
@@ -732,7 +765,9 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
       ExprKind::Array(array) => {
         for element in &array.elements {
           match element {
-            ArrayElement::Expr(expr) | ArrayElement::Spread(expr) => visit_expr(body, *expr, reachable),
+            ArrayElement::Expr(expr) | ArrayElement::Spread(expr) => {
+              visit_expr(body, *expr, reachable)
+            }
             ArrayElement::Empty => {}
           }
         }
@@ -767,10 +802,12 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
           visit_expr(body, span.expr, reachable);
         }
       }
-      ExprKind::Yield { expr: Some(expr), .. } => visit_expr(body, *expr, reachable),
+      ExprKind::Yield {
+        expr: Some(expr), ..
+      } => visit_expr(body, *expr, reachable),
       ExprKind::Yield { expr: None, .. } => {}
-      ExprKind::TypeAssertion { expr, .. }
-      | ExprKind::Instantiation { expr, .. }
+      ExprKind::Instantiation { expr, .. }
+      | ExprKind::TypeAssertion { expr, .. }
       | ExprKind::Satisfies { expr, .. } => visit_expr(body, *expr, reachable),
       ExprKind::ImportCall { argument, attributes } => {
         visit_expr(body, *argument, reachable);
@@ -890,10 +927,7 @@ pub fn recognize_patterns_untyped(
   for (idx, _expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
     if let Some(api) = resolver.resolve_call_untyped(body, expr_id) {
-      patterns.push(RecognizedPattern::CanonicalCall {
-        call: expr_id,
-        api,
-      });
+      patterns.push(RecognizedPattern::CanonicalCall { call: expr_id, api });
     }
   }
 
@@ -1017,11 +1051,13 @@ fn promise_all_fetch_match_typed(
       let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
 
       match &cb_expr.kind {
-        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => Some(PromiseAllFetchMatch {
-          urls_expr: strip_transparent_wrappers(body_ref, member.object),
-          map_call: Some(arg_expr_id),
-          fetch_call_count: 1,
-        }),
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => {
+          Some(PromiseAllFetchMatch {
+            urls_expr: strip_transparent_wrappers(body_ref, member.object),
+            map_call: Some(arg_expr_id),
+            fetch_call_count: 1,
+          })
+        }
         ExprKind::FunctionExpr { body: cb_body, .. } => {
           let cb_body_id = *cb_body;
           let cb_body = lowered.body(cb_body_id)?;
@@ -1073,11 +1109,13 @@ fn promise_all_fetch_match_typed(
       let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
 
       match &cb_expr.kind {
-        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => Some(PromiseAllFetchMatch {
-          urls_expr,
-          map_call: Some(arg_expr_id),
-          fetch_call_count: 1,
-        }),
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => {
+          Some(PromiseAllFetchMatch {
+            urls_expr,
+            map_call: Some(arg_expr_id),
+            fetch_call_count: 1,
+          })
+        }
         ExprKind::FunctionExpr { body: cb_body, .. } => {
           let cb_body_id = *cb_body;
           let cb_body = lowered.body(cb_body_id)?;
@@ -1122,7 +1160,11 @@ fn promise_all_fetch_match_typed(
   }
 }
 
-fn call_chain(lowered: &LowerResult, body: BodyId, call_expr: ExprId) -> Option<(ExprId, Vec<(ExprId, String)>)> {
+fn call_chain(
+  lowered: &LowerResult,
+  body: BodyId,
+  call_expr: ExprId,
+) -> Option<(ExprId, Vec<(ExprId, String)>)> {
   let body_ref = lowered.body(body)?;
   let mut methods = Vec::new();
   let mut cur = call_expr;
@@ -1282,10 +1324,7 @@ pub fn recognize_patterns_best_effort_untyped(
 
     // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
     if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
-      if chain.len() == 3
-        && chain[2].1 == "reduce"
-        && chain[0].1 == "map"
-        && chain[1].1 == "filter"
+      if chain.len() == 3 && chain[2].1 == "reduce" && chain[0].1 == "map" && chain[1].1 == "filter"
       {
         patterns.push(RecognizedPattern::MapFilterReduce {
           base,
@@ -1347,7 +1386,8 @@ pub fn recognize_patterns_best_effort_untyped(
       alternate,
     } = &expr.kind
     {
-      let Some((has_map, has_prop, has_key)) = parse_simple_method_call_untyped(lowered, body, *test)
+      let Some((has_map, has_prop, has_key)) =
+        parse_simple_method_call_untyped(lowered, body, *test)
       else {
         continue;
       };
@@ -1397,7 +1437,8 @@ pub fn recognize_patterns_best_effort_untyped(
       if !matches!(op, BinaryOp::NullishCoalescing | BinaryOp::LogicalOr) {
         continue;
       }
-      let Some((map, get_prop, key)) = parse_simple_method_call_untyped(lowered, body, *left) else {
+      let Some((map, get_prop, key)) = parse_simple_method_call_untyped(lowered, body, *left)
+      else {
         continue;
       };
       if get_prop != "get" {
@@ -1516,11 +1557,13 @@ fn promise_all_fetch_match_untyped(
       let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
 
       match &cb_expr.kind {
-        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => Some(PromiseAllFetchMatch {
-          urls_expr: strip_transparent_wrappers(body_ref, member.object),
-          map_call: Some(arg_expr_id),
-          fetch_call_count: 1,
-        }),
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => {
+          Some(PromiseAllFetchMatch {
+            urls_expr: strip_transparent_wrappers(body_ref, member.object),
+            map_call: Some(arg_expr_id),
+            fetch_call_count: 1,
+          })
+        }
         ExprKind::FunctionExpr { body: cb_body, .. } => {
           let cb_body_id = *cb_body;
           let cb_body = lowered.body(cb_body_id)?;
@@ -1569,11 +1612,13 @@ fn promise_all_fetch_match_untyped(
       let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
 
       match &cb_expr.kind {
-        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => Some(PromiseAllFetchMatch {
-          urls_expr,
-          map_call: Some(arg_expr_id),
-          fetch_call_count: 1,
-        }),
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => {
+          Some(PromiseAllFetchMatch {
+            urls_expr,
+            map_call: Some(arg_expr_id),
+            fetch_call_count: 1,
+          })
+        }
         ExprKind::FunctionExpr { body: cb_body, .. } => {
           let cb_body_id = *cb_body;
           let cb_body = lowered.body(cb_body_id)?;
@@ -1703,13 +1748,17 @@ fn convert_hir_array_chain_ops(
         if terminal.is_some() {
           return None;
         }
-        out_ops.push(ArrayChainOp::Map { callback: *callback });
+        out_ops.push(ArrayChainOp::Map {
+          callback: *callback,
+        });
       }
       hir_js::ArrayChainOp::Filter(callback) => {
         if terminal.is_some() {
           return None;
         }
-        out_ops.push(ArrayChainOp::Filter { callback: *callback });
+        out_ops.push(ArrayChainOp::Filter {
+          callback: *callback,
+        });
       }
       hir_js::ArrayChainOp::Reduce(callback, init) => {
         if idx != ops.len().saturating_sub(1) {
@@ -1724,19 +1773,25 @@ fn convert_hir_array_chain_ops(
         if idx != ops.len().saturating_sub(1) {
           return None;
         }
-        terminal = Some(ArrayTerminal::Find { callback: *callback });
+        terminal = Some(ArrayTerminal::Find {
+          callback: *callback,
+        });
       }
       hir_js::ArrayChainOp::Every(callback) => {
         if idx != ops.len().saturating_sub(1) {
           return None;
         }
-        terminal = Some(ArrayTerminal::Every { callback: *callback });
+        terminal = Some(ArrayTerminal::Every {
+          callback: *callback,
+        });
       }
       hir_js::ArrayChainOp::Some(callback) => {
         if idx != ops.len().saturating_sub(1) {
           return None;
         }
-        terminal = Some(ArrayTerminal::Some { callback: *callback });
+        terminal = Some(ArrayTerminal::Some {
+          callback: *callback,
+        });
       }
     }
   }
@@ -1760,8 +1815,16 @@ fn parse_array_chain(
         return None;
       }
       let (ops, terminal) = convert_hir_array_chain_ops(ops)?;
-      let ok_len = if terminal.is_some() { ops.len() >= 1 } else { ops.len() >= 2 };
-      return ok_len.then_some(RecognizedPattern::ArrayChain { base, ops, terminal });
+      let ok_len = if terminal.is_some() {
+        ops.len() >= 1
+      } else {
+        ops.len() >= 2
+      };
+      return ok_len.then_some(RecognizedPattern::ArrayChain {
+        base,
+        ops,
+        terminal,
+      });
     }
   }
 
@@ -1789,12 +1852,16 @@ fn parse_array_chain(
       }
       #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayMap { array, callback } => {
-        ops_rev.push(ArrayChainOp::Map { callback: *callback });
+        ops_rev.push(ArrayChainOp::Map {
+          callback: *callback,
+        });
         recv = *array;
       }
       #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayFilter { array, callback } => {
-        ops_rev.push(ArrayChainOp::Filter { callback: *callback });
+        ops_rev.push(ArrayChainOp::Filter {
+          callback: *callback,
+        });
         recv = *array;
       }
       #[cfg(feature = "hir-semantic-ops")]
@@ -1834,7 +1901,11 @@ fn parse_array_chain(
           return None;
         }
 
-        return Some(RecognizedPattern::ArrayChain { base, ops: ops_rev, terminal });
+        return Some(RecognizedPattern::ArrayChain {
+          base,
+          ops: ops_rev,
+          terminal,
+        });
       }
     }
   }
@@ -1975,10 +2046,7 @@ pub fn recognize_patterns_typed(
       continue;
     }
     if let Some(api) = resolver.resolve_call_typed(body, expr_id, types) {
-      patterns.push(RecognizedPattern::CanonicalCall {
-        call: expr_id,
-        api,
-      });
+      patterns.push(RecognizedPattern::CanonicalCall { call: expr_id, api });
     }
   }
 
@@ -1996,17 +2064,16 @@ pub fn recognize_patterns_typed(
       continue;
     };
     let recv_kind = body_ref.exprs.get(recv.0 as usize).map(|e| &e.kind);
-    let mark = matches!(recv_kind, Some(ExprKind::Call(_)))
-      || {
-        #[cfg(feature = "hir-semantic-ops")]
-        {
-          matches!(recv_kind, Some(ExprKind::ArrayChain { .. }))
-        }
-        #[cfg(not(feature = "hir-semantic-ops"))]
-        {
-          false
-        }
-      };
+    let mark = matches!(recv_kind, Some(ExprKind::Call(_))) || {
+      #[cfg(feature = "hir-semantic-ops")]
+      {
+        matches!(recv_kind, Some(ExprKind::ArrayChain { .. }))
+      }
+      #[cfg(not(feature = "hir-semantic-ops"))]
+      {
+        false
+      }
+    };
     if mark {
       non_outermost_array_exprs.insert(recv);
     }
@@ -2186,16 +2253,12 @@ pub fn recognize_patterns_typed(
       let consequent = strip_transparent_wrappers(body_ref, *consequent);
 
       if map_has.is_some_and(|id| resolver.resolve_call_typed(body, test, types) == Some(id))
-        && map_get.is_some_and(|id| resolver.resolve_call_typed(body, consequent, types) == Some(id))
+        && map_get
+          .is_some_and(|id| resolver.resolve_call_typed(body, consequent, types) == Some(id))
       {
-        if let Some((map, key)) = map_get_or_default_conditional(
-          lowered,
-          body_ref,
-          body,
-          test,
-          consequent,
-          types,
-        ) {
+        if let Some((map, key)) =
+          map_get_or_default_conditional(lowered, body_ref, body, test, consequent, types)
+        {
           patterns.push(RecognizedPattern::MapGetOrDefault {
             conditional: expr_id,
             map,
@@ -2337,7 +2400,11 @@ fn map_get_or_default_conditional(
   if has_prop != "has" {
     return None;
   }
-  if !types.expr_is_named_ref(body_id, strip_transparent_wrappers(body_ref, has_recv), "Map") {
+  if !types.expr_is_named_ref(
+    body_id,
+    strip_transparent_wrappers(body_ref, has_recv),
+    "Map",
+  ) {
     return None;
   }
 
@@ -2345,7 +2412,11 @@ fn map_get_or_default_conditional(
   if get_prop != "get" {
     return None;
   }
-  if !types.expr_is_named_ref(body_id, strip_transparent_wrappers(body_ref, get_recv), "Map") {
+  if !types.expr_is_named_ref(
+    body_id,
+    strip_transparent_wrappers(body_ref, get_recv),
+    "Map",
+  ) {
     return None;
   }
 

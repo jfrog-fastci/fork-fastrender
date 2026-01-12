@@ -1,16 +1,17 @@
 use effect_model::{EffectSet, Purity};
-use hir_js::{
-  ArrayElement, BinaryOp, Body, BodyId, ExprId, ExprKind, ForHead, ForInit, FunctionBody, NameId,
-  ObjectKey, ObjectProperty, PatId, PatKind, StmtId, StmtKind, TypeArenas, TypeExprId, TypeExprKind,
-  VarDecl, VarDeclKind,
-};
 use hir_js::hir::SwitchCase;
 #[cfg(feature = "hir-semantic-ops")]
 use hir_js::ArrayChainOp;
-use knowledge_base::{ApiKind, KnowledgeBase};
+use hir_js::{
+  ArrayElement, BinaryOp, Body, BodyId, ExprId, ExprKind, ForHead, ForInit, FunctionBody, NameId,
+  ObjectKey, ObjectProperty, PatId, PatKind, StmtId, StmtKind, TypeArenas, TypeExprId,
+  TypeExprKind, VarDecl, VarDeclKind,
+};
+use knowledge_base::{ApiDatabase, ApiKind, KnowledgeBase, TargetEnv};
 
 use crate::api_use::{resolve_api_use, ApiUseKind};
 use crate::eval::eval_api_call;
+use crate::target::TargetedKb;
 use crate::template_eval::eval_call_expr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,42 +22,31 @@ pub struct CallbackInfo {
   pub uses_array: bool,
 }
 
-fn callback_param_positions_for_iter_method_name(name: &str) -> (usize, usize) {
-  match name {
-    // `Array.prototype.reduce((acc, cur, idx, arr) => ...)`
-    "reduce" | "reduceRight" => (2, 3),
-    _ => (1, 2),
-  }
-}
-
-fn callback_param_positions_for_call_callee(
-  lowered: &hir_js::LowerResult,
-  body: &Body,
-  callee: ExprId,
-) -> (usize, usize) {
-  let default = (1, 2);
-  let callee = strip_value_wrappers(body, callee);
-  let Some(node) = body.exprs.get(callee.0 as usize) else {
-    return default;
-  };
-  let ExprKind::Member(member) = &node.kind else {
-    return default;
-  };
-  if member.optional {
-    return default;
-  }
-
-  let Some(prop) = static_object_key_name(lowered, body, &member.property) else {
-    return default;
-  };
-  callback_param_positions_for_iter_method_name(&prop)
-}
-
 pub fn callsite_info_for_args(
   lowered: &hir_js::LowerResult,
   body: BodyId,
   call_expr: ExprId,
   kb: &KnowledgeBase,
+) -> crate::db::CallSiteInfo {
+  callsite_info_for_args_for_target(lowered, body, call_expr, kb, &TargetEnv::Unknown)
+}
+
+pub fn callsite_info_for_args_for_target(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  call_expr: ExprId,
+  db: &ApiDatabase,
+  target: &TargetEnv,
+) -> crate::db::CallSiteInfo {
+  let kb = TargetedKb::new(db, target.clone());
+  callsite_info_for_args_with_kb(lowered, body, call_expr, &kb)
+}
+
+fn callsite_info_for_args_with_kb(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  call_expr: ExprId,
+  kb: &TargetedKb<'_>,
 ) -> crate::db::CallSiteInfo {
   let Some(body_ref) = lowered.body(body) else {
     return crate::db::CallSiteInfo::default();
@@ -64,54 +54,74 @@ pub fn callsite_info_for_args(
   let Some(expr) = body_ref.exprs.get(call_expr.0 as usize) else {
     return crate::db::CallSiteInfo::default();
   };
-  let mut index_param_pos = 1usize;
-  let mut array_param_pos = 2usize;
-  let callback_expr = match &expr.kind {
+  let (callback_expr, index_arg_position, array_arg_position) = match &expr.kind {
     ExprKind::Call(call) => {
-      (index_param_pos, array_param_pos) =
-        callback_param_positions_for_call_callee(lowered, body_ref, call.callee);
-      call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
+      let mut index_arg_position = 1;
+      let mut array_arg_position = 2;
+      let callee = strip_value_wrappers(body_ref, call.callee);
+      if let Some(callee) = body_ref.exprs.get(callee.0 as usize) {
+        if let ExprKind::Member(member) = &callee.kind {
+          if !member.optional {
+            let prop = match &member.property {
+              ObjectKey::Ident(name) => lowered.names.resolve(*name),
+              ObjectKey::String(s) => Some(s.as_str()),
+              _ => None,
+            };
+            if matches!(prop, Some("reduce" | "reduceRight")) {
+              // `Array.prototype.reduce` callback signature:
+              //   (accumulator, current, index, array)
+              index_arg_position = 2;
+              array_arg_position = 3;
+            }
+          }
+        }
+      }
+
+      (
+        call
+          .args
+          .first()
+          .filter(|arg| !arg.spread)
+          .map(|arg| arg.expr),
+        index_arg_position,
+        array_arg_position,
+      )
     }
     #[cfg(feature = "hir-semantic-ops")]
     ExprKind::ArrayMap { callback, .. }
     | ExprKind::ArrayFilter { callback, .. }
     | ExprKind::ArrayFind { callback, .. }
     | ExprKind::ArrayEvery { callback, .. }
-    | ExprKind::ArraySome { callback, .. } => Some(*callback),
+    | ExprKind::ArraySome { callback, .. } => (Some(*callback), 1, 2),
     #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::ArrayReduce { callback, .. } => {
-      (index_param_pos, array_param_pos) = (2, 3);
-      Some(*callback)
-    }
-    _ => None,
+    ExprKind::ArrayReduce { callback, .. } => (Some(*callback), 2, 3),
+    _ => (None, 1, 2),
   };
 
   let Some(callback_expr) = callback_expr else {
     return crate::db::CallSiteInfo::default();
   };
-  let callback = analyze_inline_callback_with_param_positions(
+  let callback = analyze_inline_callback_with_kb_with_arg_positions(
     lowered,
     body,
     callback_expr,
     kb,
-    index_param_pos,
-    array_param_pos,
+    index_arg_position,
+    array_arg_position,
   );
   let callback_purity = callback.map(|cb| cb.purity);
   let callback_effects = callback.map(|cb| cb.effects);
   let callback_may_throw = callback_effects
     .map(|e| e.contains(EffectSet::MAY_THROW) || e.contains(EffectSet::UNKNOWN_CALL));
-  let associative = callback.and_then(|_| infer_associative_inline_callback(lowered, body, callback_expr));
-
-  let callback_uses_index = callback.map(|cb| cb.uses_index);
-  let callback_uses_array = callback.map(|cb| cb.uses_array);
+  let associative =
+    callback.and_then(|_| infer_associative_inline_callback(lowered, body, callback_expr));
   crate::db::CallSiteInfo {
     callback_purity,
     callback_effects,
     callback_may_throw,
     callback_is_pure: callback_purity.map(|p| matches!(p, Purity::Pure | Purity::Allocating)),
-    callback_uses_index,
-    callback_uses_array,
+    callback_uses_index: callback.map(|cb| cb.uses_index),
+    callback_uses_array: callback.map(|cb| cb.uses_array),
     callback_is_associative: associative,
     ..crate::db::CallSiteInfo::default()
   }
@@ -123,44 +133,84 @@ pub fn eval_callsite_info_for_args(
   call_expr: ExprId,
   kb: &KnowledgeBase,
 ) -> crate::eval::CallSiteInfo {
+  eval_callsite_info_for_args_for_target(lowered, body, call_expr, kb, &TargetEnv::Unknown)
+}
+
+pub fn eval_callsite_info_for_args_for_target(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  call_expr: ExprId,
+  db: &ApiDatabase,
+  target: &TargetEnv,
+) -> crate::eval::CallSiteInfo {
+  let kb = TargetedKb::new(db, target.clone());
+  eval_callsite_info_for_args_with_kb(lowered, body, call_expr, &kb)
+}
+
+fn eval_callsite_info_for_args_with_kb(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  call_expr: ExprId,
+  kb: &TargetedKb<'_>,
+) -> crate::eval::CallSiteInfo {
   let Some(body_ref) = lowered.body(body) else {
     return crate::eval::CallSiteInfo::default();
   };
   let Some(expr) = body_ref.exprs.get(call_expr.0 as usize) else {
     return crate::eval::CallSiteInfo::default();
   };
-  let mut index_param_pos = 1usize;
-  let mut array_param_pos = 2usize;
-  let callback_expr = match &expr.kind {
+  let (callback_expr, index_arg_position, array_arg_position) = match &expr.kind {
     ExprKind::Call(call) => {
-      (index_param_pos, array_param_pos) =
-        callback_param_positions_for_call_callee(lowered, body_ref, call.callee);
-      call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
+      let mut index_arg_position = 1;
+      let mut array_arg_position = 2;
+      let callee = strip_value_wrappers(body_ref, call.callee);
+      if let Some(callee) = body_ref.exprs.get(callee.0 as usize) {
+        if let ExprKind::Member(member) = &callee.kind {
+          if !member.optional {
+            let prop = match &member.property {
+              ObjectKey::Ident(name) => lowered.names.resolve(*name),
+              ObjectKey::String(s) => Some(s.as_str()),
+              _ => None,
+            };
+            if matches!(prop, Some("reduce" | "reduceRight")) {
+              index_arg_position = 2;
+              array_arg_position = 3;
+            }
+          }
+        }
+      }
+
+      (
+        call
+          .args
+          .first()
+          .filter(|arg| !arg.spread)
+          .map(|arg| arg.expr),
+        index_arg_position,
+        array_arg_position,
+      )
     }
     #[cfg(feature = "hir-semantic-ops")]
     ExprKind::ArrayMap { callback, .. }
     | ExprKind::ArrayFilter { callback, .. }
     | ExprKind::ArrayFind { callback, .. }
     | ExprKind::ArrayEvery { callback, .. }
-    | ExprKind::ArraySome { callback, .. } => Some(*callback),
+    | ExprKind::ArraySome { callback, .. } => (Some(*callback), 1, 2),
     #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::ArrayReduce { callback, .. } => {
-      (index_param_pos, array_param_pos) = (2, 3);
-      Some(*callback)
-    }
-    _ => None,
+    ExprKind::ArrayReduce { callback, .. } => (Some(*callback), 2, 3),
+    _ => (None, 1, 2),
   };
 
   let Some(callback_expr) = callback_expr else {
     return crate::eval::CallSiteInfo::default();
   };
-  let callback = analyze_inline_callback_with_param_positions(
+  let callback = analyze_inline_callback_with_kb_with_arg_positions(
     lowered,
     body,
     callback_expr,
     kb,
-    index_param_pos,
-    array_param_pos,
+    index_arg_position,
+    array_arg_position,
   );
 
   match callback {
@@ -171,25 +221,6 @@ pub fn eval_callsite_info_for_args(
       callback_uses_array: cb.uses_array,
     },
     None => crate::eval::CallSiteInfo::default(),
-  }
-}
-
-fn static_object_key_name(lowered: &hir_js::LowerResult, body: &Body, key: &ObjectKey) -> Option<String> {
-  match key {
-    ObjectKey::Ident(name) => lowered.names.resolve(*name).map(|s| s.to_string()),
-    ObjectKey::String(s) => Some(s.clone()),
-    ObjectKey::Number(n) => Some(crate::js_string::number_literal_to_js_string(n)),
-    ObjectKey::Computed(expr) => {
-      let expr = strip_value_wrappers(body, *expr);
-      let expr = body.exprs.get(expr.0 as usize)?;
-      match &expr.kind {
-        ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.clone()),
-        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(crate::js_string::number_literal_to_js_string(n)),
-        ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
-        ExprKind::Template(tmpl) if tmpl.spans.is_empty() => Some(tmpl.head.clone()),
-        _ => None,
-      }
-    }
   }
 }
 
@@ -208,7 +239,10 @@ fn infer_associative_inline_callback(
 ) -> Option<bool> {
   let callsite_body = lowered.body(body)?;
   let cb_expr = callsite_body.exprs.get(callback_expr.0 as usize)?;
-  let ExprKind::FunctionExpr { def, body: cb_body, .. } = cb_expr.kind else {
+  let ExprKind::FunctionExpr {
+    def, body: cb_body, ..
+  } = cb_expr.kind
+  else {
     return None;
   };
 
@@ -313,10 +347,9 @@ fn strip_value_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
       return expr;
     };
     match &node.kind {
-      ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::Instantiation { expr: inner, .. }
+      ExprKind::Instantiation { expr: inner, .. }
+      | ExprKind::TypeAssertion { expr: inner, .. }
       | ExprKind::NonNull { expr: inner }
-      | ExprKind::Instantiation { expr: inner, .. }
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
@@ -329,16 +362,43 @@ pub fn analyze_inline_callback(
   callback_expr: ExprId,
   kb: &KnowledgeBase,
 ) -> Option<CallbackInfo> {
-  analyze_inline_callback_with_param_positions(lowered, body, callback_expr, kb, 1, 2)
+  analyze_inline_callback_with_kb(
+    lowered,
+    body,
+    callback_expr,
+    &TargetedKb::new(kb, TargetEnv::Unknown),
+  )
 }
 
-fn analyze_inline_callback_with_param_positions(
+pub fn analyze_inline_callback_for_target(
   lowered: &hir_js::LowerResult,
   body: BodyId,
   callback_expr: ExprId,
-  kb: &KnowledgeBase,
-  index_arg_pos: usize,
-  array_arg_pos: usize,
+  db: &ApiDatabase,
+  target: &TargetEnv,
+) -> Option<CallbackInfo> {
+  let kb = TargetedKb::new(db, target.clone());
+  analyze_inline_callback_with_kb(lowered, body, callback_expr, &kb)
+}
+
+pub(crate) fn analyze_inline_callback_with_kb(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  callback_expr: ExprId,
+  kb: &TargetedKb<'_>,
+) -> Option<CallbackInfo> {
+  // Default to `Array.prototype.map`-style callback arguments:
+  //   (value, index, array)
+  analyze_inline_callback_with_kb_with_arg_positions(lowered, body, callback_expr, kb, 1, 2)
+}
+
+fn analyze_inline_callback_with_kb_with_arg_positions(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  callback_expr: ExprId,
+  kb: &TargetedKb<'_>,
+  index_arg_position: u32,
+  array_arg_position: u32,
 ) -> Option<CallbackInfo> {
   let callsite_body = lowered.body(body)?;
   let cb_expr = callsite_body.exprs.get(callback_expr.0 as usize)?;
@@ -349,7 +409,14 @@ fn analyze_inline_callback_with_param_positions(
     ..
   } = &cb_expr.kind
   else {
-    return analyze_known_callback_reference(lowered, callsite_body, callback_expr, kb, index_arg_pos, array_arg_pos);
+    return analyze_known_callback_reference(
+      lowered,
+      callsite_body,
+      callback_expr,
+      kb,
+      index_arg_position,
+      array_arg_position,
+    );
   };
 
   let cb_body_data = lowered.body(*cb_body)?;
@@ -369,37 +436,36 @@ fn analyze_inline_callback_with_param_positions(
   let mut index_param: Option<NameId> = None;
   let mut array_param: Option<NameId> = None;
 
-  // If the callback uses a rest parameter, it can capture the `index` / `array`
-  // arguments depending on where the rest param appears.
+  let index_param_pos = index_arg_position as usize;
+  let array_param_pos = array_arg_position as usize;
+
+  // Rest parameters can capture the `index`/`array` arguments even when they do
+  // not appear as explicit named parameters (e.g. `(...rest)` or `(x, ...rest)`).
   if let Some(rest_pos) = func.params.iter().position(|param| param.rest) {
     let rest_param = func.params.get(rest_pos)?;
     let pat = cb_body_data.pats.get(rest_param.pat.0 as usize)?;
-    let captures_index = rest_pos <= index_arg_pos;
-    let captures_array = rest_pos <= array_arg_pos;
     match pat.kind {
       PatKind::Ident(name) => {
-        if captures_index {
+        if rest_pos <= index_param_pos {
           index_param = Some(name);
         }
-        if captures_array {
+        if rest_pos <= array_param_pos {
           array_param = Some(name);
         }
       }
       _ => {
-        if captures_index {
+        if rest_pos <= index_param_pos {
           uses_index = true;
         }
-        if captures_array {
+        if rest_pos <= array_param_pos {
           uses_array = true;
         }
       }
     }
   }
 
-  // Track direct parameter bindings for `index` / `array` when the callback
-  // declares them explicitly.
-  if index_param.is_none() && !uses_index {
-    if let Some(index_param_raw) = func.params.get(index_arg_pos) {
+  if index_param.is_none() {
+    if let Some(index_param_raw) = func.params.get(index_param_pos).filter(|p| !p.rest) {
       let pat = cb_body_data.pats.get(index_param_raw.pat.0 as usize)?;
       match pat.kind {
         PatKind::Ident(name) => index_param = Some(name),
@@ -407,8 +473,9 @@ fn analyze_inline_callback_with_param_positions(
       }
     }
   }
-  if array_param.is_none() && !uses_array {
-    if let Some(array_param_raw) = func.params.get(array_arg_pos) {
+
+  if array_param.is_none() {
+    if let Some(array_param_raw) = func.params.get(array_param_pos).filter(|p| !p.rest) {
       let pat = cb_body_data.pats.get(array_param_raw.pat.0 as usize)?;
       match pat.kind {
         PatKind::Ident(name) => array_param = Some(name),
@@ -422,8 +489,8 @@ fn analyze_inline_callback_with_param_positions(
     kb,
     body: *cb_body,
     arguments_object_available,
-    index_arg_pos,
-    array_arg_pos,
+    index_arg_position,
+    array_arg_position,
     index_param,
     array_param,
     uses_index,
@@ -476,16 +543,16 @@ fn analyze_known_callback_reference(
   lowered: &hir_js::LowerResult,
   body: &Body,
   callback_expr: ExprId,
-  kb: &KnowledgeBase,
-  index_arg_pos: usize,
-  array_arg_pos: usize,
+  kb: &TargetedKb<'_>,
+  index_arg_position: u32,
+  array_arg_position: u32,
 ) -> Option<CallbackInfo> {
   let resolved = resolve_api_use(
     lowered.hir.as_ref(),
     body,
     callback_expr,
     lowered.names.as_ref(),
-    kb,
+    kb.db(),
   )?;
   if resolved.kind != ApiUseKind::Value {
     return None;
@@ -497,7 +564,8 @@ fn analyze_known_callback_reference(
   }
 
   let sem = eval_api_call(api, &crate::eval::CallSiteInfo::default());
-  let (uses_index, uses_array) = infer_known_callback_arg_usage(api, index_arg_pos, array_arg_pos);
+  let (uses_index, uses_array) =
+    infer_known_callback_arg_usage(api, index_arg_position, array_arg_position);
   Some(CallbackInfo {
     effects: sem.effects,
     purity: sem.purity,
@@ -506,13 +574,13 @@ fn analyze_known_callback_reference(
   })
 }
 
-struct CallbackAnalyzer<'a> {
+struct CallbackAnalyzer<'a, 'db> {
   lowered: &'a hir_js::LowerResult,
-  kb: &'a KnowledgeBase,
+  kb: &'a TargetedKb<'db>,
   body: BodyId,
   arguments_object_available: bool,
-  index_arg_pos: usize,
-  array_arg_pos: usize,
+  index_arg_position: u32,
+  array_arg_position: u32,
   index_param: Option<NameId>,
   array_param: Option<NameId>,
   uses_index: bool,
@@ -529,7 +597,7 @@ struct ShadowScope {
   shadow_arguments: bool,
 }
 
-impl CallbackAnalyzer<'_> {
+impl<'a, 'db> CallbackAnalyzer<'a, 'db> {
   fn merge_effects(&mut self, other: EffectSet) {
     self.effects |= other;
   }
@@ -543,9 +611,25 @@ impl CallbackAnalyzer<'_> {
     self.merge_purity(Purity::Impure);
   }
 
+  fn record_arguments_slot(&mut self, slot: u32) {
+    if slot == self.index_arg_position {
+      self.uses_index = true;
+    }
+    if slot == self.array_arg_position {
+      self.uses_array = true;
+    }
+  }
+
+  fn record_arguments_slot_str(&mut self, key: &str) {
+    if let Ok(slot) = key.parse::<u32>() {
+      self.record_arguments_slot(slot);
+    }
+  }
+
   fn scan_shadow_in_stmts(&self, body: &Body, stmts: &[StmtId]) -> ShadowScope {
     let mut scope = ShadowScope::default();
-    if self.index_param.is_none() && self.array_param.is_none() && !self.arguments_object_available {
+    if self.index_param.is_none() && self.array_param.is_none() && !self.arguments_object_available
+    {
       return scope;
     }
     let index = self.index_param;
@@ -561,12 +645,20 @@ impl CallbackAnalyzer<'_> {
             continue;
           }
           if let Some(index) = index {
-            if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+            if var
+              .declarators
+              .iter()
+              .any(|d| pat_binds_name(body, d.pat, index))
+            {
               scope.shadow_index = true;
             }
           }
           if let Some(array) = array {
-            if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+            if var
+              .declarators
+              .iter()
+              .any(|d| pat_binds_name(body, d.pat, array))
+            {
               scope.shadow_array = true;
             }
           }
@@ -601,7 +693,8 @@ impl CallbackAnalyzer<'_> {
 
   fn scan_shadow_in_switch(&self, body: &Body, cases: &[SwitchCase]) -> ShadowScope {
     let mut scope = ShadowScope::default();
-    if self.index_param.is_none() && self.array_param.is_none() && !self.arguments_object_available {
+    if self.index_param.is_none() && self.array_param.is_none() && !self.arguments_object_available
+    {
       return scope;
     }
     let index = self.index_param;
@@ -618,12 +711,20 @@ impl CallbackAnalyzer<'_> {
               continue;
             }
             if let Some(index) = index {
-              if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+              if var
+                .declarators
+                .iter()
+                .any(|d| pat_binds_name(body, d.pat, index))
+              {
                 scope.shadow_index = true;
               }
             }
             if let Some(array) = array {
-              if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+              if var
+                .declarators
+                .iter()
+                .any(|d| pat_binds_name(body, d.pat, array))
+              {
                 scope.shadow_array = true;
               }
             }
@@ -660,12 +761,20 @@ impl CallbackAnalyzer<'_> {
   fn scan_shadow_in_var_decl(&self, body: &Body, var: &VarDecl) -> ShadowScope {
     let mut scope = ShadowScope::default();
     if let Some(index) = self.index_param {
-      if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+      if var
+        .declarators
+        .iter()
+        .any(|d| pat_binds_name(body, d.pat, index))
+      {
         scope.shadow_index = true;
       }
     }
     if let Some(array) = self.array_param {
-      if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+      if var
+        .declarators
+        .iter()
+        .any(|d| pat_binds_name(body, d.pat, array))
+      {
         scope.shadow_array = true;
       }
     }
@@ -762,7 +871,9 @@ impl CallbackAnalyzer<'_> {
         let mut pushed = false;
         if let Some(ForInit::Var(var)) = init.as_ref() {
           if is_lexical_var_decl(var) {
-            self.shadow_stack.push(self.scan_shadow_in_var_decl(body, var));
+            self
+              .shadow_stack
+              .push(self.scan_shadow_in_var_decl(body, var));
             pushed = true;
           }
         }
@@ -783,7 +894,12 @@ impl CallbackAnalyzer<'_> {
           self.shadow_stack.pop();
         }
       }
-      StmtKind::ForIn { left, right, body: inner, .. } => {
+      StmtKind::ForIn {
+        left,
+        right,
+        body: inner,
+        ..
+      } => {
         // In `for..in`/`for..of`, the RHS is evaluated *before* introducing the
         // per-loop lexical environment for `let`/`const` bindings.
         //
@@ -794,7 +910,9 @@ impl CallbackAnalyzer<'_> {
         let mut pushed = false;
         if let ForHead::Var(var) = left {
           if is_lexical_var_decl(var) {
-            self.shadow_stack.push(self.scan_shadow_in_var_decl(body, var));
+            self
+              .shadow_stack
+              .push(self.scan_shadow_in_var_decl(body, var));
             pushed = true;
           }
         }
@@ -807,7 +925,10 @@ impl CallbackAnalyzer<'_> {
           self.shadow_stack.pop();
         }
       }
-      StmtKind::Switch { discriminant, cases } => {
+      StmtKind::Switch {
+        discriminant,
+        cases,
+      } => {
         self.visit_expr(body, *discriminant);
         let scope = self.scan_shadow_in_switch(body, cases);
         self.shadow_stack.push(scope);
@@ -847,13 +968,13 @@ impl CallbackAnalyzer<'_> {
         self.effects |= EffectSet::MAY_THROW;
         self.visit_expr(body, *expr);
       }
-      StmtKind::Break(_)
-      | StmtKind::Continue(_)
-      | StmtKind::Debugger
-      | StmtKind::Empty => {}
+      StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Debugger | StmtKind::Empty => {}
       StmtKind::Var(var) => self.visit_var_decl(body, var),
       StmtKind::Labeled { body: inner, .. } => self.visit_stmt(body, *inner),
-      StmtKind::With { object, body: inner } => {
+      StmtKind::With {
+        object,
+        body: inner,
+      } => {
         // `with` can change name resolution in ways we can't model locally.
         self.mark_unknown();
         self.visit_expr(body, *object);
@@ -1068,51 +1189,23 @@ impl CallbackAnalyzer<'_> {
             .filter(|name| !self.name_is_shadowed(*name))
           {
             // `arguments[n]` can be a (slightly) more precise proxy for whether
-            // the callback uses the `index`/`array` arguments.
+            // the callback uses the `index` / `array` callback arguments.
             match &mem.property {
               ObjectKey::Computed(expr) => {
                 self.visit_expr(body, *expr);
                 let expr_node = body.exprs.get(expr.0 as usize);
                 match expr_node.map(|node| &node.kind) {
                   Some(ExprKind::Literal(hir_js::Literal::Number(n))) => {
-                    if let Ok(slot) = n.parse::<usize>() {
-                      if slot == self.index_arg_pos {
-                        self.uses_index = true;
-                      }
-                      if slot == self.array_arg_pos {
-                        self.uses_array = true;
-                      }
-                    }
+                    self.record_arguments_slot_str(n)
                   }
                   Some(ExprKind::Literal(hir_js::Literal::BigInt(n))) => {
-                    if let Ok(slot) = n.parse::<usize>() {
-                      if slot == self.index_arg_pos {
-                        self.uses_index = true;
-                      }
-                      if slot == self.array_arg_pos {
-                        self.uses_array = true;
-                      }
-                    }
+                    self.record_arguments_slot_str(n)
                   }
                   Some(ExprKind::Literal(hir_js::Literal::String(s))) => {
-                    if let Ok(slot) = s.lossy.parse::<usize>() {
-                      if slot == self.index_arg_pos {
-                        self.uses_index = true;
-                      }
-                      if slot == self.array_arg_pos {
-                        self.uses_array = true;
-                      }
-                    }
+                    self.record_arguments_slot_str(&s.lossy)
                   }
                   Some(ExprKind::Template(tmpl)) if tmpl.spans.is_empty() => {
-                    if let Ok(slot) = tmpl.head.parse::<usize>() {
-                      if slot == self.index_arg_pos {
-                        self.uses_index = true;
-                      }
-                      if slot == self.array_arg_pos {
-                        self.uses_array = true;
-                      }
-                    }
+                    self.record_arguments_slot_str(&tmpl.head)
                   }
                   Some(ExprKind::Unary { op, expr: inner }) => match *op {
                     // `+<number>` preserves the numeric property key.
@@ -1120,14 +1213,7 @@ impl CallbackAnalyzer<'_> {
                       let inner_node = body.exprs.get(inner.0 as usize);
                       match inner_node.map(|node| &node.kind) {
                         Some(ExprKind::Literal(hir_js::Literal::Number(n))) => {
-                          if let Ok(slot) = n.parse::<usize>() {
-                            if slot == self.index_arg_pos {
-                              self.uses_index = true;
-                            }
-                            if slot == self.array_arg_pos {
-                              self.uses_array = true;
-                            }
-                          }
+                          self.record_arguments_slot_str(n)
                         }
                         _ => {
                           // Unknown index; conservatively assume it may access either.
@@ -1193,7 +1279,7 @@ impl CallbackAnalyzer<'_> {
           body,
           expr_id,
           self.lowered.names.as_ref(),
-          self.kb,
+          self.kb.db(),
         ) {
           if resolved.kind == ApiUseKind::Get {
             if let Some(api) = self.kb.get_by_id(resolved.api) {
@@ -1275,13 +1361,16 @@ impl CallbackAnalyzer<'_> {
         }
       }
 
-      ExprKind::TypeAssertion { expr, .. }
-      | ExprKind::Instantiation { expr, .. }
+      ExprKind::Instantiation { expr, .. }
+      | ExprKind::TypeAssertion { expr, .. }
       | ExprKind::Satisfies { expr, .. } => {
         self.visit_expr(body, *expr);
       }
 
-      ExprKind::ImportCall { argument, attributes } => {
+      ExprKind::ImportCall {
+        argument,
+        attributes,
+      } => {
         self.mark_unknown();
         self.visit_expr(body, *argument);
         if let Some(attributes) = attributes {
@@ -1391,7 +1480,8 @@ impl CallbackAnalyzer<'_> {
         // they do (e.g. `Array.prototype.map`), they conventionally use arg0 as
         // the callback.
         let callback = args.first().copied();
-        let callback = callback.and_then(|expr| analyze_inline_callback(self.lowered, self.body, expr, self.kb));
+        let callback = callback
+          .and_then(|expr| analyze_inline_callback_with_kb(self.lowered, self.body, expr, self.kb));
         let site = callback
           .map(|cb| crate::eval::CallSiteInfo {
             arg_purity: vec![cb.purity],
@@ -1429,21 +1519,8 @@ impl CallbackAnalyzer<'_> {
       return;
     };
 
-    let (index_param_pos, array_param_pos) = api_name
-      .rsplit('.')
-      .next()
-      .map(callback_param_positions_for_iter_method_name)
-      .unwrap_or((1, 2));
-    let cb = callback_expr.and_then(|expr| {
-      analyze_inline_callback_with_param_positions(
-        self.lowered,
-        self.body,
-        expr,
-        self.kb,
-        index_param_pos,
-        array_param_pos,
-      )
-    });
+    let cb = callback_expr
+      .and_then(|expr| analyze_inline_callback_with_kb(self.lowered, self.body, expr, self.kb));
     let site = cb
       .map(|cb| crate::eval::CallSiteInfo {
         arg_purity: vec![cb.purity],
@@ -1548,8 +1625,8 @@ fn pat_binds_text(body: &Body, names: &hir_js::NameInterner, pat: PatId, text: &
 
 fn infer_known_callback_arg_usage(
   api: &knowledge_base::Api,
-  index_arg_pos: usize,
-  array_arg_pos: usize,
+  index_arg_position: u32,
+  array_arg_position: u32,
 ) -> (bool, bool) {
   let Some(signature) = api.signature.as_deref() else {
     return (true, true);
@@ -1560,7 +1637,10 @@ fn infer_known_callback_arg_usage(
   if has_rest {
     return (true, true);
   }
-  (param_count > index_arg_pos, param_count > array_arg_pos)
+  (
+    param_count >= index_arg_position as usize + 1,
+    param_count >= array_arg_position as usize + 1,
+  )
 }
 
 fn parse_signature_params(signature: &str) -> Option<(usize, bool)> {
@@ -1697,7 +1777,9 @@ mod tests {
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    assert!(info.callback_effects.is_some_and(|e| e.contains(EffectSet::IO)));
+    assert!(info
+      .callback_effects
+      .is_some_and(|e| e.contains(EffectSet::IO)));
     assert!(info
       .callback_effects
       .is_some_and(|e| e.contains(EffectSet::NETWORK)));
@@ -1707,11 +1789,8 @@ mod tests {
   #[test]
   fn callback_destructuring_index_param_counts_as_index_usage() {
     let kb = crate::load_default_api_database();
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map((x, [i]) => x);",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map((x, [i]) => x);").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
@@ -1734,11 +1813,9 @@ mod tests {
   #[test]
   fn callback_object_rest_param_is_allocating() {
     let kb = crate::load_default_api_database();
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map(({ ...rest }) => rest);",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(({ ...rest }) => rest);")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
     let body_ref = lowered.body(body).unwrap();
     let cb_expr = first_callback_arg(body_ref, call_expr);
@@ -1751,11 +1828,9 @@ mod tests {
   #[test]
   fn callback_array_rest_param_is_allocating() {
     let kb = crate::load_default_api_database();
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map(([x, ...rest]) => rest);",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(([x, ...rest]) => rest);")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
     let body_ref = lowered.body(body).unwrap();
     let cb_expr = first_callback_arg(body_ref, call_expr);
@@ -2296,11 +2371,9 @@ mod tests {
       },
     ]);
 
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map(() => new Foo().bar);",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(() => new Foo().bar);")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
     let body_ref = lowered.body(body).unwrap();
     let cb_expr = first_callback_arg(body_ref, call_expr);
@@ -2312,11 +2385,9 @@ mod tests {
   #[test]
   fn callback_calling_fetch_is_impure() {
     let kb = crate::load_default_api_database();
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map(url => fetch(url));",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(url => fetch(url));")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
     let body_ref = lowered.body(body).unwrap();
     let cb_expr = first_callback_arg(body_ref, call_expr);
@@ -2364,11 +2435,9 @@ mod tests {
   #[test]
   fn callback_delete_is_impure_and_unknown() {
     let kb = crate::load_default_api_database();
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map(x => delete x.foo);",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(x => delete x.foo);")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
     let body_ref = lowered.body(body).unwrap();
     let cb_expr = first_callback_arg(body_ref, call_expr);
@@ -2382,11 +2451,9 @@ mod tests {
   #[test]
   fn callsite_info_includes_index_and_array_usage() {
     let kb = crate::load_default_api_database();
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map((x, i, a) => a);",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map((x, i, a) => a);")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
@@ -2398,11 +2465,9 @@ mod tests {
   #[test]
   fn eval_callsite_info_includes_callback_effects_and_purity() {
     let kb = crate::load_default_api_database();
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map((x, i, a) => a);",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map((x, i, a) => a);")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = eval_callsite_info_for_args(&lowered, body, call_expr, &kb);
@@ -2415,11 +2480,9 @@ mod tests {
   #[test]
   fn nested_function_does_not_count_for_param_usage() {
     let kb = crate::load_default_api_database();
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map((x, i, a) => () => a);",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map((x, i, a) => () => a);")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
@@ -2761,11 +2824,9 @@ mod tests {
       properties: BTreeMap::new(),
     }]);
 
-    let lowered = hir_js::lower_from_source_with_kind(
-      hir_js::FileKind::Js,
-      "arr.map(() => cbApi(() => 1));",
-    )
-    .unwrap();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(() => cbApi(() => 1));")
+        .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
     let body_ref = lowered.body(body).unwrap();
     let cb_expr = first_callback_arg(body_ref, call_expr);
