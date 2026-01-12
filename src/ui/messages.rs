@@ -4,6 +4,7 @@ use crate::scroll::ScrollBounds;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::Mutex;
@@ -228,6 +229,13 @@ pub enum UiToWorker {
   },
   SetActiveTab {
     tab_id: TabId,
+  },
+  /// Set the directory used for downloaded files.
+  ///
+  /// Front-ends should send this once during startup (before the first navigation) so downloads use
+  /// the expected directory.
+  SetDownloadDirectory {
+    path: PathBuf,
   },
   /// Navigate to a new URL (typed in the address bar or clicked on the page).
   Navigate {

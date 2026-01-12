@@ -59,6 +59,14 @@ bash scripts/run_limited.sh --as 64G -- \
 The `browser` binary also supports an in-process, best-effort address-space cap via
 `FASTR_BROWSER_MEM_LIMIT_MB` (see [env-vars.md](env-vars.md)).
 
+The download directory can be configured via:
+
+- `browser --download-dir <PATH>`
+- `FASTR_BROWSER_DOWNLOAD_DIR=/path/to/dir`
+
+When unset, the browser defaults to the OS “Downloads” directory (via `directories::UserDirs`) and
+falls back to the current working directory.
+
 To prevent huge in-process pixmap allocations when the window is resized to extreme sizes (or when
 running on very high-DPI displays), the browser UI also clamps viewport/DPR based on these env vars
 (see [env-vars.md](env-vars.md) for defaults and details):

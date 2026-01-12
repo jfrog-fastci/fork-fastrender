@@ -46,6 +46,7 @@ fn browser_help_exits_successfully_without_startup_logs() {
   for flag in [
     "--restore",
     "--no-restore",
+    "--download-dir",
     "--mem-limit-mb",
     "--power-preference",
     "--force-fallback-adapter",

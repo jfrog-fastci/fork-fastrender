@@ -33,6 +33,7 @@ use crate::ui::messages::{
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use image::imageops::FilterType;
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -717,6 +718,7 @@ struct BrowserRuntime {
   ui_tx: Sender<WorkerToUi>,
   factory: FastRenderFactory,
   limits: BrowserLimits,
+  download_dir: PathBuf,
   tabs: HashMap<TabId, TabState>,
   active_tab: Option<TabId>,
   /// Messages deferred during scroll coalescing that should be handled before blocking for the next
@@ -735,6 +737,7 @@ impl BrowserRuntime {
       ui_tx,
       factory,
       limits: BrowserLimits::from_env(),
+      download_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       tabs: HashMap::new(),
       active_tab: None,
       deferred_msgs: VecDeque::new(),
@@ -1025,6 +1028,9 @@ impl BrowserRuntime {
         // Switching tabs should clear any stale hover state (cursor + hovered URL) until the UI
         // sends the next pointer position for this tab.
         Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default);
+      }
+      UiToWorker::SetDownloadDirectory { path } => {
+        self.download_dir = path;
       }
       UiToWorker::Navigate {
         tab_id,

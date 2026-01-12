@@ -138,6 +138,12 @@ struct BrowserCliArgs {
   #[arg(value_name = "URL")]
   url: Option<String>,
 
+  /// Directory to save downloaded files
+  ///
+  /// When unset, defaults to the `FASTR_BROWSER_DOWNLOAD_DIR` environment variable.
+  #[arg(long = "download-dir", value_name = "PATH")]
+  download_dir: Option<std::path::PathBuf>,
+
   /// Try to restore the previous session (even when a URL is provided)
   #[arg(long, action = clap::ArgAction::SetTrue, overrides_with = "no_restore")]
   restore: bool,
@@ -460,6 +466,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     RestoreMode::Auto
   };
 
+  let download_dir = resolve_download_dir(cli.download_dir.clone());
+
   apply_address_space_limit_from_cli_or_env(cli.mem_limit_mb);
 
   // Test/CI hook: allow integration tests to exercise startup behaviour (including mem-limit
@@ -521,7 +529,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       _ => determine_startup_session(cli_url, restore, &session_path),
     };
 
-    return run_headless_smoke_mode(startup_session, source, session_path);
+    return run_headless_smoke_mode(startup_session, source, session_path, download_dir);
   }
 
   if cli.js_enabled {
@@ -638,6 +646,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
+
+  // Set the download directory once during startup, before any `CreateTab { initial_url: Some(..) }`
+  // messages trigger a navigation.
+  ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
+    path: download_dir.clone(),
+  })?;
 
   let wgpu_init = {
     let cli_backends = cli.wgpu_backends.as_deref().map(|backends| {
@@ -941,6 +955,7 @@ fn run_headless_smoke_mode(
   session: fastrender::ui::BrowserSession,
   source: StartupSessionSource,
   session_path: std::path::PathBuf,
+  download_dir: std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
@@ -1030,6 +1045,10 @@ fn run_headless_smoke_mode(
 
   let (ui_to_worker_tx, worker_to_ui_rx, join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
+
+  ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory {
+    path: download_dir,
+  })?;
 
   let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
   for tab in &active_window.tabs {
@@ -1175,6 +1194,27 @@ fn apply_address_space_limit_from_cli_or_env(mem_limit_mb: Option<u64>) {
   } else {
     apply_address_space_limit_from_env();
   }
+}
+
+#[cfg(feature = "browser_ui")]
+fn resolve_download_dir(cli_download_dir: Option<std::path::PathBuf>) -> std::path::PathBuf {
+  const ENV: &str = "FASTR_BROWSER_DOWNLOAD_DIR";
+
+  if let Some(path) = cli_download_dir {
+    return path;
+  }
+
+  if let Some(path) = std::env::var_os(ENV).filter(|value| !value.is_empty()) {
+    return std::path::PathBuf::from(path);
+  }
+
+  if let Some(user_dirs) = directories::UserDirs::new() {
+    if let Some(download_dir) = user_dirs.download_dir() {
+      return download_dir.to_path_buf();
+    }
+  }
+
+  std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
 #[cfg(feature = "browser_ui")]
@@ -2167,6 +2207,7 @@ impl App {
     }
 
     let tab_id = match &msg {
+      UiToWorker::SetDownloadDirectory { .. } => None,
       UiToWorker::CreateTab { tab_id, .. }
       | UiToWorker::NewTab { tab_id, .. }
       | UiToWorker::CloseTab { tab_id }
@@ -2199,48 +2240,51 @@ impl App {
       | UiToWorker::FindNext { tab_id }
       | UiToWorker::FindPrev { tab_id }
       | UiToWorker::FindStop { tab_id }
-      | UiToWorker::RequestRepaint { tab_id, .. } => *tab_id,
+      | UiToWorker::RequestRepaint { tab_id, .. } => Some(*tab_id),
     };
 
-    if let Some(cancel) = self.tab_cancel.get(&tab_id) {
-      match &msg {
-        // Navigations should cancel any in-flight navigation + paint work.
-        UiToWorker::Navigate { .. }
-        | UiToWorker::GoBack { .. }
-        | UiToWorker::GoForward { .. }
-        | UiToWorker::Reload { .. } => cancel.bump_nav(),
-        // Repaint-driving events should cancel in-flight paints so we don't waste time rendering
-        // intermediate frames (e.g. rapid scroll/resize/typing).
-        UiToWorker::ViewportChanged { .. }
-        | UiToWorker::Scroll { .. }
-        | UiToWorker::ScrollTo { .. }
-        | UiToWorker::PointerMove { .. }
-        | UiToWorker::PointerDown { .. }
-        | UiToWorker::PointerUp { .. }
-        | UiToWorker::SelectDropdownChoose { .. }
-        | UiToWorker::SelectDropdownCancel { .. }
-        | UiToWorker::SelectDropdownPick { .. }
-        | UiToWorker::TextInput { .. }
-        | UiToWorker::ImePreedit { .. }
-        | UiToWorker::ImeCommit { .. }
-        | UiToWorker::ImeCancel { .. }
-        | UiToWorker::Paste { .. }
-        | UiToWorker::Cut { .. }
-        | UiToWorker::KeyAction { .. }
-        | UiToWorker::FindQuery { .. }
-        | UiToWorker::FindNext { .. }
-        | UiToWorker::FindPrev { .. }
-        | UiToWorker::FindStop { .. }
-        | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
-        // `Tick` and tab-management messages should not force cancellation.
-        UiToWorker::Tick { .. }
-        | UiToWorker::ContextMenuRequest { .. }
-        | UiToWorker::CreateTab { .. }
-        | UiToWorker::NewTab { .. }
-        | UiToWorker::CloseTab { .. }
-        | UiToWorker::SetActiveTab { .. }
-        | UiToWorker::Copy { .. }
-        | UiToWorker::SelectAll { .. } => {}
+    if let Some(tab_id) = tab_id {
+      if let Some(cancel) = self.tab_cancel.get(&tab_id) {
+        match &msg {
+          // Navigations should cancel any in-flight navigation + paint work.
+          UiToWorker::Navigate { .. }
+          | UiToWorker::GoBack { .. }
+          | UiToWorker::GoForward { .. }
+          | UiToWorker::Reload { .. } => cancel.bump_nav(),
+          // Repaint-driving events should cancel in-flight paints so we don't waste time rendering
+          // intermediate frames (e.g. rapid scroll/resize/typing).
+          UiToWorker::ViewportChanged { .. }
+          | UiToWorker::Scroll { .. }
+          | UiToWorker::ScrollTo { .. }
+          | UiToWorker::PointerMove { .. }
+          | UiToWorker::PointerDown { .. }
+          | UiToWorker::PointerUp { .. }
+          | UiToWorker::SelectDropdownChoose { .. }
+          | UiToWorker::SelectDropdownCancel { .. }
+          | UiToWorker::SelectDropdownPick { .. }
+          | UiToWorker::TextInput { .. }
+          | UiToWorker::ImePreedit { .. }
+          | UiToWorker::ImeCommit { .. }
+          | UiToWorker::ImeCancel { .. }
+          | UiToWorker::Paste { .. }
+          | UiToWorker::Cut { .. }
+          | UiToWorker::KeyAction { .. }
+          | UiToWorker::FindQuery { .. }
+          | UiToWorker::FindNext { .. }
+          | UiToWorker::FindPrev { .. }
+          | UiToWorker::FindStop { .. }
+          | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
+          // `Tick` and tab-management messages should not force cancellation.
+          UiToWorker::Tick { .. }
+          | UiToWorker::ContextMenuRequest { .. }
+          | UiToWorker::CreateTab { .. }
+          | UiToWorker::NewTab { .. }
+          | UiToWorker::CloseTab { .. }
+          | UiToWorker::SetActiveTab { .. }
+          | UiToWorker::SetDownloadDirectory { .. }
+          | UiToWorker::Copy { .. }
+          | UiToWorker::SelectAll { .. } => {}
+        }
       }
     }
 
