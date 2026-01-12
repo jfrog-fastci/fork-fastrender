@@ -6,7 +6,7 @@ This page describes how to build, test, and run the renderer using the repo as i
 
 Use the `xtask` wrapper for common local loops:
 
-- Test: `bash scripts/cargo_agent.sh xtask test [core|style|fixtures|wpt|all]` (default: `core`)
+- Test: `bash scripts/cargo_agent.sh xtask test [lib|integration|fixtures|wpt|all]` (default: `lib`)
 - Refresh goldens: `bash scripts/cargo_agent.sh xtask update-goldens [all|fixtures|reference|wpt]`
 - Update pageset scoreboard: `bash scripts/cargo_agent.sh xtask pageset` (add `--capture-missing-failure-fixtures` to auto-import offline fixtures for failing pages from warmed caches)
 - Render a page: `bash scripts/cargo_agent.sh xtask render-page --url https://example.com --output out.png`
@@ -44,8 +44,9 @@ scripts/pageset.sh
 ## Build & test
 
 - Build: `bash scripts/cargo_agent.sh build`
-- Tests (scoped): `bash scripts/cargo_agent.sh test -p fastrender --quiet --lib`
-- Style regression harness: `bash scripts/cargo_agent.sh test -p fastrender --quiet --test style_tests`
+- Unit tests: `bash scripts/cargo_agent.sh test -p fastrender --quiet --lib`
+- Integration tests: `bash scripts/cargo_agent.sh test -p fastrender --quiet --test integration`
+- Allocation failure tests: `bash scripts/cargo_agent.sh test -p fastrender --quiet --test allocation_failure`
 
 ## Render real pages (batch)
 
