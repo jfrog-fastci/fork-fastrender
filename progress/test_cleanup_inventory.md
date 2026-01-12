@@ -33,7 +33,6 @@ section in sync with `ls tests/*.rs`.
 | `tests/animation_tests.rs` | unit | `src/animation/mod.rs` | Not just a harness (large file). Also uses `#[path]` to include `tests/animation/mod.rs`; migrate all to `src/animation/**`. | TODO |
 | `tests/border_tests.rs` | unit | `src/style/` | Border parsing + cascade expectations (e.g. `src/style/types.rs`, `src/style/cascade.rs`). | TODO |
 | `tests/cascade_tests.rs` | unit | `src/style/cascade.rs` | Harness for `tests/cascade/**`. | TODO |
-| `tests/clip_tests.rs` | unit | `src/paint/clip_path.rs` | Clip/stacking-context regressions under `tests/clip/**`. | TODO |
 | `tests/csp_img_data_url.rs` | integration | `tests/integration.rs::api::csp_img_data_url` | End-to-end CSP behavior (data: images). Fold into `tests/api/` + `tests/integration.rs`. | TODO |
 | `tests/css_font_feature_values_test.rs` | unit | `src/style/font_feature_values.rs` | Parser-level tests for `@font-feature-values`. | TODO |
 | `tests/css_integration_tests.rs` | unit | `src/css/loader.rs` | “Integration” in name only; tests internal CSS loading/URL rewrite/import logic. | TODO |
@@ -81,6 +80,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/container_scroll_state_queries_test.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/style/**`. | DONE |
 | `tests/container_style_queries.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/style/**`. | DONE |
 | `tests/content_visibility_tests.rs` | unit | `src/layout/contexts/*` | Migrated into layout context unit tests (block/flex/grid). | DONE |
+| `tests/clip_tests.rs` | unit | `src/paint/display_list_builder.rs` | Migrated clip-rect regression coverage into `src/paint/display_list_builder.rs` unit tests and removed `tests/clip_tests.rs`/`tests/clip/**`. | DONE |
 | `tests/display_list_tests.rs` | unit | `src/paint/display_list_renderer/tests/display_list/mod.rs` | Migrated the display-list backend regression suite into unit tests under `src/paint/display_list_renderer/tests/display_list/**` and removed the standalone test binary. | DONE |
 | `tests/flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/flex_wrap_order_does_not_trigger_manual_placement.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
