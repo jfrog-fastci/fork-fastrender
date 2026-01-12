@@ -3,10 +3,15 @@ use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
 use crate::ui::messages::TabId;
 use crate::ui::about_pages;
 use crate::ui::{BookmarkNode, BookmarkStore};
-use crate::ui::visited::VisitedUrlStore;
+use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime};
+
+use publicsuffix::{List, Psl};
+use url::Url;
 
 /// The input + state available to [`OmniboxProvider`] implementations.
 ///
@@ -368,7 +373,7 @@ pub fn build_omnibox_suggestions(
   input: &str,
   limit: usize,
 ) -> Vec<OmniboxSuggestion> {
-  build_omnibox_suggestions_with_providers(ctx, input, limit, default_providers())
+  build_omnibox_suggestions_with_providers_at_time(ctx, input, limit, default_providers(), SystemTime::now())
 }
 
 /// Build omnibox suggestions using [`DEFAULT_OMNIBOX_LIMIT`].
@@ -397,6 +402,16 @@ fn build_omnibox_suggestions_with_providers(
   limit: usize,
   providers: Vec<Box<dyn OmniboxProvider>>,
 ) -> Vec<OmniboxSuggestion> {
+  build_omnibox_suggestions_with_providers_at_time(ctx, input, limit, providers, SystemTime::now())
+}
+
+fn build_omnibox_suggestions_with_providers_at_time(
+  ctx: &OmniboxContext<'_>,
+  input: &str,
+  limit: usize,
+  providers: Vec<Box<dyn OmniboxProvider>>,
+  now: SystemTime,
+) -> Vec<OmniboxSuggestion> {
   let input = input.trim();
   if input.is_empty() {
     return Vec::new();
@@ -409,7 +424,7 @@ fn build_omnibox_suggestions_with_providers(
   let mut scored = Vec::<ScoredSuggestion>::new();
   for provider in providers {
     for suggestion in provider.suggestions(ctx, input) {
-      let Some(score) = score_suggestion(&suggestion, &tokens_lower) else {
+      let Some(score) = score_suggestion(ctx, now, &suggestion, &tokens_lower) else {
         continue;
       };
       scored.push(ScoredSuggestion { suggestion, score });
@@ -438,7 +453,12 @@ struct ScoredSuggestion {
   score: i64,
 }
 
-fn score_suggestion(suggestion: &OmniboxSuggestion, tokens_lower: &[String]) -> Option<i64> {
+fn score_suggestion(
+  ctx: &OmniboxContext<'_>,
+  now: SystemTime,
+  suggestion: &OmniboxSuggestion,
+  tokens_lower: &[String],
+) -> Option<i64> {
   let base = match suggestion.source {
     OmniboxSuggestionSource::Primary => 1_000_000,
     // NOTE: Base scores are spaced far enough apart that match bonuses (see `match_score`) cannot
@@ -452,12 +472,33 @@ fn score_suggestion(suggestion: &OmniboxSuggestion, tokens_lower: &[String]) -> 
     OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 500,
   };
 
+  // Non-blocking local frecency bonus for URL suggestions.
+  //
+  // This is intentionally capped so the base score ordering remains stable:
+  // OpenTab > About > Bookmark > Visited.
+  let frecency = match suggestion.source {
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited)
+    | OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => suggestion
+      .url
+      .as_deref()
+      .and_then(|url| ctx.visited.get(url))
+      .map(|record| frecency_bonus(suggestion.source, record, now))
+      .unwrap_or(0),
+    _ => 0,
+  };
+
   let mut match_total = 0i64;
+  let parsed_url = suggestion
+    .url
+    .as_deref()
+    .and_then(|u| Url::parse(u).ok());
+
   for token_lower in tokens_lower {
     let mut best_token_match = None::<i64>;
 
     if let Some(url) = suggestion.url.as_deref() {
-      best_token_match = best_token_match.max(match_score(url, token_lower));
+      best_token_match =
+        best_token_match.max(match_score_url(parsed_url.as_ref(), url, token_lower));
     }
     if let Some(title) = suggestion.title.as_deref() {
       best_token_match = best_token_match.max(match_score(title, token_lower));
@@ -470,18 +511,143 @@ fn score_suggestion(suggestion: &OmniboxSuggestion, tokens_lower: &[String]) -> 
     match_total += best_token_match?;
   }
 
-  Some(base + match_total)
+  Some(base + match_total + frecency)
 }
 
 /// Returns a score for `needle` in `haystack`, where larger is better.
 fn match_score(haystack: &str, needle_lower: &str) -> Option<i64> {
-  let haystack_lower = haystack.to_ascii_lowercase();
-  let idx = haystack_lower.find(needle_lower)? as i64;
+  let idx = find_case_insensitive(haystack, needle_lower)? as i64;
 
   // Prefer prefix matches and earlier matches. Clamp so long strings don't overflow.
   let prefix_bonus = if idx == 0 { 1_000 } else { 0 };
   let position_bonus = (200 - idx).max(0);
   Some(prefix_bonus + position_bonus)
+}
+
+fn match_score_url(parsed: Option<&Url>, raw: &str, needle_lower: &str) -> Option<i64> {
+  let raw_score = match_score(raw, needle_lower);
+
+  let Some(url) = parsed else {
+    return raw_score;
+  };
+  if !matches!(url.scheme(), "http" | "https") {
+    return raw_score;
+  }
+
+  let Some(host) = url.host_str() else {
+    return raw_score;
+  };
+
+  let host_score = match_score_http_host(host, needle_lower);
+
+  // Score path + query, but keep it lower than host matches.
+  let path_score = match_score_pathish(url.path(), needle_lower);
+  let query_score = url.query().and_then(|q| match_score_pathish(q, needle_lower));
+  let path_query_score = path_score.max(query_score);
+
+  raw_score.max(host_score).max(path_query_score)
+}
+
+fn match_score_http_host(host: &str, needle_lower: &str) -> Option<i64> {
+  let idx = find_case_insensitive(host, needle_lower)? as i64;
+
+  let domain_start = registrable_domain(host)
+    .and_then(|domain| host.len().checked_sub(domain.len()))
+    .unwrap_or(0) as i64;
+
+  let boundary_bonus = if idx == 0 || idx == domain_start {
+    300
+  } else if idx > 0 && host.as_bytes().get(idx as usize - 1) == Some(&b'.') {
+    250
+  } else {
+    0
+  };
+  let position_bonus = (200 - idx).max(0);
+
+  // Ensure host matches always outrank path/query matches.
+  const HOST_BASE: i64 = 700;
+  Some((HOST_BASE + boundary_bonus + position_bonus).min(1_200))
+}
+
+fn match_score_pathish(haystack: &str, needle_lower: &str) -> Option<i64> {
+  let idx = find_case_insensitive(haystack, needle_lower)? as i64;
+  let boundary_bonus = if idx == 0 {
+    200
+  } else {
+    match haystack.as_bytes().get(idx as usize - 1) {
+      Some(b'/') | Some(b'?') | Some(b'&') | Some(b'=') | Some(b'.') | Some(b'-') | Some(b'_') => 200,
+      _ => 0,
+    }
+  };
+  let position_bonus = (200 - idx).max(0);
+  Some((boundary_bonus + position_bonus).min(600))
+}
+
+fn find_case_insensitive(haystack: &str, needle_lower: &str) -> Option<usize> {
+  // For omnibox usage we want lightweight, allocation-free matching. We use ASCII-only
+  // case-insensitivity: non-ASCII bytes are compared exactly.
+  if needle_lower.is_empty() {
+    return Some(0);
+  }
+
+  let hay = haystack.as_bytes();
+  let needle = needle_lower.as_bytes();
+  if needle.len() > hay.len() {
+    return None;
+  }
+
+  for i in 0..=(hay.len() - needle.len()) {
+    let mut ok = true;
+    for j in 0..needle.len() {
+      if hay[i + j].to_ascii_lowercase() != needle[j] {
+        ok = false;
+        break;
+      }
+    }
+    if ok {
+      return Some(i);
+    }
+  }
+
+  None
+}
+
+fn frecency_bonus(source: OmniboxSuggestionSource, record: &VisitedUrlRecord, now: SystemTime) -> i64 {
+  let age = now
+    .duration_since(record.last_visited)
+    .unwrap_or(Duration::ZERO);
+
+  let recency_bonus = if age < Duration::from_secs(60 * 60) {
+    80
+  } else if age < Duration::from_secs(60 * 60 * 24) {
+    50
+  } else if age < Duration::from_secs(60 * 60 * 24 * 7) {
+    20
+  } else {
+    0
+  };
+
+  let frequency_bonus = if record.visit_count <= 1 {
+    0
+  } else {
+    let log2 = 31 - record.visit_count.leading_zeros() as i64;
+    (log2 * 10).min(70)
+  };
+
+  let bonus = recency_bonus + frequency_bonus;
+  let cap = match source {
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 90,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => 150,
+    _ => 0,
+  };
+  bonus.min(cap)
+}
+
+fn registrable_domain(host: &str) -> Option<&str> {
+  static PSL: OnceLock<List> = OnceLock::new();
+  let list = PSL.get_or_init(List::default);
+  let domain = list.domain(host.as_bytes())?;
+  std::str::from_utf8(domain.as_bytes()).ok()
 }
 
 fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ordering {
@@ -562,6 +728,8 @@ mod tests {
 
   #[test]
   fn engine_produces_expected_local_suggestions() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
     let tab_a = TabId(1);
     let tab_b = TabId(2);
 
@@ -580,15 +748,23 @@ mod tests {
     }];
 
     let mut visited = VisitedUrlStore::with_capacity(10);
-    visited.record_visit(
-      "https://example.net/".to_string(),
-      Some("Example Net".to_string()),
-    );
-    // Duplicate URL from open tab should be deduped in favour of the open-tab suggestion.
-    visited.record_visit(
-      "https://example.com/".to_string(),
-      Some("Example Domain (history)".to_string()),
-    );
+    visited.seed_from_global_history(&crate::ui::GlobalHistoryStore {
+      entries: vec![
+        crate::ui::GlobalHistoryEntry {
+          url: "https://example.net/".to_string(),
+          title: Some("Example Net".to_string()),
+          visited_at_ms: Some(1_000),
+          visit_count: 1,
+        },
+        // Duplicate URL from open tab should be deduped in favour of the open-tab suggestion.
+        crate::ui::GlobalHistoryEntry {
+          url: "https://example.com/".to_string(),
+          title: Some("Example Domain (history)".to_string()),
+          visited_at_ms: Some(2_000),
+          visit_count: 1,
+        },
+      ],
+    });
 
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,
@@ -598,7 +774,13 @@ mod tests {
       bookmarks: None,
       remote_search_suggest: None,
     };
-    let suggestions = build_omnibox_suggestions_default_limit(&ctx, "example");
+    let suggestions = build_omnibox_suggestions_with_providers_at_time(
+      &ctx,
+      "example",
+      DEFAULT_OMNIBOX_LIMIT,
+      default_providers(),
+      now,
+    );
 
     assert_eq!(
       suggestions,
@@ -886,7 +1068,119 @@ mod tests {
   }
 
   #[test]
+  fn visited_suggestions_prefer_frecency_over_lexicographic_order_when_scores_tie() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000_000);
+    let now_ms = now
+      .duration_since(SystemTime::UNIX_EPOCH)
+      .unwrap()
+      .as_millis() as u64;
+
+    let history = crate::ui::GlobalHistoryStore {
+      entries: vec![
+        // Oldest, low frequency, but lexicographically earlier.
+        crate::ui::GlobalHistoryEntry {
+          url: "https://a.example.com/".to_string(),
+          title: None,
+          visited_at_ms: Some(now_ms - 9 * 24 * 60 * 60 * 1_000),
+          visit_count: 1,
+        },
+        // Recent and frequently visited, but lexicographically later.
+        crate::ui::GlobalHistoryEntry {
+          url: "https://b.example.com/".to_string(),
+          title: None,
+          visited_at_ms: Some(now_ms - 30 * 60 * 1_000),
+          visit_count: 64,
+        },
+      ],
+    };
+
+    let mut visited = VisitedUrlStore::with_capacity(10);
+    visited.seed_from_global_history(&history);
+
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions_with_providers_at_time(
+      &ctx,
+      "example",
+      10,
+      vec![Box::new(PrimaryActionProvider), Box::new(VisitedProvider)],
+      now,
+    );
+
+    let visited_urls: Vec<&str> = suggestions
+      .iter()
+      .filter(|s| s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited))
+      .filter_map(|s| s.url.as_deref())
+      .collect();
+    assert_eq!(visited_urls, vec!["https://b.example.com/", "https://a.example.com/"]);
+  }
+
+  #[test]
+  fn host_matches_are_weighted_above_path_matches_for_urls() {
+    struct Provider;
+    impl OmniboxProvider for Provider {
+      fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
+        vec![
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://example.com/path/git/one".to_string()),
+            title: None,
+            url: Some("https://example.com/path/git/one".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl("https://github.com/rust-lang/rust".to_string()),
+            title: None,
+            url: Some("https://github.com/rust-lang/rust".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+        ]
+      }
+    }
+
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000_000);
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions_with_providers_at_time(
+      &ctx,
+      "git",
+      10,
+      vec![Box::new(Provider)],
+      now,
+    );
+
+    let urls: Vec<&str> = suggestions.iter().filter_map(|s| s.url.as_deref()).collect();
+    assert_eq!(
+      urls,
+      vec![
+        "https://github.com/rust-lang/rust",
+        "https://example.com/path/git/one"
+      ]
+    );
+  }
+
+  #[test]
   fn bookmarks_are_suggested_and_ranked_above_visited_below_open_tabs() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
     let tab_id = TabId(1);
     let open_tabs = vec![BrowserTabState::new(
       tab_id,
@@ -895,10 +1189,14 @@ mod tests {
     let closed_tabs = Vec::new();
 
     let mut visited = VisitedUrlStore::new();
-    visited.record_visit(
-      "https://visited.example/".to_string(),
-      Some("Needle Title".to_string()),
-    );
+    visited.seed_from_global_history(&crate::ui::GlobalHistoryStore {
+      entries: vec![crate::ui::GlobalHistoryEntry {
+        url: "https://visited.example/".to_string(),
+        title: Some("Needle Title".to_string()),
+        visited_at_ms: Some(1_000),
+        visit_count: 1,
+      }],
+    });
 
     let mut bookmarks = BookmarkStore::default();
     bookmarks
@@ -913,7 +1211,8 @@ mod tests {
       remote_search_suggest: None,
     };
 
-    let suggestions = build_omnibox_suggestions(&ctx, "Needle", 10);
+    let suggestions =
+      build_omnibox_suggestions_with_providers_at_time(&ctx, "Needle", 10, default_providers(), now);
 
     assert_eq!(suggestions.len(), 4, "unexpected suggestions: {suggestions:?}");
     assert_eq!(suggestions[0].source, OmniboxSuggestionSource::Primary);
@@ -1041,7 +1340,11 @@ mod tests {
       .add("https://www.rust-lang.org/learn".to_string(), None, None)
       .expect("add bookmark rust-lang");
     bookmarks
-      .add("https://example.com/only-one-token".to_string(), None, None)
+      .add(
+        "https://example.com/only-one-token".to_string(),
+        None,
+        None,
+      )
       .expect("add bookmark example");
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,

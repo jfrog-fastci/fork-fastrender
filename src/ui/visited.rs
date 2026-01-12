@@ -15,6 +15,7 @@ pub struct VisitedUrlRecord {
   pub url: String,
   pub title: Option<String>,
   pub last_visited: SystemTime,
+  pub visit_count: u32,
 }
 
 #[derive(Debug)]
@@ -57,7 +58,7 @@ impl VisitedUrlStore {
   /// - `last_visited` is always refreshed
   /// - `title` is refreshed only when `title` is `Some(..)`
   pub fn record_visit(&mut self, url: String, title: Option<String>) {
-    self.record_visit_at(url, title, SystemTime::now());
+    self.record_visit_at_with_count(url, title, SystemTime::now(), 1);
   }
 
   pub(crate) fn record_visit_at(
@@ -66,13 +67,26 @@ impl VisitedUrlStore {
     title: Option<String>,
     visited_at: SystemTime,
   ) {
+    self.record_visit_at_with_count(url, title, visited_at, 1);
+  }
+
+  fn record_visit_at_with_count(
+    &mut self,
+    url: String,
+    title: Option<String>,
+    visited_at: SystemTime,
+    visit_count: u32,
+  ) {
     if self.capacity == 0 {
       return;
     }
 
+    let visit_count = visit_count.max(1);
+
     if let Some(idx) = self.records.iter().position(|r| r.url == url) {
       if let Some(mut existing) = self.records.remove(idx) {
         existing.last_visited = visited_at;
+        existing.visit_count = existing.visit_count.saturating_add(visit_count);
         if title.is_some() {
           existing.title = title;
         }
@@ -85,6 +99,7 @@ impl VisitedUrlStore {
       url,
       title,
       last_visited: visited_at,
+      visit_count,
     });
 
     while self.records.len() > self.capacity {
@@ -135,7 +150,10 @@ impl VisitedUrlStore {
         .checked_add(Duration::from_millis(visited_at_ms))
         .unwrap_or(UNIX_EPOCH);
 
-      self.record_visit_at(url.to_string(), entry.title.clone(), visited_at);
+      let visit_count = entry.visit_count.max(1);
+      let visit_count = u32::try_from(visit_count).unwrap_or(u32::MAX);
+
+      self.record_visit_at_with_count(url.to_string(), entry.title.clone(), visited_at, visit_count);
     }
   }
 
@@ -177,6 +195,10 @@ impl VisitedUrlStore {
     }
 
     out
+  }
+
+  pub fn get(&self, url: &str) -> Option<&VisitedUrlRecord> {
+    self.records.iter().find(|r| r.url == url)
   }
 }
 
@@ -241,10 +263,12 @@ mod tests {
     assert_eq!(a.url, "https://a.example/");
     assert_eq!(a.title.as_deref(), Some("A"));
     assert_eq!(a.last_visited, t3);
+    assert_eq!(a.visit_count, 2, "expected visit_count to increment on revisit");
 
     let b = it.next().unwrap();
     assert_eq!(b.url, "https://b.example/");
     assert_eq!(b.last_visited, t2);
+    assert_eq!(b.visit_count, 1);
   }
 
   #[test]
@@ -275,14 +299,14 @@ mod tests {
           url: "https://a.example/".to_string(),
           title: Some("A".to_string()),
           visited_at_ms: Some(2_000),
-          visit_count: 1,
+          visit_count: 2,
         },
         // More recent, but missing title; should not clobber previous title for the same URL.
         super::super::GlobalHistoryEntry {
           url: "https://a.example/".to_string(),
           title: None,
           visited_at_ms: Some(6_000),
-          visit_count: 1,
+          visit_count: 3,
         },
         // Out-of-order timestamp compared to file order: this should still be newer than `c`.
         super::super::GlobalHistoryEntry {
@@ -316,6 +340,10 @@ mod tests {
     assert_eq!(
       a.last_visited,
       std::time::UNIX_EPOCH + Duration::from_millis(6_000)
+    );
+    assert_eq!(
+      a.visit_count, 5,
+      "expected visit_count to be accumulated across duplicate history entries"
     );
   }
 
