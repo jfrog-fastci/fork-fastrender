@@ -3917,10 +3917,10 @@ pub enum ListStylePosition {
 }
 
 /// list-style-image values
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ListStyleImage {
   None,
-  Url(String),
+  Url(BackgroundImageUrl),
 }
 
 /// Text case transformation

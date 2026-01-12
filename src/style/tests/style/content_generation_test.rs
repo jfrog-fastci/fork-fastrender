@@ -10,6 +10,7 @@ use fastrender::style::content::ContentItem;
 use fastrender::style::content::ContentValue;
 use fastrender::style::content::CounterStyle;
 use fastrender::style::counter_styles::CounterStyleName;
+use fastrender::style::types::BackgroundImageUrl;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -638,7 +639,9 @@ fn test_generator_combined_content() {
 #[test]
 fn test_generator_url_content() {
   let gen = ContentGenerator::new();
-  let content = ContentValue::Items(vec![ContentItem::Url("image.png".to_string())]);
+  let content = ContentValue::Items(vec![ContentItem::Url(BackgroundImageUrl::new(
+    "image.png".to_string(),
+  ))]);
   let mut ctx = ContentContext::new();
 
   // URL content generates empty string (should be handled as image by caller)
@@ -659,7 +662,7 @@ fn test_is_text_only() {
 
   // URL makes it not text-only
   assert!(!ContentGenerator::is_text_only(&ContentValue::Items(vec![
-    ContentItem::Url("image.png".to_string())
+    ContentItem::Url(BackgroundImageUrl::new("image.png".to_string()))
   ])));
 }
 
@@ -833,7 +836,10 @@ fn test_parse_no_close_quote() {
 fn test_parse_url_double_quoted() {
   let content = parse_content("url(\"image.png\")").unwrap();
   if let ContentValue::Items(items) = content {
-    assert_eq!(items[0], ContentItem::Url("image.png".to_string()));
+    assert_eq!(
+      items[0],
+      ContentItem::Url(BackgroundImageUrl::new("image.png".to_string()))
+    );
   }
 }
 
@@ -841,7 +847,10 @@ fn test_parse_url_double_quoted() {
 fn test_parse_url_unquoted() {
   let content = parse_content("url(image.png)").unwrap();
   if let ContentValue::Items(items) = content {
-    assert_eq!(items[0], ContentItem::Url("image.png".to_string()));
+    assert_eq!(
+      items[0],
+      ContentItem::Url(BackgroundImageUrl::new("image.png".to_string()))
+    );
   }
 }
 

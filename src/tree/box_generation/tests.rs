@@ -3496,7 +3496,9 @@ fn pseudo_content_supports_attr_counter_and_image() {
       style: Some(CounterStyle::UpperRoman.into()),
     },
     ContentItem::String(" ".to_string()),
-    ContentItem::Url("icon.png".to_string()),
+    ContentItem::Url(crate::style::types::BackgroundImageUrl::new(
+      "icon.png".to_string(),
+    )),
   ]);
 
   let base_style = ComputedStyle::default();
@@ -3574,8 +3576,9 @@ fn pseudo_content_url_does_not_treat_nbsp_as_empty() {
   use crate::style::content::ContentValue;
 
   let mut before_style = ComputedStyle::default();
-  before_style.content_value =
-    ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
+  before_style.content_value = ContentValue::Items(vec![ContentItem::Url(
+    crate::style::types::BackgroundImageUrl::new("\u{00A0}".to_string()),
+  )]);
 
   let base_style = ComputedStyle::default();
   let styled = StyledNode {
@@ -3643,8 +3646,9 @@ fn marker_content_url_does_not_treat_nbsp_as_empty() {
   li_style.display = Display::ListItem;
 
   let mut marker_style = ComputedStyle::default();
-  marker_style.content_value =
-    ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
+  marker_style.content_value = ContentValue::Items(vec![ContentItem::Url(
+    crate::style::types::BackgroundImageUrl::new("\u{00A0}".to_string()),
+  )]);
 
   let styled = StyledNode {
     node_id: 0,
@@ -8115,7 +8119,9 @@ fn pseudo_element_content_ignores_empty_url() {
   let mut quote_depth = 0usize;
 
   let mut pseudo_style = ComputedStyle::default();
-  pseudo_style.content_value = ContentValue::Items(vec![ContentItem::Url(String::new())]);
+  pseudo_style.content_value = ContentValue::Items(vec![ContentItem::Url(
+    crate::style::types::BackgroundImageUrl::new(String::new()),
+  )]);
   let pseudo_style = Arc::new(pseudo_style);
 
   let pseudo_box =
@@ -8160,7 +8166,9 @@ fn marker_content_ignores_empty_url() {
   let mut quote_depth = 0usize;
 
   let mut marker_style = ComputedStyle::default();
-  marker_style.content_value = ContentValue::Items(vec![ContentItem::Url(String::new())]);
+  marker_style.content_value = ContentValue::Items(vec![ContentItem::Url(
+    crate::style::types::BackgroundImageUrl::new(String::new()),
+  )]);
 
   assert!(
     marker_content_from_style(&styled, &marker_style, &counters, &mut quote_depth).is_none(),

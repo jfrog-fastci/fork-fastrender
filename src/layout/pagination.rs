@@ -3130,20 +3130,30 @@ fn build_margin_box_children(
           ContentItem::NoOpenQuote => context.push_quote(),
           ContentItem::NoCloseQuote => context.pop_quote(),
           ContentItem::Url(url) => {
-            if trim_ascii_whitespace(url).is_empty() {
+            if trim_ascii_whitespace(&url.url).is_empty() {
               continue;
             }
             flush_text(&mut text_buf, &mut children, style);
+            let srcset = url
+              .override_resolution
+              .filter(|d| d.is_finite() && *d > 0.0)
+              .map(|d| {
+                vec![crate::tree::box_tree::SrcsetCandidate {
+                  url: url.url.clone(),
+                  descriptor: crate::tree::box_tree::SrcsetDescriptor::Density(d),
+                }]
+              })
+              .unwrap_or_default();
             children.push(BoxNode::new_replaced(
               style.clone(),
               ReplacedType::Image {
-                src: url.clone(),
+                src: url.url.clone(),
                 alt: None,
                 loading: ImageLoadingAttribute::Auto,
                 decoding: ImageDecodingAttribute::Auto,
                 crossorigin: CrossOriginAttribute::None,
                 referrer_policy: None,
-                srcset: Vec::new(),
+                srcset,
                 sizes: None,
                 picture_sources: Vec::new(),
               },
@@ -4175,7 +4185,9 @@ mod tests {
   fn margin_box_content_url_does_not_treat_nbsp_as_empty() {
     let mut box_style = ComputedStyle::default();
     box_style.display = Display::Block;
-    box_style.content_value = ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
+    box_style.content_value = ContentValue::Items(vec![ContentItem::Url(
+      crate::style::types::BackgroundImageUrl::new("\u{00A0}".to_string()),
+    )]);
     let style = Arc::new(box_style.clone());
     let running_strings: HashMap<String, RunningStringValues> = HashMap::new();
     let running_elements: HashMap<String, RunningElementValues> = HashMap::new();

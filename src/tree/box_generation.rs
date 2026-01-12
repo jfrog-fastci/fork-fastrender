@@ -74,6 +74,7 @@ use crate::tree::box_tree::SelectControl;
 use crate::tree::box_tree::SelectItem;
 use crate::tree::box_tree::SizesList;
 use crate::tree::box_tree::SrcsetCandidate;
+use crate::tree::box_tree::SrcsetDescriptor;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::SvgDocumentCssInjection;
 use crate::tree::box_tree::TableCellSpan;
@@ -108,6 +109,21 @@ fn trim_ascii_whitespace_end(value: &str) -> &str {
   value.trim_end_matches(|c: char| {
     matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
   })
+}
+
+fn srcset_from_override_resolution(
+  image: &crate::style::types::BackgroundImageUrl,
+) -> Vec<SrcsetCandidate> {
+  match image
+    .override_resolution
+    .filter(|d| d.is_finite() && *d > 0.0)
+  {
+    Some(density) => vec![SrcsetCandidate {
+      url: image.url.clone(),
+      descriptor: SrcsetDescriptor::Density(density),
+    }],
+    None => Vec::new(),
+  }
 }
 
 // ============================================================================
@@ -5575,7 +5591,7 @@ fn create_pseudo_element_box(
         );
       }
       ContentItem::Url(url) => {
-        if trim_ascii_whitespace(url).is_empty() {
+        if trim_ascii_whitespace(&url.url).is_empty() {
           continue;
         }
         flush_text(
@@ -5587,14 +5603,14 @@ fn create_pseudo_element_box(
         let mut replaced_node = BoxNode::new_replaced(
           generated_content_style.clone(),
           ReplacedType::Image {
-            src: url.clone(),
+            src: url.url.clone(),
             alt: None,
             loading: ImageLoadingAttribute::Auto,
             decoding: ImageDecodingAttribute::Auto,
             crossorigin: CrossOriginAttribute::None,
             referrer_policy: None,
             sizes: None,
-            srcset: Vec::new(),
+            srcset: srcset_from_override_resolution(url),
             picture_sources: Vec::new(),
           },
           None,
@@ -6131,7 +6147,7 @@ pub(crate) fn marker_content_from_style(
     context.set_quote_depth(*quote_depth);
 
     let mut text = String::new();
-    let mut image: Option<String> = None;
+    let mut image: Option<crate::style::types::BackgroundImageUrl> = None;
 
     if let ContentValue::Items(items) = &content_value {
       for item in items {
@@ -6195,7 +6211,7 @@ pub(crate) fn marker_content_from_style(
             // Running elements are not supported for list markers yet.
           }
           ContentItem::Url(url) => {
-            if trim_ascii_whitespace(url).is_empty() {
+            if trim_ascii_whitespace(&url.url).is_empty() {
               continue;
             }
             // If the author supplies multiple URLs we take the last; mixed text+image returns text.
@@ -6211,16 +6227,17 @@ pub(crate) fn marker_content_from_style(
     }
     if let Some(src) = image {
       *quote_depth = context.quote_depth();
+      let srcset = srcset_from_override_resolution(&src);
       let replaced = ReplacedBox {
         replaced_type: ReplacedType::Image {
-          src,
+          src: src.url,
           alt: None,
           loading: ImageLoadingAttribute::Auto,
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
-          srcset: Vec::new(),
+          srcset,
           picture_sources: Vec::new(),
         },
         intrinsic_size: None,
@@ -6235,16 +6252,17 @@ pub(crate) fn marker_content_from_style(
 
   match &marker_style.list_style_image {
     crate::style::types::ListStyleImage::Url(url) => {
+      let srcset = srcset_from_override_resolution(url);
       let replaced = ReplacedBox {
         replaced_type: ReplacedType::Image {
-          src: url.clone(),
+          src: url.url.clone(),
           alt: None,
           loading: ImageLoadingAttribute::Auto,
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
-          srcset: Vec::new(),
+          srcset,
           picture_sources: Vec::new(),
         },
         intrinsic_size: None,
@@ -6282,16 +6300,18 @@ fn effective_content_value(style: &ComputedStyle) -> ContentValue {
   }
 }
 
-fn replaced_image_src_from_content_property(style: &ComputedStyle) -> Option<String> {
+fn replaced_image_src_from_content_property(
+  style: &ComputedStyle,
+) -> Option<crate::style::types::BackgroundImageUrl> {
   let ContentValue::Items(items) = effective_content_value(style) else {
     return None;
   };
 
-  let mut src: Option<String> = None;
+  let mut src: Option<crate::style::types::BackgroundImageUrl> = None;
   for item in items {
     match item {
       ContentItem::Url(url) => {
-        if trim_ascii_whitespace(&url).is_empty() {
+        if trim_ascii_whitespace(&url.url).is_empty() {
           continue;
         }
         if src.is_some() {
@@ -7480,8 +7500,8 @@ fn create_replaced_box_from_styled(
     // FastRender only supports this behavior when the `content` property is a pure URL (no mixed
     // text/counters/etc), matching the common authoring pattern.
     if let Some(content_src) = replaced_image_src_from_content_property(&style) {
-      src = content_src;
-      srcset.clear();
+      srcset = srcset_from_override_resolution(&content_src);
+      src = content_src.url;
       sizes = None;
       picture_sources.clear();
     }

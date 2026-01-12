@@ -24002,7 +24002,7 @@ fn parse_list_style_image(value: &PropertyValue) -> Option<ListStyleImage> {
           if trim_ascii_whitespace(&url.url).is_empty() {
             Some(ListStyleImage::None)
           } else {
-            Some(ListStyleImage::Url(url.url))
+            Some(ListStyleImage::Url(url))
           }
         }
         BackgroundImage::None => Some(ListStyleImage::None),
@@ -24013,7 +24013,7 @@ fn parse_list_style_image(value: &PropertyValue) -> Option<ListStyleImage> {
       if trim_ascii_whitespace(url).is_empty() {
         Some(ListStyleImage::None)
       } else {
-        Some(ListStyleImage::Url(url.clone()))
+        Some(ListStyleImage::Url(BackgroundImageUrl::new(url.clone())))
       }
     }
     _ => None,
@@ -33586,7 +33586,7 @@ mod tests {
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
     assert_eq!(
       style.list_style_image,
-      ListStyleImage::Url("marker.png".to_string())
+      ListStyleImage::Url(BackgroundImageUrl::new("marker.png".to_string()))
     );
 
     let decl = Declaration {
@@ -33614,7 +33614,7 @@ mod tests {
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
     assert_eq!(
       style.list_style_image,
-      ListStyleImage::Url("img.png".to_string())
+      ListStyleImage::Url(BackgroundImageUrl::new("img.png".to_string()))
     );
     assert_eq!(style.list_style_type, ListStyleType::Disc);
     assert_eq!(style.list_style_position, ListStylePosition::Outside);
@@ -34146,7 +34146,40 @@ mod tests {
 
     assert_eq!(
       style.list_style_image,
-      ListStyleImage::Url("marker-1x.png".to_string())
+      ListStyleImage::Url(BackgroundImageUrl {
+        url: "marker-1x.png".to_string(),
+        override_resolution: Some(1.0),
+      })
+    );
+  }
+
+  #[test]
+  fn list_style_image_image_set_preserves_selected_density() {
+    let mut style = ComputedStyle::default();
+    with_image_set_dpr(2.0, || {
+      apply_declaration(
+        &mut style,
+        &Declaration {
+          property: "list-style-image".into(),
+          value: PropertyValue::Keyword(
+            "image-set(url(\"marker-1x.png\") 1x, url(\"marker-2x.png\") 2x)".to_string(),
+          ),
+          contains_var: false,
+          raw_value: String::new(),
+          important: false,
+        },
+        &ComputedStyle::default(),
+        16.0,
+        16.0,
+      );
+    });
+
+    assert_eq!(
+      style.list_style_image,
+      ListStyleImage::Url(BackgroundImageUrl {
+        url: "marker-2x.png".to_string(),
+        override_resolution: Some(2.0),
+      })
     );
   }
 

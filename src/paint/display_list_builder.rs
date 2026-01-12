@@ -15947,6 +15947,42 @@ mod tests {
     FragmentNode::new_text(Rect::from_xywh(x, y, width, height), text.to_string(), 12.0)
   }
 
+  fn styled_element(tag: &str) -> crate::style::cascade::StyledNode {
+    crate::style::cascade::StyledNode {
+      node_id: 0,
+      node: crate::dom::DomNode {
+        node_type: crate::dom::DomNodeType::Element {
+          tag_name: tag.to_string(),
+          namespace: crate::dom::HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: crate::style::cascade::StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      progress_bar_styles: None,
+      progress_value_styles: None,
+      meter_bar_styles: None,
+      meter_optimum_value_styles: None,
+      meter_suboptimum_value_styles: None,
+      meter_even_less_good_value_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    }
+  }
+
   #[test]
   fn display_list_build_allocation_budget_exceeded() {
     let budget = Arc::new(StageAllocationBudget::new(0));
@@ -16463,9 +16499,18 @@ mod tests {
   }
 
   fn data_url_for_color(color: [u8; 4]) -> String {
+    data_url_for_solid_png(1, 1, color)
+  }
+
+  fn data_url_for_solid_png(width: u32, height: u32, color: [u8; 4]) -> String {
     let mut buf = Vec::new();
+    let len = width as usize * height as usize * 4;
+    let mut pixels = vec![0u8; len];
+    for chunk in pixels.chunks_exact_mut(4) {
+      chunk.copy_from_slice(&color);
+    }
     PngEncoder::new(&mut buf)
-      .write_image(&color, 1, 1, ColorType::Rgba8.into())
+      .write_image(&pixels, width, height, ColorType::Rgba8.into())
       .expect("encode png");
     format!(
       "data:image/png;base64,{}",
@@ -19151,7 +19196,7 @@ mod tests {
 
     let chosen = match content {
       ContentValue::Items(items) if items.len() == 1 => match &items[0] {
-        ContentItem::Url(url) => url.clone(),
+        ContentItem::Url(url) => url.url.clone(),
         other => panic!("unexpected content item: {other:?}"),
       },
       other => panic!("unexpected content value: {other:?}"),
@@ -19187,8 +19232,8 @@ mod tests {
 
   #[test]
   fn list_style_image_image_set_respects_device_pixel_ratio() {
-    let low = data_url_for_color([255, 0, 0, 255]);
-    let high = data_url_for_color([0, 255, 0, 255]);
+    let low = data_url_for_solid_png(10, 10, [255, 0, 0, 255]);
+    let high = data_url_for_solid_png(20, 20, [0, 255, 0, 255]);
 
     let mut style = ComputedStyle::default();
     with_image_set_dpr(2.0, || {
@@ -19210,28 +19255,27 @@ mod tests {
       );
     });
 
-    let chosen = match &style.list_style_image {
-      crate::style::types::ListStyleImage::Url(url) => url.clone(),
-      crate::style::types::ListStyleImage::None => panic!("unexpected list-style-image: None"),
+    let styled = styled_element("li");
+    let counters = crate::style::counters::CounterManager::new();
+    let mut quote_depth = 0usize;
+    let marker = crate::tree::box_generation::marker_content_from_style(
+      &styled,
+      &style,
+      &counters,
+      &mut quote_depth,
+    )
+    .expect("marker content");
+    let replaced = match marker {
+      crate::tree::box_tree::MarkerContent::Image(replaced) => replaced,
+      other => panic!("unexpected marker content: {other:?}"),
     };
 
-    let mut fragment = FragmentNode::new_replaced(
-      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
-      ReplacedType::Image {
-        src: chosen,
-        alt: None,
-        loading: Default::default(),
-        decoding: ImageDecodingAttribute::Auto,
-        crossorigin: CrossOriginAttribute::None,
-        referrer_policy: None,
-        sizes: None,
-        srcset: Vec::new(),
-        picture_sources: Vec::new(),
-      },
-    );
-    fragment.style = Some(Arc::new(style));
+    let fragment =
+      FragmentNode::new_replaced(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), replaced.replaced_type);
 
-    let list = DisplayListBuilder::with_image_cache(ImageCache::new()).build(&fragment);
+    let list = DisplayListBuilder::with_image_cache(ImageCache::new())
+      .with_device_pixel_ratio(2.0)
+      .build(&fragment);
     let image = list
       .items()
       .iter()
@@ -19242,6 +19286,17 @@ mod tests {
       .expect("marker image should emit an image item");
 
     assert_eq!(&image.image.pixels[..4], &[0, 255, 0, 255]);
+    assert_eq!((image.image.width, image.image.height), (20, 20));
+    assert!(
+      (image.image.css_width - 10.0).abs() < 1e-6,
+      "expected 20px @2x asset to report css width 10px, got {}",
+      image.image.css_width
+    );
+    assert!(
+      (image.image.css_height - 10.0).abs() < 1e-6,
+      "expected 20px @2x asset to report css height 10px, got {}",
+      image.image.css_height
+    );
   }
 
   #[test]

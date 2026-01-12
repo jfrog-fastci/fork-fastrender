@@ -37,6 +37,7 @@
 //! <https://www.w3.org/TR/css-content-3/>
 
 use crate::style::counter_styles::{CounterStyleName, CounterStyleRegistry};
+use crate::style::types::BackgroundImageUrl;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -304,7 +305,7 @@ pub enum ContentItem {
   ///
   /// CSS: `content: url(image.png);`
   /// Note: Image content requires special handling during layout/paint.
-  Url(String),
+  Url(BackgroundImageUrl),
 
   /// A running element reference
   ///
@@ -470,7 +471,7 @@ impl fmt::Display for ContentItem {
       ContentItem::CloseQuote => write!(f, "close-quote"),
       ContentItem::NoOpenQuote => write!(f, "no-open-quote"),
       ContentItem::NoCloseQuote => write!(f, "no-close-quote"),
-      ContentItem::Url(url) => write!(f, "url(\"{}\")", url),
+      ContentItem::Url(url) => write!(f, "url(\"{}\")", url.url),
       ContentItem::Element { ident, select } => match select {
         RunningElementSelect::First => write!(f, "element({})", ident),
         _ => write!(f, "element({}, {})", ident, select),
@@ -1749,7 +1750,7 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
         .and_then(|s| s.strip_suffix('"'))
         .or_else(|| args.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
         .unwrap_or(args);
-      Some(ContentItem::Url(url.to_string()))
+      Some(ContentItem::Url(BackgroundImageUrl::new(url.to_string())))
     }
     "element" => {
       let args = trim_ascii_whitespace(args);
@@ -1787,10 +1788,10 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
         select,
       })
     }
-    "image-set" => {
-      let full = format!("image-set({})", args);
+    "image-set" | "-webkit-image-set" => {
+      let full = format!("{}({})", name, args);
       match crate::style::properties::parse_image_set(&full) {
-        Some(crate::style::types::BackgroundImage::Url(url)) => Some(ContentItem::Url(url.url)),
+        Some(crate::style::types::BackgroundImage::Url(url)) => Some(ContentItem::Url(url)),
         _ => None,
       }
     }
@@ -2379,7 +2380,9 @@ mod tests {
     let content = parse_content("url(\"image.png\")").unwrap();
     assert_eq!(
       content,
-      ContentValue::Items(vec![ContentItem::Url("image.png".to_string())])
+      ContentValue::Items(vec![ContentItem::Url(BackgroundImageUrl::new(
+        "image.png".to_string()
+      ))])
     );
   }
 
@@ -2399,7 +2402,9 @@ mod tests {
     let content = parse_content("url(\")").unwrap();
     assert_eq!(
       content,
-      ContentValue::Items(vec![ContentItem::Url("\"".to_string())])
+      ContentValue::Items(vec![ContentItem::Url(BackgroundImageUrl::new(
+        "\"".to_string()
+      ))])
     );
   }
 
@@ -2448,10 +2453,33 @@ mod tests {
   #[test]
   fn test_parse_image_set() {
     let content = parse_content("image-set(url(\"one.png\") 1x, url(\"two.png\") 2x)").unwrap();
+    let mut expected = BackgroundImageUrl::new("one.png".to_string());
+    expected.override_resolution = Some(1.0);
     assert_eq!(
       content,
-      ContentValue::Items(vec![ContentItem::Url("one.png".to_string())])
+      ContentValue::Items(vec![ContentItem::Url(expected)])
     );
+  }
+
+  #[test]
+  fn content_image_set_preserves_selected_density() {
+    use crate::style::properties::with_image_set_dpr;
+
+    let content = with_image_set_dpr(2.0, || {
+      parse_content("image-set(url(\"one.png\") 1x, url(\"two.png\") 2x)")
+        .expect("parse content")
+    });
+
+    match content {
+      ContentValue::Items(items) if items.len() == 1 => match &items[0] {
+        ContentItem::Url(url) => {
+          assert_eq!(url.url, "two.png");
+          assert_eq!(url.override_resolution, Some(2.0));
+        }
+        other => panic!("unexpected content item: {other:?}"),
+      },
+      other => panic!("unexpected content value: {other:?}"),
+    }
   }
 
   #[test]
@@ -2556,7 +2584,9 @@ mod tests {
     let text = ContentValue::from_string("Hello");
     assert!(ContentGenerator::is_text_only(&text));
 
-    let with_url = ContentValue::Items(vec![ContentItem::Url("image.png".to_string())]);
+    let with_url = ContentValue::Items(vec![ContentItem::Url(BackgroundImageUrl::new(
+      "image.png".to_string(),
+    ))]);
     assert!(!ContentGenerator::is_text_only(&with_url));
 
     let with_element = ContentValue::Items(vec![ContentItem::Element {

@@ -17998,7 +17998,13 @@ fn hash_content_item(item: &crate::style::content::ContentItem, hasher: &mut Def
     ContentItem::NoCloseQuote => 8u8.hash(hasher),
     ContentItem::Url(url) => {
       9u8.hash(hasher);
-      url.hash(hasher);
+      url.url.hash(hasher);
+      if let Some(override_resolution) = url.override_resolution {
+        1u8.hash(hasher);
+        hash_f32(override_resolution, hasher);
+      } else {
+        0u8.hash(hasher);
+      }
     }
     ContentItem::Element { ident, select } => {
       10u8.hash(hasher);
@@ -18289,7 +18295,13 @@ fn hash_list_style_image(value: &crate::style::types::ListStyleImage, hasher: &m
     crate::style::types::ListStyleImage::None => 0u8.hash(hasher),
     crate::style::types::ListStyleImage::Url(url) => {
       1u8.hash(hasher);
-      url.hash(hasher);
+      url.url.hash(hasher);
+      if let Some(override_resolution) = url.override_resolution {
+        1u8.hash(hasher);
+        hash_f32(override_resolution, hasher);
+      } else {
+        0u8.hash(hasher);
+      }
     }
   }
 }
