@@ -42,11 +42,9 @@
 //! - Timeout settings
 //! - Output directories for artifacts
 
-use super::harness::compare_images;
 use super::harness::generate_diff_image;
 use super::harness::DiscoveryMode;
 use super::harness::HarnessConfig;
-use super::harness::ImageComparisonResult;
 use super::harness::ReftestExpectation;
 use super::harness::SuiteResult;
 use super::harness::TestMetadata;
@@ -1249,13 +1247,12 @@ impl WptRunner {
       }
       let mut result = TestResult::pass(metadata.clone(), start.elapsed())
         .with_images(rendered_image.clone(), rendered_image.clone());
-      if let Ok(comparison) = compare_images(
-        &rendered_image,
-        &rendered_image,
-        config.pixel_tolerance,
-        Some(0.0),
-      ) {
-        result = result.with_diff(&comparison);
+      if let Ok(compare_config) = config.compare_config_from_env() {
+        if let Ok(comparison) =
+          super::harness::compare_images(&rendered_image, &rendered_image, &compare_config)
+        {
+          result = result.with_diff(&comparison);
+        }
       }
       return result;
     }
@@ -1307,7 +1304,8 @@ impl WptRunner {
         if let (Some(ref actual), Some(ref expected)) =
           (&result.rendered_image, &result.expected_image)
         {
-          if let Ok(comparison) = compare_images(actual, expected, 0, Some(0.0)) {
+          let compare_config = fastrender::image_compare::CompareConfig::strict();
+          if let Ok(comparison) = super::harness::compare_images(actual, expected, &compare_config) {
             result = result.with_diff(&comparison);
           }
         }
@@ -1363,21 +1361,28 @@ impl WptRunner {
   ) -> TestResult {
     let duration = start.elapsed();
 
-    let comparison = match compare_images(
-      &rendered,
-      &expected,
-      config.pixel_tolerance,
-      Some(config.max_diff_percentage),
-    ) {
-      Ok(result) => result,
-      Err(e) => {
+    let compare_config = match config.compare_config_from_env() {
+      Ok(config) => config,
+      Err(err) => {
         return TestResult::error(
           metadata.clone(),
           duration,
-          format!("Comparison error: {}", e),
-        )
+          format!("Comparison config error: {err}"),
+        );
       }
     };
+
+    let comparison =
+      match super::harness::compare_images(&rendered, &expected, &compare_config) {
+        Ok(result) => result,
+        Err(e) => {
+          return TestResult::error(
+            metadata.clone(),
+            duration,
+            format!("Comparison error: {}", e),
+          )
+        }
+      };
 
     let should_match = metadata.reftest_expectation != ReftestExpectation::Mismatch;
     let can_update_expected = config.update_expected
@@ -1387,9 +1392,9 @@ impl WptRunner {
         .expected_status
         .is_some_and(|status| status != TestStatus::Pass);
     let matches_expectation = if should_match {
-      comparison.is_match(config.max_diff_percentage)
+      comparison.is_match()
     } else {
-      comparison.diff_pixels > 0
+      !comparison.dimensions_match || comparison.statistics.different_pixels > 0
     };
 
     if matches_expectation {
@@ -1419,42 +1424,68 @@ impl WptRunner {
       return result;
     }
 
-    let message =
-      Self::format_comparison_failure(&comparison, metadata.reftest_expectation, config);
+    let message = Self::format_comparison_failure(&comparison, metadata.reftest_expectation);
     TestResult::fail(metadata.clone(), duration, message)
       .with_images(rendered, expected)
       .with_diff(&comparison)
   }
 
   fn format_comparison_failure(
-    comparison: &ImageComparisonResult,
+    comparison: &fastrender::image_compare::ImageDiff,
     expectation: ReftestExpectation,
-    config: &HarnessConfig,
   ) -> String {
+    let stats = &comparison.statistics;
+    let max_channel_diff = stats.max_channel_diff(comparison.config.compare_alpha);
+
     let mut message = if expectation == ReftestExpectation::Mismatch {
-      "Mismatch expected but renders were identical".to_string()
+      format!(
+        "Mismatch expected but renders matched: {:.3}% different ({} of {} pixels), max channel diff {}, perceptual distance {:.4}",
+        stats.different_percent,
+        stats.different_pixels,
+        stats.total_pixels,
+        max_channel_diff,
+        stats.perceptual_distance
+      )
+    } else if !comparison.dimensions_match {
+      format!(
+        "Image dimension mismatch: rendered {}x{}, expected {}x{}",
+        comparison.actual_dimensions.0,
+        comparison.actual_dimensions.1,
+        comparison.expected_dimensions.0,
+        comparison.expected_dimensions.1
+      )
     } else {
       format!(
-        "Image mismatch: {:.3}% difference ({} pixels, max channel diff {})",
-        comparison.diff_percentage, comparison.diff_pixels, comparison.max_channel_diff
+        "Image mismatch: {:.3}% different ({} of {} pixels), max channel diff {}, perceptual distance {:.4}",
+        stats.different_percent,
+        stats.different_pixels,
+        stats.total_pixels,
+        max_channel_diff,
+        stats.perceptual_distance
       )
     };
 
-    if expectation == ReftestExpectation::Match && config.max_diff_percentage > 0.0 {
-      let _ = write!(
-        &mut message,
-        " (allowed ≤{:.3}% and tolerance {})",
-        config.max_diff_percentage, config.pixel_tolerance
-      );
-    }
+    let _ = write!(
+      &mut message,
+      " (tolerance {}, allowed ≤{:.3}%, compare_alpha={}, max_perceptual_distance={})",
+      comparison.config.channel_tolerance,
+      comparison.config.max_different_percent,
+      comparison.config.compare_alpha,
+      comparison
+        .config
+        .max_perceptual_distance
+        .map(|d| format!("{d:.4}"))
+        .unwrap_or_else(|| "none".to_string())
+    );
 
-    if !comparison.samples.is_empty() {
-      let samples: Vec<String> = comparison
-        .samples
-        .iter()
-        .map(|s| format!("({}, {}): Δ{:?}", s.x, s.y, s.delta))
-        .collect();
-      let _ = write!(&mut message, "; first differences {}", samples.join(", "));
+    if let Some((x, y)) = stats.first_mismatch {
+      let _ = write!(&mut message, "; first mismatch at ({x}, {y})");
+      if let Some((actual, expected)) = stats.first_mismatch_rgba {
+        let _ = write!(
+          &mut message,
+          " actual rgba={actual:?}, expected rgba={expected:?}"
+        );
+      }
     }
 
     message
@@ -1608,6 +1639,7 @@ impl WptRunner {
       let diff_link = self.link_from_output(&paths.diff);
       let diff_pct = result.diff_percentage.unwrap_or(0.0);
       let max_diff = result.max_channel_diff.unwrap_or(0);
+      let perceptual = result.perceptual_distance.unwrap_or(0.0);
       let message = result
         .message
         .clone()
@@ -1622,6 +1654,7 @@ impl WptRunner {
            <td>{}</td>\
            <td>{:.3}</td>\
            <td>{}</td>\
+           <td>{:.4}</td>\
            <td><a href=\"{}\">expected</a> | <a href=\"{}\">actual</a> | <a href=\"{}\">diff</a></td>\
            <td>{}</td>\
          </tr>",
@@ -1632,6 +1665,7 @@ impl WptRunner {
         result.status,
         diff_pct,
         max_diff,
+        perceptual,
         expected_link,
         actual_link,
         diff_link,
@@ -1666,7 +1700,7 @@ impl WptRunner {
   </div>
   <table>
     <thead>
-      <tr><th>Test</th><th>Status</th><th>Diff %</th><th>Max Δ</th><th>Links</th><th>Message</th></tr>
+      <tr><th>Test</th><th>Status</th><th>Diff %</th><th>Max Δ</th><th>Perceptual Δ</th><th>Links</th><th>Message</th></tr>
     </thead>
     <tbody id="results">
       {rows}
@@ -1801,8 +1835,16 @@ impl WptRunner {
       eprintln!("Failed to save expected image: {}", e);
     }
 
-    let diff = generate_diff_image(&actual, &expected, self.config.pixel_tolerance)
-      .unwrap_or_else(|_| Self::placeholder_png());
+    let diff_config = self.config.compare_config_from_env().unwrap_or_else(|err| {
+      eprintln!("Failed to parse comparison config from env for diff output: {err}");
+      fastrender::image_compare::CompareConfig::strict()
+        .with_channel_tolerance(self.config.pixel_tolerance)
+        .with_max_different_percent(self.config.max_diff_percentage)
+        .with_compare_alpha(self.config.compare_alpha)
+        .with_max_perceptual_distance(self.config.max_perceptual_distance)
+    });
+    let diff =
+      generate_diff_image(&actual, &expected, &diff_config).unwrap_or_else(|_| Self::placeholder_png());
     if let Err(e) = fs::write(&paths.diff, diff) {
       eprintln!("Failed to save diff image: {}", e);
     }

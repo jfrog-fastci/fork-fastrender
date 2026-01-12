@@ -380,6 +380,13 @@ There is a self-contained WPT-style runner under `tests/wpt/` for local “rende
 - Viewport/DPR are fixed per-test from metadata. CI can pin fonts for deterministic renders via `HarnessConfig::with_font_dir`/`WptRunnerBuilder::font_dir` (for example, point at `tests/fonts/`).
 - The runner supports parallel execution and per-test timeouts (see `HarnessConfig`).
 - Comparisons use the shared image comparison module (same as fixtures/ref tests) with configurable tolerance, alpha handling, pixel difference thresholds, and perceptual distance thresholds to reduce platform noise.
+  - Defaults are strict: `tolerance=0`, `max_different_percent=0.0`, `compare_alpha=true`, and no perceptual threshold.
+  - Local overrides (env vars):
+    - `WPT_TOLERANCE=5` (per-channel tolerance)
+    - `WPT_MAX_DIFFERENT_PERCENT=0.5` (percent of pixels allowed to differ)
+    - `WPT_FUZZY=1` (preset: tolerance 10, up to 1% different, no alpha compare, max perceptual distance 0.05)
+    - `WPT_IGNORE_ALPHA=1` (ignore alpha differences even without fuzzy)
+    - `WPT_MAX_PERCEPTUAL_DISTANCE=0.05` (allow minor perceptual differences using SSIM-style scoring)
 
 ### WPT importer (offline)
 

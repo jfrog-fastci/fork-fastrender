@@ -898,7 +898,9 @@ fn run_tests(args: TestArgs) -> Result<()> {
         cmd.arg("fixtures");
       }
       TestSuite::Wpt => {
-        cmd.arg("wpt_local_suite_passes");
+        // Scope to the WPT integration-test harness so we don't accidentally pass libtest filter
+        // args to the standalone `wpt_tests` runner (`harness = false`).
+        cmd.args(["-p", "fastrender", "--test", "wpt_test", "wpt_local_suite_passes"]);
         cmd.arg("--");
         cmd.arg("--exact");
       }
@@ -953,7 +955,9 @@ fn run_update_goldens(args: UpdateGoldensArgs) -> Result<()> {
       }
       GoldenSuite::Wpt => {
         cmd.env("UPDATE_WPT_EXPECTED", "1");
-        cmd.arg("wpt_local_suite_passes");
+        // Like the test suite, scope to `--test wpt_test` to avoid invoking the `wpt_tests`
+        // standalone runner with libtest-only arguments.
+        cmd.args(["-p", "fastrender", "--test", "wpt_test", "wpt_local_suite_passes"]);
         cmd.arg("--");
         cmd.arg("--exact");
       }

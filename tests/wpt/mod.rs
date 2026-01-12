@@ -14,11 +14,12 @@ mod validate_manifest;
 // Re-export main types for convenience
 pub use harness::compare_images;
 pub use harness::generate_diff_image;
+pub use fastrender::image_compare::CompareConfig;
+pub use fastrender::image_compare::DiffStatistics;
+pub use fastrender::image_compare::ImageDiff;
 pub use harness::AssertionResult;
 pub use harness::DiscoveryMode;
 pub use harness::HarnessConfig;
-pub use harness::ImageComparisonResult;
-pub use harness::PixelMismatch;
 pub use harness::ReftestExpectation;
 pub use harness::SuiteResult;
 pub use harness::TestMetadata;

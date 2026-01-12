@@ -34,12 +34,16 @@
 //!                 └── margin-applies-to-002.png  # Expected image
 //! ```
 
+use fastrender::image_compare::CompareConfig;
+use fastrender::image_compare::ImageDiff;
 use fastrender::style::media::MediaType;
-use image::RgbaImage;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -332,10 +336,16 @@ pub struct TestResult {
   pub diff_percentage: Option<f64>,
   /// Maximum per-channel difference encountered
   pub max_channel_diff: Option<u8>,
-  /// Sample of differing pixels
-  pub diff_samples: Vec<PixelMismatch>,
-  /// Dimensions of the compared images
-  pub image_dimensions: Option<(u32, u32)>,
+  /// Perceptual distance (0.0 = identical).
+  pub perceptual_distance: Option<f64>,
+  /// Location (x,y) of the first pixel that exceeded the configured tolerance.
+  pub first_mismatch: Option<(u32, u32)>,
+  /// RGBA samples at [`Self::first_mismatch`], stored as `(actual, expected)`.
+  pub first_mismatch_rgba: Option<([u8; 4], [u8; 4])>,
+  /// Dimensions of the rendered/actual image.
+  pub actual_dimensions: Option<(u32, u32)>,
+  /// Dimensions of the expected/baseline image.
+  pub expected_dimensions: Option<(u32, u32)>,
 }
 
 impl TestResult {
@@ -352,8 +362,11 @@ impl TestResult {
       pixel_diff: None,
       diff_percentage: None,
       max_channel_diff: None,
-      diff_samples: Vec::new(),
-      image_dimensions: None,
+      perceptual_distance: None,
+      first_mismatch: None,
+      first_mismatch_rgba: None,
+      actual_dimensions: None,
+      expected_dimensions: None,
     }
   }
 
@@ -371,8 +384,11 @@ impl TestResult {
       pixel_diff: None,
       diff_percentage: None,
       max_channel_diff: None,
-      diff_samples: Vec::new(),
-      image_dimensions: None,
+      perceptual_distance: None,
+      first_mismatch: None,
+      first_mismatch_rgba: None,
+      actual_dimensions: None,
+      expected_dimensions: None,
     }
   }
 
@@ -390,8 +406,11 @@ impl TestResult {
       pixel_diff: None,
       diff_percentage: None,
       max_channel_diff: None,
-      diff_samples: Vec::new(),
-      image_dimensions: None,
+      perceptual_distance: None,
+      first_mismatch: None,
+      first_mismatch_rgba: None,
+      actual_dimensions: None,
+      expected_dimensions: None,
     }
   }
 
@@ -408,8 +427,11 @@ impl TestResult {
       pixel_diff: None,
       diff_percentage: None,
       max_channel_diff: None,
-      diff_samples: Vec::new(),
-      image_dimensions: None,
+      perceptual_distance: None,
+      first_mismatch: None,
+      first_mismatch_rgba: None,
+      actual_dimensions: None,
+      expected_dimensions: None,
     }
   }
 
@@ -426,8 +448,11 @@ impl TestResult {
       pixel_diff: None,
       diff_percentage: None,
       max_channel_diff: None,
-      diff_samples: Vec::new(),
-      image_dimensions: None,
+      perceptual_distance: None,
+      first_mismatch: None,
+      first_mismatch_rgba: None,
+      actual_dimensions: None,
+      expected_dimensions: None,
     }
   }
 
@@ -439,12 +464,16 @@ impl TestResult {
   }
 
   /// Sets the pixel difference information
-  pub fn with_diff(mut self, comparison: &ImageComparisonResult) -> Self {
-    self.pixel_diff = Some(comparison.diff_pixels);
-    self.diff_percentage = Some(comparison.diff_percentage);
-    self.max_channel_diff = Some(comparison.max_channel_diff);
-    self.diff_samples = comparison.samples.clone();
-    self.image_dimensions = Some(comparison.dimensions);
+  pub fn with_diff(mut self, comparison: &ImageDiff) -> Self {
+    self.pixel_diff = Some(comparison.statistics.different_pixels);
+    self.diff_percentage = Some(comparison.statistics.different_percent);
+    self.max_channel_diff =
+      Some(comparison.statistics.max_channel_diff(comparison.config.compare_alpha));
+    self.perceptual_distance = Some(comparison.statistics.perceptual_distance);
+    self.first_mismatch = comparison.statistics.first_mismatch;
+    self.first_mismatch_rgba = comparison.statistics.first_mismatch_rgba;
+    self.actual_dimensions = Some(comparison.actual_dimensions);
+    self.expected_dimensions = Some(comparison.expected_dimensions);
     self
   }
 }
@@ -577,6 +606,10 @@ pub struct HarnessConfig {
   pub pixel_tolerance: u8,
   /// Maximum allowed percentage difference
   pub max_diff_percentage: f64,
+  /// Whether to compare the alpha channel (when false, alpha is ignored).
+  pub compare_alpha: bool,
+  /// Optional perceptual distance threshold (0.0 = identical, higher = more different).
+  pub max_perceptual_distance: Option<f64>,
   /// Default timeout in milliseconds
   pub default_timeout_ms: u64,
   /// Whether to fail fast on first failure
@@ -626,6 +659,8 @@ impl Default for HarnessConfig {
       save_diffs: true,
       pixel_tolerance: 0,
       max_diff_percentage: 0.0,
+      compare_alpha: true,
+      max_perceptual_distance: None,
       default_timeout_ms: 30000,
       fail_fast: false,
       parallel: false,
@@ -665,6 +700,71 @@ impl HarnessConfig {
   pub fn with_max_diff(mut self, max_diff: f64) -> Self {
     self.max_diff_percentage = max_diff;
     self
+  }
+
+  /// Enables or disables alpha comparison.
+  pub fn with_compare_alpha(mut self, compare_alpha: bool) -> Self {
+    self.compare_alpha = compare_alpha;
+    self
+  }
+
+  /// Sets the maximum perceptual distance allowed for a pass.
+  pub fn with_max_perceptual_distance(mut self, max_distance: Option<f64>) -> Self {
+    self.max_perceptual_distance = max_distance;
+    self
+  }
+
+  /// Build a comparison config honoring both the harness configuration and WPT-specific env vars.
+  ///
+  /// Supported env vars:
+  /// - `WPT_FUZZY=1` (preset: tolerance 10, up to 1% different, no alpha compare, max perceptual distance 0.05)
+  /// - `WPT_TOLERANCE=<u8>`
+  /// - `WPT_MAX_DIFFERENT_PERCENT=<f64>`
+  /// - `WPT_IGNORE_ALPHA=1`
+  /// - `WPT_MAX_PERCEPTUAL_DISTANCE=<f64>`
+  pub fn compare_config_from_env(&self) -> Result<CompareConfig, String> {
+    let mut config = if std::env::var_os("WPT_FUZZY").is_some() {
+      CompareConfig::fuzzy()
+    } else {
+      CompareConfig::strict()
+        .with_channel_tolerance(self.pixel_tolerance)
+        .with_max_different_percent(self.max_diff_percentage)
+        .with_compare_alpha(self.compare_alpha)
+        .with_max_perceptual_distance(self.max_perceptual_distance)
+    };
+
+    if let Ok(tolerance) = std::env::var("WPT_TOLERANCE") {
+      let parsed = tolerance
+        .parse::<u8>()
+        .map_err(|e| format!("Invalid WPT_TOLERANCE '{}': {}", tolerance, e))?;
+      config = config.with_channel_tolerance(parsed);
+    }
+
+    if let Ok(percent) = std::env::var("WPT_MAX_DIFFERENT_PERCENT") {
+      let parsed = percent
+        .parse::<f64>()
+        .map_err(|e| format!("Invalid WPT_MAX_DIFFERENT_PERCENT '{}': {}", percent, e))?;
+      config = config.with_max_different_percent(parsed);
+    }
+
+    if std::env::var_os("WPT_IGNORE_ALPHA").is_some() {
+      config = config.with_compare_alpha(false);
+    }
+
+    if let Ok(distance) = std::env::var("WPT_MAX_PERCEPTUAL_DISTANCE") {
+      let parsed = distance.parse::<f64>().map_err(|e| {
+        format!(
+          "Invalid WPT_MAX_PERCEPTUAL_DISTANCE '{}': {}",
+          distance, e
+        )
+      })?;
+      config = config.with_max_perceptual_distance(Some(parsed));
+    }
+
+    // Always generate diff images to aid debugging.
+    config.generate_diff_image = true;
+
+    Ok(config)
   }
 
   /// Enables fail-fast mode
@@ -717,143 +817,26 @@ impl HarnessConfig {
   }
 }
 
-/// Compares two images and returns the difference metrics.
+/// Serialises tests that mutate process-wide state (environment variables).
 ///
-/// # Returns
-///
-/// Tuple of (different_pixels, total_pixels, diff_percentage)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PixelMismatch {
-  /// X coordinate of the differing pixel
-  pub x: u32,
-  /// Y coordinate of the differing pixel
-  pub y: u32,
-  /// Absolute per-channel differences (RGBA)
-  pub delta: [u8; 4],
+/// The WPT harness supports env var overrides for comparison settings. Unit tests that validate
+/// this behaviour must avoid racing with each other (or with other tests in the same binary) by
+/// taking this lock.
+pub(crate) fn global_env_lock() -> MutexGuard<'static, ()> {
+  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+  LOCK
+    .get_or_init(|| Mutex::new(()))
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[derive(Debug, Clone)]
-pub struct ImageComparisonResult {
-  /// Number of pixels that differ beyond tolerance
-  pub diff_pixels: u64,
-  /// Total pixels compared
-  pub total_pixels: u64,
-  /// Percentage of differing pixels
-  pub diff_percentage: f64,
-  /// Maximum absolute difference observed across all channels
-  pub max_channel_diff: u8,
-  /// Sample of first few differing pixels with coordinates and deltas
-  pub samples: Vec<PixelMismatch>,
-  /// Dimensions of the compared images
-  pub dimensions: (u32, u32),
-}
-
-impl ImageComparisonResult {
-  pub fn is_match(&self, threshold: f64) -> bool {
-    self.diff_percentage <= threshold
-  }
-}
-
+/// Compare two PNG byte buffers using the shared image comparison module.
 pub fn compare_images(
   rendered: &[u8],
   expected: &[u8],
-  tolerance: u8,
-  max_diff_percentage: Option<f64>,
-) -> Result<ImageComparisonResult, String> {
-  // Decode PNG images
-  let rendered_img =
-    decode_png(rendered).map_err(|e| format!("Failed to decode rendered image: {}", e))?;
-  let expected_img =
-    decode_png(expected).map_err(|e| format!("Failed to decode expected image: {}", e))?;
-
-  // Check dimensions match
-  let (rendered_width, rendered_height) = rendered_img.dimensions();
-  let (expected_width, expected_height) = expected_img.dimensions();
-  if rendered_width != expected_width || rendered_height != expected_height {
-    return Err(format!(
-      "Image dimensions differ: rendered {}x{}, expected {}x{}",
-      rendered_width, rendered_height, expected_width, expected_height
-    ));
-  }
-
-  let total_pixels = (rendered_width as u64) * (rendered_height as u64);
-  let mut diff_pixels = 0u64;
-  let mut max_channel_diff = 0u8;
-  let mut samples = Vec::new();
-  const SAMPLE_LIMIT: usize = 5;
-
-  // Precompute allowed differing pixels for early exit if threshold provided and > 0.
-  let stop_after = match max_diff_percentage {
-    Some(max_pct) if max_pct > 0.0 => {
-      let allowed = ((max_pct / 100.0) * total_pixels as f64).ceil() as u64;
-      Some(allowed)
-    }
-    _ => None,
-  };
-
-  let tolerance = tolerance as i16;
-  let rendered_data = rendered_img.as_raw();
-  let expected_data = expected_img.as_raw();
-
-  for (idx, (rendered_px, expected_px)) in rendered_data
-    .chunks_exact(4)
-    .zip(expected_data.chunks_exact(4))
-    .enumerate()
-  {
-    let mut channel_diffs = [0u8; 4];
-    let differs =
-      rendered_px
-        .iter()
-        .zip(expected_px.iter())
-        .enumerate()
-        .any(|(channel, (&r, &e))| {
-          let delta = (r as i16 - e as i16).abs();
-          channel_diffs[channel] = delta as u8;
-          delta > tolerance
-        });
-
-    if differs {
-      diff_pixels += 1;
-      if let Some(local_max) = channel_diffs.iter().max() {
-        max_channel_diff = max_channel_diff.max(*local_max);
-      }
-      if samples.len() < SAMPLE_LIMIT {
-        let x = (idx as u32) % rendered_width;
-        let y = (idx as u32) / rendered_width;
-        samples.push(PixelMismatch {
-          x,
-          y,
-          delta: channel_diffs,
-        });
-      }
-
-      if let Some(limit) = stop_after {
-        if diff_pixels > limit {
-          break;
-        }
-      }
-    }
-  }
-
-  let diff_percentage = if total_pixels == 0 {
-    0.0
-  } else {
-    (diff_pixels as f64 / total_pixels as f64) * 100.0
-  };
-
-  Ok(ImageComparisonResult {
-    diff_pixels,
-    total_pixels,
-    diff_percentage,
-    max_channel_diff,
-    samples,
-    dimensions: (rendered_width, rendered_height),
-  })
-}
-
-/// Decodes a PNG image from bytes into an RGBA buffer
-fn decode_png(data: &[u8]) -> Result<RgbaImage, image::ImageError> {
-  image::load_from_memory_with_format(data, image::ImageFormat::Png).map(|img| img.to_rgba8())
+  config: &CompareConfig,
+) -> Result<ImageDiff, String> {
+  fastrender::image_compare::compare_png(rendered, expected, config).map_err(|e| e.to_string())
 }
 
 /// Generates a visual diff image between two images
@@ -870,11 +853,16 @@ fn decode_png(data: &[u8]) -> Result<RgbaImage, image::ImageError> {
 pub fn generate_diff_image(
   rendered: &[u8],
   expected: &[u8],
-  tolerance: u8,
+  config: &CompareConfig,
 ) -> Result<Vec<u8>, String> {
-  fastrender::image_output::diff_png(rendered, expected, tolerance)
-    .map(|(_, diff)| diff)
-    .map_err(|e| e.to_string())
+  fastrender::image_output::diff_png_with_alpha(
+    rendered,
+    expected,
+    config.channel_tolerance,
+    config.compare_alpha,
+  )
+  .map(|(_, diff)| diff)
+  .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -1099,6 +1087,8 @@ mod tests {
     let config = HarnessConfig::default();
     assert_eq!(config.pixel_tolerance, 0);
     assert_eq!(config.max_diff_percentage, 0.0);
+    assert!(config.compare_alpha);
+    assert!(config.max_perceptual_distance.is_none());
     assert!(!config.fail_fast);
     assert!(!config.parallel);
     assert!(config.manifest_path.is_none());
@@ -1139,6 +1129,143 @@ mod tests {
     assert!(config.update_expected);
   }
 
+  struct ScopedEnv {
+    saved: Vec<(String, Option<std::ffi::OsString>)>,
+  }
+
+  impl ScopedEnv {
+    fn apply(vars: &[(&str, Option<&str>)]) -> Self {
+      let saved = vars
+        .iter()
+        .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
+        .collect();
+      for (key, value) in vars {
+        match value {
+          Some(value) => std::env::set_var(key, value),
+          None => std::env::remove_var(key),
+        }
+      }
+      Self { saved }
+    }
+  }
+
+  impl Drop for ScopedEnv {
+    fn drop(&mut self) {
+      for (key, value) in self.saved.drain(..) {
+        match value {
+          Some(value) => std::env::set_var(&key, value),
+          None => std::env::remove_var(&key),
+        }
+      }
+    }
+  }
+
+  fn with_wpt_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+    let _lock = super::global_env_lock();
+    let _env = ScopedEnv::apply(vars);
+    f()
+  }
+
+  #[test]
+  fn test_compare_config_from_env_defaults_to_harness_fields() {
+    with_wpt_env(
+      &[
+        ("WPT_FUZZY", None),
+        ("WPT_TOLERANCE", None),
+        ("WPT_MAX_DIFFERENT_PERCENT", None),
+        ("WPT_IGNORE_ALPHA", None),
+        ("WPT_MAX_PERCEPTUAL_DISTANCE", None),
+      ],
+      || {
+        let harness = HarnessConfig::default()
+          .with_tolerance(7)
+          .with_max_diff(0.25)
+          .with_compare_alpha(false)
+          .with_max_perceptual_distance(Some(0.123));
+
+        let config = harness.compare_config_from_env().unwrap();
+        assert_eq!(config.channel_tolerance, 7);
+        assert_eq!(config.max_different_percent, 0.25);
+        assert!(!config.compare_alpha);
+        assert_eq!(config.max_perceptual_distance, Some(0.123));
+        assert!(config.generate_diff_image);
+      },
+    )
+  }
+
+  #[test]
+  fn test_compare_config_from_env_fuzzy_preset() {
+    with_wpt_env(
+      &[
+        ("WPT_FUZZY", Some("1")),
+        ("WPT_TOLERANCE", None),
+        ("WPT_MAX_DIFFERENT_PERCENT", None),
+        ("WPT_IGNORE_ALPHA", None),
+        ("WPT_MAX_PERCEPTUAL_DISTANCE", None),
+      ],
+      || {
+        let harness = HarnessConfig::default()
+          .with_tolerance(1)
+          .with_max_diff(0.0)
+          .with_compare_alpha(true);
+        let config = harness.compare_config_from_env().unwrap();
+        assert_eq!(config.channel_tolerance, CompareConfig::fuzzy().channel_tolerance);
+        assert_eq!(
+          config.max_different_percent,
+          CompareConfig::fuzzy().max_different_percent
+        );
+        assert_eq!(config.compare_alpha, CompareConfig::fuzzy().compare_alpha);
+        assert_eq!(
+          config.max_perceptual_distance,
+          CompareConfig::fuzzy().max_perceptual_distance
+        );
+      },
+    )
+  }
+
+  #[test]
+  fn test_compare_config_from_env_overrides() {
+    with_wpt_env(
+      &[
+        ("WPT_FUZZY", None),
+        ("WPT_TOLERANCE", Some("5")),
+        ("WPT_MAX_DIFFERENT_PERCENT", Some("2.5")),
+        ("WPT_IGNORE_ALPHA", Some("1")),
+        ("WPT_MAX_PERCEPTUAL_DISTANCE", Some("0.42")),
+      ],
+      || {
+        let harness = HarnessConfig::default()
+          .with_tolerance(0)
+          .with_max_diff(0.0)
+          .with_compare_alpha(true)
+          .with_max_perceptual_distance(None);
+        let config = harness.compare_config_from_env().unwrap();
+        assert_eq!(config.channel_tolerance, 5);
+        assert_eq!(config.max_different_percent, 2.5);
+        assert!(!config.compare_alpha);
+        assert_eq!(config.max_perceptual_distance, Some(0.42));
+      },
+    )
+  }
+
+  #[test]
+  fn test_compare_config_from_env_rejects_invalid_values() {
+    with_wpt_env(
+      &[
+        ("WPT_FUZZY", None),
+        ("WPT_TOLERANCE", Some("not-a-number")),
+        ("WPT_MAX_DIFFERENT_PERCENT", None),
+        ("WPT_IGNORE_ALPHA", None),
+        ("WPT_MAX_PERCEPTUAL_DISTANCE", None),
+      ],
+      || {
+        let harness = HarnessConfig::default();
+        let err = harness.compare_config_from_env().unwrap_err();
+        assert!(err.contains("Invalid WPT_TOLERANCE"));
+      },
+    )
+  }
+
   fn encode_png(image: &RgbaImage) -> Vec<u8> {
     let mut buffer = Vec::new();
     PngEncoder::new(&mut buffer)
@@ -1160,14 +1287,21 @@ mod tests {
   #[test]
   fn test_compare_images_identical() {
     let png = solid_png(2, 2, [10, 20, 30, 255]);
-    let comparison = compare_images(&png, &png, 0, None).unwrap();
+    let comparison = compare_images(&png, &png, &CompareConfig::strict()).unwrap();
 
-    assert_eq!(comparison.diff_pixels, 0);
-    assert_eq!(comparison.total_pixels, 4);
-    assert_eq!(comparison.diff_percentage, 0.0);
-    assert_eq!(comparison.max_channel_diff, 0);
-    assert_eq!(comparison.dimensions, (2, 2));
-    assert!(comparison.samples.is_empty());
+    assert!(comparison.is_match());
+    assert!(comparison.dimensions_match);
+    assert_eq!(comparison.statistics.different_pixels, 0);
+    assert_eq!(comparison.statistics.total_pixels, 4);
+    assert_eq!(comparison.statistics.different_percent, 0.0);
+    assert_eq!(comparison.statistics.perceptual_distance, 0.0);
+    assert_eq!(
+      comparison.statistics.max_channel_diff(comparison.config.compare_alpha),
+      0
+    );
+    assert_eq!(comparison.actual_dimensions, (2, 2));
+    assert_eq!(comparison.expected_dimensions, (2, 2));
+    assert!(comparison.statistics.first_mismatch.is_none());
   }
 
   #[test]
@@ -1178,16 +1312,23 @@ mod tests {
     let expected_png = solid_png(2, 2, [0, 0, 0, 255]);
     let rendered_png = encode_png(&rendered_img);
 
-    let comparison = compare_images(&rendered_png, &expected_png, 0, None).unwrap();
+    let comparison = compare_images(&rendered_png, &expected_png, &CompareConfig::strict()).unwrap();
 
-    assert_eq!(comparison.diff_pixels, 1);
-    assert_eq!(comparison.total_pixels, 4);
-    assert_eq!(comparison.max_channel_diff, 255);
-    assert!((comparison.diff_percentage - 25.0).abs() < f64::EPSILON);
-    assert_eq!(comparison.samples.len(), 1);
-    let sample = &comparison.samples[0];
-    assert_eq!((sample.x, sample.y), (1, 1));
-    assert!(sample.delta.iter().any(|d| *d > 0));
+    assert!(!comparison.is_match());
+    assert!(comparison.dimensions_match);
+    assert_eq!(comparison.statistics.different_pixels, 1);
+    assert_eq!(comparison.statistics.total_pixels, 4);
+    assert_eq!(
+      comparison.statistics.max_channel_diff(comparison.config.compare_alpha),
+      255
+    );
+    assert!((comparison.statistics.different_percent - 25.0).abs() < f64::EPSILON);
+    assert!(comparison.statistics.perceptual_distance > 0.0);
+    assert_eq!(comparison.statistics.first_mismatch, Some((1, 1)));
+    assert_eq!(
+      comparison.statistics.first_mismatch_rgba,
+      Some(([255, 0, 0, 255], [0, 0, 0, 255]))
+    );
   }
 
   #[test]
@@ -1198,11 +1339,16 @@ mod tests {
     rendered_img.put_pixel(0, 0, Rgba([12, 10, 10, 255]));
     let rendered_png = encode_png(&rendered_img);
 
-    let comparison = compare_images(&rendered_png, &expected_png, 5, None).unwrap();
+    let config = CompareConfig::strict().with_channel_tolerance(5);
+    let comparison = compare_images(&rendered_png, &expected_png, &config).unwrap();
 
-    assert_eq!(comparison.diff_pixels, 0);
-    assert_eq!(comparison.diff_percentage, 0.0);
-    assert_eq!(comparison.max_channel_diff, 0);
+    assert!(comparison.is_match());
+    assert_eq!(comparison.statistics.different_pixels, 0);
+    assert_eq!(comparison.statistics.different_percent, 0.0);
+    assert_eq!(
+      comparison.statistics.max_channel_diff(comparison.config.compare_alpha),
+      2
+    );
   }
 
   #[test]
@@ -1210,8 +1356,10 @@ mod tests {
     let small = solid_png(1, 1, [0, 0, 0, 255]);
     let large = solid_png(2, 1, [0, 0, 0, 255]);
 
-    let err = compare_images(&small, &large, 0, None).unwrap_err();
-    assert!(err.contains("dimensions differ"));
+    let diff = compare_images(&small, &large, &CompareConfig::strict()).unwrap();
+    assert!(!diff.dimensions_match);
+    assert_eq!(diff.actual_dimensions, (1, 1));
+    assert_eq!(diff.expected_dimensions, (2, 1));
   }
 
   #[test]
@@ -1219,15 +1367,15 @@ mod tests {
     let rendered = solid_png(1, 1, [255, 255, 255, 255]);
     let expected = solid_png(1, 1, [0, 0, 0, 255]);
 
-    let diff_png = generate_diff_image(&rendered, &expected, 0).unwrap();
-    let diff_image = decode_png(&diff_png).unwrap();
+    let diff_png = generate_diff_image(&rendered, &expected, &CompareConfig::strict()).unwrap();
+    let diff_image = fastrender::image_compare::decode_png(&diff_png).unwrap();
 
     assert_eq!(diff_image.dimensions(), (1, 1));
     assert_eq!(*diff_image.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
   }
 
   #[test]
-  fn test_compare_images_with_max_diff_early_exit() {
+  fn test_compare_images_enforces_max_diff_percent() {
     let expected = solid_png(3, 3, [0, 0, 0, 255]);
 
     let mut rendered_img = RgbaImage::from_pixel(3, 3, Rgba([0, 0, 0, 255]));
@@ -1237,14 +1385,14 @@ mod tests {
     }
     let rendered = encode_png(&rendered_img);
 
-    let full = compare_images(&rendered, &expected, 0, None).unwrap();
-    assert_eq!(full.diff_pixels, 5);
+    let strict = compare_images(&rendered, &expected, &CompareConfig::strict()).unwrap();
+    assert!(!strict.is_match());
+    assert_eq!(strict.statistics.different_pixels, 5);
+    assert!(strict.statistics.different_percent > 10.0);
 
-    // With a 10% max diff threshold (ceil(0.1 * 9) = 1 allowed), we should early exit
-    // once we exceed the allowance. The reported diff count may be lower than the true
-    // count but must still exceed the threshold percentage.
-    let limited = compare_images(&rendered, &expected, 0, Some(10.0)).unwrap();
-    assert!(limited.diff_pixels <= full.diff_pixels);
-    assert!(limited.diff_percentage > 10.0);
+    let lenient = CompareConfig::strict().with_max_different_percent(60.0);
+    let diff = compare_images(&rendered, &expected, &lenient).unwrap();
+    assert!(diff.is_match());
+    assert_eq!(diff.statistics.different_pixels, 5);
   }
 }

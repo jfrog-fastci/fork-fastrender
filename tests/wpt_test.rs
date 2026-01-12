@@ -84,7 +84,7 @@ fn wpt_local_suite_passes() {
 mod wpt_runner_tests {
   use super::wpt::DiscoveryMode;
   use super::wpt::HarnessConfig;
-  use super::wpt::ImageComparisonResult;
+  use super::wpt::CompareConfig;
   use super::wpt::RunnerStats;
   use super::wpt::SuiteResult;
   use super::wpt::TestMetadata;
@@ -750,20 +750,100 @@ mod wpt_runner_tests {
   #[test]
   fn test_result_with_diff() {
     let metadata = TestMetadata::from_path(PathBuf::from("test.html"));
-    let comparison = ImageComparisonResult {
-      diff_pixels: 100,
-      total_pixels: 200,
-      diff_percentage: 0.5,
-      max_channel_diff: 10,
-      samples: Vec::new(),
-      dimensions: (10, 20),
-    };
-    let result = TestResult::pass(metadata, Duration::from_millis(100)).with_diff(&comparison);
+    let mut rendered = image::RgbaImage::from_pixel(10, 20, image::Rgba([0, 0, 0, 255]));
+    rendered.put_pixel(0, 0, image::Rgba([10, 0, 0, 255]));
+    let expected = image::RgbaImage::from_pixel(10, 20, image::Rgba([0, 0, 0, 255]));
 
-    assert_eq!(result.pixel_diff, Some(100));
+    let rendered_png = fastrender::image_compare::encode_png(&rendered).unwrap();
+    let expected_png = fastrender::image_compare::encode_png(&expected).unwrap();
+    let diff = super::wpt::compare_images(&rendered_png, &expected_png, &CompareConfig::strict()).unwrap();
+
+    let result = TestResult::pass(metadata, Duration::from_millis(100)).with_diff(&diff);
+
+    assert_eq!(result.pixel_diff, Some(1));
     assert_eq!(result.diff_percentage, Some(0.5));
     assert_eq!(result.max_channel_diff, Some(10));
-    assert_eq!(result.image_dimensions, Some((10, 20)));
+    assert_eq!(result.perceptual_distance.is_some(), true);
+    assert_eq!(result.first_mismatch, Some((0, 0)));
+    assert_eq!(
+      result.first_mismatch_rgba,
+      Some(([10, 0, 0, 255], [0, 0, 0, 255]))
+    );
+    assert_eq!(result.actual_dimensions, Some((10, 20)));
+    assert_eq!(result.expected_dimensions, Some((10, 20)));
+  }
+
+  struct ScopedEnv {
+    saved: Vec<(String, Option<std::ffi::OsString>)>,
+  }
+
+  impl ScopedEnv {
+    fn apply(vars: &[(&str, Option<&str>)]) -> Self {
+      let saved = vars
+        .iter()
+        .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
+        .collect();
+      for (key, value) in vars {
+        match value {
+          Some(value) => std::env::set_var(key, value),
+          None => std::env::remove_var(key),
+        }
+      }
+      Self { saved }
+    }
+  }
+
+  impl Drop for ScopedEnv {
+    fn drop(&mut self) {
+      for (key, value) in self.saved.drain(..) {
+        match value {
+          Some(value) => std::env::set_var(&key, value),
+          None => std::env::remove_var(&key),
+        }
+      }
+    }
+  }
+
+  fn with_wpt_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+    let _lock = super::wpt::harness::global_env_lock();
+    let _env = ScopedEnv::apply(vars);
+    f()
+  }
+
+  #[test]
+  fn test_wpt_env_ignore_alpha_is_reflected_in_config() {
+    with_wpt_env(
+      &[
+        ("WPT_IGNORE_ALPHA", Some("1")),
+        ("WPT_MAX_PERCEPTUAL_DISTANCE", None),
+        ("WPT_FUZZY", None),
+        ("WPT_TOLERANCE", None),
+        ("WPT_MAX_DIFFERENT_PERCENT", None),
+      ],
+      || {
+        let harness = HarnessConfig::default();
+        let compare = harness.compare_config_from_env().unwrap();
+        assert!(!compare.compare_alpha);
+      },
+    )
+  }
+
+  #[test]
+  fn test_wpt_env_max_perceptual_distance_is_reflected_in_config() {
+    with_wpt_env(
+      &[
+        ("WPT_IGNORE_ALPHA", None),
+        ("WPT_MAX_PERCEPTUAL_DISTANCE", Some("0.123")),
+        ("WPT_FUZZY", None),
+        ("WPT_TOLERANCE", None),
+        ("WPT_MAX_DIFFERENT_PERCENT", None),
+      ],
+      || {
+        let harness = HarnessConfig::default();
+        let compare = harness.compare_config_from_env().unwrap();
+        assert_eq!(compare.max_perceptual_distance, Some(0.123));
+      },
+    )
   }
 
   // =========================================================================
