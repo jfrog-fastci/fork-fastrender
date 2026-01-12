@@ -132,38 +132,6 @@ fn alloc_dom_rect_with_proto(
   Ok(obj)
 }
 
-fn dom_rect_ro_proto_from_realm(scope: &mut Scope<'_>, realm: &Realm) -> Result<vm_js::GcObject, VmError> {
-  let global = realm.global_object();
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(global))?;
-  let key = alloc_key(&mut scope, INTERNAL_DOMRECT_RO_PROTO_KEY)?;
-  match scope
-    .heap()
-    .object_get_own_data_property_value(global, &key)?
-  {
-    Some(Value::Object(proto)) => Ok(proto),
-    _ => Err(VmError::InvariantViolation(
-      "DOMRectReadOnly bindings missing cached prototype on global object",
-    )),
-  }
-}
-
-fn dom_rect_proto_from_realm(scope: &mut Scope<'_>, realm: &Realm) -> Result<vm_js::GcObject, VmError> {
-  let global = realm.global_object();
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(global))?;
-  let key = alloc_key(&mut scope, INTERNAL_DOMRECT_PROTO_KEY)?;
-  match scope
-    .heap()
-    .object_get_own_data_property_value(global, &key)?
-  {
-    Some(Value::Object(proto)) => Ok(proto),
-    _ => Err(VmError::InvariantViolation(
-      "DOMRect bindings missing cached prototype on global object",
-    )),
-  }
-}
-
 fn dom_rect_ro_proto_from_global(
   scope: &mut Scope<'_>,
   global: vm_js::GcObject,
@@ -197,19 +165,15 @@ fn dom_rect_proto_from_global(scope: &mut Scope<'_>, global: vm_js::GcObject) ->
   }
 }
 
-#[allow(dead_code)]
-pub(crate) fn alloc_dom_rect_read_only(
-  scope: &mut Scope<'_>,
-  realm: &Realm,
-  x: f64,
-  y: f64,
-  width: f64,
-  height: f64,
-) -> Result<vm_js::GcObject, VmError> {
-  let proto = dom_rect_ro_proto_from_realm(scope, realm)?;
-  alloc_dom_rect_with_proto(scope, proto, x, y, width, height)
+fn dom_rect_ro_proto_from_realm(scope: &mut Scope<'_>, realm: &Realm) -> Result<vm_js::GcObject, VmError> {
+  dom_rect_ro_proto_from_global(scope, realm.global_object())
 }
 
+fn dom_rect_proto_from_realm(scope: &mut Scope<'_>, realm: &Realm) -> Result<vm_js::GcObject, VmError> {
+  dom_rect_proto_from_global(scope, realm.global_object())
+}
+
+#[allow(dead_code)]
 pub(crate) fn alloc_dom_rect_read_only_from_global(
   scope: &mut Scope<'_>,
   global: vm_js::GcObject,
@@ -219,19 +183,6 @@ pub(crate) fn alloc_dom_rect_read_only_from_global(
   height: f64,
 ) -> Result<vm_js::GcObject, VmError> {
   let proto = dom_rect_ro_proto_from_global(scope, global)?;
-  alloc_dom_rect_with_proto(scope, proto, x, y, width, height)
-}
-
-#[allow(dead_code)]
-pub(crate) fn alloc_dom_rect(
-  scope: &mut Scope<'_>,
-  realm: &Realm,
-  x: f64,
-  y: f64,
-  width: f64,
-  height: f64,
-) -> Result<vm_js::GcObject, VmError> {
-  let proto = dom_rect_proto_from_realm(scope, realm)?;
   alloc_dom_rect_with_proto(scope, proto, x, y, width, height)
 }
 
@@ -246,6 +197,30 @@ pub(crate) fn alloc_dom_rect_from_global(
 ) -> Result<vm_js::GcObject, VmError> {
   let proto = dom_rect_proto_from_global(scope, global)?;
   alloc_dom_rect_with_proto(scope, proto, x, y, width, height)
+}
+
+#[allow(dead_code)]
+pub(crate) fn alloc_dom_rect_read_only(
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  x: f64,
+  y: f64,
+  width: f64,
+  height: f64,
+) -> Result<vm_js::GcObject, VmError> {
+  alloc_dom_rect_read_only_from_global(scope, realm.global_object(), x, y, width, height)
+}
+
+#[allow(dead_code)]
+pub(crate) fn alloc_dom_rect(
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  x: f64,
+  y: f64,
+  width: f64,
+  height: f64,
+) -> Result<vm_js::GcObject, VmError> {
+  alloc_dom_rect_from_global(scope, realm.global_object(), x, y, width, height)
 }
 
 fn require_dom_rect_obj(scope: &mut Scope<'_>, this: Value) -> Result<vm_js::GcObject, VmError> {
@@ -886,32 +861,7 @@ pub(crate) fn install_window_dom_rect_bindings(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::window_realm::{alloc_intersection_observer_entry_object, WindowRealm, WindowRealmConfig};
-
-  fn set_global_prop(
-    scope: &mut Scope<'_>,
-    global: vm_js::GcObject,
-    name: &str,
-    value: Value,
-  ) -> Result<(), VmError> {
-    let mut scope = scope.reborrow();
-    scope.push_root(Value::Object(global))?;
-    scope.push_root(value)?;
-    let key = alloc_key(&mut scope, name)?;
-    scope.define_property(
-      global,
-      key,
-      PropertyDescriptor {
-        enumerable: true,
-        configurable: true,
-        kind: PropertyKind::Data {
-          value,
-          writable: true,
-        },
-      },
-    )?;
-    Ok(())
-  }
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
 
   #[test]
   fn dom_rect_read_only_derived_getters() {
@@ -962,27 +912,30 @@ mod tests {
   #[test]
   fn observer_entry_rects_are_dom_rect_read_only_instances() {
     let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
-    {
-      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
-      let mut scope = heap.scope();
-      let global = realm.global_object();
+    let v = window
+      .exec_script(
+        r#"(() => {
+          // Force the async delivery path so we can synchronously inspect `takeRecords()` regardless
+          // of whether this realm has a native queueMicrotask binding.
+          globalThis.__fastrender_queue_microtask = (cb) => { Promise.resolve().then(cb); };
 
-      // Allocate a fake IntersectionObserverEntry-like object from Rust (mirrors how observer
-      // plumbing will construct entries).
-      let entry = alloc_intersection_observer_entry_object(
-        &mut scope,
-        global,
-        None,
-        (1.0, 2.0, 3.0, 4.0),
-        (5.0, 6.0, 7.0, 8.0),
+          const target = {};
+          const observer = new IntersectionObserver(() => {});
+          observer.observe(target);
+          const entries = observer.takeRecords();
+          if (!Array.isArray(entries) || entries.length !== 1) return false;
+          const e = entries[0];
+          return (
+            e.boundingClientRect instanceof DOMRectReadOnly &&
+            e.intersectionRect instanceof DOMRectReadOnly &&
+            e.rootBounds instanceof DOMRectReadOnly
+          );
+        })()"#,
       )
       .unwrap();
-      set_global_prop(&mut scope, global, "__entry", Value::Object(entry)).unwrap();
-    }
 
-    let v = window
-      .exec_script("globalThis.__entry.boundingClientRect instanceof DOMRectReadOnly")
-      .unwrap();
+    // Drain the queued microtask to avoid leaving pending jobs across tests.
+    window.perform_microtask_checkpoint().unwrap();
     assert_eq!(v, Value::Bool(true));
   }
 }

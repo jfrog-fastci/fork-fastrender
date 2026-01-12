@@ -18,6 +18,7 @@
 //! This is intentionally minimal: it focuses on API presence + callback delivery so scripts can
 //! progress through lazy-load/observer gating logic during server-side execution.
 
+use crate::js::window_dom_rect;
 use vm_js::{
   GcObject, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope,
   Value, Vm, VmError, VmHost, VmHostHooks,
@@ -30,6 +31,7 @@ const INTERSECTION_OBSERVER_ENTRY_HOST_TAG: u64 = 0x494F_4245_4E54_5259; // "IOB
 const OBSERVER_CALLBACK_KEY: &str = "__fastrender_intersection_observer_callback";
 const OBSERVER_PENDING_TARGETS_KEY: &str = "__fastrender_intersection_observer_pending_targets";
 const OBSERVER_SCHEDULED_KEY: &str = "__fastrender_intersection_observer_scheduled";
+const OBSERVER_GLOBAL_KEY: &str = "__fastrender_intersection_observer_global";
 
 // Must match `window_timers::INTERNAL_QUEUE_MICROTASK_KEY`, but duplicated here to keep this module
 // independent of timer bindings.
@@ -38,6 +40,9 @@ const INTERNAL_QUEUE_MICROTASK_KEY: &str = "__fastrender_queue_microtask";
 // Native slot indices for `IntersectionObserver.prototype.observe`.
 const OBSERVE_GLOBAL_SLOT: usize = 0;
 const OBSERVE_NOTIFY_CALL_ID_SLOT: usize = 1;
+
+// Native slot indices for the `IntersectionObserver` constructor.
+const CTOR_GLOBAL_SLOT: usize = 0;
 
 // Native slot indices for the microtask notification callback.
 const NOTIFY_OBSERVER_SLOT: usize = 0;
@@ -128,6 +133,16 @@ fn observe_global_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcO
   }
 }
 
+fn ctor_global_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.get(CTOR_GLOBAL_SLOT).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "IntersectionObserver constructor missing required global slot",
+    )),
+  }
+}
+
 fn notify_call_id_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<NativeFunctionId, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   match slots
@@ -201,6 +216,7 @@ fn clear_pending_targets(vm: &Vm, scope: &mut Scope<'_>, observer_obj: GcObject)
 fn build_entries_from_pending_targets(
   vm: &Vm,
   scope: &mut Scope<'_>,
+  global: Option<GcObject>,
   pending_targets: GcObject,
 ) -> Result<GcObject, VmError> {
   // Root the pending array while we read elements and allocate entry objects/strings.
@@ -255,6 +271,41 @@ fn build_entries_from_pending_targets(
       Value::Number(1.0),
       /* writable */ false,
     )?;
+
+    // Spec-ish geometry shape: provide `DOMRectReadOnly` instances for rect fields.
+    if let Some(global) = global {
+      // The shim does not have real layout info; use a stable non-zero rect so `intersectionRatio == 1`
+      // remains plausible (area(intersectionRect) / area(boundingClientRect) == 1).
+      let root_bounds =
+        window_dom_rect::alloc_dom_rect_read_only_from_global(&mut iter_scope, global, 0.0, 0.0, 1.0, 1.0)?;
+      set_own_data_prop(
+        &mut iter_scope,
+        entry,
+        "rootBounds",
+        Value::Object(root_bounds),
+        /* writable */ false,
+      )?;
+
+      let bounding_rect =
+        window_dom_rect::alloc_dom_rect_read_only_from_global(&mut iter_scope, global, 0.0, 0.0, 1.0, 1.0)?;
+      set_own_data_prop(
+        &mut iter_scope,
+        entry,
+        "boundingClientRect",
+        Value::Object(bounding_rect),
+        /* writable */ false,
+      )?;
+
+      let intersection_rect =
+        window_dom_rect::alloc_dom_rect_read_only_from_global(&mut iter_scope, global, 0.0, 0.0, 1.0, 1.0)?;
+      set_own_data_prop(
+        &mut iter_scope,
+        entry,
+        "intersectionRect",
+        Value::Object(intersection_rect),
+        /* writable */ false,
+      )?;
+    }
 
     // entries[idx] = entry
     iter_scope.push_root(Value::Object(entries))?;
@@ -351,7 +402,12 @@ fn deliver_pending_entries(
     return Ok(());
   }
 
-  let entries = build_entries_from_pending_targets(vm, scope, pending_targets)?;
+  let global = match get_own_data_prop(scope, observer_obj, OBSERVER_GLOBAL_KEY)? {
+    Value::Object(obj) => Some(obj),
+    _ => None,
+  };
+
+  let entries = build_entries_from_pending_targets(vm, scope, global, pending_targets)?;
   scope.push_root(Value::Object(entries))?;
 
   // Clear pending state before invoking the callback so re-entrancy behaves sensibly.
@@ -425,6 +481,8 @@ fn intersection_observer_ctor_construct(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
+  let global = ctor_global_from_callee(scope, callee)?;
+
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
   if !scope.heap().is_callable(callback).unwrap_or(false) {
     return Err(VmError::TypeError(
@@ -473,6 +531,13 @@ fn intersection_observer_ctor_construct(
     OBSERVER_SCHEDULED_KEY,
     Value::Bool(false),
     /* writable */ true,
+  )?;
+  set_own_data_prop(
+    scope,
+    observer,
+    OBSERVER_GLOBAL_KEY,
+    Value::Object(global),
+    /* writable */ false,
   )?;
   let pending = alloc_empty_targets_array(vm, scope)?;
   set_own_data_prop(
@@ -656,7 +721,12 @@ fn intersection_observer_take_records_native(
     _ => alloc_empty_targets_array(vm, scope)?,
   };
 
-  let entries = build_entries_from_pending_targets(vm, scope, pending_targets)?;
+  let global = match get_own_data_prop(scope, observer_obj, OBSERVER_GLOBAL_KEY)? {
+    Value::Object(obj) => Some(obj),
+    _ => None,
+  };
+
+  let entries = build_entries_from_pending_targets(vm, scope, global, pending_targets)?;
   clear_pending_targets(vm, scope, observer_obj)?;
   set_own_data_prop(
     scope,
@@ -840,7 +910,13 @@ pub fn install_window_intersection_observer_bindings(
   let ctor_construct_id = vm.register_native_construct(intersection_observer_ctor_construct)?;
   let name = scope.alloc_string("IntersectionObserver")?;
   scope.push_root(Value::String(name))?;
-  let ctor = scope.alloc_native_function(ctor_call_id, Some(ctor_construct_id), name, 1)?;
+  let ctor = scope.alloc_native_function_with_slots(
+    ctor_call_id,
+    Some(ctor_construct_id),
+    name,
+    1,
+    &[Value::Object(global)],
+  )?;
   scope.heap_mut().object_set_prototype(ctor, Some(func_proto))?;
   scope.push_root(Value::Object(ctor))?;
 

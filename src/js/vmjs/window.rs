@@ -102,11 +102,25 @@ const OBSERVER_SHIMS_JS: &str = r#"
         this._scheduled = false;
       }
 
-      ResizeObserver.prototype.observe = function (target) {
-        if (!isObject(target)) {
-          throw new TypeError("ResizeObserver.observe: target must be an object");
+       ResizeObserver.prototype.observe = function (target) {
+         if (!isObject(target)) {
+           throw new TypeError("ResizeObserver.observe: target must be an object");
+         }
+        // Spec-ish shape: provide a `ResizeObserverEntry`-like object with a real `DOMRectReadOnly`
+        // `contentRect` so geometry-gated scripts can run without a full layout engine.
+        //
+        // `DOMRectReadOnly` is installed by the vm-js WindowRealm globals init; fall back to a plain
+        // object if it is missing for some reason.
+        var contentRect;
+        try {
+          contentRect = typeof DOMRectReadOnly === "function" ? new DOMRectReadOnly(0, 0, 0, 0) : null;
+        } catch (_e) {
+          contentRect = null;
         }
-        this._queue.push({ target: target });
+        if (contentRect === null) {
+          contentRect = { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 };
+        }
+        this._queue.push({ target: target, contentRect: contentRect });
         if (this._scheduled) return;
         this._scheduled = true;
         var self = this;
