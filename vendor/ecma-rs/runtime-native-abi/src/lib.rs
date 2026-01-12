@@ -957,19 +957,19 @@ extern "C" {
   pub fn rt_promise_resolve_promise_legacy(p: LegacyPromiseRef, other: LegacyPromiseRef);
   pub fn rt_promise_resolve_thenable_legacy(p: LegacyPromiseRef, thenable: ThenableRef);
   pub fn rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef);
-  pub fn rt_promise_then_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8);
+  pub fn rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8);
   pub fn rt_promise_then_rooted_legacy(
-    p: LegacyPromiseRef,
+    p: PromiseRef,
     on_settle: extern "C" fn(*mut u8),
     data: GcPtr,
   );
   pub fn rt_promise_then_rooted_h_legacy(
-    p: LegacyPromiseRef,
+    p: PromiseRef,
     on_settle: extern "C" fn(*mut u8),
     data: GcHandle,
   );
   pub fn rt_promise_then_with_drop_legacy(
-    p: LegacyPromiseRef,
+    p: PromiseRef,
     on_settle: extern "C" fn(*mut u8),
     data: *mut u8,
     drop_data: extern "C" fn(*mut u8),

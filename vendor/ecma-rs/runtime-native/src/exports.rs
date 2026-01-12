@@ -3888,7 +3888,7 @@ pub extern "C" fn rt_promise_then(
   on_settle: extern "C" fn(*mut u8),
   data: *mut u8,
 ) {
-  abort_on_panic(|| rt_promise_then_legacy(p, on_settle, data))
+  abort_on_panic(|| rt_promise_then_legacy(PromiseRef(p.0.cast()), on_settle, data))
 }
 
 #[no_mangle]
@@ -3897,7 +3897,7 @@ pub extern "C" fn rt_promise_then_rooted(
   on_settle: extern "C" fn(*mut u8),
   data: *mut u8,
 ) {
-  abort_on_panic(|| rt_promise_then_rooted_legacy(p, on_settle, data))
+  abort_on_panic(|| rt_promise_then_rooted_legacy(PromiseRef(p.0.cast()), on_settle, data))
 }
 
 #[no_mangle]
@@ -3906,7 +3906,7 @@ pub unsafe extern "C" fn rt_promise_then_rooted_h(
   on_settle: extern "C" fn(*mut u8),
   data: crate::roots::GcHandle,
 ) {
-  abort_on_panic(|| unsafe { rt_promise_then_rooted_h_legacy(p, on_settle, data) })
+  abort_on_panic(|| unsafe { rt_promise_then_rooted_h_legacy(PromiseRef(p.0.cast()), on_settle, data) })
 }
 
 #[no_mangle]
@@ -4014,51 +4014,51 @@ pub extern "C" fn rt_promise_resolve_thenable_legacy(p: LegacyPromiseRef, thenab
 
 #[no_mangle]
 pub extern "C" fn rt_promise_then_legacy(
-  p: LegacyPromiseRef,
+  p: PromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: *mut u8,
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then(PromiseRef(p.0.cast()), on_settle, data)
+    async_rt::promise::promise_then(p, on_settle, data)
   })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_then_rooted_legacy(
-  p: LegacyPromiseRef,
+  p: PromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: *mut u8,
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then_rooted(PromiseRef(p.0.cast()), on_settle, data)
+    async_rt::promise::promise_then_rooted(p, on_settle, data)
   })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_then_rooted_h_legacy(
-  p: LegacyPromiseRef,
+  p: PromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: crate::roots::GcHandle,
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
     // Safety: caller contract.
-    unsafe { async_rt::promise::promise_then_rooted_h(PromiseRef(p.0.cast()), on_settle, data) }
+    unsafe { async_rt::promise::promise_then_rooted_h(p, on_settle, data) }
   })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_then_with_drop_legacy(
-  p: LegacyPromiseRef,
+  p: PromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: *mut u8,
   drop_data: extern "C" fn(*mut u8),
 ) {
   abort_on_panic(|| {
     ensure_current_thread_registered();
-    async_rt::promise::promise_then_with_drop(PromiseRef(p.0.cast()), on_settle, data, drop_data)
+    async_rt::promise::promise_then_with_drop(p, on_settle, data, drop_data)
   })
 }
 

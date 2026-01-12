@@ -194,7 +194,11 @@ fn await_and_then_share_single_reaction_list_with_fifo_ordering() {
 
   // Then register an explicit `then` callback.
   let then_ctx: &'static LogCtx = Box::leak(Box::new(LogCtx { log, id: 2 }));
-  runtime_native::rt_promise_then_legacy(awaited, push_log, then_ctx as *const LogCtx as *mut u8);
+  runtime_native::rt_promise_then_legacy(
+    AbiPromiseRef(awaited.0.cast()),
+    push_log,
+    then_ctx as *const LogCtx as *mut u8,
+  );
 
   runtime_native::rt_promise_resolve_legacy(awaited, 0x1234usize as ValueRef);
   while runtime_native::rt_async_poll_legacy() {}
@@ -207,6 +211,7 @@ fn concurrent_registrations_do_not_lose_reactions() {
   let _rt = TestRuntimeGuard::new();
 
   let promise = runtime_native::rt_promise_new_legacy();
+  let promise_ref = AbiPromiseRef(promise.0.cast());
   let fired: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
 
   extern "C" fn inc(data: *mut u8) {
@@ -226,11 +231,15 @@ fn concurrent_registrations_do_not_lose_reactions() {
     let b = barrier.clone();
     let half_ready = half_ready.clone();
     let settled = settled.clone();
-    let promise = promise;
+    let promise_ref = promise_ref;
     joins.push(std::thread::spawn(move || {
       b.wait();
       for i in 0..PER_THREAD {
-        runtime_native::rt_promise_then_legacy(promise, inc, fired as *const AtomicUsize as *mut u8);
+        runtime_native::rt_promise_then_legacy(
+          promise_ref,
+          inc,
+          fired as *const AtomicUsize as *mut u8,
+        );
         if i + 1 == HALF {
           half_ready.fetch_add(1, Ordering::SeqCst);
           while !settled.load(Ordering::SeqCst) {
@@ -283,14 +292,26 @@ fn reentrant_then_handlers_observe_microtask_checkpoint_ordering() {
       log: ctx.log,
       id: 3,
     }));
-    runtime_native::rt_promise_then_legacy(ctx.promise, push_log, b_ctx as *const LogCtx as *mut u8);
+    runtime_native::rt_promise_then_legacy(
+      AbiPromiseRef(ctx.promise.0.cast()),
+      push_log,
+      b_ctx as *const LogCtx as *mut u8,
+    );
   }
 
   let ctx: &'static ReentrantCtx = Box::leak(Box::new(ReentrantCtx { promise, log }));
   let c_ctx: &'static LogCtx = Box::leak(Box::new(LogCtx { log, id: 2 }));
 
-  runtime_native::rt_promise_then_legacy(promise, first, ctx as *const ReentrantCtx as *mut u8);
-  runtime_native::rt_promise_then_legacy(promise, push_log, c_ctx as *const LogCtx as *mut u8);
+  runtime_native::rt_promise_then_legacy(
+    AbiPromiseRef(promise.0.cast()),
+    first,
+    ctx as *const ReentrantCtx as *mut u8,
+  );
+  runtime_native::rt_promise_then_legacy(
+    AbiPromiseRef(promise.0.cast()),
+    push_log,
+    c_ctx as *const LogCtx as *mut u8,
+  );
 
   runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
   while runtime_native::rt_async_poll_legacy() {}

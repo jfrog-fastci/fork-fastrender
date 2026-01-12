@@ -1,4 +1,5 @@
 use runtime_native::test_util::{reset_runtime_state, TestRuntimeGuard};
+use runtime_native::abi::PromiseRef;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -32,7 +33,7 @@ fn promise_then_with_drop_runs_drop_on_discard() {
   let data_ptr = Box::into_raw(data) as *mut u8;
 
   let promise = runtime_native::rt_promise_new_legacy();
-  runtime_native::rt_promise_then_with_drop_legacy(promise, noop, data_ptr, drop_counter);
+  runtime_native::rt_promise_then_with_drop_legacy(PromiseRef(promise.0.cast()), noop, data_ptr, drop_counter);
   runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
 
   // Discard the queued microtask (simulates teardown) and ensure the callback state is freed.
@@ -40,4 +41,3 @@ fn promise_then_with_drop_runs_drop_on_discard() {
 
   assert_eq!(drops.load(Ordering::Acquire), 1);
 }
-

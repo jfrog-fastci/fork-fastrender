@@ -118,7 +118,7 @@ fn promise_outcome_is_relocatable_via_global_root_handle() {
     observed: AtomicUsize::new(0),
   };
   runtime_native::rt_promise_then_legacy(
-    promise,
+    promise_ref,
     on_settle_observe_outcome,
     (&mut then_data as *mut ThenData).cast::<u8>(),
   );
@@ -170,7 +170,11 @@ fn promise_then_rooted_passes_relocated_data_ptr() {
     observed: AtomicUsize::new(0),
   }));
 
-  runtime_native::rt_promise_then_rooted_legacy(promise, on_settle_store_self_ptr, old_data.cast());
+  runtime_native::rt_promise_then_rooted_legacy(
+    legacy_promise_as_ref(promise),
+    on_settle_store_self_ptr,
+    old_data.cast(),
+  );
   // `then_rooted` installs a persistent handle for the rooted callback `data`.
   assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
 

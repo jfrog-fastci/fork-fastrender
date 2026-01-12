@@ -1,4 +1,4 @@
-use runtime_native::abi::{LegacyPromiseRef, RtShapeDescriptor, RtShapeId, TimerId};
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef, RtShapeDescriptor, RtShapeId, TimerId};
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -32,7 +32,7 @@ fn ensure_shape_table() {
 }
 
 unsafe fn promise_then_rooted_h_legacy_sendable(
-  promise: LegacyPromiseRef,
+  promise: PromiseRef,
   on_settle: extern "C" fn(*mut u8),
   data: runtime_native::roots::GcHandle,
 ) {
@@ -82,7 +82,7 @@ fn promise_then_rooted_legacy_roots_data_until_invoked() {
   let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
 
   let promise = runtime_native::rt_promise_new_legacy();
-  runtime_native::rt_promise_then_rooted_legacy(promise, on_settle, data);
+  runtime_native::rt_promise_then_rooted_legacy(PromiseRef(promise.0.cast()), on_settle, data);
 
   assert_eq!(
     runtime_native::roots::global_persistent_handle_table().live_count(),
@@ -124,6 +124,7 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
   let new_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
 
   let promise = runtime_native::rt_promise_new_legacy();
+  let promise_ref = PromiseRef(promise.0.cast());
 
   let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
 
@@ -166,7 +167,7 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
       let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
       // Safety: `slot_ptr` points at a writable `GcPtr` slot that outlives this call.
       unsafe {
-        promise_then_rooted_h_legacy_sendable(promise, on_settle, slot_ptr);
+        promise_then_rooted_h_legacy_sendable(promise_ref, on_settle, slot_ptr);
       }
       c_done_tx.send(()).unwrap();
 

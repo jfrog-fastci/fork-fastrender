@@ -1,7 +1,7 @@
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use runtime_native::abi::{LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
 use runtime_native::gc::{ObjHeader, RememberedSet, RootSet, TypeDescriptor};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::GcHeap;
@@ -155,7 +155,7 @@ fn legacy_promise_then_rooted_keeps_gc_data_alive_across_minor_gc() {
   CONT_SEEN_VALUE.store(0, Ordering::SeqCst);
 
   let p = runtime_native::rt_promise_new_legacy();
-  runtime_native::rt_promise_then_rooted_legacy(p, continuation_observe_data, orig);
+  runtime_native::rt_promise_then_rooted_legacy(PromiseRef(p.0.cast()), continuation_observe_data, orig);
 
   // Evacuate the continuation data while the promise is still pending.
   collect_minor_from_world_roots(&mut heap);

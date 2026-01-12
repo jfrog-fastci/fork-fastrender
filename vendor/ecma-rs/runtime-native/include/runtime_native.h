@@ -1172,7 +1172,15 @@ void rt_promise_resolve_into_legacy(LegacyPromiseRef p, PromiseResolveInput valu
 void rt_promise_resolve_promise_legacy(LegacyPromiseRef p, LegacyPromiseRef other);
 void rt_promise_resolve_thenable_legacy(LegacyPromiseRef p, ThenableRef thenable);
 void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);
-void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+// Register a legacy-style `then` reaction callback on any `PromiseRef`.
+//
+// Note: despite the `_legacy` suffix, these `rt_promise_then*_legacy` entrypoints accept `PromiseRef`
+// (native promise handle) because they only rely on the `PromiseHeader` prefix at offset 0. This
+// allows attaching reactions to:
+// - native GC-managed `Promise<T>` allocations (`rt_alloc` + `rt_promise_init`),
+// - GC-managed payload promises (`rt_parallel_spawn_promise*`, `rt_spawn_blocking_promise*`), and
+// - legacy `LegacyPromiseRef` promises (by casting `LegacyPromiseRef` to `PromiseRef`).
+void rt_promise_then_legacy(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
 // Like `rt_promise_then_legacy`, but `data` is a GC-managed object base pointer that must remain
 // alive (and relocatable) until `on_settle` runs.
 //
@@ -1182,9 +1190,9 @@ void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uin
 //   object payload).
 // - The runtime registers a strong GC root for `data` until the callback runs.
 // - When the callback runs, the runtime passes the *current* pointer (after any relocation).
-void rt_promise_then_rooted_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
-void rt_promise_then_rooted_h_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), GcHandle data);
-void rt_promise_then_with_drop_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
+void rt_promise_then_rooted_legacy(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+void rt_promise_then_rooted_h_legacy(PromiseRef p, void (*on_settle)(uint8_t*), GcHandle data);
+void rt_promise_then_with_drop_legacy(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
 void rt_promise_drop_legacy(LegacyPromiseRef p);
 
 typedef enum RtCoroStatus {

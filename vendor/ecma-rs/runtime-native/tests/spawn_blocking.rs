@@ -1,4 +1,4 @@
-use runtime_native::abi::LegacyPromiseRef;
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{
   rt_async_poll_legacy as rt_async_poll,
@@ -49,7 +49,7 @@ fn spawn_blocking_basic() {
   let settled_ptr = Box::into_raw(settled);
 
   let promise = rt_spawn_blocking(task_set_flag, flag_ptr.cast::<u8>());
-  rt_promise_then(promise, set_bool, settled_ptr.cast::<u8>());
+  rt_promise_then(PromiseRef(promise.0.cast()), set_bool, settled_ptr.cast::<u8>());
 
   let start = Instant::now();
   while !unsafe { &*settled_ptr }.load(Ordering::SeqCst) {
@@ -81,7 +81,7 @@ fn spawn_blocking_concurrency() {
 
   for _ in 0..N {
     let p = rt_spawn_blocking(task_sleep_and_inc, counter_ptr.cast::<u8>());
-    rt_promise_then(p, inc_usize, settled_ptr.cast::<u8>());
+    rt_promise_then(PromiseRef(p.0.cast()), inc_usize, settled_ptr.cast::<u8>());
   }
 
   let start = Instant::now();
@@ -111,7 +111,7 @@ fn spawn_blocking_does_not_block_event_loop() {
   let timer_promise = rt_async_sleep(50);
   let timer_settled = Box::new(AtomicBool::new(false));
   let timer_settled_ptr = Box::into_raw(timer_settled);
-  rt_promise_then(timer_promise, set_bool, timer_settled_ptr.cast::<u8>());
+  rt_promise_then(PromiseRef(timer_promise.0.cast()), set_bool, timer_settled_ptr.cast::<u8>());
 
   let counter = Box::new(AtomicUsize::new(0));
   let settled = Box::new(AtomicUsize::new(0));
@@ -120,7 +120,7 @@ fn spawn_blocking_does_not_block_event_loop() {
 
   for _ in 0..N {
     let p = rt_spawn_blocking(task_long_sleep_and_inc, counter_ptr.cast::<u8>());
-    rt_promise_then(p, inc_usize, settled_ptr.cast::<u8>());
+    rt_promise_then(PromiseRef(p.0.cast()), inc_usize, settled_ptr.cast::<u8>());
   }
 
   let mut timer_fired_at = None;

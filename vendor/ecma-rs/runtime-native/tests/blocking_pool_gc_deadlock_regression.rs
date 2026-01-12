@@ -1,4 +1,4 @@
-use runtime_native::abi::LegacyPromiseRef;
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading::ThreadKind;
 use runtime_native::{
@@ -62,7 +62,7 @@ fn stw_gc_does_not_deadlock_with_blocking_pool_tasks() {
   let settled_ptr = (&*settled as *const AtomicBool).cast_mut().cast::<u8>();
 
   let promise = rt_spawn_blocking(blocking_task_wait, state_ptr);
-  rt_promise_then(promise, set_bool, settled_ptr);
+  rt_promise_then(PromiseRef(promise.0.cast()), set_bool, settled_ptr);
 
   // Wait until the blocking worker thread is definitely inside `blocking_task_wait`.
   let start = Instant::now();

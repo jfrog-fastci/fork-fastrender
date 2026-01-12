@@ -1,4 +1,4 @@
-use runtime_native::abi::{LegacyPromiseRef, PromiseRef};
+use runtime_native::abi::PromiseRef;
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::test_util::TestRuntimeGuard;
 use std::ptr;
@@ -39,7 +39,7 @@ fn async_sleep_fulfills_promise() {
 
   let settled = AtomicBool::new(false);
   runtime_native::rt_promise_then_legacy(
-    LegacyPromiseRef(p.0.cast()),
+    p,
     set_bool,
     (&settled as *const AtomicBool).cast::<u8>().cast_mut(),
   );
@@ -79,7 +79,7 @@ fn sleep_promise_weak_handle_after_settle() -> u64 {
 
   let settled = AtomicBool::new(false);
   runtime_native::rt_promise_then_legacy(
-    LegacyPromiseRef(p.0.cast()),
+    p,
     set_bool,
     (&settled as *const AtomicBool).cast::<u8>().cast_mut(),
   );
@@ -180,7 +180,7 @@ fn async_sleep_promise_relocates_while_rooted_in_timer_queue() {
   let settled = AtomicBool::new(false);
   let promise_relocated = PromiseRef(relocated.cast());
   runtime_native::rt_promise_then_legacy(
-    LegacyPromiseRef(promise_relocated.0.cast()),
+    promise_relocated,
     set_bool,
     (&settled as *const AtomicBool).cast::<u8>().cast_mut(),
   );

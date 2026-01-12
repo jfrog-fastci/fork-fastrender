@@ -966,11 +966,11 @@ mod tests {
       "void rt_promise_resolve_promise_legacy(LegacyPromiseRef p, LegacyPromiseRef other);",
       "void rt_promise_resolve_thenable_legacy(LegacyPromiseRef p, ThenableRef thenable);",
       "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",
-      "void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
+      "void rt_promise_then_legacy(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
       "void rt_promise_then_rooted(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
-      "void rt_promise_then_rooted_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
-      "void rt_promise_then_rooted_h_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), GcHandle data);",
-      "void rt_promise_then_with_drop_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));",
+      "void rt_promise_then_rooted_legacy(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
+      "void rt_promise_then_rooted_h_legacy(PromiseRef p, void (*on_settle)(uint8_t*), GcHandle data);",
+      "void rt_promise_then_with_drop_legacy(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));",
       "void rt_promise_drop_legacy(LegacyPromiseRef p);",
       "LegacyPromiseRef rt_async_spawn_legacy(RtCoroutineHeader* coro);",
       "LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);",
@@ -1191,16 +1191,16 @@ mod tests {
     let _promise_resolve_thenable_legacy: extern "C" fn(abi::LegacyPromiseRef, abi::ThenableRef) =
       rt_promise_resolve_thenable_legacy;
     let _promise_reject_legacy: extern "C" fn(abi::LegacyPromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
-    let _promise_then_legacy: extern "C" fn(abi::LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then_legacy;
-    let _promise_then_rooted_legacy: extern "C" fn(abi::LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
+    let _promise_then_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then_legacy;
+    let _promise_then_rooted_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) =
       rt_promise_then_rooted_legacy;
     let _promise_then_rooted_h_legacy: unsafe extern "C" fn(
-      abi::LegacyPromiseRef,
+      abi::PromiseRef,
       extern "C" fn(*mut u8),
       crate::roots::GcHandle,
     ) = rt_promise_then_rooted_h_legacy;
     let _promise_then_with_drop_legacy: extern "C" fn(
-      abi::LegacyPromiseRef,
+      abi::PromiseRef,
       extern "C" fn(*mut u8),
       *mut u8,
       extern "C" fn(*mut u8),
@@ -1819,12 +1819,12 @@ int main(void) {
 
   // Legacy promise/coroutine ABI (still used by runtime-native tests/utilities).
   LegacyPromiseRef pr = rt_promise_new_legacy();
-  rt_promise_then_legacy(pr, on_settle, NULL);
+  rt_promise_then_legacy((PromiseRef)pr, on_settle, NULL);
   rt_promise_resolve_legacy(pr, (ValueRef)0);
   rt_promise_reject_legacy(pr, (ValueRef)0);
 
   LegacyPromiseRef blocking = rt_spawn_blocking(blocking_task, NULL);
-  rt_promise_then_legacy(blocking, on_settle, NULL);
+  rt_promise_then_legacy((PromiseRef)blocking, on_settle, NULL);
 
   return 0;
 }

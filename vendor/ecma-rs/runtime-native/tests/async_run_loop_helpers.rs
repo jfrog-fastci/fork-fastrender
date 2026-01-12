@@ -111,7 +111,11 @@ fn run_until_idle_drains_deferred_coroutines() {
   coro.done = done.as_ref();
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
-  runtime_native::rt_promise_then_legacy(promise, set_bool, on_settle.as_ref() as *const AtomicBool as *mut u8);
+  runtime_native::rt_promise_then_legacy(
+    PromiseRef(promise.0.cast()),
+    set_bool,
+    on_settle.as_ref() as *const AtomicBool as *mut u8,
+  );
 
   assert!(!done.load(Ordering::SeqCst));
   assert!(!on_settle.load(Ordering::SeqCst));

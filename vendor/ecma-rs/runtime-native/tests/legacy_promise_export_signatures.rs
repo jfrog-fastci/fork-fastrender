@@ -1,8 +1,11 @@
-use runtime_native::abi::{LegacyPromiseRef, PromiseResolveInput, RtCoroutineHeader, ThenableRef, ValueRef};
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef, PromiseResolveInput, RtCoroutineHeader, ThenableRef, ValueRef};
 use runtime_native::roots::GcHandle;
 
-/// Regression test: ensure legacy promise/coroutine exports use `LegacyPromiseRef` in their Rust
-/// signatures, matching `runtime_native.h`.
+/// Regression test: keep the legacy async-rt export signatures aligned with `runtime_native.h`.
+///
+/// Most legacy promise/coroutine APIs operate on `LegacyPromiseRef` handles, but the legacy-style
+/// `rt_promise_then*_legacy` callbacks take `PromiseRef` so they can be used with native GC-managed
+/// promises as well.
 #[test]
 fn legacy_export_signatures_match_header() {
   let _spawn_blocking: extern "C" fn(
@@ -44,24 +47,24 @@ fn legacy_export_signatures_match_header() {
 
   let _promise_then: extern "C" fn(LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
     runtime_native::rt_promise_then;
-  let _promise_then_legacy: extern "C" fn(LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
+  let _promise_then_legacy: extern "C" fn(PromiseRef, extern "C" fn(*mut u8), *mut u8) =
     runtime_native::rt_promise_then_legacy;
 
   let _promise_then_rooted: extern "C" fn(LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
     runtime_native::rt_promise_then_rooted;
-  let _promise_then_rooted_legacy: extern "C" fn(LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
+  let _promise_then_rooted_legacy: extern "C" fn(PromiseRef, extern "C" fn(*mut u8), *mut u8) =
     runtime_native::rt_promise_then_rooted_legacy;
 
   let _promise_then_rooted_h: unsafe extern "C" fn(LegacyPromiseRef, extern "C" fn(*mut u8), GcHandle) =
     runtime_native::rt_promise_then_rooted_h;
   let _promise_then_rooted_h_legacy: unsafe extern "C" fn(
-    LegacyPromiseRef,
+    PromiseRef,
     extern "C" fn(*mut u8),
     GcHandle,
   ) = runtime_native::rt_promise_then_rooted_h_legacy;
 
   let _promise_then_with_drop_legacy: extern "C" fn(
-    LegacyPromiseRef,
+    PromiseRef,
     extern "C" fn(*mut u8),
     *mut u8,
     extern "C" fn(*mut u8),
@@ -69,4 +72,3 @@ fn legacy_export_signatures_match_header() {
 
   let _promise_drop_legacy: extern "C" fn(LegacyPromiseRef) = runtime_native::rt_promise_drop_legacy;
 }
-

@@ -97,7 +97,7 @@ fn awaited_rejection_is_not_reported_as_unhandled() {
 
   let coro_promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
   // Avoid spurious unhandled rejections for the coroutine promise; we only care about `p`.
-  runtime_native::rt_promise_then_legacy(coro_promise, noop, core::ptr::null_mut());
+  runtime_native::rt_promise_then_legacy(PromiseRef(coro_promise.0.cast()), noop, core::ptr::null_mut());
 
   while runtime_native::rt_async_poll_legacy() {}
 
@@ -136,7 +136,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
   coro.awaited = p;
 
   let coro_promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
-  runtime_native::rt_promise_then_legacy(coro_promise, noop, core::ptr::null_mut());
+  runtime_native::rt_promise_then_legacy(PromiseRef(coro_promise.0.cast()), noop, core::ptr::null_mut());
 
   // Next microtask checkpoint: should report `rejectionhandled` for `p`.
   while runtime_native::rt_async_poll_legacy() {}

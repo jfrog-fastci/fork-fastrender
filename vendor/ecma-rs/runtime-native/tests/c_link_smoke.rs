@@ -323,7 +323,7 @@ static void native_async_heap_destroy(CoroutineRef coro) {
   // (promise settlement waking a blocked poll), not thread pool initialization.
   int warm_settled = 0;
   LegacyPromiseRef warm = rt_spawn_blocking(blocking_task, (uint8_t*)0);
-  rt_promise_then_legacy(warm, set_int, (uint8_t*)&warm_settled);
+  rt_promise_then_legacy((PromiseRef)warm, set_int, (uint8_t*)&warm_settled);
   for (int i = 0; i < 10000 && !warm_settled; i++) {
     rt_async_poll_legacy();
     // On some platforms `rt_async_poll_legacy` can return quickly when idle.
@@ -347,7 +347,7 @@ static void native_async_heap_destroy(CoroutineRef coro) {
 
   int settled = 0;
   LegacyPromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
-  rt_promise_then_legacy(p, set_int, (uint8_t*)&settled);
+  rt_promise_then_legacy((PromiseRef)p, set_int, (uint8_t*)&settled);
   // Drive the event loop until the promise settles.
   //
   // Under heavy CI load, the blocking worker may not run immediately. That's OK: this is a C

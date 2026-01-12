@@ -672,10 +672,15 @@ Compatibility aliases (older codegen used the unsuffixed names):
 - `rt_promise_resolve_promise_legacy(p: LegacyPromiseRef, other: LegacyPromiseRef)`
 - `rt_promise_resolve_thenable_legacy(p: LegacyPromiseRef, thenable: ThenableRef)`
 - `rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef)`
-- `rt_promise_then_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8)`
-- `rt_promise_then_rooted_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8)`
-- `rt_promise_then_rooted_h_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: GcHandle)`
-- `rt_promise_then_with_drop_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
+
+Note: despite the `_legacy` suffix, `rt_promise_then*_legacy` take `PromiseRef` because they only
+depend on the `PromiseHeader` prefix at offset 0. This allows attaching reaction callbacks to native
+GC-managed promises and payload promises. Legacy promises can be used by casting
+`LegacyPromiseRef -> PromiseRef`.
+- `rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_promise_then_rooted_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_promise_then_rooted_h_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: GcHandle)`
+- `rt_promise_then_with_drop_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
 - `rt_promise_drop_legacy(p: LegacyPromiseRef)`
 - `rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef`
 - `rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef`

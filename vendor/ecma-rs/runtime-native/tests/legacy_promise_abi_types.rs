@@ -1,7 +1,7 @@
 use core::ptr::null_mut;
 
 use runtime_native::abi::{
-  LegacyPromiseRef, PromiseResolveInput, PromiseResolvePayload, RtCoroStatus,
+  LegacyPromiseRef, PromiseRef, PromiseResolveInput, PromiseResolvePayload, RtCoroStatus,
   RtCoroutineHeader, ValueRef,
 };
 use runtime_native::roots::GcHandle;
@@ -11,7 +11,7 @@ extern "C" fn dummy_resume(_coro: *mut RtCoroutineHeader) -> RtCoroStatus {
 }
 
 #[test]
-fn legacy_exports_use_legacy_promise_ref_in_signatures() {
+fn legacy_exports_use_expected_promise_ref_types_in_signatures() {
   let _promise_new: extern "C" fn() -> LegacyPromiseRef = runtime_native::rt_promise_new;
   let _promise_new_legacy: extern "C" fn() -> LegacyPromiseRef = runtime_native::rt_promise_new_legacy;
 
@@ -28,7 +28,7 @@ fn legacy_exports_use_legacy_promise_ref_in_signatures() {
 
   let _promise_then: extern "C" fn(LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
     runtime_native::rt_promise_then;
-  let _promise_then_legacy: extern "C" fn(LegacyPromiseRef, extern "C" fn(*mut u8), *mut u8) =
+  let _promise_then_legacy: extern "C" fn(PromiseRef, extern "C" fn(*mut u8), *mut u8) =
     runtime_native::rt_promise_then_legacy;
   let _promise_then_rooted_h: unsafe extern "C" fn(LegacyPromiseRef, extern "C" fn(*mut u8), GcHandle) =
     runtime_native::rt_promise_then_rooted_h;

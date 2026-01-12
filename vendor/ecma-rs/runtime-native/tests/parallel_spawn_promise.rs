@@ -493,7 +493,7 @@ fn parallel_spawn_promise_wakes_blocked_async_poll() {
     PromiseLayout::of::<()>(),
   );
   runtime_native::rt_promise_then_legacy(
-    legacy_from_promise_ref(promise),
+    promise,
     inc_atomic,
     Arc::into_raw(continuations.clone()) as *mut u8,
   );
@@ -545,7 +545,7 @@ fn parallel_spawn_promise_stress() {
       PromiseLayout::of::<()>(),
     );
     runtime_native::rt_promise_then_legacy(
-      legacy_from_promise_ref(promise),
+      promise,
       inc_atomic,
       Arc::into_raw(continuations.clone()) as *mut u8,
     );
@@ -592,7 +592,7 @@ fn parallel_spawn_promise_promise_all_like() {
       all: all_state_ptr,
     });
     runtime_native::rt_promise_then_with_drop_legacy(
-      legacy_from_promise_ref(promise),
+      promise,
       on_one_settle,
       Box::into_raw(one) as *mut u8,
       drop_one_state,
@@ -672,7 +672,7 @@ fn parallel_spawn_promise_legacy_runs_task_on_worker_and_continuation_on_event_l
   let data_ptr = Box::into_raw(data);
 
   let promise = runtime_native::rt_parallel_spawn_promise_legacy(task, data_ptr.cast::<u8>());
-  runtime_native::rt_promise_then_legacy(promise, on_settle, data_ptr.cast::<u8>());
+  runtime_native::rt_promise_then_legacy(PromiseRef(promise.0.cast()), on_settle, data_ptr.cast::<u8>());
 
   let start = Instant::now();
   while !unsafe { &*data_ptr }.settled.load(Ordering::Acquire) {
