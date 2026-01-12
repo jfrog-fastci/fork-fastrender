@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "jsx": 2,
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": true,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strict": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2322,
+      "file": "main.tsx",
+      "start": 180,
+      "end": 185,
+      "category": "error",
+      "message": "Type 'string' is not assignable to type 'number'."
+    },
+    {
+      "code": 2322,
+      "file": "main.tsx",
+      "start": 190,
+      "end": 193,
+      "category": "error",
+      "message": "Type 'number' is not assignable to type 'string'."
+    }
+  ]
+}

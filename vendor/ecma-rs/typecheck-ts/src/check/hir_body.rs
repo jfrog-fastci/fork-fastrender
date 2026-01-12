@@ -4288,65 +4288,141 @@ impl<'a> Checker<'a> {
     expected: Option<TypeId>,
   ) -> Option<TypeId> {
     let prim = self.store.primitive_ids();
-    let mut collected = Vec::new();
-    let mut spread = false;
-
-    let mut meaningful = 0usize;
+    let mut semantic_children = Vec::new();
     let mut has_spread_child = false;
-    for child in children {
+    for (idx, child) in children.iter().enumerate() {
       match child {
         JsxElemChild::Text(text) => {
           if !text.stx.value.trim().is_empty() {
-            meaningful += 1;
+            semantic_children.push(idx);
           }
         }
         JsxElemChild::Expr(expr) => {
           if is_empty_jsx_expr_placeholder(&expr.stx.value) {
             continue;
           }
-          meaningful += 1;
           if expr.stx.spread {
             has_spread_child = true;
           }
+          semantic_children.push(idx);
         }
-        JsxElemChild::Element(_) => {
-          meaningful += 1;
-        }
-      }
-      if meaningful > 1 {
-        break;
+        JsxElemChild::Element(_) => semantic_children.push(idx),
       }
     }
 
+    if semantic_children.is_empty() {
+      return None;
+    }
+
     let expected_children_ty = expected.unwrap_or(prim.unknown);
-    let expected_spread_ty =
-      if has_spread_child && self.spread_element_type(expected_children_ty) != prim.unknown {
-        expected_children_ty
-      } else {
-        prim.unknown
-      };
-    let expected_child_ty = if has_spread_child || meaningful > 1 {
-      self.spread_element_type(expected_children_ty)
-    } else {
-      expected_children_ty
+    let (expected_is_array_like, expected_is_tuple_like) = {
+      let mut queue: VecDeque<TypeId> = VecDeque::from([expected_children_ty]);
+      let mut seen = HashSet::new();
+      let mut array_like = false;
+      let mut tuple_like = false;
+      while let Some(ty) = queue.pop_front() {
+        let ty = self.expand_ref(ty);
+        if !seen.insert(ty) {
+          continue;
+        }
+        match self.store.type_kind(ty) {
+          TypeKind::Tuple(_) => {
+            array_like = true;
+            tuple_like = true;
+          }
+          TypeKind::Array { .. } => {
+            array_like = true;
+          }
+          TypeKind::Union(members) | TypeKind::Intersection(members) => {
+            for member in members {
+              queue.push_back(member);
+            }
+          }
+          _ => {}
+        }
+        if tuple_like {
+          break;
+        }
+      }
+      (array_like, tuple_like)
     };
 
-    for child in children {
-      match child {
+    let expected_spread_ty = if expected_is_array_like {
+      expected_children_ty
+    } else {
+      prim.unknown
+    };
+
+    let semantic_len = semantic_children.len();
+    let should_return_tuple = semantic_len > 1 && !has_spread_child && expected_is_tuple_like;
+    let should_check_children_assignability = should_return_tuple
+      && {
+        let mut queue: VecDeque<TypeId> = VecDeque::from([expected_children_ty]);
+        let mut seen = HashSet::new();
+        let mut found_type_param = false;
+        while let Some(ty) = queue.pop_front() {
+          let ty = self.expand_ref(ty);
+          if !seen.insert(ty) {
+            continue;
+          }
+          match self.store.type_kind(ty) {
+            TypeKind::TypeParam(_) => {
+              found_type_param = true;
+              break;
+            }
+            TypeKind::Tuple(elems) => {
+              for elem in elems {
+                queue.push_back(elem.ty);
+              }
+            }
+            TypeKind::Array { ty, .. } => {
+              queue.push_back(ty);
+            }
+            TypeKind::Callable { overloads } => {
+              for sig_id in overloads {
+                let sig = self.store.signature(sig_id);
+                for param in sig.params.iter() {
+                  queue.push_back(param.ty);
+                }
+                queue.push_back(sig.ret);
+              }
+            }
+            TypeKind::Union(members) | TypeKind::Intersection(members) => {
+              for member in members {
+                queue.push_back(member);
+              }
+            }
+            _ => {}
+          }
+        }
+        !found_type_param
+      };
+
+    let mut collected = Vec::new();
+
+    for (semantic_idx, child_idx) in semantic_children.into_iter().enumerate() {
+      match &children[child_idx] {
         JsxElemChild::Text(text) => {
           if let Some(ty) = self.jsx_child_text_type(text) {
             collected.push(ty);
           }
         }
         JsxElemChild::Expr(expr) => {
-          if is_empty_jsx_expr_placeholder(&expr.stx.value) {
-            continue;
-          }
-          let expr_ty = if expr.stx.spread {
-            self.check_expr_with_expected(&expr.stx.value, expected_spread_ty)
+          let expected_ty = if expr.stx.spread {
+            expected_spread_ty
+          } else if semantic_len == 1 {
+            expected_children_ty
+          } else if expected_is_array_like {
+            let key_ty = self
+              .store
+              .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(semantic_idx as f64)));
+            self.member_type_for_index_key(expected_children_ty, key_ty)
           } else {
-            self.check_expr_with_expected(&expr.stx.value, expected_child_ty)
+            expected_children_ty
           };
+
+          let expr_ty = self.check_expr_with_expected(&expr.stx.value, expected_ty);
+
           if expr.stx.spread {
             let expanded = self.expand_ref(expr_ty);
             if !matches!(self.store.type_kind(expanded), TypeKind::Any)
@@ -4365,15 +4441,33 @@ impl<'a> Checker<'a> {
                 ));
             }
           }
+
+          if should_check_children_assignability && !expr.stx.spread && expected_ty != prim.unknown {
+            // `parse-js` assigns JSX expression containers a span that excludes the surrounding
+            // `{`/`}` tokens. `tsc` anchors diagnostics on the full container (including braces),
+            // so expand the span by one byte on each side for JSX child assignability checks.
+            let container = loc_to_range(self.file, expr.loc);
+            let container = TextRange::new(
+              container.start.saturating_sub(1),
+              container.end.saturating_add(1),
+            );
+            self.check_assignable(
+              &expr.stx.value,
+              expr_ty,
+              expected_ty,
+              Some(container),
+            );
+          }
           if !expr.stx.spread
-            && expected_child_ty != prim.unknown
+            && !should_check_children_assignability
+            && expected_ty != prim.unknown
             && !matches!(
-              self.store.type_kind(expected_child_ty),
+              self.store.type_kind(expected_ty),
               TypeKind::Any | TypeKind::Unknown
             )
           {
             if let AstExpr::LitObj(obj) = expr.stx.value.stx.as_ref() {
-              if self.has_excess_properties(obj, expected_child_ty) {
+              if self.has_excess_properties(obj, expected_ty) {
                 self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                   "excess property",
                   Span::new(self.file, loc_to_range(self.file, obj.loc)),
@@ -4381,13 +4475,18 @@ impl<'a> Checker<'a> {
               }
             }
           }
+
           let ty = if expr.stx.spread {
-            spread = true;
             self.spread_element_type(expr_ty)
+          } else if should_check_children_assignability {
+            expected_ty
           } else {
             expr_ty
           };
-          if ty != prim.unknown {
+
+          if should_return_tuple {
+            collected.push(ty);
+          } else if ty != prim.unknown {
             collected.push(ty);
           }
         }
@@ -4396,17 +4495,41 @@ impl<'a> Checker<'a> {
         }
       }
     }
+
     if collected.is_empty() {
-      None
-    } else if spread || collected.len() > 1 {
+      return None;
+    }
+
+    if has_spread_child {
       let ty = self.store.union(collected);
-      Some(self.store.intern_type(TypeKind::Array {
+      return Some(self.store.intern_type(TypeKind::Array {
         ty,
         readonly: false,
-      }))
-    } else {
-      Some(collected[0])
+      }));
     }
+
+    if semantic_len > 1 {
+      if should_return_tuple {
+        let elems = collected
+          .into_iter()
+          .map(|ty| types_ts_interned::TupleElem {
+            ty,
+            optional: false,
+            rest: false,
+            readonly: false,
+          })
+          .collect();
+        return Some(self.store.intern_type(TypeKind::Tuple(elems)));
+      }
+
+      let ty = self.store.union(collected);
+      return Some(self.store.intern_type(TypeKind::Array {
+        ty,
+        readonly: false,
+      }));
+    }
+
+    Some(collected[0])
   }
 
   fn is_valid_jsx_spread_child_type(&self, ty: TypeId) -> bool {

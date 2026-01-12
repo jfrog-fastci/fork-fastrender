@@ -913,6 +913,134 @@ const bad = <div>{"a"}{"b"}</div>;
 }
 
 #[test]
+fn tuple_children_pass() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    div: { children?: [number, string] };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+const ok = <div>{1}{"x"}</div>;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics for tuple-typed children, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn tuple_children_fail() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    div: { children?: [number, string] };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+const bad = <div>{"x"}{1}</div>;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::TYPE_MISMATCH.as_str()),
+    "expected at least one type mismatch diagnostic for mis-ordered tuple children, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn tuple_children_contextual_typing() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+  options.no_implicit_any = true;
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    div: {
+      children?: [
+        (ev: { x: number }) => void,
+        (ev: { y: string }) => void
+      ];
+    };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+<div>
+  {(ev) => { const n: number = ev.x; }}
+  {(ev) => { const s: string = ev.y; }}
+</div>;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics (including implicit any) for per-index contextually typed tuple children, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn intrinsic_namespaced_and_hyphenated_tags_are_not_value_identifiers() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
