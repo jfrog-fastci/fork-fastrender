@@ -1,5 +1,47 @@
 use crate::text::caret::CaretAffinity;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Live (non-DOM) form control state.
+///
+/// This is used to reflect user-driven changes to form controls without mutating DOM attributes.
+/// Downstream systems (paint, accessibility, validation) can consult this store to surface the
+/// current control state.
+#[derive(Debug, Clone, Default)]
+pub struct FormState {
+  /// Current value for value-bearing controls (`<input>` / `<textarea>` / etc.), keyed by DOM
+  /// pre-order node id.
+  pub values: FxHashMap<usize, String>,
+  /// Current checked state for checkbox/radio inputs, keyed by DOM pre-order node id.
+  pub checked: FxHashMap<usize, bool>,
+  /// Current selected option ids for `<select>` elements, keyed by the select element's DOM pre-order
+  /// node id.
+  ///
+  /// When a select id is present in this map, the selection set is treated as authoritative for that
+  /// select (including the empty set for multi-selects).
+  pub select_selected: FxHashMap<usize, FxHashSet<usize>>,
+}
+
+impl FormState {
+  #[inline]
+  pub fn has_overrides(&self) -> bool {
+    !(self.values.is_empty() && self.checked.is_empty() && self.select_selected.is_empty())
+  }
+
+  #[inline]
+  pub fn value_for(&self, node_id: usize) -> Option<&str> {
+    self.values.get(&node_id).map(|s| s.as_str())
+  }
+
+  #[inline]
+  pub fn checked_for(&self, node_id: usize) -> Option<bool> {
+    self.checked.get(&node_id).copied()
+  }
+
+  #[inline]
+  pub fn select_selected_options(&self, select_node_id: usize) -> Option<&FxHashSet<usize>> {
+    self.select_selected.get(&select_node_id)
+  }
+}
 
 /// Internal, non-DOM-visible interaction state for a single document/tab.
 ///
@@ -36,6 +78,15 @@ pub struct InteractionState {
   /// DOM (e.g. via `data-*` attributes), because that would make selection/caret state observable to
   /// author CSS/DOM.
   pub text_edit: Option<TextEditPaintState>,
+
+  /// Live form state for value-bearing and toggleable controls.
+  pub form_state: FormState,
+
+  /// Whether the document (non-form-control) currently has an active selection.
+  ///
+  /// This is a best-effort signal for downstream tooling (e.g. accessibility debug exports). The
+  /// renderer does not yet expose a concrete document selection range.
+  pub document_has_selection: bool,
 
   /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
   ///

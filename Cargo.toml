@@ -32,6 +32,7 @@ resolver = "2"
 
 [features]
 default = ["preserve3d_warp", "avif"]
+a11y_debug = []
 avif = ["dep:avif-decode", "dep:avif-parse"]
 box_generation_demo = []
 disk_cache = ["fs2"]

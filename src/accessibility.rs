@@ -139,6 +139,29 @@ pub struct AccessibilityRelations {
   pub error_message: Option<String>,
 }
 
+/// Debug-only accessibility metadata that is not part of the stable JSON schema.
+///
+/// This is currently used for exposing selection/caret state in accessibility tests.
+#[cfg(any(debug_assertions, feature = "a11y_debug"))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AccessibilityDebugInfo {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub text_selection: Option<AccessibilityTextSelection>,
+  #[serde(skip_serializing_if = "is_false")]
+  pub document_has_selection: bool,
+}
+
+#[cfg(any(debug_assertions, feature = "a11y_debug"))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AccessibilityTextSelection {
+  /// Caret position in character indices.
+  pub caret: usize,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub selection_start: Option<usize>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub selection_end: Option<usize>,
+}
+
 /// A node in the exported accessibility tree.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AccessibilityNode {
@@ -161,6 +184,9 @@ pub struct AccessibilityNode {
   pub relations: Option<AccessibilityRelations>,
   pub states: AccessibilityState,
   pub children: Vec<AccessibilityNode>,
+  #[cfg(any(debug_assertions, feature = "a11y_debug"))]
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub debug: Option<AccessibilityDebugInfo>,
 }
 
 /// Build an accessibility tree from a styled DOM.
@@ -198,10 +224,12 @@ pub fn build_accessibility_tree(
         .is_some_and(|t| t.eq_ignore_ascii_case("radio"))
       && node
         .node
-        .get_attribute_ref("name")
-        .is_some_and(|name| !name.is_empty())
+       .get_attribute_ref("name")
+       .is_some_and(|name| !name.is_empty())
   });
-  let validation_dom = needs_validation_dom.then(|| ValidationDomIndex::build(root));
+  let has_form_overrides = interaction_state.is_some_and(|state| state.form_state.has_overrides());
+  let needs_validation_dom = needs_validation_dom || has_form_overrides;
+  let validation_dom = needs_validation_dom.then(|| ValidationDomIndex::build(root, interaction_state));
 
   let ctx = BuildContext {
     hidden,
@@ -242,6 +270,13 @@ pub fn build_accessibility_tree(
     relations: None,
     states: AccessibilityState::default(),
     children,
+    #[cfg(any(debug_assertions, feature = "a11y_debug"))]
+    debug: interaction_state
+      .is_some_and(|state| state.document_has_selection)
+      .then_some(AccessibilityDebugInfo {
+        text_selection: None,
+        document_has_selection: true,
+      }),
   })
 }
 
@@ -317,8 +352,11 @@ struct ValidationDomIndex {
 }
 
 impl ValidationDomIndex {
-  fn build(root: &StyledNode) -> Self {
-    let root = Box::new(clone_dom_subtree(root));
+  fn build(root: &StyledNode, interaction_state: Option<&InteractionState>) -> Self {
+    let mut root = Box::new(clone_dom_subtree(root));
+    if let Some(state) = interaction_state.filter(|state| state.form_state.has_overrides()) {
+      apply_form_state_overrides(&mut root, state);
+    }
     let mut node_by_id: Vec<*const DomNode> = Vec::new();
     let mut parent_by_id: Vec<usize> = Vec::new();
     node_by_id.push(std::ptr::null());
@@ -1387,10 +1425,132 @@ fn clone_dom_subtree(node: &StyledNode) -> DomNode {
   root
 }
 
-fn build_nodes<'a, 'state>(
-  node: &'a StyledNode,
-  ctx: &BuildContext<'a, 'state>,
-) -> Vec<AccessibilityNode> {
+#[cfg(any(debug_assertions, feature = "a11y_debug"))]
+fn debug_info_for_node(node: &StyledNode, ctx: &BuildContext<'_, '_>) -> Option<AccessibilityDebugInfo> {
+  let state = ctx.interaction_state?;
+  if !state.is_focused(node.node_id) {
+    return None;
+  }
+
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  if !matches!(tag.as_deref(), Some("input") | Some("textarea")) {
+    return None;
+  }
+
+  let edit = state.text_edit_for(node.node_id)?;
+  let (selection_start, selection_end) = match edit.selection {
+    Some((start, end)) => (Some(start), Some(end)),
+    None => (None, None),
+  };
+
+  Some(AccessibilityDebugInfo {
+    text_selection: Some(AccessibilityTextSelection {
+      caret: edit.caret,
+      selection_start,
+      selection_end,
+    }),
+    document_has_selection: false,
+  })
+}
+
+fn apply_form_state_overrides(root: &mut DomNode, interaction_state: &InteractionState) {
+  if !interaction_state.form_state.has_overrides() {
+    return;
+  }
+
+  #[derive(Clone, Copy)]
+  struct Frame {
+    ptr: *mut DomNode,
+    next_child: usize,
+    node_id: usize,
+    select_override: Option<usize>,
+  }
+
+  // Depth-first pre-order traversal, matching `crate::dom::enumerate_dom_ids`.
+  let mut stack: Vec<Frame> = Vec::new();
+  stack.push(Frame {
+    ptr: root as *mut DomNode,
+    next_child: 0,
+    node_id: 1,
+    select_override: None,
+  });
+  let mut next_id = 2usize;
+
+  while let Some(mut frame) = stack.pop() {
+    // Safety: `root` is mutably borrowed for the duration of this traversal, and we never mutate any
+    // `children` vectors while raw pointers are stored in `stack` (only element attributes), so
+    // pointers remain valid.
+    let node = unsafe { &mut *frame.ptr };
+
+    if frame.next_child == 0 {
+      let is_select = node
+        .tag_name()
+        .is_some_and(|t| t.eq_ignore_ascii_case("select"));
+      let is_textarea = node
+        .tag_name()
+        .is_some_and(|t| t.eq_ignore_ascii_case("textarea"));
+      let is_input = node
+        .tag_name()
+        .is_some_and(|t| t.eq_ignore_ascii_case("input"));
+      let is_option = node
+        .tag_name()
+        .is_some_and(|t| t.eq_ignore_ascii_case("option"));
+
+      // Propagate select override state to descendants.
+      if is_select && interaction_state.form_state.select_selected.contains_key(&frame.node_id)
+      {
+        frame.select_override = Some(frame.node_id);
+      }
+
+      if let Some(value) = interaction_state.form_state.values.get(&frame.node_id) {
+        if is_textarea {
+          // Mirror the DOM layer's current-value representation used by painting and validation.
+          node.set_attribute("data-fastr-value", value);
+        } else if is_input {
+          node.set_attribute("value", value);
+        }
+      }
+
+      if let Some(checked) = interaction_state.form_state.checked.get(&frame.node_id).copied() {
+        if is_input {
+          let is_checkbox_or_radio = node.get_attribute_ref("type").is_some_and(|t| {
+            t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio")
+          });
+          if is_checkbox_or_radio {
+            node.toggle_bool_attribute("checked", checked);
+          }
+        }
+      }
+
+      if let Some(select_id) = frame.select_override {
+        if is_option {
+          if let Some(selected) = interaction_state.form_state.select_selected.get(&select_id) {
+            node.toggle_bool_attribute("selected", selected.contains(&frame.node_id));
+          }
+        }
+      }
+    }
+
+    if frame.next_child < node.children.len() {
+      // Safety: `next_child` is in bounds.
+      let child_ptr = unsafe { node.children.as_mut_ptr().add(frame.next_child) };
+      let child_id = next_id;
+      next_id = next_id.saturating_add(1);
+
+      let select_override = frame.select_override;
+      frame.next_child += 1;
+      stack.push(frame);
+      stack.push(Frame {
+        ptr: child_ptr,
+        next_child: 0,
+        node_id: child_id,
+        select_override,
+      });
+    }
+  }
+}
+
+fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>) -> Vec<AccessibilityNode> {
   if ctx.is_hidden(node) {
     return Vec::new();
   }
@@ -1528,14 +1688,9 @@ fn build_nodes<'a, 'state>(
             description = None;
           }
 
-          let checked = compute_checked(node, role.as_deref(), &element_ref);
-          let selected = compute_selected(
-            node,
-            role.as_deref(),
-            &element_ref,
-            styled_ancestors.as_slice(),
-            ctx,
-          );
+          let checked = compute_checked(node, role.as_deref(), &element_ref, ctx);
+          let selected =
+            compute_selected(node, role.as_deref(), &element_ref, styled_ancestors.as_slice(), ctx);
           let pressed = compute_pressed(node, role.as_deref(), ctx);
           let busy = attr_truthy(&node.node, "aria-busy");
           let modal = compute_modal(&node.node);
@@ -1622,6 +1777,8 @@ fn build_nodes<'a, 'state>(
               relations,
               states,
               children,
+              #[cfg(any(debug_assertions, feature = "a11y_debug"))]
+              debug: debug_info_for_node(node, ctx),
             }]
           }
         }
@@ -2702,6 +2859,12 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
       if input_type == "hidden" {
         return None;
       }
+      if let Some(value) = ctx
+        .interaction_state
+        .and_then(|state| state.form_state.value_for(node.node_id))
+      {
+        return Some(value.to_string());
+      }
       Some(
         node
           .node
@@ -2710,7 +2873,15 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
           .unwrap_or_default(),
       )
     }
-    "textarea" => Some(textarea_value_text(node, ctx)),
+    "textarea" => {
+      if let Some(value) = ctx
+        .interaction_state
+        .and_then(|state| state.form_state.value_for(node.node_id))
+      {
+        return Some(value.to_string());
+      }
+      Some(textarea_value_text(node, ctx))
+    }
     "select" => select_value_text(node, ctx),
     _ => None,
   }
@@ -2740,6 +2911,10 @@ fn select_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
 }
 
 fn first_selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
+  let selected_override = ctx
+    .interaction_state
+    .and_then(|state| state.form_state.select_selected_options(node.node_id));
+
   let mut stack: Vec<&StyledNode> = vec![node];
   while let Some(current) = stack.pop() {
     ctx.deadline_step(RenderStage::BoxTree);
@@ -2756,7 +2931,13 @@ fn first_selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<S
       .tag_name()
       .is_some_and(|tag| tag.eq_ignore_ascii_case("option"));
 
-    if is_option && current.node.get_attribute_ref("selected").is_some() {
+    let is_selected = if let Some(selected) = selected_override {
+      selected.contains(&current.node_id)
+    } else {
+      current.node.get_attribute_ref("selected").is_some()
+    };
+
+    if is_option && is_selected {
       return Some(option_label_text(current, ctx));
     }
 
@@ -2769,157 +2950,9 @@ fn first_selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<S
 }
 
 fn selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
-  let multiple = node.node.get_attribute_ref("multiple").is_some();
-  if multiple {
-    let mut selected = Vec::new();
-    collect_selected_option_text(node, false, ctx, &mut selected);
-    if selected.is_empty() {
-      return None;
-    }
-    return Some(selected.join(", "));
-  }
-
-  let explicit = find_selected_option_text(node, false, ctx);
-  if explicit.is_some() {
-    return explicit;
-  }
-
-  first_enabled_option_text(node, false, ctx).or_else(|| first_option_text(node, ctx))
-}
-
-fn collect_selected_option_text(
-  node: &StyledNode,
-  optgroup_disabled: bool,
-  ctx: &BuildContext,
-  out: &mut Vec<String>,
-) {
-  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
-  while let Some((current, optgroup_disabled)) = stack.pop() {
-    ctx.deadline_step(RenderStage::BoxTree);
-    if ctx.deadline_tripped() {
-      return;
-    }
-
-    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
-    let is_option = tag.as_deref() == Some("option");
-
-    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled =
-      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
-
-    if is_option && current.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(current)
-    {
-      out.push(option_label_text(current, ctx));
-    }
-
-    if ctx.is_hidden(current) {
-      continue;
-    }
-
-    for child in ctx.composed_children(current).into_iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
-}
-
-fn find_selected_option_text(
-  node: &StyledNode,
-  optgroup_disabled: bool,
-  ctx: &BuildContext,
-) -> Option<String> {
-  let mut selected = None;
-  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
-  while let Some((current, optgroup_disabled)) = stack.pop() {
-    ctx.deadline_step(RenderStage::BoxTree);
-    if ctx.deadline_tripped() {
-      return selected;
-    }
-
-    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
-    let is_option = tag.as_deref() == Some("option");
-
-    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled =
-      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
-
-    if is_option && current.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(current)
-    {
-      selected = Some(option_label_text(current, ctx));
-    }
-
-    if ctx.is_hidden(current) {
-      continue;
-    }
-
-    for child in ctx.composed_children(current).into_iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
-  selected
-}
-
-fn first_enabled_option_text(
-  node: &StyledNode,
-  optgroup_disabled: bool,
-  ctx: &BuildContext,
-) -> Option<String> {
-  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
-  while let Some((current, optgroup_disabled)) = stack.pop() {
-    ctx.deadline_step(RenderStage::BoxTree);
-    if ctx.deadline_tripped() {
-      return None;
-    }
-
-    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
-    let is_option = tag.as_deref() == Some("option");
-
-    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled =
-      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
-
-    if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(current) {
-      return Some(option_label_text(current, ctx));
-    }
-
-    if ctx.is_hidden(current) {
-      continue;
-    }
-
-    for child in ctx.composed_children(current).into_iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
-
-  None
-}
-
-fn first_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
-  let mut stack: Vec<&StyledNode> = vec![node];
-  while let Some(current) = stack.pop() {
-    ctx.deadline_step(RenderStage::BoxTree);
-    if ctx.deadline_tripped() {
-      return None;
-    }
-
-    if current
-      .node
-      .tag_name()
-      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
-      && !ctx.is_hidden(current)
-    {
-      return Some(option_label_text(current, ctx));
-    }
-
-    if ctx.is_hidden(current) {
-      continue;
-    }
-
-    for child in ctx.composed_children(current).into_iter().rev() {
-      stack.push(child);
-    }
-  }
-
-  None
+  let selected_id = selected_option_node_id(node, ctx)?;
+  let selected_node = ctx.node_by_id(selected_id)?;
+  Some(option_label_text(selected_node, ctx))
 }
 
 fn option_label_text(node: &StyledNode, ctx: &BuildContext) -> String {
@@ -2992,9 +3025,19 @@ fn select_placeholder_label_option_node_id(
 }
 
 fn selected_option_node_id(node: &StyledNode, ctx: &BuildContext) -> Option<usize> {
-  let explicit = find_selected_option_node_id(node, false, ctx);
-  if explicit.is_some() {
-    return explicit;
+  if let Some(selected) = ctx
+    .interaction_state
+    .and_then(|state| state.form_state.select_selected_options(node.node_id))
+  {
+    let explicit = find_selected_option_node_id_override(node, false, selected, ctx);
+    if explicit.is_some() {
+      return explicit;
+    }
+  } else {
+    let explicit = find_selected_option_node_id(node, false, ctx);
+    if explicit.is_some() {
+      return explicit;
+    }
   }
 
   let multiple = node.node.get_attribute_ref("multiple").is_some();
@@ -3003,6 +3046,42 @@ fn selected_option_node_id(node: &StyledNode, ctx: &BuildContext) -> Option<usiz
   }
 
   first_enabled_option_node_id(node, false, ctx).or_else(|| first_option_node_id(node, ctx))
+}
+
+fn find_selected_option_node_id_override(
+  node: &StyledNode,
+  optgroup_disabled: bool,
+  selected: &rustc_hash::FxHashSet<usize>,
+  ctx: &BuildContext,
+) -> Option<usize> {
+  let mut out = None;
+  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
+  while let Some((current, optgroup_disabled)) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return out;
+    }
+
+    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
+    let is_option = tag.as_deref() == Some("option");
+
+    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled =
+      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+
+    if is_option && selected.contains(&current.node_id) && !ctx.is_hidden(current) {
+      out = Some(current.node_id);
+    }
+
+    if ctx.is_hidden(current) {
+      continue;
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push((child, next_optgroup_disabled));
+    }
+  }
+  out
 }
 
 fn find_selected_option_node_id(
@@ -3727,28 +3806,13 @@ fn compute_invalid(
     return false;
   }
 
-  let is_radio = node
-    .node
-    .tag_name()
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-    && node
-      .node
-      .get_attribute_ref("type")
-      .is_some_and(|t| t.eq_ignore_ascii_case("radio"))
-    && node
-      .node
-      .get_attribute_ref("name")
-      .is_some_and(|name| !name.is_empty());
-
-  if is_radio {
-    if let Some(dom) = ctx.validation_dom.as_ref() {
-      return dom
-        .with_element_ref(node.node_id, |radio_ref| {
-          forms_validation::validity_state_with_disabled(&radio_ref, native_disabled)
-            .is_some_and(|state| !state.valid)
-        })
-        .unwrap_or(false);
-    }
+  if let Some(dom) = ctx.validation_dom.as_ref() {
+    return dom
+      .with_element_ref(node.node_id, |ref_for_validation| {
+        forms_validation::validity_state_with_disabled(&ref_for_validation, native_disabled)
+          .is_some_and(|state| !state.valid)
+      })
+      .unwrap_or(false);
   }
 
   forms_validation::validity_state_with_disabled(element_ref, native_disabled)
@@ -3759,6 +3823,7 @@ fn compute_checked(
   node: &StyledNode,
   role: Option<&str>,
   element_ref: &ElementRef,
+  ctx: &BuildContext<'_, '_>,
 ) -> Option<CheckState> {
   let is_native_checkbox_or_radio = is_html_element(&node.node)
     && node
@@ -3769,6 +3834,11 @@ fn compute_checked(
       .node
       .get_attribute_ref("type")
       .is_some_and(|t| t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio"));
+  let is_native_radio = is_native_checkbox_or_radio
+    && node
+      .node
+      .get_attribute_ref("type")
+      .is_some_and(|t| t.eq_ignore_ascii_case("radio"));
 
   if is_native_checkbox_or_radio
     && matches!(
@@ -3778,12 +3848,16 @@ fn compute_checked(
         | Some("switch")
         | Some("menuitemcheckbox")
         | Some("menuitemradio")
-    )
+      )
   {
-    if element_ref.accessibility_indeterminate() {
+    if !is_native_radio && element_ref.accessibility_indeterminate() {
       return Some(CheckState::Mixed);
     }
-    if element_ref.accessibility_checked() {
+    let checked = ctx
+      .interaction_state
+      .and_then(|state| state.form_state.checked_for(node.node_id))
+      .unwrap_or_else(|| element_ref.accessibility_checked());
+    if checked {
       return Some(CheckState::True);
     }
     return Some(CheckState::False);
@@ -3801,7 +3875,7 @@ fn compute_checked(
       | Some("menuitemcheckbox")
       | Some("menuitemradio")
   ) {
-    if element_ref.accessibility_indeterminate() {
+    if !is_native_radio && element_ref.accessibility_indeterminate() {
       return Some(CheckState::Mixed);
     }
     if element_ref.accessibility_checked() {
@@ -3828,6 +3902,13 @@ fn compute_selected(
         .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
     }) {
       if select.node.get_attribute_ref("multiple").is_some() {
+        if let Some(selected) = ctx
+          .interaction_state
+          .and_then(|state| state.form_state.select_selected_options(select.node_id))
+        {
+          return Some(selected.contains(&node.node_id));
+        }
+
         return Some(node.node.get_attribute_ref("selected").is_some());
       }
 
