@@ -600,6 +600,7 @@ fn export_all_cycle_includes_late_local_export_of_import() {
     items: vec![ExportSpecifier {
       local: "Foo".to_string(),
       exported: None,
+      is_type_only: false,
       local_span: span(20),
       exported_span: None,
     }],
@@ -683,6 +684,8 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
   let ambient_c = AmbientModule {
     name: "c".to_string(),
     name_span: span(1),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![foo_decl],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -695,6 +698,8 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
   let ambient_a = AmbientModule {
     name: "a".to_string(),
     name_span: span(10),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: Vec::new(),
     imports: vec![Import {
       specifier: "c".to_string(),
@@ -727,6 +732,7 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
         items: vec![ExportSpecifier {
           local: "Foo".to_string(),
           exported: None,
+          is_type_only: false,
           local_span: span(12),
           exported_span: None,
         }],
@@ -742,6 +748,8 @@ fn ambient_export_all_cycle_includes_late_local_export_of_import() {
   let ambient_b = AmbientModule {
     name: "b".to_string(),
     name_span: span(20),
+    export_modifier: false,
+    export_modifier_span: None,
     decls: vec![bar_decl],
     imports: Vec::new(),
     type_imports: Vec::new(),
@@ -2399,7 +2407,7 @@ fn imported_named_binding_available_in_namespace_namespace() {
 }
 
 #[test]
-fn import_type_named_import_skips_namespace_namespace() {
+fn import_type_named_import_includes_namespace_namespace() {
   let file_a = FileId(66);
   let file_b = FileId(67);
 
@@ -2440,7 +2448,7 @@ fn import_type_named_import_skips_namespace_namespace() {
     .is_none());
   assert!(semantics
     .resolve_in_module(file_b, "Foo", Namespace::NAMESPACE)
-    .is_none());
+    .is_some());
   assert!(semantics
     .resolve_in_module(file_b, "Foo", Namespace::TYPE)
     .is_some());
