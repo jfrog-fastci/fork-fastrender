@@ -9,8 +9,9 @@
 
 use crate::symbol::semantics::SymbolId;
 use crate::types::{TypeId, ValueTypeSummary};
-use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
+use crate::analysis::alias::AbstractLoc;
 use diagnostics::TextRange;
+use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
 use hir_js::ExprId;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -51,6 +52,11 @@ fn is_false(value: &bool) -> bool {
 pub enum EffectLocation {
   /// Heap memory reachable via object/array properties.
   Heap,
+  /// A field/key on a specific allocation site.
+  ///
+  /// This enables field-sensitive effect tracking for constant-key property
+  /// reads/writes when alias analysis can determine the receiver's points-to set.
+  AllocField { alloc: AbstractLoc, key: String },
   /// Variables captured from an ancestor scope (including the global scope when in module/script
   /// mode).
   Foreign(SymbolId),
@@ -87,11 +93,31 @@ impl EffectLocation {
       EffectLocation::Heap => 0,
       EffectLocation::Foreign(_) => 1,
       EffectLocation::Unknown(_) => 2,
+      EffectLocation::AllocField { .. } => 3,
       #[cfg(feature = "typed")]
-      EffectLocation::Field { .. } => 3,
+      EffectLocation::Field { .. } => 4,
       #[cfg(feature = "typed")]
-      EffectLocation::ArrayElements { .. } => 4,
+      EffectLocation::ArrayElements { .. } => 5,
     }
+  }
+
+  /// Returns whether this location must be treated as conflicting with all other locations.
+  ///
+  /// These locations represent "unknown" memory (e.g. any heap property) and therefore must alias
+  /// conservatively.
+  pub fn is_universal(&self) -> bool {
+    matches!(self, Self::Heap | Self::Unknown(_))
+  }
+
+  /// Returns whether two effect locations may alias.
+  ///
+  /// `Heap` and `Unknown` are conservative universal locations and alias with everything. Two
+  /// `AllocField` locations only alias when both the allocation site and the key match.
+  pub fn may_alias(&self, other: &Self) -> bool {
+    if self.is_universal() || other.is_universal() {
+      return true;
+    }
+    self == other
   }
 }
 
@@ -129,6 +155,16 @@ impl Ord for EffectLocation {
       (EffectLocation::Heap, EffectLocation::Heap) => Ordering::Equal,
       (EffectLocation::Foreign(a), EffectLocation::Foreign(b)) => a.cmp(b),
       (EffectLocation::Unknown(a), EffectLocation::Unknown(b)) => a.cmp(b),
+      (
+        EffectLocation::AllocField {
+          alloc: a_alloc,
+          key: a_key,
+        },
+        EffectLocation::AllocField {
+          alloc: b_alloc,
+          key: b_key,
+        },
+      ) => a_alloc.cmp(b_alloc).then_with(|| a_key.cmp(b_key)),
       #[cfg(feature = "typed")]
       (
         EffectLocation::Field {
@@ -194,6 +230,32 @@ impl EffectSet {
   pub fn union(mut self, other: Self) -> Self {
     self.merge(&other);
     self
+  }
+
+  /// Returns whether two effect sets have any potentially conflicting memory effects.
+  ///
+  /// This only considers read/write locations (not throws/allocations/unknown flags). Two reads do
+  /// not conflict. `Heap` and `Unknown` locations are treated as conflicting with everything.
+  pub fn conflicts_with(&self, other: &Self) -> bool {
+    if self.unknown || other.unknown {
+      return true;
+    }
+
+    fn any_alias(a: &BTreeSet<EffectLocation>, b: &BTreeSet<EffectLocation>) -> bool {
+      for loc_a in a {
+        for loc_b in b {
+          if loc_a.may_alias(loc_b) {
+            return true;
+          }
+        }
+      }
+      false
+    }
+
+    // write-write or write-read/read-write conflicts.
+    any_alias(&self.writes, &other.writes)
+      || any_alias(&self.writes, &other.reads)
+      || any_alias(&self.reads, &other.writes)
   }
 }
 
@@ -878,4 +940,35 @@ pub enum VectorizeNoReason {
   NonContiguousIndex,
   MayAlias,
   HasSideEffects,
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+  use super::*;
+  use std::collections::BTreeSet;
+
+  #[test]
+  fn alloc_field_serializes_deterministically() {
+    let loc1 = EffectLocation::AllocField {
+      alloc: AbstractLoc::Alloc { block: 1, inst_idx: 2 },
+      key: "b".to_string(),
+    };
+    let loc2 = EffectLocation::AllocField {
+      alloc: AbstractLoc::Alloc { block: 1, inst_idx: 1 },
+      key: "a".to_string(),
+    };
+
+    let mut set_a = BTreeSet::new();
+    set_a.insert(loc1.clone());
+    set_a.insert(loc2.clone());
+
+    let mut set_b = BTreeSet::new();
+    // Insert in the opposite order to ensure `Ord` drives serialization order.
+    set_b.insert(loc2);
+    set_b.insert(loc1);
+
+    let json_a = serde_json::to_string(&set_a).expect("serialize effect locations");
+    let json_b = serde_json::to_string(&set_b).expect("serialize effect locations");
+    assert_eq!(json_a, json_b);
+  }
 }

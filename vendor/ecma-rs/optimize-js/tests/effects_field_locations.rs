@@ -97,12 +97,8 @@ fn two_writes_to_different_fields_produce_distinct_field_locations() {
     "expected exactly two PropAssign instructions"
   );
 
-  let store = type_program.interned_type_store();
-  let expected_x = types_ts_interned::PropKey::String(store.intern_name_ref("x"));
-  let expected_y = types_ts_interned::PropKey::String(store.intern_name_ref("y"));
-
   let mut fields = Vec::new();
-  for inst in prop_assigns {
+  for inst in &prop_assigns {
     assert!(
       !inst.meta.effects.writes.contains(&EffectLocation::Heap),
       "expected field-level modeling (no Heap) but got: {:?}",
@@ -116,14 +112,14 @@ fn two_writes_to_different_fields_produce_distinct_field_locations() {
     );
     let loc = inst.meta.effects.writes.iter().next().unwrap();
     match loc {
-      EffectLocation::Field { shape, key } => fields.push((*shape, key.clone())),
-      other => panic!("expected EffectLocation::Field but got {other:?}"),
+      EffectLocation::AllocField { alloc, key } => fields.push((alloc.clone(), key.clone())),
+      other => panic!("expected EffectLocation::AllocField but got {other:?}"),
     }
   }
 
   assert_eq!(
     fields[0].0, fields[1].0,
-    "expected both writes to use the same shape"
+    "expected both writes to use the same allocation site"
   );
   assert_ne!(
     fields[0].1, fields[1].1,
@@ -132,8 +128,16 @@ fn two_writes_to_different_fields_produce_distinct_field_locations() {
 
   let keys: Vec<_> = fields.into_iter().map(|(_, key)| key).collect();
   assert!(
-    keys.contains(&expected_x) && keys.contains(&expected_y),
-    "expected keys {expected_x:?} and {expected_y:?} but got {keys:?}"
+    keys.contains(&"x".to_string()) && keys.contains(&"y".to_string()),
+    "expected keys \"x\" and \"y\" but got {keys:?}"
+  );
+
+  assert!(
+    !prop_assigns[0]
+      .meta
+      .effects
+      .conflicts_with(&prop_assigns[1].meta.effects),
+    "expected writes to different fields to not conflict"
   );
 }
 
@@ -209,12 +213,15 @@ fn write_conflicts_with_read_of_same_field_but_not_other_field() {
     .expect("read y should have at least one location")
     .clone();
 
-  assert_eq!(
-    write_loc, read_x_loc,
+  assert_eq!(write_loc, read_x_loc, "expected same field location for x");
+  assert_ne!(write_loc, read_y_loc, "expected different field locations for x vs y");
+
+  assert!(
+    write_x.meta.effects.conflicts_with(&read_x.meta.effects),
     "expected write to obj.x to conflict with read of obj.x"
   );
-  assert_ne!(
-    write_loc, read_y_loc,
+  assert!(
+    !write_x.meta.effects.conflicts_with(&read_y.meta.effects),
     "expected write to obj.x to not conflict with read of obj.y"
   );
 }
@@ -254,8 +261,166 @@ fn non_strict_native_falls_back_to_heap_effects() {
       .effects
       .writes
       .iter()
-      .any(|loc| matches!(loc, EffectLocation::Field { .. })),
-    "expected no Field locations in non-strict-native mode but got {:?}",
+      .any(|loc| matches!(loc, EffectLocation::AllocField { .. })),
+    "expected no AllocField locations in non-strict-native mode but got {:?}",
+    assign.meta.effects.writes
+  );
+}
+
+#[test]
+fn two_allocations_same_field_do_not_conflict() {
+  let (mut program, type_program) = compile_with_typecheck(
+    r#"
+      interface Obj { x: number; }
+      const a: Obj = { x: 0 };
+      const b: Obj = { x: 1 };
+      a.x = 1;
+      b.x = 2;
+    "#,
+    true,
+  );
+
+  annotate_top_level_effects(&mut program, &type_program);
+
+  let cfg = program
+    .top_level
+    .ssa_body
+    .as_ref()
+    .unwrap_or(&program.top_level.body);
+  let insts = collect_insts(cfg);
+
+  let prop_assigns: Vec<_> = insts
+    .into_iter()
+    .filter(|inst| {
+      inst.t == InstTyp::PropAssign
+        && matches!(inst.args.get(1), Some(Arg::Const(Const::Str(s))) if s == "x")
+    })
+    .collect();
+  assert_eq!(
+    prop_assigns.len(),
+    2,
+    "expected exactly two PropAssign instructions to .x"
+  );
+
+  let loc_a = prop_assigns[0]
+    .meta
+    .effects
+    .writes
+    .iter()
+    .next()
+    .expect("expected a write location")
+    .clone();
+  let loc_b = prop_assigns[1]
+    .meta
+    .effects
+    .writes
+    .iter()
+    .next()
+    .expect("expected a write location")
+    .clone();
+  assert_ne!(loc_a, loc_b, "expected different allocation sites to differ");
+  assert!(
+    !prop_assigns[0]
+      .meta
+      .effects
+      .conflicts_with(&prop_assigns[1].meta.effects),
+    "expected writes to different allocations to not conflict"
+  );
+}
+
+#[test]
+fn same_allocation_same_field_conflicts() {
+  let (mut program, type_program) = compile_with_typecheck(
+    r#"
+      interface Obj { x: number; }
+      const a: Obj = { x: 0 };
+      a.x = 1;
+      a.x = 2;
+    "#,
+    true,
+  );
+
+  annotate_top_level_effects(&mut program, &type_program);
+
+  let cfg = program
+    .top_level
+    .ssa_body
+    .as_ref()
+    .unwrap_or(&program.top_level.body);
+  let insts = collect_insts(cfg);
+
+  let prop_assigns: Vec<_> = insts
+    .into_iter()
+    .filter(|inst| inst.t == InstTyp::PropAssign)
+    .collect();
+  assert_eq!(
+    prop_assigns.len(),
+    2,
+    "expected exactly two PropAssign instructions"
+  );
+  let loc1 = prop_assigns[0]
+    .meta
+    .effects
+    .writes
+    .iter()
+    .next()
+    .expect("expected a write location")
+    .clone();
+  let loc2 = prop_assigns[1]
+    .meta
+    .effects
+    .writes
+    .iter()
+    .next()
+    .expect("expected a write location")
+    .clone();
+  assert_eq!(loc1, loc2, "expected same field location for two writes");
+  assert!(
+    prop_assigns[0]
+      .meta
+      .effects
+      .conflicts_with(&prop_assigns[1].meta.effects),
+    "expected writes to same field to conflict"
+  );
+}
+
+#[test]
+fn dynamic_key_falls_back_to_heap_effects_even_in_strict_native() {
+  let (mut program, type_program) = compile_with_typecheck(
+    r#"
+      const arr = [0, 1, 2];
+      let i = 0;
+      arr[i] = 1;
+    "#,
+    true,
+  );
+
+  annotate_top_level_effects(&mut program, &type_program);
+
+  let cfg = program
+    .top_level
+    .ssa_body
+    .as_ref()
+    .unwrap_or(&program.top_level.body);
+  let insts = collect_insts(cfg);
+
+  let assign = insts
+    .iter()
+    .find(|inst| inst.t == InstTyp::PropAssign && matches!(inst.args.get(1), Some(Arg::Var(_))))
+    .expect("expected PropAssign with a dynamic key");
+  assert!(
+    assign.meta.effects.writes.contains(&EffectLocation::Heap),
+    "expected Heap write for dynamic key but got {:?}",
+    assign.meta.effects.writes
+  );
+  assert!(
+    !assign
+      .meta
+      .effects
+      .writes
+      .iter()
+      .any(|loc| matches!(loc, EffectLocation::AllocField { .. })),
+    "expected no AllocField locations for dynamic key but got {:?}",
     assign.meta.effects.writes
   );
 }

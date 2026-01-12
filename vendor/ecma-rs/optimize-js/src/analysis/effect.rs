@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "typed")]
 use std::sync::Arc;
 
+#[cfg(feature = "typed")]
+use super::alias;
 use super::value_types::ValueTypeSummaries;
 
 /// Function-level effect summaries for every function in a [`crate::Program`].
@@ -73,8 +75,10 @@ fn collect_insts(cfg: &Cfg) -> Vec<&Inst> {
 // receiver has a numeric index signature. This pass currently only refines constant-key accesses;
 // dynamic indexer cases conservatively fall back to `EffectLocation::Heap`.
 //
-// When those conditions are met, we can model effects at field granularity via
-// `EffectLocation::Field { shape, key }`, enabling safe reordering and better load/store elimination.
+// When those conditions are met and alias analysis can identify concrete allocation sites for the
+// receiver, we can model effects at field granularity via
+// `EffectLocation::AllocField { alloc, key }`, enabling safe reordering and better load/store
+// elimination.
 
 #[cfg(feature = "typed")]
 #[derive(Clone, Debug, Default)]
@@ -127,6 +131,7 @@ struct PreciseEffectCtx<'a> {
   store: Arc<types_ts_interned::TypeStore>,
   var_types: VarTypeIds,
   strict_native: bool,
+  alias: alias::AliasResult,
 }
 
 #[cfg(feature = "typed")]
@@ -139,6 +144,7 @@ impl<'a> PreciseEffectCtx<'a> {
       store: type_program.interned_type_store(),
       var_types: VarTypeIds::new(cfg),
       strict_native,
+      alias: alias::calculate_alias(cfg),
     }
   }
 }
@@ -236,27 +242,60 @@ fn strict_native_field_locations(
     return None;
   }
 
-  let key = prop_key_from_const(&ctx.store, key)?;
+  let prop_key = prop_key_from_const(&ctx.store, key)?;
   let recv_ty = ctx.var_types.arg(receiver)?;
 
   const MAX_SHAPES: usize = 4;
   let shapes = type_to_object_shapes(ctx.type_program, &ctx.store, recv_ty, MAX_SHAPES, 0)?;
   if shapes
     .iter()
-    .any(|shape| !shape_has_own_property(&ctx.store, *shape, &key))
+    .any(|shape| !shape_has_own_property(&ctx.store, *shape, &prop_key))
   {
     return None;
   }
 
-  Some(
-    shapes
-      .into_iter()
-      .map(|shape| EffectLocation::Field {
-        shape,
-        key: key.clone(),
-      })
-      .collect(),
-  )
+  use crate::il::inst::Const;
+  let receiver_var = receiver.maybe_var()?;
+  let points_to = ctx
+    .alias
+    .points_to
+    .get(&receiver_var)
+    .cloned()
+    .unwrap_or_else(alias::PointsToSet::top);
+  if points_to.is_top() || points_to.is_empty() {
+    return None;
+  }
+
+  let key = match key {
+    Arg::Const(Const::Str(s)) => s.clone(),
+    Arg::Const(Const::Num(n)) => {
+      let value = n.0;
+      if value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value <= i64::MAX as f64
+      {
+        (value as i64).to_string()
+      } else {
+        return None;
+      }
+    }
+    _ => return None,
+  };
+
+  // Only refine to allocation-site field locations when alias analysis can prove the receiver is a
+  // local allocation (no foreign/globals).
+  let mut out = Vec::new();
+  for loc in points_to.iter() {
+    let alias::AbstractLoc::Alloc { .. } = loc else {
+      return None;
+    };
+    out.push(EffectLocation::AllocField {
+      alloc: loc.clone(),
+      key: key.clone(),
+    });
+  }
+  Some(out)
 }
 
 fn collect_constant_foreign_fns(program: &Program) -> BTreeMap<SymbolId, FnId> {
