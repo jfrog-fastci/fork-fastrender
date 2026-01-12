@@ -257,3 +257,14 @@ fn semantic_ops_lowering_unwraps_instantiation_callee() {
     "expected Promise.all<T>(...) to lower as a semantic op"
   );
 }
+
+#[test]
+fn semantic_ops_lowering_unwraps_instantiation_in_array_pipeline() {
+  let lowered = lower_from_source_with_kind(FileKind::Ts, "arr.map<number>(x => x + 1);").unwrap();
+  let (body, expr) = first_stmt_expr(&lowered);
+  let body_ref = lowered.body(body).expect("body");
+  assert!(
+    matches!(&body_ref.exprs[expr.0 as usize].kind, ExprKind::ArrayMap { .. }),
+    "expected arr.map<T>(...) to lower as a semantic op"
+  );
+}
