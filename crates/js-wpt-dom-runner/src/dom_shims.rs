@@ -17,6 +17,8 @@ const DOM_SHIM: &str = r##"
 
   var NODE_ID = Symbol("fastrender_node_id");
   var NODE_CACHE = new Map(); // node id -> JS wrapper
+  var STYLE_OWNER = Symbol("fastrender_style_owner");
+  var STYLE_CACHE = new WeakMap(); // HTMLElement -> CSSStyleDeclaration
 
   function illegal() {
     throw new TypeError("Illegal constructor");
@@ -232,6 +234,7 @@ const DOM_SHIM: &str = r##"
   function HTMLOptionElement() { illegal(); }
   function Text() { illegal(); }
   function HTMLCollection() { illegal(); }
+  function CSSStyleDeclaration() { illegal(); }
 
   Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
   Object.setPrototypeOf(Document.prototype, Node.prototype);
@@ -733,6 +736,184 @@ const DOM_SHIM: &str = r##"
   Element.prototype.removeAttribute = function (name) {
     g.__fastrender_dom_remove_attribute(nodeIdFromThis(this), String(name));
   };
+
+  function cssStyleFromThis(self) {
+    if (typeof self !== "object" || self === null) {
+      throw new TypeError("Illegal invocation");
+    }
+    var el = self[STYLE_OWNER];
+    if (!(el instanceof HTMLElement)) {
+      throw new TypeError("Illegal invocation");
+    }
+    return el;
+  }
+
+  function parseStyleDecls(cssText) {
+    var raw = String(cssText || "");
+    var out = [];
+    var parts = raw.split(";");
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (!part) continue;
+      var idx = part.indexOf(":");
+      if (idx < 0) continue;
+      var name = part.slice(0, idx).trim();
+      if (!name) continue;
+      var value = part.slice(idx + 1).trim();
+      // Ignore priority (naively strip a trailing "!important").
+      var lower = value.toLowerCase();
+      var bang = lower.lastIndexOf("!important");
+      if (bang >= 0 && lower.slice(bang).trim() === "!important") {
+        value = value.slice(0, bang).trim();
+      }
+      out.push({ name: name.toLowerCase(), value: value });
+    }
+    return out;
+  }
+
+  function serializeStyleDecls(decls) {
+    var out = [];
+    for (var i = 0; i < decls.length; i++) {
+      var d = decls[i];
+      if (!d || !d.name) continue;
+      var value = d.value;
+      if (value === null || value === undefined) value = "";
+      out.push(String(d.name) + ": " + String(value).trim());
+    }
+    return out.join("; ");
+  }
+
+  Object.defineProperty(CSSStyleDeclaration.prototype, "cssText", {
+    get: function () {
+      var el = cssStyleFromThis(this);
+      var v = el.getAttribute("style");
+      return v === null ? "" : v;
+    },
+    set: function (value) {
+      var el = cssStyleFromThis(this);
+      el.setAttribute("style", String(value));
+    },
+    configurable: true,
+   });
+
+  CSSStyleDeclaration.prototype.getPropertyValue = function (name) {
+    var el = cssStyleFromThis(this);
+    var needle = String(name).trim().toLowerCase();
+    if (!needle) return "";
+    var cssText = el.getAttribute("style") || "";
+    var decls = parseStyleDecls(cssText);
+    for (var i = 0; i < decls.length; i++) {
+      if (decls[i].name === needle) {
+        return decls[i].value || "";
+      }
+    }
+    return "";
+  };
+
+  CSSStyleDeclaration.prototype.setProperty = function (name, value) {
+    var el = cssStyleFromThis(this);
+    var needle = String(name).trim().toLowerCase();
+    if (!needle) return;
+    var v = String(value).trim();
+    var cssText = el.getAttribute("style") || "";
+    var decls = parseStyleDecls(cssText);
+
+    var idx = -1;
+    for (var i = 0; i < decls.length; i++) {
+      if (decls[i].name === needle) {
+        idx = i;
+        break;
+      }
+    }
+
+    if (!v) {
+      if (idx >= 0) decls.splice(idx, 1);
+    } else {
+      if (idx >= 0) {
+        decls[idx].value = v;
+      } else {
+        decls.push({ name: needle, value: v });
+      }
+    }
+    el.setAttribute("style", serializeStyleDecls(decls));
+  };
+
+  Object.defineProperty(HTMLElement.prototype, "hidden", {
+    get: function () {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      return this.getAttribute("hidden") !== null;
+    },
+    set: function (value) {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      if (value) {
+        this.setAttribute("hidden", "");
+      } else {
+        this.removeAttribute("hidden");
+      }
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(HTMLElement.prototype, "title", {
+    get: function () {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      var v = this.getAttribute("title");
+      return v === null ? "" : v;
+    },
+    set: function (value) {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      this.setAttribute("title", String(value));
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(HTMLElement.prototype, "lang", {
+    get: function () {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      var v = this.getAttribute("lang");
+      return v === null ? "" : v;
+    },
+    set: function (value) {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      this.setAttribute("lang", String(value));
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(HTMLElement.prototype, "dir", {
+    get: function () {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      var v = this.getAttribute("dir");
+      return v === null ? "" : v;
+    },
+    set: function (value) {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      this.setAttribute("dir", String(value));
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(HTMLElement.prototype, "style", {
+    get: function () {
+      nodeIdFromThis(this);
+      if (!(this instanceof HTMLElement)) throw new TypeError("Illegal invocation");
+      var cached = STYLE_CACHE.get(this);
+      if (cached) return cached;
+      var style = Object.create(CSSStyleDeclaration.prototype);
+      Object.defineProperty(style, STYLE_OWNER, { value: this });
+      STYLE_CACHE.set(this, style);
+      return style;
+    },
+    configurable: true,
+  });
 
   Object.defineProperty(Text.prototype, "data", {
     get: function () {
@@ -1253,6 +1434,7 @@ const DOM_SHIM: &str = r##"
   Object.defineProperty(g, "HTMLOptionElement", { value: HTMLOptionElement, configurable: true, writable: true });
   Object.defineProperty(g, "Text", { value: Text, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLCollection", { value: HTMLCollection, configurable: true, writable: true });
+  Object.defineProperty(g, "CSSStyleDeclaration", { value: CSSStyleDeclaration, configurable: true, writable: true });
   Object.defineProperty(g, "EventTarget", { value: EventTarget, configurable: true, writable: true });
   Object.defineProperty(g, "Event", { value: Event, configurable: true, writable: true });
 

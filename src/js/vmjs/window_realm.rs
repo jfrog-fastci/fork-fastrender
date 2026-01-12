@@ -1856,6 +1856,14 @@ const ELEMENT_CLASS_LIST_CONTAINS_KEY: &str = "__fastrender_element_class_list_c
 const ELEMENT_CLASS_LIST_REPLACE_KEY: &str = "__fastrender_element_class_list_replace";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
+const ELEMENT_TITLE_GET_KEY: &str = "__fastrender_element_title_get";
+const ELEMENT_TITLE_SET_KEY: &str = "__fastrender_element_title_set";
+const ELEMENT_LANG_GET_KEY: &str = "__fastrender_element_lang_get";
+const ELEMENT_LANG_SET_KEY: &str = "__fastrender_element_lang_set";
+const ELEMENT_DIR_GET_KEY: &str = "__fastrender_element_dir_get";
+const ELEMENT_DIR_SET_KEY: &str = "__fastrender_element_dir_set";
+const ELEMENT_HIDDEN_GET_KEY: &str = "__fastrender_element_hidden_get";
+const ELEMENT_HIDDEN_SET_KEY: &str = "__fastrender_element_hidden_set";
 const ELEMENT_SRC_GET_KEY: &str = "__fastrender_element_src_get";
 const ELEMENT_SRC_SET_KEY: &str = "__fastrender_element_src_set";
 const ELEMENT_SRCSET_GET_KEY: &str = "__fastrender_element_srcset_get";
@@ -1893,6 +1901,7 @@ const STYLE_HEIGHT_GET_KEY: &str = "__fastrender_style_height_get";
 const STYLE_HEIGHT_SET_KEY: &str = "__fastrender_style_height_set";
 const STYLE_WIDTH_GET_KEY: &str = "__fastrender_style_width_get";
 const STYLE_WIDTH_SET_KEY: &str = "__fastrender_style_width_set";
+const CSS_STYLE_DECL_PROTOTYPE_KEY: &str = "__fastrender_css_style_declaration_prototype";
 const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
 const NODE_INSERT_BEFORE_KEY: &str = "__fastrender_node_insert_before";
 const NODE_REMOVE_CHILD_KEY: &str = "__fastrender_node_remove_child";
@@ -3679,6 +3688,38 @@ fn get_or_create_node_wrapper(
       .heap()
       .object_get_own_data_property_value(document_obj, &key)?
   };
+  let title_get = {
+    let key = alloc_key(scope, ELEMENT_TITLE_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let title_set = {
+    let key = alloc_key(scope, ELEMENT_TITLE_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let lang_get = {
+    let key = alloc_key(scope, ELEMENT_LANG_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let lang_set = {
+    let key = alloc_key(scope, ELEMENT_LANG_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let dir_get = {
+    let key = alloc_key(scope, ELEMENT_DIR_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let dir_set = {
+    let key = alloc_key(scope, ELEMENT_DIR_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let hidden_get = {
+    let key = alloc_key(scope, ELEMENT_HIDDEN_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let hidden_set = {
+    let key = alloc_key(scope, ELEMENT_HIDDEN_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
   let src_get = {
     let key = alloc_key(scope, ELEMENT_SRC_GET_KEY)?;
     scope
@@ -4051,6 +4092,10 @@ fn get_or_create_node_wrapper(
       .heap()
       .object_get_own_data_property_value(document_obj, &key)?
   };
+  let css_style_decl_proto = {
+    let key = alloc_key(scope, CSS_STYLE_DECL_PROTOTYPE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
 
   let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
   scope.define_property(
@@ -4114,6 +4159,70 @@ fn get_or_create_node_wrapper(
     scope.define_property(
       wrapper,
       id_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (title_get, title_set) {
+    let key = alloc_key(scope, "title")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (lang_get, lang_set) {
+    let key = alloc_key(scope, "lang")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (dir_get, dir_set) {
+    let key = alloc_key(scope, "dir")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (hidden_get, hidden_set) {
+    let key = alloc_key(scope, "hidden")?;
+    scope.define_property(
+      wrapper,
+      key,
       PropertyDescriptor {
         enumerable: false,
         configurable: true,
@@ -4500,6 +4609,13 @@ fn get_or_create_node_wrapper(
     ) {
       let style = scope.alloc_object()?;
       scope.push_root(Value::Object(style))?;
+
+      if let Some(Value::Object(proto)) = css_style_decl_proto {
+        scope
+          .heap_mut()
+          .object_set_prototype(style, Some(proto))
+          .map_err(|_| VmError::TypeError("failed to set CSSStyleDeclaration prototype"))?;
+      }
 
       let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
       scope.define_property(
@@ -18247,6 +18363,24 @@ fn init_window_globals(
     let element_key = alloc_key(&mut scope, "Element")?;
     scope.define_property(global, element_key, data_desc(Value::Object(element_ctor)))?;
 
+    // Minimal HTMLElement constructor needed for `instanceof HTMLElement` checks in the WPT corpus.
+    //
+    // FastRender does not yet expose per-tag HTML element subclasses, so re-use the Element
+    // prototype object for HTMLElement as well.
+    let html_element_ctor = make_illegal_ctor(&mut scope, "HTMLElement")?;
+    scope.push_root(Value::Object(html_element_ctor))?;
+    scope.define_property(
+      html_element_ctor,
+      prototype_key,
+      data_desc(Value::Object(element_proto)),
+    )?;
+    let html_element_key = alloc_key(&mut scope, "HTMLElement")?;
+    scope.define_property(
+      global,
+      html_element_key,
+      data_desc(Value::Object(html_element_ctor)),
+    )?;
+
     let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
     scope.push_root(Value::Object(document_ctor))?;
     scope.define_property(
@@ -18362,6 +18496,50 @@ fn init_window_globals(
         configurable: false,
         kind: PropertyKind::Data {
           value: Value::Object(html_collection_proto),
+          writable: false,
+        },
+      },
+    )?;
+
+    // Minimal CSSStyleDeclaration constructor needed for `instanceof CSSStyleDeclaration` checks.
+    //
+    // The style objects returned from `HTMLElement.style` are plain objects with an extra prototype
+    // layer for branding.
+    let css_style_decl_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(css_style_decl_proto))?;
+    scope.heap_mut().object_set_prototype(
+      css_style_decl_proto,
+      Some(realm.intrinsics().object_prototype()),
+    )?;
+
+    let css_style_decl_ctor = make_illegal_ctor(&mut scope, "CSSStyleDeclaration")?;
+    scope.push_root(Value::Object(css_style_decl_ctor))?;
+    scope.define_property(
+      css_style_decl_ctor,
+      prototype_key,
+      data_desc(Value::Object(css_style_decl_proto)),
+    )?;
+    scope.define_property(
+      css_style_decl_proto,
+      constructor_key,
+      data_desc(Value::Object(css_style_decl_ctor)),
+    )?;
+    let css_style_decl_key = alloc_key(&mut scope, "CSSStyleDeclaration")?;
+    scope.define_property(
+      global,
+      css_style_decl_key,
+      data_desc(Value::Object(css_style_decl_ctor)),
+    )?;
+
+    let css_style_decl_proto_key = alloc_key(&mut scope, CSS_STYLE_DECL_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      css_style_decl_proto_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(css_style_decl_proto),
           writable: false,
         },
       },
@@ -19783,6 +19961,9 @@ fn init_window_globals(
       ELEMENT_CHARSET_GET_KEY,
       ELEMENT_CHARSET_SET_KEY,
     ),
+    ("title", "title", ELEMENT_TITLE_GET_KEY, ELEMENT_TITLE_SET_KEY),
+    ("lang", "lang", ELEMENT_LANG_GET_KEY, ELEMENT_LANG_SET_KEY),
+    ("dir", "dir", ELEMENT_DIR_GET_KEY, ELEMENT_DIR_SET_KEY),
     (
       "crossOrigin",
       "crossorigin",
@@ -19851,6 +20032,7 @@ fn init_window_globals(
       ELEMENT_DEFER_GET_KEY,
       ELEMENT_DEFER_SET_KEY,
     ),
+    ("hidden", "hidden", ELEMENT_HIDDEN_GET_KEY, ELEMENT_HIDDEN_SET_KEY),
   ] {
     let attr_s = scope.alloc_string(attr)?;
     scope.push_root(Value::String(attr_s))?;

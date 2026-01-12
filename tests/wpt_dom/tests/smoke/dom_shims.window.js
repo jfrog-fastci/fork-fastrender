@@ -162,3 +162,48 @@ test(() => {
   child.outerHTML = '<p id="y">y</p><p>z</p>';
   assert_equals(container.innerHTML, '<p id="y">y</p><p>z</p>');
 }, "Element.outerHTML setter replaces the node in its parent");
+
+test(() => {
+  const el = document.createElement("div");
+  assert_true(el instanceof HTMLElement, "HTML elements should inherit from HTMLElement");
+
+  assert_false(el.hidden, "hidden should default to false");
+  assert_equals(el.getAttribute("hidden"), null);
+  el.hidden = true;
+  assert_true(el.hidden);
+  assert_equals(el.getAttribute("hidden"), "");
+  el.hidden = false;
+  assert_false(el.hidden);
+  assert_equals(el.getAttribute("hidden"), null);
+
+  assert_equals(el.title, "");
+  el.title = "hello";
+  assert_equals(el.getAttribute("title"), "hello");
+  assert_equals(el.title, "hello");
+
+  assert_equals(el.lang, "");
+  el.lang = "en";
+  assert_equals(el.getAttribute("lang"), "en");
+  assert_equals(el.lang, "en");
+
+  assert_equals(el.dir, "");
+  el.dir = "ltr";
+  assert_equals(el.getAttribute("dir"), "ltr");
+  assert_equals(el.dir, "ltr");
+}, "HTMLElement reflected attributes: hidden/title/lang/dir");
+
+test(() => {
+  const el = document.createElement("div");
+  assert_true(typeof el.style === "object");
+  assert_true(el.style instanceof CSSStyleDeclaration);
+  assert_equals(el.style, el.style, "style should be [SameObject]");
+
+  assert_equals(el.style.cssText, "");
+  el.style.cssText = "color: red";
+  assert_equals(el.getAttribute("style"), "color: red");
+  assert_equals(el.style.cssText, "color: red");
+
+  el.style.setProperty("color", "red");
+  assert_true(el.getAttribute("style").includes("color: red"));
+  assert_equals(el.style.getPropertyValue("color"), "red");
+}, "HTMLElement.style (CSSStyleDeclaration shim)");
