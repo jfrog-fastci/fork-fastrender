@@ -1047,6 +1047,10 @@ impl<'a, E: TypeExpander> TypeEvaluator<'a, E> {
     match self.store.type_kind(ty) {
       TypeKind::Never => primitives.never,
       TypeKind::Any => primitives.any,
+      // `void` is effectively `undefined` in value space, so intersecting it
+      // with `{}` yields `never` under `strictNullChecks` (since `{}` excludes
+      // `undefined`).
+      TypeKind::Void => primitives.never,
       TypeKind::Null | TypeKind::Undefined => primitives.never,
       TypeKind::Union(members) => {
         let mapped: Vec<_> = members
