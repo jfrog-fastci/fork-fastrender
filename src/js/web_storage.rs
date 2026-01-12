@@ -276,6 +276,33 @@ pub fn with_default_hub_mut<R>(f: impl FnOnce(&mut WebStorageHub) -> R) -> R {
   })
 }
 
+/// Clears the thread-local default Web Storage hub.
+///
+/// This is intended for test harnesses (e.g. the WPT runner) that need to ensure a clean
+/// `localStorage`/`sessionStorage` state between runs on the same thread.
+///
+/// Note: FastRender does not currently model multi-realm browsing contexts with persistent storage.
+/// The default hub is thread-local for determinism. Clearing it from production code would break the
+/// expected storage persistence within a browsing session.
+pub fn clear_default_web_storage_hub() {
+  with_default_hub_mut(|hub| {
+    // Clear underlying `StorageArea`s in case another part of the process still holds `Arc` handles
+    // to them (e.g. a dropped-but-not-yet-freed JS realm).
+    for area in hub.local_areas.values() {
+      area.lock().clear();
+    }
+    for area in hub.session_areas.values() {
+      area.lock().clear();
+    }
+
+    hub.local_areas.clear();
+    hub.session_areas.clear();
+
+    // Storage event listeners are not yet modelled in FastRender. If/when listener registries are
+    // added to `WebStorageHub`, they must be cleared here as well to avoid cross-test leakage.
+  });
+}
+
 /// Derive a storage origin key from a document URL.
 ///
 /// Supports `http:` / `https:` / `file:`. Other schemes are treated as opaque and return `None`.

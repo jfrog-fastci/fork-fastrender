@@ -129,6 +129,10 @@ impl Backend for VmJsBackend {
     self.deadline = Some(init.timeout);
     self.timed_out = false;
 
+    // Each curated WPT test expects a fresh browsing context. FastRender's Web Storage hub is
+    // thread-local, so it must be reset between tests executed on the same worker thread.
+    fastrender::js::web_storage::clear_default_web_storage_hub();
+
     // Deterministic virtual time (starts at 0).
     let virtual_clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<WindowHostState>::with_clock(virtual_clock.clone());
@@ -718,4 +722,51 @@ fn parse_subtests_array(
   }
 
   out
+}
+
+#[cfg(test)]
+mod tests {
+  use super::VmJsBackend;
+  use crate::engine::{Backend, BackendInit};
+  use crate::wpt_fs::WptFs;
+  use fastrender::js::web_storage::{get_local_area, get_session_area, origin_key_from_document_url, SessionNamespaceId};
+  use std::path::PathBuf;
+  use std::time::Duration;
+
+  #[test]
+  fn init_realm_resets_default_web_storage_hub() {
+    let wpt_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/wpt_dom");
+    let fs = WptFs::new(&wpt_root).expect("failed to open tests/wpt_dom corpus");
+
+    let init = BackendInit {
+      test_url: "https://web-platform.test/wpt_dom_web_storage_reset.html".to_string(),
+      fs: fs.clone(),
+      timeout: Duration::from_millis(50),
+      max_tasks: 10,
+      max_microtasks: 100,
+    };
+
+    let mut backend = VmJsBackend::new(fs);
+    backend.init_realm(init.clone(), None).expect("init_realm 1 failed");
+
+    let origin = origin_key_from_document_url(&init.test_url).expect("test url should have an origin");
+    let local_area = get_local_area(Some(origin.as_str()));
+    local_area
+      .lock()
+      .set_item("leak", "1")
+      .expect("failed to set local area item");
+
+    let session_area = get_session_area(SessionNamespaceId(1), Some(origin.as_str()));
+    session_area
+      .lock()
+      .set_item("leak", "1")
+      .expect("failed to set session area item");
+
+    // A second realm (next WPT test) must start with a clean storage hub, even when executed on the
+    // same thread.
+    backend.init_realm(init, None).expect("init_realm 2 failed");
+
+    assert_eq!(local_area.lock().get_item("leak"), None);
+    assert_eq!(session_area.lock().get_item("leak"), None);
+  }
 }
