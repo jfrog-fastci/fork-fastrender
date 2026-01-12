@@ -4259,6 +4259,37 @@ fn build_table_collapsed_borders_metadata(
   let counts = collapsed_border_allocation_guard(structure.row_count, structure.column_count)?;
   let mut deadline_counter = 0usize;
   check_layout_deadline(&mut deadline_counter)?;
+  // Layout geometry uses `vertical_line_max`/`horizontal_line_max` (outer vertical edges are based
+  // on the first row per CSS 2.2 §17.6.2). Paint bounds must still include thicker outer-edge
+  // segments that can appear in later rows/columns.
+  let mut outer_left_half = 0.0f32;
+  let mut outer_right_half = 0.0f32;
+  if let (Some(left), Some(right)) = (
+    collapsed_borders.vertical.first(),
+    collapsed_borders.vertical.get(structure.column_count),
+  ) {
+    for row in 0..structure.row_count {
+      check_layout_deadline(&mut deadline_counter)?;
+      outer_left_half = outer_left_half.max(left.get(row).map(|b| b.width * 0.5).unwrap_or(0.0));
+      outer_right_half =
+        outer_right_half.max(right.get(row).map(|b| b.width * 0.5).unwrap_or(0.0));
+    }
+  }
+
+  let mut outer_top_half = 0.0f32;
+  let mut outer_bottom_half = 0.0f32;
+  if let (Some(top), Some(bottom)) = (
+    collapsed_borders.horizontal.first(),
+    collapsed_borders.horizontal.get(structure.row_count),
+  ) {
+    for col in 0..structure.column_count {
+      check_layout_deadline(&mut deadline_counter)?;
+      outer_top_half = outer_top_half.max(top.get(col).map(|b| b.width * 0.5).unwrap_or(0.0));
+      outer_bottom_half =
+        outer_bottom_half.max(bottom.get(col).map(|b| b.width * 0.5).unwrap_or(0.0));
+    }
+  }
+
   let mut vertical_borders = Vec::with_capacity(counts.vertical_segments);
   for column in &collapsed_borders.vertical {
     check_layout_deadline(&mut deadline_counter)?;
@@ -4278,26 +4309,24 @@ fn build_table_collapsed_borders_metadata(
   }
 
   let mut corner_borders = Vec::with_capacity(counts.corner_segments);
+  let mut max_corner_half = 0.0f32;
   for row in &collapsed_borders.corners {
     check_layout_deadline(&mut deadline_counter)?;
     for border in row {
       check_layout_deadline(&mut deadline_counter)?;
       corner_borders.push(*border);
+      max_corner_half = max_corner_half.max(border.width * 0.5);
     }
   }
 
-  let max_corner_half = corner_borders
-    .iter()
-    .map(|c| c.width * 0.5)
-    .fold(0.0f32, f32::max);
   let min_x = column_line_pos.first().copied().unwrap_or(0.0)
-    - (vertical_line_max.first().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
+    - outer_left_half.max(max_corner_half);
   let max_x = column_line_pos.last().copied().unwrap_or(0.0)
-    + (vertical_line_max.last().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
+    + outer_right_half.max(max_corner_half);
   let min_y = row_line_pos.first().copied().unwrap_or(0.0)
-    - (horizontal_line_max.first().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
+    - outer_top_half.max(max_corner_half);
   let max_y = row_line_pos.last().copied().unwrap_or(0.0)
-    + (horizontal_line_max.last().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
+    + outer_bottom_half.max(max_corner_half);
 
   Ok(TableCollapsedBorders {
     column_count: structure.column_count,
@@ -19777,6 +19806,92 @@ mod tests {
     assert!(
       fragment.bounds.width() < 6.0,
       "table width should be bounded by the first row's border"
+    );
+  }
+
+  #[test]
+  fn collapsed_border_paint_bounds_include_thick_outer_segment() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_collapse = BorderCollapse::Collapse;
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut thin_cell_style = ComputedStyle::default();
+    thin_cell_style.display = Display::TableCell;
+    thin_cell_style.border_left_style = BorderStyle::Solid;
+    thin_cell_style.border_left_width = Length::px(2.0);
+    // Ensure corner joins don't capture the thick outer segment so `paint_bounds` must account for
+    // the maximum segment width along the outer edge, not just corners.
+    thin_cell_style.border_top_style = BorderStyle::Hidden;
+    thin_cell_style.border_bottom_style = BorderStyle::Hidden;
+
+    let mut thick_cell_style = ComputedStyle::default();
+    thick_cell_style.display = Display::TableCell;
+    thick_cell_style.border_left_style = BorderStyle::Solid;
+    thick_cell_style.border_left_width = Length::px(20.0);
+    thick_cell_style.border_top_style = BorderStyle::Hidden;
+    thick_cell_style.border_bottom_style = BorderStyle::Hidden;
+
+    let row1 = BoxNode::new_block(
+      Arc::new(row_style.clone()),
+      FormattingContextType::Block,
+      vec![BoxNode::new_block(
+        Arc::new(thin_cell_style),
+        FormattingContextType::Block,
+        vec![],
+      )],
+    );
+    let row2 = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_block(
+        Arc::new(thick_cell_style),
+        FormattingContextType::Block,
+        vec![],
+      )],
+    );
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![row1, row2],
+    );
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite_width(0.0))
+      .expect("table layout");
+
+    let borders = fragment
+      .table_borders
+      .as_ref()
+      .expect("expected collapsed borders metadata on the table fragment");
+
+    // Paint bounds must include the thick second-row border segment: a 20px stroke extends 10px
+    // past the left grid line.
+    assert!(
+      borders.paint_bounds.x() <= -9.9,
+      "expected paint bounds to include thick outer segment (got x={})",
+      borders.paint_bounds.x()
+    );
+
+    // Layout geometry still uses the first row's outer border width (CSS 2.2 §17.6.2): the base
+    // width used to position the grid remains 2px, so the excess from later rows spills outward.
+    assert!(
+      (borders.vertical_line_base.first().copied().unwrap_or(0.0) - 2.0).abs() < 1e-6,
+      "expected layout outer border width to match first row segment"
+    );
+    let mut cells = Vec::new();
+    collect_table_cell_fragments(&fragment, &mut cells);
+    let first_row_cell = cells
+      .into_iter()
+      .find(|cell| cell.bounds.y().abs() < 1e-3)
+      .expect("first row cell");
+    assert!(
+      first_row_cell.bounds.x() < 2.0,
+      "cell offset should use first-row border, got {}",
+      first_row_cell.bounds.x()
     );
   }
 
