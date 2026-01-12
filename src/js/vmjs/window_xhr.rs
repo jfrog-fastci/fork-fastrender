@@ -58,6 +58,7 @@ const XHR_HEADER_NAME_TOO_LONG_ERROR: &str =
   "XMLHttpRequest.setRequestHeader name exceeds maximum length";
 const XHR_HEADER_VALUE_TOO_LONG_ERROR: &str =
   "XMLHttpRequest.setRequestHeader value exceeds maximum length";
+const XHR_HEADER_NAME_INVALID_ERROR: &str = "XMLHttpRequest.setRequestHeader invalid header name";
 const XHR_BODY_TOO_LONG_ERROR: &str = "XMLHttpRequest.send body exceeds maximum length";
 const XHR_RESPONSE_TYPE_TOO_LONG_ERROR: &str = "XMLHttpRequest.responseType exceeds maximum length";
 const XHR_EVENT_TYPE_TOO_LONG_ERROR: &str = "XMLHttpRequest event type exceeds maximum length";
@@ -406,6 +407,17 @@ fn decode_response_text(bytes: &[u8], override_mime_type: &str) -> String {
     return out;
   }
   String::from_utf8_lossy(bytes).to_string()
+}
+
+fn sanitize_request_header_value(value: &str) -> String {
+  let sanitized = value
+    .chars()
+    .map(|c| match c {
+      '\r' | '\n' | '\0' => ' ',
+      other => other,
+    })
+    .collect::<String>();
+  sanitized.trim_matches(|c| matches!(c, ' ' | '\t')).to_string()
 }
 
 fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
@@ -999,12 +1011,17 @@ fn xhr_set_request_header_native(
     limits.max_total_header_bytes,
     XHR_HEADER_NAME_TOO_LONG_ERROR,
   )?;
+  if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+    return Err(VmError::TypeError(XHR_HEADER_NAME_INVALID_ERROR));
+  }
+
   let value = to_rust_string_limited(
     scope.heap_mut(),
     value_val,
     limits.max_total_header_bytes,
     XHR_HEADER_VALUE_TOO_LONG_ERROR,
   )?;
+  let value = sanitize_request_header_value(&value);
 
   with_env_state_mut(env_id, |state| {
     let xhr = state
@@ -1019,6 +1036,33 @@ fn xhr_set_request_header_native(
     let req = xhr.request.as_mut().ok_or(VmError::TypeError(
       "XMLHttpRequest.open must be called first",
     ))?;
+    // XHR combines duplicate header names by appending `, value` (case-insensitive).
+    if let Some(idx) = req
+      .headers
+      .iter()
+      .position(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+    {
+      let current_bytes: usize = req.headers.iter().map(|(k, v)| k.len() + v.len()).sum();
+      let old_len = req.headers[idx].1.len();
+      let new_value = if req.headers[idx].1.is_empty() {
+        value.clone()
+      } else if value.is_empty() {
+        req.headers[idx].1.clone()
+      } else {
+        format!("{}, {}", req.headers[idx].1, value)
+      };
+      let new_total = current_bytes
+        .saturating_sub(old_len)
+        .saturating_add(new_value.len());
+      if new_total > limits.max_total_header_bytes {
+        return Err(VmError::TypeError(
+          "XMLHttpRequest.setRequestHeader exceeded total header bytes limit",
+        ));
+      }
+      req.headers[idx].1 = new_value;
+      return Ok(());
+    }
+
     if req.headers.len() >= limits.max_header_count {
       return Err(VmError::TypeError(
         "XMLHttpRequest.setRequestHeader exceeded header count limit",
@@ -1624,7 +1668,6 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         return Ok(false);
       }
       if is_timeout || is_error {
-        xhr.ready_state = XHR_DONE;
         xhr.status = 0;
         xhr.status_text.clear();
         xhr.response_bytes.clear();
@@ -1632,8 +1675,6 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         xhr.response_headers.clear();
         xhr.response_url.clear();
       } else {
-        // Ensure `status` isn't observable while `readyState` is still OPENED.
-        xhr.ready_state = XHR_HEADERS_RECEIVED;
         xhr.status = status;
         xhr.status_text = status_text;
         xhr.response_text = decode_response_text(&bytes, &xhr.override_mime_type);
@@ -2735,6 +2776,7 @@ mod tests {
   struct RecordedRequest {
     method: String,
     url: String,
+    headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
   }
 
@@ -2754,6 +2796,11 @@ mod tests {
       self.requests.lock().unwrap().push(RecordedRequest {
         method: req.method.to_string(),
         url: req.fetch.url.to_string(),
+        headers: req
+          .headers
+          .iter()
+          .map(|(k, v)| (k.clone(), v.clone()))
+          .collect(),
         body: req.body.map(|b| b.to_vec()),
       });
 
@@ -2979,6 +3026,47 @@ mod tests {
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].method, "GET");
     assert_eq!(reqs[0].url, "https://example.invalid/ok");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_set_request_header_combines_duplicates() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher.clone());
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "var xhr = new XMLHttpRequest();\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.setRequestHeader('X-Test', 'a');\n\
+         xhr.setRequestHeader('x-test', 'b');\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let reqs = fetcher.requests.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    let headers = &reqs[0].headers;
+    let matches: Vec<&(String, String)> = headers
+      .iter()
+      .filter(|(k, _)| k.eq_ignore_ascii_case("x-test"))
+      .collect();
+    assert_eq!(matches.len(), 1, "headers={headers:?}");
+    assert_eq!(matches[0].1, "a, b");
     Ok(())
   }
 
