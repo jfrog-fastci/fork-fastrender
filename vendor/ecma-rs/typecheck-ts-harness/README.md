@@ -406,5 +406,42 @@ RAYON_NUM_THREADS=2 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness -
   mismatches.
 
  To reproduce locally, install the pinned TypeScript package next to the harness
- (`cd typecheck-ts-harness && npm install --no-save --no-package-lock --ignore-scripts typescript@5.9.3`)
- before running the command above.
+  (`cd typecheck-ts-harness && npm install --no-save --no-package-lock --ignore-scripts typescript@5.9.3`)
+  before running the command above.
+
+## CI: upstream conformance (sharded)
+
+CI also runs a small slice of the *upstream* TypeScript conformance suite (from
+the `parse-js/tests/TypeScript` submodule) and shards it by stable hash so the
+distribution stays consistent as upstream adds/removes tests.
+
+Current CI configuration:
+
+- root: `parse-js/tests/TypeScript/tests/cases/conformance` (default)
+- filter: `es2020/**` (15 tests, includes `// @filename:` multi-file cases)
+- shards: 8 (`--shard-strategy hash`)
+- timeout: 20s per case
+- workers: `--jobs 2`
+- expectations: `typecheck-ts-harness/fixtures/upstream_manifest.toml`
+
+To reproduce shard `0/8` locally:
+
+```bash
+# Bring in the upstream suite and Node deps (once)
+git submodule update --init --recursive parse-js/tests/TypeScript
+cd typecheck-ts-harness && npm ci
+
+# Run a single shard and emit a JSON report (matches CI)
+cd ..
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
+  --filter "es2020/**" \
+  --manifest typecheck-ts-harness/fixtures/upstream_manifest.toml \
+  --fail-on new \
+  --shard 0/8 \
+  --shard-strategy hash \
+  --timeout-secs 20 \
+  --jobs 2 \
+  --allow-mismatches \
+  --json \
+  > upstream-es2020-shard0.json
+```

@@ -1,0 +1,67 @@
+## Expectations for a small, real upstream TypeScript conformance slice.
+##
+## This manifest is consumed by `typecheck-ts-harness conformance --fail-on new`
+## in CI, so it should:
+## - mark currently-known mismatches as `xfail`
+## - avoid blanket globs that would hide regressions or cause XPASS churn
+##
+## The current CI filter is `es2020/**` (15 tests), sharded by hash.
+##
+## NOTE: Conformance test ids are the *path under the conformance root*, e.g.
+## `parse-js/tests/TypeScript/tests/cases/conformance/es2020/...` becomes
+## `es2020/...` here.
+
+[[expectations]]
+id = "es2020/bigintMissingES2019.ts"
+status = "xfail"
+reason = "BigInt/lib-target conformance mismatch"
+
+[[expectations]]
+id = "es2020/bigintMissingES2020.ts"
+status = "xfail"
+reason = "BigInt/lib-target conformance mismatch"
+
+[[expectations]]
+id = "es2020/bigintMissingESNext.ts"
+status = "xfail"
+reason = "BigInt/lib-target conformance mismatch"
+
+[[expectations]]
+id = "es2020/es2020IntlAPIs.ts"
+status = "xfail"
+reason = "Intl lib typing mismatch"
+
+[[expectations]]
+id = "es2020/intlNumberFormatES2020.ts"
+status = "xfail"
+reason = "Intl lib typing mismatch"
+
+[[expectations]]
+id = "es2020/modules/exportAsNamespace1.ts"
+status = "xfail"
+reason = "Module/export-as-namespace conformance mismatch"
+
+[[expectations]]
+id = "es2020/modules/exportAsNamespace2.ts"
+status = "xfail"
+reason = "Module/export-as-namespace conformance mismatch"
+
+[[expectations]]
+id = "es2020/modules/exportAsNamespace3.ts"
+status = "xfail"
+reason = "Module/export-as-namespace conformance mismatch"
+
+[[expectations]]
+id = "es2020/modules/exportAsNamespace4.ts"
+status = "xfail"
+reason = "Module/export-as-namespace conformance mismatch"
+
+[[expectations]]
+id = "es2020/modules/exportAsNamespace_exportAssignment.ts"
+status = "xfail"
+reason = "Module/export-as-namespace conformance mismatch"
+
+[[expectations]]
+id = "es2020/modules/exportAsNamespace_nonExistent.ts"
+status = "xfail"
+reason = "Module/export-as-namespace conformance mismatch"

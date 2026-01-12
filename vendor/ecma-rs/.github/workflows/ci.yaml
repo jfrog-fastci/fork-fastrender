@@ -334,6 +334,101 @@ jobs:
           name: conformance-mini-snapshot-verify
           path: conformance-mini-snapshot-verify.json
 
+  typecheck-ts-upstream-conformance:
+    name: typecheck-ts upstream conformance (${{ matrix.shard }}/8)
+    runs-on: ubuntu-24.04
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      CONFORMANCE_FILTER: "es2020/**"
+      SHARD_TOTAL: 8
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch TypeScript conformance suite (submodule)
+        run: git submodule update --init --recursive parse-js/tests/TypeScript
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: typecheck-ts-harness/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Install TypeScript (npm)
+        working-directory: ./typecheck-ts-harness
+        run: npm ci
+
+      - name: Show TypeScript version
+        working-directory: ./typecheck-ts-harness
+        run: node -p "require('typescript').version"
+
+      - name: Run upstream conformance shard (JSON)
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          set -euxo pipefail
+          report="typecheck-upstream-es2020-shard-${SHARD_INDEX}-of-${SHARD_TOTAL}.json"
+
+          cargo run -p typecheck-ts-harness --release --locked -- \
+            conformance \
+            --filter "${CONFORMANCE_FILTER}" \
+            --compare tsc \
+            --manifest typecheck-ts-harness/fixtures/upstream_manifest.toml \
+            --fail-on new \
+            --shard "${SHARD_INDEX}/${SHARD_TOTAL}" \
+            --shard-strategy hash \
+            --timeout-secs 20 \
+            --jobs 2 \
+            --allow-mismatches \
+            --json \
+            > "${report}"
+
+          # `conformance` exits non-zero on uncovered mismatches, which would stop
+          # CI from uploading the JSON report artifact. Instead, always emit the
+          # report and enforce "no new failures" by inspecting the summary.
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          shard_index = os.environ["SHARD_INDEX"]
+          shard_total = os.environ["SHARD_TOTAL"]
+          report_path = f"typecheck-upstream-es2020-shard-{shard_index}-of-{shard_total}.json"
+          with open(report_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+          mismatches = report.get("summary", {}).get("mismatches") or {}
+          unexpected = int(mismatches.get("unexpected", 0) or 0)
+          xpass = int(mismatches.get("xpass", 0) or 0)
+          expected = int(mismatches.get("expected", 0) or 0)
+          flaky = int(mismatches.get("flaky", 0) or 0)
+
+          if unexpected or xpass:
+            print(
+              f"upstream conformance shard failed: unexpected={unexpected} xpass={xpass} expected={expected} flaky={flaky}",
+              file=sys.stderr,
+            )
+            sys.exit(1)
+          PY
+
+      - name: Upload upstream conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-upstream-es2020-shard-${{ matrix.shard }}-of-8
+          path: typecheck-upstream-es2020-shard-${{ matrix.shard }}-of-8.json
+
   test262-parser:
     runs-on: ubuntu-24.04
     needs: test
