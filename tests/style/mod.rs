@@ -173,6 +173,7 @@ mod top_layer_closed_hidden_test;
 mod transition_global_keyword_tests;
 mod transitions_starting_style_test;
 mod user_agent_defaults_test;
+mod user_agent_placeholder_pseudo_test;
 mod user_agent_test;
 mod user_validity_pseudo_test;
 mod var_dependent_recompute_test;
@@ -184,3 +185,5 @@ mod visual_keywords_case_insensitive_test;
 mod webkit_text_stroke_test;
 mod will_change_global_keywords_test;
 mod writing_mode_inheritance_top_test;
+
+mod css_font_feature_values_test;
