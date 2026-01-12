@@ -5,7 +5,7 @@ use std::process;
 
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
-  eprintln!("  scenario: eval | function | generator | number | parseFloat | regexp_compile");
+  eprintln!("  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp");
   process::exit(2);
 }
 
@@ -118,7 +118,7 @@ fn main() {
     "generator" => "Object.getPrototypeOf(function*(){}).constructor(S)",
     "number" => "Number(S)",
     "parseFloat" => "parseFloat(S)",
-    "regexp_compile" => "new RegExp(S)",
+    "regexp_compile" | "regexp" => "new RegExp(S)",
     other => {
       eprintln!("oom_harness: unknown scenario: {other}");
       process::exit(2);

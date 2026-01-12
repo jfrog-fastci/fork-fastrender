@@ -16,7 +16,7 @@ pub(crate) const DEFAULT_TICK_EVERY: usize = 1024;
 pub(crate) fn tick_every(
   i: usize,
   every: usize,
-  tick: &mut impl FnMut() -> Result<(), VmError>,
+  tick: &mut (impl FnMut() -> Result<(), VmError> + ?Sized),
 ) -> Result<(), VmError> {
   debug_assert!(every.is_power_of_two(), "tick interval must be a power-of-two");
   if (i & (every - 1)) == 0 {

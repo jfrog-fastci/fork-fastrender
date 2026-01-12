@@ -11805,9 +11805,12 @@ fn regexp_constructor_impl(
   // Parse flags.
   let parsed_flags = {
     let js = scope.heap().get_string(flags_s)?;
-    match RegExpFlags::parse(js.as_code_units()) {
+    let mut tick = || vm.tick();
+    match RegExpFlags::parse(js.as_code_units(), &mut tick) {
       Ok(f) => f,
-      Err(e) => return throw_syntax_error(vm, &mut scope, e.message),
+      Err(RegExpCompileError::Syntax(e)) => return throw_syntax_error(vm, &mut scope, e.message),
+      Err(RegExpCompileError::OutOfMemory) => return Err(VmError::OutOfMemory),
+      Err(RegExpCompileError::Vm(err)) => return Err(err),
     }
   };
 
@@ -11819,13 +11822,18 @@ fn regexp_constructor_impl(
       js.len_code_units()
     };
     let estimated_bytes = estimated_regexp_compilation_bytes(pat_len);
-    // `Heap::ensure_can_allocate` is private; use an external-memory charge token to reserve
-    // compilation headroom against `HeapLimits` while building the off-heap regexp program.
-    let _compile_mem = scope.heap_mut().charge_external(estimated_bytes)?;
+    // Avoid compiling patterns that would require more memory than we have headroom for under the
+    // configured heap limits. The compilation itself uses fallible allocations, but this check
+    // ensures hostile patterns cannot bypass `HeapLimits` by allocating large off-heap buffers.
+    let heap = scope.heap();
+    let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
+    if estimated_bytes > headroom {
+      return Err(VmError::OutOfMemory);
+    }
 
     let js = scope.heap().get_string(source_s)?;
     let mut tick = || vm.tick();
-    match compile_regexp_with_budget(js.as_code_units(), parsed_flags, &mut tick) {
+    match compile_regexp_with_budget(js.as_code_units(), parsed_flags, heap, &mut tick) {
       Ok(p) => p,
       Err(RegExpCompileError::Syntax(e)) => return throw_syntax_error(vm, &mut scope, e.message),
       Err(RegExpCompileError::OutOfMemory) => return Err(VmError::OutOfMemory),
