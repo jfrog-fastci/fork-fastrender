@@ -2383,6 +2383,18 @@ impl<'a> Checker<'a> {
       if let Some(this_ty) = explicit_this_ty.or(contextual_this_ty) {
         self.current_this_ty = this_ty;
       }
+      let pushed_contextual_type_params = if has_type_params {
+        false
+      } else if let Some(sig) = contextual_sig.as_ref() {
+        if sig.type_params.is_empty() {
+          false
+        } else {
+          self.type_param_scopes.push(sig.type_params.clone());
+          true
+        }
+      } else {
+        false
+      };
       let annotated_return = func_node
         .stx
         .return_type
@@ -2396,6 +2408,9 @@ impl<'a> Checker<'a> {
       self.expected_return = expected;
       self.bind_params(func_node, &type_param_decls, contextual_sig.as_ref());
       self.check_function_body(func_node);
+      if pushed_contextual_type_params {
+        self.type_param_scopes.pop();
+      }
       if has_type_params {
         self.type_param_scopes.pop();
         self.lowerer.pop_type_param_scope();
