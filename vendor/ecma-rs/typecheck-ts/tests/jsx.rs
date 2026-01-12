@@ -437,6 +437,123 @@ declare namespace JSX {
 }
 
 #[test]
+fn jsx_spread_children_invalid_type_emits_ts2609() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    div: { children?: string };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"const el = <div>{...123}</div>;"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::JSX_SPREAD_CHILD_MUST_BE_ARRAY.as_str()),
+    "expected TS2609 diagnostic for invalid spread child, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn jsx_spread_children_array_does_not_emit_ts2609() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    div: { children?: string };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"const el = <div>{...["ok"]}</div>;"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    !diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::JSX_SPREAD_CHILD_MUST_BE_ARRAY.as_str()),
+    "did not expect TS2609 diagnostic for array spread child, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn jsx_spread_children_any_bypasses_ts2609() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    div: { children?: string };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"const el = <div>{...(123 as any)}</div>;"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    !diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::JSX_SPREAD_CHILD_MUST_BE_ARRAY.as_str()),
+    "did not expect TS2609 diagnostic for `any` spread child, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn component_attribute_values_are_contextually_typed() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;

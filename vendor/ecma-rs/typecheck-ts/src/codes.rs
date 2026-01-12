@@ -788,6 +788,22 @@ pub const JSX_NAMESPACE_MISSING: Code = Code::new(
   &[],
 );
 
+/// TS2609: JSX spread child must be an array type.
+///
+/// TypeScript emits this diagnostic when a JSX child expression container uses
+/// the spread syntax (`{...expr}`) but `expr` is not an array/tuple type.
+///
+/// - Primary span: the JSX expression container containing the spread child.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const JSX_SPREAD_CHILD_MUST_BE_ARRAY: Code = Code::new(
+  "TS2609",
+  "jsx spread child must be an array type",
+  "JSX expression container containing a spread child",
+  &["primary: JSX spread child"],
+  &[],
+);
+
 /// TC3004: Variance annotation on a type parameter does not match its usage
 /// within the declaring type.
 ///

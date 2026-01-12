@@ -4280,6 +4280,24 @@ impl<'a> Checker<'a> {
           } else {
             self.check_expr_with_expected(&expr.stx.value, expected_child_ty)
           };
+          if expr.stx.spread {
+            let expanded = self.expand_ref(expr_ty);
+            if !matches!(self.store.type_kind(expanded), TypeKind::Any)
+              && !self.is_valid_jsx_spread_child_type(expanded)
+            {
+              let expr_range = loc_to_range(self.file, expr.loc);
+              let spread_range = TextRange::new(
+                expr_range.start.saturating_sub(4),
+                expr_range.end.saturating_add(1),
+              );
+              self
+                .diagnostics
+                .push(codes::JSX_SPREAD_CHILD_MUST_BE_ARRAY.error(
+                  "JSX spread child must be an array type.",
+                  Span::new(self.file, spread_range),
+                ));
+            }
+          }
           if !expr.stx.spread
             && expected_child_ty != prim.unknown
             && !matches!(
@@ -4321,6 +4339,19 @@ impl<'a> Checker<'a> {
       }))
     } else {
       Some(collected[0])
+    }
+  }
+
+  fn is_valid_jsx_spread_child_type(&self, ty: TypeId) -> bool {
+    let ty = self.expand_ref(ty);
+    match self.store.type_kind(ty) {
+      TypeKind::Array { .. } | TypeKind::Tuple(_) => true,
+      TypeKind::Union(members) | TypeKind::Intersection(members) => {
+        members
+          .into_iter()
+          .all(|member| self.is_valid_jsx_spread_child_type(member))
+      }
+      _ => false,
     }
   }
 
