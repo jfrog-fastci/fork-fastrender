@@ -146,6 +146,200 @@ fn detect_use_strict_directive(
   Ok(false)
 }
 
+/// Converts an ECMAScript String value (UTF-16 code units) to a Rust UTF-8 `String` lossily.
+///
+/// This is used for parsing eval source: Rust `String` cannot represent unpaired UTF-16 surrogate
+/// code units, so they are replaced with U+FFFD (matching `String::from_utf16_lossy`).
+///
+/// Unlike `String::from_utf16_lossy`, this conversion:
+/// - ticks the VM budget periodically, and
+/// - uses fallible allocation (`try_reserve`) so hostile inputs can't abort the host on OOM.
+fn eval_string_to_utf8_lossy_with_tick(
+  vm: &mut Vm,
+  heap: &Heap,
+  source_string: GcString,
+) -> Result<String, VmError> {
+  let units = heap.get_string(source_string)?.as_code_units();
+
+  let mut out = String::new();
+  // Worst-case UTF-8 expansion is 3 bytes per UTF-16 code unit (surrogates become U+FFFD).
+  let reserve = units.len().checked_mul(3).ok_or(VmError::OutOfMemory)?;
+  out.try_reserve(reserve).map_err(|_| VmError::OutOfMemory)?;
+
+  const TICK_EVERY: usize = 1024;
+  let mut i = 0usize;
+  while i < units.len() {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let u = units[i];
+
+    // High surrogate.
+    if (0xD800..=0xDBFF).contains(&u) {
+      if let Some(&u2) = units.get(i + 1) {
+        if (0xDC00..=0xDFFF).contains(&u2) {
+          let hi = (u as u32) - 0xD800;
+          let lo = (u2 as u32) - 0xDC00;
+          let cp = (hi << 10) + lo + 0x10000;
+          out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+          i += 2;
+          continue;
+        }
+      }
+
+      // Unpaired high surrogate.
+      out.push('\u{FFFD}');
+      i += 1;
+      continue;
+    }
+
+    // Unpaired low surrogate.
+    if (0xDC00..=0xDFFF).contains(&u) {
+      out.push('\u{FFFD}');
+      i += 1;
+      continue;
+    }
+
+    out.push(char::from_u32(u as u32).unwrap_or('\u{FFFD}'));
+    i += 1;
+  }
+
+  Ok(out)
+}
+
+/// Implements indirect eval (ECMA-262 `PerformEval` with `direct = false`) for Script source.
+///
+/// This is used by the global `%eval%` builtin; direct eval is handled by the evaluator's call
+/// semantics (it needs access to the caller's lexical environment).
+pub(crate) fn perform_indirect_eval(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_object: GcObject,
+  global_lexical_env: GcEnv,
+  source_string: GcString,
+) -> Result<Value, VmError> {
+  // If the input is not a String, `eval` returns it unchanged (caller handles this for direct eval).
+  let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
+  let source = Arc::new(SourceText::new_charged(
+    scope.heap_mut(),
+    "<eval>",
+    source_text,
+  )?);
+
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  // `eval` parses at runtime, so syntax errors must be catchable as thrown `SyntaxError` instances.
+  let top = match vm.parse_top_level_with_budget(&source.text, opts) {
+    Ok(top) => top,
+    Err(VmError::Syntax(diags)) => {
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+      return Err(VmError::Throw(err_obj));
+    }
+    Err(err) => return Err(err),
+  };
+
+  // Indirect eval does not inherit strictness from the caller; it is strict only if its source
+  // begins with a `"use strict"` directive.
+  let strict = detect_use_strict_directive(&top.stx.body, || vm.tick())?;
+  {
+    let mut tick = || vm.tick();
+    match crate::early_errors::validate_top_level(
+      &top.stx.body,
+      crate::early_errors::EarlyErrorOptions::script(strict),
+      &mut tick,
+    ) {
+      Ok(()) => {}
+      Err(VmError::Syntax(diags)) => {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+        return Err(VmError::Throw(err_obj));
+      }
+      Err(err) => return Err(err),
+    }
+  }
+
+  // Create the Eval lexical environment as an inner declarative env nested in the global lexical
+  // environment (so eval code sees global `let`/`const`, but its own lexical declarations remain
+  // scoped to the eval itself).
+  let eval_lex = scope.env_create(Some(global_lexical_env))?;
+
+  // Variable environment depends on strictness:
+  // - non-strict indirect eval: var/function declarations create global var bindings
+  // - strict indirect eval: var/function declarations are scoped to the eval
+  let mut eval_env = if strict {
+    RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, eval_lex, eval_lex)?
+  } else {
+    RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, eval_lex)?
+  };
+  eval_env.set_source_info(source.clone(), 0, 0);
+
+  let mut evaluator = Evaluator {
+    vm,
+    host,
+    hooks,
+    env: &mut eval_env,
+    strict,
+    this: Value::Object(global_object),
+    new_target: Value::Undefined,
+  };
+
+  let result = (|| {
+    evaluator.instantiate_script(scope, &top.stx.body)?;
+
+    let completion = evaluator.eval_stmt_list(scope, &top.stx.body)?;
+    match completion {
+      Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+      Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+        value: thrown.value,
+        stack: thrown.stack,
+      }),
+      Completion::Return(_) => Err(VmError::InvariantViolation(
+        "eval produced Return completion (early errors should prevent this)",
+      )),
+      Completion::Break(..) => Err(VmError::InvariantViolation(
+        "eval produced Break completion (early errors should prevent this)",
+      )),
+      Completion::Continue(..) => Err(VmError::InvariantViolation(
+        "eval produced Continue completion (early errors should prevent this)",
+      )),
+    }
+  })();
+
+  eval_env.teardown(scope.heap_mut());
+  match result {
+    Err(VmError::Syntax(diags)) => {
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+      Err(VmError::Throw(err_obj))
+    }
+    other => other,
+  }
+}
+
 fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
@@ -254,6 +448,28 @@ impl RuntimeEnv {
     })
   }
 
+  pub(crate) fn new_with_lexical_env(
+    heap: &mut Heap,
+    global_object: GcObject,
+    lexical_env: GcEnv,
+  ) -> Result<Self, VmError> {
+    // Root the global object across root registration in case it triggers GC.
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global_object))?;
+    scope.push_env_root(lexical_env)?;
+    let lexical_root = scope.heap_mut().add_env_root(lexical_env)?;
+
+    Ok(Self {
+      global_object,
+      lexical_env,
+      lexical_root,
+      var_env: VarEnv::GlobalObject,
+      source: Arc::new(SourceText::new("<init>", "")),
+      base_offset: 0,
+      prefix_len: 0,
+    })
+  }
+
   pub(crate) fn teardown(&mut self, heap: &mut Heap) {
     heap.remove_env_root(self.lexical_root);
   }
@@ -292,6 +508,14 @@ impl RuntimeEnv {
 
   pub(crate) fn lexical_env(&self) -> GcEnv {
     self.lexical_env
+  }
+
+  fn var_env(&self) -> VarEnv {
+    self.var_env
+  }
+
+  fn set_var_env(&mut self, var_env: VarEnv) {
+    self.var_env = var_env;
   }
 
   fn resolve_lexical_binding(
@@ -758,7 +982,6 @@ impl JsRuntime {
     // Make the runtime-owned module graph available to nested ECMAScript function calls (and other
     // VM entry points that do not naturally thread an explicit `&mut ModuleGraph` parameter).
     vm.set_module_graph(modules.as_mut());
-
     Ok(Self {
       vm,
       heap,
@@ -6301,22 +6524,19 @@ impl<'a> Evaluator<'a> {
     expr: &CallExpr,
     loc: parse_js::loc::Loc,
   ) -> Result<Value, VmError> {
-    // Special-case direct `eval(...)` calls.
+    // Track whether this call is *syntactically* a direct eval candidate (`eval(...)`).
     //
-    // `vm-js` does not yet expose a global `eval` builtin, but unit tests (and real-world scripts)
-    // expect `eval("...")` to work. Treat an identifier call as direct eval and interpret the
-    // argument string in the current environment.
+    // A call is only a direct eval if:
+    // - it is syntactically `eval(...)`, and
+    // - `eval` resolves to the original `%eval%` intrinsic function object.
     //
-    // This is intentionally minimal but spec-shaped:
-    // - Arguments are evaluated left-to-right (including spreads).
-    // - Non-String inputs are returned unchanged.
-    if !expr.optional_chaining {
-      match &*expr.callee.stx {
-        Expr::Id(id) if id.stx.name == "eval" => return self.eval_direct_eval(scope, expr),
-        Expr::IdPat(id) if id.stx.name == "eval" => return self.eval_direct_eval(scope, expr),
-        _ => {}
-      }
-    }
+    // Otherwise this is an indirect eval (or just an ordinary call if `eval` was shadowed).
+    let direct_eval_syntax = !expr.optional_chaining
+      && match &*expr.callee.stx {
+        Expr::Id(id) => id.stx.name == "eval",
+        Expr::IdPat(id) => id.stx.name == "eval",
+        _ => false,
+      };
 
     // Evaluate the callee and compute the `this` value for the call.
     let (callee_value, this_value) = match &*expr.callee.stx {
@@ -6439,6 +6659,21 @@ impl<'a> Evaluator<'a> {
         args.push(value);
       }
     }
+    if direct_eval_syntax {
+      let intr = self
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      if callee_value == Value::Object(intr.eval()) {
+        // Direct eval: execute in the caller's lexical environment (with strictness propagation).
+        let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+        return match arg0 {
+          Value::String(s) => self.eval_direct_eval_string(&mut call_scope, s),
+          other => Ok(other),
+        };
+      }
+    }
+
     let source = self.env.source();
     let rel_start = loc.start_u32().saturating_sub(self.env.prefix_len());
     let abs_offset = self.env.base_offset().saturating_add(rel_start);
@@ -6455,82 +6690,17 @@ impl<'a> Evaluator<'a> {
     )
   }
 
-  fn eval_direct_eval(&mut self, scope: &mut Scope<'_>, expr: &CallExpr) -> Result<Value, VmError> {
-    let mut call_scope = scope.reborrow();
-    let mut args: Vec<Value> = Vec::new();
-    args
-      .try_reserve_exact(expr.arguments.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-
-    for arg in &expr.arguments {
-      if arg.stx.spread {
-        let spread_value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
-        call_scope.push_root(spread_value)?;
-
-        let mut iter = iterator::get_iterator(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          &mut call_scope,
-          spread_value,
-        )?;
-        call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-        if let Err(err) = call_scope.push_root(iter.next_method) {
-          return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
-        }
-
-        loop {
-          let next_value = match iterator::iterator_step_value(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            &mut call_scope,
-            &mut iter,
-          ) {
-            Ok(v) => v,
-            Err(err) => {
-              return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
-            }
-          };
-
-          let Some(value) = next_value else {
-            break;
-          };
-
-          let step_res: Result<(), VmError> = (|| {
-            self.tick()?;
-            call_scope.push_root(value)?;
-            args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-            args.push(value);
-            Ok(())
-          })();
-          if let Err(err) = step_res {
-            return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
-          }
-        }
-      } else {
-        let value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
-        call_scope.push_root(value)?;
-        args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-        args.push(value);
-      }
-    }
-
-    let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-    match arg0 {
-      Value::String(s) => self.eval_direct_eval_string(&mut call_scope, s),
-      other => Ok(other),
-    }
-  }
-
   fn eval_direct_eval_string(
     &mut self,
     scope: &mut Scope<'_>,
     source_string: GcString,
   ) -> Result<Value, VmError> {
-    let source = scope.heap().get_string(source_string)?.to_utf8_lossy();
-
-    let source = Arc::new(SourceText::new_charged(scope.heap_mut(), "<eval>", source)?);
+    let source_text = eval_string_to_utf8_lossy_with_tick(self.vm, scope.heap(), source_string)?;
+    let source = Arc::new(SourceText::new_charged(
+      scope.heap_mut(),
+      "<eval>",
+      source_text,
+    )?);
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -6577,17 +6747,24 @@ impl<'a> Evaluator<'a> {
       }
     }
 
-    // Save and restore the runtime's source and lexical environment while running eval code. This
-    // keeps nested function source spans aligned with the eval input.
+    // Save and restore the runtime's source and environments while running eval code. This keeps
+    // nested function source spans aligned with the eval input and preserves the caller's
+    // execution state.
     let prev_source = self.env.source();
     let prev_base_offset = self.env.base_offset();
     let prev_prefix_len = self.env.prefix_len();
     let prev_lexical_env = self.env.lexical_env;
+    let prev_var_env = self.env.var_env();
     let prev_strict = self.strict;
 
-    self.env.set_source_info(source.clone(), 0, 0);
     let eval_lex = scope.env_create(Some(prev_lexical_env))?;
+    self.env.set_source_info(source.clone(), 0, 0);
     self.env.set_lexical_env(scope.heap_mut(), eval_lex);
+    // In strict eval code, var/function declarations are scoped to the eval itself. In non-strict
+    // direct eval, they are scoped to the caller's VariableEnvironment.
+    self
+      .env
+      .set_var_env(if strict { VarEnv::Env(eval_lex) } else { prev_var_env });
     self.strict = strict;
 
     let result = (|| {
@@ -6614,11 +6791,26 @@ impl<'a> Evaluator<'a> {
 
     self.strict = prev_strict;
     self.env.set_lexical_env(scope.heap_mut(), prev_lexical_env);
+    self.env.set_var_env(prev_var_env);
     self
       .env
       .set_source_info(prev_source, prev_base_offset, prev_prefix_len);
 
-    result
+    match result {
+      Err(VmError::Syntax(diags)) => {
+        let intr = self
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+        Err(VmError::Throw(err_obj))
+      }
+      other => other,
+    }
   }
 
   fn eval_cond(&mut self, scope: &mut Scope<'_>, expr: &CondExpr) -> Result<Value, VmError> {
@@ -12369,6 +12561,38 @@ fn async_call_continue_args(
       .get_root(id)
       .ok_or(VmError::InvariantViolation("missing call arg root"))?;
     args.push(v);
+  }
+
+  // Mirror `Evaluator::eval_call`: detect direct eval (`eval(...)`) and execute in the caller's
+  // lexical environment rather than invoking the global `%eval%` builtin.
+  //
+  // This matters in the async evaluator because calls that contain `await` do not go through
+  // `Evaluator::eval_call` and instead arrive here after resuming argument evaluation.
+  let direct_eval_syntax = !call.optional_chaining
+    && match &*call.callee.stx {
+      Expr::Id(id) => id.stx.name == "eval",
+      Expr::IdPat(id) => id.stx.name == "eval",
+      _ => false,
+    };
+  if direct_eval_syntax {
+    let intr = evaluator
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    if callee_value == Value::Object(intr.eval()) {
+      let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+      let res = match arg0 {
+        Value::String(s) => evaluator.eval_direct_eval_string(scope, s),
+        other => Ok(other),
+      }
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+
+      async_call_cleanup(scope, callee_root, this_root, &mut arg_roots);
+      return match res {
+        Ok(v) => Ok(AsyncEval::Complete(v)),
+        Err(err) => Err(err),
+      };
+    }
   }
 
   let res = evaluator

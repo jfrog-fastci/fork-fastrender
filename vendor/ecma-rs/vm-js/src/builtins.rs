@@ -11049,6 +11049,50 @@ pub fn symbol_prototype_description_get(
   })
 }
 
+/// Global `eval(x)`.
+///
+/// Note: direct eval is handled by the evaluator (`eval(...)` call expressions); this builtin
+/// implements *indirect* eval semantics (ECMA-262 `PerformEval` with `direct = false`).
+pub fn global_eval(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let arg0 = args.first().copied().unwrap_or(Value::Undefined);
+  let Value::String(source_string) = arg0 else {
+    return Ok(arg0);
+  };
+
+  // Indirect eval executes in the global environment of the `eval` function's realm.
+  let (global_object, global_lexical_env) = {
+    let f = scope.heap().get_function(callee)?;
+    let global_object = f.realm.ok_or(VmError::Unimplemented("eval missing [[Realm]]"))?;
+    let global_lexical_env =
+      f.closure_env
+        .ok_or(VmError::Unimplemented("eval missing [[Environment]]"))?;
+    (global_object, global_lexical_env)
+  };
+
+  let mut eval_scope = scope.reborrow();
+  eval_scope.push_root(Value::Object(global_object))?;
+  eval_scope.push_root(Value::String(source_string))?;
+  eval_scope.push_env_root(global_lexical_env)?;
+
+  crate::exec::perform_indirect_eval(
+    vm,
+    &mut eval_scope,
+    host,
+    hooks,
+    global_object,
+    global_lexical_env,
+    source_string,
+  )
+}
+
 /// Global `isNaN(x)` (minimal).
 pub fn global_is_nan(
   vm: &mut Vm,

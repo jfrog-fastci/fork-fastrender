@@ -160,6 +160,9 @@ impl Realm {
       scope
         .heap_mut()
         .set_function_closure_env(intrinsics.function_constructor(), Some(env))?;
+      scope
+        .heap_mut()
+        .set_function_closure_env(intrinsics.eval(), Some(env))?;
 
       // Populate `[[Realm]]` + `[[JobRealm]]` on all intrinsic function objects.
       set_intrinsic_function_realm_metadata(scope.heap_mut(), &roots, global_object, id)?;
@@ -303,7 +306,8 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.int8_array())),
       )?;
 
-      let uint8_clamped_array_key = PropertyKey::from_string(scope.alloc_string("Uint8ClampedArray")?);
+      let uint8_clamped_array_key =
+        PropertyKey::from_string(scope.alloc_string("Uint8ClampedArray")?);
       scope.define_property(
         global_object,
         uint8_clamped_array_key,
@@ -357,6 +361,13 @@ impl Realm {
         global_object,
         data_view_key,
         global_data_desc(Value::Object(intrinsics.data_view())),
+      )?;
+
+      let eval_key = PropertyKey::from_string(scope.alloc_string("eval")?);
+      scope.define_property(
+        global_object,
+        eval_key,
+        global_data_desc(Value::Object(intrinsics.eval())),
       )?;
 
       let is_nan_key = PropertyKey::from_string(scope.alloc_string("isNaN")?);

@@ -79,6 +79,7 @@ pub struct Intrinsics {
   data_view: GcObject,
   is_nan: GcObject,
   is_finite: GcObject,
+  eval: GcObject,
   parse_int: GcObject,
   parse_float: GcObject,
   encode_uri: GcObject,
@@ -728,6 +729,7 @@ impl Intrinsics {
     let boolean_construct = vm.register_native_construct(builtins::boolean_constructor_construct)?;
     let date_call = vm.register_native_call(builtins::date_constructor_call)?;
     let date_construct = vm.register_native_construct(builtins::date_constructor_construct)?;
+    let eval_call = vm.register_native_call(builtins::global_eval)?;
     let is_nan_call = vm.register_native_call(builtins::global_is_nan)?;
     let is_finite_call = vm.register_native_call(builtins::global_is_finite)?;
     let parse_int_call = vm.register_native_call(builtins::global_parse_int)?;
@@ -2294,6 +2296,13 @@ impl Intrinsics {
         data_desc(Value::Object(to_prim_fn), false, false, true),
       )?;
     }
+
+    // `%eval%` (global function)
+    let eval_name = scope.alloc_string("eval")?;
+    let eval = alloc_rooted_native_function(scope, roots, eval_call, None, eval_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(eval, Some(function_prototype))?;
 
     // `%isNaN%` (global function)
     let is_nan_name = scope.alloc_string("isNaN")?;
@@ -3969,6 +3978,7 @@ impl Intrinsics {
       data_view,
       is_nan,
       is_finite,
+      eval,
       parse_int,
       parse_float,
       encode_uri,
@@ -4208,6 +4218,10 @@ impl Intrinsics {
 
   pub fn is_finite(&self) -> GcObject {
     self.is_finite
+  }
+
+  pub fn eval(&self) -> GcObject {
+    self.eval
   }
 
   pub fn parse_int(&self) -> GcObject {
