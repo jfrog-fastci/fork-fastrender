@@ -2,6 +2,7 @@
 
 use crate::render_control::StageHeartbeat;
 use crate::ui::browser_app::BrowserAppState;
+use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
 use crate::ui::security_indicator;
@@ -556,26 +557,52 @@ pub fn chrome_ui(
         motion.durations.progress_fade,
       );
       if loading_t > 0.0 {
+        let indicator = load_progress_indicator(loading, load_progress);
         let bar_h = 2.0;
-        let progress = load_progress
-          .filter(|p| p.is_finite())
-          .map(|p| p.clamp(0.0, 1.0))
-          .unwrap_or(0.0);
-        // Ensure the bar appears quickly on navigation start even before the first stage heartbeat.
-        //
-        // When loading finishes, keep the bar full width while it fades out to avoid a sudden
-        // disappearance (and to mimic typical browser "complete then fade" behaviour).
-        let progress = if loading { progress.max(0.02) } else { 1.0 };
-        let x1 = bar_rect.left() + bar_rect.width() * progress;
-        let rect = egui::Rect::from_min_max(
+        let track_rect = egui::Rect::from_min_max(
           egui::pos2(bar_rect.left(), bar_rect.bottom() - bar_h),
-          egui::pos2(x1, bar_rect.bottom()),
+          egui::pos2(bar_rect.right(), bar_rect.bottom()),
         );
         let color = with_alpha(ui.visuals().selection.stroke.color, loading_t);
-        if rect.width() > 0.0 {
-          ui
-            .painter()
-            .rect_filled(rect, egui::Rounding::same(1.0), color);
+
+        match indicator {
+          Some(LoadProgressIndicator::Determinate { progress }) => {
+            let w = track_rect.width() * progress;
+            let rect = egui::Rect::from_min_max(
+              track_rect.min,
+              egui::pos2((track_rect.left() + w).min(track_rect.right()), track_rect.bottom()),
+            );
+            ui
+              .painter()
+              .rect_filled(rect, egui::Rounding::same(1.0), color);
+          }
+          Some(LoadProgressIndicator::Indeterminate) => {
+            // Keep repainting so the indeterminate segment animates smoothly even when the worker
+            // isn't emitting progress heartbeats.
+            ctx.request_repaint();
+            let time = ctx.input(|i| i.time) as f32;
+            let phase = (time * 1.2).fract();
+            let seg_w = (track_rect.width() * 0.25)
+              .clamp(16.0, 120.0)
+              .min(track_rect.width());
+            let travel = (track_rect.width() - seg_w).max(0.0);
+            let x0 = track_rect.left() + travel * phase;
+            let seg_rect = egui::Rect::from_min_max(
+              egui::pos2(x0, track_rect.top()),
+              egui::pos2(x0 + seg_w, track_rect.bottom()),
+            );
+            ui
+              .painter()
+              .with_clip_rect(track_rect)
+              .rect_filled(seg_rect, egui::Rounding::same(1.0), color);
+          }
+          None => {
+            // Fade-out path: we no longer have a progress value, but keep the line around briefly
+            // so it doesn't "pop" out of existence.
+            ui
+              .painter()
+              .rect_filled(track_rect, egui::Rounding::same(1.0), color);
+          }
         }
       }
 

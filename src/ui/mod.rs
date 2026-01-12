@@ -22,6 +22,7 @@ pub mod frame_upload;
 pub mod history;
 pub mod visited;
 pub mod omnibox;
+pub mod load_progress;
 pub mod messages;
 pub mod render_worker;
 pub mod scrollbars;
