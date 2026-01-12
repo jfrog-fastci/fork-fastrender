@@ -18,7 +18,5 @@ mod tooling;
 
 // Regression tests under `tests/regression/`.
 mod regression;
-mod test_support;
 mod bin;
-mod browser_integration;
 mod bundled;
