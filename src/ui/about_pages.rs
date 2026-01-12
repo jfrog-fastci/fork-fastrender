@@ -280,15 +280,27 @@ fn help_html() -> &'static str {
         <li>Typing a filesystem path like <code>/tmp/a.html</code> navigates to a <code>file://</code> URL.</li>
       </ul>
 
+      <h2>Bookmarks and history</h2>
+      <ul>
+        <li>Use the star button in the toolbar (or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd>) to toggle a bookmark for the current page.</li>
+        <li>Bookmarks show up in the bookmarks bar for quick access.</li>
+        <li>The history panel supports search and clear.</li>
+        <li>Bookmarks and history are persisted as JSON files under FastRender’s per-user config directory (for example <code>~/.config/fastrender/</code> on Linux). You can override the file paths with <code>FASTR_BROWSER_BOOKMARKS_PATH</code> / <code>FASTR_BROWSER_HISTORY_PATH</code>.</li>
+      </ul>
+
       <h2>Keyboard shortcuts</h2>
       <ul>
-        <li><kbd>Ctrl</kbd>+<kbd>L</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd> — Focus address bar</li>
-        <li><kbd>Ctrl</kbd>+<kbd>T</kbd> — New tab</li>
-        <li><kbd>Ctrl</kbd>+<kbd>W</kbd> — Close tab</li>
-        <li><kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab</li>
-        <li><kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> — Back/forward</li>
-        <li><kbd>Ctrl</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload</li>
-        <li><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — Activate tab (9 = last)</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>L</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>K</kbd> — Focus address bar</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> — New tab</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> — Reopen last closed tab</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>W</kbd> — Close tab</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab</li>
+        <li><kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> (macOS) — Back/forward</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — Activate tab (9 = last)</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd> — Toggle bookmark</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> — Show bookmarks manager</li>
+        <li><kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Y</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS) — Show history</li>
       </ul>
 
       <h2>Built-in pages</h2>
@@ -780,5 +792,28 @@ mod tests {
       html.contains("<pre>network failed: &lt;timeout&gt;</pre>"),
       "expected HTML-escaped raw error message inside <details>"
     );
+  }
+
+  #[test]
+  fn help_page_includes_bookmarks_and_history_shortcuts() {
+    let html = html_for_about_url(ABOUT_HELP).unwrap();
+
+    for needle in [
+      // Bookmarks.
+      "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd>",
+      "Toggle bookmark",
+      "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>",
+      "Show bookmarks manager",
+      // History.
+      "<kbd>Ctrl</kbd>+<kbd>H</kbd>",
+      "<kbd>Cmd</kbd>+<kbd>Y</kbd>",
+      "<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd>",
+      "Show history",
+    ] {
+      assert!(
+        html.contains(needle),
+        "expected about:help HTML to contain {needle:?}"
+      );
+    }
   }
 }

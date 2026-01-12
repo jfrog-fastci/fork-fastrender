@@ -43,6 +43,8 @@ end-to-end:
     → `https://example.com/`, filesystem paths → `file://...`)
   - per-tab history with back/forward/reload
   - loading + error status in the chrome
+- **Bookmarks**: bookmark the current page (star button / Ctrl/Cmd+D), bookmarks bar, bookmarks manager.
+- **History**: global history panel with search + clear.
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
 - **Pointer/keyboard routing**:
   - link clicking (`<a href=...>`) navigates

@@ -77,8 +77,11 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_BROWSER_WGPU_BACKENDS=<backend[,backend...]>` – select `wgpu` backend(s) used by the `browser` UI.
   - CLI equivalent: `browser --wgpu-backend <backend>` / `browser --wgpu-backends <backend[,backend...]>`.
   - Accepted values: `vulkan`, `metal`, `dx12`, `dx11`, `gl`, `all` (aliases: `auto`, `default`).
+- `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/bookmarks.json` – override the bookmarks persistence file path (JSON).
+- `FASTR_BROWSER_HISTORY_PATH=/path/to/history.json` – override the history persistence file path (JSON).
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON=<json>` – **test-only** hook: override the restored session used by headless smoke mode with an explicit `BrowserSession` JSON value.
 
 ### Appearance / accessibility / debugging (browser UX)
 

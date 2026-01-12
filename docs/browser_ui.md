@@ -241,6 +241,9 @@ The browser also requests `Theme::Dark` on Linux:
 | Cmd+[ (macOS) | Back |
 | Cmd+] (macOS) | Forward |
 | Ctrl/Cmd+R / F5 | Reload |
+| Ctrl/Cmd+D | Toggle bookmark for current page |
+| Ctrl+H (Win/Linux); Cmd+Y / Cmd+Shift+H (macOS) | Show history |
+| Ctrl/Cmd+Shift+O | Show bookmarks manager |
 | Ctrl/Cmd+Plus / Ctrl/Cmd+Equals | Zoom in |
 | Ctrl/Cmd+Minus | Zoom out |
 | Ctrl/Cmd+0 | Reset zoom |
@@ -266,6 +269,27 @@ The browser also requests `Theme::Dark` on Linux:
 | Shift+Delete (page focus, Win/Linux) | Cut selection from the focused page `<input>`/`<textarea>` |
 
 Note: zoom is tracked per-tab and persisted in the browser session file (see `src/ui/session.rs`).
+
+## Bookmarks / History
+
+FastRender’s experimental desktop browser UI supports **bookmarks** and a basic **history** panel.
+
+- **Bookmarking**:
+  - Click the **star** button in the toolbar (or press <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd>) to
+    toggle a bookmark for the current page.
+  - Bookmarks appear in the **bookmarks bar** for quick access.
+  - Use the **bookmarks manager** (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>) to
+    browse/edit/remove bookmarks.
+- **History**:
+  - Open the history panel with <kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux) or <kbd>Cmd</kbd>+<kbd>Y</kbd>
+    / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS).
+  - The history UI includes **search** and a **clear** action.
+- **Persistence**:
+  - Bookmarks and history are stored as JSON files under the per-user FastRender config directory
+    (for example `~/.config/fastrender/` on Linux).
+  - Override the default paths with:
+    - `FASTR_BROWSER_BOOKMARKS_PATH`
+    - `FASTR_BROWSER_HISTORY_PATH`
 
 ## Code layout
 
