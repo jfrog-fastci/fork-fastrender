@@ -123,6 +123,9 @@ pub mod window_xhr;
 #[path = "vmjs/window_structured_clone.rs"]
 pub mod window_structured_clone;
 
+#[path = "vmjs/window_streams.rs"]
+pub mod window_streams;
+
 #[cfg(test)]
 #[path = "vmjs/regression_tests.rs"]
 mod vmjs_regression_tests;
