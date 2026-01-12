@@ -41,6 +41,58 @@ fn for_await_over_array_awaits_values() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_for_await_of_lhs_destructuring_default_value() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        for await (const { x = await Promise.resolve("ok") } of [ {} ]) {
+          return x;
+        }
+        return "bad";
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_for_await_of_lhs_destructuring_computed_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        for await (const { [await Promise.resolve("x")]: v } of [ { x: "ok" } ]) {
+          return v;
+        }
+        return "bad";
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
 fn for_await_over_custom_async_iterable() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
