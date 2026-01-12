@@ -1,7 +1,8 @@
 #![cfg(all(feature = "typed", feature = "semantic-ops"))]
 
 use optimize_js::analysis::async_elision::AsyncElisionOptions;
-use optimize_js::il::inst::{AwaitBehavior, InstTyp};
+use optimize_js::analysis::async_elision::await_operand;
+use optimize_js::il::inst::AwaitBehavior;
 use optimize_js::opt::optpass_async_elision::optpass_async_elision;
 use optimize_js::{CompileCfgOptions, TopLevelMode};
 
@@ -40,7 +41,9 @@ fn await_literal_may_not_yield() {
   for func in &program.functions {
     for label in func.body.graph.labels_sorted() {
       for inst in func.body.bblocks.get(label) {
-        if inst.t == InstTyp::Call && inst.meta.await_behavior == Some(AwaitBehavior::MayNotYield) {
+        if await_operand(inst).is_some()
+          && inst.meta.await_behavior == Some(AwaitBehavior::MayNotYield)
+        {
           found = true;
         }
       }
@@ -49,4 +52,3 @@ fn await_literal_may_not_yield() {
 
   assert!(found, "expected at least one await to be marked MayNotYield");
 }
-

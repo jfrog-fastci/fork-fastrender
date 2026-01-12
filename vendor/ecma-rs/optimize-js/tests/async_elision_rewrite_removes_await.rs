@@ -1,22 +1,14 @@
 #![cfg(all(feature = "typed", feature = "semantic-ops"))]
 
 use optimize_js::analysis::async_elision::AsyncElisionOptions;
-use optimize_js::il::inst::{Arg, Const, InstTyp};
+use optimize_js::analysis::async_elision::await_operand;
 use optimize_js::opt::optpass_async_elision::optpass_async_elision;
 use optimize_js::{CompileCfgOptions, TopLevelMode};
 
-fn has_internal_await(cfg: &optimize_js::cfg::cfg::Cfg) -> bool {
+fn has_await(cfg: &optimize_js::cfg::cfg::Cfg) -> bool {
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get(label) {
-      if inst.t != InstTyp::Call {
-        continue;
-      }
-      let (_, callee, this, args, spreads) = inst.as_call();
-      if spreads.is_empty()
-        && matches!(this, Arg::Const(Const::Undefined))
-        && matches!(callee, Arg::Builtin(path) if path == "__optimize_js_await")
-        && args.len() == 1
-      {
+      if await_operand(inst).is_some() {
         return true;
       }
     }
@@ -50,8 +42,7 @@ fn async_elision_rewrite_removes_await() {
   }
 
   assert!(
-    program.functions.iter().all(|f| !has_internal_await(&f.body)),
+    program.functions.iter().all(|f| !has_await(&f.body)),
     "expected await to be rewritten away when rewrite=true"
   );
 }
-

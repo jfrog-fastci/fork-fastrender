@@ -1,20 +1,9 @@
 #![cfg(all(feature = "typed", feature = "semantic-ops"))]
 
 use optimize_js::analysis::async_elision::AsyncElisionOptions;
-use optimize_js::il::inst::{AwaitBehavior, Arg, Const, InstTyp};
+use optimize_js::analysis::async_elision::await_operand;
 use optimize_js::opt::optpass_async_elision::optpass_async_elision;
 use optimize_js::{CompileCfgOptions, TopLevelMode};
-
-fn is_internal_await(inst: &optimize_js::il::inst::Inst) -> bool {
-  if inst.t != InstTyp::Call {
-    return false;
-  }
-  let (_, callee, this, args, spreads) = inst.as_call();
-  spreads.is_empty()
-    && matches!(this, Arg::Const(Const::Undefined))
-    && matches!(callee, Arg::Builtin(path) if path == "__optimize_js_await")
-    && args.len() == 1
-}
 
 #[test]
 fn await_unknown_keeps_must_yield() {
@@ -46,14 +35,14 @@ fn await_unknown_keeps_must_yield() {
   for func in &program.functions {
     for label in func.body.graph.labels_sorted() {
       for inst in func.body.bblocks.get(label) {
-        if !is_internal_await(inst) {
+        if await_operand(inst).is_none() {
           continue;
         }
         saw_await = true;
-        assert_eq!(
-          inst.meta.await_behavior,
-          Some(AwaitBehavior::MustYield),
-          "expected await to remain MustYield"
+        assert!(
+          inst.meta.await_behavior.is_none(),
+          "expected await to remain MustYield (await_behavior unset), got {:?}",
+          inst.meta.await_behavior
         );
       }
     }
@@ -61,4 +50,3 @@ fn await_unknown_keeps_must_yield() {
 
   assert!(saw_await, "expected to find an await instruction in lowered IL");
 }
-

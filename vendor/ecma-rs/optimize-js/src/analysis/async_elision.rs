@@ -33,9 +33,19 @@ pub struct AsyncElisionResult {
 
 pub(crate) const INTERNAL_AWAIT_CALLEE: &str = "__optimize_js_await";
 
-/// Returns the awaited operand for the internal await helper call, when `inst`
-/// is an await.
+/// Returns the awaited operand when `inst` is an await.
+///
+/// Supports both:
+/// - `InstTyp::Await` (when `native-async-ops` is enabled)
+/// - `Call(__optimize_js_await, undefined, value)` legacy lowering
 pub fn await_operand(inst: &Inst) -> Option<&Arg> {
+  #[cfg(feature = "native-async-ops")]
+  {
+    if inst.t == InstTyp::Await {
+      return inst.args.get(0);
+    }
+  }
+
   if inst.t != InstTyp::Call {
     return None;
   }
@@ -95,6 +105,13 @@ pub fn analyze_cfg_async_elision(cfg: &Cfg, options: AsyncElisionOptions) -> Asy
         continue;
       };
       let behavior = classify_await_operand(operand, &types, options);
+      #[cfg(feature = "native-async-ops")]
+      {
+        if options.aggressive && inst.t == InstTyp::Await && inst.meta.await_known_resolved {
+          awaits.insert(InstKey { label, index }, AwaitBehavior::MayNotYield);
+          continue;
+        }
+      }
       awaits.insert(InstKey { label, index }, behavior);
     }
   }
