@@ -6,34 +6,34 @@
 
 | Metric | Count |
 | --- | ---: |
-| Total cases | 15209 |
-| Matched upstream expected | 11177 |
-| Mismatched upstream expected | 4032 |
+| Total cases | 15378 |
+| Matched upstream expected | 12703 |
+| Mismatched upstream expected | 2675 |
 | Timeouts | 0 |
 
 ### Manifest expectations (kind)
 
 | Kind | Count |
 | --- | ---: |
-| pass | 1662 |
-| xfail | 13545 |
-| skip | 2 |
+| pass | 1802 |
+| xfail | 13566 |
+| skip | 10 |
 | flaky | 0 |
 
 ### Results vs expectations
 
 | Status | Count |
 | --- | ---: |
-| PASS (pass+matched) | 1662 |
-| XFAIL (xfail+mismatched) | 4032 |
-| SKIP | 2 |
-| XPASS (xfail+matched) | 9513 |
+| PASS (pass+matched) | 1802 |
+| XFAIL (xfail+mismatched) | 2675 |
+| SKIP | 10 |
+| XPASS (xfail+matched) | 10891 |
 
 ### Mismatch classification (for `--fail-on`)
 
 | Kind | Count |
 | --- | ---: |
-| expected | 4032 |
+| expected | 2675 |
 | unexpected | 0 |
 | flaky | 0 |
 
@@ -41,16 +41,21 @@
 
 | Area | Total | PASS | XFAIL | SKIP | Unexpected | Timeouts | ΔPASS | ΔXFAIL | ΔTimeout |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `built-ins/Array` | 1120 | 0 | 343 | 2 | 0 | 0 |  |  |  |
-| `built-ins/Boolean` | 101 | 0 | 21 | 0 | 0 | 0 |  |  |  |
-| `built-ins/JSON` | 330 | 0 | 106 | 0 | 0 | 0 |  |  |  |
-| `built-ins/Math` | 654 | 0 | 48 | 0 | 0 | 0 |  |  |  |
-| `built-ins/Number` | 302 | 0 | 82 | 0 | 0 | 0 |  |  |  |
-| `built-ins/Object` | 1664 | 538 | 570 | 0 | 0 | 0 |  |  |  |
-| `built-ins/String` | 768 | 82 | 254 | 0 | 0 | 0 |  |  |  |
-| `built-ins/Symbol` | 184 | 42 | 48 | 0 | 0 | 0 |  |  |  |
+| `built-ins/Array` | 1124 | 0 | 161 | 10 | 0 | 0 |  |  |  |
+| `built-ins/Boolean` | 101 | 0 | 1 | 0 | 0 | 0 |  |  |  |
+| `built-ins/Function` | 86 | 0 | 0 | 0 | 0 | 0 |  |  |  |
+| `built-ins/JSON` | 330 | 0 | 92 | 0 | 0 | 0 |  |  |  |
+| `built-ins/Math` | 654 | 0 | 46 | 0 | 0 | 0 |  |  |  |
+| `built-ins/Number` | 302 | 0 | 0 | 0 | 0 | 0 |  |  |  |
+| `built-ins/Object` | 1664 | 570 | 130 | 0 | 0 | 0 |  |  |  |
+| `built-ins/Promise` | 64 | 64 | 0 | 0 | 0 | 0 |  |  |  |
+| `built-ins/String` | 768 | 82 | 134 | 0 | 0 | 0 |  |  |  |
+| `built-ins/Symbol` | 184 | 42 | 18 | 0 | 0 | 0 |  |  |  |
+| `built-ins/WeakMap` | 8 | 8 | 0 | 0 | 0 | 0 |  |  |  |
+| `built-ins/WeakSet` | 6 | 6 | 0 | 0 | 0 | 0 |  |  |  |
 | `language/block-scope` | 287 | 0 | 191 | 0 | 0 | 0 |  |  |  |
 | `language/directive-prologue` | 62 | 0 | 6 | 0 | 0 | 0 |  |  |  |
-| `language/expressions` | 2325 | 1000 | 265 | 0 | 0 | 0 |  |  |  |
-| `language/function-code` | 281 | 0 | 16 | 0 | 0 | 0 |  |  |  |
-| `language/statements` | 7131 | 0 | 2082 | 0 | 0 | 0 |  |  |  |
+| `language/expressions` | 2325 | 1030 | 207 | 0 | 0 | 0 |  |  |  |
+| `language/function-code` | 281 | 0 | 2 | 0 | 0 | 0 |  |  |  |
+| `language/statements` | 7131 | 0 | 1687 | 0 | 0 | 0 |  |  |  |
+| `staging/sm` | 1 | 0 | 0 | 0 | 0 | 0 |  |  |  |

@@ -141,11 +141,6 @@ id = "language/expressions/tagged-template/tco-member.js"
 status = "xfail"
 reason = "vm-js does not yet implement proper tail calls (PTC)."
 
-[[expectations]]
-id = "language/expressions/tagged-template/template-object.js"
-status = "xfail"
-reason = "vm-js does not yet implement Object.prototype.propertyIsEnumerable, which is required by test262's propertyHelper.js harness."
-
 # --- Broad xfail fallback (keep below any `pass` globs) ---
 [[expectations]]
 glob = "language/expressions/**"
@@ -222,6 +217,11 @@ status = "skip"
 reason = "vm-js: test262 case triggers a timeout (pathological array length / allocation)."
 
 [[expectations]]
+id = "built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js"
+status = "skip"
+reason = "vm-js: test262 case triggers a timeout (large TypedArray concat)."
+
+[[expectations]]
 id = "built-ins/Array/prototype/sort/call-with-primitive.js"
 status = "xfail"
 reason = "vm-js: BigInt constructor is not implemented (test uses `instanceof BigInt`)."
@@ -280,6 +280,10 @@ reason = "vm-js bug: Symbol.prototype.description should throw a TypeError for n
 
 [[expectations]]
 glob = "built-ins/Object/getOwnPropertyNames/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Object/prototype/propertyIsEnumerable/**"
 status = "pass"
 
 [[expectations]]
