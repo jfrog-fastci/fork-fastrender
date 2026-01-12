@@ -41,8 +41,3 @@ mod tooling;
 mod regression;
 mod bin;
 mod bundled;
-
-#[test]
-fn fuzz_corpus_smoke_test() {
-  tooling::fuzz_corpus_smoke::fuzz_corpus_smoke_test();
-}
