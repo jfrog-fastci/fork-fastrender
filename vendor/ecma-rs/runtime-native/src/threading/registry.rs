@@ -480,9 +480,9 @@ fn clear_tls_thread_registration() {
 /// Return this thread's registered [`ThreadState`], if any.
 pub fn current_thread_state() -> Option<Arc<ThreadState>> {
   // `current_thread_state` can be called from `Drop` paths during thread-local destruction (e.g. via
-  // `GcAwareMutex`). Accessing a TLS value at that point would panic with `AccessError` and abort
-  // the process (TLS dtors are `abort_on_dtor_unwind`). Treat an inaccessible TLS key as
-  // "unregistered" instead so cleanup paths can complete without panicking.
+  // `GcAwareMutex`). Accessing a TLS value at that point panics with `AccessError`, and TLS dtors
+  // are `abort_on_dtor_unwind` so it would abort the process. Treat an inaccessible TLS key as
+  // "unregistered" instead so cleanup paths can complete.
   TLS_THREAD_REGISTRATION
     .try_with(|cell| cell.borrow().as_ref().map(|reg| reg.state.clone()))
     .ok()

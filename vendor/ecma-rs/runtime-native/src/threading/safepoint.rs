@@ -3,6 +3,7 @@ use crate::gc::RootSet;
 use crate::gc_roots::RelocPair;
 use crate::sync::GcAwareMutex;
 use crate::threading::registry;
+use parking_lot::MutexGuard;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -149,7 +150,7 @@ struct SafepointCoordinator {
   /// How many threads are currently blocked inside [`rt_gc_safepoint`]'s slow path.
   threads_waiting: AtomicUsize,
 
-  gc_lock: Mutex<()>,
+  gc_lock: GcAwareMutex<()>,
 
   cv_mutex: Mutex<()>,
   cv: Condvar,
@@ -159,7 +160,7 @@ impl SafepointCoordinator {
   fn new() -> Self {
     Self {
       threads_waiting: AtomicUsize::new(0),
-      gc_lock: Mutex::new(()),
+      gc_lock: GcAwareMutex::new(()),
       cv_mutex: Mutex::new(()),
       cv: Condvar::new(),
     }
@@ -257,11 +258,8 @@ pub(crate) fn wait_while_stop_the_world() {
 }
 
 /// Lock held by the GC coordinator while the world is stopped and thread contexts are being read.
-pub(crate) fn gc_world_lock() -> std::sync::MutexGuard<'static, ()> {
-  coordinator()
-    .gc_lock
-    .lock()
-    .unwrap_or_else(|e| e.into_inner())
+pub(crate) fn gc_world_lock() -> MutexGuard<'static, ()> {
+  coordinator().gc_lock.lock()
 }
 
 /// Block the current thread while the global safepoint epoch remains equal to `expected_epoch`.
@@ -488,7 +486,7 @@ where
   let _clear = ClearFlag;
 
   let coord = coordinator();
-  let gc_guard = coord.gc_lock.lock().unwrap_or_else(|e| e.into_inner());
+  let gc_guard = coord.gc_lock.lock_for_gc();
 
   let coordinator_id = registry::current_thread_id();
 
