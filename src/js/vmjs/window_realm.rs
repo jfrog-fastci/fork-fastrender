@@ -37159,6 +37159,42 @@ mod tests {
       })()",
     )?;
     assert_eq!(get_string(realm.heap(), add_null_is_noop), "ok");
+
+    let remove_null_is_noop = realm.exec_script(
+      "(() => {\n\
+        try {\n\
+          new EventTarget().removeEventListener('x', null);\n\
+          return 'ok';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), remove_null_is_noop), "ok");
+
+    let add_undefined_is_noop = realm.exec_script(
+      "(() => {\n\
+        try {\n\
+          new EventTarget().addEventListener('x', undefined);\n\
+          return 'ok';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), add_undefined_is_noop), "ok");
+
+    let remove_undefined_is_noop = realm.exec_script(
+      "(() => {\n\
+        try {\n\
+          new EventTarget().removeEventListener('x', undefined);\n\
+          return 'ok';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), remove_undefined_is_noop), "ok");
     Ok(())
   }
 
@@ -39434,6 +39470,51 @@ mod tests {
       })()",
     )?;
     assert_eq!(get_string(realm.heap(), add_null_is_noop), "ok");
+
+    let remove_null_is_noop = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        try {\n\
+          el.removeEventListener('x', null);\n\
+          return 'ok';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), remove_null_is_noop), "ok");
+
+    let add_undefined_is_noop = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        try {\n\
+          el.addEventListener('x', undefined);\n\
+          return 'ok';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), add_undefined_is_noop), "ok");
+
+    let remove_undefined_is_noop = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        try {\n\
+          el.removeEventListener('x', undefined);\n\
+          return 'ok';\n\
+        } catch (e) {\n\
+          return e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), remove_undefined_is_noop), "ok");
 
     Ok(())
   }
