@@ -194,3 +194,66 @@ fn forbidden_template_marker_builtin_triggers_diagnostic() {
     "expected OPTN0005 banned-builtin diagnostic, got {err:?}"
   );
 }
+
+#[test]
+fn phi_labels_must_match_cfg_predecessors() {
+  // The verifier should reject Phi nodes whose incoming label set doesn't match the CFG predecessor
+  // set. This catches subtle SSA bugs that can otherwise silently miscompile.
+  let mut graph = CfgGraph::default();
+  for label in [0, 1, 2, 3] {
+    graph.ensure_label(label);
+  }
+  graph.connect(0, 1);
+  graph.connect(0, 2);
+  graph.connect(1, 3);
+  graph.connect(2, 3);
+
+  let mut bblocks = CfgBBlocks::default();
+  bblocks.add(0, Vec::new());
+  bblocks.add(1, Vec::new());
+  bblocks.add(2, Vec::new());
+
+  let mut phi = Inst::phi_empty(0);
+  // Block 3 has predecessors {1, 2}, but we provide {0, 1}.
+  phi.insert_phi(1, Arg::Const(Const::Undefined));
+  phi.insert_phi(0, Arg::Const(Const::Undefined));
+  bblocks.add(3, vec![phi, Inst::ret(None)]);
+
+  let cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let top_level = ProgramFunction {
+    debug: None,
+    meta: Default::default(),
+    body: cfg.clone(),
+    params: Vec::new(),
+    ssa_body: Some(cfg),
+    stats: OptimizationStats::default(),
+  };
+  let program = Program {
+    source_file: FileId(0),
+    source_len: 0,
+    functions: Vec::new(),
+    top_level,
+    top_level_mode: TopLevelMode::Module,
+    symbols: None,
+  };
+
+  let err = verify_program_strict_native(
+    &program,
+    &VerifyOptions {
+      file: FileId(0),
+      require_type_metadata: false,
+      ..Default::default()
+    },
+  )
+  .expect_err("expected verifier to reject Phi with mismatched incoming labels");
+
+  assert!(
+    err.iter().any(|diag| diag.code == "OPTN0007" && diag.message.contains("incoming labels do not match CFG predecessors")),
+    "expected OPTN0007 phi-label mismatch diagnostic, got {err:?}"
+  );
+}
