@@ -10933,7 +10933,6 @@ fn dom_parser_parse_from_string_native(
 
   Ok(Value::Object(document_obj))
 }
-
 fn define_event_default_properties(scope: &mut Scope<'_>, obj: GcObject) -> Result<(), VmError> {
   // WHATWG DOM: core Event attributes must exist from construction time (or `createEvent`), with
   // default values until dispatch populates them.
@@ -37706,10 +37705,8 @@ mod tests {
     );
     event.is_trusted = true;
     event.mouse = Some(web_events::MouseEvent {
-      detail: 1,
       client_x: 12.5,
       client_y: 34.0,
-      detail: 1,
       button: 0,
       buttons: 1,
       detail: 1,

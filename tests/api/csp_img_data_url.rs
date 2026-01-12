@@ -46,7 +46,9 @@ fn csp_img_src_wildcard_blocks_data_url_images() {
       .expect("render should succeed");
 
     assert_eq!(
-      rgba_at(&result.pixmap, 10, 10),
+      // Sample a pixel away from the UA broken-image border/icon in case the renderer paints a
+      // placeholder for blocked images.
+      rgba_at(&result.pixmap, 15, 15),
       (255, 0, 0, 255),
       "expected img-src * to block data: images, leaving the red background visible"
     );
@@ -89,7 +91,7 @@ fn csp_img_src_data_allows_data_url_images() {
       .expect("render should succeed");
 
     assert_eq!(
-      rgba_at(&result.pixmap, 10, 10),
+      rgba_at(&result.pixmap, 15, 15),
       (0, 255, 0, 255),
       "expected img-src data: to allow data: images to render"
     );

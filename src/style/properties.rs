@@ -14328,7 +14328,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.text_orientation = match kw.as_str() {
           // Legacy keyword (MDN compat). Historically, `use-glyph-orientation` interacted with the
           // deprecated `glyph-orientation-*` properties. We do not implement those, so treat it as
-          // `mixed` (the initial value).
+          // the safe fallback `mixed` (the initial value).
           "use-glyph-orientation" => TextOrientation::Mixed,
           "mixed" => TextOrientation::Mixed,
           "upright" => TextOrientation::Upright,
