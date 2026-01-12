@@ -531,10 +531,61 @@ fn array_destructuring_iterator_return_must_return_object() {
         var [] = iterable;
         false;
       } catch (e) {
-        e instanceof TypeError
-      }
+         e instanceof TypeError
+       }
       "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_uses_proxy_get_trap_for_length_and_index() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let global = rt.realm().global_object();
+
+  rt.exec_script(
+    r#"
+      var log = [];
+      var target = ["x"];
+      var handler = {
+        get: function (t, k, r) {
+          log.push(String(k));
+          return t[k];
+        },
+      };
+    "#,
+  )?;
+
+  let target = match rt.exec_script("target")? {
+    Value::Object(o) => o,
+    other => panic!("expected target object, got {other:?}"),
+  };
+  let handler = match rt.exec_script("handler")? {
+    Value::Object(o) => o,
+    other => panic!("expected handler object, got {other:?}"),
+  };
+
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(target))?;
+    scope.push_root(Value::Object(handler))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  let ok = rt.exec_script(
+    r#"
+      (() => {
+        var x;
+        ([x] = p);
+        return x === "x"
+          && log.join(",").includes("length")
+          && log.join(",").includes("0");
+      })()
+    "#,
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
 }

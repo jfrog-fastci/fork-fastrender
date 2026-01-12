@@ -7271,12 +7271,17 @@ pub fn object_prototype___proto___set(
   }
 }
 
-fn get_array_length(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result<usize, VmError> {
+fn get_array_length(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+) -> Result<usize, VmError> {
   let length_key = string_key(scope, "length")?;
-  Ok(match get_data_property_value(vm, scope, obj, &length_key)? {
-    Some(v) => to_length(v),
-    None => 0,
-  })
+  let length_value =
+    scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  Ok(to_length(length_value))
 }
 
 fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
@@ -8411,7 +8416,7 @@ pub fn array_prototype_join(
     _ => return Err(VmError::Unimplemented("Array.prototype.join on non-object")),
   };
 
-  let len = get_array_length(vm, scope, this_obj)?;
+  let len = get_array_length(vm, scope, host, hooks, this_obj)?;
 
   let sep = match args.first().copied() {
     None | Some(Value::Undefined) => scope.alloc_string(",")?,
@@ -9327,7 +9332,7 @@ pub fn array_iterator_next(
     _ => return Err(VmError::TypeError("Array iterator internal kind is not a number")),
   };
 
-  let len = get_array_length(vm, &mut scope, array_obj)?;
+  let len = get_array_length(vm, &mut scope, host, hooks, array_obj)?;
   if idx >= len {
     // End-of-iteration: clear `[[IteratedObject]]` so the underlying array can be collected if this
     // iterator is retained.
@@ -9365,7 +9370,7 @@ pub fn array_iterator_next(
       scope.push_root(Value::String(idx_s))?;
       let key = PropertyKey::from_string(idx_s);
       let value =
-        scope.ordinary_get_with_host_and_hooks(vm, host, hooks, array_obj, key, Value::Object(array_obj))?;
+        scope.get_with_host_and_hooks(vm, host, hooks, array_obj, key, Value::Object(array_obj))?;
       // Root the retrieved value across subsequent allocations/GC. This matters in particular for
       // accessors that return freshly allocated objects/strings.
       scope.push_root(value)?;
