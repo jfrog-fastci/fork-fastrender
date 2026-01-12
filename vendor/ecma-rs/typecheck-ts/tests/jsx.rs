@@ -741,8 +741,8 @@ function Foo(props: Props): JSX.Element { return null as any; }
   assert!(
     diagnostics
       .iter()
-      .any(|d| d.code.as_str() == codes::IMPLICIT_ANY.as_str()),
-    "expected at least one diagnostic for wrong discriminated union JSX prop usage, got {diagnostics:?}"
+      .any(|d| d.code.as_str() == codes::PROPERTY_DOES_NOT_EXIST.as_str()),
+    "expected PROPERTY_DOES_NOT_EXIST diagnostic for wrong discriminated union JSX prop usage, got {diagnostics:?}"
   );
 }
 
