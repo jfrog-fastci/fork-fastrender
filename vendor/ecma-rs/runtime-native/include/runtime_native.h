@@ -623,6 +623,8 @@ PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t
 // - The runtime registers a strong GC root for `data` until the task completes.
 // - The worker callback receives the (possibly relocated) pointer after any GC relocation.
 PromiseRef rt_parallel_spawn_promise_rooted(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);
+// Like `rt_parallel_spawn_promise_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
+PromiseRef rt_parallel_spawn_promise_rooted_h(void (*task)(uint8_t*, PromiseRef), GcHandle data, PromiseLayout layout);
 
 // -----------------------------------------------------------------------------
 // Blocking thread pool

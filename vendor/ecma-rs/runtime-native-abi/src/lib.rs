@@ -618,6 +618,11 @@ extern "C" {
     data: GcPtr,
     layout: PromiseLayout,
   ) -> PromiseRef;
+  pub fn rt_parallel_spawn_promise_rooted_h(
+    task: RtParallelPromiseTaskFn,
+    data: GcHandle,
+    layout: PromiseLayout,
+  ) -> PromiseRef;
   pub fn rt_spawn_blocking(
     task: extern "C" fn(*mut u8, LegacyPromiseRef),
     data: *mut u8,
@@ -1145,6 +1150,7 @@ mod tests {
       "rt_parallel_for(",
       "rt_parallel_spawn_promise(",
       "rt_parallel_spawn_promise_rooted(",
+      "rt_parallel_spawn_promise_rooted_h(",
       "rt_spawn_blocking(",
       "rt_spawn_blocking_rooted(",
       "rt_promise_init(",

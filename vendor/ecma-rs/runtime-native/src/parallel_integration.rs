@@ -2,6 +2,7 @@ use crate::abi::PromiseRef;
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING};
 use crate::async_runtime::PromiseLayout;
 use crate::async_rt::gc::Root;
+use crate::roots::GcHandle;
 use crate::threading::ThreadKind;
 use core::sync::atomic::Ordering;
 
@@ -92,4 +93,18 @@ pub(crate) fn spawn_promise_rooted(
   // GC-managed object.
   let root = unsafe { Root::new_unchecked(data) };
   spawn_promise_impl(func, data, layout, Some(root))
+}
+
+pub(crate) unsafe fn spawn_promise_rooted_h(
+  func: extern "C" fn(*mut u8, PromiseRef),
+  data: GcHandle,
+  layout: PromiseLayout,
+) -> PromiseRef {
+  // Safety: caller must uphold the rooted-task contract that `data` is a valid pointer to a
+  // writable `GcPtr` slot containing the base pointer of a GC-managed object.
+  let root = unsafe { Root::new_from_slot_unchecked(data) };
+  // Provide the current pointer value for consistency/debugging; the trampoline will always reload
+  // via `root.ptr()` before invoking the callback.
+  let ptr = root.ptr();
+  spawn_promise_impl(func, ptr, layout, Some(root))
 }

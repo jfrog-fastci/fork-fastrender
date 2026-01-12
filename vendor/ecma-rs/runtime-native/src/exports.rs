@@ -1355,6 +1355,26 @@ pub extern "C" fn rt_parallel_spawn_promise_rooted(
   })
 }
 
+/// Like [`rt_parallel_spawn_promise_rooted`], but takes the GC-managed `data` pointer as a `GcHandle`
+/// (pointer-to-slot).
+///
+/// # Safety
+/// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
+/// object base pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_parallel_spawn_promise_rooted_h(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: crate::roots::GcHandle,
+  promise_layout: PromiseLayout,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    // Safety: caller contract.
+    unsafe { crate::parallel_integration::spawn_promise_rooted_h(task, data, promise_layout) }
+  })
+}
+
 #[no_mangle]
 pub extern "C" fn rt_spawn_blocking(
   task: extern "C" fn(*mut u8, PromiseRef),

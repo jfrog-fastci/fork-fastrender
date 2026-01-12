@@ -151,22 +151,39 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
   let join_guard = ParallelJoinGuard { ctx, tasks };
 
   let mut heap = GcHeap::new();
-  let obj = unsafe { init_test_obj(&mut heap) };
-  let weak = runtime_native::rt_weak_add(obj);
-  let _weak_guard = WeakHandleGuard(weak);
+  let obj_rooted = unsafe { init_test_obj(&mut heap) };
+  let obj_rooted_h = unsafe { init_test_obj(&mut heap) };
 
-  let promise = runtime_native::rt_parallel_spawn_promise_rooted(
+  let weak_rooted = runtime_native::rt_weak_add(obj_rooted);
+  let weak_rooted_h = runtime_native::rt_weak_add(obj_rooted_h);
+  let _weak_guard_rooted = WeakHandleGuard(weak_rooted);
+  let _weak_guard_rooted_h = WeakHandleGuard(weak_rooted_h);
+
+  let promise_rooted = runtime_native::rt_parallel_spawn_promise_rooted(
     record_magic_and_fulfill,
-    obj,
+    obj_rooted,
     PromiseLayout::of::<()>(),
   );
+
+  let mut slot = obj_rooted_h;
+  let promise_rooted_h = unsafe {
+    runtime_native::rt_parallel_spawn_promise_rooted_h(
+      record_magic_and_fulfill,
+      runtime_native::roots::handle_from_slot(&mut slot),
+      PromiseLayout::of::<()>(),
+    )
+  };
 
   // Move/collect while the task is still queued behind the blocking tasks.
   collect_major(&mut heap);
 
-  let after_gc = runtime_native::rt_weak_get(weak);
-  assert!(!after_gc.is_null());
-  assert!(!heap.is_in_nursery(after_gc));
+  let after_gc_rooted = runtime_native::rt_weak_get(weak_rooted);
+  assert!(!after_gc_rooted.is_null());
+  assert!(!heap.is_in_nursery(after_gc_rooted));
+
+  let after_gc_rooted_h = runtime_native::rt_weak_get(weak_rooted_h);
+  assert!(!after_gc_rooted_h.is_null());
+  assert!(!heap.is_in_nursery(after_gc_rooted_h));
 
   // Release workers so the rooted task can run.
   {
@@ -177,28 +194,41 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
 
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
-    let ptr = runtime_native::rt_weak_get(weak);
-    assert!(!ptr.is_null());
-    let seen = unsafe { seen_magic_slot(ptr) }.load(Ordering::Acquire);
-    if seen != 0 {
-      assert_eq!(seen, MAGIC);
+    let ptr_rooted = runtime_native::rt_weak_get(weak_rooted);
+    let ptr_rooted_h = runtime_native::rt_weak_get(weak_rooted_h);
+    assert!(!ptr_rooted.is_null());
+    assert!(!ptr_rooted_h.is_null());
+
+    let seen_rooted = unsafe { seen_magic_slot(ptr_rooted) }.load(Ordering::Acquire);
+    let seen_rooted_h = unsafe { seen_magic_slot(ptr_rooted_h) }.load(Ordering::Acquire);
+    if seen_rooted != 0 && seen_rooted_h != 0 {
+      assert_eq!(seen_rooted, MAGIC);
+      assert_eq!(seen_rooted_h, MAGIC);
       break;
     }
     assert!(Instant::now() < deadline, "rooted promise task did not run in time");
     std::thread::yield_now();
   }
 
-  // Ensure the promise is fulfilled.
-  let promise_header = promise.0.cast::<runtime_native::async_abi::PromiseHeader>();
-  assert!(!promise_header.is_null());
+  // Ensure the promises are fulfilled.
+  let promise_header_rooted = promise_rooted.0.cast::<runtime_native::async_abi::PromiseHeader>();
+  let promise_header_rooted_h = promise_rooted_h.0.cast::<runtime_native::async_abi::PromiseHeader>();
+  assert!(!promise_header_rooted.is_null());
+  assert!(!promise_header_rooted_h.is_null());
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
-    let state = unsafe { &*promise_header }.state.load(Ordering::Acquire);
-    if state == runtime_native::async_abi::PromiseHeader::FULFILLED {
+    let state_rooted = unsafe { &*promise_header_rooted }.state.load(Ordering::Acquire);
+    let state_rooted_h = unsafe { &*promise_header_rooted_h }.state.load(Ordering::Acquire);
+    if state_rooted == runtime_native::async_abi::PromiseHeader::FULFILLED
+      && state_rooted_h == runtime_native::async_abi::PromiseHeader::FULFILLED
+    {
       break;
     }
-    if state == runtime_native::async_abi::PromiseHeader::REJECTED {
+    if state_rooted == runtime_native::async_abi::PromiseHeader::REJECTED {
       panic!("expected rooted promise task to fulfill, but it rejected");
+    }
+    if state_rooted_h == runtime_native::async_abi::PromiseHeader::REJECTED {
+      panic!("expected rooted-h promise task to fulfill, but it rejected");
     }
     assert!(Instant::now() < deadline, "promise did not settle in time");
     runtime_native::rt_async_poll();
@@ -209,12 +239,12 @@ fn parallel_spawn_promise_rooted_roots_and_relocates_task_context() {
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
     collect_major(&mut heap);
-    if runtime_native::rt_weak_get(weak).is_null() {
+    if runtime_native::rt_weak_get(weak_rooted).is_null() && runtime_native::rt_weak_get(weak_rooted_h).is_null() {
       break;
     }
     assert!(
       Instant::now() < deadline,
-      "object stayed alive after rooted promise task executed (root not released?)"
+      "object stayed alive after rooted promise tasks executed (root not released?)"
     );
   }
 
