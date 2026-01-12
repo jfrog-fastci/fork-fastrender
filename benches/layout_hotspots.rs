@@ -27,7 +27,7 @@ use fastrender::style::types::{BorderCollapse, BorderStyle, FlexWrap, TableLayou
 use fastrender::style::values::Length;
 use fastrender::{
   BoxNode, BoxTree, ComputedStyle, FormattingContext, FormattingContextFactory,
-  FormattingContextType, IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
+  FormattingContextType, IntrinsicSizingMode, LayoutConfig, LayoutConstraints, LayoutEngine, Size,
 };
 
 mod common;
@@ -309,6 +309,41 @@ fn build_table_tree(rows: usize, cols: usize) -> BoxNode {
   BoxNode::new_block(table_style, FormattingContextType::Table, vec![row_group])
 }
 
+fn build_float_shrink_to_fit_tree(float_count: usize) -> BoxTree {
+  // Regression protected:
+  // - Shrink-to-fit sizing for floats uses min/max-content intrinsic widths. Those intrinsic widths
+  //   are often computed earlier during parent intrinsic sizing / layout probes (flex, grid, etc.).
+  //   This tree warms the intrinsic cache first, then measures how much work float layout can reuse.
+  const FLOAT_TEXT: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit";
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+  let root_style = Arc::new(root_style);
+
+  let mut float_style = ComputedStyle::default();
+  float_style.display = Display::Block;
+  float_style.float = Float::Left;
+  float_style.width_keyword = None;
+  float_style.height_keyword = None;
+  let float_style = Arc::new(float_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(float_count);
+  for idx in 0..float_count {
+    let text = BoxNode::new_text(text_style.clone(), format!("float-{idx} {FLOAT_TEXT}"));
+    let mut float = BoxNode::new_block(float_style.clone(), FormattingContextType::Block, vec![text]);
+    // Use stable, non-zero ids so intrinsic sizing can be cached.
+    float.id = 10_000 + idx;
+    children.push(float);
+  }
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
+  BoxTree::new(root)
+}
+
 fn bench_flex_measure_hot_path(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
@@ -360,6 +395,57 @@ fn bench_flex_measure_hot_path(c: &mut Criterion) {
         .layout_tree(black_box(&box_tree))
         .expect("flex layout should succeed");
       black_box(fragments);
+    })
+  });
+  group.finish();
+}
+
+fn bench_float_shrink_to_fit_intrinsic_cache_reuse(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+  let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+    .with_parallelism(LayoutParallelism::disabled());
+  let bfc = BlockFormattingContext::with_factory(factory);
+  // Enough floats to make intrinsic sizing meaningful without turning this into a full-page bench.
+  let tree = build_float_shrink_to_fit_tree(64);
+  let constraints = LayoutConstraints::definite(viewport.width, viewport.height);
+
+  // Warm intrinsic caches as if a parent intrinsic probe (or flex/grid measurement pass) had
+  // already walked the subtree.
+  bfc
+    .compute_intrinsic_inline_sizes(&tree.root)
+    .expect("intrinsic sizing should succeed");
+
+  // Capture cache usage for a single cached layout pass so the benchmark documents what it's
+  // measuring (and ensures this scenario keeps producing cache hits).
+  {
+    let stats_engine = LayoutEngine::new(LayoutConfig::for_viewport(viewport));
+    let before = stats_engine.stats();
+    let _ = bfc.layout(&tree.root, &constraints).expect("layout should succeed");
+    let after = stats_engine.stats();
+    let delta_hits = after.cache_hits.saturating_sub(before.cache_hits);
+    let delta_misses = after.cache_misses.saturating_sub(before.cache_misses);
+    let delta_lookups = delta_hits + delta_misses;
+    let hit_rate = if delta_lookups > 0 {
+      (delta_hits as f64 / delta_lookups as f64) * 100.0
+    } else {
+      0.0
+    };
+    assert!(delta_hits > 0, "expected intrinsic cache hits from cached float sizing");
+    eprintln!(
+      "layout_hotspots float_shrink_to_fit_cached: intrinsic_cache lookups={} hits={} misses={} hit_rate={:.2}%",
+      delta_lookups, delta_hits, delta_misses, hit_rate
+    );
+  }
+
+  let mut group = c.benchmark_group("layout_hotspots_float_shrink_to_fit");
+  group.bench_function("layout_cached_intrinsics", |b| {
+    b.iter(|| {
+      let fragment = bfc
+        .layout(black_box(&tree.root), black_box(&constraints))
+        .expect("layout should succeed");
+      black_box(fragment);
     })
   });
   group.finish();
@@ -553,6 +639,7 @@ criterion_group!(
   config = micro_criterion();
   targets =
     bench_flex_measure_hot_path,
+    bench_float_shrink_to_fit_intrinsic_cache_reuse,
     bench_block_intrinsic_sizing,
     bench_block_intrinsic_many_inline_runs,
     bench_float_shrink_to_fit_sizing,

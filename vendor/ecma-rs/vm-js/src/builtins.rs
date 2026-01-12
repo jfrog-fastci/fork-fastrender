@@ -706,7 +706,6 @@ pub fn object_define_properties(
   define_properties(vm, scope, host, hooks, target, props_val)?;
   Ok(Value::Object(target))
 }
-
 pub fn object_create(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

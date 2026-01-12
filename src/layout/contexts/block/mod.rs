@@ -6358,13 +6358,13 @@ impl BlockFormattingContext {
               Ok(values) => values,
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),
               Err(_) => {
-                let preferred_content =
-                  match child_bfc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
-                  {
-                    Ok(value) => value,
-                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                    Err(_) => 0.0,
-                  };
+                let preferred_content = match child_bfc
+                  .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
+                {
+                  Ok(value) => value,
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => 0.0,
+                };
                 (0.0, preferred_content)
               }
             }
@@ -15509,6 +15509,98 @@ mod tests {
     assert!(
       max >= 50.0 - 0.01,
       "max-content should include float width (expected >= 50, got {max})"
+    );
+  }
+
+  #[test]
+  fn float_shrink_to_fit_reuses_intrinsic_cache_within_epoch() {
+    let _guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let next_epoch = crate::layout::formatting_context::intrinsic_cache_epoch() + 1;
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(next_epoch, true);
+
+    let bfc = BlockFormattingContext::new();
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let text_style = Arc::new(text_style);
+    let text = BoxNode::new_text(
+      text_style,
+      "lorem ipsum dolor sit amet consectetur adipiscing elit".to_string(),
+    );
+
+    let mut float_node = BoxNode::new_block(
+      Arc::new(float_style),
+      FormattingContextType::Block,
+      vec![text],
+    );
+    float_node.id = 42424;
+
+    let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![float_node]);
+
+    // Warm the intrinsic cache for the float subtree (as would happen during an earlier intrinsic
+    // sizing probe on the parent).
+    let _ = bfc
+      .compute_intrinsic_inline_sizes(&root)
+      .expect("intrinsic sizing should succeed");
+
+    // Ensure the subsequent layout pass observes cache hits rather than recomputing intrinsic
+    // widths.
+    crate::layout::formatting_context::intrinsic_cache_reset_counters();
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let _ = bfc.layout(&root, &constraints).expect("layout should succeed");
+
+    let (lookups, hits, stores, block_calls, flex_calls, inline_calls) =
+      crate::layout::formatting_context::intrinsic_cache_stats();
+    assert!(
+      hits >= 2,
+      "expected intrinsic cache hits on shrink-to-fit float sizing; lookups={lookups} hits={hits} stores={stores} block_calls={block_calls} flex_calls={flex_calls} inline_calls={inline_calls}",
+    );
+  }
+
+  #[test]
+  fn float_shrink_to_fit_rebases_percentage_padding_and_borders() {
+    let bfc = BlockFormattingContext::new();
+
+    let containing_width = 200.0;
+    let constraints = LayoutConstraints::definite(containing_width, 200.0);
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
+    float_style.padding_left = Length::percent(10.0);
+    float_style.padding_right = Length::percent(10.0);
+    float_style.border_left_style = BorderStyle::Solid;
+    float_style.border_right_style = BorderStyle::Solid;
+    float_style.border_left_width = Length::percent(5.0);
+    float_style.border_right_width = Length::percent(5.0);
+
+    let mut float_node = BoxNode::new_block(
+      Arc::new(float_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    float_node.id = 42425;
+
+    let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![float_node]);
+    let fragment = bfc.layout(&root, &constraints).expect("layout");
+
+    let float_fragment = find_block_fragment(&fragment, 42425).expect("float fragment");
+    let expected_padding = containing_width * (10.0 / 100.0) * 2.0;
+    let expected_borders = containing_width * (5.0 / 100.0) * 2.0;
+    let expected_width = expected_padding + expected_borders;
+    assert!(
+      (float_fragment.bounds.width() - expected_width).abs() < 0.1,
+      "expected rebased float width {expected_width}, got {}",
+      float_fragment.bounds.width(),
     );
   }
 
