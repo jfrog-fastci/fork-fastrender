@@ -220,6 +220,37 @@ fn replace_data_uses_utf16_code_units() {
 }
 
 #[test]
+fn replace_data_offset_uses_utf16_code_units() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let recorder = LiveMutationTestRecorder::default();
+  doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  // U+1F600 GRINNING FACE is encoded as a surrogate pair in UTF-16 (2 code units).
+  let text = doc.create_text("😀");
+  doc.append_child(parent, text).unwrap();
+  let _ = recorder.take();
+
+  // Insert after the emoji. If `offset` were interpreted as a byte index (4 bytes for 😀), this
+  // would target the middle of the UTF-8 encoding and fail.
+  assert!(doc.replace_data(text, 2, 0, "a").unwrap());
+
+  assert_eq!(
+    recorder.take(),
+    vec![LiveMutationEvent::ReplaceData {
+      node: text,
+      offset: 2,
+      removed_len: 0,
+      inserted_len: 1,
+    }]
+  );
+  assert_eq!(doc.text_data(text).unwrap(), "😀a");
+}
+
+#[test]
 fn set_comment_data_emits_replace_data() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let recorder = LiveMutationTestRecorder::default();
