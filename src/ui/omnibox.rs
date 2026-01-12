@@ -94,7 +94,6 @@ impl OmniboxSuggestion {
     }
   }
 }
-
 /// Placeholder for a cache of remote search suggestions.
 #[derive(Debug, Default)]
 pub struct RemoteSearchSuggestCache {
@@ -313,14 +312,14 @@ impl OmniboxProvider for BookmarksProvider {
         }
       }
 
+      let url_owned = url.to_string();
       out.push(OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl(url.to_string()),
+        action: OmniboxAction::NavigateToUrl(url_owned.clone()),
         title: None,
-        url: Some(url.to_string()),
+        url: Some(url_owned),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark),
       });
     }
-
     out
   }
 }
@@ -382,12 +381,15 @@ fn build_omnibox_suggestions_with_providers(
   if input.is_empty() {
     return Vec::new();
   }
-  let input_lower = input.to_ascii_lowercase();
+  let tokens_lower = tokenize_lower(input);
+  if tokens_lower.is_empty() {
+    return Vec::new();
+  }
 
   let mut scored = Vec::<ScoredSuggestion>::new();
   for provider in providers {
     for suggestion in provider.suggestions(ctx, input) {
-      let Some(score) = score_suggestion(&suggestion, &input_lower) else {
+      let Some(score) = score_suggestion(&suggestion, &tokens_lower) else {
         continue;
       };
       scored.push(ScoredSuggestion { suggestion, score });
@@ -416,7 +418,7 @@ struct ScoredSuggestion {
   score: i64,
 }
 
-fn score_suggestion(suggestion: &OmniboxSuggestion, input_lower: &str) -> Option<i64> {
+fn score_suggestion(suggestion: &OmniboxSuggestion, tokens_lower: &[String]) -> Option<i64> {
   let base = match suggestion.source {
     OmniboxSuggestionSource::Primary => 1_000_000,
     // NOTE: Base scores are spaced far enough apart that match bonuses (see `match_score`) cannot
@@ -430,21 +432,25 @@ fn score_suggestion(suggestion: &OmniboxSuggestion, input_lower: &str) -> Option
     OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 500,
   };
 
-  let mut best_match = None::<i64>;
+  let mut match_total = 0i64;
+  for token_lower in tokens_lower {
+    let mut best_token_match = None::<i64>;
 
-  if let Some(url) = suggestion.url.as_deref() {
-    best_match = best_match.max(match_score(url, input_lower));
-  }
-  if let Some(title) = suggestion.title.as_deref() {
-    best_match = best_match.max(match_score(title, input_lower));
+    if let Some(url) = suggestion.url.as_deref() {
+      best_token_match = best_token_match.max(match_score(url, token_lower));
+    }
+    if let Some(title) = suggestion.title.as_deref() {
+      best_token_match = best_token_match.max(match_score(title, token_lower));
+    }
+    // Search suggestions match against the query text.
+    if let OmniboxAction::Search(query) = &suggestion.action {
+      best_token_match = best_token_match.max(match_score(query, token_lower));
+    }
+
+    match_total += best_token_match?;
   }
 
-  // Search suggestions match against the query text.
-  if let OmniboxAction::Search(query) = &suggestion.action {
-    best_match = best_match.max(match_score(query, input_lower));
-  }
-
-  best_match.map(|m| base + m)
+  Some(base + match_total)
 }
 
 /// Returns a score for `needle` in `haystack`, where larger is better.
@@ -545,6 +551,14 @@ fn suggestion_sort_key(s: &OmniboxSuggestion) -> SuggestionSortKey {
     secondary: secondary.to_ascii_lowercase(),
     tab_id,
   }
+}
+
+fn tokenize_lower(input: &str) -> Vec<String> {
+  input
+    .split_whitespace()
+    .filter(|t| !t.is_empty())
+    .map(|t| t.to_ascii_lowercase())
+    .collect()
 }
 
 // -----------------------------------------------------------------------------
@@ -896,7 +910,6 @@ mod tests {
     let bookmarks = BookmarkStore {
       urls: ["https://needle.example/".to_string()].into_iter().collect(),
     };
-
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,
       closed_tabs: &closed_tabs,
@@ -925,6 +938,124 @@ mod tests {
     assert_eq!(
       suggestions[3].source,
       OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited)
+    );
+  }
+
+  #[test]
+  fn bookmarks_are_suggested_for_matching_input() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let bookmarks = BookmarkStore {
+      urls: ["https://example.com/bookmark".to_string()]
+        .into_iter()
+        .collect(),
+    };
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: Some(&bookmarks),
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions_default_limit(&ctx, "exam");
+    assert!(
+      suggestions.iter().any(|s| {
+        s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
+          && s.url.as_deref() == Some("https://example.com/bookmark")
+          && matches!(s.action, OmniboxAction::NavigateToUrl(ref u) if u == "https://example.com/bookmark")
+      }),
+      "expected bookmark suggestion, got {suggestions:?}"
+    );
+  }
+
+  #[test]
+  fn bookmark_matching_is_tokenized_and_case_insensitive() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let bookmarks = BookmarkStore {
+      urls: [
+        "https://www.rust-lang.org/learn".to_string(),
+        "https://example.com/only-one-token".to_string(),
+      ]
+      .into_iter()
+      .collect(),
+    };
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: Some(&bookmarks),
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions_default_limit(&ctx, "RUST lang");
+    assert!(
+      suggestions.iter().any(|s| {
+        s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
+          && s.url.as_deref() == Some("https://www.rust-lang.org/learn")
+      }),
+      "expected rust-lang bookmark suggestion, got {suggestions:?}"
+    );
+
+    assert!(
+      !suggestions.iter().any(|s| {
+        s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
+          && s.url.as_deref() == Some("https://example.com/only-one-token")
+      }),
+      "expected tokenized match to filter out non-matching bookmarks, got {suggestions:?}"
+    );
+  }
+
+  #[test]
+  fn engine_dedupes_bookmark_and_open_tab_suggestions() {
+    let tab_id = TabId(1);
+    let open_tabs = vec![BrowserTabState::new(
+      tab_id,
+      "https://example.com/".to_string(),
+    )];
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let bookmarks = BookmarkStore {
+      urls: ["https://example.com/".to_string()].into_iter().collect(),
+    };
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: Some(&bookmarks),
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions_with_providers(
+      &ctx,
+      "example",
+      50,
+      vec![
+        Box::new(PrimaryActionProvider),
+        Box::new(OpenTabsProvider),
+        Box::new(BookmarksProvider),
+      ],
+    );
+
+    let matching = suggestions
+      .iter()
+      .filter(|s| s.url.as_deref() == Some("https://example.com/"))
+      .collect::<Vec<_>>();
+    assert_eq!(
+      matching.len(),
+      1,
+      "expected exactly one suggestion for https://example.com/, got {suggestions:?}"
+    );
+    assert_eq!(
+      matching[0].source,
+      OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
+      "expected open-tab suggestion to win dedup over bookmark, got {suggestions:?}"
     );
   }
 }

@@ -1315,6 +1315,39 @@ mod tests {
       .map(|clipped| count_in_shape(&clipped.shape, glyph, rect))
       .sum()
   }
+
+  #[test]
+  fn omnibox_suggests_bookmarked_urls() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+    let bookmarks = BookmarkStore {
+      urls: ["https://example.com/bookmark".to_string()]
+        .into_iter()
+        .collect(),
+    };
+
+    app.chrome.request_focus_address_bar = true;
+    let ctx = new_context();
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+
+    app.chrome.address_bar_text = "example".to_string();
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      app.chrome.omnibox.suggestions.iter().any(|s| {
+        s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
+          && s.url.as_deref() == Some("https://example.com/bookmark")
+      }),
+      "expected bookmark omnibox suggestion, got {:?}",
+      app.chrome.omnibox.suggestions
+    );
+  }
   #[test]
   fn address_bar_blur_reverts_uncommitted_text() {
     let mut app = BrowserAppState::new();
