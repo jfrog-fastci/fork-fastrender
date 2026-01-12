@@ -3,8 +3,8 @@
 //! See `instructions/webidl_consolidation.md`.
 //!
 //! WebIDL stack consolidation is complete: shared JS/WebIDL infrastructure should live in the
-//! vendored `vendor/ecma-rs/` workspace and `crates/` should be reserved for FastRender-specific
-//! tooling.
+//! vendored `vendor/ecma-rs/` workspace; `crates/` should be reserved for FastRender-specific
+//! tooling (currently just `crates/js-wpt-dom-runner/`).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Adding any new crate under `crates/` must be an explicit decision: update this allowlist and
 /// justify why it doesn't belong under `vendor/ecma-rs/`.
-const ALLOWED_CRATE_DIRS: [&str; 1] = ["js-wpt-dom-runner"];
+const ALLOWED_CRATE_DIRS: &[&str] = &["js-wpt-dom-runner"];
 
 fn list_crate_dirs(crates_dir: &Path) -> BTreeSet<String> {
   let mut dirs = BTreeSet::new();
