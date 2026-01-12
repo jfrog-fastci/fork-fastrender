@@ -18,16 +18,17 @@ If workspace configuration makes this awkward, **fix the workspace configuration
 
 ## Anti-patterns (FORBIDDEN)
 
-### ❌ Creating parallel crates in `crates/`
+### ❌ Creating parallel JS/WebIDL crates outside `vendor/ecma-rs/`
 
-**Wrong:**
-```
-crates/webidl-vm-js/          ← Parallel to vendor/ecma-rs/webidl-vm-js
-crates/webidl-bindings-core/  ← Should be in vendor/ecma-rs/webidl
-crates/webidl-ir/             ← Should be in vendor/ecma-rs/webidl
-```
+**Wrong:** putting a second copy of WebIDL infrastructure under `crates/` (or anywhere else in this
+repo) when the canonical implementation lives in:
 
-This creates maintenance burden, sync overhead, and divergence. Every line in a parallel crate is technical debt.
+- `vendor/ecma-rs/webidl/`
+- `vendor/ecma-rs/webidl-vm-js/`
+- `vendor/ecma-rs/webidl-runtime/`
+
+This creates maintenance burden, sync overhead, and divergence. Every line in a parallel crate is
+technical debt.
 
 ### ❌ "Workspace isolation" as justification
 
@@ -62,9 +63,9 @@ Need a new crate? Create it in `vendor/ecma-rs/`.
 
 ### ✅ Keep FastRender-specific code in `src/`
 
-DOM bindings that specifically bind FastRender's DOM → `src/js/dom/`  
+FastRender-specific DOM/Web API bindings integration → `src/js/webidl/`  
 Browser event loop integration → `src/js/event_loop.rs`  
-HTML script processing → `src/js/script_processing.rs`
+HTML script scheduling/processing scaffolding → `src/js/script_scheduler.rs`
 
 The boundary is:
 - **ecma-rs**: JavaScript language, WebIDL spec, engine infrastructure
@@ -92,31 +93,23 @@ This is a one-time fix. Don't create parallel crates to avoid it.
 |------|----------|-----------|
 | JS parser | `vendor/ecma-rs/parse-js/` | Language infrastructure |
 | JS runtime/VM | `vendor/ecma-rs/vm-js/` | Language infrastructure |
-| WebIDL types/traits | `vendor/ecma-rs/webidl/` | Spec infrastructure |
+| WebIDL IR + algorithms | `vendor/ecma-rs/webidl/` | Spec infrastructure |
 | WebIDL ↔ vm-js adapter | `vendor/ecma-rs/webidl-vm-js/` | Engine integration |
-| WebIDL parsing | `vendor/ecma-rs/webidl/` | Spec infrastructure |
-| DOM bindings (FastRender DOM) | `src/js/dom/` | FastRender-specific |
-| Browser APIs (timers, fetch) | `src/js/web_apis/` | FastRender-specific |
+| Legacy heap-only WebIDL runtime adapter | `vendor/ecma-rs/webidl-runtime/` | Compatibility layer |
+| DOM/Web API bindings integration (FastRender) | `src/js/webidl/` | FastRender-specific glue |
+| Browser APIs (timers, fetch, URL, ...) | `src/js/` + `src/web/` | FastRender-specific |
 | Event loop | `src/js/event_loop.rs` | FastRender-specific |
-| Script processing | `src/js/script_processing.rs` | FastRender-specific |
+| Script scheduling/processing | `src/js/script_scheduler.rs` | FastRender-specific |
 
 ---
 
-## Migration: Eliminating `crates/`
+## Repository shape (post-migration)
 
-The `crates/` directory currently contains parallel WebIDL infrastructure that should be merged into ecma-rs:
+`crates/` exists only for FastRender-specific tooling (currently `crates/js-wpt-dom-runner`).
 
-| Current location | Target location |
-|-----------------|-----------------|
-| `crates/webidl-ir/` | `vendor/ecma-rs/webidl/` (merge) |
-| `crates/webidl-bindings-core/` | `vendor/ecma-rs/webidl/` (merge) |
-| `crates/webidl-vm-js/` | `vendor/ecma-rs/webidl-vm-js/` (merge) |
-| `crates/webidl-js-runtime/` | `vendor/ecma-rs/webidl-runtime/` (new crate) |
-| `crates/js-dom-bindings/` | `src/js/dom/` (move) |
-| `crates/js-dom-bindings-quickjs/` | `src/js/dom/quickjs/` (move) |
-| `crates/js-wpt-dom-runner/` | `tests/wpt/` or tool (evaluate) |
-
-After migration, `crates/` should be **deleted entirely**.
+All generic JS/WebIDL infrastructure lives in `vendor/ecma-rs/`. If you find yourself reaching for
+`crates/` to add WebIDL parsing/conversions/VM integration, that is almost certainly a design
+mistake: put it in ecma-rs instead.
 
 ---
 

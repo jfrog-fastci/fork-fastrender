@@ -164,20 +164,24 @@ A change counts if it lands at least one of:
 ### Architecture
 
 ```
-src/js/webidl/           — WebIDL binding infrastructure
-  bindings/              — Generated and hand-written bindings
-    generated/mod.rs     — Auto-generated from WebIDL
-    document.rs          — Document bindings
-    host.rs              — Host function dispatch
-  conversions.rs         — Type conversions
-  
-src/dom2/                — Mutable DOM implementation
-  mod.rs                 — Document, Node, Element types
-  traversal.rs           — Tree traversal
-  mutation.rs            — DOM mutation
-  
-crates/js-dom-bindings/  — DOM binding helpers
-crates/webidl-vm-js/     — WebIDL runtime for vm-js
+src/js/webidl/                — FastRender-specific WebIDL bindings integration
+  bindings/                    — Generated + hand-written bindings glue
+    generated/mod.rs           — Auto-generated installers from the committed WebIDL snapshot
+    document.rs                — Document bindings (hand-written)
+    host.rs                    — Host function dispatch
+  conversions.rs               — Compatibility helpers for the legacy heap-only backend
+  runtime_vmjs.rs              — Realm-based bindings runtime (canonical)
+
+src/dom2/                      — Mutable DOM implementation
+  mod.rs                       — Document, Node, Element types
+  traversal.rs                 — Tree traversal
+  mutation.rs                  — DOM mutation
+
+vendor/ecma-rs/webidl/         — WebIDL IR + spec algorithms (`webidl::ir`, conversions, overload resolution)
+vendor/ecma-rs/webidl-vm-js/   — vm-js adapter + shared realm bindings helpers used by generated glue
+vendor/ecma-rs/webidl-runtime/ — Legacy heap-only runtime adapter (re-exported as `fastrender::js::webidl::legacy`)
+
+crates/js-wpt-dom-runner/      — Tooling (offline WPT `testharness.js` runner)
 ```
 
 ### WebIDL workflow

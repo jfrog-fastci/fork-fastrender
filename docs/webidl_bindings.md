@@ -12,13 +12,13 @@ how to update it.
 - **Runtime WebIDL “world” representation**: `src/webidl/mod.rs`
   - This is *metadata only* (names, members, extended attributes, inheritance).
   - It is intentionally **not** a full WebIDL semantic model.
-- **Authoritative WebIDL conversion/runtime layer**: `vendor/ecma-rs/webidl`
-  - This is the shared implementation of WebIDL conversion helpers (e.g. `DOMString`) and the
-    `JsRuntime` trait boundary those helpers are defined against.
+- **Authoritative WebIDL IR + algorithms**: `vendor/ecma-rs/webidl`
+  - This is the shared implementation of WebIDL IR (exported as `webidl::ir`) and WebIDL algorithms
+    (conversion helpers like `DOMString`, overload resolution, etc.).
+  - It also defines the `JsRuntime` trait boundary those helpers are defined against.
   - FastRender re-exports this API surface as `fastrender::js::webidl` so generated bindings can
     depend on a single path and we do not fork/duplicate WebIDL algorithms between repos.
-  - FastRender’s canonical `vm-js` embedding adapter lives in `crates/webidl-vm-js` (a workspace-local
-    copy of `vendor/ecma-rs/webidl-vm-js`; see `crates/webidl-vm-js/README.md`) as
+  - FastRender’s canonical `vm-js` embedding adapter lives in `vendor/ecma-rs/webidl-vm-js` as
     `webidl_vm_js::VmJsWebIdlCx`.
 - **Bindings runtime (canonical)**: `src/js/webidl/runtime_vmjs.rs`
   - This is FastRender’s in-tree “bindings runtime” layer that installs WebIDL-generated APIs onto a
@@ -28,9 +28,10 @@ how to update it.
     - `VmJsWebIdlBindingsCx`
     - `VmJsWebIdlBindingsState`
     - `WebIdlBindingsRuntime`
-- **Binding installation / host scaffolding (legacy)**: `crates/webidl-js-runtime`
+- **Binding installation / host scaffolding (legacy heap-only runtime)**: `vendor/ecma-rs/webidl-runtime`
   - This provides a heap-only `vm-js` value/object model (`VmJsRuntime`) used by early scaffolding
     code. It cannot execute author scripts and should not be used for new bindings work.
+  - Cargo package name: `webidl-js-runtime` (Rust crate name: `webidl_js_runtime`).
   - It remains available under `fastrender::js::webidl::legacy` while migration is in progress.
   - Note: FastRender’s real DOM bindings are `vm-js` realm-based (`src/js/legacy/vm_dom.rs`) and do not use this legacy heap-only runtime.
 - **Committed generated snapshot**: `src/webidl/generated/mod.rs`
@@ -181,10 +182,11 @@ world:
     into the embedder via `webidl_vm_js::WebIdlBindingsHost` (retrieved from
     `webidl_vm_js::host_from_hooks`, backed by a `webidl_vm_js::WebIdlBindingsHostSlot` exposed
     through `VmHostHooks::as_any_mut`).
-  - Controlled by an explicit allowlist: `tools/webidl/window_bindings_allowlist.toml` (typo-guarded
-    against the committed snapshot world).
-- **Legacy `webidl-js-runtime` bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
+   - Controlled by an explicit allowlist: `tools/webidl/window_bindings_allowlist.toml` (typo-guarded
+     against the committed snapshot world).
+- **Legacy heap-only runtime bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
   `src/js/webidl/bindings/generated_legacy.rs`
+  - Backed by `fastrender::js::webidl::legacy` (vendored in `vendor/ecma-rs/webidl-runtime`).
   - Kept temporarily for migration and for unit tests that still exercise the older bindings/runtime
     surface.
   - Regenerate with:
@@ -212,7 +214,7 @@ In practice:
 - **Spec algorithms** (WebIDL conversions and overload resolution) live in `vendor/ecma-rs/webidl`
   and are re-exported as `fastrender::js::webidl`.
 - **`vm-js` realm bindings runtime helpers** (property definition presets, small numeric helpers used
-  by generated glue) live in `crates/webidl-vm-js`:
+  by generated glue) live in `vendor/ecma-rs/webidl-vm-js`:
   - `webidl_vm_js::bindings_runtime` contains installer/runtime helpers (`BindingsRuntime`,
     `DataPropertyAttributes`, `to_int32_f64` / `to_uint32_f64`, etc.).
   - `webidl_vm_js::conversions` contains shared `vm-js`-specific conversion helpers that generated
@@ -231,11 +233,11 @@ In practice:
 Notes:
 
 - `src/js/webidl/*` should stay as **thin re-exports/adapters**. In particular,
-  `src/js/webidl/conversions.rs` exists to support the legacy `webidl-js-runtime` backend and should
+  `src/js/webidl/conversions.rs` exists to support the legacy heap-only runtime backend and should
   not be used by the `vm-js` realm backend.
 - If you find yourself pasting a WebIDL algorithm (record/sequence conversion loops, union
   discrimination, etc.) into the generator output, it probably belongs in `vendor/ecma-rs/webidl` or
-  `crates/webidl-vm-js` instead.
+  `vendor/ecma-rs/webidl-vm-js` instead.
 
 ### Troubleshooting
 
