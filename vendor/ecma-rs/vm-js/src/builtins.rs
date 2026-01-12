@@ -3546,17 +3546,32 @@ pub fn data_view_prototype_byte_length_get(
   let buffer = heap
     .data_view_buffer(obj)
     .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
-  let len = if heap
+  let byte_offset = heap
+    .data_view_byte_offset(obj)
+    .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
+  let byte_length = heap
+    .data_view_byte_length(obj)
+    .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
+
+  // Per ECMAScript, `DataView.prototype.byteLength` throws if the view is out-of-bounds. Detached
+  // buffers are considered out-of-bounds.
+  if heap
     .is_detached_array_buffer(buffer)
     .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?
   {
-    0
-  } else {
-    heap
-      .data_view_byte_length(obj)
-      .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?
-  };
-  Ok(Value::Number(len as f64))
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+  let buffer_byte_length = heap
+    .array_buffer_byte_length(buffer)
+    .map_err(|_| VmError::TypeError("DataView.byteLength called on incompatible receiver"))?;
+  let view_end = byte_offset
+    .checked_add(byte_length)
+    .ok_or(VmError::TypeError("DataView view out of bounds"))?;
+  if view_end > buffer_byte_length {
+    return Err(VmError::TypeError("DataView view out of bounds"));
+  }
+
+  Ok(Value::Number(byte_length as f64))
 }
 
 pub fn data_view_prototype_byte_offset_get(
@@ -3575,17 +3590,32 @@ pub fn data_view_prototype_byte_offset_get(
   let buffer = heap
     .data_view_buffer(obj)
     .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
-  let offset = if heap
+  let byte_offset = heap
+    .data_view_byte_offset(obj)
+    .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
+  let byte_length = heap
+    .data_view_byte_length(obj)
+    .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
+
+  // Per ECMAScript, `DataView.prototype.byteOffset` throws if the view is out-of-bounds. Detached
+  // buffers are considered out-of-bounds.
+  if heap
     .is_detached_array_buffer(buffer)
     .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?
   {
-    0
-  } else {
-    heap
-      .data_view_byte_offset(obj)
-      .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?
-  };
-  Ok(Value::Number(offset as f64))
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+  let buffer_byte_length = heap
+    .array_buffer_byte_length(buffer)
+    .map_err(|_| VmError::TypeError("DataView.byteOffset called on incompatible receiver"))?;
+  let view_end = byte_offset
+    .checked_add(byte_length)
+    .ok_or(VmError::TypeError("DataView view out of bounds"))?;
+  if view_end > buffer_byte_length {
+    return Err(VmError::TypeError("DataView view out of bounds"));
+  }
+
+  Ok(Value::Number(byte_offset as f64))
 }
 
 pub fn data_view_prototype_buffer_get(
