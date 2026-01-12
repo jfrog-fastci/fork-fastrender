@@ -2177,6 +2177,36 @@ fn collects_defs_in_module_item_attributes() {
 }
 
 #[test]
+fn export_assignment_collects_nested_defs() {
+  let source = "export = (function inner() { return 1; });";
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+
+  assert_no_missing_exprs(&result);
+
+  let mut found_inner = false;
+  for body in result.bodies.iter() {
+    for expr in body.exprs.iter() {
+      if let ExprKind::FunctionExpr {
+        name,
+        body: inner_body_id,
+        ..
+      } = &expr.kind
+      {
+        if let Some(name_id) = name {
+          if result.names.resolve(*name_id) == Some("inner") {
+            found_inner = true;
+            assert_ne!(*inner_body_id, MISSING_BODY, "inner function should have a body");
+            let inner_body = result.body(*inner_body_id).expect("inner body");
+            assert_eq!(inner_body.kind, BodyKind::Function, "inner body kind");
+          }
+        }
+      }
+    }
+  }
+  assert!(found_inner, "expected to lower inner function expression");
+}
+
+#[test]
 fn lowers_export_import_equals() {
   let source = r#"export import Foo = require("bar");"#;
   let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
