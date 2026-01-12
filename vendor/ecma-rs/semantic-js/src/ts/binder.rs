@@ -1181,21 +1181,21 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             .or_else(|| named.items.first().and_then(|i| i.exported_span))
             .or_else(|| named.items.first().map(|i| i.local_span))
             .unwrap_or_else(|| TextRange::new(0, 0));
-          let target = named.specifier.as_ref().map(|spec| {
-            let spec_span = Span::new(file_id, span_range);
-            let resolved = self.resolve_spec(file_id, spec, spec_span, false, ambient_modules);
-            if let ModuleRef::File(t) = &resolved {
-              deps.push(*t);
-            }
-            state.module_edges.push(ModuleEdge {
-              kind: ModuleEdgeKind::ReExportNamed,
-              specifier: spec.to_string(),
-              target: resolved.clone(),
-              span: spec_span,
-              is_type_only: named.is_type_only,
-            });
-            (resolved, spec_span)
-          });
+           let target = named.specifier.as_ref().map(|spec| {
+             let spec_span = Span::new(file_id, span_range);
+             let resolved = self.resolve_spec(file_id, spec, spec_span, false, ambient_modules);
+             if let ModuleRef::File(t) = &resolved {
+               deps.push(*t);
+             }
+             state.module_edges.push(ModuleEdge {
+               kind: ModuleEdgeKind::ReExportNamed,
+               specifier: spec.to_string(),
+               target: resolved.clone(),
+               span: spec_span,
+               is_type_only: named_export_statement_is_type_only(named),
+             });
+             (resolved, spec_span)
+           });
           for item in &named.items {
             let type_only = named.is_type_only || item.is_type_only;
             if named.specifier.is_none() {
@@ -3317,6 +3317,21 @@ fn import_statement_is_type_only(import: &Import) -> bool {
   }
 
   has_any_binding
+}
+
+fn named_export_statement_is_type_only(export: &NamedExport) -> bool {
+  if export.is_type_only {
+    return true;
+  }
+
+  if export.items.is_empty() {
+    // `export {} from "mod"` is valid ECMAScript and still produces a runtime
+    // module request, so it is not type-only unless explicitly written as
+    // `export type`.
+    return false;
+  }
+
+  export.items.iter().all(|item| item.is_type_only)
 }
 
 pub(super) fn is_pattern(spec: &str) -> bool {

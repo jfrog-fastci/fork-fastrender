@@ -914,6 +914,56 @@ fn mixed_type_only_reexport_respects_per_specifier_flags() {
 }
 
 #[test]
+fn type_only_named_reexport_marks_module_edge_type_only_when_all_specifiers_are_type_only() {
+  let file_a = FileId(212);
+  let file_b = FileId(213);
+
+  let mut a = HirFile::module(file_a);
+  a.decls
+    .push(mk_decl(0, "Foo", DeclKind::Interface, Exported::Named));
+
+  let mut b = HirFile::module(file_b);
+  b.exports.push(Export::Named(NamedExport {
+    specifier: Some("a".to_string()),
+    specifier_span: Some(span(10)),
+    items: vec![ExportSpecifier {
+      is_type_only: true,
+      ..export_spec("Foo", span(11))
+    }],
+    is_type_only: false,
+  }));
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_b => Arc::new(b),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "a".to_string() => file_a,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_b], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  assert_eq!(
+    semantics.module_edges(file_b),
+    &[ModuleEdge {
+      kind: ModuleEdgeKind::ReExportNamed,
+      specifier: "a".to_string(),
+      target: ModuleRef::File(file_a),
+      span: Span::new(file_b, span(10)),
+      is_type_only: true,
+    }]
+  );
+
+  let exports_b = semantics.exports_of(file_b);
+  let symbols = semantics.symbols();
+  let foo = exports_b.get("Foo").expect("Foo exported");
+  assert!(foo.symbol_for(Namespace::VALUE, symbols).is_none());
+  assert!(foo.symbol_for(Namespace::TYPE, symbols).is_some());
+}
+
+#[test]
 fn mixed_type_only_local_export_respects_per_specifier_flags() {
   let file_a = FileId(220);
   let file_b = FileId(221);
