@@ -462,6 +462,10 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
   ///
   /// This enables `webidl_vm_js::host_from_hooks()` for native call handlers running under these
   /// hooks.
+  ///
+  /// Note: vm-js WebIDL bindings do **not** dispatch through the `vm_js::VmHost` value passed to
+  /// native calls (e.g. `BrowserDocumentDom2`). The generated bindings always look up the dispatch
+  /// host through `VmHostHooks` payload slots.
   pub fn set_webidl_bindings_host(&mut self, host: &mut dyn WebIdlBindingsHost) {
     self.any.webidl_bindings_host_slot_mut().set(host);
   }
