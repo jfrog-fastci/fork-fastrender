@@ -2873,7 +2873,10 @@ impl DisplayListBuilder {
     }
   }
 
-  /// Recursively builds display items with clipping support
+  /// Builds display items with clipping support.
+  ///
+  /// This traversal is implemented iteratively to avoid stack overflow on adversarially deep
+  /// fragment trees (e.g. when used by selection/highlight paths that need custom clipping).
   fn build_fragment_with_clips(
     &mut self,
     fragment: &FragmentNode,
@@ -2881,254 +2884,370 @@ impl DisplayListBuilder {
     clips: &HashSet<Option<usize>>,
     visibility: Visibility,
   ) {
-    if self.deadline_reached() {
-      return;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Stage {
+      Enter,
+      Children,
+      Exit,
     }
-    let style_opt = fragment.style.as_deref();
-    let paint_self = style_opt.map_or(true, |style| {
-      matches!(
-        style.visibility,
-        crate::style::computed::Visibility::Visible
-      )
+
+    struct FrameData<'a> {
+      style_opt: Option<&'a ComputedStyle>,
+      paint_self: bool,
+      list_start: usize,
+      push_opacity: bool,
+      push_backface_visibility: bool,
+      absolute_rect: Rect,
+      skip_contents: bool,
+      did_push_clip: bool,
+      child_offset: Point,
+      prev_line_decoration_ctx: Option<LineDecorationContext>,
+      before_children: usize,
+      ordered_children: Vec<usize>,
+      child_pos: usize,
+      counter: usize,
+    }
+
+    struct Frame<'a> {
+      stage: Stage,
+      fragment: &'a FragmentNode,
+      offset: Point,
+      visibility: Visibility,
+      data: Option<FrameData<'a>>,
+    }
+
+    let mut stack: Vec<Frame<'_>> = Vec::new();
+    stack.push(Frame {
+      stage: Stage::Enter,
+      fragment,
+      offset,
+      visibility,
+      data: None,
     });
-    if !paint_self && fragment.children.is_empty() {
-      return;
-    }
 
-    if matches!(
-      fragment.content,
-      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
-    ) {
-      return;
-    }
-
-    let list_start = self.list.len();
-    let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
-    let push_opacity = opacity < 1.0 - f32::EPSILON;
-
-    let absolute_rect = Rect::new(
-      Point::new(
-        fragment.bounds.origin.x + offset.x,
-        fragment.bounds.origin.y + offset.y,
-      ),
-      fragment.bounds.size,
-    );
-    let element_scroll = self.element_scroll_offset(fragment);
-    let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
-    if let Some(vis) = visibility.rect {
-      if !vis.intersects(absolute_rect) {
-        return;
-      }
-    }
-    let skip_contents =
-      fragment
-        .style
-        .as_deref()
-        .is_some_and(|style| match style.content_visibility {
-          ContentVisibility::Hidden => true,
-          ContentVisibility::Auto => visibility
-            .rect
-            .is_some_and(|vis| !vis.intersects(absolute_rect)),
-          ContentVisibility::Visible => false,
-        });
-
-    let push_backface_visibility = style_opt.is_some_and(|style| {
-      matches!(style.backface_visibility, BackfaceVisibility::Hidden)
-        && !crate::paint::stacking::creates_stacking_context(style, None, false)
-    });
-    if push_backface_visibility {
-      self.list.push(DisplayItem::PushBackfaceVisibility(
-        BackfaceVisibility::Hidden,
-      ));
-    }
-    if push_opacity {
-      self.push_opacity(opacity);
-    }
-
-    if paint_self {
-      if let Some(style) = style_opt {
-        let (decoration_rect, decoration_clip) =
-          Self::decoration_rect_and_clip(fragment, absolute_rect, style);
-        let decoration_clip_pushed = decoration_clip.is_some();
-        if let Some(clip) = decoration_clip {
-          self.list.push(DisplayItem::PushClip(clip));
-        }
-        self.emit_background_from_style_with_culling_rect(
-          decoration_rect,
-          style,
-          visibility.rect,
-          scroll_delta,
-        );
-        let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
-        self.emit_border_from_style(decoration_rect, style, gap);
-        if decoration_clip_pushed {
-          self.list.push(DisplayItem::PopClip);
-        }
-      }
-    }
-
-    let box_id = Self::get_box_id(fragment);
-    let should_clip = clips.contains(&box_id);
-
-    let mut children_painted = false;
-    if !skip_contents {
-      // Emit content before clipping children
-      if paint_self {
-        self.emit_content(fragment, absolute_rect, visibility.rect);
-      }
-
-      // Push clip if needed
-      if should_clip {
-        self.list.push(DisplayItem::PushClip(ClipItem {
-          shape: ClipShape::Rect {
-            rect: absolute_rect,
-            radii: None,
-          },
-        }));
-      }
-
-      // Recurse to children
-      let child_offset = Point::new(
-        absolute_rect.origin.x - element_scroll.x,
-        absolute_rect.origin.y - element_scroll.y,
-      );
-      let prev_line_decoration_ctx = self.line_decoration_ctx;
-      if let FragmentContent::Line { baseline } = &fragment.content {
-        self.line_decoration_ctx =
-          Some(self.build_line_decoration_context(fragment, child_offset, *baseline));
-      } else if self.line_decoration_ctx.is_some()
-        && style_opt.is_some_and(|style| {
-          style.display.is_inline_level() && style.display.establishes_formatting_context()
-        })
-      {
-        self.line_decoration_ctx = None;
-      }
-      let before_children = self.list.len();
-      let mut blocks = Vec::new();
-      let mut floats = Vec::new();
-      let mut inlines = Vec::new();
-      let mut positioned = Vec::new();
-      for (idx, child) in fragment.children.iter().enumerate() {
-        match child.style.as_deref() {
-          Some(child_style) if !matches!(child_style.position, Position::Static) => {
-            positioned.push(idx);
+    'work: while let Some(mut frame) = stack.pop() {
+      match frame.stage {
+        Stage::Enter => {
+          if self.deadline_reached() {
+            continue;
           }
-          Some(child_style) if child_style.float.is_floating() => floats.push(idx),
-          Some(child_style)
-            if matches!(
-              child_style.display,
-              crate::style::display::Display::Inline
-                | crate::style::display::Display::InlineBlock
-                | crate::style::display::Display::InlineFlex
-                | crate::style::display::Display::InlineGrid
-                | crate::style::display::Display::InlineTable
-            ) =>
-          {
-            inlines.push(idx);
+
+          let style_opt = frame.fragment.style.as_deref();
+          let paint_self = style_opt.map_or(true, |style| {
+            matches!(
+              style.visibility,
+              crate::style::computed::Visibility::Visible
+            )
+          });
+          if !paint_self && frame.fragment.children.is_empty() {
+            continue;
           }
-          Some(_) => blocks.push(idx),
-          None => match child.content {
-            FragmentContent::Text { .. }
-            | FragmentContent::Inline { .. }
-            | FragmentContent::Line { .. } => inlines.push(idx),
-            _ => blocks.push(idx),
-          },
-        }
-      }
 
-      // CSS2.1 stacking levels 3-6: blocks → floats → inlines → positioned.
-      let mut counter = 0usize;
-      for idx in blocks
-        .into_iter()
-        .chain(floats)
-        .chain(inlines)
-        .chain(positioned)
-      {
-        if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-          break;
-        }
-        let child = &fragment.children[idx];
-        self.build_fragment_with_clips(child, child_offset, clips, visibility);
-      }
-      children_painted = self.list.len() != before_children;
-      self.line_decoration_ctx = prev_line_decoration_ctx;
+          if matches!(
+            frame.fragment.content,
+            FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+          ) {
+            continue;
+          }
 
-      if let Some(table_borders) = fragment.table_borders.as_ref() {
-        let mut origin = absolute_rect.origin;
-        let mut clip_to_slice = false;
-        if let Some(style) = style_opt {
-          if matches!(style.box_decoration_break, BoxDecorationBreak::Slice) {
-            let info = fragment.slice_info;
-            if !(info.is_first && info.is_last) {
-              clip_to_slice = true;
-              if !table_borders.fragment_local {
-                let original_block_size = info.original_block_size.max(0.0);
-                let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
-                if block_axis_is_horizontal(style.writing_mode) {
-                  if block_axis_positive(style.writing_mode) {
-                    origin.x -= slice_offset;
-                  } else {
-                    origin.x = origin.x + slice_offset - original_block_size;
-                  }
-                } else {
-                  origin.y -= slice_offset;
-                }
+          let list_start = self.list.len();
+          let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
+          let push_opacity = opacity < 1.0 - f32::EPSILON;
+
+          let absolute_rect = Rect::new(
+            Point::new(
+              frame.fragment.bounds.origin.x + frame.offset.x,
+              frame.fragment.bounds.origin.y + frame.offset.y,
+            ),
+            frame.fragment.bounds.size,
+          );
+          let element_scroll = self.element_scroll_offset(frame.fragment);
+          let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
+          if let Some(vis) = frame.visibility.rect {
+            if !vis.intersects(absolute_rect) {
+              continue;
+            }
+          }
+          let skip_contents =
+            frame
+              .fragment
+              .style
+              .as_deref()
+              .is_some_and(|style| match style.content_visibility {
+                ContentVisibility::Hidden => true,
+                ContentVisibility::Auto => frame
+                  .visibility
+                  .rect
+                  .is_some_and(|vis| !vis.intersects(absolute_rect)),
+                ContentVisibility::Visible => false,
+              });
+
+          let push_backface_visibility = style_opt.is_some_and(|style| {
+            matches!(style.backface_visibility, BackfaceVisibility::Hidden)
+              && !crate::paint::stacking::creates_stacking_context(style, None, false)
+          });
+          if push_backface_visibility {
+            self.list.push(DisplayItem::PushBackfaceVisibility(
+              BackfaceVisibility::Hidden,
+            ));
+          }
+          if push_opacity {
+            self.push_opacity(opacity);
+          }
+
+          if paint_self {
+            if let Some(style) = style_opt {
+              let (decoration_rect, decoration_clip) =
+                Self::decoration_rect_and_clip(frame.fragment, absolute_rect, style);
+              let decoration_clip_pushed = decoration_clip.is_some();
+              if let Some(clip) = decoration_clip {
+                self.list.push(DisplayItem::PushClip(clip));
+              }
+              self.emit_background_from_style_with_culling_rect(
+                decoration_rect,
+                style,
+                frame.visibility.rect,
+                scroll_delta,
+              );
+              let gap = self.fieldset_legend_border_gap(frame.fragment, decoration_rect, style);
+              self.emit_border_from_style(decoration_rect, style, gap);
+              if decoration_clip_pushed {
+                self.list.push(DisplayItem::PopClip);
               }
             }
           }
-        }
 
-        let bounds = table_borders.paint_bounds.translate(origin);
-        let has_visible_borders = table_borders
-          .vertical_borders
-          .iter()
-          .chain(table_borders.horizontal_borders.iter())
-          .chain(table_borders.corner_borders.iter())
-          .any(|b| b.is_visible());
-        if paint_self && has_visible_borders {
-          if clip_to_slice {
-            self.list.push(DisplayItem::PushClip(ClipItem {
-              shape: ClipShape::Rect {
-                rect: absolute_rect,
-                radii: None,
-              },
-            }));
+          let box_id = Self::get_box_id(frame.fragment);
+          let should_clip = clips.contains(&box_id);
+
+          let mut data = FrameData {
+            style_opt,
+            paint_self,
+            list_start,
+            push_opacity,
+            push_backface_visibility,
+            absolute_rect,
+            skip_contents,
+            did_push_clip: false,
+            child_offset: Point::ZERO,
+            prev_line_decoration_ctx: None,
+            before_children: 0,
+            ordered_children: Vec::new(),
+            child_pos: 0,
+            counter: 0,
+          };
+
+          if !skip_contents {
+            // Emit content before clipping children.
+            if paint_self {
+              self.emit_content(frame.fragment, absolute_rect, frame.visibility.rect);
+            }
+
+            // Push clip if needed.
+            if should_clip {
+              self.list.push(DisplayItem::PushClip(ClipItem {
+                shape: ClipShape::Rect {
+                  rect: absolute_rect,
+                  radii: None,
+                },
+              }));
+              data.did_push_clip = true;
+            }
+
+            let child_offset = Point::new(
+              absolute_rect.origin.x - element_scroll.x,
+              absolute_rect.origin.y - element_scroll.y,
+            );
+            let prev_line_decoration_ctx = self.line_decoration_ctx;
+            if let FragmentContent::Line { baseline } = &frame.fragment.content {
+              self.line_decoration_ctx = Some(self.build_line_decoration_context(
+                frame.fragment,
+                child_offset,
+                *baseline,
+              ));
+            } else if self.line_decoration_ctx.is_some()
+              && style_opt.is_some_and(|style| {
+                style.display.is_inline_level() && style.display.establishes_formatting_context()
+              })
+            {
+              self.line_decoration_ctx = None;
+            }
+
+            let before_children = self.list.len();
+
+            let mut blocks = Vec::new();
+            let mut floats = Vec::new();
+            let mut inlines = Vec::new();
+            let mut positioned = Vec::new();
+            for (idx, child) in frame.fragment.children.iter().enumerate() {
+              match child.style.as_deref() {
+                Some(child_style) if !matches!(child_style.position, Position::Static) => {
+                  positioned.push(idx);
+                }
+                Some(child_style) if child_style.float.is_floating() => floats.push(idx),
+                Some(child_style)
+                  if matches!(
+                    child_style.display,
+                    crate::style::display::Display::Inline
+                      | crate::style::display::Display::InlineBlock
+                      | crate::style::display::Display::InlineFlex
+                      | crate::style::display::Display::InlineGrid
+                      | crate::style::display::Display::InlineTable
+                  ) =>
+                {
+                  inlines.push(idx);
+                }
+                Some(_) => blocks.push(idx),
+                None => match child.content {
+                  FragmentContent::Text { .. }
+                  | FragmentContent::Inline { .. }
+                  | FragmentContent::Line { .. } => inlines.push(idx),
+                  _ => blocks.push(idx),
+                },
+              }
+            }
+
+            // CSS2.1 stacking levels 3-6: blocks → floats → inlines → positioned.
+            let mut ordered_children = blocks;
+            ordered_children.extend(floats);
+            ordered_children.extend(inlines);
+            ordered_children.extend(positioned);
+
+            data.child_offset = child_offset;
+            data.prev_line_decoration_ctx = prev_line_decoration_ctx;
+            data.before_children = before_children;
+            data.ordered_children = ordered_children;
+
+            frame.data = Some(data);
+            frame.stage = Stage::Children;
+            stack.push(frame);
+            continue 'work;
           }
-          self.list.push(DisplayItem::TableCollapsedBorders(
-            TableCollapsedBordersItem {
-              origin,
-              bounds,
-              borders: table_borders.clone(),
-            },
-          ));
-          if clip_to_slice {
-            self.list.push(DisplayItem::PopClip);
+
+          frame.data = Some(data);
+          frame.stage = Stage::Exit;
+          stack.push(frame);
+        }
+        Stage::Children => {
+          let (child_opt, child_offset, visibility) = {
+            let data = frame.data.as_mut().expect("missing clip frame data");
+            if data.child_pos >= data.ordered_children.len() {
+              (None, Point::ZERO, Visibility::none())
+            } else if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
+              data.child_pos = data.ordered_children.len();
+              (None, Point::ZERO, Visibility::none())
+            } else {
+              let idx = data.ordered_children[data.child_pos];
+              data.child_pos += 1;
+              (
+                Some(&frame.fragment.children[idx]),
+                data.child_offset,
+                frame.visibility,
+              )
+            }
+          };
+
+          if let Some(child) = child_opt {
+            stack.push(frame);
+            stack.push(Frame {
+              stage: Stage::Enter,
+              fragment: child,
+              offset: child_offset,
+              visibility,
+              data: None,
+            });
+            continue 'work;
+          }
+
+          frame.stage = Stage::Exit;
+          stack.push(frame);
+        }
+        Stage::Exit => {
+          let data = frame.data.take().expect("missing clip frame data");
+          let mut children_painted = false;
+
+          if !data.skip_contents {
+            children_painted = self.list.len() != data.before_children;
+            self.line_decoration_ctx = data.prev_line_decoration_ctx;
+
+            if let Some(table_borders) = frame.fragment.table_borders.as_ref() {
+              let mut origin = data.absolute_rect.origin;
+              let mut clip_to_slice = false;
+              if let Some(style) = data.style_opt {
+                if matches!(style.box_decoration_break, BoxDecorationBreak::Slice) {
+                  let info = frame.fragment.slice_info;
+                  if !(info.is_first && info.is_last) {
+                    clip_to_slice = true;
+                    if !table_borders.fragment_local {
+                      let original_block_size = info.original_block_size.max(0.0);
+                      let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
+                      if block_axis_is_horizontal(style.writing_mode) {
+                        if block_axis_positive(style.writing_mode) {
+                          origin.x -= slice_offset;
+                        } else {
+                          origin.x = origin.x + slice_offset - original_block_size;
+                        }
+                      } else {
+                        origin.y -= slice_offset;
+                      }
+                    }
+                  }
+                }
+              }
+
+              let bounds = table_borders.paint_bounds.translate(origin);
+              let has_visible_borders = table_borders
+                .vertical_borders
+                .iter()
+                .chain(table_borders.horizontal_borders.iter())
+                .chain(table_borders.corner_borders.iter())
+                .any(|b| b.is_visible());
+              if data.paint_self && has_visible_borders {
+                if clip_to_slice {
+                  self.list.push(DisplayItem::PushClip(ClipItem {
+                    shape: ClipShape::Rect {
+                      rect: data.absolute_rect,
+                      radii: None,
+                    },
+                  }));
+                }
+                self.list.push(DisplayItem::TableCollapsedBorders(
+                  TableCollapsedBordersItem {
+                    origin,
+                    bounds,
+                    borders: table_borders.clone(),
+                  },
+                ));
+                if clip_to_slice {
+                  self.list.push(DisplayItem::PopClip);
+                }
+              }
+            }
+
+            if data.did_push_clip {
+              self.list.push(DisplayItem::PopClip);
+            }
+          }
+
+          if data.paint_self {
+            if let Some(style) = data.style_opt {
+              self.emit_outline(data.absolute_rect, style);
+            }
+          }
+
+          if data.push_opacity {
+            self.pop_opacity();
+          }
+
+          if data.push_backface_visibility {
+            self.list.push(DisplayItem::PopBackfaceVisibility);
+          }
+
+          if !data.paint_self && !children_painted {
+            self.list.items_mut().truncate(data.list_start);
           }
         }
       }
-
-      // Pop clip
-      if should_clip {
-        self.list.push(DisplayItem::PopClip);
-      }
-    }
-
-    if paint_self {
-      if let Some(style) = style_opt {
-        self.emit_outline(absolute_rect, style);
-      }
-    }
-
-    if push_opacity {
-      self.pop_opacity();
-    }
-
-    if push_backface_visibility {
-      self.list.push(DisplayItem::PopBackfaceVisibility);
-    }
-
-    if !paint_self && !children_painted {
-      self.list.items_mut().truncate(list_start);
     }
   }
 
@@ -8013,209 +8132,235 @@ impl DisplayListBuilder {
     visibility: Visibility,
     out: &mut Vec<TextItem>,
   ) {
-    if self.deadline_reached() {
-      return;
+    // This routine used to recurse directly on `fragment.children`, which meant adversarially deep
+    // fragment trees combined with `background-clip:text` could stack overflow. Traverse the
+    // fragment subtree iteratively instead.
+    struct WorkItem<'a> {
+      fragment: &'a FragmentNode,
+      offset: Point,
+      visibility: Visibility,
     }
 
-    let style_opt = fragment.style.as_deref();
-    let paint_self = style_opt.map_or(true, |style| {
-      matches!(
-        style.visibility,
-        crate::style::computed::Visibility::Visible
-      )
-    });
-    if !paint_self && fragment.children.is_empty() {
-      return;
-    }
-
-    if matches!(
-      fragment.content,
-      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
-    ) {
-      return;
-    }
-
-    let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
-    if opacity <= f32::EPSILON {
-      return;
-    }
-
-    let absolute_rect = Rect::new(
-      Point::new(
-        fragment.bounds.origin.x + offset.x,
-        fragment.bounds.origin.y + offset.y,
-      ),
-      fragment.bounds.size,
-    );
-    let skip_contents = style_opt.is_some_and(|style| match style.content_visibility {
-      ContentVisibility::Hidden => true,
-      ContentVisibility::Auto => visibility
-        .rect
-        .is_some_and(|vis| !vis.intersects(absolute_rect)),
-      ContentVisibility::Visible => false,
+    let mut stack: Vec<WorkItem<'_>> = Vec::new();
+    stack.push(WorkItem {
+      fragment,
+      offset,
+      visibility,
     });
 
-    let mut paint_bounds = self.fragment_paint_bounds(fragment, absolute_rect, style_opt);
-    paint_bounds = paint_bounds.union(fragment.scroll_overflow.translate(absolute_rect.origin));
-    if let Some(vis) = visibility.rect {
-      if !vis.intersects(paint_bounds) {
-        return;
+    let mut counter = 0usize;
+    while let Some(item) = stack.pop() {
+      if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+        break;
       }
-      if visibility.hard_clip {
-        paint_bounds = match paint_bounds.intersection(vis) {
-          Some(intersection) if intersection.width() > 0.0 && intersection.height() > 0.0 => {
-            intersection
-          }
-          _ => return,
-        };
-      } else {
-        paint_bounds = paint_bounds.intersection(vis).unwrap_or(paint_bounds);
-      }
-    }
 
-    // Mirror the main fragment traversal's clipping rules so we only include text that will
-    // actually be painted. In particular, text outside overflow/clip edges should not contribute
-    // to `background-clip:text`.
-    let mut absolute_rects: Option<BackgroundRects> = None;
-    let (overflow_clip, clip_rect) = if let Some(style) = style_opt {
-      let is_replaced = matches!(&fragment.content, FragmentContent::Replaced { .. });
-      let clip_x = !is_replaced && Self::overflow_axis_clips(style.overflow_x);
-      let clip_y = !is_replaced && Self::overflow_axis_clips(style.overflow_y);
-      (
-        if clip_x || clip_y {
-          let overflow_bounds =
-            absolute_rect.union(fragment.scroll_overflow.translate(absolute_rect.origin));
-          let rects = absolute_rects
-            .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport));
-          Self::overflow_clip_from_style_with_rects(
-            style,
-            rects,
-            clip_x,
-            clip_y,
-            overflow_bounds,
-            self.viewport,
-            self.build_breakdown.as_deref(),
-          )
+      let fragment = item.fragment;
+      let offset = item.offset;
+      let visibility = item.visibility;
+
+      let style_opt = fragment.style.as_deref();
+      let paint_self = style_opt.map_or(true, |style| {
+        matches!(
+          style.visibility,
+          crate::style::computed::Visibility::Visible
+        )
+      });
+      if !paint_self && fragment.children.is_empty() {
+        continue;
+      }
+
+      if matches!(
+        fragment.content,
+        FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+      ) {
+        continue;
+      }
+
+      let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
+      if opacity <= f32::EPSILON {
+        continue;
+      }
+
+      let absolute_rect = Rect::new(
+        Point::new(
+          fragment.bounds.origin.x + offset.x,
+          fragment.bounds.origin.y + offset.y,
+        ),
+        fragment.bounds.size,
+      );
+      let skip_contents = style_opt.is_some_and(|style| match style.content_visibility {
+        ContentVisibility::Hidden => true,
+        ContentVisibility::Auto => visibility
+          .rect
+          .is_some_and(|vis| !vis.intersects(absolute_rect)),
+        ContentVisibility::Visible => false,
+      });
+
+      let mut paint_bounds = self.fragment_paint_bounds(fragment, absolute_rect, style_opt);
+      paint_bounds = paint_bounds.union(fragment.scroll_overflow.translate(absolute_rect.origin));
+      if let Some(vis) = visibility.rect {
+        if !vis.intersects(paint_bounds) {
+          continue;
+        }
+        if visibility.hard_clip {
+          paint_bounds = match paint_bounds.intersection(vis) {
+            Some(intersection) if intersection.width() > 0.0 && intersection.height() > 0.0 => {
+              intersection
+            }
+            _ => continue,
+          };
         } else {
-          None
-        },
-        Self::clip_rect_from_style(style, absolute_rect, self.viewport),
-      )
-    } else {
-      (None, None)
-    };
-    let mut child_visibility = visibility;
-    if let Some(clip) = overflow_clip.as_ref() {
-      child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
-    }
-    if let Some(clip) = clip_rect.as_ref() {
-      child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
-    }
-    if child_visibility.rect.is_none() && visibility.rect.is_some() {
-      return;
-    }
-    if let Some(vis) = child_visibility.rect {
-      if !vis.intersects(paint_bounds) {
-        return;
+          paint_bounds = paint_bounds.intersection(vis).unwrap_or(paint_bounds);
+        }
       }
-      if child_visibility.hard_clip {
-        match paint_bounds.intersection(vis) {
-          Some(intersection) if intersection.width() > 0.0 && intersection.height() > 0.0 => {}
-          _ => return,
-        };
+
+      // Mirror the main fragment traversal's clipping rules so we only include text that will
+      // actually be painted. In particular, text outside overflow/clip edges should not contribute
+      // to `background-clip:text`.
+      let mut absolute_rects: Option<BackgroundRects> = None;
+      let (overflow_clip, clip_rect) = if let Some(style) = style_opt {
+        let is_replaced = matches!(&fragment.content, FragmentContent::Replaced { .. });
+        let clip_x = !is_replaced && Self::overflow_axis_clips(style.overflow_x);
+        let clip_y = !is_replaced && Self::overflow_axis_clips(style.overflow_y);
+        (
+          if clip_x || clip_y {
+            let overflow_bounds =
+              absolute_rect.union(fragment.scroll_overflow.translate(absolute_rect.origin));
+            let rects = absolute_rects
+              .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport));
+            Self::overflow_clip_from_style_with_rects(
+              style,
+              rects,
+              clip_x,
+              clip_y,
+              overflow_bounds,
+              self.viewport,
+              self.build_breakdown.as_deref(),
+            )
+          } else {
+            None
+          },
+          Self::clip_rect_from_style(style, absolute_rect, self.viewport),
+        )
+      } else {
+        (None, None)
+      };
+      let mut child_visibility = visibility;
+      if let Some(clip) = overflow_clip.as_ref() {
+        child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
       }
-    }
+      if let Some(clip) = clip_rect.as_ref() {
+        child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
+      }
+      if child_visibility.rect.is_none() && visibility.rect.is_some() {
+        continue;
+      }
+      if let Some(vis) = child_visibility.rect {
+        if !vis.intersects(paint_bounds) {
+          continue;
+        }
+        if child_visibility.hard_clip {
+          match paint_bounds.intersection(vis) {
+            Some(intersection) if intersection.width() > 0.0 && intersection.height() > 0.0 => {}
+            _ => continue,
+          };
+        }
+      }
 
-    if paint_self {
-      if let FragmentContent::Text {
-        text,
-        baseline_offset,
-        shaped,
-        is_marker,
-        ..
-      } = &fragment.content
-      {
-        if !text.is_empty() && !is_marker {
-          if let Some(style) = style_opt {
-            let inline_vertical = matches!(
-              style.writing_mode,
-              crate::style::types::WritingMode::VerticalRl
-                | crate::style::types::WritingMode::VerticalLr
-                | crate::style::types::WritingMode::SidewaysRl
-                | crate::style::types::WritingMode::SidewaysLr
-            );
-            let (baseline_block, baseline_inline) = if inline_vertical {
-              (
-                absolute_rect.origin.x + baseline_offset,
-                absolute_rect.origin.y,
-              )
-            } else {
-              (
-                absolute_rect.origin.x,
-                absolute_rect.origin.y + baseline_offset,
-              )
-            };
-
-            let mut shaped_storage: Option<Vec<ShapedRun>> = None;
-            let runs_ref: Option<&[ShapedRun]> = if let Some(runs) = shaped {
-              Some(runs.as_ref())
-            } else {
-              let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-              let shaped_result = self.shaper.shape(text, style, &self.font_ctx);
-              if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
-                breakdown.record_text_shape(start.elapsed());
-              }
-              if let Ok(mut runs) = shaped_result {
-                InlineTextItem::apply_spacing_to_runs(
-                  &mut runs,
-                  text,
-                  style.letter_spacing,
-                  style.word_spacing,
-                );
-                shaped_storage = Some(runs);
-              }
-              shaped_storage.as_deref()
-            };
-
-            if let Some(runs) = runs_ref {
-              if inline_vertical {
-                self.collect_shaped_runs_for_text_clip_vertical(
-                  out,
-                  runs,
-                  baseline_block,
-                  baseline_inline,
-                  style.allow_subpixel_aa,
-                );
+      if paint_self {
+        if let FragmentContent::Text {
+          text,
+          baseline_offset,
+          shaped,
+          is_marker,
+          ..
+        } = &fragment.content
+        {
+          if !text.is_empty() && !is_marker {
+            if let Some(style) = style_opt {
+              let inline_vertical = matches!(
+                style.writing_mode,
+                crate::style::types::WritingMode::VerticalRl
+                  | crate::style::types::WritingMode::VerticalLr
+                  | crate::style::types::WritingMode::SidewaysRl
+                  | crate::style::types::WritingMode::SidewaysLr
+              );
+              let (baseline_block, baseline_inline) = if inline_vertical {
+                (
+                  absolute_rect.origin.x + baseline_offset,
+                  absolute_rect.origin.y,
+                )
               } else {
-                self.collect_shaped_runs_for_text_clip(
-                  out,
-                  runs,
-                  baseline_inline,
-                  baseline_block,
-                  style.allow_subpixel_aa,
-                );
+                (
+                  absolute_rect.origin.x,
+                  absolute_rect.origin.y + baseline_offset,
+                )
+              };
+
+              let mut shaped_storage: Option<Vec<ShapedRun>> = None;
+              let runs_ref: Option<&[ShapedRun]> = if let Some(runs) = shaped {
+                Some(runs.as_ref())
+              } else {
+                let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
+                let shaped_result = self.shaper.shape(text, style, &self.font_ctx);
+                if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer)
+                {
+                  breakdown.record_text_shape(start.elapsed());
+                }
+                if let Ok(mut runs) = shaped_result {
+                  InlineTextItem::apply_spacing_to_runs(
+                    &mut runs,
+                    text,
+                    style.letter_spacing,
+                    style.word_spacing,
+                  );
+                  shaped_storage = Some(runs);
+                }
+                shaped_storage.as_deref()
+              };
+
+              if let Some(runs) = runs_ref {
+                if inline_vertical {
+                  self.collect_shaped_runs_for_text_clip_vertical(
+                    out,
+                    runs,
+                    baseline_block,
+                    baseline_inline,
+                    style.allow_subpixel_aa,
+                  );
+                } else {
+                  self.collect_shaped_runs_for_text_clip(
+                    out,
+                    runs,
+                    baseline_inline,
+                    baseline_block,
+                    style.allow_subpixel_aa,
+                  );
+                }
               }
             }
           }
         }
       }
-    }
 
-    if skip_contents {
-      return;
-    }
-
-    let element_scroll = self.element_scroll_offset(fragment);
-    let child_offset = Point::new(
-      absolute_rect.origin.x - element_scroll.x,
-      absolute_rect.origin.y - element_scroll.y,
-    );
-    let mut counter = 0usize;
-    for child in fragment.children.iter() {
-      if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-        break;
+      if skip_contents {
+        continue;
       }
-      self.collect_text_clip_runs(child, child_offset, child_visibility, out);
+
+      let element_scroll = self.element_scroll_offset(fragment);
+      let child_offset = Point::new(
+        absolute_rect.origin.x - element_scroll.x,
+        absolute_rect.origin.y - element_scroll.y,
+      );
+
+      // Preserve the original recursive DFS order: visit children left-to-right.
+      for child in fragment.children.iter().rev() {
+        stack.push(WorkItem {
+          fragment: child,
+          offset: child_offset,
+          visibility: child_visibility,
+        });
+      }
     }
   }
 
