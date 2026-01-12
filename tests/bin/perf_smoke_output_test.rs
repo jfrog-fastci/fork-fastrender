@@ -8,6 +8,35 @@ use tempfile::tempdir;
 const PAGESET_GUARDRAILS_MANIFEST_ENV: &str = "FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST";
 const PAGESET_TIMEOUT_MANIFEST_ENV: &str = "FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST";
 
+fn run_perf_smoke_single_fixture(name: &str) -> Value {
+  let temp = tempdir().expect("create temp dir");
+  let output = temp.path().join("perf-smoke.json");
+
+  let result = Command::new(env!("CARGO_BIN_EXE_perf_smoke"))
+    .args(["--output", output.to_str().unwrap(), "--only", name])
+    .stdout(Stdio::null())
+    .output()
+    .expect("run perf_smoke");
+
+  assert!(
+    result.status.success(),
+    "perf_smoke should exit successfully; stderr: {}",
+    String::from_utf8_lossy(&result.stderr)
+  );
+
+  let data = fs::read_to_string(&output).expect("read perf_smoke output");
+  let summary: Value = serde_json::from_str(&data).expect("parse perf_smoke json");
+  let fixtures = summary["fixtures"]
+    .as_array()
+    .expect("fixtures array must exist");
+  assert_eq!(
+    fixtures.len(),
+    1,
+    "fixture filter should limit to one entry"
+  );
+  fixtures[0].clone()
+}
+
 #[test]
 fn perf_smoke_emits_stage_breakdowns() {
   let temp = tempdir().expect("create temp dir");
@@ -98,6 +127,70 @@ fn perf_smoke_emits_stage_breakdowns() {
   assert!(
     fixture["failure_stage"].is_null() || fixture["failure_stage"].as_str().is_some(),
     "fixture failure_stage should be null/absent or a string"
+  );
+}
+
+#[test]
+fn perf_smoke_intrinsic_sizing_stress_is_hot_and_offline() {
+  let fixture = run_perf_smoke_single_fixture("intrinsic_sizing_stress");
+  assert_eq!(
+    fixture["status"].as_str(),
+    Some("ok"),
+    "intrinsic_sizing_stress status should be ok"
+  );
+  assert_eq!(
+    fixture["fetch_error_count"].as_u64(),
+    Some(0),
+    "intrinsic_sizing_stress should not emit subresource fetch errors"
+  );
+
+  let fragments = fixture["counts"]["fragments"].as_u64().unwrap_or(0);
+  let glyphs = fixture["counts"]["glyphs"].as_u64().unwrap_or(0);
+  let box_nodes = fixture["counts"]["box_nodes"].as_u64().unwrap_or(0);
+
+  assert!(
+    fragments >= 400,
+    "expected intrinsic_sizing_stress to stay non-trivial (fragments={fragments})"
+  );
+  assert!(
+    glyphs >= 4000,
+    "expected intrinsic_sizing_stress to stay non-trivial (glyphs={glyphs})"
+  );
+  assert!(
+    box_nodes >= 200,
+    "expected intrinsic_sizing_stress to stay non-trivial (box_nodes={box_nodes})"
+  );
+}
+
+#[test]
+fn perf_smoke_float_stress_is_hot_and_offline() {
+  let fixture = run_perf_smoke_single_fixture("float_stress");
+  assert_eq!(
+    fixture["status"].as_str(),
+    Some("ok"),
+    "float_stress status should be ok"
+  );
+  assert_eq!(
+    fixture["fetch_error_count"].as_u64(),
+    Some(0),
+    "float_stress should not emit subresource fetch errors"
+  );
+
+  let fragments = fixture["counts"]["fragments"].as_u64().unwrap_or(0);
+  let glyphs = fixture["counts"]["glyphs"].as_u64().unwrap_or(0);
+  let box_nodes = fixture["counts"]["box_nodes"].as_u64().unwrap_or(0);
+
+  assert!(
+    fragments >= 400,
+    "expected float_stress to stay non-trivial (fragments={fragments})"
+  );
+  assert!(
+    glyphs >= 4000,
+    "expected float_stress to stay non-trivial (glyphs={glyphs})"
+  );
+  assert!(
+    box_nodes >= 100,
+    "expected float_stress to stay non-trivial (box_nodes={box_nodes})"
   );
 }
 

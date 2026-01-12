@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Float stress fixture</title>
+    <style>
+      /*
+        Synthetic, deterministic fixture.
+
+        Goal: stress layout hot paths for float placement + range scanning:
+          - many floats (left/right) with varying heights
+          - periodic clear patterns to exercise clearance handling
+          - long inline text that must wrap around float geometry (range queries per line)
+
+        Notes:
+          - Inline CSS only (offline fixture; no network subresources).
+          - Use ASCII uppercase text + disable ligatures for stable glyph counts.
+      */
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font: 14px/1.4 sans-serif;
+        font-variant-ligatures: none;
+        font-feature-settings: "liga" 0;
+      }
+
+      body {
+        background: #fff;
+        color: #111;
+      }
+
+      h1,
+      p {
+        margin: 0;
+        padding: 0;
+      }
+
+      h1 {
+        font-size: 18px;
+        margin: 0 0 10px 0;
+      }
+
+      p {
+        margin: 0 0 12px 0;
+        color: #333;
+      }
+
+      .page {
+        width: 980px;
+        padding: 20px;
+      }
+
+      .stream {
+        border: 1px solid #c9c9c9;
+        background: #fafafa;
+        padding: 12px;
+      }
+
+      .float-box {
+        width: 190px;
+        padding: 6px 8px;
+        border: 1px solid #b7b7b7;
+        background: #fff;
+        color: #222;
+        font-size: 12px;
+        line-height: 1.2;
+        overflow: hidden;
+      }
+
+      .left {
+        float: left;
+        margin: 0 10px 10px 0;
+      }
+
+      .right {
+        float: right;
+        margin: 0 0 10px 10px;
+      }
+
+      .clear-left {
+        clear: left;
+      }
+
+      .clear-right {
+        clear: right;
+      }
+
+      .clear-both {
+        clear: both;
+      }
+
+      /* Height palette (varied but fixed for determinism). */
+      .h0 {
+        height: 40px;
+      }
+      .h1 {
+        height: 60px;
+      }
+      .h2 {
+        height: 80px;
+      }
+      .h3 {
+        height: 110px;
+      }
+      .h4 {
+        height: 140px;
+      }
+      .h5 {
+        height: 180px;
+      }
+
+      .footer-clear {
+        clear: both;
+        height: 1px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page" data-fixture="float_stress" data-version="1">
+      <h1>float_stress</h1>
+      <p>
+        Targets float placement and float range scanning by interleaving many floats with long text
+        that wraps around them.
+      </p>
+
+      <div class="stream" id="float-stream">
+        <div class="float-box left h3 clear-both">FLOAT L00 (H3 CLEAR BOTH)</div>
+        <div class="float-box right h2">FLOAT R01 (H2)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR
+          JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+        </p>
+
+        <div class="float-box left h1">FLOAT L02 (H1)</div>
+        <div class="float-box right h5">FLOAT R03 (H5)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER
+          THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS
+          JUMP. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. SIX BIG DEVILS FROM JAPAN QUICKLY
+          FORGOT HOW TO WALTZ.
+        </p>
+
+        <div class="float-box left h4 clear-left">FLOAT L04 (H4 CLEAR LEFT)</div>
+        <div class="float-box right h2">FLOAT R05 (H2)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG
+          DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+        </p>
+
+        <div class="float-box right h4 clear-right">FLOAT R06 (H4 CLEAR RIGHT)</div>
+        <div class="float-box left h2">FLOAT L07 (H2)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. SIX BIG
+          DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+        </p>
+
+        <!-- Repeat a deterministic float + paragraph pattern to keep the float context dense. -->
+        <div class="float-box left h2">FLOAT L08 (H2)</div>
+        <div class="float-box right h3">FLOAT R09 (H3)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. SIX
+          BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+        </p>
+
+        <div class="float-box left h5">FLOAT L10 (H5)</div>
+        <div class="float-box right h1">FLOAT R11 (H1)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW
+          TO WALTZ.
+        </p>
+
+        <div class="float-box left h3">FLOAT L12 (H3)</div>
+        <div class="float-box right h4">FLOAT R13 (H4)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+        </p>
+
+        <div class="float-box left h1 clear-both">FLOAT L14 (H1 CLEAR BOTH)</div>
+        <div class="float-box right h5">FLOAT R15 (H5)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG.
+        </p>
+
+        <div class="float-box left h4">FLOAT L16 (H4)</div>
+        <div class="float-box right h2">FLOAT R17 (H2)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+        </p>
+
+        <div class="float-box right h3">FLOAT R18 (H3)</div>
+        <div class="float-box left h2">FLOAT L19 (H2)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ.
+        </p>
+
+        <div class="float-box left h5">FLOAT L20 (H5)</div>
+        <div class="float-box right h1">FLOAT R21 (H1)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+        </p>
+
+        <div class="float-box left h2 clear-both">FLOAT L22 (H2 CLEAR BOTH)</div>
+        <div class="float-box right h4">FLOAT R23 (H4)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG.
+        </p>
+
+        <!-- Repeat the same 8-float block multiple times to keep float lists large/deterministic. -->
+        <div class="float-box left h2">FLOAT L08 (H2)</div>
+        <div class="float-box right h3">FLOAT R09 (H3)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. SIX
+          BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+        </p>
+
+        <div class="float-box left h5">FLOAT L10 (H5)</div>
+        <div class="float-box right h1">FLOAT R11 (H1)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW
+          TO WALTZ.
+        </p>
+
+        <div class="float-box left h3">FLOAT L12 (H3)</div>
+        <div class="float-box right h4">FLOAT R13 (H4)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+        </p>
+
+        <div class="float-box left h1 clear-both">FLOAT L14 (H1 CLEAR BOTH)</div>
+        <div class="float-box right h5">FLOAT R15 (H5)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG.
+        </p>
+
+        <div class="float-box left h4">FLOAT L16 (H4)</div>
+        <div class="float-box right h2">FLOAT R17 (H2)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+        </p>
+
+        <div class="float-box right h3">FLOAT R18 (H3)</div>
+        <div class="float-box left h2">FLOAT L19 (H2)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ.
+        </p>
+
+        <div class="float-box left h5">FLOAT L20 (H5)</div>
+        <div class="float-box right h1">FLOAT R21 (H1)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+        </p>
+
+        <div class="float-box left h2 clear-both">FLOAT L22 (H2 CLEAR BOTH)</div>
+        <div class="float-box right h4">FLOAT R23 (H4)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG.
+        </p>
+
+        <div class="float-box left h2">FLOAT L08 (H2)</div>
+        <div class="float-box right h3">FLOAT R09 (H3)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. SIX
+          BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+        </p>
+
+        <div class="float-box left h5">FLOAT L10 (H5)</div>
+        <div class="float-box right h1">FLOAT R11 (H1)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW
+          TO WALTZ.
+        </p>
+
+        <div class="float-box left h3">FLOAT L12 (H3)</div>
+        <div class="float-box right h4">FLOAT R13 (H4)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+        </p>
+
+        <div class="float-box left h1 clear-both">FLOAT L14 (H1 CLEAR BOTH)</div>
+        <div class="float-box right h5">FLOAT R15 (H5)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG.
+        </p>
+
+        <div class="float-box left h4">FLOAT L16 (H4)</div>
+        <div class="float-box right h2">FLOAT R17 (H2)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+        </p>
+
+        <div class="float-box right h3">FLOAT R18 (H3)</div>
+        <div class="float-box left h2">FLOAT L19 (H2)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ.
+        </p>
+
+        <div class="float-box left h5">FLOAT L20 (H5)</div>
+        <div class="float-box right h1">FLOAT R21 (H1)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+        </p>
+
+        <div class="float-box left h2 clear-both">FLOAT L22 (H2 CLEAR BOTH)</div>
+        <div class="float-box right h4">FLOAT R23 (H4)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG.
+        </p>
+
+        <div class="float-box left h2">FLOAT L08 (H2)</div>
+        <div class="float-box right h3">FLOAT R09 (H3)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. SIX
+          BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+        </p>
+
+        <div class="float-box left h5">FLOAT L10 (H5)</div>
+        <div class="float-box right h1">FLOAT R11 (H1)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW
+          TO WALTZ.
+        </p>
+
+        <div class="float-box left h3">FLOAT L12 (H3)</div>
+        <div class="float-box right h4">FLOAT R13 (H4)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+        </p>
+
+        <div class="float-box left h1 clear-both">FLOAT L14 (H1 CLEAR BOTH)</div>
+        <div class="float-box right h5">FLOAT R15 (H5)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG.
+        </p>
+
+        <div class="float-box left h4">FLOAT L16 (H4)</div>
+        <div class="float-box right h2">FLOAT R17 (H2)</div>
+        <p>
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS.
+        </p>
+
+        <div class="float-box right h3">FLOAT R18 (H3)</div>
+        <div class="float-box left h2">FLOAT L19 (H2)</div>
+        <p>
+          HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY
+          DOG. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO
+          WALTZ.
+        </p>
+
+        <div class="float-box left h5">FLOAT L20 (H5)</div>
+        <div class="float-box right h1">FLOAT R21 (H1)</div>
+        <p>
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. HOW
+          VEXINGLY QUICK DAFT ZEBRAS JUMP. SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ.
+          PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+        </p>
+
+        <div class="float-box left h2 clear-both">FLOAT L22 (H2 CLEAR BOTH)</div>
+        <div class="float-box right h4">FLOAT R23 (H4)</div>
+        <p>
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG. PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS. HOW VEXINGLY QUICK DAFT ZEBRAS JUMP.
+          SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ. THE QUICK BROWN FOX JUMPS OVER THE
+          LAZY DOG.
+        </p>
+
+        <div class="footer-clear"></div>
+      </div>
+    </div>
+  </body>
+</html>

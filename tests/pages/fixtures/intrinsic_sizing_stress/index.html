@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Intrinsic sizing stress fixture</title>
+    <style>
+      /*
+        Synthetic, deterministic fixture.
+
+        Goal: stress layout hot paths for intrinsic sizing:
+          - block intrinsic width calculation (min/max-content + fit-content clamp)
+          - inline intrinsic width contributions (many inline runs + long unbreakable words)
+          - flex item intrinsic measurement (min-width:auto)
+
+        Notes:
+          - Inline CSS only (offline fixture; no network subresources).
+          - Use ASCII uppercase text + disable ligatures for stable glyph counts.
+      */
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font: 14px/1.4 sans-serif;
+        font-variant-ligatures: none;
+        font-feature-settings: "liga" 0;
+      }
+
+      body {
+        background: #fff;
+        color: #111;
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+        padding: 0;
+      }
+
+      h1 {
+        font-size: 18px;
+        margin: 0 0 10px 0;
+      }
+
+      h2 {
+        font-size: 14px;
+        margin: 18px 0 8px 0;
+      }
+
+      p {
+        margin: 0 0 10px 0;
+        color: #333;
+      }
+
+      .page {
+        width: 980px;
+        padding: 20px;
+      }
+
+      .probe {
+        border: 1px solid #c9c9c9;
+        background: #fafafa;
+        padding: 10px;
+        margin: 10px 0;
+      }
+
+      /* Force block intrinsic sizing probes. */
+      .probe.max-content {
+        width: max-content;
+        max-width: 960px;
+      }
+
+      .probe.fit-content {
+        width: fit-content;
+        max-width: 960px;
+      }
+
+      .row {
+        margin: 0 0 6px 0;
+      }
+
+      .token {
+        display: inline-block;
+        padding: 1px 4px;
+        margin-right: 4px;
+        border: 1px solid #ddd;
+        background: #fff;
+      }
+
+      .word {
+        display: inline;
+      }
+
+      .long {
+        font-weight: 700;
+      }
+
+      /* Flex items force intrinsic measurement (min-width:auto uses content contributions). */
+      .flex-probe {
+        display: flex;
+        flex-wrap: wrap;
+        width: 960px;
+        gap: 6px;
+        border: 1px solid #c9c9c9;
+        padding: 8px;
+        background: #f7f7f7;
+      }
+
+      .flex-item {
+        flex: 0 1 auto;
+        min-width: auto;
+        max-width: 230px;
+        padding: 6px 8px;
+        border: 1px solid #ddd;
+        background: #fff;
+      }
+
+      .flex-item .label {
+        display: block;
+        width: max-content;
+        max-width: 100%;
+        font-size: 12px;
+        color: #555;
+        margin: 0 0 4px 0;
+      }
+
+      .flex-item .pill {
+        display: inline-block;
+        padding: 1px 5px;
+        border: 1px solid #eee;
+        background: #fafafa;
+        margin-right: 3px;
+      }
+
+      .flex-item .snippet {
+        display: inline-block;
+        width: max-content;
+        max-width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page" data-fixture="intrinsic_sizing_stress" data-version="1">
+      <h1>intrinsic_sizing_stress</h1>
+      <p>
+        Targets min/max-content width + fit-content clamping via many inline runs with a periodic
+        long unbreakable word.
+      </p>
+
+      <h2>Block intrinsic sizing: width=max-content (clamped)</h2>
+      <div class="probe max-content" id="probe-max-content">
+        <div class="row">
+          <span class="token">ROW 000</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word long">SUPERCALIFRAGILISTICEXPIALIDOCIOUSSUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 001</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 002</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 003</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word long">PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSISPNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 004</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 005</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 006</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 007</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word long">SUPERCALIFRAGILISTICEXPIALIDOCIOUSSUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 008</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 009</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 010</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 011</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word long">PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSISPNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 012</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 013</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 014</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 015</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word long">SUPERCALIFRAGILISTICEXPIALIDOCIOUSSUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 016</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 017</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 018</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word long">PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSISPNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 019</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 020</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 021</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 022</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+        </div>
+        <div class="row">
+          <span class="token">ROW 023</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word long">SUPERCALIFRAGILISTICEXPIALIDOCIOUSSUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+      </div>
+
+      <h2>Block intrinsic sizing: width=fit-content (clamped)</h2>
+      <div class="probe fit-content" id="probe-fit-content">
+        <div class="row">
+          <span class="token">FIT 000</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word long">ANTIDISESTABLISHMENTARIANISMANTIDISESTABLISHMENTARIANISM</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 001</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 002</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 003</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word long">PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 004</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 005</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word long">ANTIDISESTABLISHMENTARIANISMANTIDISESTABLISHMENTARIANISM</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 006</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 007</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 008</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 009</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word long">PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 010</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word">SIX BIG DEVILS FROM JAPAN QUICKLY FORGOT HOW TO WALTZ</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+        </div>
+        <div class="row">
+          <span class="token">FIT 011</span>
+          <span class="word">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG</span>
+          <span class="word">HOW VEXINGLY QUICK DAFT ZEBRAS JUMP</span>
+          <span class="word">PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS</span>
+          <span class="word long">ANTIDISESTABLISHMENTARIANISMANTIDISESTABLISHMENTARIANISM</span>
+        </div>
+      </div>
+
+      <h2>Flex intrinsic measurement: many items + long words</h2>
+      <div class="flex-probe" id="probe-flex">
+        <div class="flex-item">
+          <span class="label">ITEM 000</span>
+          <span class="pill">ALPHA</span><span class="pill">BETA</span><span class="pill">GAMMA</span>
+          <span class="snippet long">SUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 001</span>
+          <span class="pill">DELTA</span><span class="pill">EPSILON</span><span class="pill">ZETA</span>
+          <span class="snippet">THE QUICK BROWN FOX JUMPS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 002</span>
+          <span class="pill">ETA</span><span class="pill">THETA</span><span class="pill">IOTA</span>
+          <span class="snippet long">PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 003</span>
+          <span class="pill">KAPPA</span><span class="pill">LAMBDA</span><span class="pill">MU</span>
+          <span class="snippet">PACK MY BOX WITH FIVE DOZEN</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 004</span>
+          <span class="pill">NU</span><span class="pill">XI</span><span class="pill">OMICRON</span>
+          <span class="snippet long">ANTIDISESTABLISHMENTARIANISMANTIDISESTABLISHMENTARIANISM</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 005</span>
+          <span class="pill">PI</span><span class="pill">RHO</span><span class="pill">SIGMA</span>
+          <span class="snippet">SIX BIG DEVILS FROM JAPAN</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 006</span>
+          <span class="pill">TAU</span><span class="pill">UPSILON</span><span class="pill">PHI</span>
+          <span class="snippet long">SUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 007</span>
+          <span class="pill">CHI</span><span class="pill">PSI</span><span class="pill">OMEGA</span>
+          <span class="snippet">HOW VEXINGLY QUICK DAFT ZEBRAS</span>
+        </div>
+
+        <!-- Repeat the same pattern to keep the fixture deterministic while remaining "hot". -->
+        <div class="flex-item">
+          <span class="label">ITEM 008</span>
+          <span class="pill">ALPHA</span><span class="pill">BETA</span><span class="pill">GAMMA</span>
+          <span class="snippet long">SUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 009</span>
+          <span class="pill">DELTA</span><span class="pill">EPSILON</span><span class="pill">ZETA</span>
+          <span class="snippet">THE QUICK BROWN FOX JUMPS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 010</span>
+          <span class="pill">ETA</span><span class="pill">THETA</span><span class="pill">IOTA</span>
+          <span class="snippet long">PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 011</span>
+          <span class="pill">KAPPA</span><span class="pill">LAMBDA</span><span class="pill">MU</span>
+          <span class="snippet">PACK MY BOX WITH FIVE DOZEN</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 012</span>
+          <span class="pill">NU</span><span class="pill">XI</span><span class="pill">OMICRON</span>
+          <span class="snippet long">ANTIDISESTABLISHMENTARIANISMANTIDISESTABLISHMENTARIANISM</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 013</span>
+          <span class="pill">PI</span><span class="pill">RHO</span><span class="pill">SIGMA</span>
+          <span class="snippet">SIX BIG DEVILS FROM JAPAN</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 014</span>
+          <span class="pill">TAU</span><span class="pill">UPSILON</span><span class="pill">PHI</span>
+          <span class="snippet long">SUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 015</span>
+          <span class="pill">CHI</span><span class="pill">PSI</span><span class="pill">OMEGA</span>
+          <span class="snippet">HOW VEXINGLY QUICK DAFT ZEBRAS</span>
+        </div>
+
+        <div class="flex-item">
+          <span class="label">ITEM 016</span>
+          <span class="pill">ALPHA</span><span class="pill">BETA</span><span class="pill">GAMMA</span>
+          <span class="snippet long">SUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 017</span>
+          <span class="pill">DELTA</span><span class="pill">EPSILON</span><span class="pill">ZETA</span>
+          <span class="snippet">THE QUICK BROWN FOX JUMPS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 018</span>
+          <span class="pill">ETA</span><span class="pill">THETA</span><span class="pill">IOTA</span>
+          <span class="snippet long">PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 019</span>
+          <span class="pill">KAPPA</span><span class="pill">LAMBDA</span><span class="pill">MU</span>
+          <span class="snippet">PACK MY BOX WITH FIVE DOZEN</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 020</span>
+          <span class="pill">NU</span><span class="pill">XI</span><span class="pill">OMICRON</span>
+          <span class="snippet long">ANTIDISESTABLISHMENTARIANISMANTIDISESTABLISHMENTARIANISM</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 021</span>
+          <span class="pill">PI</span><span class="pill">RHO</span><span class="pill">SIGMA</span>
+          <span class="snippet">SIX BIG DEVILS FROM JAPAN</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 022</span>
+          <span class="pill">TAU</span><span class="pill">UPSILON</span><span class="pill">PHI</span>
+          <span class="snippet long">SUPERCALIFRAGILISTICEXPIALIDOCIOUS</span>
+        </div>
+        <div class="flex-item">
+          <span class="label">ITEM 023</span>
+          <span class="pill">CHI</span><span class="pill">PSI</span><span class="pill">OMEGA</span>
+          <span class="snippet">HOW VEXINGLY QUICK DAFT ZEBRAS</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

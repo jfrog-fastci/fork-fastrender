@@ -236,6 +236,20 @@ const CORE_FIXTURES: &[CoreFixture] = &[
     MediaType::Screen,
   ),
   (
+    "intrinsic_sizing_stress",
+    "tests/pages/fixtures/intrinsic_sizing_stress/index.html",
+    (1040, 1240),
+    1.0,
+    MediaType::Screen,
+  ),
+  (
+    "float_stress",
+    "tests/pages/fixtures/float_stress/index.html",
+    (1040, 1240),
+    1.0,
+    MediaType::Screen,
+  ),
+  (
     "paginated_report_print",
     "tests/pages/fixtures/paginated_report/index.html",
     (920, 1180),
