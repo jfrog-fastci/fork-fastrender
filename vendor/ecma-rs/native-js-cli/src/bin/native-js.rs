@@ -49,6 +49,7 @@ struct Cli {
   ///
   /// - `check`/`build`/`emit-ir`: diagnostics JSON (`schema_version = 1`)
   /// - `bench`: benchmark JSON (`schema_version = 1`, `command = "bench"`)
+  /// - `addr2line`: symbolization JSON (`schema_version = 1`, `command = "addr2line"`)
   #[arg(long, global = true)]
   json: bool,
 
@@ -225,6 +226,32 @@ struct Addr2LineArgs {
   /// Demangle function names when possible (Rust symbols).
   #[arg(long, action = ArgAction::SetTrue)]
   demangle: bool,
+}
+
+const ADDR2LINE_JSON_SCHEMA_VERSION: u32 = 1;
+
+#[derive(serde::Serialize)]
+struct Addr2LineJsonOutput {
+  schema_version: u32,
+  command: &'static str,
+  exe: String,
+  base: Option<String>,
+  demangle: bool,
+  results: Vec<Addr2LineJsonResult>,
+  error: Option<String>,
+  exit_code: u8,
+}
+
+#[derive(serde::Serialize)]
+struct Addr2LineJsonResult {
+  input: String,
+  addr: String,
+  probe: String,
+  file: Option<String>,
+  line: Option<u32>,
+  col: Option<u32>,
+  function: Option<String>,
+  symbol: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -874,16 +901,32 @@ fn run_bench_once(exe: &Path, args: &[OsString], timeout: Duration) -> Result<Be
 }
 
 fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
-  if cli.json {
-    eprintln!("--json is not supported with `addr2line`");
-    return ExitCode::from(2);
+  fn emit_json(payload: &Addr2LineJsonOutput) {
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let _ = serde_json::to_writer_pretty(&mut handle, payload);
+    let _ = writeln!(&mut handle);
   }
 
   let base = match args.base.as_deref() {
     Some(raw) => match parse_hex_u64(raw) {
       Ok(value) => Some(value),
       Err(err) => {
-        eprintln!("{err}");
+        if cli.json {
+          let payload = Addr2LineJsonOutput {
+            schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+            command: "addr2line",
+            exe: args.exe.display().to_string(),
+            base: None,
+            demangle: args.demangle,
+            results: Vec::new(),
+            error: Some(err),
+            exit_code: 2,
+          };
+          emit_json(&payload);
+        } else {
+          eprintln!("{err}");
+        }
         return ExitCode::from(2);
       }
     },
@@ -893,27 +936,77 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
   let loader = match addr2line::Loader::new(&args.exe) {
     Ok(loader) => loader,
     Err(err) => {
-      eprintln!("failed to load DWARF debug info from {}: {err}", args.exe.display());
+      let msg = format!(
+        "failed to load DWARF debug info from {}: {err}",
+        args.exe.display()
+      );
+      if cli.json {
+        let payload = Addr2LineJsonOutput {
+          schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+          command: "addr2line",
+          exe: args.exe.display().to_string(),
+          base: base.map(|b| format!("0x{b:x}")),
+          demangle: args.demangle,
+          results: Vec::new(),
+          error: Some(msg),
+          exit_code: 2,
+        };
+        emit_json(&payload);
+      } else {
+        eprintln!("{msg}");
+      }
       return ExitCode::from(2);
     }
   };
 
+  let mut results = Vec::with_capacity(args.addrs.len());
+
   for raw_addr in &args.addrs {
-    let mut addr = match parse_hex_u64(raw_addr) {
+    let addr_raw = match parse_hex_u64(raw_addr) {
       Ok(addr) => addr,
       Err(err) => {
-        eprintln!("{err}");
+        if cli.json {
+          let payload = Addr2LineJsonOutput {
+            schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+            command: "addr2line",
+            exe: args.exe.display().to_string(),
+            base: base.map(|b| format!("0x{b:x}")),
+            demangle: args.demangle,
+            results,
+            error: Some(err),
+            exit_code: 2,
+          };
+          emit_json(&payload);
+        } else {
+          eprintln!("{err}");
+        }
         return ExitCode::from(2);
       }
     };
 
+    let mut probe = addr_raw;
     if let Some(base) = base {
-      addr = match addr.checked_sub(base) {
+      probe = match probe.checked_sub(base) {
         Some(v) => v,
         None => {
-          eprintln!(
+          let msg = format!(
             "address {raw_addr} is below base 0x{base:x} (use a correct --base for PIE/ASLR offsets)"
           );
+          if cli.json {
+            let payload = Addr2LineJsonOutput {
+              schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+              command: "addr2line",
+              exe: args.exe.display().to_string(),
+              base: Some(format!("0x{base:x}")),
+              demangle: args.demangle,
+              results,
+              error: Some(msg),
+              exit_code: 2,
+            };
+            emit_json(&payload);
+          } else {
+            eprintln!("{msg}");
+          }
           return ExitCode::from(2);
         }
       };
@@ -925,10 +1018,33 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
     let mut function: Option<String> = None;
     let mut have_line = false;
 
-    let mut frames = match loader.find_frames(addr) {
+    let symbol = loader.find_symbol(probe).map(|sym| {
+      if args.demangle {
+        addr2line::demangle_auto(std::borrow::Cow::Borrowed(sym), None).into_owned()
+      } else {
+        sym.to_string()
+      }
+    });
+
+    let mut frames = match loader.find_frames(probe) {
       Ok(frames) => frames,
       Err(err) => {
-        eprintln!("failed to resolve 0x{addr:x}: {err}");
+        let msg = format!("failed to resolve 0x{probe:x}: {err}");
+        if cli.json {
+          let payload = Addr2LineJsonOutput {
+            schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+            command: "addr2line",
+            exe: args.exe.display().to_string(),
+            base: base.map(|b| format!("0x{b:x}")),
+            demangle: args.demangle,
+            results,
+            error: Some(msg),
+            exit_code: 2,
+          };
+          emit_json(&payload);
+        } else {
+          eprintln!("{msg}");
+        }
         return ExitCode::from(2);
       }
     };
@@ -938,7 +1054,22 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
         Ok(Some(frame)) => frame,
         Ok(None) => break,
         Err(err) => {
-          eprintln!("failed to resolve 0x{addr:x}: {err}");
+          let msg = format!("failed to resolve 0x{probe:x}: {err}");
+          if cli.json {
+            let payload = Addr2LineJsonOutput {
+              schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+              command: "addr2line",
+              exe: args.exe.display().to_string(),
+              base: base.map(|b| format!("0x{b:x}")),
+              demangle: args.demangle,
+              results,
+              error: Some(msg),
+              exit_code: 2,
+            };
+            emit_json(&payload);
+          } else {
+            eprintln!("{msg}");
+          }
           return ExitCode::from(2);
         }
       };
@@ -975,25 +1106,48 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
       }
     }
 
-    let file = file.unwrap_or_else(|| "??".to_string());
-    let line = line.unwrap_or(0);
-    let mut out = format!("{file}:{line}");
-    if let Some(col) = col {
-      out.push(':');
-      out.push_str(&col.to_string());
-    }
-    if let Some(function) = function {
-      out.push(' ');
-      out.push_str(&function);
-    } else if let Some(symbol) = loader.find_symbol(addr) {
-      out.push(' ');
-      if args.demangle {
-        out.push_str(&addr2line::demangle_auto(std::borrow::Cow::Borrowed(symbol), None));
-      } else {
+    if cli.json {
+      results.push(Addr2LineJsonResult {
+        input: raw_addr.clone(),
+        addr: format!("0x{addr_raw:x}"),
+        probe: format!("0x{probe:x}"),
+        file,
+        line,
+        col,
+        function,
+        symbol,
+      });
+    } else {
+      let file = file.unwrap_or_else(|| "??".to_string());
+      let line = line.unwrap_or(0);
+      let mut out = format!("{file}:{line}");
+      if let Some(col) = col {
+        out.push(':');
+        out.push_str(&col.to_string());
+      }
+      if let Some(function) = function {
+        out.push(' ');
+        out.push_str(&function);
+      } else if let Some(symbol) = symbol.as_deref() {
+        out.push(' ');
         out.push_str(symbol);
       }
+      println!("{out}");
     }
-    println!("{out}");
+  }
+
+  if cli.json {
+    let payload = Addr2LineJsonOutput {
+      schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
+      command: "addr2line",
+      exe: args.exe.display().to_string(),
+      base: base.map(|b| format!("0x{b:x}")),
+      demangle: args.demangle,
+      results,
+      error: None,
+      exit_code: 0,
+    };
+    emit_json(&payload);
   }
 
   ExitCode::SUCCESS

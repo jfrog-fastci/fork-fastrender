@@ -538,6 +538,43 @@ fn addr2line_resolves_main_symbol_to_typescript_location() {
     .success()
     .stdout(predicate::str::contains("entry.ts:1"))
     .stdout(predicate::str::contains("main"));
+
+  let assert = native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--json")
+    .arg("addr2line")
+    .arg(&out)
+    .arg(format!("{main_addr:x}"))
+    .assert()
+    .success()
+    .code(0);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["schema_version"], 1);
+  assert_eq!(value["command"], "addr2line");
+  assert_eq!(value["exit_code"], 0);
+
+  let results = value["results"].as_array().expect("expected results array");
+  assert_eq!(results.len(), 1);
+  let file = results[0]["file"].as_str().unwrap_or("");
+  assert!(
+    file.ends_with("entry.ts"),
+    "expected file to end with entry.ts, got {file:?}"
+  );
+  assert_eq!(results[0]["line"], 1);
+  let function = results[0]["function"].as_str().unwrap_or("");
+  let symbol = results[0]["symbol"].as_str().unwrap_or("");
+  assert!(
+    function.contains("main") || symbol.contains("main"),
+    "expected function/symbol to contain main, got function={function:?} symbol={symbol:?}"
+  );
 }
 
 #[test]
