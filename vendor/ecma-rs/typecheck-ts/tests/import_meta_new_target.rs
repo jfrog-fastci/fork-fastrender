@@ -206,6 +206,28 @@ interface ImportMeta {
 }
 
 #[test]
+fn import_meta_falls_back_to_unknown_without_import_meta_interface() {
+  let source = r#"
+export const x = import.meta;
+"#;
+  let program = program_with_source(source, Vec::new());
+
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file_id = program.file_id(&FileKey::new("entry.ts")).expect("file id");
+  let offset = source
+    .find("import.meta")
+    .expect("import.meta in source") as u32
+    + 1;
+  let ty = program.type_at(file_id, offset).expect("type at import.meta");
+  assert_eq!(program.display_type(ty).to_string(), "unknown");
+}
+
+#[test]
 fn new_target_is_typed_when_function_is_available() {
   let program = program_with_source(
     r#"
@@ -223,4 +245,35 @@ export function f() {
     diagnostics.is_empty(),
     "unexpected diagnostics when new.target is passed to Function: {diagnostics:?}"
   );
+}
+
+#[test]
+fn new_target_falls_back_to_unknown_without_function_type() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+
+  let mut host = MemoryHost::with_options(options);
+  // Intentionally omit `common::core_globals_lib()` so `Function` is not resolvable.
+  let entry = FileKey::new("entry.ts");
+  let source = r#"
+export function f() {
+  return new.target;
+}
+"#;
+  host.insert(entry.clone(), Arc::from(source.to_string()));
+
+  let program = Program::new(host, vec![entry.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file_id = program.file_id(&entry).expect("file id");
+  let offset = source
+    .find("new.target")
+    .expect("new.target in source") as u32
+    + 1;
+  let ty = program.type_at(file_id, offset).expect("type at new.target");
+  assert_eq!(program.display_type(ty).to_string(), "unknown");
 }
