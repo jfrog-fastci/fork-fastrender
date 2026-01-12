@@ -455,6 +455,10 @@ pub enum ParallelReason {
   CallbackReadsHeap,
   CallbackWrites,
   CallbackUsesIndex,
+  PromiseUnknownEffects,
+  PromiseWritesHeap,
+  PromiseConflictingAccess,
+  PromiseDependsOnOther,
   ReduceNotAssociative,
   Await,
 }

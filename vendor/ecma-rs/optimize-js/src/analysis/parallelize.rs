@@ -5,6 +5,7 @@ use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp, Para
 use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CallbackInfo {
@@ -40,6 +41,195 @@ fn resolve_alias(mut var: u32, aliases: &BTreeMap<u32, u32>) -> u32 {
     var = src;
   }
   var
+}
+
+#[derive(Clone, Debug)]
+struct ValueDefInfo {
+  uses: Vec<u32>,
+  effects: EffectSet,
+}
+
+#[derive(Clone, Debug)]
+enum ValueDef {
+  Known(ValueDefInfo),
+  Unknown,
+}
+
+fn inst_used_vars(inst: &Inst) -> Vec<u32> {
+  let mut out = Vec::new();
+  for arg in &inst.args {
+    if let Arg::Var(v) = arg {
+      out.push(*v);
+    }
+  }
+  out
+}
+
+fn build_value_defs(cfg: &Cfg) -> BTreeMap<u32, ValueDef> {
+  let mut defs = BTreeMap::<u32, ValueDef>::new();
+  for label in cfg.graph.labels_sorted() {
+    let bb = cfg.bblocks.maybe_get(label).into_iter().flatten();
+    for inst in bb {
+      for &tgt in &inst.tgts {
+        let def = ValueDef::Known(ValueDefInfo {
+          uses: inst_used_vars(inst),
+          effects: inst.meta.effects.clone(),
+        });
+        defs
+          .entry(tgt)
+          .and_modify(|existing| {
+            if !matches!(existing, ValueDef::Unknown) {
+              *existing = ValueDef::Unknown;
+            }
+          })
+          .or_insert(def);
+      }
+    }
+  }
+  defs
+}
+
+fn unknown_effects() -> EffectSet {
+  let mut e = EffectSet::default();
+  e.mark_unknown();
+  e
+}
+
+fn var_total_effect(
+  var: u32,
+  defs: &BTreeMap<u32, ValueDef>,
+  memo: &mut BTreeMap<u32, EffectSet>,
+  visiting: &mut Vec<u32>,
+) -> EffectSet {
+  if let Some(e) = memo.get(&var) {
+    return e.clone();
+  }
+  if visiting.contains(&var) {
+    return unknown_effects();
+  }
+  visiting.push(var);
+
+  let mut out = EffectSet::default();
+  match defs.get(&var) {
+    None => {
+      // Variables without a defining instruction are treated as effect-free when used as an input
+      // value (e.g. parameters).
+    }
+    Some(ValueDef::Unknown) => {
+      out.mark_unknown();
+    }
+    Some(ValueDef::Known(info)) => {
+      out.merge(&info.effects);
+      for &u in &info.uses {
+        let e = var_total_effect(u, defs, memo, visiting);
+        out.merge(&e);
+      }
+    }
+  }
+
+  visiting.pop();
+  memo.insert(var, out.clone());
+  out
+}
+
+fn arg_total_effect(arg: &Arg, defs: &BTreeMap<u32, ValueDef>, memo: &mut BTreeMap<u32, EffectSet>) -> EffectSet {
+  match arg {
+    Arg::Var(v) => var_total_effect(*v, defs, memo, &mut Vec::new()),
+    _ => EffectSet::default(),
+  }
+}
+
+fn var_depends_on(var: u32, target: u32, defs: &BTreeMap<u32, ValueDef>, visiting: &mut Vec<u32>) -> bool {
+  if visiting.contains(&var) {
+    return true;
+  }
+  visiting.push(var);
+
+  let mut out = false;
+  match defs.get(&var) {
+    None => {}
+    Some(ValueDef::Unknown) => {
+      out = true;
+    }
+    Some(ValueDef::Known(info)) => {
+      for &u in &info.uses {
+        if u == target || var_depends_on(u, target, defs, visiting) {
+          out = true;
+          break;
+        }
+      }
+    }
+  }
+
+  visiting.pop();
+  out
+}
+
+fn promise_components_plan(
+  args: &[Arg],
+  defs: &BTreeMap<u32, ValueDef>,
+  memo: &mut BTreeMap<u32, EffectSet>,
+) -> Result<(), ParallelReason> {
+  let arg_vars: Vec<u32> = args
+    .iter()
+    .filter_map(|a| match a {
+      Arg::Var(v) => Some(*v),
+      _ => None,
+    })
+    .collect();
+
+  let mut effects_per_arg = Vec::<EffectSet>::with_capacity(args.len());
+  for arg in args {
+    match arg {
+      Arg::Var(v) if !defs.contains_key(v) => {
+        return Err(ParallelReason::PromiseUnknownEffects);
+      }
+      _ => {}
+    }
+    effects_per_arg.push(arg_total_effect(arg, defs, memo));
+  }
+
+  for eff in &effects_per_arg {
+    if eff.unknown {
+      return Err(ParallelReason::PromiseUnknownEffects);
+    }
+    if eff.writes.contains(&EffectLocation::Heap) {
+      return Err(ParallelReason::PromiseWritesHeap);
+    }
+  }
+
+  // Conflicts: any read after another write, or any write after another read/write.
+  let mut seen_reads = BTreeSet::<EffectLocation>::new();
+  let mut seen_writes = BTreeSet::<EffectLocation>::new();
+  for eff in &effects_per_arg {
+    if eff.reads.iter().any(|loc| seen_writes.contains(loc)) {
+      return Err(ParallelReason::PromiseConflictingAccess);
+    }
+    if eff
+      .writes
+      .iter()
+      .any(|loc| seen_reads.contains(loc) || seen_writes.contains(loc))
+    {
+      return Err(ParallelReason::PromiseConflictingAccess);
+    }
+    seen_reads.extend(eff.reads.iter().cloned());
+    seen_writes.extend(eff.writes.iter().cloned());
+  }
+
+  if arg_vars.len() >= 2 {
+    for &v in &arg_vars {
+      for &other in &arg_vars {
+        if v == other {
+          continue;
+        }
+        if var_depends_on(v, other, defs, &mut Vec::new()) {
+          return Err(ParallelReason::PromiseDependsOnOther);
+        }
+      }
+    }
+  }
+
+  Ok(())
 }
 
 fn detect_associative_reduce_callback(cfg: &Cfg, params: &[u32]) -> bool {
@@ -320,6 +510,8 @@ pub fn annotate_cfg_parallelize(
   foreign_fns: &BTreeMap<SymbolId, FnId>,
 ) {
   let defs = build_callee_var_defs(cfg, foreign_fns);
+  let value_defs = build_value_defs(cfg);
+  let mut value_memo = BTreeMap::<u32, EffectSet>::new();
 
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
@@ -330,11 +522,19 @@ pub fn annotate_cfg_parallelize(
           continue;
         }
         InstTyp::PromiseAll => {
-          inst.meta.parallel = Some(ParallelPlan::SpawnAll);
+          let plan = match promise_components_plan(&inst.args, &value_defs, &mut value_memo) {
+            Ok(()) => ParallelPlan::SpawnAll,
+            Err(reason) => ParallelPlan::NotParallelizable(reason),
+          };
+          inst.meta.parallel = Some(plan);
           continue;
         }
         InstTyp::PromiseRace => {
-          inst.meta.parallel = Some(ParallelPlan::SpawnAllButRaceResult);
+          let plan = match promise_components_plan(&inst.args, &value_defs, &mut value_memo) {
+            Ok(()) => ParallelPlan::SpawnAllButRaceResult,
+            Err(reason) => ParallelPlan::NotParallelizable(reason),
+          };
+          inst.meta.parallel = Some(plan);
           continue;
         }
         _ => {}
