@@ -3796,8 +3796,11 @@ impl<'ctx> CodeGen<'ctx> {
 fn insert_gc_safepoint(&mut self);
 fn insert_write_barrier(&mut self, obj: PointerValue, field: PointerValue);
 // NOTE: `ShapeId` is a semantic (analysis/codegen) id; it is *not* passed into the runtime
-// directly. Codegen maps `ShapeId -> RtShapeId(u32)` and registers the shape descriptor table at
-// startup (see runtime-native ABI below).
+// directly. Codegen maps `ShapeId -> RtShapeId(u32)` and registers a shape descriptor table via the
+// runtime-native ABI below.
+//
+// For dlopen/JIT-style multi-module embeddings, modules can register additional shapes at runtime
+// and obtain a stable `RtShapeId` base via `rt_register_shape_table_extend` / `*_append`.
 fn compile_allocation(&mut self, shape: ShapeId) -> PointerValue<'ctx>;
 ```
 
