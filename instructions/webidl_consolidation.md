@@ -26,8 +26,10 @@ vendor/ecma-rs/
 src/js/webidl/            ← FastRender-specific bindings integration (re-exports, host dispatch,
                             realm installation/runtime glue)
 
-crates/
-└── js-wpt-dom-runner/    ← FastRender-specific tooling (offline WPT runner)
+ crates/
+ ├── webidl-js-runtime/    ← transitional (deprecated) workspace-local copy of the legacy runtime
+ │                           (Cargo package `webidl-js-runtime`, re-exported as `fastrender::js::webidl::legacy`)
+ └── js-wpt-dom-runner/    ← FastRender-specific tooling (offline WPT runner)
 ```
 
 Note: historical WebIDL infrastructure that previously lived under `crates/` has been migrated into
