@@ -116,9 +116,9 @@ COLRv1 rendering lives in
 [`src/text/color_fonts/colr_v1.rs`](../../src/text/color_fonts/colr_v1.rs) and is
 exercised by tests such as:
 
-- `tests/colr_v1_color_font_test.rs`
-- `tests/colr_v1_radial_gradient_test.rs`
-- `tests/colr_v1_sweep_gradient_test.rs` (see also `colrv1-sweep-test.ttf` /
+- `tests/colr/v1_color_font_test.rs`
+- `tests/colr/v1_radial_gradient_test.rs`
+- `tests/colr/v1_sweep_gradient_test.rs` (see also `colrv1-sweep-test.ttf` /
   `colrv1-var-sweep-test.ttf` in
   [`tests/fixtures/fonts/README.md`](../../tests/fixtures/fonts/README.md))
 
@@ -145,7 +145,7 @@ Implemented COLRv1 features include:
   keep `currentColor` paints opaque), so changing CSS opacity does not require
   re-rasterizing color glyphs. Concretely: cached color glyph rasters strip the
   alpha channel from the text color and multiply by the combined alpha (`color.a *
-  opacity`) only when drawing (see `tests/color_glyph_opacity.rs`).
+  opacity`) only when drawing (see `tests/misc/color_glyph_opacity.rs`).
 - `Canvas` passes stacking-context transforms, clips, opacity, and blend modes down
   to `TextRasterizer` so both outline and color-glyph rendering participate in
   those effects.

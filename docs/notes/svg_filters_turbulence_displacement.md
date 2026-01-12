@@ -171,7 +171,7 @@ Regression coverage:
 - Unit test: `turbulence_encodes_channels_based_on_color_interpolation_filters`
   (`src/paint/svg_filter.rs`)
 - Integration test: `turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb`
-  (`tests/svg_filter_turbulence.rs`)
+  (`tests/svg_integration/filter_turbulence.rs`)
 
 ### Coordinates: `primitiveUnits`, bbox translation, and `filterRes`/DPR
 
@@ -196,8 +196,8 @@ Important (Chrome-aligned) behavior:
 
 Regression coverage:
 
-- `turbulence_userspace_translation_changes_pattern` (`tests/svg_filter_turbulence.rs`)
-- `turbulence_userspace_translation_changes_pattern_with_filter_res` (`tests/svg_filter_turbulence.rs`)
+- `turbulence_userspace_translation_changes_pattern` (`tests/svg_integration/filter_turbulence.rs`)
+- `turbulence_userspace_translation_changes_pattern_with_filter_res` (`tests/svg_integration/filter_turbulence.rs`)
 
 ### `stitchTiles` (wrapping algorithm)
 
@@ -220,8 +220,8 @@ Stitching is implemented inside `turbulence()` / `noise2()`:
 
 Regression coverage:
 
-- `turbulence_stitches_edges` (`tests/svg_filter_turbulence.rs`)
-- `turbulence_stitches_edges_with_offset_filter_region` (`tests/svg_filter_turbulence.rs`)
+- `turbulence_stitches_edges` (`tests/svg_integration/filter_turbulence.rs`)
+- `turbulence_stitches_edges_with_offset_filter_region` (`tests/svg_integration/filter_turbulence.rs`)
 
 ## `feDisplacementMap`
 
@@ -386,7 +386,7 @@ Regression coverage:
 
 ### `feTurbulence` integration tests
 
-- `tests/svg_filter_turbulence.rs`:
+- `tests/svg_integration/filter_turbulence.rs`:
   - `turbulence_is_deterministic`
   - `turbulence_seed_changes_output`
   - `turbulence_stitches_edges`
