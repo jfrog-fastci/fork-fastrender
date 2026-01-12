@@ -433,6 +433,56 @@ fn dynamic_import_sync_host_completion_fulfills_promise() -> Result<(), VmError>
 }
 
 #[test]
+fn dynamic_import_rejects_when_module_evaluation_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // A module that throws during evaluation should cause the dynamic import promise to reject with
+  // the thrown value (via `PerformPromiseThen(evaluatePromise, ...)`).
+  let err = rt
+    .modules_mut()
+    .add_module(SourceTextModuleRecord::parse("throw 1;")?);
+
+  let mut host = SyncHostHooks::new();
+  host.register_module("./err.js", err);
+
+  let promise_value = rt.exec_script_with_hooks(&mut host, "import('./err.js')")?;
+  let promise_root = rt.heap.add_root(promise_value)?;
+
+  let Value::Object(promise_obj) = promise_value else {
+    return Err(VmError::InvariantViolation(
+      "import() should evaluate to a Promise object",
+    ));
+  };
+
+  // Even though evaluation fails synchronously, `ContinueDynamicImport` settles the import()
+  // promise via a Promise reaction job (microtask).
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+  host.perform_microtask_checkpoint(&mut rt)?;
+
+  let promise_value = rt
+    .heap
+    .get_root(promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(promise_obj) = promise_value else {
+    return Err(VmError::InvariantViolation(
+      "promise root should reference an object",
+    ));
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+
+  let reason = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  assert!(matches!(reason, Value::Number(n) if n == 1.0));
+
+  rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
 fn dynamic_import_waits_for_top_level_await() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
