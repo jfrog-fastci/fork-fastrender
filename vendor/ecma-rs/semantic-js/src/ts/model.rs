@@ -252,6 +252,8 @@ pub enum ImportEqualsTarget {
 pub struct ExportSpecifier {
   pub local: String,
   pub exported: Option<String>,
+  /// `export { type Foo }` marks the specifier as type-only.
+  pub is_type_only: bool,
   pub local_span: TextRange,
   pub exported_span: Option<TextRange>,
 }

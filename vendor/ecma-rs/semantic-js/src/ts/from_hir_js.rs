@@ -280,6 +280,7 @@ fn lower_block(
               } else {
                 None
               },
+              is_type_only: list.stx.type_only || name.stx.type_only,
               local_span: to_range(name.loc),
               exported_span,
             });
@@ -305,7 +306,7 @@ fn lower_block(
               .as_ref()
               .map(|_| export_specifier_span(stmt_range).unwrap_or(stmt_range)),
             items,
-            is_type_only: list.stx.type_only || names.iter().all(|n| n.stx.type_only),
+            is_type_only: list.stx.type_only,
           }));
         }
       },
@@ -364,6 +365,7 @@ fn lower_block(
           .map(|n| ExportSpecifier {
             local: n.local.clone(),
             exported: n.exported.clone(),
+            is_type_only: true,
             local_span: stmt_range,
             exported_span: n.exported.as_ref().map(|_| stmt_range),
           })

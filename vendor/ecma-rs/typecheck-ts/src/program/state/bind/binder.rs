@@ -356,6 +356,7 @@ impl ProgramState {
                   vec![sem_ts::ExportSpecifier {
                     local: exportable.clone(),
                     exported: exported_as.clone(),
+                    is_type_only,
                     local_span: loc_to_span(file, name.loc).range,
                     exported_span: exported_as
                       .as_ref()

@@ -344,6 +344,7 @@ fn reexport_chain_uses_original_symbols() {
     items: vec![ExportSpecifier {
       local: "foo".to_string(),
       exported: None,
+      is_type_only: false,
       local_span: span(11),
       exported_span: None,
     }],
@@ -544,6 +545,7 @@ fn type_only_import_export_isolated() {
     items: vec![ExportSpecifier {
       local: "Foo".to_string(),
       exported: None,
+      is_type_only: false,
       local_span: span(33),
       exported_span: None,
     }],
@@ -565,6 +567,163 @@ fn type_only_import_export_isolated() {
   let foo_export = semantics.exports_of(file_b).get("Foo").unwrap();
   let mask = foo_export.namespaces(semantics.symbols());
   assert_eq!(mask, Namespace::TYPE);
+}
+
+#[test]
+fn mixed_type_only_reexport_respects_per_specifier_flags() {
+  let file_a = FileId(210);
+  let file_b = FileId(211);
+
+  let mut a = HirFile::module(file_a);
+  // Use a class so the type-only modifier has observable behavior: classes occupy
+  // both the value and type namespaces.
+  a.decls
+    .push(mk_decl(0, "Foo", DeclKind::Class, Exported::Named));
+  a.decls
+    .push(mk_decl(1, "Bar", DeclKind::Var, Exported::Named));
+
+  let mut b = HirFile::module(file_b);
+  b.exports.push(Export::Named(NamedExport {
+    specifier: Some("a".to_string()),
+    specifier_span: Some(span(10)),
+    items: vec![
+      ExportSpecifier {
+        local: "Foo".to_string(),
+        exported: None,
+        is_type_only: true,
+        local_span: span(11),
+        exported_span: None,
+      },
+      ExportSpecifier {
+        local: "Bar".to_string(),
+        exported: None,
+        is_type_only: false,
+        local_span: span(12),
+        exported_span: None,
+      },
+    ],
+    is_type_only: false,
+  }));
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_b => Arc::new(b),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "a".to_string() => file_a,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_b], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let symbols = semantics.symbols();
+  let exports_b = semantics.exports_of(file_b);
+
+  let foo = exports_b.get("Foo").expect("Foo exported");
+  assert!(
+    foo.symbol_for(Namespace::VALUE, symbols).is_none(),
+    "type-only re-export should not export Foo in value namespace"
+  );
+  assert!(
+    foo.symbol_for(Namespace::TYPE, symbols).is_some(),
+    "type-only re-export should export Foo in type namespace"
+  );
+
+  let bar = exports_b.get("Bar").expect("Bar exported");
+  assert!(
+    bar.symbol_for(Namespace::VALUE, symbols).is_some(),
+    "non-type-only re-export should export Bar in value namespace"
+  );
+}
+
+#[test]
+fn mixed_type_only_local_export_respects_per_specifier_flags() {
+  let file_a = FileId(220);
+  let file_b = FileId(221);
+
+  let mut a = HirFile::module(file_a);
+  a.decls
+    .push(mk_decl(0, "Foo", DeclKind::Class, Exported::Named));
+  a.decls
+    .push(mk_decl(1, "Bar", DeclKind::Var, Exported::Named));
+
+  let mut b = HirFile::module(file_b);
+  b.imports.push(Import {
+    specifier: "a".to_string(),
+    specifier_span: span(30),
+    default: None,
+    namespace: None,
+    named: vec![
+      ImportNamed {
+        imported: "Foo".to_string(),
+        local: "Foo".to_string(),
+        is_type_only: false,
+        imported_span: span(31),
+        local_span: span(32),
+      },
+      ImportNamed {
+        imported: "Bar".to_string(),
+        local: "Bar".to_string(),
+        is_type_only: false,
+        imported_span: span(33),
+        local_span: span(34),
+      },
+    ],
+    is_type_only: false,
+  });
+  b.exports.push(Export::Named(NamedExport {
+    specifier: None,
+    specifier_span: None,
+    items: vec![
+      ExportSpecifier {
+        local: "Foo".to_string(),
+        exported: None,
+        is_type_only: true,
+        local_span: span(35),
+        exported_span: None,
+      },
+      ExportSpecifier {
+        local: "Bar".to_string(),
+        exported: None,
+        is_type_only: false,
+        local_span: span(36),
+        exported_span: None,
+      },
+    ],
+    is_type_only: false,
+  }));
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(a),
+    file_b => Arc::new(b),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "a".to_string() => file_a,
+  });
+
+  let (semantics, diags) =
+    bind_ts_program(&[file_b], &resolver, |f| files.get(&f).unwrap().clone());
+  assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+
+  let symbols = semantics.symbols();
+  let exports_b = semantics.exports_of(file_b);
+
+  let foo = exports_b.get("Foo").expect("Foo exported");
+  assert!(
+    foo.symbol_for(Namespace::VALUE, symbols).is_none(),
+    "type-only export should not export Foo in value namespace"
+  );
+  assert!(
+    foo.symbol_for(Namespace::TYPE, symbols).is_some(),
+    "type-only export should export Foo in type namespace"
+  );
+
+  let bar = exports_b.get("Bar").expect("Bar exported");
+  assert!(
+    bar.symbol_for(Namespace::VALUE, symbols).is_some(),
+    "non-type-only export should export Bar in value namespace"
+  );
 }
 
 #[test]
@@ -773,6 +932,7 @@ fn export_namespace_import_uses_local_binding() {
     items: vec![ExportSpecifier {
       local: "NS".to_string(),
       exported: None,
+      is_type_only: false,
       local_span: span(42),
       exported_span: None,
     }],
@@ -853,6 +1013,7 @@ fn declaration_merging_orders_deterministically() {
     items: vec![ExportSpecifier {
       local: "Classy".to_string(),
       exported: None,
+      is_type_only: true,
       local_span: span(50),
       exported_span: None,
     }],
@@ -1855,6 +2016,7 @@ fn binder_is_deterministic_across_orders_and_threads() {
     items: vec![ExportSpecifier {
       local: "Foo".to_string(),
       exported: Some("Bar".to_string()),
+      is_type_only: false,
       local_span: span(14),
       exported_span: Some(span(15)),
     }],
@@ -1866,6 +2028,7 @@ fn binder_is_deterministic_across_orders_and_threads() {
     items: vec![ExportSpecifier {
       local: "LocalB".to_string(),
       exported: None,
+      is_type_only: false,
       local_span: span(18),
       exported_span: None,
     }],
@@ -1886,6 +2049,7 @@ fn binder_is_deterministic_across_orders_and_threads() {
     items: vec![ExportSpecifier {
       local: "TypeOnly".to_string(),
       exported: None,
+      is_type_only: true,
       local_span: span(20),
       exported_span: None,
     }],
@@ -2116,6 +2280,7 @@ fn duplicate_export_has_two_labels() {
     items: vec![ExportSpecifier {
       local: "FromA".to_string(),
       exported: Some("Dup".to_string()),
+      is_type_only: false,
       local_span: span(64),
       exported_span: Some(TextRange::new(200, 203)),
     }],
@@ -3043,6 +3208,7 @@ fn ambient_module_import_reexports_without_resolver_mapping() {
     items: vec![ExportSpecifier {
       local: "x".to_string(),
       exported: None,
+      is_type_only: false,
       local_span: span(13),
       exported_span: None,
     }],
@@ -3114,6 +3280,7 @@ fn ambient_module_reexport_chain() {
     items: vec![ExportSpecifier {
       local: "foo".to_string(),
       exported: None,
+      is_type_only: false,
       local_span: span(21),
       exported_span: None,
     }],
@@ -3391,6 +3558,7 @@ fn reexports_from_ambient_modules_are_resolved() {
     items: vec![ExportSpecifier {
       local: "Foo".to_string(),
       exported: None,
+      is_type_only: false,
       local_span: span(6),
       exported_span: None,
     }],

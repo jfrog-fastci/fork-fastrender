@@ -498,6 +498,7 @@ fn gen_export_specifier(
   ts::ExportSpecifier {
     local,
     exported,
+    is_type_only: cursor.next_bool(),
     local_span,
     exported_span,
   }

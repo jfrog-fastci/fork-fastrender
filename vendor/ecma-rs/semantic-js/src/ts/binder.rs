@@ -876,13 +876,14 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             (resolved, spec_span)
           });
           for item in &named.items {
+            let type_only = named.is_type_only || item.is_type_only;
             if named.specifier.is_none() {
               let span = Span::new(file_id, item.exported_span.unwrap_or(item.local_span));
               first_export_span.get_or_insert(span);
               state.export_specs.push(ExportSpec::Local {
                 name: item.local.clone(),
                 exported_as: item.exported.clone().unwrap_or_else(|| item.local.clone()),
-                type_only: named.is_type_only,
+                type_only,
                 span,
               });
             } else {
@@ -894,7 +895,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
                 from_span: *from_span,
                 name: item.local.clone(),
                 exported_as: item.exported.clone().unwrap_or_else(|| item.local.clone()),
-                type_only: named.is_type_only,
+                type_only,
                 span,
               });
             }
