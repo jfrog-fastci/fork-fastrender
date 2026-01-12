@@ -1052,6 +1052,34 @@ fn history_push_replace_state_null_url_does_not_change_document_url() -> Result<
 }
 
 #[test]
+fn history_push_state_null_url_updates_length_and_state_without_changing_href() -> Result<()> {
+  let start_url = "https://example.com/";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(start_url))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script(
+      r#"
+      const before = location.href;
+      history.pushState({a: 1}, '', null);
+      const after = location.href;
+      [before, after, history.length, history.state && history.state.a].join('|')
+      "#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(
+    get_string(realm.heap(), value),
+    format!("{start_url}|{start_url}|2|1")
+  );
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.pushState with null URL should not schedule navigation"
+  );
+  Ok(())
+}
+
+#[test]
 fn history_push_and_replace_state_update_length_and_state() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
