@@ -2599,6 +2599,25 @@ fn console_dir_native(
   Ok(Value::Undefined)
 }
 
+fn console_dirxml_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(sink) = console_sink_from_callee_and_this(scope, callee, this)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let fallback = [Value::Undefined];
+  let args = if args.is_empty() { &fallback } else { &args[..1] };
+  sink(ConsoleMessageLevel::Log, scope.heap_mut(), args);
+  Ok(Value::Undefined)
+}
+
 fn console_table_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -21336,6 +21355,7 @@ fn init_window_globals(
   let console_time_log_call_id = vm.register_native_call(console_time_log_native)?;
   let console_time_end_call_id = vm.register_native_call(console_time_end_native)?;
   let console_dir_call_id = vm.register_native_call(console_dir_native)?;
+  let console_dirxml_call_id = vm.register_native_call(console_dirxml_native)?;
   let console_table_call_id = vm.register_native_call(console_table_native)?;
   let sink_id_key_s = scope.alloc_string(CONSOLE_SINK_ID_KEY)?;
   scope.push_root(Value::String(sink_id_key_s))?;
@@ -21440,7 +21460,7 @@ fn init_window_globals(
   let time_end_func =
     define_console_standard_method(&mut scope, console_time_end_call_id, "timeEnd", 0)?;
   let dir_func = define_console_standard_method(&mut scope, console_dir_call_id, "dir", 0)?;
-  let dirxml_func = define_console_standard_method(&mut scope, console_dir_call_id, "dirxml", 0)?;
+  let dirxml_func = define_console_standard_method(&mut scope, console_dirxml_call_id, "dirxml", 0)?;
   let table_func = define_console_standard_method(&mut scope, console_table_call_id, "table", 0)?;
 
   scope.define_property(console_obj, log_key, data_desc(log_func))?;
@@ -25342,9 +25362,12 @@ mod tests {
       realm.exec_script(
         "typeof console.assert === 'function' && \
          typeof console.count === 'function' && \
+         typeof console.countReset === 'function' && \
          typeof console.time === 'function' && \
+         typeof console.timeLog === 'function' && \
          typeof console.timeEnd === 'function' && \
          typeof console.dir === 'function' && \
+         typeof console.dirxml === 'function' && \
          typeof console.table === 'function'"
       )?,
       Value::Bool(true)
@@ -25390,6 +25413,31 @@ mod tests {
       &[(ConsoleMessageLevel::Log, "default: 4".to_string())]
     );
 
+    // `console.countReset` resets existing counters (and warns when missing).
+    captured.lock().clear();
+    realm.exec_script("console.countReset('x'); console.count('x');")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Log, "x: 1".to_string())]
+    );
+
+    captured.lock().clear();
+    realm.exec_script("console.countReset(); console.count();")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Log, "default: 1".to_string())]
+    );
+
+    captured.lock().clear();
+    realm.exec_script("console.countReset('missing')")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(
+        ConsoleMessageLevel::Warn,
+        "Count for 'missing' does not exist".to_string()
+      )]
+    );
+
     // `console.time`/`console.timeEnd` must follow the same monotonic clock as `performance.now()`.
     captured.lock().clear();
     clock.set_now(Duration::from_millis(0));
@@ -25397,10 +25445,15 @@ mod tests {
     assert!(captured.lock().is_empty());
 
     clock.set_now(Duration::from_nanos(1_234_567_890)); // 1234.56789ms
+    realm.exec_script("console.timeLog('t', 'extra', 1)")?;
+    clock.set_now(Duration::from_millis(2000));
     realm.exec_script("console.timeEnd('t')")?;
     assert_eq!(
       &*captured.lock(),
-      &[(ConsoleMessageLevel::Log, "t: 1234.568ms".to_string())]
+      &[
+        (ConsoleMessageLevel::Log, "t: 1234.568ms extra 1".to_string()),
+        (ConsoleMessageLevel::Log, "t: 2000.000ms".to_string()),
+      ]
     );
 
     captured.lock().clear();
@@ -25418,15 +25471,24 @@ mod tests {
     );
 
     captured.lock().clear();
-    let ok = realm.exec_script("try { console.dir({}); console.table({}); true } catch (e) { false }")?;
+    realm.exec_script("console.timeLog('missing')")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Warn, "Timer 'missing' does not exist".to_string())]
+    );
+
+    captured.lock().clear();
+    let ok = realm.exec_script(
+      "try { console.dir({}); console.dirxml({}); console.table({}); true } catch (e) { false }",
+    )?;
     assert_eq!(ok, Value::Bool(true));
     let calls = captured.lock().clone();
     assert!(
-      calls.len() >= 2
+      calls.len() >= 3
         && calls
           .iter()
           .all(|(level, _)| *level == ConsoleMessageLevel::Log),
-      "expected console.dir/table to emit log messages, got {calls:?}"
+      "expected console.dir/dirxml/table to emit log messages, got {calls:?}"
     );
 
     Ok(())
