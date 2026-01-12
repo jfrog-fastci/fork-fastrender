@@ -3169,7 +3169,7 @@ fn default_export_decls_cannot_merge_fixture_reports_ts2652() {
 
   let ast = parse(source).expect("parse defaultExportsCannotMerge04.ts");
   let lowered = lower_file(file, HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
   let resolver = StaticResolver::new(HashMap::new());
@@ -3203,7 +3203,7 @@ fn default_export_class_cannot_merge_with_interface_reports_ts2652() {
 
   let ast = parse(source).expect("parse class/interface default export merge");
   let lowered = lower_file(file, HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
   let resolver = StaticResolver::new(HashMap::new());
@@ -3228,6 +3228,34 @@ fn default_export_class_cannot_merge_with_interface_reports_ts2652() {
     assert_eq!(diag.message, message);
     assert_eq!(diag.primary.file, file);
   }
+}
+
+#[test]
+fn default_export_async_function_merge_reports_ts2652_on_name_span() {
+  let file = FileId(5092);
+  let source = "export default async function Foo() {}\nnamespace Foo {}\n";
+
+  let ast = parse(source).expect("parse async default export merge");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  let ts2652: Vec<_> = diags.iter().filter(|d| d.code == "TS2652").collect();
+  assert_eq!(ts2652.len(), 2);
+
+  let positions = positions(source, "Foo");
+  assert_eq!(positions.len(), 2);
+  let expected: Vec<TextRange> = vec![
+    TextRange::new(positions[0], positions[0] + 3),
+    TextRange::new(positions[1], positions[1] + 3),
+  ];
+
+  let mut actual: Vec<TextRange> = ts2652.iter().map(|d| d.primary.range).collect();
+  actual.sort_by_key(|r| (r.start, r.end));
+  assert_eq!(actual, expected);
 }
 
 #[test]

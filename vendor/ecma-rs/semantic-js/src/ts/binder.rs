@@ -3313,60 +3313,6 @@ fn decl_sort_key(symbols: &SymbolTable, decl: DeclId) -> (FileId, u32, u32, Decl
   (data.file, data.span.start, data.span.end, decl)
 }
 
-fn decl_name_span(data: &DeclData) -> TextRange {
-  let span = data.span;
-  let len = data.name.len() as u32;
-  if len == 0 {
-    return span;
-  }
-
-  // Best-effort: infer the identifier span from the start of the declaration.
-  // `DeclData` currently only stores the full declaration span, so for keyword-
-  // introduced declarations we approximate by skipping the leading keyword
-  // sequence. Once `DeclData` stores an explicit name span (Task 66), this can
-  // be replaced with that field.
-  let prefix_len: Option<u32> = match data.kind {
-    DeclKind::Function => match data.exported {
-      Exported::Default => Some(24), // `export default function `
-      Exported::Named => Some(16),   // `export function `
-      Exported::No => Some(9),       // `function `
-    },
-    DeclKind::Class => match data.exported {
-      Exported::Default => Some(21), // `export default class `
-      Exported::Named => Some(13),   // `export class `
-      Exported::No => Some(6),       // `class `
-    },
-    DeclKind::Interface => match data.exported {
-      Exported::Named => Some(17), // `export interface `
-      _ => Some(10),               // `interface `
-    },
-    DeclKind::Namespace => match data.exported {
-      Exported::Named => Some(17), // `export namespace `
-      _ => Some(10),               // `namespace `
-    },
-    DeclKind::Enum => match data.exported {
-      Exported::Named => Some(12), // `export enum `
-      _ => Some(5),                // `enum `
-    },
-    DeclKind::TypeAlias => match data.exported {
-      Exported::Named => Some(12), // `export type `
-      _ => Some(5),                // `type `
-    },
-    // Vars, imports, and alias-like decls are already tracked at the name span.
-    DeclKind::Var | DeclKind::ImportBinding => None,
-  };
-
-  let Some(prefix_len) = prefix_len else {
-    return span;
-  };
-
-  if span.start + prefix_len + len <= span.end {
-    TextRange::new(span.start + prefix_len, span.start + prefix_len + len)
-  } else {
-    span
-  }
-}
-
 fn decls_are_compatible(a: &DeclData, b: &DeclData) -> bool {
   let overlap = a.namespaces & b.namespaces;
   if overlap.is_empty() {
@@ -3574,7 +3520,7 @@ fn emit_default_export_merge_diagnostics(
     diags.push(Diagnostic::error(
       "TS2652",
       message.clone(),
-      Span::new(data.file, decl_name_span(data)),
+      Span::new(data.file, data.name_span),
     ));
   }
 }
