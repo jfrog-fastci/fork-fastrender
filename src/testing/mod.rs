@@ -94,7 +94,7 @@ mod tests {
 
   #[test]
   fn smoke_testing_utils_compile_and_work() {
-    init_rayon_for_tests(1);
+    init_rayon_for_tests(2);
 
     let result = with_large_stack(2 * 1024 * 1024, || 123_u32);
     assert_eq!(result, 123);
@@ -128,4 +128,3 @@ mod tests {
     assert!(result.is_err());
   }
 }
-

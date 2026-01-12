@@ -51,7 +51,7 @@ fn trace_backdrop_stack_smoke() {
   ])));
 
   runtime::with_runtime_toggles(toggles, || {
-    crate::testing::init_rayon_for_tests(1);
+    crate::testing::init_rayon_for_tests(2);
 
     let html = r#"<!doctype html>
       <style>

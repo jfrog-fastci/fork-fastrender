@@ -13,7 +13,7 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, FontContext) {
-  crate::testing::init_rayon_for_tests(1);
+  crate::testing::init_rayon_for_tests(2);
 
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())

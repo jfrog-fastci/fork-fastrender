@@ -50,7 +50,7 @@ fn render(
   Vec<StackingContextReason>,
   Vec<StackingContextItem>,
 ) {
-  crate::testing::init_rayon_for_tests(1);
+  crate::testing::init_rayon_for_tests(2);
   // Force the display-list paint backend so this future guard catches issues introduced by
   // stacking-context compositing layers (the known risk surface for backdrop-filter sampling).
   let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(

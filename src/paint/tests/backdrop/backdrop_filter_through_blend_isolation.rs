@@ -5,7 +5,7 @@ use crate::scroll::ScrollState;
 use crate::{FastRender, Point, Rgba};
 
 fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
-  crate::testing::init_rayon_for_tests(1);
+  crate::testing::init_rayon_for_tests(2);
 
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
