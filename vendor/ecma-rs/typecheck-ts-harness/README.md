@@ -394,10 +394,14 @@ the suite name (e.g. `difftsc/assignability`).
 
  CI runs a small `fixtures/difftsc` suite against a pinned npm TypeScript to keep
  the Rust checker aligned with upstream diagnostics without relying on stored
- baselines. The workflow installs `typescript@5.9.3` and executes:
+ baselines.
 
-```
-RAYON_NUM_THREADS=2 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release --locked --jobs 2 -- \
+ The workflow installs dependencies from `typecheck-ts-harness/package-lock.json`
+ (via `npm ci --ignore-scripts`) and executes:
+
+```bash
+# From `vendor/ecma-rs/`:
+RAYON_NUM_THREADS=2 bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release --locked --jobs 2 -- \
   difftsc \
   --suite typecheck-ts-harness/fixtures/difftsc \
   --compare-rust \
@@ -411,9 +415,13 @@ RAYON_NUM_THREADS=2 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness -
 - The JSON report artifact captures both `tsc` and Rust diagnostics for
   mismatches.
 
- To reproduce locally, install the pinned TypeScript package next to the harness
-  (`cd typecheck-ts-harness && npm install --no-save --no-package-lock --ignore-scripts typescript@5.9.3`)
-  before running the command above.
+ To reproduce locally, install the pinned TypeScript dependency next to the
+ harness and then run the command above:
+
+ ```bash
+ cd typecheck-ts-harness && npm ci --ignore-scripts
+ cd ..
+ ```
 
 ## CI: upstream conformance (sharded)
 
