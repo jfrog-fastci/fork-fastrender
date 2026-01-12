@@ -12532,7 +12532,6 @@ pub(crate) fn alloc_resize_observer_entry_object_with_dom_rects(
 
   Ok(obj)
 }
-
 fn mutation_observer_observe_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -13440,7 +13439,7 @@ fn alloc_intersection_observer_entry_object_from_dom(
     )
   };
 
-  let obj = alloc_intersection_observer_entry_object(
+  let obj = alloc_intersection_observer_entry_dom_rects_object(
     scope,
     global,
     entry.root_bounds.map(rect_tuple),
@@ -14004,7 +14003,7 @@ fn alloc_resize_observer_entry_object_from_dom(
     entry.content_rect.size.width as f64,
     entry.content_rect.size.height as f64,
   );
-  let obj = alloc_resize_observer_entry_object(scope, global, content_rect)?;
+  let obj = alloc_resize_observer_entry_dom_rect_object(scope, global, content_rect)?;
   scope.push_root(Value::Object(obj))?;
 
   let target_key = alloc_key(scope, "target")?;

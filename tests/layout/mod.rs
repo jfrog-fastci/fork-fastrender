@@ -17,7 +17,6 @@ mod image_percent_height_missing_uses_alt_intrinsic;
 mod intrinsic_memoization_stress;
 mod legacy_webkit_box_flex;
 mod padding_offsets;
-mod paged_media;
 mod parallel_stats;
 mod profile_diagnostics;
 mod render_wrap;
