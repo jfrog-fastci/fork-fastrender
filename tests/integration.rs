@@ -28,7 +28,6 @@ mod progress;
 mod render;
 mod scroll;
 mod style;
-mod tree;
 mod ui;
 mod var;
 mod guards;

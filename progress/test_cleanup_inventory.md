@@ -73,7 +73,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/scroll_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/scroll/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/style_tests.rs` | delete | `src/style/tests/style/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
 | `tests/text_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/text/**` and is pulled into `tests/integration.rs`. | DONE |
-| `tests/tree_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/tree/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/tree_tests.rs` | delete | delete | Top-level harness removed; tree/box generation tests migrated to unit tests under `src/tree/**`. | DONE |
 | `tests/ui_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ui/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/var_tests.rs` | delete | `src/style/tests/var/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
 | `tests/weibo_web_font_relative_url_test.rs` | delete | delete | Migrated to unit tests (`src/text/font_loader.rs`) as `weibo_fixture_font_face_relative_url_resolves_against_document_base_url`. | DONE |
@@ -130,7 +130,7 @@ migrations.
 | `tests/style/` | migrated (directory removed) | `src/style/**` | Suite moved into `src/style/tests/**` (unit tests). |
 | `tests/text/` | shaping/text regressions | `src/text/**` | Unit tests. |
 | `tests/tooling/` | external tool integration (e.g. LLVM stackmaps) | `tests/integration.rs::tooling` | Tests that shell out to toolchains; should skip when tools absent. |
-| `tests/tree/` | box/tree generation regressions | `src/tree/**` | Unit tests. |
+| `tests/tree/` | box/tree generation regressions | `src/tree/**` | Migrated to unit tests; `tests/tree/` directory removed. |
 | `tests/ui/` | browser UI protocol tests | `tests/integration.rs::api::ui` | Integration tests (feature-gated). |
 | `tests/wpt/` + `tests/wpt_dom/` | WPT runners + fixtures | `tests/integration.rs::wpt` | Stays in `tests/` (fixture-driven integration). |
 
