@@ -1,7 +1,15 @@
 use native_oracle_harness::{
-  compare_native_against_vm_js_oracle, run_fixture_ts_outcome, run_fixture_ts_outcome_with_name_and_options,
-  OracleHarnessOptions, RunOutcome, RunOutcomeCompareOptions, VmJsOracleRunner,
+  compare_native_against_vm_js_oracle, run_fixture_outcome_with_options, run_fixture_ts_outcome,
+  run_fixture_ts_outcome_with_name_and_options, run_js_source_outcome_with_options, OracleHarnessOptions,
+  RunOutcome, RunOutcomeCompareOptions, VmJsOracleRunner,
 };
+use std::path::PathBuf;
+
+fn fixture_path(name: &str) -> PathBuf {
+  PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("../fixtures/native_oracle")
+    .join(name)
+}
 
 #[test]
 fn run_outcome_ok() {
@@ -35,6 +43,61 @@ fn run_outcome_throw() {
       assert_eq!(stderr, "");
     }
     other => panic!("expected Throw, got {other:?}"),
+  }
+}
+
+#[test]
+fn run_outcome_captures_console_log() {
+  let out = run_js_source_outcome_with_options(
+    "<fixture>",
+    r#"console.log("hi"); "ok";"#,
+    &OracleHarnessOptions::default(),
+  );
+  match out {
+    RunOutcome::Ok { value, stdout, .. } => {
+      assert_eq!(value, "ok");
+      assert_eq!(stdout, "hi");
+    }
+    other => panic!("expected Ok, got {other:?}"),
+  }
+}
+
+#[test]
+fn run_outcome_promise_aware_ok() {
+  let out = run_fixture_outcome_with_options(
+    fixture_path("await_promise_resolve.js"),
+    &OracleHarnessOptions::default(),
+  );
+  match out {
+    RunOutcome::Ok { value, .. } => assert_eq!(value, "ok"),
+    other => panic!("expected Ok, got {other:?}"),
+  }
+}
+
+#[test]
+fn run_outcome_promise_aware_rejected_promise_is_throw() {
+  let out = run_fixture_outcome_with_options(
+    fixture_path("promise_reject.js"),
+    &OracleHarnessOptions::default(),
+  );
+  match out {
+    RunOutcome::Throw { message, .. } => assert_eq!(message, "nope"),
+    other => panic!("expected Throw, got {other:?}"),
+  }
+}
+
+#[test]
+fn run_outcome_promise_aware_pending_promise_is_terminated() {
+  let mut opts = OracleHarnessOptions::default();
+  opts.max_microtask_checkpoints = 8;
+
+  let out = run_fixture_outcome_with_options(fixture_path("promise_pending.js"), &opts);
+  match out {
+    RunOutcome::Terminated { message, .. } => assert!(
+      message.contains("did not settle"),
+      "expected termination to mention promise did not settle, got {message:?}"
+    ),
+    other => panic!("expected Terminated, got {other:?}"),
   }
 }
 
@@ -73,4 +136,3 @@ fn compare_vm_js_oracle_runner_matches_itself() {
   compare_native_against_vm_js_oracle(&native, r#"globalThis.__native_result="ok";"#, RunOutcomeCompareOptions::default())
     .expect("oracle should match itself");
 }
-

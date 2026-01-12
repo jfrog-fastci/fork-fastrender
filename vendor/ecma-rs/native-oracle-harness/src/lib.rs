@@ -604,6 +604,107 @@ pub fn run_fixture_with_options(
   }
 }
 
+/// Execute a fixture file (TypeScript or JavaScript) and return a structured [`RunOutcome`].
+///
+/// This mirrors [`run_fixture`] / [`run_fixture_with_options`], but:
+/// - returns structured outcomes (ok/throw/termination/compile error), and
+/// - captures `console.log` output into [`RunOutcome::stdout`].
+pub fn run_fixture_outcome(path: impl AsRef<Path>) -> RunOutcome {
+  run_fixture_outcome_with_options(path, &OracleHarnessOptions::default())
+}
+
+pub fn run_fixture_outcome_with_options(path: impl AsRef<Path>, options: &OracleHarnessOptions) -> RunOutcome {
+  let path = path.as_ref();
+  let source_name: Arc<str> = path
+    .file_name()
+    .and_then(|s| s.to_str())
+    .unwrap_or("<fixture>")
+    .into();
+  let source_text = match fs::read_to_string(path) {
+    Ok(src) => src,
+    Err(err) => {
+      return RunOutcome::Terminated {
+        message: format!("failed to read fixture {}: {err}", path.display()),
+        stdout: String::new(),
+        stderr: String::new(),
+      }
+    }
+  };
+  let ext = path.extension().and_then(|ext| ext.to_str());
+  if matches!(ext, Some("ts") | Some("tsx")) {
+    run_typescript_source_outcome_with_options(source_name, &source_text, options)
+  } else {
+    run_js_source_outcome_with_options(source_name, Arc::<str>::from(source_text), options)
+  }
+}
+
+/// Execute a TypeScript snippet in the oracle VM, returning a structured [`RunOutcome`].
+pub fn run_typescript_source_outcome_with_options(
+  source_name: impl Into<Arc<str>>,
+  source_text: &str,
+  options: &OracleHarnessOptions,
+) -> RunOutcome {
+  let js = match ts_to_js(source_text) {
+    Ok(js) => js,
+    Err(diag) => return RunOutcome::CompileError { diagnostic: diag },
+  };
+  run_js_source_outcome_with_options(source_name, Arc::<str>::from(js), options)
+}
+
+/// Execute already-erased JavaScript source, returning a structured [`RunOutcome`].
+///
+/// This captures `console.log` output into [`RunOutcome::stdout`] using the same console prelude as
+/// [`run_js_source_capture_stdout_with_options`].
+pub fn run_js_source_outcome_with_options(
+  source_name: impl Into<Arc<str>>,
+  source_text: impl Into<Arc<str>>,
+  options: &OracleHarnessOptions,
+) -> RunOutcome {
+  let mut rt = match new_runtime_with_options(options) {
+    Ok(rt) => rt,
+    Err(err) => {
+      return RunOutcome::Terminated {
+        message: format!("failed to init vm-js: {err}"),
+        stdout: String::new(),
+        stderr: String::new(),
+      }
+    }
+  };
+  rt.vm.set_user_data(StdoutCapture::default());
+
+  let outcome = (|| {
+    if let Err(err) = rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    if let Err(err) = rt.exec_script_source(Arc::new(SourceText::new(
+      CONSOLE_PRELUDE_SOURCE_NAME,
+      CONSOLE_PRELUDE_SCRIPT,
+    ))) {
+      return vm_error_to_outcome(&mut rt, err);
+    }
+
+    let source = Arc::new(SourceText::new(source_name, source_text));
+    let value = match rt.exec_script_source(source) {
+      Ok(v) => v,
+      Err(err) => return vm_error_to_outcome(&mut rt, err),
+    };
+
+    match value_to_outcome_string(&mut rt, value, options) {
+      Ok(value) => RunOutcome::Ok {
+        value,
+        stdout: String::new(),
+        stderr: String::new(),
+      },
+      Err(outcome) => outcome,
+    }
+  })();
+
+  let stdout = take_captured_stdout(&mut rt.vm);
+  teardown_microtasks(&mut rt);
+  attach_stdio(outcome, stdout, String::new())
+}
+
 /// Execute a TypeScript snippet in the oracle VM, returning its output string.
 pub fn run_typescript_source_with_options(
   source_name: impl Into<Arc<str>>,
@@ -835,6 +936,133 @@ fn wait_for_promise(
           .unwrap_or(Value::Undefined);
         return Err(OracleHarnessError::PromiseRejected {
           reason: stringify_value(rt, reason, 0),
+        });
+      }
+    }
+  }
+}
+
+fn value_to_outcome_string(
+  rt: &mut JsRuntime,
+  value: Value,
+  options: &OracleHarnessOptions,
+) -> Result<String, RunOutcome> {
+  // Fast path: synchronous string.
+  if let Value::String(s) = value {
+    return rt
+      .heap()
+      .get_string(s)
+      .map(|js| js.to_utf8_lossy())
+      .map_err(|err| RunOutcome::Terminated {
+        message: format!("invalid string handle: {err}"),
+        stdout: String::new(),
+        stderr: String::new(),
+      });
+  }
+
+  // Await Promise<string>.
+  let Value::Object(obj) = value else {
+    return Err(RunOutcome::Terminated {
+      message: format!("fixture returned non-string value: {value:?}"),
+      stdout: String::new(),
+      stderr: String::new(),
+    });
+  };
+  if !rt.heap().is_promise(obj) {
+    return Err(RunOutcome::Terminated {
+      message: format!("fixture returned non-string value: {value:?}"),
+      stdout: String::new(),
+      stderr: String::new(),
+    });
+  }
+
+  // Root the promise so microtask execution can allocate/GC without invalidating the handle.
+  let root_id = match rt.heap_mut().add_root(Value::Object(obj)) {
+    Ok(id) => id,
+    Err(err) => return Err(vm_error_to_outcome(rt, err)),
+  };
+
+  let settle_result = (|| wait_for_promise_outcome(rt, obj, options))();
+  rt.heap_mut().remove_root(root_id);
+  settle_result
+}
+
+fn wait_for_promise_outcome(
+  rt: &mut JsRuntime,
+  promise: vm_js::GcObject,
+  options: &OracleHarnessOptions,
+) -> Result<String, RunOutcome> {
+  let mut checkpoints = 0usize;
+
+  loop {
+    let state = match rt.heap().promise_state(promise) {
+      Ok(state) => state,
+      Err(err) => return Err(vm_error_to_outcome(rt, err)),
+    };
+
+    match state {
+      PromiseState::Pending => {
+        if checkpoints >= options.max_microtask_checkpoints {
+          return Err(RunOutcome::Terminated {
+            message: format!(
+              "promise did not settle after {microtask_checkpoints} microtask checkpoints",
+              microtask_checkpoints = checkpoints
+            ),
+            stdout: String::new(),
+            stderr: String::new(),
+          });
+        }
+
+        // If there is nothing queued, the promise cannot make progress (this harness does not have
+        // a macro-task/event loop).
+        if rt.vm.microtask_queue().is_empty() {
+          return Err(RunOutcome::Terminated {
+            message: format!(
+              "promise did not settle after {microtask_checkpoints} microtask checkpoints",
+              microtask_checkpoints = checkpoints
+            ),
+            stdout: String::new(),
+            stderr: String::new(),
+          });
+        }
+
+        if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+          return Err(vm_error_to_outcome(rt, err));
+        }
+        checkpoints += 1;
+      }
+      PromiseState::Fulfilled => {
+        let value = match rt.heap().promise_result(promise) {
+          Ok(v) => v.unwrap_or(Value::Undefined),
+          Err(err) => return Err(vm_error_to_outcome(rt, err)),
+        };
+        let Value::String(s) = value else {
+          return Err(RunOutcome::Terminated {
+            message: format!("promise fulfilled with non-string value: {value:?}"),
+            stdout: String::new(),
+            stderr: String::new(),
+          });
+        };
+        return rt
+          .heap()
+          .get_string(s)
+          .map(|js| js.to_utf8_lossy())
+          .map_err(|err| RunOutcome::Terminated {
+            message: format!("invalid string handle: {err}"),
+            stdout: String::new(),
+            stderr: String::new(),
+          });
+      }
+      PromiseState::Rejected => {
+        let reason = match rt.heap().promise_result(promise) {
+          Ok(v) => v.unwrap_or(Value::Undefined),
+          Err(err) => return Err(vm_error_to_outcome(rt, err)),
+        };
+        return Err(RunOutcome::Throw {
+          message: stringify_value(rt, reason, 0),
+          stack: None,
+          stdout: String::new(),
+          stderr: String::new(),
         });
       }
     }
@@ -1087,88 +1315,7 @@ pub fn run_fixture_ts_outcome(source: &str) -> RunOutcome {
 
 /// Like [`run_fixture_ts_outcome`] but uses a custom source name for VM error reporting.
 pub fn run_fixture_ts_outcome_with_name(name: &str, source: &str) -> RunOutcome {
-  let js = match ts_to_js(source) {
-    Ok(js) => js,
-    Err(diag) => return RunOutcome::CompileError { diagnostic: diag },
-  };
-
-  let mut vm = Vm::new(VmOptions::default());
-  vm.set_user_data(StdoutCapture::default());
-  let heap = Heap::new(HeapLimits::new(HEAP_MAX_BYTES, HEAP_GC_THRESHOLD_BYTES));
-  let mut rt = match JsRuntime::new(vm, heap) {
-    Ok(rt) => rt,
-    Err(err) => {
-      return RunOutcome::Terminated {
-        message: format!("failed to init vm-js: {err}"),
-        stdout: String::new(),
-        stderr: String::new(),
-      };
-    }
-  };
-  rt.vm.set_budget(Budget {
-    fuel: Some(VM_FUEL),
-    deadline: None,
-    check_time_every: 100,
-  });
-
-  let outcome = (|| {
-    if let Err(err) = rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0) {
-      return vm_error_to_outcome(&mut rt, err);
-    }
-
-    if let Err(err) = rt.exec_script_source(Arc::new(SourceText::new(
-      CONSOLE_PRELUDE_SOURCE_NAME,
-      CONSOLE_PRELUDE_SCRIPT,
-    ))) {
-      return vm_error_to_outcome(&mut rt, err);
-    }
-
-    let fixture_source = Arc::new(SourceText::new(name, js));
-    if let Err(err) = rt.exec_script_source(fixture_source) {
-      return vm_error_to_outcome(&mut rt, err);
-    }
-
-    if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
-      return vm_error_to_outcome(&mut rt, err);
-    }
-
-    let value = match rt.exec_script_source(Arc::new(SourceText::new(
-      OBSERVE_SOURCE_NAME,
-      OBSERVE_SCRIPT,
-    ))) {
-      Ok(v) => v,
-      Err(err) => return vm_error_to_outcome(&mut rt, err),
-    };
-
-    let Value::String(s) = value else {
-      return RunOutcome::Terminated {
-        message: format!("observe script returned non-string value: {value:?}"),
-        stdout: String::new(),
-        stderr: String::new(),
-      };
-    };
-
-    let value = match rt.heap().get_string(s) {
-      Ok(s) => s.to_utf8_lossy(),
-      Err(err) => {
-        return RunOutcome::Terminated {
-          message: format!("invalid string handle: {err}"),
-          stdout: String::new(),
-          stderr: String::new(),
-        }
-      }
-    };
-
-    RunOutcome::Ok {
-      value,
-      stdout: String::new(),
-      stderr: String::new(),
-    }
-  })();
-
-  let stdout = take_captured_stdout(&mut rt.vm);
-  teardown_microtasks(&mut rt);
-  attach_stdio(outcome, stdout, String::new())
+  run_fixture_ts_outcome_with_name_and_options(name, source, &OracleHarnessOptions::default())
 }
 
 /// Like [`run_fixture_ts_outcome_with_name`], but allows customizing the VM options and heap limits.
@@ -1185,20 +1332,17 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
     Err(diag) => return RunOutcome::CompileError { diagnostic: diag },
   };
 
-  let mut vm = Vm::new(options.vm_options.clone());
-  vm.set_user_data(StdoutCapture::default());
-
-  let heap = Heap::new(options.heap_limits);
-  let mut rt = match JsRuntime::new(vm, heap) {
+  let mut rt = match new_runtime_with_options(options) {
     Ok(rt) => rt,
     Err(err) => {
       return RunOutcome::Terminated {
         message: format!("failed to init vm-js: {err}"),
         stdout: String::new(),
         stderr: String::new(),
-      };
+      }
     }
   };
+  rt.vm.set_user_data(StdoutCapture::default());
 
   let outcome = (|| {
     if let Err(err) = rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0) {
