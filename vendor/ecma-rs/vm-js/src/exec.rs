@@ -2686,44 +2686,32 @@ impl<'a> Evaluator<'a> {
       }
       VarDeclMode::Let => {
         for declarator in &decl.declarators {
-          let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
-            let Some(init) = &declarator.initializer else {
-              return Err(VmError::Unimplemented(
-                "destructuring let without initializer",
-              ));
-            };
-            let value = self.eval_expr(scope, init)?;
-            bind_pattern(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              scope,
-              self.env,
-              &declarator.pattern.stx.pat.stx,
-              value,
-              BindingKind::Let,
-              self.strict,
-              self.this,
-            )?;
-            continue;
-          };
-
-          let name = id.stx.name.as_str();
           let value = match &declarator.initializer {
             Some(init) => self.eval_expr(scope, init)?,
             None => {
               self.tick()?;
+              // Destructuring declarations require an initializer (early error in real JS).
+              if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+                return Err(VmError::Unimplemented(
+                  "destructuring let without initializer",
+                ));
+              }
               Value::Undefined
             }
           };
 
-          if !scope.heap().env_has_binding(self.env.lexical_env, name)? {
-            // Non-block statement contexts may not have performed lexical hoisting yet.
-            scope.env_create_mutable_binding(self.env.lexical_env, name)?;
-          }
-          scope
-            .heap_mut()
-            .env_initialize_binding(self.env.lexical_env, name, value)?;
+          bind_pattern(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            self.env,
+            &declarator.pattern.stx.pat.stx,
+            value,
+            BindingKind::Let,
+            self.strict,
+            self.this,
+          )?;
         }
         Ok(Completion::empty())
       }
@@ -2737,36 +2725,18 @@ impl<'a> Evaluator<'a> {
           };
           let value = self.eval_expr(scope, init)?;
 
-          if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
-            bind_pattern(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              scope,
-              self.env,
-              &declarator.pattern.stx.pat.stx,
-              value,
-              BindingKind::Const,
-              self.strict,
-              self.this,
-            )?;
-            continue;
-          }
-
-          let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
-            debug_assert!(false, "expected Pat::Id after matches! guard");
-            return Err(VmError::InvariantViolation(
-              "internal error: const declaration pattern mismatch",
-            ));
-          };
-          let name = id.stx.name.as_str();
-
-          if !scope.heap().env_has_binding(self.env.lexical_env, name)? {
-            scope.env_create_immutable_binding(self.env.lexical_env, name)?;
-          }
-          scope
-            .heap_mut()
-            .env_initialize_binding(self.env.lexical_env, name, value)?;
+          bind_pattern(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            self.env,
+            &declarator.pattern.stx.pat.stx,
+            value,
+            BindingKind::Const,
+            self.strict,
+            self.this,
+          )?;
         }
         Ok(Completion::empty())
       }
@@ -4546,6 +4516,44 @@ impl<'a> Evaluator<'a> {
     }
   }
 
+  fn maybe_set_anonymous_function_name_for_assignment(
+    &mut self,
+    scope: &mut Scope<'_>,
+    reference: &Reference<'_>,
+    value: Value,
+  ) -> Result<(), VmError> {
+    if !scope.heap().is_callable(value)? {
+      return Ok(());
+    }
+    let Value::Object(func_obj) = value else {
+      return Ok(());
+    };
+
+    let current_name = scope.heap().get_function_name(func_obj)?;
+    if !scope
+      .heap()
+      .get_string(current_name)?
+      .as_code_units()
+      .is_empty()
+    {
+      return Ok(());
+    }
+
+    let key = match *reference {
+      Reference::Binding(name) => {
+        // Root the allocated key string: `set_function_name` may allocate and trigger GC while
+        // pushing its own roots.
+        let name_s = scope.alloc_string(name)?;
+        scope.push_root(Value::String(name_s))?;
+        PropertyKey::String(name_s)
+      }
+      Reference::Property { key, .. } => key,
+    };
+
+    crate::function_properties::set_function_name(scope, func_obj, key, None)?;
+    Ok(())
+  }
+
   fn eval_func_expr(
     &mut self,
     scope: &mut Scope<'_>,
@@ -6161,6 +6169,7 @@ impl<'a> Evaluator<'a> {
             self.root_reference(&mut rhs_scope, &reference)?;
             let value = self.eval_expr(&mut rhs_scope, &expr.right)?;
             rhs_scope.push_root(value)?;
+            self.maybe_set_anonymous_function_name_for_assignment(&mut rhs_scope, &reference, value)?;
             self.put_value_to_reference(&mut rhs_scope, &reference, value)?;
             Ok(value)
           }

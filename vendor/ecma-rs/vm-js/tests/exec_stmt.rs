@@ -496,3 +496,56 @@ fn named_class_expression_creates_inner_const_binding() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn anonymous_function_names_are_inferred_from_identifier_bindings() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var f = function() {};
+      var a = () => {};
+      f.name === "f" && a.name === "a"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn anonymous_class_name_is_inferred_from_identifier_binding() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"var C = class {}; C.name === "C""#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn assignment_expression_sets_function_name_for_anonymous_functions() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"var f; f = function() {}; f.name === "f""#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn assignment_expression_sets_function_name_for_property_assignments() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var o = {};
+      o.f = function() {};
+      o.c = class {};
+      o.a = () => {};
+      o.f.name === "f" && o.c.name === "c" && o.a.name === "a"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn named_function_expression_name_is_not_overwritten() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"var f = function g() {}; f.name === "g""#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

@@ -201,6 +201,13 @@ fn bind_identifier(
   kind: BindingKind,
   strict: bool,
 ) -> Result<(), VmError> {
+  // `SetFunctionName`-like behaviour: when binding an anonymous function/class to an identifier,
+  // infer its `name` from the identifier.
+  //
+  // In ECMAScript this applies in a variety of binding/assignment contexts; `vm-js` approximates it
+  // here for identifier targets.
+  maybe_set_anonymous_function_name(scope, value, name)?;
+
   match kind {
     BindingKind::Var => env.set_var(vm, host, hooks, scope, name, value),
     BindingKind::Let => {
@@ -221,6 +228,37 @@ fn bind_identifier(
     }
     BindingKind::Assignment => env.set(vm, host, hooks, scope, name, value, strict),
   }
+}
+
+fn maybe_set_anonymous_function_name(
+  scope: &mut Scope<'_>,
+  value: Value,
+  name: &str,
+) -> Result<(), VmError> {
+  if !scope.heap().is_callable(value)? {
+    return Ok(());
+  }
+  let Value::Object(func_obj) = value else {
+    return Ok(());
+  };
+
+  let current_name = scope.heap().get_function_name(func_obj)?;
+  if !scope
+    .heap()
+    .get_string(current_name)?
+    .as_code_units()
+    .is_empty()
+  {
+    return Ok(());
+  }
+
+  // Root the function object while allocating the new name string and redefining `name`.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(func_obj))?;
+
+  let name_s = scope.alloc_string(name)?;
+  crate::function_properties::set_function_name(&mut scope, func_obj, PropertyKey::String(name_s), None)?;
+  Ok(())
 }
 
 fn bind_object_pattern(
