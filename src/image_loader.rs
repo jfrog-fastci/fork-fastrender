@@ -3492,7 +3492,10 @@ fn inline_svg_style_imports<'a>(
     let Some(slice) = svg_content.get(node_range.clone()) else {
       continue;
     };
-    let Some(end_tag_rel) = slice.rfind('<') else {
+    // Locate the closing tag (`</...>`). Do not use `rfind('<')` because `<style>` content can
+    // contain literal `<` bytes when authored via CDATA sections, and we must not treat those as
+    // markup boundaries when patching the original SVG string.
+    let Some(end_tag_rel) = slice.rfind("</") else {
       continue;
     };
     let end_tag_start = node_range.start.saturating_add(end_tag_rel);
