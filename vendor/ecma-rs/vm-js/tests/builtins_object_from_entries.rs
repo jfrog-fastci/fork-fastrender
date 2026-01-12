@@ -117,6 +117,38 @@ fn iterator_return_set_closed_native(
   Ok(Value::Object(iterator))
 }
 
+fn iterator_return_set_closed_returns_undefined_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iterator) = this else {
+    return Err(VmError::TypeError("iterator.return this is not an object"));
+  };
+  define_data_property(scope, iterator, "closed", Value::Bool(true))?;
+  Ok(Value::Undefined)
+}
+
+fn throw_slot0_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(value) = slots.get(0).copied() else {
+    return Err(VmError::InvariantViolation("throw_slot0_native missing slot 0"));
+  };
+  Err(VmError::Throw(value))
+}
+
 fn iterator_next_throw_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -630,6 +662,91 @@ fn object_from_entries_iterator_closed_for_throwing_entry_key_tostring() -> Resu
     .call_without_host(&mut scope, Value::Object(from_entries), Value::Object(object), &args)
     .unwrap_err();
 
+  require_closed_flag(&mut scope, iter, true)?;
+  Ok(())
+}
+
+#[test]
+fn object_from_entries_iterator_close_error_does_not_override_thrown_entry_error() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let intr = *rt.realm.intrinsics();
+  let object = intr.object_constructor();
+
+  let mut scope = rt.heap.scope();
+
+  let from_entries = get_own_data_property(&mut scope, object, "fromEntries")?.unwrap();
+  let Value::Object(from_entries) = from_entries else {
+    return Err(VmError::Unimplemented("Object.fromEntries is not a function object"));
+  };
+
+  let iter = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter))?;
+  define_data_property(&mut scope, iter, "closed", Value::Bool(false))?;
+
+  // Entry object where accessing key "0" throws a specific object value.
+  let thrown_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(thrown_obj))?;
+
+  let throw_slot0_id = rt.vm.register_native_call(throw_slot0_native)?;
+  let throw_name = scope.alloc_string("")?;
+  let throw_fn = scope.alloc_native_function_with_slots(
+    throw_slot0_id,
+    None,
+    throw_name,
+    0,
+    &[Value::Object(thrown_obj)],
+  )?;
+  scope.push_root(Value::Object(throw_fn))?;
+
+  let entry = scope.alloc_object()?;
+  scope.push_root(Value::Object(entry))?;
+  define_accessor_property(&mut scope, entry, "0", Value::Object(throw_fn))?;
+  define_data_property(&mut scope, entry, "1", Value::Undefined)?;
+
+  let iter_result = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter_result))?;
+  define_data_property(&mut scope, iter_result, "done", Value::Bool(false))?;
+  define_data_property(&mut scope, iter_result, "value", Value::Object(entry))?;
+  define_data_property(&mut scope, iter, "result", Value::Object(iter_result))?;
+
+  let return_this_id = rt.vm.register_native_call(return_this_native)?;
+  let next_return_result_id = rt.vm.register_native_call(iterator_next_return_result_native)?;
+  let return_set_closed_undefined_id =
+    rt.vm.register_native_call(iterator_return_set_closed_returns_undefined_native)?;
+
+  let iter_name = scope.alloc_string("")?;
+  let iter_method = scope.alloc_native_function(return_this_id, None, iter_name, 0)?;
+  scope.push_root(Value::Object(iter_method))?;
+  let next_name = scope.alloc_string("")?;
+  let next = scope.alloc_native_function(next_return_result_id, None, next_name, 0)?;
+  scope.push_root(Value::Object(next))?;
+  let return_name = scope.alloc_string("")?;
+  let return_ = scope.alloc_native_function(return_set_closed_undefined_id, None, return_name, 0)?;
+  scope.push_root(Value::Object(return_))?;
+
+  let iterator_key = PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+  scope.define_property(
+    iter,
+    iterator_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(iter_method),
+        writable: true,
+      },
+    },
+  )?;
+  define_data_property(&mut scope, iter, "next", Value::Object(next))?;
+  define_data_property(&mut scope, iter, "return", Value::Object(return_))?;
+
+  let args = [Value::Object(iter)];
+  let err = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(from_entries), Value::Object(object), &args)
+    .unwrap_err();
+
+  assert_eq!(err.thrown_value(), Some(Value::Object(thrown_obj)));
   require_closed_flag(&mut scope, iter, true)?;
   Ok(())
 }
