@@ -35,6 +35,33 @@ fail() {
   exit 1
 }
 
+summarize_version_output() {
+  # Avoid `echo "$out" | head -n 1` under `set -o pipefail`: if the consumer
+  # exits early, the producer can hit EPIPE/SIGPIPE and make the pipeline fail,
+  # which can hide the real version mismatch.
+  local out="$1"
+  out="${out//$'\r'/}"
+
+  local line1=""
+  local line2=""
+
+  if [[ "${out}" == *$'\n'* ]]; then
+    line1="${out%%$'\n'*}"
+    local rest="${out#*$'\n'}"
+    line2="${rest%%$'\n'*}"
+  else
+    line1="${out}"
+  fi
+
+  if [[ -z "${line1}" && -z "${line2}" ]]; then
+    printf '%s' "unknown"
+  elif [[ -n "${line2}" ]]; then
+    printf '%s %s' "${line1}" "${line2}"
+  else
+    printf '%s' "${line1}"
+  fi
+}
+
 require_llvm18() {
   local tool="$1"
   local out
@@ -43,7 +70,7 @@ require_llvm18() {
   # Some LLVM builds print the version on line 1 ("Ubuntu LLVM version 18.1.x"),
   # others print it on line 2 ("LLVM (http://llvm.org/):" then "LLVM version 18.1.x").
   if ! grep -Eq 'version 18\.' <<<"${out}"; then
-    fail "expected LLVM 18.x (${tool}), got: $(echo "${out}" | head -n2 | tr '\n' ' ')"
+    fail "expected LLVM 18.x (${tool}), got: $(summarize_version_output "${out}")"
   fi
 }
 
@@ -106,8 +133,9 @@ EOF
 "${LLVM_AS}" "${OUT_LL}" -o "${BC}"
 "${LLC}" --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 -filetype=obj "${BC}" -o "${OBJ}"
 
-if ! "${LLVM_READOBJ}" --sections "${OBJ}" | grep -Eq '\.llvm_stackmaps|__llvm_stackmaps'; then
-  "${LLVM_READOBJ}" --sections "${OBJ}" >&2 || true
+readobj_sections="$("${LLVM_READOBJ}" --sections "${OBJ}")"
+if ! grep -Eq '\.llvm_stackmaps|__llvm_stackmaps' <<<"${readobj_sections}"; then
+  echo "${readobj_sections}" >&2
   fail "expected .llvm_stackmaps section in output object: ${OBJ}"
 fi
 
