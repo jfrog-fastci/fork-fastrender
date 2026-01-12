@@ -209,3 +209,256 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
 
   runtime_native::rt_thread_deinit();
 }
+
+#[test]
+fn queue_microtask_rooted_h_reads_slot_after_lock_acquired() {
+  let _rt = TestRuntimeGuard::new();
+  runtime_native::rt_thread_init(0);
+  ensure_shape_table();
+
+  FIRED.store(0, Ordering::SeqCst);
+  OBSERVED_DATA.store(0, Ordering::SeqCst);
+
+  // Allocate pinned GC objects so we can safely pass their base pointers through the rooted-h ABI.
+  let shape = RtShapeId(1);
+  let old_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
+  let new_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
+
+  let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
+
+  // Slot is a GC-handle (pointer-to-slot) so a moving GC can update it in-place.
+  let mut slot = old_ptr;
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let slot_ptr: usize = runtime_native::roots::handle_from_slot(&mut slot) as usize;
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  std::thread::scope(|scope| {
+    // Thread A holds the persistent handle table lock.
+    let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+    let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+    // Thread C attempts to enqueue a rooted-h microtask while the lock is held.
+    let (c_registered_tx, c_registered_rx) = mpsc::channel::<runtime_native::threading::ThreadId>();
+    let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+    let (c_done_tx, c_done_rx) = mpsc::channel::<()>();
+
+    scope.spawn(move || {
+      runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Worker);
+      runtime_native::roots::global_persistent_handle_table().debug_with_read_lock_for_tests(|| {
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+      });
+      runtime_native::threading::unregister_current_thread();
+    });
+
+    a_locked_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread A should acquire the persistent handle table lock");
+
+    scope.spawn(move || {
+      let id = runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Worker);
+      c_registered_tx.send(id).unwrap();
+
+      c_start_rx.recv().unwrap();
+
+      let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
+      // Safety: `slot_ptr` points at a writable `GcPtr` slot that outlives this call.
+      unsafe {
+        runtime_native::rt_queue_microtask_rooted_h(on_settle, slot_ptr);
+      }
+      c_done_tx.send(()).unwrap();
+
+      runtime_native::threading::unregister_current_thread();
+    });
+
+    let c_id = c_registered_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread C should register with the thread registry");
+
+    // Start thread C's enqueue attempt (it should block on the handle table lock).
+    c_start_tx.send(()).unwrap();
+
+    // Wait until thread C is marked NativeSafe (meaning it's blocked on the GC-aware lock).
+    let start = Instant::now();
+    loop {
+      let mut native_safe = false;
+      runtime_native::threading::registry::for_each_thread(|t| {
+        if t.id() == c_id {
+          native_safe = t.is_native_safe();
+        }
+      });
+
+      if native_safe {
+        break;
+      }
+      if start.elapsed() > TIMEOUT {
+        panic!("thread C did not enter a GC-safe region while blocked on the persistent handle table lock");
+      }
+      std::thread::yield_now();
+    }
+
+    // Update the slot while thread C is blocked. If `rt_queue_microtask_rooted_h` (or its internal
+    // plumbing) incorrectly reads the slot before acquiring the lock, it would still observe
+    // `old_ptr`.
+    slot = new_ptr;
+
+    // Release the lock so `alloc_from_slot` can proceed and read the updated slot value.
+    a_release_tx.send(()).unwrap();
+
+    c_done_rx
+      .recv_timeout(TIMEOUT)
+      .expect("microtask enqueue should complete after lock is released");
+  });
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots + 1,
+    "rooted-h microtask enqueue should allocate exactly one persistent handle for the slot contents while pending"
+  );
+
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert_eq!(FIRED.load(Ordering::SeqCst), 1, "callback should fire exactly once");
+  assert_eq!(
+    OBSERVED_DATA.load(Ordering::SeqCst),
+    new_ptr as usize,
+    "callback should observe the slot value that was read after lock acquisition"
+  );
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots,
+    "rooted-h microtask enqueue should release its persistent handle after the callback runs"
+  );
+
+  runtime_native::rt_thread_deinit();
+}
+
+#[test]
+fn set_timeout_rooted_h_reads_slot_after_lock_acquired() {
+  let _rt = TestRuntimeGuard::new();
+  runtime_native::rt_thread_init(0);
+  ensure_shape_table();
+
+  // Ensure the current thread claims the event-loop identity so the worker thread below registers
+  // as `External` rather than becoming the event loop.
+  let _ = runtime_native::rt_async_poll_legacy();
+
+  FIRED.store(0, Ordering::SeqCst);
+  OBSERVED_DATA.store(0, Ordering::SeqCst);
+
+  // Allocate pinned GC objects so we can safely pass their base pointers through the rooted-h ABI.
+  let shape = RtShapeId(1);
+  let old_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
+  let new_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
+
+  let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
+
+  // Slot is a GC-handle (pointer-to-slot) so a moving GC can update it in-place.
+  let mut slot = old_ptr;
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let slot_ptr: usize = runtime_native::roots::handle_from_slot(&mut slot) as usize;
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  std::thread::scope(|scope| {
+    // Thread A holds the persistent handle table lock.
+    let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+    let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+    // Thread C attempts to schedule a rooted-h timeout while the lock is held.
+    let (c_registered_tx, c_registered_rx) = mpsc::channel::<runtime_native::threading::ThreadId>();
+    let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+    let (c_done_tx, c_done_rx) = mpsc::channel::<runtime_native::abi::TimerId>();
+
+    scope.spawn(move || {
+      runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Worker);
+      runtime_native::roots::global_persistent_handle_table().debug_with_read_lock_for_tests(|| {
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+      });
+      runtime_native::threading::unregister_current_thread();
+    });
+
+    a_locked_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread A should acquire the persistent handle table lock");
+
+    scope.spawn(move || {
+      let id = runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Worker);
+      c_registered_tx.send(id).unwrap();
+
+      c_start_rx.recv().unwrap();
+
+      let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
+      // Safety: `slot_ptr` points at a writable `GcPtr` slot that outlives this call.
+      let timer = unsafe { runtime_native::rt_set_timeout_rooted_h(on_settle, slot_ptr, 0) };
+      c_done_tx.send(timer).unwrap();
+
+      runtime_native::threading::unregister_current_thread();
+    });
+
+    let c_id = c_registered_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread C should register with the thread registry");
+
+    // Start thread C's schedule attempt (it should block on the handle table lock).
+    c_start_tx.send(()).unwrap();
+
+    // Wait until thread C is marked NativeSafe (meaning it's blocked on the GC-aware lock).
+    let start = Instant::now();
+    loop {
+      let mut native_safe = false;
+      runtime_native::threading::registry::for_each_thread(|t| {
+        if t.id() == c_id {
+          native_safe = t.is_native_safe();
+        }
+      });
+
+      if native_safe {
+        break;
+      }
+      if start.elapsed() > TIMEOUT {
+        panic!("thread C did not enter a GC-safe region while blocked on the persistent handle table lock");
+      }
+      std::thread::yield_now();
+    }
+
+    // Update the slot while thread C is blocked. If `rt_set_timeout_rooted_h` (or its internal
+    // plumbing) incorrectly reads the slot before acquiring the lock, it would still observe
+    // `old_ptr`.
+    slot = new_ptr;
+
+    // Release the lock so `alloc_from_slot` can proceed and read the updated slot value.
+    a_release_tx.send(()).unwrap();
+
+    let timer = c_done_rx
+      .recv_timeout(TIMEOUT)
+      .expect("timer schedule should complete after lock is released");
+    assert_ne!(timer, 0);
+  });
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots + 1,
+    "rooted-h timeout should allocate exactly one persistent handle for the slot contents while pending"
+  );
+
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert_eq!(FIRED.load(Ordering::SeqCst), 1, "callback should fire exactly once");
+  assert_eq!(
+    OBSERVED_DATA.load(Ordering::SeqCst),
+    new_ptr as usize,
+    "callback should observe the slot value that was read after lock acquisition"
+  );
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots,
+    "rooted-h timeout should release its persistent handle after the callback runs"
+  );
+
+  runtime_native::rt_thread_deinit();
+}
