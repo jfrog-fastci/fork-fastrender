@@ -10945,14 +10945,16 @@ impl Clone for StyledNode {
         frame.next_child += 1;
 
         dst.children.push(clone_shallow(child_src));
-        let child_dst = dst.children.last_mut().expect("child was just pushed") as *mut StyledNode;
+        let child_dst = dst.children.last_mut().map(|child| child as *mut StyledNode);
 
         stack.push(frame);
-        stack.push(Frame {
-          src: child_src,
-          dst: child_dst,
-          next_child: 0,
-        });
+        if let Some(child_dst) = child_dst {
+          stack.push(Frame {
+            src: child_src,
+            dst: child_dst,
+            next_child: 0,
+          });
+        }
       }
     }
 
@@ -18046,6 +18048,13 @@ fn apply_styles_internal_with_ancestors<'a>(
   deadline: Option<&RenderDeadline>,
   has_starting_styles: bool,
 ) -> Result<StyledNode, RenderError> {
+  #[inline]
+  fn style_traversal_stack_underflow() -> RenderError {
+    RenderError::PaintFailed {
+      operation: "style traversal stack underflow".to_string(),
+    }
+  }
+
   enum FrameBase {
     Computed {
       base: Box<NodeBaseStyles>,
@@ -18228,9 +18237,9 @@ fn apply_styles_internal_with_ancestors<'a>(
 
   loop {
     let child_info = {
-      let frame = stack
-        .last_mut()
-        .expect("style traversal stack must contain at least one frame");
+      let Some(frame) = stack.last_mut() else {
+        return Err(style_traversal_stack_underflow());
+      };
       if frame.next_child >= frame.node.children.len() {
         None
       } else {
@@ -18264,18 +18273,17 @@ fn apply_styles_internal_with_ancestors<'a>(
         reuse_map,
         &mut reuse_counter,
       ) {
-        stack
-          .last_mut()
-          .expect("parent frame should still be on the stack")
-          .children
-          .push(reused);
+        let Some(parent) = stack.last_mut() else {
+          return Err(style_traversal_stack_underflow());
+        };
+        parent.children.push(reused);
         continue;
       }
 
       let (child_base, child_starting_base) = {
-        let parent = stack
-          .last()
-          .expect("parent frame should still be on the stack");
+        let Some(parent) = stack.last() else {
+          return Err(style_traversal_stack_underflow());
+        };
 
         let mut inheritance_parent_styles: &ComputedStyle = parent.base.styles();
         let mut inheritance_parent_ua_styles: &ComputedStyle = parent.base.ua_styles();
@@ -18448,7 +18456,7 @@ fn apply_styles_internal_with_ancestors<'a>(
 
     let frame = stack
       .pop()
-      .expect("style traversal stack must contain at least one frame");
+      .ok_or_else(style_traversal_stack_underflow)?;
 
     if frame.push_ancestor_bloom {
       element_attr_cache.for_each_ancestor_bloom_hash(
@@ -18463,7 +18471,9 @@ fn apply_styles_internal_with_ancestors<'a>(
     if frame.entered_shadow_bloom_scope {
       let restored = shadow_bloom_stack
         .pop()
-        .expect("ancestor bloom shadow scope stack underflow");
+        .ok_or_else(|| RenderError::PaintFailed {
+          operation: "ancestor bloom shadow scope stack underflow".to_string(),
+        })?;
       *ancestor_bloom_filter = restored;
     }
 
@@ -36377,7 +36387,7 @@ fn apply_cascaded_declarations<'a, F>(
     return;
   }
   if let Some(inline) = inline_declarations {
-    let inline_layer_order = inline_layer_order.expect("inline layer order missing");
+    let inline_layer_order = inline_layer_order.unwrap_or_else(|| Arc::<[u32]>::from([]));
     matched_rules.push(MatchedRule {
       origin: StyleOrigin::Inline,
       specificity: INLINE_SPECIFICITY,
@@ -36868,15 +36878,9 @@ fn apply_cascaded_declarations<'a, F>(
                   color_scheme_layer_snapshot_stratum = Some(stratum);
                 }
                 let layer_order = &rule.layer_order;
-                let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
-                  Some(existing) => existing,
-                  None => {
-                    color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-                    color_scheme_layer_snapshots
-                      .get_mut(layer_order.as_ref())
-                      .expect("layer snapshot inserted")
-                  }
-                };
+                let layer_base = color_scheme_layer_snapshots
+                  .entry(Arc::clone(layer_order))
+                  .or_insert_with(|| styles.clone());
                 Some(&*layer_base)
               } else {
                 None
@@ -36962,15 +36966,9 @@ fn apply_cascaded_declarations<'a, F>(
                   color_scheme_layer_snapshot_stratum = Some(stratum);
                 }
                 let layer_order = &rule.layer_order;
-                let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
-                  Some(existing) => existing,
-                  None => {
-                    color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-                    color_scheme_layer_snapshots
-                      .get_mut(layer_order.as_ref())
-                      .expect("layer snapshot inserted")
-                  }
-                };
+                let layer_base = color_scheme_layer_snapshots
+                  .entry(Arc::clone(layer_order))
+                  .or_insert_with(|| styles.clone());
                 Some(&*layer_base)
               } else {
                 None
