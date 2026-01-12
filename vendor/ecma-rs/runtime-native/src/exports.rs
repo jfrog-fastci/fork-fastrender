@@ -2220,6 +2220,24 @@ fn rt_async_sleep_impl(delay_ms: u64) -> PromiseRef {
   promise
 }
 
+#[inline]
+fn rt_async_sleep_legacy_impl(delay_ms: u64) -> PromiseRef {
+  let _ = crate::rt_ensure_init();
+  ensure_event_loop_thread_registered();
+
+  extern "C" fn resolve_sleep(data: *mut u8) {
+    let promise = PromiseRef(data.cast());
+    async_rt::promise::promise_resolve(promise, core::ptr::null_mut());
+  }
+
+  let promise = async_rt::promise::promise_new();
+  let _timer_id = async_rt::global().schedule_timer_in(
+    Duration::from_millis(delay_ms),
+    async_rt::Task::new(resolve_sleep, promise.0 as *mut u8),
+  );
+  promise
+}
+
 /// Resolve a promise after `delay_ms` milliseconds.
 ///
 /// This is a small convenience helper for generated code and embeddings that want a
@@ -2233,7 +2251,7 @@ pub extern "C" fn rt_async_sleep(delay_ms: u64) -> PromiseRef {
 
 #[no_mangle]
 pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
-  abort_on_panic(|| rt_async_sleep_impl(delay_ms))
+  abort_on_panic(|| rt_async_sleep_legacy_impl(delay_ms))
 }
 
 // -----------------------------------------------------------------------------
