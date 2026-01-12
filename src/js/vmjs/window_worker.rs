@@ -29,7 +29,7 @@
 use crate::error::{Error, Result as FastResult};
 use crate::js::url_resolve::resolve_url;
 use crate::js::vm_limits;
-use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
+use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG};
 use crate::js::window_timers::{event_loop_mut_from_hooks, VmJsEventLoopHooks};
 use crate::js::{EventLoop, TaskSource};
 use std::cell::RefCell;
@@ -41,7 +41,6 @@ use vm_js::{
   RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
-const WORKER_HOST_KIND: u64 = 50;
 const WORKER_MAX_QUEUED_MESSAGES: usize = 1_000;
 const WORKER_MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
 
@@ -288,10 +287,13 @@ fn require_worker_id_from_this(
   let Some(slots) = slots else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  if slots.b != WORKER_HOST_KIND {
+  if slots.a != EVENT_TARGET_HOST_TAG {
     return Err(VmError::TypeError("Illegal invocation"));
   }
-  Ok(slots.a)
+  if slots.b == 0 {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  Ok(slots.b)
 }
 
 fn structured_clone_from_value(
@@ -965,8 +967,8 @@ fn worker_ctor_construct(
   scope
     .heap_mut()
     .object_set_host_slots(worker_obj, HostSlots {
-      a: id,
-      b: WORKER_HOST_KIND,
+      a: EVENT_TARGET_HOST_TAG,
+      b: id,
     })?;
 
   // Initialize `onmessage`/`onerror` attributes.
@@ -1434,6 +1436,30 @@ mod tests {
     })?;
 
     assert_eq!(get_global_number(&mut host, "__result"), Some(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn worker_is_event_target() -> FastResult<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__count = 0;
+      const w = new Worker('data:text/javascript,0');
+      w.addEventListener('x', () => { __count++; });
+      w.dispatchEvent(new Event('x'));
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 50,
+      max_microtasks: 100,
+      max_wall_time: None,
+    })?;
+
+    assert_eq!(get_global_number(&mut host, "__count"), Some(1.0));
     Ok(())
   }
 }
