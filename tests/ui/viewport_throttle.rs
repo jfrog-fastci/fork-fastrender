@@ -1,55 +1,85 @@
-use fastrender::ui::viewport_throttle::ViewportThrottle;
-use std::time::Duration;
+use fastrender::ui::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
+use std::time::{Duration, Instant};
+
+fn min_interval_for(max_hz: u32) -> Duration {
+  let max_hz = max_hz.max(1) as u64;
+  let nanos_per_tick = (1_000_000_000u64 + max_hz - 1) / max_hz;
+  Duration::from_nanos(nanos_per_tick.max(1))
+}
 
 #[test]
 fn viewport_throttle_enforces_max_rate() {
-  let mut throttle = ViewportThrottle::new(Duration::from_millis(10));
+  let config = ViewportThrottleConfig {
+    max_hz: 100,
+    debounce: Duration::from_millis(25),
+  };
+  let min_interval = min_interval_for(config.max_hz);
+  let mut throttle = ViewportThrottle::with_config(config);
 
-  let mut emitted: Vec<Duration> = Vec::new();
+  let t0 = Instant::now();
+  let mut emitted_at: Vec<Instant> = Vec::new();
 
   // Simulate a 1kHz resize stream for 50ms.
   for ms in 0..=50_u64 {
-    let now = Duration::from_millis(ms);
+    let now = t0 + Duration::from_millis(ms);
 
     if let Some(_value) = throttle.poll(now) {
-      emitted.push(now);
+      emitted_at.push(now);
     }
 
-    if let Some(_value) = throttle.push(now, ms) {
-      emitted.push(now);
+    if let Some(_value) = throttle.push_desired(now, (ms as u32, 600), 1.0) {
+      emitted_at.push(now);
     }
   }
 
   // Ensure we never emit more frequently than the throttle interval.
-  for window in emitted.windows(2) {
-    let prev = window[0];
-    let next = window[1];
+  assert!(
+    !emitted_at.is_empty(),
+    "expected at least one emitted update under a resize stream"
+  );
+  for window in emitted_at.windows(2) {
+    let prev_at = window[0];
+    let next_at = window[1];
     assert!(
-      next >= prev + Duration::from_millis(10),
-      "expected emissions to be spaced by >= 10ms, got {prev:?} then {next:?}"
+      next_at.duration_since(prev_at) >= min_interval,
+      "expected emissions to be spaced by >= {min_interval:?}, got {prev_at:?} then {next_at:?}"
     );
   }
 }
 
 #[test]
 fn viewport_throttle_emits_final_update() {
-  let mut throttle = ViewportThrottle::new(Duration::from_millis(10));
+  let config = ViewportThrottleConfig {
+    max_hz: 100,
+    debounce: Duration::from_millis(20),
+  };
+  let min_interval = min_interval_for(config.max_hz);
+  let mut throttle = ViewportThrottle::with_config(config);
+  let t0 = Instant::now();
 
   assert_eq!(
-    throttle.push(Duration::from_millis(0), 1),
-    Some(1),
+    throttle.push_desired(t0, (100, 100), 1.0),
+    Some(ViewportUpdate::new((100, 100), 1.0)),
     "first update should be emitted immediately"
   );
 
   // Burst updates inside the interval: should be coalesced.
-  assert_eq!(throttle.push(Duration::from_millis(1), 2), None);
-  assert_eq!(throttle.push(Duration::from_millis(2), 3), None);
+  assert_eq!(throttle.push_desired(t0 + Duration::from_millis(1), (200, 100), 1.0), None);
+  assert_eq!(throttle.push_desired(t0 + Duration::from_millis(2), (300, 100), 1.0), None);
 
-  // Not due yet.
-  assert_eq!(throttle.poll(Duration::from_millis(9)), None);
+  let updated_at = t0 + Duration::from_millis(2);
+  let expected_deadline = updated_at + config.debounce;
+  assert!(
+    expected_deadline >= t0 + min_interval,
+    "test expects debounce to be the limiting factor (deadline should be >= rate-limit interval)"
+  );
+  assert_eq!(throttle.next_deadline(), Some(expected_deadline));
+  assert_eq!(throttle.poll(expected_deadline - Duration::from_millis(1)), None);
 
   // Once due, the latest pending value should be emitted.
-  assert_eq!(throttle.poll(Duration::from_millis(10)), Some(3));
-  assert!(!throttle.has_pending(), "expected pending update to be cleared");
+  assert_eq!(
+    throttle.poll(expected_deadline),
+    Some(ViewportUpdate::new((300, 100), 1.0))
+  );
+  assert!(throttle.next_deadline().is_none());
 }
-

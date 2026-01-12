@@ -33,9 +33,7 @@ pub mod worker;
 pub mod zoom;
 pub mod motion;
 pub mod loading_overlay;
-// Viewport-change throttling is used only by the windowed browser UI, but we compile it for unit
-// tests even without `browser_ui` so it stays cheap to validate.
-#[cfg(any(test, feature = "browser_ui"))]
+// Viewport-change throttling is used only by the windowed browser UI.
 pub mod viewport_throttle;
 
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
@@ -107,7 +105,6 @@ pub use zoom::{
 };
 
 pub use frame_upload::FrameUploadCoalescer;
-#[cfg(any(test, feature = "browser_ui"))]
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
 
 pub use crate::select_dropdown;
