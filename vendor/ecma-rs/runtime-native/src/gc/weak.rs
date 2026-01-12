@@ -1,8 +1,10 @@
 use once_cell::sync::Lazy;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::GcHeap;
 use crate::threading::GcAwareMutex;
+use crate::threading::registry;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -108,22 +110,23 @@ impl WeakHandles {
     slot.ptr = ptr;
   }
 
-  pub fn weak_remove(&mut self, handle: WeakHandle) {
+  pub fn weak_remove(&mut self, handle: WeakHandle) -> bool {
     let idx = usize::try_from(handle.index()).ok();
     let Some(idx) = idx else {
-      return;
+      return false;
     };
     let Some(slot) = self.slots.get_mut(idx) else {
-      return;
+      return false;
     };
     if !slot.occupied || slot.generation != handle.generation() {
-      return;
+      return false;
     }
 
     slot.ptr = ptr::null_mut();
     slot.occupied = false;
     slot.generation = slot.generation.wrapping_add(1);
     self.free_list.push(idx as u32);
+    true
   }
 
   fn get_slot_mut(&mut self, handle: WeakHandle) -> Option<&mut WeakSlot> {
@@ -140,6 +143,24 @@ impl WeakHandles {
       if slot.occupied {
         f(&mut slot.ptr);
       }
+    }
+  }
+
+  pub(crate) fn clear_for_tests(&mut self) {
+    // Important: do *not* truncate `slots` here.
+    //
+    // Some tests reset global runtime state while other threads are still unwinding/dropping old
+    // weak-handle IDs (e.g. interner cleanup). If we were to drop the `slots` vector, a stale
+    // `WeakHandle` could become valid again if slot 0 is reused with generation 0.
+    //
+    // Instead, clear slots in-place, bump each slot's generation to invalidate any previously
+    // issued handles, and rebuild the free list.
+    self.free_list.clear();
+    for (idx, slot) in self.slots.iter_mut().enumerate() {
+      slot.ptr = ptr::null_mut();
+      slot.occupied = false;
+      slot.generation = slot.generation.wrapping_add(1);
+      self.free_list.push(u32::try_from(idx).expect("too many weak handles"));
     }
   }
 }
@@ -164,9 +185,12 @@ pub(crate) fn run_weak_cleanups(heap: &mut GcHeap) {
 }
 static GLOBAL_WEAK_HANDLES: Lazy<GcAwareMutex<WeakHandles>> =
   Lazy::new(|| GcAwareMutex::new(WeakHandles::new()));
+static GLOBAL_WEAK_HANDLES_LIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn global_weak_add(ptr: *mut u8) -> WeakHandle {
-  GLOBAL_WEAK_HANDLES.lock().weak_add(ptr)
+  let handle = GLOBAL_WEAK_HANDLES.lock().weak_add(ptr);
+  GLOBAL_WEAK_HANDLES_LIVE_COUNT.fetch_add(1, Ordering::Release);
+  handle
 }
 
 /// Like [`global_weak_add`], but reads the pointer value from an addressable slot after acquiring
@@ -187,7 +211,38 @@ pub(crate) unsafe fn global_weak_add_from_slot(slot: *mut *mut u8) -> WeakHandle
   }
   // SAFETY: caller contract.
   let ptr = unsafe { slot.read() };
-  table.weak_add(ptr)
+  let handle = table.weak_add(ptr);
+  GLOBAL_WEAK_HANDLES_LIVE_COUNT.fetch_add(1, Ordering::Release);
+  handle
+}
+
+/// Moving-GC-safe weak-handle creation for a raw pointer value on a registered thread.
+///
+/// If lock acquisition blocks on contention, the thread may enter a GC-safe ("NativeSafe") region
+/// while waiting. A moving GC can then relocate objects. To avoid capturing a stale pre-relocation
+/// address, this helper temporarily stores `ptr` in the current thread's shadow stack and calls
+/// [`global_weak_add_from_slot`] so the pointer is read only *after* the lock is acquired.
+///
+/// If the current thread is not registered with the runtime thread registry, this falls back to
+/// [`global_weak_add`]. In that case the caller must ensure `ptr` is either non-GC-managed or
+/// otherwise stable (pinned/non-moving) for the duration of the call.
+pub(crate) fn global_weak_add_movable(ptr: *mut u8) -> WeakHandle {
+  let ts = registry::current_thread_state_ptr();
+  if ts.is_null() {
+    return global_weak_add(ptr);
+  }
+
+  // Safety: `current_thread_state_ptr` returns a valid pointer to the current thread's registered
+  // `ThreadState` (it is null only if the thread is unregistered).
+  let ts = unsafe { &*ts };
+
+  let scope = super::shadow_stack::RootScope::new(ts);
+  let root = scope.root(ptr);
+
+  // Safety: `root.slot_ptr()` returns a valid, aligned pointer to a writable `*mut u8` slot in the
+  // current thread's shadow stack.
+  unsafe { global_weak_add_from_slot(root.slot_ptr()) }
+  // `scope` drops here, truncating the shadow stack entry.
 }
 
 pub(crate) fn global_weak_get(handle: WeakHandle) -> Option<*mut u8> {
@@ -195,7 +250,26 @@ pub(crate) fn global_weak_get(handle: WeakHandle) -> Option<*mut u8> {
 }
 
 pub(crate) fn global_weak_remove(handle: WeakHandle) {
-  GLOBAL_WEAK_HANDLES.lock().weak_remove(handle);
+  let removed = GLOBAL_WEAK_HANDLES.lock().weak_remove(handle);
+  if removed {
+    let prev = GLOBAL_WEAK_HANDLES_LIVE_COUNT.fetch_sub(1, Ordering::AcqRel);
+    if prev == 0 {
+      // Underflow indicates internal bookkeeping corruption; fail fast.
+      std::process::abort();
+    }
+  }
+}
+
+/// Debug/test helper: clear all global weak handles.
+///
+/// This exists so integration tests can start from a blank slate and deterministically reproduce
+/// GC+lock-contention interleavings without deadlocking the collector on a non-empty weak-handle
+/// table.
+#[doc(hidden)]
+pub fn debug_clear_global_weak_handles_for_tests() {
+  let mut table = GLOBAL_WEAK_HANDLES.lock();
+  table.clear_for_tests();
+  GLOBAL_WEAK_HANDLES_LIVE_COUNT.store(0, Ordering::Release);
 }
 
 /// Debug/test helper: snapshot the global weak-handle table sizes.
@@ -230,6 +304,9 @@ pub fn debug_hold_global_weak_handles_lock() -> impl Drop {
 }
 
 pub(crate) fn process_global_weak_handles_minor(heap: &GcHeap) {
+  if GLOBAL_WEAK_HANDLES_LIVE_COUNT.load(Ordering::Acquire) == 0 {
+    return;
+  }
   let mut handles = GLOBAL_WEAK_HANDLES.lock_for_gc();
 
   handles.for_each_slot_mut(|slot| {
@@ -253,6 +330,9 @@ pub(crate) fn process_global_weak_handles_minor(heap: &GcHeap) {
 }
 
 pub(crate) fn process_global_weak_handles_major(heap: &GcHeap, epoch: u8) {
+  if GLOBAL_WEAK_HANDLES_LIVE_COUNT.load(Ordering::Acquire) == 0 {
+    return;
+  }
   let mut handles = GLOBAL_WEAK_HANDLES.lock_for_gc();
 
   handles.for_each_slot_mut(|slot| {

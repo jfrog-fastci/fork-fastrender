@@ -1550,13 +1550,16 @@ pub extern "C" fn rt_gc_stats_reset() {
 /// returns null.
 ///
 /// ## Moving-GC safety
-/// If `value` is a **movable** GC-managed pointer, prefer [`rt_weak_add_h`]. Lock contention while
-/// registering the weak handle may temporarily enter a GC-safe region, allowing a moving GC to
-/// relocate objects; `rt_weak_add_h` reads the pointer from an addressable slot after acquiring the
-/// weak-handle table lock.
+/// When the current thread is registered with the runtime thread registry, this function is
+/// moving-GC safe even for **movable** objects: it temporarily roots `value` in the thread's shadow
+/// stack and only reads the pointer value after acquiring the weak-handle table lock.
+///
+/// If the current thread is **unregistered**, this function provides no moving-GC safety guarantees.
+/// In that case, prefer [`rt_weak_add_h`] (pointer-to-slot) or ensure the pointer is stable (pinned)
+/// or that no GC can run concurrently.
 #[no_mangle]
 pub extern "C" fn rt_weak_add(value: crate::roots::GcPtr) -> u64 {
-  abort_on_panic(|| crate::gc::weak::global_weak_add(value).as_u64())
+  abort_on_panic(|| crate::gc::weak::global_weak_add_movable(value).as_u64())
 }
 
 /// Like [`rt_weak_add`], but takes the referent as a `GcHandle` (pointer-to-slot) handle.

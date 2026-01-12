@@ -369,7 +369,7 @@ impl GcHeap {
   }
 
   pub fn weak_remove(&mut self, handle: WeakHandle) {
-    self.weak_handles.weak_remove(handle);
+    let _ = self.weak_handles.weak_remove(handle);
   }
 
   #[inline]
