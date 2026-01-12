@@ -11,6 +11,8 @@ members = [
   "xtask",
   "crates/js-wpt-dom-runner",
 ]
+# NOTE: WebIDL/JS infrastructure should live in `vendor/ecma-rs/` per
+# instructions/ecma_rs_ownership.md and instructions/webidl_consolidation.md.
 default-members = [
   ".",
   "xtask",
@@ -134,6 +136,7 @@ rquickjs = { version = "0.9", optional = true, features = ["classes", "macro"] }
 read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
+# Legacy heap-only WebIDL runtime adapter (vendored ecma-rs workspace).
 webidl-js-runtime = { path = "vendor/ecma-rs/webidl-runtime" }
 webidl-vm-js = { path = "vendor/ecma-rs/webidl-vm-js" }
 vm-js = { path = "vendor/ecma-rs/vm-js" }

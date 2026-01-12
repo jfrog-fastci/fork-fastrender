@@ -63,7 +63,7 @@ Put it in `vendor/ecma-rs/webidl-vm-js/`:
 If you need the legacy heap-only runtime (used by early scaffolding and some unit tests), the
 canonical implementation lives in `vendor/ecma-rs/webidl-runtime/`:
 
-- Cargo package name: `webidl-js-runtime` (Rust crate name: `webidl_js_runtime`).
+- Cargo package name: `webidl-js-runtime` (Rust crate name: `webidl_js_runtime`)
 - FastRender exposes it via `fastrender::js::webidl::legacy` while migration is in progress.
 - FastRender depends on this vendored crate directly. The historical workspace-local copy at
   `crates/webidl-js-runtime/` has been removed.

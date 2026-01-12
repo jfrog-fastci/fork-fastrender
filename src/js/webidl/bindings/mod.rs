@@ -2,7 +2,8 @@
 //!
 //! - [`generated`] contains `vm-js` realm WebIDL-to-host glue (calls into the embedder via
 //!   [`webidl_vm_js::WebIdlBindingsHost`] + [`webidl_vm_js::host_from_hooks`]).
-//! - [`generated_legacy`] contains legacy `webidl-js-runtime` bindings (kept temporarily for
+//! - [`generated_legacy`] contains legacy heap-only bindings (backed by `webidl_js_runtime`, kept
+//!   temporarily for
 //!   migration and for unit tests that exercise the old bindings/runtime surface).
 //! - The `vm-js` backend emits **per-interface installers** (e.g. [`install_url_bindings_vm_js`]) so
 //!   embedders can incrementally adopt generated bindings without clobbering legacy DOM globals.

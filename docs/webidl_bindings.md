@@ -194,7 +194,7 @@ world:
     through `VmHostHooks::as_any_mut`).
   - Controlled by an explicit allowlist: `tools/webidl/window_bindings_allowlist.toml` (typo-guarded
     against the committed snapshot world).
-- **Legacy `webidl-js-runtime` (heap-only) bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
+- **Legacy heap-only bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
   `src/js/webidl/bindings/generated_legacy.rs`
   - Backed by `fastrender::js::webidl::legacy` (vendored at `vendor/ecma-rs/webidl-runtime`, Cargo
     package `webidl-js-runtime`).
@@ -244,7 +244,7 @@ In practice:
 Notes:
 
 - `src/js/webidl/*` should stay as **thin re-exports/adapters**. In particular,
-  `src/js/webidl/conversions.rs` exists to support the legacy `webidl-js-runtime` (heap-only) backend
+  `src/js/webidl/conversions.rs` exists to support the legacy heap-only backend (`webidl_js_runtime`)
   and should not be used by the `vm-js` realm backend.
 - If you find yourself pasting a WebIDL algorithm (record/sequence conversion loops, union
   discrimination, etc.) into the generator output, it probably belongs in `vendor/ecma-rs/webidl` or
