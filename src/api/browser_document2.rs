@@ -490,19 +490,6 @@ impl crate::js::DomHost for BrowserDocument2 {
 mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
-  use std::sync::Once;
-
-  static INIT_ENV: Once = Once::new();
-
-  fn ensure_test_env() {
-    INIT_ENV.call_once(|| {
-      // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count, which
-      // can exceed sandbox thread budgets and cause the global pool init to fail.
-      if std::env::var("RAYON_NUM_THREADS").is_err() {
-        std::env::set_var("RAYON_NUM_THREADS", "1");
-      }
-    });
-  }
 
   fn pixel(pixmap: &super::super::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
     let px = pixmap.pixel(x, y).unwrap();
@@ -527,9 +514,11 @@ mod tests {
 
   #[test]
   fn realtime_animation_sampling_progresses_with_virtual_clock() -> Result<()> {
-    ensure_test_env();
-    let mut doc =
-      BrowserDocument2::from_html(fixture_html(), RenderOptions::new().with_viewport(2, 2))?;
+    let options = RenderOptions::new()
+      .with_viewport(2, 2)
+      .with_layout_parallelism(crate::LayoutParallelism::disabled())
+      .with_paint_parallelism(crate::PaintParallelism::disabled());
+    let mut doc = BrowserDocument2::from_html(fixture_html(), options)?;
 
     let clock = Arc::new(VirtualClock::new());
     doc.set_animation_clock(clock.clone());
@@ -552,9 +541,11 @@ mod tests {
 
   #[test]
   fn realtime_animation_play_state_pauses_and_resumes_across_frames() -> Result<()> {
-    ensure_test_env();
-    let mut doc =
-      BrowserDocument2::from_html(fixture_html(), RenderOptions::new().with_viewport(2, 2))?;
+    let options = RenderOptions::new()
+      .with_viewport(2, 2)
+      .with_layout_parallelism(crate::LayoutParallelism::disabled())
+      .with_paint_parallelism(crate::PaintParallelism::disabled());
+    let mut doc = BrowserDocument2::from_html(fixture_html(), options)?;
 
     let clock = Arc::new(VirtualClock::new());
     doc.set_animation_clock(clock.clone());
