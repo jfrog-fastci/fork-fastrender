@@ -4075,6 +4075,28 @@ impl Heap {
     js.as_code_units() == LENGTH_UNITS
   }
 
+  pub(crate) fn property_key_is_caller(&self, key: &PropertyKey) -> bool {
+    const CALLER_UNITS: [u16; 6] = [99, 97, 108, 108, 101, 114]; // "caller"
+    let PropertyKey::String(s) = key else {
+      return false;
+    };
+    let Ok(js) = self.get_string(*s) else {
+      return false;
+    };
+    js.as_code_units() == CALLER_UNITS
+  }
+
+  pub(crate) fn property_key_is_arguments(&self, key: &PropertyKey) -> bool {
+    const ARGUMENTS_UNITS: [u16; 9] = [97, 114, 103, 117, 109, 101, 110, 116, 115]; // "arguments"
+    let PropertyKey::String(s) = key else {
+      return false;
+    };
+    let Ok(js) = self.get_string(*s) else {
+      return false;
+    };
+    js.as_code_units() == ARGUMENTS_UNITS
+  }
+
   /// Returns whether `obj` is an Array exotic object.
   ///
   /// This is the engine-side equivalent of `Array.isArray` (without consulting prototypes).

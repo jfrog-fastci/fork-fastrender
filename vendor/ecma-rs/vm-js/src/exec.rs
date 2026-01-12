@@ -3022,6 +3022,29 @@ impl<'a> Evaluator<'a> {
         idx_scope.define_property(args_obj, key, global_var_desc(v))?;
       }
 
+      // Strict-mode `arguments` objects have poison-pill `callee`/`caller` accessors.
+      if self.strict {
+        let thrower = intr.throw_type_error();
+        scope.push_root(Value::Object(thrower))?;
+        for prop_name in ["callee", "caller"] {
+          let key_s = scope.alloc_string(prop_name)?;
+          scope.push_root(Value::String(key_s))?;
+          let key = PropertyKey::from_string(key_s);
+          scope.define_property(
+            args_obj,
+            key,
+            PropertyDescriptor {
+              enumerable: false,
+              configurable: false,
+              kind: PropertyKind::Accessor {
+                get: Value::Object(thrower),
+                set: Value::Object(thrower),
+              },
+            },
+          )?;
+        }
+      }
+
       scope.env_create_mutable_binding(self.env.lexical_env, "arguments")?;
       scope.heap_mut().env_initialize_binding(
         self.env.lexical_env,
@@ -7466,6 +7489,9 @@ impl<'a> Evaluator<'a> {
     // Note: This is distinct from `SetFunctionName` (function object `name` property), which is
     // handled separately.
     let outer_env = self.env.lexical_env;
+    // Root the outer lexical environment while allocating the optional function-name environment and
+    // function name string.
+    scope.push_env_root(outer_env)?;
     let (closure_env, name_binding_env) = if let Some(name) = name {
       // Create the function name environment and keep it rooted across function allocation.
       let func_env = scope.env_create(Some(outer_env))?;
@@ -7477,8 +7503,16 @@ impl<'a> Evaluator<'a> {
     };
 
     let name_s = match name {
-      Some(name) => scope.alloc_string(name)?,
-      None => scope.alloc_string("")?,
+      Some(name) => {
+        let s = scope.alloc_string(name)?;
+        scope.push_root(Value::String(s))?;
+        s
+      }
+      None => {
+        let s = scope.alloc_string("")?;
+        scope.push_root(Value::String(s))?;
+        s
+      }
     };
     let length = self.function_length(func)?;
 
@@ -7566,11 +7600,18 @@ impl<'a> Evaluator<'a> {
     use crate::vm::EcmaFunctionKind;
 
     if func.generator {
-      return Err(VmError::Unimplemented(if func.async_ {
+      // See `create_function_object_for_decl` for rationale.
+      let intr = self
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let message = if func.async_ {
         "async generator functions"
       } else {
         "generator functions"
-      }));
+      };
+      let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+      return Err(VmError::Throw(err_obj));
     }
     let is_strict = self.strict
       || match &func.body {

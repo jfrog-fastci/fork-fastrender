@@ -1,5 +1,6 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::heap::ModuleNamespaceExportValue;
+use crate::function::ThisMode;
 use crate::property_descriptor_ops;
 use crate::{GcObject, GcString, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::collections::{HashMap, HashSet};
@@ -2551,6 +2552,26 @@ impl<'a> Scope<'a> {
       }
     }
 
+    // Annex B `caller` / `arguments`: for ordinary non-strict functions, legacy `.caller`/`.arguments`
+    // must not throw even though %Function.prototype% defines poison-pill accessors.
+    if scope.heap().property_key_is_caller(&key) || scope.heap().property_key_is_arguments(&key) {
+      if let Ok(func) = scope.heap().get_function(obj) {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let proto = scope.heap().object_prototype(obj)?;
+        let is_ordinary_function = proto == Some(intr.function_prototype());
+        let is_restricted = func.is_strict
+          || func.bound_target.is_some()
+          || func.this_mode == ThisMode::Lexical
+          || !is_ordinary_function;
+        if is_restricted {
+          return Err(VmError::TypeError("Restricted function property"));
+        }
+        return Ok(Value::Null);
+      }
+    }
+
     let Some(proto) = scope.heap().object_prototype(obj)? else {
       return Ok(Value::Undefined);
     };
@@ -2783,6 +2804,26 @@ impl<'a> Scope<'a> {
       }
     }
 
+    // Annex B `caller` / `arguments`: for ordinary non-strict functions, legacy `.caller`/`.arguments`
+    // must not throw even though %Function.prototype% defines poison-pill accessors.
+    if scope.heap().property_key_is_caller(&key) || scope.heap().property_key_is_arguments(&key) {
+      if let Ok(func) = scope.heap().get_function(obj) {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let proto = scope.heap().object_prototype(obj)?;
+        let is_ordinary_function = proto == Some(intr.function_prototype());
+        let is_restricted = func.is_strict
+          || func.bound_target.is_some()
+          || func.this_mode == ThisMode::Lexical
+          || !is_ordinary_function;
+        if is_restricted {
+          return Err(VmError::TypeError("Restricted function property"));
+        }
+        return Ok(Value::Null);
+      }
+    }
+
     // Host hook for "exotic" property getters (e.g. DOM named properties) runs before walking the
     // prototype chain.
     if let Some(value) = hooks.host_exotic_get(&mut scope, obj, key, receiver)? {
@@ -3005,9 +3046,32 @@ impl<'a> Scope<'a> {
     scope.push_roots(&roots)?;
     let key_value = roots[1];
 
+    // Annex B `caller` / `arguments`: for ordinary non-strict functions, legacy `.caller`/`.arguments`
+    // must not throw even though %Function.prototype% defines poison-pill accessors.
+    if scope.heap().property_key_is_caller(&key) || scope.heap().property_key_is_arguments(&key) {
+      if let Ok(func) = scope.heap().get_function(obj) {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let proto = scope.heap().object_prototype(obj)?;
+        let is_ordinary_function = proto == Some(intr.function_prototype());
+        let is_restricted = func.is_strict
+          || func.bound_target.is_some()
+          || func.this_mode == ThisMode::Lexical
+          || !is_ordinary_function;
+        if is_restricted {
+          return Err(VmError::TypeError("Restricted function property"));
+        }
+        return Ok(true);
+      }
+    }
+
     // Spec-shaped OrdinarySet implementation: we must not scan the prototype chain as ordinary
     // objects, since the chain can contain Proxy objects. If the property is not an own property,
     // delegate to `proto.[[Set]]` so Proxy `set` traps are observed.
+    //
+    // Implement this by walking the chain iteratively so we can keep a visited set to guard against
+    // prototype cycles.
     let mut visited: HashSet<GcObject> = HashSet::new();
     if visited.try_reserve(1).is_err() {
       return Err(VmError::OutOfMemory);
@@ -3402,6 +3466,26 @@ impl<'a> Scope<'a> {
           }
            // Valid integer index: continue with ordinary `[[Set]]` semantics below.
          }
+      }
+    }
+
+    // Annex B `caller` / `arguments`: for ordinary non-strict functions, legacy `.caller`/`.arguments`
+    // must not throw even though %Function.prototype% defines poison-pill accessors.
+    if self.heap().property_key_is_caller(&key) || self.heap().property_key_is_arguments(&key) {
+      if let Ok(func) = self.heap().get_function(obj) {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let proto = self.heap().object_prototype(obj)?;
+        let is_ordinary_function = proto == Some(intr.function_prototype());
+        let is_restricted = func.is_strict
+          || func.bound_target.is_some()
+          || func.this_mode == ThisMode::Lexical
+          || !is_ordinary_function;
+        if is_restricted {
+          return Err(VmError::TypeError("Restricted function property"));
+        }
+        return Ok(true);
       }
     }
 

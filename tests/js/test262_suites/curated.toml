@@ -228,6 +228,18 @@ include = [
   "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T4.js",
   "built-ins/Error/prototype/toString/invalid-receiver.js",
   "built-ins/Array/length/S15.4.2.2_A2.2_T1.js",
+
+  # Restricted function properties / %ThrowTypeError%
+  "built-ins/Function/prototype/caller/prop-desc.js",
+  "built-ins/Function/prototype/arguments/prop-desc.js",
+  "built-ins/Function/prototype/caller-arguments/accessor-properties.js",
+  "built-ins/Function/StrictFunction_restricted-properties.js",
+  "built-ins/Function/prototype/bind/BoundFunction_restricted-properties.js",
+  "built-ins/Function/15.3.5.4_2-76gs.js",
+  "language/expressions/arrow-function/ArrowFunction_restricted-properties.js",
+  "language/statements/generators/restricted-properties.js",
+  "language/expressions/class/restricted-properties.js",
+  "language/statements/class/restricted-properties.js",
 ]
 
 exclude = [

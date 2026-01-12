@@ -32,6 +32,7 @@ pub struct Intrinsics {
   well_known_symbols: WellKnownSymbols,
   object_prototype: GcObject,
   function_prototype: GcObject,
+  throw_type_error: GcObject,
   iterator_prototype: GcObject,
   generator_function: GcObject,
   generator_function_prototype: GcObject,
@@ -1570,7 +1571,7 @@ impl Intrinsics {
     }
 
     // Function.prototype.caller / Function.prototype.arguments (restricted properties).
-    {
+    let throw_type_error = {
       let thrower_name = scope.alloc_string("%ThrowTypeError%")?;
       let thrower_fn = alloc_rooted_native_function(
         scope,
@@ -1615,7 +1616,9 @@ impl Intrinsics {
           },
         },
       )?;
-    }
+
+      thrower_fn
+    };
 
     // `%GeneratorFunction.prototype%`
     let generator_function_prototype = alloc_rooted_object(scope, roots)?;
@@ -6284,6 +6287,7 @@ impl Intrinsics {
       well_known_symbols,
       object_prototype,
       function_prototype,
+      throw_type_error,
       iterator_prototype,
       generator_function,
       generator_function_prototype,
@@ -6403,6 +6407,10 @@ impl Intrinsics {
 
   pub fn function_prototype(&self) -> GcObject {
     self.function_prototype
+  }
+
+  pub fn throw_type_error(&self) -> GcObject {
+    self.throw_type_error
   }
 
   pub fn iterator_prototype(&self) -> GcObject {

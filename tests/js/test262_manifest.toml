@@ -119,7 +119,40 @@ status = "pass"
 [[expectations]]
 id = "language/expressions/comma/tco-final.js"
 status = "xfail"
-reason = "vm-js does not yet implement named function expression binding / proper tail calls."
+reason = "vm-js does not yet implement proper tail calls."
+
+# --- Restricted function properties / %ThrowTypeError% (newly green) ---
+[[expectations]]
+id = "language/expressions/arrow-function/ArrowFunction_restricted-properties.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/generators/restricted-properties.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Function/prototype/caller/prop-desc.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Function/prototype/arguments/prop-desc.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Function/prototype/caller-arguments/accessor-properties.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Function/StrictFunction_restricted-properties.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Function/prototype/bind/BoundFunction_restricted-properties.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Function/15.3.5.4_2-76gs.js"
+status = "pass"
 
 # --- Tagged template literals (newly green) ---
 [[expectations]]
@@ -1347,6 +1380,11 @@ reason = "vm-js: built-in coverage is still incomplete; tracked via curated test
 [[expectations]]
 id = "staging/sm/Function/15.3.4.3-01.js"
 status = "pass"
+
+[[expectations]]
+id = "language/statements/class/restricted-properties.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance."
 
 # --- Known-passing tests (keep regressions unexpected) ---
 [[expectations]]

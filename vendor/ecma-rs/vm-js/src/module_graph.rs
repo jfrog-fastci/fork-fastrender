@@ -1522,6 +1522,14 @@ impl ModuleGraph {
     let idx = module_index(module);
     if let Some(record) = self.modules.get(idx) {
       if record.status == ModuleStatus::EvaluatingAsync {
+        if !record.has_tla {
+          return Err(VmError::InvariantViolation(
+            "module is evaluating-async but does not have top-level await",
+          ));
+        }
+
+        // Top-level await evaluation is in progress; per spec, `Evaluate()` is idempotent and must
+        // return the existing evaluation promise.
         // Async evaluation is driven by SCC evaluation promises stored on the SCC (cycle) root's
         // `[[TopLevelCapability]]`.
         // Async module evaluation is per-SCC (cycle root). The spec-visible evaluation promise is
