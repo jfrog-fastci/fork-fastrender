@@ -1,4 +1,6 @@
-use crate::dom2::{Document, DomError, NodeId};
+use crate::dom2::{
+  Document, DomError, MutationObserverId, MutationObserverInit, MutationRecord, NodeId,
+};
 use vm_js::VmHost;
 
 /// Abstraction over a live `dom2::Document` that allows DOM mutation while keeping renderer cache
@@ -69,6 +71,32 @@ pub trait DomHostVmJs {
     value: &str,
   ) -> Result<bool, DomError>;
   fn take_mutation_observer_microtask_needed(&mut self) -> bool;
+
+  /// Register a mutation observer in the DOM's observer registry.
+  ///
+  /// This is bookkeeping-only and must **not** trigger renderer invalidation.
+  fn mutation_observer_observe(
+    &mut self,
+    observer: MutationObserverId,
+    target: NodeId,
+    options: MutationObserverInit,
+  ) -> Result<(), DomError>;
+
+  /// Disconnect a mutation observer from the DOM's observer registry.
+  ///
+  /// This is bookkeeping-only and must **not** trigger renderer invalidation.
+  fn mutation_observer_disconnect(&mut self, observer: MutationObserverId);
+
+  /// Take queued mutation records for an observer.
+  ///
+  /// This is bookkeeping-only and must **not** trigger renderer invalidation.
+  fn mutation_observer_take_records(&mut self, observer: MutationObserverId) -> Vec<MutationRecord>;
+
+  /// Take all pending mutation observer deliveries for the document.
+  ///
+  /// This is bookkeeping-only and must **not** trigger renderer invalidation.
+  fn mutation_observer_take_deliveries(&mut self)
+    -> Vec<(MutationObserverId, Vec<MutationRecord>)>;
 }
 
 /// Downcast a `vm-js` [`VmHost`] into a dyn-compatible [`DomHostVmJs`] implementation.
@@ -211,6 +239,35 @@ where
 
   fn take_mutation_observer_microtask_needed(&mut self) -> bool {
     self.mutate_dom(|dom| (dom.take_mutation_observer_microtask_needed(), false))
+  }
+
+  fn mutation_observer_observe(
+    &mut self,
+    observer: MutationObserverId,
+    target: NodeId,
+    options: MutationObserverInit,
+  ) -> Result<(), DomError> {
+    self.mutate_dom(|dom| match dom.mutation_observer_observe(observer, target, options) {
+      Ok(()) => (Ok(()), false),
+      Err(err) => (Err(err), false),
+    })
+  }
+
+  fn mutation_observer_disconnect(&mut self, observer: MutationObserverId) {
+    self.mutate_dom(|dom| {
+      dom.mutation_observer_disconnect(observer);
+      ((), false)
+    })
+  }
+
+  fn mutation_observer_take_records(&mut self, observer: MutationObserverId) -> Vec<MutationRecord> {
+    self.mutate_dom(|dom| (dom.mutation_observer_take_records(observer), false))
+  }
+
+  fn mutation_observer_take_deliveries(
+    &mut self,
+  ) -> Vec<(MutationObserverId, Vec<MutationRecord>)> {
+    self.mutate_dom(|dom| (dom.mutation_observer_take_deliveries(), false))
   }
 }
 

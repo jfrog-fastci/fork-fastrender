@@ -2036,6 +2036,11 @@ const MUTATION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_mutation_observer_reg
 const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
 const MUTATION_OBSERVER_HOST_TAG: u64 = 6;
 const MUTATION_RECORD_HOST_TAG: u64 = 7;
+const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
+const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_prototype";
+
+const NODE_LIST_ITERATOR_LIST_KEY: &str = "__fastrender_node_list_iterator_list";
+const NODE_LIST_ITERATOR_INDEX_KEY: &str = "__fastrender_node_list_iterator_index";
 
 const MUTATION_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
 
@@ -10375,6 +10380,186 @@ fn mutation_observer_registry_from_document(
   }
 }
 
+fn node_list_prototype_from_document(scope: &mut Scope<'_>, document_obj: GcObject) -> Result<GcObject, VmError> {
+  scope.push_root(Value::Object(document_obj))?;
+  let key = alloc_key(scope, NODE_LIST_PROTOTYPE_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "document missing internal NodeList prototype",
+    )),
+  }
+}
+
+fn mutation_record_prototype_from_document(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  scope.push_root(Value::Object(document_obj))?;
+  let key = alloc_key(scope, MUTATION_RECORD_PROTOTYPE_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "document missing internal MutationRecord prototype",
+    )),
+  }
+}
+
+fn node_list_item_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(list_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let idx_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let idx_n = match idx_value {
+    Value::Number(n) => n,
+    other => scope.to_number(vm, host, hooks, other)?,
+  };
+  if !idx_n.is_finite() || idx_n < 0.0 {
+    return Ok(Value::Null);
+  }
+
+  let idx = idx_n.trunc() as usize;
+  let key = alloc_key(scope, &idx.to_string())?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(list_obj, &key)?
+      .unwrap_or(Value::Null),
+  )
+}
+
+fn node_list_iterator_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(list_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+    "NodeList iterator requires intrinsics",
+  ))?;
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let next_func = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "NodeList iterator missing next() function slot",
+      ))
+    }
+  };
+
+  let iter_obj = scope.alloc_object()?;
+  scope
+    .heap_mut()
+    .object_set_prototype(iter_obj, Some(intr.object_prototype()))?;
+  scope.push_root(Value::Object(iter_obj))?;
+
+  let list_key = alloc_key(scope, NODE_LIST_ITERATOR_LIST_KEY)?;
+  scope.define_property(iter_obj, list_key, data_desc(Value::Object(list_obj)))?;
+
+  let index_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
+  scope.define_property(iter_obj, index_key, data_desc(Value::Number(0.0)))?;
+
+  let next_key = alloc_key(scope, "next")?;
+  scope.define_property(iter_obj, next_key, data_desc(Value::Object(next_func)))?;
+
+  Ok(Value::Object(iter_obj))
+}
+
+fn node_list_iterator_next_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  scope.push_root(Value::Object(iter_obj))?;
+
+  let list_key = alloc_key(scope, NODE_LIST_ITERATOR_LIST_KEY)?;
+  let list_value = scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &list_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(list_obj) = list_value else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let idx_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
+  let idx_value = scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &idx_key)?
+    .unwrap_or(Value::Number(0.0));
+  let idx_n = match idx_value {
+    Value::Number(n) => n,
+    other => scope.to_number(vm, host, hooks, other)?,
+  };
+  let mut idx = if idx_n.is_finite() && idx_n >= 0.0 {
+    idx_n.trunc() as usize
+  } else {
+    0usize
+  };
+
+  let length_key = alloc_key(scope, "length")?;
+  let len_value =
+    vm.get_with_host_and_hooks(host, scope, hooks, list_obj, length_key)?;
+  let len_n = match len_value {
+    Value::Number(n) => n,
+    other => scope.to_number(vm, host, hooks, other)?,
+  };
+  let len = if len_n.is_finite() && len_n >= 0.0 {
+    len_n.trunc() as usize
+  } else {
+    0usize
+  };
+
+  let (done, value) = if idx >= len {
+    (true, Value::Undefined)
+  } else {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, key)?;
+    idx = idx.saturating_add(1);
+    let idx_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
+    scope.define_property(iter_obj, idx_key, data_desc(Value::Number(idx as f64)))?;
+    (false, value)
+  };
+
+  let result_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(result_obj))?;
+  let value_key = alloc_key(scope, "value")?;
+  scope.define_property(result_obj, value_key, data_desc(value))?;
+  let done_key = alloc_key(scope, "done")?;
+  scope.define_property(result_obj, done_key, data_desc(Value::Bool(done)))?;
+  Ok(Value::Object(result_obj))
+}
+
 fn alloc_node_array(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -10382,35 +10567,23 @@ fn alloc_node_array(
   dom: Option<&dom2::Document>,
   nodes: &[NodeId],
 ) -> Result<GcObject, VmError> {
-  let array = scope.alloc_array(0)?;
-  scope.push_root(Value::Object(array))?;
-  if let Some(intrinsics) = vm.intrinsics() {
-    scope
-      .heap_mut()
-      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
-  }
+  let node_list = scope.alloc_object()?;
+  scope.push_root(Value::Object(node_list))?;
+  let node_list_proto = node_list_prototype_from_document(scope, document_obj)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(node_list, Some(node_list_proto))?;
 
   for (idx, node_id) in nodes.iter().copied().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
     let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, dom, node_id)?;
-    scope.define_property(array, key, data_desc(wrapper))?;
+    scope.define_property(node_list, key, data_desc(wrapper))?;
   }
 
   let length_key = alloc_key(scope, "length")?;
-  scope.define_property(
-    array,
-    length_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Number(nodes.len() as f64),
-        writable: true,
-      },
-    },
-  )?;
+  scope.define_property(node_list, length_key, read_only_data_desc(Value::Number(nodes.len() as f64)))?;
 
-  Ok(array)
+  Ok(node_list)
 }
 
 fn alloc_mutation_record_object(
@@ -10429,37 +10602,39 @@ fn alloc_mutation_record_object(
       b: MUTATION_RECORD_HOST_TAG,
     },
   )?;
+  let proto = mutation_record_prototype_from_document(scope, document_obj)?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
   let type_key = alloc_key(scope, "type")?;
   let type_s = scope.alloc_string(record.type_.as_str())?;
   scope.push_root(Value::String(type_s))?;
-  scope.define_property(obj, type_key, data_desc(Value::String(type_s)))?;
+  scope.define_property(obj, type_key, read_only_data_desc(Value::String(type_s)))?;
 
   let target_key = alloc_key(scope, "target")?;
   let target_wrapper = get_or_create_node_wrapper(vm, scope, document_obj, dom, record.target)?;
-  scope.define_property(obj, target_key, data_desc(target_wrapper))?;
+  scope.define_property(obj, target_key, read_only_data_desc(target_wrapper))?;
 
   let added_key = alloc_key(scope, "addedNodes")?;
   let added = alloc_node_array(vm, scope, document_obj, dom, &record.added_nodes)?;
-  scope.define_property(obj, added_key, data_desc(Value::Object(added)))?;
+  scope.define_property(obj, added_key, read_only_data_desc(Value::Object(added)))?;
 
   let removed_key = alloc_key(scope, "removedNodes")?;
   let removed = alloc_node_array(vm, scope, document_obj, dom, &record.removed_nodes)?;
-  scope.define_property(obj, removed_key, data_desc(Value::Object(removed)))?;
+  scope.define_property(obj, removed_key, read_only_data_desc(Value::Object(removed)))?;
 
   let prev_key = alloc_key(scope, "previousSibling")?;
   let prev = match record.previous_sibling {
     Some(id) => get_or_create_node_wrapper(vm, scope, document_obj, dom, id)?,
     None => Value::Null,
   };
-  scope.define_property(obj, prev_key, data_desc(prev))?;
+  scope.define_property(obj, prev_key, read_only_data_desc(prev))?;
 
   let next_key = alloc_key(scope, "nextSibling")?;
   let next = match record.next_sibling {
     Some(id) => get_or_create_node_wrapper(vm, scope, document_obj, dom, id)?,
     None => Value::Null,
   };
-  scope.define_property(obj, next_key, data_desc(next))?;
+  scope.define_property(obj, next_key, read_only_data_desc(next))?;
 
   let attr_name_key = alloc_key(scope, "attributeName")?;
   let attr_name = match record.attribute_name.as_deref() {
@@ -10470,10 +10645,10 @@ fn alloc_mutation_record_object(
     }
     None => Value::Null,
   };
-  scope.define_property(obj, attr_name_key, data_desc(attr_name))?;
+  scope.define_property(obj, attr_name_key, read_only_data_desc(attr_name))?;
 
   let attr_ns_key = alloc_key(scope, "attributeNamespace")?;
-  scope.define_property(obj, attr_ns_key, data_desc(Value::Null))?;
+  scope.define_property(obj, attr_ns_key, read_only_data_desc(Value::Null))?;
 
   let old_value_key = alloc_key(scope, "oldValue")?;
   let old_value = match record.old_value.as_deref() {
@@ -10484,7 +10659,7 @@ fn alloc_mutation_record_object(
     }
     None => Value::Null,
   };
-  scope.define_property(obj, old_value_key, data_desc(old_value))?;
+  scope.define_property(obj, old_value_key, read_only_data_desc(old_value))?;
 
   Ok(obj)
 }
@@ -10576,14 +10751,16 @@ fn mutation_observer_observe_native(
   let options_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let options = mutation_observer_parse_options(vm, scope, host, hooks, options_value)?;
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "MutationObserver.observe requires a DOM-backed node",
-  ))?;
-  let target_id = dom
+  let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
+    return Err(VmError::TypeError(
+      "MutationObserver.observe requires a DOM-backed node",
+    ));
+  };
+  let target_id = dom_host
     .node_id_from_index(node_index)
     .map_err(|_| VmError::TypeError("MutationObserver.observe requires a DOM-backed node"))?;
 
-  if let Err(err) = dom.mutation_observer_observe(observer_id, target_id, options) {
+  if let Err(err) = dom_host.mutation_observer_observe(observer_id, target_id, options) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
@@ -10624,9 +10801,9 @@ fn mutation_observer_disconnect_native(
     return Ok(Value::Undefined);
   };
 
-  if let Some(dom) = dom_from_vm_host_mut(host) {
-    dom.mutation_observer_disconnect(observer_id);
-  };
+  if let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) {
+    dom_host.mutation_observer_disconnect(observer_id);
+  }
 
   if let Ok(registry) = mutation_observer_registry_from_document(scope, document_obj) {
     scope.push_root(Value::Object(registry))?;
@@ -10680,12 +10857,13 @@ fn mutation_observer_take_records_native(
     return Ok(Value::Object(empty));
   };
 
-  let Some(dom) = dom_from_vm_host_mut(host) else {
+  let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
     let empty = alloc_mutation_records_array(vm, scope, document_obj, None, &[])?;
     return Ok(Value::Object(empty));
   };
-  let records = dom.mutation_observer_take_records(observer_id);
-  let array = alloc_mutation_records_array(vm, scope, document_obj, Some(dom), &records)?;
+  let records = dom_host.mutation_observer_take_records(observer_id);
+  let dom_for_wrappers = dom_from_vm_host(host);
+  let array = alloc_mutation_records_array(vm, scope, document_obj, dom_for_wrappers, &records)?;
   Ok(Value::Object(array))
 }
 
@@ -10709,10 +10887,10 @@ fn mutation_observer_notify_native(
   };
 
   let deliveries = {
-    let Some(dom) = dom_from_vm_host_mut(host) else {
+    let Some(dom_host) = crate::js::dom_host::dom_host_vmjs(host) else {
       return Ok(Value::Undefined);
     };
-    dom.mutation_observer_take_deliveries()
+    dom_host.mutation_observer_take_deliveries()
   };
   if deliveries.is_empty() {
     return Ok(Value::Undefined);
@@ -22328,6 +22506,94 @@ fn init_window_globals(
       },
     )?;
 
+    // NodeList prototype + constructor.
+    let node_list_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(node_list_proto))?;
+    scope.heap_mut().object_set_prototype(
+      node_list_proto,
+      Some(realm.intrinsics().object_prototype()),
+    )?;
+
+    let node_list_item_call_id = vm.register_native_call(node_list_item_native)?;
+    let node_list_item_name = scope.alloc_string("item")?;
+    scope.push_root(Value::String(node_list_item_name))?;
+    let node_list_item_func =
+      scope.alloc_native_function(node_list_item_call_id, None, node_list_item_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      node_list_item_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_list_item_func))?;
+    let node_list_item_key = alloc_key(&mut scope, "item")?;
+    scope.define_property(
+      node_list_proto,
+      node_list_item_key,
+      data_desc(Value::Object(node_list_item_func)),
+    )?;
+
+    // NodeList iterator.
+    let node_list_iter_next_call_id = vm.register_native_call(node_list_iterator_next_native)?;
+    let node_list_iter_next_name = scope.alloc_string("next")?;
+    scope.push_root(Value::String(node_list_iter_next_name))?;
+    let node_list_iter_next_func =
+      scope.alloc_native_function(node_list_iter_next_call_id, None, node_list_iter_next_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      node_list_iter_next_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_list_iter_next_func))?;
+
+    let node_list_iter_call_id = vm.register_native_call(node_list_iterator_native)?;
+    let node_list_iter_name = scope.alloc_string("values")?;
+    scope.push_root(Value::String(node_list_iter_name))?;
+    let node_list_iter_func = scope.alloc_native_function_with_slots(
+      node_list_iter_call_id,
+      None,
+      node_list_iter_name,
+      0,
+      &[Value::Object(node_list_iter_next_func)],
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_list_iter_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_list_iter_func))?;
+    let iterator_sym = realm.intrinsics().well_known_symbols().iterator;
+    scope.define_property(
+      node_list_proto,
+      PropertyKey::from_symbol(iterator_sym),
+      data_desc(Value::Object(node_list_iter_func)),
+    )?;
+
+    let node_list_ctor = make_illegal_ctor(&mut scope, "NodeList")?;
+    scope.push_root(Value::Object(node_list_ctor))?;
+    scope.define_property(
+      node_list_ctor,
+      prototype_key,
+      data_desc(Value::Object(node_list_proto)),
+    )?;
+    scope.define_property(
+      node_list_proto,
+      constructor_key,
+      data_desc(Value::Object(node_list_ctor)),
+    )?;
+    let node_list_key = alloc_key(&mut scope, "NodeList")?;
+    scope.define_property(global, node_list_key, data_desc(Value::Object(node_list_ctor)))?;
+
+    let node_list_proto_internal_key = alloc_key(&mut scope, NODE_LIST_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      node_list_proto_internal_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(node_list_proto),
+          writable: false,
+        },
+      },
+    )?;
+
     // Minimal CSSStyleDeclaration constructor needed for `instanceof CSSStyleDeclaration` checks.
     //
     // The style objects returned from `HTMLElement.style` are plain objects with an extra prototype
@@ -22367,6 +22633,47 @@ fn init_window_globals(
         configurable: false,
         kind: PropertyKind::Data {
           value: Value::Object(css_style_decl_proto),
+          writable: false,
+        },
+      },
+    )?;
+
+    // MutationRecord prototype + constructor.
+    let mutation_record_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(mutation_record_proto))?;
+    scope.heap_mut().object_set_prototype(
+      mutation_record_proto,
+      Some(realm.intrinsics().object_prototype()),
+    )?;
+
+    let mutation_record_ctor = make_illegal_ctor(&mut scope, "MutationRecord")?;
+    scope.push_root(Value::Object(mutation_record_ctor))?;
+    scope.define_property(
+      mutation_record_ctor,
+      prototype_key,
+      data_desc(Value::Object(mutation_record_proto)),
+    )?;
+    scope.define_property(
+      mutation_record_proto,
+      constructor_key,
+      data_desc(Value::Object(mutation_record_ctor)),
+    )?;
+    let mutation_record_key = alloc_key(&mut scope, "MutationRecord")?;
+    scope.define_property(
+      global,
+      mutation_record_key,
+      data_desc(Value::Object(mutation_record_ctor)),
+    )?;
+
+    let mutation_record_proto_internal_key = alloc_key(&mut scope, MUTATION_RECORD_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      mutation_record_proto_internal_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(mutation_record_proto),
           writable: false,
         },
       },

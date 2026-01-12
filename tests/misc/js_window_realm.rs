@@ -1380,6 +1380,42 @@ target.setAttribute('data-x', '1');
 }
 
 #[test]
+fn mutation_observer_records_are_webidl_shaped() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><head></head><body><div id=target></div></body></html>",
+  )?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__ok = false;
+const target = document.getElementById('target');
+const obs = new MutationObserver((records) => {
+  const r = records[0];
+  globalThis.__ok =
+    (r instanceof MutationRecord) &&
+    (r.addedNodes instanceof NodeList) &&
+    (r.removedNodes instanceof NodeList) &&
+    (typeof r.addedNodes.item === 'function') &&
+    (typeof r.removedNodes.item === 'function') &&
+    (r.type === 'attributes') &&
+    (r.target === target) &&
+    (r.attributeName === 'data-x');
+});
+obs.observe(target, { attributes: true });
+target.setAttribute('data-x', '1');
+"#,
+  )?;
+
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  let ok = host.exec_script_in_event_loop(&mut event_loop, "globalThis.__ok")?;
+  assert_eq!(ok, vm_js::Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn set_timeout_callbacks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
