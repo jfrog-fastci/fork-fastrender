@@ -2627,8 +2627,11 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
   }
 
   match style.font_kerning {
-    FontKerning::Auto => {}
-    FontKerning::Normal => push_toggle(&mut features, *b"kern", true),
+    // `font-kerning: auto` leaves the decision to the user agent. Chrome enables kerning for
+    // typical Latin text runs by default, and real-world pages (Tailwind resets, etc) rarely set
+    // `font-kerning` explicitly. Treating `auto` as "kerning enabled" matches browser behavior and
+    // avoids pervasive text metric/layout diffs on pages that rely on kerning pairs.
+    FontKerning::Auto | FontKerning::Normal => push_toggle(&mut features, *b"kern", true),
     FontKerning::None => push_toggle(&mut features, *b"kern", false),
   }
 
@@ -10542,6 +10545,17 @@ mod tests {
     assert_eq!(seen.get(b"fwid"), Some(&1));
     assert_eq!(seen.get(b"ruby"), Some(&1));
     assert_eq!(seen.get(b"sups"), Some(&1));
+  }
+
+  #[test]
+  fn collect_features_auto_enables_kerning() {
+    let style = ComputedStyle::default();
+    let feats = collect_opentype_features(&style, "serif");
+    assert_eq!(
+      tag_value(&feats, b"kern"),
+      Some(1),
+      "expected font-kerning:auto to enable the OpenType kern feature"
+    );
   }
 
   #[test]
