@@ -13,7 +13,6 @@ pub mod ecma_runtime;
 pub mod overload_resolution;
 pub mod runtime;
 pub mod to_js;
-pub mod vmjs;
 
 pub use conversions::{convert_arguments, convert_to_idl, ArgumentSchema, ConvertedValue};
 pub use ecma_runtime::VmJsRuntime;
