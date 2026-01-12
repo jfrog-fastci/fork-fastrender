@@ -11492,6 +11492,413 @@ mod tests {
     );
   }
 
+  #[test]
+  fn empty_cells_hide_row_does_not_collapse_with_text_content() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.white_space = WhiteSpace::Normal;
+
+    let text = BoxNode::new_text(Arc::new(text_style), "x".to_string());
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![text]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with text content");
+
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "row with visible text should not collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_row_does_not_collapse_with_nbsp() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.white_space = WhiteSpace::Normal;
+
+    let text = BoxNode::new_text(Arc::new(text_style), "\u{00A0}".to_string());
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![text]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with nbsp");
+
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "row with NBSP should not collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_row_collapses_with_only_ascii_whitespace() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.white_space = WhiteSpace::Normal;
+
+    let text = BoxNode::new_text(Arc::new(text_style), "\n  \t".to_string());
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![text]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with whitespace");
+
+    assert!(
+      fragment.bounds.height() < 0.5,
+      "whitespace-only `white-space: normal` should collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_row_does_not_collapse_when_white_space_pre_preserves_newlines() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.white_space = WhiteSpace::Pre;
+
+    let text = BoxNode::new_text(Arc::new(text_style), "\n  \t".to_string());
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![text]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with pre whitespace");
+
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "`white-space: pre` should treat whitespace as visible content (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_row_does_not_collapse_when_white_space_pre_line_preserves_newlines() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.white_space = WhiteSpace::PreLine;
+
+    let text = BoxNode::new_text(Arc::new(text_style), "\n".to_string());
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![text]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with pre-line whitespace");
+
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "`white-space: pre-line` should treat preserved line breaks as visible content (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_row_collapses_when_only_positioned_descendant() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.position = Position::Absolute;
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let abs_text = BoxNode::new_text(Arc::new(text_style), "x".to_string());
+    let abs = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![abs_text]);
+
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![abs]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with abs child");
+
+    assert!(
+      fragment.bounds.height() < 0.5,
+      "out-of-flow positioned descendants should not prevent collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_row_does_not_collapse_with_replaced_content() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Inline;
+    let replaced = BoxNode::new_replaced(
+      Arc::new(replaced_style),
+      crate::tree::box_tree::ReplacedType::Canvas,
+      Some(Size::new(10.0, 10.0)),
+      None,
+    );
+
+    let cell =
+      BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![replaced]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with replaced content");
+
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "replaced content should prevent empty-cells row collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_rowspan_content_prevents_spanned_rows_collapse() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let text = BoxNode::new_text(Arc::new(text_style), "x".to_string());
+    let spanning_cell = BoxNode::new_block(
+      Arc::new(cell_style),
+      FormattingContextType::Block,
+      vec![text],
+    )
+    .with_table_cell_spans(1, 2);
+
+    let row1 = BoxNode::new_block(
+      Arc::new(row_style.clone()),
+      FormattingContextType::Block,
+      vec![spanning_cell],
+    );
+    let row2 = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![]);
+    let table =
+      BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row1, row2]);
+
+    let structure = TableStructure::from_box_tree(&table);
+    let source_rows = collect_source_rows(&table);
+    let collapses = compute_rows_that_collapse_due_to_empty_cells(&structure, &source_rows);
+    assert_eq!(
+      collapses,
+      vec![false, false],
+      "row-spanning cell with visible content should keep all covered rows from collapsing"
+    );
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout rowspan visible");
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "table with rowspan content should not collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_rowspan_empty_allows_spanned_rows_to_collapse() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let spanning_cell =
+      BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+        .with_table_cell_spans(1, 2);
+
+    let row1 = BoxNode::new_block(
+      Arc::new(row_style.clone()),
+      FormattingContextType::Block,
+      vec![spanning_cell],
+    );
+    let row2 = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![]);
+    let table =
+      BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row1, row2]);
+
+    let structure = TableStructure::from_box_tree(&table);
+    let source_rows = collect_source_rows(&table);
+    let collapses = compute_rows_that_collapse_due_to_empty_cells(&structure, &source_rows);
+    assert_eq!(
+      collapses,
+      vec![true, true],
+      "row-spanning empty-cells should allow all covered rows to collapse"
+    );
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout rowspan empty");
+    assert!(
+      fragment.bounds.height() < 0.5,
+      "table with empty rowspan and empty-cells: hide should collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
   #[cfg(test)]
   fn legacy_get_cell_box<'a>(table_box: &'a BoxNode, cell: &CellInfo) -> Option<&'a BoxNode> {
     let mut row_idx = 0;
