@@ -2113,16 +2113,45 @@ fn rt_async_sleep_impl(delay_ms: u64) -> PromiseRef {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
 
-  extern "C" fn resolve_sleep(data: *mut u8) {
-    let promise = PromiseRef(data.cast());
-    async_rt::promise::promise_resolve(promise, core::ptr::null_mut());
+  // Allocate a minimal native async-ABI promise in the GC heap.
+  //
+  // This must *not* use the legacy `async_rt::promise::promise_new()` allocator (`Box<RtPromise>`)
+  // because `rt_async_sleep` is a stable runtime API and is expected to be usable in long-running
+  // programs without leaking Rust heap allocations.
+  static ASYNC_SLEEP_PROMISE_PTR_OFFSETS: [u32; 0] = [];
+  static ASYNC_SLEEP_PROMISE_TYPE_DESC: TypeDescriptor = TypeDescriptor::new(
+    core::mem::size_of::<PromiseHeader>(),
+    &ASYNC_SLEEP_PROMISE_PTR_OFFSETS,
+  );
+
+  let obj = crate::rt_alloc::alloc_typed(&ASYNC_SLEEP_PROMISE_TYPE_DESC);
+  let promise = PromiseRef(obj.cast());
+  unsafe {
+    // Initialize the `PromiseHeader` atomics without creating references to uninitialized `Atomic*`
+    // values (see `native_async::promise_init` safety notes).
+    crate::native_async::promise_init(promise);
   }
 
-  let promise = async_rt::promise::promise_new();
-  let _timer_id = async_rt::global().schedule_timer_in(
-    Duration::from_millis(delay_ms),
-    async_rt::Task::new(resolve_sleep, promise.0 as *mut u8),
-  );
+  extern "C" fn fulfill_sleep(data: *mut u8) {
+    let promise = PromiseRef(data.cast());
+    unsafe {
+      crate::native_async::promise_fulfill(promise);
+    }
+  }
+
+  // Timers store callback userdata in Rust-owned queues that are not scanned by the GC. Keep the
+  // promise alive (and relocatable) via a persistent handle root until the timer fires.
+  let task = {
+    // Root the freshly-allocated promise via the shadow stack while we create the persistent handle
+    // for the queued task. This avoids a moving-GC TOCTOU where contended lock acquisition could
+    // safepoint before the persistent handle is installed.
+    let tmp_root = crate::roots::Root::<u8>::new(obj);
+    // Safety: `tmp_root.handle()` points at a valid `*mut u8` GC pointer slot.
+    unsafe { async_rt::Task::new_gc_rooted_h(fulfill_sleep, tmp_root.handle()) }
+  };
+
+  let _timer_id =
+    async_rt::global().schedule_timer_in(Duration::from_millis(delay_ms), task);
   promise
 }
 
