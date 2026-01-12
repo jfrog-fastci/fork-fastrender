@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::{
   Indexer, MappedModifier, MappedType, ObjectType, Param, PropData, PropKey, Property, RelateCtx,
-  Shape, Signature, TemplateChunk, TemplateLiteralType, TupleElem, TypeEvaluator, TypeExpander,
-  TypeId, TypeKind, TypeParamId, TypeStore,
+  RelationLimits, Shape, Signature, TemplateChunk, TemplateLiteralType, TupleElem, TypeEvaluator,
+  TypeExpander, TypeId, TypeKind, TypeParamId, TypeStore,
 };
 use hir_js::DefId;
 use num_bigint::BigInt;
@@ -459,7 +459,15 @@ pub fn fuzz_type_graph(data: &[u8]) {
     let _ = store.evaluate(ty);
   }
 
-  let ctx = RelateCtx::new(store.clone(), store.options()).with_step_limit(50_000);
+  let ctx = RelateCtx::new(store.clone(), store.options())
+    .with_limits(RelationLimits {
+      // Cap template literal enumeration to keep fuzzing deterministic and avoid
+      // allocating arbitrarily large intermediate strings.
+      max_template_string_len: 16 * 1024,
+      max_template_total_bytes: 1024 * 1024,
+      ..RelationLimits::default()
+    })
+    .with_step_limit(50_000);
   for pair in roots.windows(2) {
     let _ = ctx.is_assignable(pair[0], pair[1]);
     let _ = ctx.is_assignable(pair[1], pair[0]);

@@ -516,6 +516,11 @@ impl TypeStore {
     guard.name(id).to_string()
   }
 
+  pub(crate) fn name_len(&self, id: NameId) -> usize {
+    let guard = self.names.read();
+    guard.name(id).len()
+  }
+
   fn intern_name_impl(&self, name: Cow<'_, str>) -> NameId {
     // Fast path: avoid taking an exclusive lock when the name is already
     // interned (common for property keys, intrinsic names, and string literals).

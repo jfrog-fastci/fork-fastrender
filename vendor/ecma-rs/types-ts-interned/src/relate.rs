@@ -103,6 +103,19 @@ pub struct RelationLimits {
   pub max_template_match_states: usize,
   /// Maximum number of concrete strings produced when enumerating template literal atoms.
   pub max_template_atom_strings: usize,
+  /// Maximum length in bytes of any concrete string produced when enumerating
+  /// template literal atoms / template literal types.
+  ///
+  /// This caps intermediate `String` allocations performed by
+  /// [`RelateCtx::template_atom_strings`] and [`RelateCtx::template_strings`].
+  pub max_template_string_len: usize,
+  /// Maximum cumulative bytes across all concrete strings produced when
+  /// enumerating template literal atoms / template literal types.
+  ///
+  /// This bounds the total size of `Vec<String>` results returned by
+  /// [`RelateCtx::template_atom_strings`] and [`RelateCtx::template_strings`], and
+  /// is also enforced while building intermediate enumeration states.
+  pub max_template_total_bytes: usize,
 }
 
 impl RelationLimits {
@@ -113,6 +126,8 @@ impl RelationLimits {
   pub const DEFAULT_MAX_TEMPLATE_MATCH_DEPTH: usize = 32;
   pub const DEFAULT_MAX_TEMPLATE_MATCH_STATES: usize = 1024;
   pub const DEFAULT_MAX_TEMPLATE_ATOM_STRINGS: usize = 1024;
+  pub const DEFAULT_MAX_TEMPLATE_STRING_LEN: usize = 16 * 1024;
+  pub const DEFAULT_MAX_TEMPLATE_TOTAL_BYTES: usize = 1024 * 1024;
 }
 
 impl Default for RelationLimits {
@@ -125,6 +140,8 @@ impl Default for RelationLimits {
       max_template_match_depth: Self::DEFAULT_MAX_TEMPLATE_MATCH_DEPTH,
       max_template_match_states: Self::DEFAULT_MAX_TEMPLATE_MATCH_STATES,
       max_template_atom_strings: Self::DEFAULT_MAX_TEMPLATE_ATOM_STRINGS,
+      max_template_string_len: Self::DEFAULT_MAX_TEMPLATE_STRING_LEN,
+      max_template_total_bytes: Self::DEFAULT_MAX_TEMPLATE_TOTAL_BYTES,
     }
   }
 }
@@ -1710,21 +1727,59 @@ impl<'a> RelateCtx<'a> {
       return None;
     }
 
+    let max_len = self.limits.max_template_string_len;
+    let max_total = self.limits.max_template_total_bytes;
+
     let mut result = match self.store.type_kind(ty) {
-      TypeKind::StringLiteral(id) => Some(vec![self.store.name(id)]),
-      TypeKind::NumberLiteral(num) => Some(vec![num.0.to_string()]),
-      TypeKind::BooleanLiteral(val) => Some(vec![val.to_string()]),
-      TypeKind::BigIntLiteral(val) => Some(vec![val.to_string()]),
+      TypeKind::StringLiteral(id) => {
+        let len = self.store.name_len(id);
+        (len <= max_len && len <= max_total).then_some(vec![self.store.name(id)])
+      }
+      TypeKind::NumberLiteral(num) => {
+        let s = num.0.to_string();
+        let len = s.len();
+        (len <= max_len && len <= max_total).then_some(vec![s])
+      }
+      TypeKind::BooleanLiteral(val) => {
+        let s = val.to_string();
+        let len = s.len();
+        (len <= max_len && len <= max_total).then_some(vec![s])
+      }
+      TypeKind::BigIntLiteral(val) => {
+        let s = val.to_string();
+        let len = s.len();
+        (len <= max_len && len <= max_total).then_some(vec![s])
+      }
       TypeKind::Boolean => Some(vec!["false".into(), "true".into()]),
       TypeKind::TemplateLiteral(tpl) => self.template_strings(&tpl, depth + 1, visited),
       TypeKind::Union(members) => {
         let mut out = Vec::new();
+        let mut out_bytes = 0usize;
         let mut ok = true;
         for member in members {
           let Some(mut vals) = self.template_atom_strings(member, depth + 1, visited) else {
             ok = false;
             break;
           };
+          for v in &vals {
+            let len = v.len();
+            if len > max_len {
+              ok = false;
+              break;
+            }
+            let Some(next_bytes) = out_bytes.checked_add(len) else {
+              ok = false;
+              break;
+            };
+            if next_bytes > max_total {
+              ok = false;
+              break;
+            }
+            out_bytes = next_bytes;
+          }
+          if !ok {
+            break;
+          }
           out.append(&mut vals);
           if out.len() > self.limits.max_template_atom_strings {
             ok = false;
@@ -1740,7 +1795,27 @@ impl<'a> RelateCtx<'a> {
     if let Some(strings) = result.as_mut() {
       strings.sort();
       strings.dedup();
-      if strings.len() > self.limits.max_template_atom_strings {
+      let mut ok = strings.len() <= self.limits.max_template_atom_strings;
+      if ok {
+        let mut total = 0usize;
+        for s in strings.iter() {
+          let len = s.len();
+          if len > max_len {
+            ok = false;
+            break;
+          }
+          let Some(next_total) = total.checked_add(len) else {
+            ok = false;
+            break;
+          };
+          if next_total > max_total {
+            ok = false;
+            break;
+          }
+          total = next_total;
+        }
+      }
+      if !ok {
         result = None;
       }
     }
@@ -1759,7 +1834,14 @@ impl<'a> RelateCtx<'a> {
       return None;
     }
 
+    let max_len = self.limits.max_template_string_len;
+    let max_total = self.limits.max_template_total_bytes;
+
+    if tpl.head.len() > max_len || tpl.head.len() > max_total {
+      return None;
+    }
     let mut acc = vec![tpl.head.clone()];
+    let mut acc_bytes = tpl.head.len();
     for span in tpl.spans.iter() {
       if acc.is_empty() {
         break;
@@ -1773,21 +1855,48 @@ impl<'a> RelateCtx<'a> {
         Some(product) if product <= self.limits.max_template_atom_strings => {}
         _ => return None,
       }
+      if span.literal.len() > max_len || span.literal.len() > max_total {
+        return None;
+      }
       let mut next = Vec::new();
+      let mut next_bytes = 0usize;
       for base in &acc {
         for atom in &atom_strings {
           if next.len() >= self.limits.max_template_atom_strings {
             return None;
           }
-          let mut new = base.clone();
+          let Some(new_len) = base
+            .len()
+            .checked_add(atom.len())
+            .and_then(|len| len.checked_add(span.literal.len()))
+          else {
+            return None;
+          };
+          if new_len > max_len {
+            return None;
+          }
+          let Some(next_total) = next_bytes.checked_add(new_len) else {
+            return None;
+          };
+          if next_total > max_total {
+            return None;
+          }
+          next_bytes = next_total;
+
+          let mut new = String::with_capacity(new_len);
+          new.push_str(base);
           new.push_str(atom);
           new.push_str(&span.literal);
           next.push(new);
         }
       }
       acc = next;
+      acc_bytes = next_bytes;
     }
     if acc.len() > self.limits.max_template_atom_strings {
+      return None;
+    }
+    if acc_bytes > max_total {
       return None;
     }
     acc.sort();
