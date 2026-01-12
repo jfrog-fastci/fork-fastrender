@@ -10443,7 +10443,10 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
           .stx
           .declarators
           .iter()
-          .any(|d| d.initializer.as_ref().is_some_and(expr_contains_await)),
+          .any(|d| {
+            d.initializer.as_ref().is_some_and(expr_contains_await)
+              || pat_contains_await(&d.pattern.stx.pat.stx)
+          }),
       };
  
       init_has_await
@@ -11378,7 +11381,11 @@ fn async_bind_object_pattern_from(
   start_prop_index: usize,
   kind: BindingKind,
 ) -> Result<AsyncEval<()>, VmError> {
-  let value = match scope.heap().get_root(value_root) {
+  // Keep the boxed object wrapper (for primitive source values) rooted only for the duration of
+  // this binding step; if we suspend, we'll re-box on resume.
+  let mut scope = scope.reborrow();
+
+  let src_value = match scope.heap().get_root(value_root) {
     Some(v) => v,
     None => {
       // The root has been removed unexpectedly; avoid leaking any excluded-key roots.
@@ -11387,21 +11394,36 @@ fn async_bind_object_pattern_from(
       return Err(VmError::InvariantViolation("missing destructuring value root"));
     }
   };
-  let Value::Object(obj) = value else {
-    // Clean up persistent roots *before* allocating the error object so we don't leak even if
-    // `throw_type_error` itself fails (e.g. OOM).
-    scope.heap_mut().remove_root(value_root);
-    async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
-    return Err(
-      throw_type_error(evaluator.vm, scope, "object destructuring requires object")
-        .unwrap_or_else(|e| e),
-    );
-  };
 
   let cleanup = |scope: &mut Scope<'_>, excluded: &mut Vec<RootedPropertyKey>| {
     scope.heap_mut().remove_root(value_root);
     async_cleanup_rooted_property_keys(scope.heap_mut(), excluded);
   };
+
+  // Object destructuring follows `GetV` semantics: property lookup uses `ToObject(value)`, but
+  // accessors must observe `this = value` (the original RHS value), not the boxed object.
+  let obj = match scope.to_object(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    src_value,
+  ) {
+    Ok(obj) => obj,
+    Err(err) => {
+      cleanup(&mut scope, &mut excluded);
+      return Err(coerce_error_to_throw_for_async(
+        evaluator.vm,
+        &mut scope,
+        err,
+      ));
+    }
+  };
+  if let Err(err) = scope.push_root(Value::Object(obj)) {
+    cleanup(&mut scope, &mut excluded);
+    return Err(err);
+  }
+
+  let receiver = src_value;
 
   for (idx, prop) in pat
     .properties
@@ -11411,36 +11433,36 @@ fn async_bind_object_pattern_from(
   {
     // Budget object destructuring by pattern size.
     if let Err(err) = evaluator.tick() {
-      cleanup(scope, &mut excluded);
+      cleanup(&mut scope, &mut excluded);
       return Err(err);
     }
 
     let prop = &prop.stx;
     let key = match &prop.key {
-      ClassOrObjKey::Direct(direct) => match resolve_obj_pat_direct_key(scope, direct) {
+      ClassOrObjKey::Direct(direct) => match resolve_obj_pat_direct_key(&mut scope, direct) {
         Ok(key) => key,
         Err(err) => {
-          cleanup(scope, &mut excluded);
+          cleanup(&mut scope, &mut excluded);
           return Err(err);
         }
       },
       ClassOrObjKey::Computed(expr) => {
-        let key_eval = match async_eval_expr(evaluator, scope, expr) {
+        let key_eval = match async_eval_expr(evaluator, &mut scope, expr) {
           Ok(v) => v,
           Err(err) => {
-            cleanup(scope, &mut excluded);
+            cleanup(&mut scope, &mut excluded);
             return Err(err);
           }
         };
         match key_eval {
           AsyncEval::Complete(key_value) => {
             let key = match evaluator
-              .to_property_key_operator(scope, key_value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+              .to_property_key_operator(&mut scope, key_value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut scope, err))
             {
               Ok(key) => key,
               Err(err) => {
-                cleanup(scope, &mut excluded);
+                cleanup(&mut scope, &mut excluded);
                 return Err(err);
               }
             };
@@ -11451,7 +11473,7 @@ fn async_bind_object_pattern_from(
               for mut frame in suspend.frames {
                 async_teardown_frame(scope.heap_mut(), &mut frame);
               }
-              cleanup(scope, &mut excluded);
+              cleanup(&mut scope, &mut excluded);
               return Err(VmError::OutOfMemory);
             }
             suspend.frames.push_back(AsyncFrame::BindObjAfterKey {
@@ -11467,7 +11489,7 @@ fn async_bind_object_pattern_from(
       }
     };
 
-    let rooted_key = match async_root_property_key(scope, key) {
+    let rooted_key = match async_root_property_key(&mut scope, key) {
       Ok(k) => k,
       Err(err) => {
         scope.heap_mut().remove_root(value_root);
@@ -11484,23 +11506,23 @@ fn async_bind_object_pattern_from(
         &mut *evaluator.hooks,
         obj,
         key,
-        Value::Object(obj),
+        receiver,
       )
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut scope, err))
     {
       Ok(v) => v,
       Err(err) => {
-        cleanup(scope, &mut excluded);
+        cleanup(&mut scope, &mut excluded);
         return Err(err);
       }
     };
 
     if matches!(prop_value, Value::Undefined) {
       if let Some(default_expr) = &prop.default_value {
-        let default_eval = match async_eval_expr(evaluator, scope, default_expr) {
+        let default_eval = match async_eval_expr(evaluator, &mut scope, default_expr) {
           Ok(v) => v,
           Err(err) => {
-            cleanup(scope, &mut excluded);
+            cleanup(&mut scope, &mut excluded);
             return Err(err);
           }
         };
@@ -11511,7 +11533,7 @@ fn async_bind_object_pattern_from(
               for mut frame in suspend.frames {
                 async_teardown_frame(scope.heap_mut(), &mut frame);
               }
-              cleanup(scope, &mut excluded);
+              cleanup(&mut scope, &mut excluded);
               return Err(VmError::OutOfMemory);
             }
             suspend.frames.push_back(AsyncFrame::BindObjAfterDefault {
@@ -11527,10 +11549,10 @@ fn async_bind_object_pattern_from(
       }
     }
 
-    let target_bind = match async_bind_pattern(evaluator, scope, &prop.target.stx, prop_value, kind) {
+    let target_bind = match async_bind_pattern(evaluator, &mut scope, &prop.target.stx, prop_value, kind) {
       Ok(v) => v,
       Err(err) => {
-        cleanup(scope, &mut excluded);
+        cleanup(&mut scope, &mut excluded);
         return Err(err);
       }
     };
@@ -11541,7 +11563,7 @@ fn async_bind_object_pattern_from(
           for mut frame in suspend.frames {
             async_teardown_frame(scope.heap_mut(), &mut frame);
           }
-          cleanup(scope, &mut excluded);
+          cleanup(&mut scope, &mut excluded);
           return Err(VmError::OutOfMemory);
         }
         suspend.frames.push_back(AsyncFrame::BindObjContinue {
@@ -11565,7 +11587,7 @@ fn async_bind_object_pattern_from(
   let rest_obj = match scope.alloc_object() {
     Ok(obj) => obj,
     Err(err) => {
-      cleanup(scope, &mut excluded);
+      cleanup(&mut scope, &mut excluded);
       return Err(err);
     }
   };
@@ -20887,25 +20909,51 @@ fn async_resume_from_frames(
       } => match state {
         AsyncState::Expr(key_res) => match key_res {
           Ok(key_value) => {
+            let mut scope = scope.reborrow();
             let pat_ref = unsafe { &*pat };
-            let value = scope
-              .heap()
-              .get_root(value_root)
-              .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
-            let Value::Object(obj) = value else {
-              scope.heap_mut().remove_root(value_root);
-              async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
-              state = AsyncState::Expr(Err(throw_type_error(
-                evaluator.vm,
-                scope,
-                "object destructuring requires object",
-              )?));
-              continue;
+            let src_value = match scope.heap().get_root(value_root) {
+              Some(v) => v,
+              None => {
+                // The root has been removed unexpectedly; avoid leaking any excluded-key roots.
+                scope.heap_mut().remove_root(value_root);
+                async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                return Err(VmError::InvariantViolation("missing destructuring value root"));
+              }
             };
 
+            // Object destructuring follows `GetV` semantics: property lookup uses `ToObject(value)`,
+            // but accessors must observe `this = value` (the original RHS value), not the boxed
+            // object.
+            let obj = match scope.to_object(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              src_value,
+            ) {
+              Ok(obj) => obj,
+              Err(err) => {
+                scope.heap_mut().remove_root(value_root);
+                async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                state = AsyncState::Expr(Err(coerce_error_to_throw_for_async(
+                  evaluator.vm,
+                  &mut scope,
+                  err,
+                )));
+                continue;
+              }
+            };
+            if let Err(err) = scope.push_root(Value::Object(obj)) {
+              scope.heap_mut().remove_root(value_root);
+              async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+              state = AsyncState::Expr(Err(err));
+              continue;
+            }
+
+            let receiver = src_value;
+
             let key = match evaluator
-              .to_property_key_operator(scope, key_value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+              .to_property_key_operator(&mut scope, key_value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut scope, err))
             {
               Ok(key) => key,
               Err(err) => {
@@ -20916,7 +20964,7 @@ fn async_resume_from_frames(
               }
             };
 
-            let rooted_key = match async_root_property_key(scope, key) {
+            let rooted_key = match async_root_property_key(&mut scope, key) {
               Ok(k) => k,
               Err(err) => {
                 scope.heap_mut().remove_root(value_root);
@@ -20942,9 +20990,9 @@ fn async_resume_from_frames(
                 &mut *evaluator.hooks,
                 obj,
                 key,
-                Value::Object(obj),
+                receiver,
               )
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut scope, err))
             {
               Ok(v) => v,
               Err(err) => {
@@ -20957,7 +21005,7 @@ fn async_resume_from_frames(
 
             if matches!(prop_value, Value::Undefined) {
               if let Some(default_expr) = &prop.default_value {
-                match async_eval_expr(evaluator, scope, default_expr) {
+                match async_eval_expr(evaluator, &mut scope, default_expr) {
                   Ok(AsyncEval::Complete(v)) => prop_value = v,
                   Ok(AsyncEval::Suspend(mut suspend)) => {
                     if let Err(_) = suspend.frames.try_reserve(1) {
@@ -20994,7 +21042,7 @@ fn async_resume_from_frames(
               }
             }
 
-            match async_bind_pattern(evaluator, scope, &prop.target.stx, prop_value, kind) {
+            match async_bind_pattern(evaluator, &mut scope, &prop.target.stx, prop_value, kind) {
               Ok(AsyncEval::Complete(())) => {}
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 if let Err(_) = suspend.frames.try_reserve(1) {
@@ -21031,7 +21079,7 @@ fn async_resume_from_frames(
 
             match async_bind_object_pattern_from(
               evaluator,
-              scope,
+              &mut scope,
               pat_ref,
               value_root,
               excluded,
