@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>negative z-index paints below auto, which paints below positive</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: white;
+  }
+
+  .root {
+    position: relative;
+    width: 120px;
+    height: 120px;
+  }
+
+  .box {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+  }
+
+  .neg {
+    left: 0;
+    top: 0;
+    background: rgb(0, 0, 200);
+    z-index: -1;
+  }
+
+  .auto {
+    left: 20px;
+    top: 20px;
+    background: rgb(0, 160, 0);
+  }
+
+  .pos {
+    left: 40px;
+    top: 40px;
+    background: rgb(220, 0, 0);
+    z-index: 1;
+  }
+</style>
+<div class="root">
+  <div class="box pos"></div>
+  <div class="box neg"></div>
+  <div class="box auto"></div>
+</div>

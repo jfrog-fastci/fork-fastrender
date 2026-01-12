@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>positioned in-flow element with z-index creates a stacking context</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: white;
+  }
+
+  .root {
+    position: relative;
+    width: 120px;
+    height: 120px;
+  }
+
+  .scoped {
+    position: relative;
+    z-index: 0;
+    width: 120px;
+    height: 120px;
+  }
+
+  .child {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 120px;
+    height: 120px;
+    background: rgb(0, 0, 200);
+    z-index: 999;
+  }
+
+  .outside {
+    position: absolute;
+    left: 30px;
+    top: 30px;
+    width: 60px;
+    height: 60px;
+    background: rgb(220, 0, 0);
+    z-index: 1;
+  }
+</style>
+<div class="root">
+  <div class="outside"></div>
+  <div class="scoped">
+    <div class="child"></div>
+  </div>
+</div>

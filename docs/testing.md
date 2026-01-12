@@ -392,8 +392,12 @@ When working on JavaScript parsing (via the vendored `vendor/ecma-rs`), the repo
 
 There is a self-contained WPT-style runner under `tests/wpt/` for local “render and compare” tests. It does not talk to upstream WPT and never fetches from the network.
 
-- Run: `bash scripts/cargo_agent.sh xtask test wpt` (or `bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes`)
-- Run a subset: `WPT_FILTER=layout/floats bash scripts/cargo_agent.sh test --quiet -p fastrender --test integration wpt_local_suite_passes`
+- Run: `bash scripts/cargo_agent.sh xtask test wpt` (or `bash scripts/cargo_agent.sh test --quiet -p fastrender --test wpt_test wpt_local_suite_passes -- --exact`)
+- Run a scoped subset (fast iteration) via `WPT_FILTER`:
+  - `WPT_FILTER=layout/floats bash scripts/cargo_agent.sh test --quiet -p fastrender --test wpt_test wpt_local_suite_passes -- --exact`
+  - `WPT_FILTER=paint/stacking bash scripts/cargo_agent.sh test --quiet -p fastrender --test wpt_test wpt_local_suite_passes -- --exact`
+  - `WPT_FILTER=paint/overflow bash scripts/cargo_agent.sh test --quiet -p fastrender --test wpt_test wpt_local_suite_passes -- --exact`
+  - `WPT_FILTER=css/tables bash scripts/cargo_agent.sh test --quiet -p fastrender --test wpt_test wpt_local_suite_passes -- --exact`
 - Each rendered document is given a per-document `file://` base URL (the test HTML path for the test render, and the reference HTML path for the reference render) so relative resources like `support/*.css`, images, and fonts resolve reliably regardless of the current working directory.
 - `WptRunnerBuilder::build()` defaults to an offline renderer (`ResourcePolicy` with `http/https` disabled). Advanced callers can still inject a custom renderer via `.renderer(...)`.
 
@@ -401,6 +405,7 @@ There is a self-contained WPT-style runner under `tests/wpt/` for local “rende
   - `.html.ini` files set expectations (`expected: FAIL`), `disabled` reasons, timeouts, viewport, and DPR.
   - `<link rel="match" | rel="mismatch">` inside HTML declares reftest references without touching the manifest.
   - The legacy `tests/wpt/manifest.toml` is still honored; set `HarnessConfig::with_discovery_mode(DiscoveryMode::MetadataOnly)` to ignore it when adding new offline WPT dumps.
+- New curated tests should start as `expected = "fail"` in `tests/wpt/manifest.toml` until the underlying primitive is implemented. Once a test starts passing, flip it to `expected = "pass"` (the harness treats “unexpected pass” as a failure so CI stays honest).
 - The `wpt_local_suite_passes` smoke-test suite is strict by default: visual tests compare against checked-in PNGs under `tests/wpt/expected/` and fail on diffs. Set `UPDATE_WPT_EXPECTED=1` (or run `bash scripts/cargo_agent.sh xtask update-goldens --suite wpt`) to regenerate/update those goldens. (Optional: `WPT_EXPECTED_DIR` overrides the baseline directory for local experimentation.)
 - Artifacts always land in `target/wpt-output/<id>/{actual,expected,diff}.png` with `report.html` + `report.json` for debugging and tooling.
 - Viewport/DPR are fixed per-test from metadata. CI can pin fonts for deterministic renders via `HarnessConfig::with_font_dir`/`WptRunnerBuilder::font_dir` (for example, point at `tests/fonts/`).

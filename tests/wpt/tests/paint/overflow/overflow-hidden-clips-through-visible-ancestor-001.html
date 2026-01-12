@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>overflow:hidden ancestor clips descendant even if intermediate overflow is visible</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: rgb(0, 0, 200);
+  }
+
+  .outer {
+    position: relative;
+    width: 60px;
+    height: 60px;
+    overflow: hidden;
+  }
+
+  .inner {
+    width: 60px;
+    height: 60px;
+    overflow: visible;
+  }
+
+  .child {
+    width: 100px;
+    height: 100px;
+    background: rgb(220, 0, 0);
+  }
+</style>
+<div class="outer">
+  <div class="inner">
+    <div class="child"></div>
+  </div>
+</div>

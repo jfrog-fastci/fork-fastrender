@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>border-collapse: separate produces double-thickness borders between adjacent cells</title>
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+
+  table {
+    border-collapse: separate;
+    border-spacing: 0;
+    border: 0;
+    font-size: 0;
+    line-height: 0;
+  }
+
+  td {
+    padding: 0;
+    width: 40px;
+    height: 40px;
+    border: 10px solid rgb(0, 0, 0);
+  }
+
+  td.a { background: rgb(220, 0, 0); }
+  td.b { background: rgb(0, 160, 0); }
+  td.c { background: rgb(0, 0, 200); }
+  td.d { background: rgb(220, 220, 0); }
+</style>
+<table>
+  <tr><td class="a"></td><td class="b"></td></tr>
+  <tr><td class="c"></td><td class="d"></td></tr>
+</table>

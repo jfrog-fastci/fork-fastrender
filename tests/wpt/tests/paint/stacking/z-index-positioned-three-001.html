@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>z-index orders multiple positioned siblings</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: white;
+  }
+
+  .root {
+    position: relative;
+    width: 120px;
+    height: 120px;
+  }
+
+  .box {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+  }
+
+  .blue {
+    left: 0;
+    top: 0;
+    background: rgb(0, 0, 200);
+    z-index: 1;
+  }
+
+  .green {
+    left: 20px;
+    top: 20px;
+    background: rgb(0, 160, 0);
+    z-index: 2;
+  }
+
+  .red {
+    left: 40px;
+    top: 40px;
+    background: rgb(220, 0, 0);
+    z-index: 3;
+  }
+</style>
+<div class="root">
+  <div class="box green"></div>
+  <div class="box blue"></div>
+  <div class="box red"></div>
+</div>

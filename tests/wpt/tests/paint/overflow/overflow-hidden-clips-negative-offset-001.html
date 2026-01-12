@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>overflow:hidden clips child with negative offset</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: rgb(0, 0, 200);
+  }
+
+  .container {
+    position: relative;
+    width: 60px;
+    height: 60px;
+    overflow: hidden;
+  }
+
+  .child {
+    position: absolute;
+    left: -20px;
+    top: 0;
+    width: 60px;
+    height: 60px;
+    background: rgb(220, 0, 0);
+  }
+</style>
+<div class="container">
+  <div class="child"></div>
+</div>

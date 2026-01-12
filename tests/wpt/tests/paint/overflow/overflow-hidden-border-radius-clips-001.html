@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>overflow:hidden clips to border-radius</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: rgb(0, 0, 200);
+  }
+
+  .clip {
+    position: absolute;
+    left: 20px;
+    top: 20px;
+    width: 80px;
+    height: 80px;
+    overflow: hidden;
+    border-radius: 40px;
+  }
+
+  .fill {
+    width: 80px;
+    height: 80px;
+    background: rgb(220, 0, 0);
+  }
+</style>
+<div class="clip">
+  <div class="fill"></div>
+</div>

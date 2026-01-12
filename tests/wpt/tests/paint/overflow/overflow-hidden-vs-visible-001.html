@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>overflow:hidden vs overflow:visible</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: rgb(0, 0, 200);
+  }
+
+  .container {
+    position: absolute;
+    top: 0;
+    width: 50px;
+    height: 50px;
+  }
+
+  .hidden {
+    left: 0;
+    overflow: hidden;
+  }
+
+  .visible {
+    left: 60px;
+    overflow: visible;
+  }
+
+  .child {
+    width: 80px;
+    height: 50px;
+    background: rgb(220, 0, 0);
+  }
+</style>
+<div class="container hidden"><div class="child"></div></div>
+<div class="container visible"><div class="child"></div></div>

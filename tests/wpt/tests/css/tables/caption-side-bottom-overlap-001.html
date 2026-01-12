@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>caption-side: bottom paints above the table when overlapping</title>
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+
+  table {
+    border-collapse: separate;
+    border-spacing: 0;
+    width: 60px;
+    font-size: 0;
+    line-height: 0;
+  }
+
+  caption {
+    caption-side: bottom;
+    height: 20px;
+    margin: 0;
+    margin-top: -10px;
+    padding: 0;
+    background: rgb(220, 0, 0);
+  }
+
+  td {
+    padding: 0;
+    width: 60px;
+    height: 60px;
+    background: rgb(0, 160, 0);
+    border: 0;
+  }
+</style>
+<table>
+  <caption></caption>
+  <tr><td></td></tr>
+</table>

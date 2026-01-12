@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>colspan affects cell layout</title>
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+
+  table {
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0;
+    line-height: 0;
+  }
+
+  td {
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    border: 0;
+  }
+
+  td.a { background: rgb(220, 0, 0); }
+  td.b { background: rgb(0, 160, 0); }
+  td.c { background: rgb(0, 0, 200); }
+</style>
+<table>
+  <tr><td class="a" colspan="2"></td></tr>
+  <tr><td class="b"></td><td class="c"></td></tr>
+</table>

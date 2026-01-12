@@ -310,6 +310,136 @@ width = 60
 height = 60
 
 [[tests]]
+id = "css/tables/border-collapse-basic-001"
+path = "css/tables/border-collapse-basic-001.html"
+reference = "css/tables/border-collapse-basic-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/border-separate-double-inner-001"
+path = "css/tables/border-separate-double-inner-001.html"
+reference = "css/tables/border-separate-double-inner-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/border-spacing-between-cells-001"
+path = "css/tables/border-spacing-between-cells-001.html"
+reference = "css/tables/border-spacing-between-cells-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/border-spacing-table-background-001"
+path = "css/tables/border-spacing-table-background-001.html"
+reference = "css/tables/border-spacing-table-background-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/caption-side-top-overlap-001"
+path = "css/tables/caption-side-top-overlap-001.html"
+reference = "css/tables/caption-side-top-overlap-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/caption-side-bottom-overlap-001"
+path = "css/tables/caption-side-bottom-overlap-001.html"
+reference = "css/tables/caption-side-bottom-overlap-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/colspan-layout-001"
+path = "css/tables/colspan-layout-001.html"
+reference = "css/tables/colspan-layout-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/rowspan-layout-001"
+path = "css/tables/rowspan-layout-001.html"
+reference = "css/tables/rowspan-layout-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/rowspan-colspan-mixed-001"
+path = "css/tables/rowspan-colspan-mixed-001.html"
+reference = "css/tables/rowspan-colspan-mixed-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "css/tables/border-collapse-ignores-border-spacing-001"
+path = "css/tables/border-collapse-ignores-border-spacing-001.html"
+reference = "css/tables/border-collapse-ignores-border-spacing-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
 id = "css/subgrid/subgrid-gap-difference-001"
 path = "css/subgrid/subgrid-gap-difference-001.html"
 reference = "css/subgrid/subgrid-gap-difference-001-ref.html"
@@ -1515,6 +1645,279 @@ dpr = 1.0
 [tests.viewport]
 width = 200
 height = 200
+
+[[tests]]
+id = "paint/stacking/z-index-positioned-three-001"
+path = "paint/stacking/z-index-positioned-three-001.html"
+reference = "paint/stacking/z-index-positioned-three-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/z-index-negative-order-001"
+path = "paint/stacking/z-index-negative-order-001.html"
+reference = "paint/stacking/z-index-negative-order-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/z-index-negative-auto-positive-001"
+path = "paint/stacking/z-index-negative-auto-positive-001.html"
+reference = "paint/stacking/z-index-negative-auto-positive-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/negative-z-index-behind-parent-background-001"
+path = "paint/stacking/negative-z-index-behind-parent-background-001.html"
+reference = "paint/stacking/negative-z-index-behind-parent-background-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/negative-z-index-above-parent-background-001"
+path = "paint/stacking/negative-z-index-above-parent-background-001.html"
+reference = "paint/stacking/negative-z-index-above-parent-background-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/border-behind-positioned-descendant-001"
+path = "paint/stacking/border-behind-positioned-descendant-001.html"
+reference = "paint/stacking/border-behind-positioned-descendant-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/stacking-context-inflow-z-index-001"
+path = "paint/stacking/stacking-context-inflow-z-index-001.html"
+reference = "paint/stacking/stacking-context-inflow-z-index-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/opacity-stacking-context-inflow-001"
+path = "paint/stacking/opacity-stacking-context-inflow-001.html"
+reference = "paint/stacking/opacity-stacking-context-inflow-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/transform-stacking-context-inflow-001"
+path = "paint/stacking/transform-stacking-context-inflow-001.html"
+reference = "paint/stacking/transform-stacking-context-inflow-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/z-index-nonpositioned-does-not-scope-001"
+path = "paint/stacking/z-index-nonpositioned-does-not-scope-001.html"
+reference = "paint/stacking/z-index-nonpositioned-does-not-scope-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/stacking/negative-z-index-behind-inflow-001"
+path = "paint/stacking/negative-z-index-behind-inflow-001.html"
+reference = "paint/stacking/negative-z-index-behind-inflow-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-hidden-clips-basic-001"
+path = "paint/overflow/overflow-hidden-clips-basic-001.html"
+reference = "paint/overflow/overflow-hidden-clips-basic-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-hidden-clips-negative-offset-001"
+path = "paint/overflow/overflow-hidden-clips-negative-offset-001.html"
+reference = "paint/overflow/overflow-hidden-clips-negative-offset-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-visible-does-not-clip-001"
+path = "paint/overflow/overflow-visible-does-not-clip-001.html"
+reference = "paint/overflow/overflow-visible-does-not-clip-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-hidden-clip-padding-box-001"
+path = "paint/overflow/overflow-hidden-clip-padding-box-001.html"
+reference = "paint/overflow/overflow-hidden-clip-padding-box-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-x-hidden-y-visible-001"
+path = "paint/overflow/overflow-x-hidden-y-visible-001.html"
+reference = "paint/overflow/overflow-x-hidden-y-visible-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-x-visible-y-hidden-001"
+path = "paint/overflow/overflow-x-visible-y-hidden-001.html"
+reference = "paint/overflow/overflow-x-visible-y-hidden-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-scroll-clips-001"
+path = "paint/overflow/overflow-scroll-clips-001.html"
+reference = "paint/overflow/overflow-scroll-clips-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-hidden-border-radius-clips-001"
+path = "paint/overflow/overflow-hidden-border-radius-clips-001.html"
+reference = "paint/overflow/overflow-hidden-border-radius-clips-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-hidden-clips-through-visible-ancestor-001"
+path = "paint/overflow/overflow-hidden-clips-through-visible-ancestor-001.html"
+reference = "paint/overflow/overflow-hidden-clips-through-visible-ancestor-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "paint/overflow/overflow-hidden-vs-visible-001"
+path = "paint/overflow/overflow-hidden-vs-visible-001.html"
+reference = "paint/overflow/overflow-hidden-vs-visible-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
 
 [[tests]]
 id = "style/layer-important-inversion-001"
