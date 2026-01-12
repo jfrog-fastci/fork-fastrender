@@ -1638,18 +1638,23 @@ pub fn chrome_ui_with_bookmarks(
           let prev_enabled = !tab.find.query.trim().is_empty() && match_count > 0;
           let next_enabled = prev_enabled;
 
-          if ui
-            .add_enabled(prev_enabled, egui::Button::new("↑"))
-            .on_hover_text("Previous match (Shift+Enter)")
-            .clicked()
-          {
+          let prev_resp = icon_button(
+            ui,
+            BrowserIcon::ArrowUp,
+            "Previous match (Shift+Enter)",
+            prev_enabled,
+          );
+          prev_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Previous match")
+          });
+          if prev_resp.clicked() {
             actions.push(ChromeAction::FindPrev(tab_id));
           }
-          if ui
-            .add_enabled(next_enabled, egui::Button::new("↓"))
-            .on_hover_text("Next match (Enter)")
-            .clicked()
-          {
+          let next_resp =
+            icon_button(ui, BrowserIcon::ArrowDown, "Next match (Enter)", next_enabled);
+          next_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Next match"));
+          if next_resp.clicked() {
             actions.push(ChromeAction::FindNext(tab_id));
           }
 

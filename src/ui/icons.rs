@@ -12,6 +12,8 @@ use std::num::NonZeroUsize;
 pub enum BrowserIcon {
   Back,
   Forward,
+  ArrowUp,
+  ArrowDown,
   Reload,
   StopLoading,
   Home,
@@ -35,6 +37,8 @@ impl BrowserIcon {
     match self {
       Self::Back => "back",
       Self::Forward => "forward",
+      Self::ArrowUp => "arrow_up",
+      Self::ArrowDown => "arrow_down",
       Self::Reload => "reload",
       Self::StopLoading => "stop_loading",
       Self::Home => "home",
@@ -62,6 +66,8 @@ impl BrowserIcon {
     match self {
       Self::Back => "Back",
       Self::Forward => "Forward",
+      Self::ArrowUp => "Up",
+      Self::ArrowDown => "Down",
       Self::Reload => "Reload",
       Self::StopLoading => "Stop loading",
       Self::Home => "Home",
@@ -85,6 +91,8 @@ impl BrowserIcon {
     match self {
       Self::Back => include_bytes!("../../assets/browser_icons/back.svg"),
       Self::Forward => include_bytes!("../../assets/browser_icons/forward.svg"),
+      Self::ArrowUp => include_bytes!("../../assets/browser_icons/arrow_up.svg"),
+      Self::ArrowDown => include_bytes!("../../assets/browser_icons/arrow_down.svg"),
       Self::Reload => include_bytes!("../../assets/browser_icons/reload.svg"),
       Self::StopLoading => include_bytes!("../../assets/browser_icons/close_tab.svg"),
       Self::Home => include_bytes!("../../assets/browser_icons/home.svg"),
@@ -500,6 +508,8 @@ mod tests {
     for icon in [
       BrowserIcon::Back,
       BrowserIcon::Forward,
+      BrowserIcon::ArrowUp,
+      BrowserIcon::ArrowDown,
       BrowserIcon::Reload,
       BrowserIcon::StopLoading,
       BrowserIcon::Home,
@@ -606,6 +616,8 @@ mod tests {
     let icons = [
       BrowserIcon::Back,
       BrowserIcon::Forward,
+      BrowserIcon::ArrowUp,
+      BrowserIcon::ArrowDown,
       BrowserIcon::Reload,
       BrowserIcon::StopLoading,
       BrowserIcon::Home,
