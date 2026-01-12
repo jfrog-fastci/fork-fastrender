@@ -28,6 +28,7 @@ mod browser_worker_thread;
 mod click_events;
 mod document;
 mod document2;
+mod console_formatting;
 mod dynamic_script_insertion;
 mod csp_script_enforcement;
 mod script_crossorigin_cors;
