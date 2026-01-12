@@ -9,7 +9,6 @@ It’s aimed at developers/agents working on:
 
 For the full rationale and long-form plan, read [`instructions/native_aot.md`](../instructions/native_aot.md)
 (source of truth).
-(source of truth).
 
 ---
 
@@ -220,7 +219,33 @@ Today the harness runs:
   expectation) compare `String(globalThis.__native_result)` against `// EXPECT:` (or a sibling `*.out` file).
 - **JavaScript fixtures**: execute `.js` promise/microtask fixtures directly under `vm-js` and assert on returned output.
 
-Native-vs-oracle comparison is expected to be added later.
+Native-vs-oracle comparison exists as an **LLVM-backed** (heavier) fixture suite, gated behind a
+feature so the normal oracle harness remains lightweight:
+
+- Fixtures live under `vendor/ecma-rs/fixtures/native_compare/`
+- The suite is `native-oracle-harness/tests/native_compare.rs`
+- Expectations live in `vendor/ecma-rs/fixtures/native_compare/expectations.toml`
+  - `pass`: native output must match the oracle output
+  - `xfail-compile`: native compilation is expected to fail (known gap)
+  - `xfail-run`: native compilation is expected to succeed, but runtime mismatch/termination is expected (known gap)
+  - `skip`: do not run
+
+Run it with the LLVM wrapper:
+
+```bash
+# From the repo root:
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-oracle-harness --features native-js-runner --test native_compare
+
+# Or, if you're already in vendor/ecma-rs/:
+timeout -k 10 900 bash scripts/cargo_llvm.sh test -p native-oracle-harness --features native-js-runner --test native_compare
+```
+
+To inspect/update expectations, the `native-oracle-harness` binary also supports:
+
+```bash
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p native-oracle-harness -- --list
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p native-oracle-harness -- --set-expectation <fixture> <mode> [--reason <text>]
+```
 
 > Note: the oracle fixture corpus intentionally includes some **TypeScript-only expression wrappers**
 > (e.g. `as`, `!`, `satisfies`, instantiation/type arguments). These are useful for hardening the

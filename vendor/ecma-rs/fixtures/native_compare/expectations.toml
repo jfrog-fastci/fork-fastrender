@@ -1,0 +1,23 @@
+# Expectations for `native-oracle-harness` native-vs-oracle fixture comparisons.
+#
+# Each fixture can be assigned a mode:
+# - "pass": native output must match oracle output
+# - "xfail-compile": native compilation is expected to fail (known gap)
+# - "xfail-run": native compilation is expected to succeed, but runtime mismatch/termination is expected (known gap)
+# - "skip": do not run this fixture
+#
+# The `[default]` section provides the default mode for any fixture that does not have an explicit
+# `[fixture.<name>]` entry.
+
+[default]
+mode = "pass"
+
+# Example expectation entries (update/remove as native coverage improves).
+
+[fixture.arithmetic]
+mode = "pass"
+
+[fixture.promise_all]
+mode = "xfail-compile"
+reason = "native-js does not support Promises yet"
+

@@ -23,6 +23,7 @@ parse-js = { workspace = true, features = ["diagnostics"] }
 thiserror = { workspace = true }
 ts-erase = { workspace = true }
 vm-js = { workspace = true }
+toml = { workspace = true }
 typecheck-ts = { workspace = true, optional = true }
 
 optimize-js = { workspace = true, optional = true }

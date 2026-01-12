@@ -20,6 +20,7 @@
 //! For deterministic value-comparison fixtures, [`run_fixture_ts`] runs TypeScript source and
 //! returns `String(globalThis.__native_result)` after a microtask checkpoint.
 
+pub mod expectations;
 pub mod fixtures;
 
 use std::fs;
