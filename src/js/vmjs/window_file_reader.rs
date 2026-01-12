@@ -1156,7 +1156,7 @@ mod tests {
 
     assert_eq!(host.exec_script("onloadCalled")?, Value::Bool(true));
     let text = host.exec_script("textResult")?;
-    let heap = host.host_mut().window_realm().heap();
+    let heap = host.host_mut().window_realm()?.heap();
     assert_eq!(get_string(heap, text), "hi");
     Ok(())
   }
@@ -1196,7 +1196,7 @@ mod tests {
     let Value::Object(ab_obj) = buf else {
       panic!("expected ArrayBuffer object");
     };
-    let heap = host.host_mut().window_realm().heap();
+    let heap = host.host_mut().window_realm()?.heap();
     assert!(heap.is_array_buffer_object(ab_obj));
     assert_eq!(heap.array_buffer_data(ab_obj).unwrap(), &[1, 2, 3]);
     Ok(())
@@ -1219,7 +1219,7 @@ mod tests {
     let _ = host.run_until_idle(RunLimits::unbounded())?;
 
     let events = host.exec_script("events.join(',')")?;
-    let heap = host.host_mut().window_realm().heap();
+    let heap = host.host_mut().window_realm()?.heap();
     assert_eq!(get_string(heap, events), "abort,loadend");
     assert_eq!(host.exec_script("reader.result")?, Value::Null);
     Ok(())

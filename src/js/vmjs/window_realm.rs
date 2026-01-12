@@ -32608,7 +32608,9 @@ mod tests {
       fn vm_host_and_window_realm(
         &mut self,
       ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
-        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+        Err(crate::error::Error::Other(
+          "DummyHost is only used as a type parameter for VmJsEventLoopHooks".to_string(),
+        ))
       }
     }
 
@@ -33609,7 +33611,9 @@ mod tests {
       fn vm_host_and_window_realm(
         &mut self,
       ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
-        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+        Err(crate::error::Error::Other(
+          "DummyHost is only used as a type parameter for VmJsEventLoopHooks".to_string(),
+        ))
       }
     }
 
@@ -36153,14 +36157,14 @@ mod tests {
     assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
     assert!(host
       .host_mut()
-      .window_realm()
+      .window_realm()?
       .take_pending_navigation_request()
       .is_none());
 
     let href_v = host.exec_script("__href")?;
     let url_v = host.exec_script("__url")?;
     {
-      let heap = host.host_mut().window_realm().heap();
+      let heap = host.host_mut().window_realm()?.heap();
       assert_eq!(get_string(heap, href_v), "https://example.com/#a");
       assert_eq!(get_string(heap, url_v), "https://example.com/#a");
     }
@@ -36170,7 +36174,7 @@ mod tests {
     assert_eq!(host.exec_script("__is_hashchange_event")?, Value::Bool(true));
     let event_v = host.exec_script("__events[0]")?;
     {
-      let heap = host.host_mut().window_realm().heap();
+      let heap = host.host_mut().window_realm()?.heap();
       assert_eq!(
         get_string(heap, event_v),
         "https://example.com/|https://example.com/#a"
@@ -36199,12 +36203,12 @@ mod tests {
     assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
     assert!(host
       .host_mut()
-      .window_realm()
+      .window_realm()?
       .take_pending_navigation_request()
       .is_none());
     let href_v = host.exec_script("__href")?;
     {
-      let heap = host.host_mut().window_realm().heap();
+      let heap = host.host_mut().window_realm()?.heap();
       assert_eq!(get_string(heap, href_v), "https://example.com/#a");
     }
 
@@ -36231,12 +36235,12 @@ mod tests {
     assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
     assert!(host
       .host_mut()
-      .window_realm()
+      .window_realm()?
       .take_pending_navigation_request()
       .is_none());
     let href_v = host.exec_script("__href")?;
     {
-      let heap = host.host_mut().window_realm().heap();
+      let heap = host.host_mut().window_realm()?.heap();
       assert_eq!(get_string(heap, href_v), "https://example.com/#a");
     }
 
@@ -36265,12 +36269,12 @@ mod tests {
     assert_eq!(host.exec_script("__hist_len")?, Value::Number(1.0));
     assert!(host
       .host_mut()
-      .window_realm()
+      .window_realm()?
       .take_pending_navigation_request()
       .is_none());
     let href_v = host.exec_script("__href")?;
     {
-      let heap = host.host_mut().window_realm().heap();
+      let heap = host.host_mut().window_realm()?.heap();
       assert_eq!(get_string(heap, href_v), "https://example.com/#b");
     }
 
@@ -36278,7 +36282,7 @@ mod tests {
     assert_eq!(host.exec_script("__events.length")?, Value::Number(1.0));
     let event_v = host.exec_script("__events[0]")?;
     {
-      let heap = host.host_mut().window_realm().heap();
+      let heap = host.host_mut().window_realm()?.heap();
       assert_eq!(
         get_string(heap, event_v),
         "https://example.com/|https://example.com/#b"
@@ -36307,7 +36311,7 @@ mod tests {
     let hash_v = host.exec_script("__hash")?;
     let href_v = host.exec_script("__href")?;
     {
-      let heap = host.host_mut().window_realm().heap();
+      let heap = host.host_mut().window_realm()?.heap();
       assert_eq!(get_string(heap, hash_v), "#c");
       assert_eq!(get_string(heap, href_v), "https://example.com/#c");
     }
@@ -36335,7 +36339,7 @@ mod tests {
     assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
     let href_v = host.exec_script("__href")?;
     {
-      let heap = host.host_mut().window_realm().heap();
+      let heap = host.host_mut().window_realm()?.heap();
       assert_eq!(get_string(heap, href_v), "https://example.com/#a");
     }
 
