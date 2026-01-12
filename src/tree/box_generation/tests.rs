@@ -8141,3 +8141,1215 @@ fn marker_content_ignores_empty_url() {
     "empty url() content items should not generate marker images"
   );
 }
+
+fn contains_class(node: &BoxNode, class: &str) -> bool {
+  if let Some(info) = &node.debug_info {
+    if info.classes.iter().any(|c| c == class) {
+      return true;
+    }
+  }
+  node
+    .children
+    .iter()
+    .any(|child| contains_class(child, class))
+}
+
+fn node_has_class(node: &BoxNode, class: &str) -> bool {
+  node
+    .debug_info
+    .as_ref()
+    .is_some_and(|info| info.classes.iter().any(|c| c == class))
+}
+
+fn find_first_by_class<'a>(node: &'a BoxNode, class: &str) -> Option<&'a BoxNode> {
+  if node_has_class(node, class) {
+    return Some(node);
+  }
+  node
+    .children
+    .iter()
+    .find_map(|child| find_first_by_class(child, class))
+}
+
+#[test]
+fn empty_ad_placeholders_are_kept_by_default() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade::apply_styles_with_media;
+  use crate::style::media::MediaContext;
+
+  for class in ["ad-height-hold", "ad__slot", "should-hold-space"] {
+    let html = format!("<div class=\"{}\"></div>", class);
+    let dom: DomNode = dom::parse_html(&html).unwrap();
+    let stylesheet = parse_stylesheet("").unwrap();
+    let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+    let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+    assert!(
+      contains_class(&box_tree.root, class),
+      "default pipeline should not drop placeholder {class}"
+    );
+  }
+}
+
+#[test]
+fn empty_ad_placeholders_are_dropped_with_site_compat() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade::apply_styles_with_media;
+  use crate::style::media::MediaContext;
+
+  let compat_options =
+    BoxGenerationOptions::default().with_compat_profile(CompatProfile::SiteCompatibility);
+
+  for class in ["ad-height-hold", "ad__slot", "should-hold-space"] {
+    let html = format!("<div class=\"{}\"></div>", class);
+    let dom: DomNode = dom::parse_html(&html).unwrap();
+    let stylesheet = parse_stylesheet("").unwrap();
+    let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+    let box_tree = super::generate_box_tree_with_anonymous_fixup_with_options(&styled, &compat_options)
+      .expect("box tree");
+    assert!(
+      !contains_class(&box_tree.root, class),
+      "compat mode should drop empty placeholder {class}"
+    );
+  }
+}
+
+#[test]
+fn non_empty_ad_placeholders_are_kept_in_compat_mode() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade::apply_styles_with_media;
+  use crate::style::media::MediaContext;
+
+  let compat_options =
+    BoxGenerationOptions::default().with_compat_profile(CompatProfile::SiteCompatibility);
+  let dom: DomNode =
+    dom::parse_html(r#"<div class="ad-height-hold"><span>ad content</span></div>"#).unwrap();
+  let stylesheet = parse_stylesheet("").unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let box_tree = super::generate_box_tree_with_anonymous_fixup_with_options(&styled, &compat_options)
+    .expect("box tree");
+  assert!(contains_class(&box_tree.root, "ad-height-hold"));
+}
+
+#[test]
+fn hidden_onenav_overlay_is_retained_by_default() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade::apply_styles_with_media;
+  use crate::style::media::MediaContext;
+
+  let html = r#"
+      <div>
+          <div data-testid="one-nav-overlay" class="Overlay-ljtLmi"></div>
+          <div class="FocusTrapContainer-jqtblI"><span class="content">keep me</span></div>
+          <div class="keep">keep me too</div>
+      </div>
+  "#;
+  let css = r#"
+      [data-testid="one-nav-overlay"] {
+          visibility: hidden;
+          opacity: 0;
+      }
+  "#;
+
+  let dom: DomNode = dom::parse_html(html).unwrap();
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+
+  assert!(contains_class(&box_tree.root, "keep"));
+  assert!(contains_class(&box_tree.root, "content"));
+  assert!(contains_class(&box_tree.root, "Overlay-ljtLmi"));
+  assert!(contains_class(&box_tree.root, "FocusTrapContainer-jqtblI"));
+}
+
+#[test]
+fn hidden_onenav_overlay_skips_drawer_with_site_compat() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade::apply_styles_with_media;
+  use crate::style::media::MediaContext;
+
+  let html = r#"
+      <div>
+          <div data-testid="one-nav-overlay" class="Overlay-ljtLmi"></div>
+          <div class="FocusTrapContainer-jqtblI"><span class="content">keep me</span></div>
+          <div class="keep">keep me too</div>
+      </div>
+  "#;
+  let css = r#"
+      [data-testid="one-nav-overlay"] {
+          visibility: hidden;
+          opacity: 0;
+      }
+  "#;
+
+  let dom: DomNode = dom::parse_html(html).unwrap();
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let compat_options =
+    BoxGenerationOptions::default().with_compat_profile(CompatProfile::SiteCompatibility);
+  let box_tree =
+    super::generate_box_tree_with_anonymous_fixup_with_options(&styled, &compat_options)
+      .expect("box tree");
+
+  assert!(contains_class(&box_tree.root, "keep"));
+  assert!(contains_class(&box_tree.root, "content"));
+  assert!(!contains_class(&box_tree.root, "Overlay-ljtLmi"));
+  assert!(!contains_class(&box_tree.root, "FocusTrapContainer-jqtblI"));
+}
+
+#[test]
+fn visible_onenav_overlay_retained_with_drawer_in_compat_mode() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade::apply_styles_with_media;
+  use crate::style::media::MediaContext;
+
+  let html = r#"
+      <div>
+          <div data-testid="one-nav-overlay" class="Overlay-ljtLmi"></div>
+          <div class="FocusTrapContainer-jqtblI"><span class="content">keep me</span></div>
+      </div>
+  "#;
+  let css = r#"
+      [data-testid="one-nav-overlay"] {
+          visibility: visible;
+          opacity: 1;
+      }
+  "#;
+
+  let dom: DomNode = dom::parse_html(html).unwrap();
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let compat_options =
+    BoxGenerationOptions::default().with_compat_profile(CompatProfile::SiteCompatibility);
+  let box_tree =
+    super::generate_box_tree_with_anonymous_fixup_with_options(&styled, &compat_options)
+      .expect("box tree");
+
+  assert!(contains_class(&box_tree.root, "Overlay-ljtLmi"));
+  assert!(contains_class(&box_tree.root, "FocusTrapContainer-jqtblI"));
+  assert!(contains_class(&box_tree.root, "content"));
+}
+
+#[test]
+fn flex_items_are_blockified() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = r#"<div style="display:flex"><span class="item">Item</span></div>"#;
+  let dom: dom::DomNode = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+
+  let item = find_first_by_class(&box_tree.root, "item").expect("item present");
+
+  assert_eq!(
+    item.style.display,
+    Display::Block,
+    "flex/grid items should be blockified (used display becomes block-level)"
+  );
+  assert!(item.box_type.is_block_level());
+}
+
+#[test]
+fn grid_items_are_blockified() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = r#"<div style="display:grid"><span class="item">Item</span></div>"#;
+  let dom: dom::DomNode = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+
+  let item = find_first_by_class(&box_tree.root, "item").expect("item present");
+
+  assert_eq!(item.style.display, Display::Block);
+  assert!(item.box_type.is_block_level());
+}
+
+#[test]
+fn display_contents_descendants_are_blockified_as_items() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = r#"<div style="display:flex"><div style="display:contents"><span class="item">Item</span></div></div>"#;
+  let dom: dom::DomNode = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+
+  let item = find_first_by_class(&box_tree.root, "item").expect("item present");
+
+  assert_eq!(item.style.display, Display::Block);
+  assert!(item.box_type.is_block_level());
+}
+
+#[test]
+fn flex_replaced_items_are_blockified() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = r#"<div style="display:flex"><img class="item" src="example.png"></div>"#;
+  let dom: dom::DomNode = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+
+  let item = find_first_by_class(&box_tree.root, "item").expect("item present");
+
+  assert!(
+    item.box_type.is_replaced(),
+    "expected <img> to create a replaced box"
+  );
+  assert_eq!(
+    item.style.display,
+    Display::Block,
+    "replaced flex/grid items should be blockified (used display becomes block-level)"
+  );
+}
+
+#[test]
+fn flex_container_ignores_collapsible_whitespace_text_nodes() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = r#"
+  <div class="flex" style="display:flex">
+    <div class="a"></div>
+    <div class="b"></div>
+  </div>
+"#;
+  let dom: crate::dom::DomNode = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+
+  let flex = find_first_by_class(&box_tree.root, "flex").expect("flex node present");
+
+  assert_eq!(
+    flex.children.len(),
+    2,
+    "collapsible whitespace between flex items should not generate anonymous flex items"
+  );
+  assert!(node_has_class(&flex.children[0], "a"));
+  assert!(node_has_class(&flex.children[1], "b"));
+}
+
+#[test]
+fn grid_container_ignores_collapsible_whitespace_text_nodes() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = r#"
+  <div class="grid" style="display:grid">
+    <div class="a"></div>
+    <div class="b"></div>
+  </div>
+"#;
+  let dom: crate::dom::DomNode = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree_with_anonymous_fixup(&styled);
+
+  let grid = find_first_by_class(&box_tree.root, "grid").expect("grid node present");
+
+  assert_eq!(
+    grid.children.len(),
+    2,
+    "collapsible whitespace between grid items should not generate anonymous grid items"
+  );
+  assert!(node_has_class(&grid.children[0], "a"));
+  assert!(node_has_class(&grid.children[1], "b"));
+}
+
+struct TestRenderDelayGuard;
+
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    crate::render_control::set_test_render_delay_ms(ms);
+    Self
+  }
+}
+
+impl Drop for TestRenderDelayGuard {
+  fn drop(&mut self) {
+    crate::render_control::set_test_render_delay_ms(None);
+  }
+}
+
+#[test]
+fn box_generation_times_out_with_active_deadline() {
+  use crate::error::{Error, RenderError, RenderStage};
+  use crate::render_control::{DeadlineGuard, RenderDeadline};
+  use crate::style::cascade::apply_styles;
+
+  let _guard = TestRenderDelayGuard::set(Some(5));
+
+  let mut repeated = String::new();
+  for _ in 0..5000 {
+    repeated.push_str("<div class=\"item\">content</div>");
+  }
+  let html = format!("<html><body>{repeated}</body></html>");
+
+  let dom = dom::parse_html(&html).expect("parse html");
+  let styled = apply_styles(&dom, &crate::css::types::StyleSheet::new());
+
+  let deadline = RenderDeadline::new(Some(std::time::Duration::from_millis(1)), None);
+  let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+  let err = super::generate_box_tree_with_anonymous_fixup(&styled).unwrap_err();
+  match err {
+    Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::BoxTree),
+    other => panic!("expected box_tree timeout, got {other:?}"),
+  }
+}
+
+#[test]
+fn container_query_rel_layout_uses_box_generation_options() {
+  use crate::api::{FastRender, RenderArtifactRequest, RenderOptions};
+
+  std::thread::Builder::new()
+    .stack_size(8 * 1024 * 1024)
+    .spawn(|| {
+      // Force a container-query second pass (fingerprints differ) while running under the
+      // site-compatibility profile. The second-pass box generation must keep using the
+      // compatibility options; otherwise empty ad placeholders would reappear.
+      let html = r#"
+      <style>
+        .container {
+          container-type: inline-size;
+          width: 200px;
+        }
+        .target { display: none; }
+        @container (min-width: 150px) {
+          .target { display: block; }
+        }
+      </style>
+      <div class="container">
+        <div class="ad-height-hold"></div>
+        <div class="target">hello</div>
+      </div>
+    "#;
+
+      let mut renderer = FastRender::builder()
+        .viewport_size(800, 600)
+        .with_site_compat_hacks()
+        .build()
+        .expect("build renderer");
+
+      let report = renderer
+        .render_html_with_stylesheets_report(
+          html,
+          "https://example.com",
+          RenderOptions::default(),
+          RenderArtifactRequest {
+            box_tree: true,
+            ..RenderArtifactRequest::default()
+          },
+        )
+        .expect("render html");
+
+      let box_tree = report
+        .artifacts
+        .box_tree
+        .expect("expected box tree artifact");
+      assert!(
+        !contains_class(&box_tree.root, "ad-height-hold"),
+        "empty ad placeholders should remain dropped after container-query relayout",
+      );
+    })
+    .expect("spawn test thread")
+    .join()
+    .expect("join test thread");
+}
+
+fn find_styled_node_id_by_element_id(styled: &crate::style::cascade::StyledNode, id: &str) -> Option<usize> {
+  if styled.node.get_attribute_ref("id") == Some(id) {
+    return Some(styled.node_id);
+  }
+  styled
+    .children
+    .iter()
+    .find_map(|child| find_styled_node_id_by_element_id(child, id))
+}
+
+fn find_box_by_styled_id<'a>(node: &'a BoxNode, styled_id: usize) -> Option<&'a BoxNode> {
+  if node.styled_node_id == Some(styled_id) {
+    return Some(node);
+  }
+  node
+    .children
+    .iter()
+    .find_map(|child| find_box_by_styled_id(child, styled_id))
+}
+
+fn has_descendant_with_styled_id(node: &BoxNode, styled_id: usize) -> bool {
+  if node.styled_node_id == Some(styled_id) {
+    return true;
+  }
+  node
+    .children
+    .iter()
+    .any(|child| has_descendant_with_styled_id(child, styled_id))
+}
+
+fn count_form_control_replacements(node: &BoxNode) -> usize {
+  let mut count = 0usize;
+  if let BoxType::Replaced(repl) = &node.box_type {
+    if matches!(repl.replaced_type, ReplacedType::FormControl(_)) {
+      count += 1;
+    }
+  }
+  for child in node.children.iter() {
+    count += count_form_control_replacements(child);
+  }
+  count
+}
+
+fn has_generated_pseudo(node: &BoxNode, pseudo: GeneratedPseudoElement) -> bool {
+  if node.generated_pseudo == Some(pseudo) {
+    return true;
+  }
+  node
+    .children
+    .iter()
+    .any(|child| has_generated_pseudo(child, pseudo))
+}
+
+#[test]
+fn button_appearance_none_preserves_dom_children() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = "<html><body><button id=\"btn\" style=\"appearance:none\"><span id=\"inner\">Hello</span></button></body></html>";
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+
+  let btn_id = find_styled_node_id_by_element_id(&styled, "btn").expect("button styled node id");
+  let span_id = find_styled_node_id_by_element_id(&styled, "inner").expect("span styled node id");
+
+  let tree = generate_box_tree(&styled);
+  assert_eq!(
+    count_form_control_replacements(&tree.root),
+    0,
+    "appearance:none buttons should not create replaced form controls"
+  );
+
+  let btn_box = find_box_by_styled_id(&tree.root, btn_id).expect("button box");
+  assert!(
+    has_descendant_with_styled_id(btn_box, span_id),
+    "expected button descendants to generate boxes when appearance:none"
+  );
+  assert!(
+    btn_box.text().is_none(),
+    "button box should not collapse children into a synthetic label text node"
+  );
+}
+
+#[test]
+fn range_appearance_none_generates_slider_track_and_thumb_boxes() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html =
+    "<html><body><input id=\"slider\" type=\"range\" style=\"appearance:none\" /></body></html>";
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+
+  let slider_id =
+    find_styled_node_id_by_element_id(&styled, "slider").expect("slider styled node id");
+  let tree = generate_box_tree(&styled);
+
+  assert_eq!(
+    count_form_control_replacements(&tree.root),
+    0,
+    "appearance:none range inputs should not create replaced form controls"
+  );
+
+  let slider_box = find_box_by_styled_id(&tree.root, slider_id).expect("slider box");
+  assert!(
+    has_generated_pseudo(slider_box, GeneratedPseudoElement::SliderTrack),
+    "expected range track pseudo-element box to be generated"
+  );
+  assert!(
+    has_generated_pseudo(slider_box, GeneratedPseudoElement::SliderThumb),
+    "expected range thumb pseudo-element box to be generated"
+  );
+}
+
+#[test]
+fn file_input_appearance_none_generates_file_selector_button_box() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html =
+    "<html><body><input id=\"file\" type=\"file\" style=\"appearance:none\" /></body></html>";
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+
+  let file_id = find_styled_node_id_by_element_id(&styled, "file").expect("file styled node id");
+  let tree = generate_box_tree(&styled);
+
+  assert_eq!(
+    count_form_control_replacements(&tree.root),
+    0,
+    "appearance:none file inputs should not create replaced form controls"
+  );
+
+  let file_box = find_box_by_styled_id(&tree.root, file_id).expect("file input box");
+  assert!(
+    has_generated_pseudo(file_box, GeneratedPseudoElement::FileSelectorButton),
+    "expected file-selector-button pseudo-element box to be generated"
+  );
+}
+
+fn find_select_control<'a>(node: &'a BoxNode) -> Option<&'a SelectControl> {
+  if let BoxType::Replaced(replaced) = &node.box_type {
+    if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+      if let FormControlKind::Select(select) = &control.control {
+        return Some(select);
+      }
+    }
+  }
+
+  for child in node.children.iter() {
+    if let Some(found) = find_select_control(child) {
+      return Some(found);
+    }
+  }
+
+  node.footnote_body.as_deref().and_then(find_select_control)
+}
+
+fn find_node_by_id<'a>(root: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+  let mut stack: Vec<&'a DomNode> = Vec::new();
+  stack.push(root);
+
+  while let Some(node) = stack.pop() {
+    if node.get_attribute_ref("id") == Some(id) {
+      return Some(node);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  None
+}
+
+fn collect_option_dom_ids(select: &DomNode, ids: &HashMap<*const DomNode, usize>) -> Vec<usize> {
+  let mut out = Vec::new();
+  let mut stack: Vec<&DomNode> = Vec::new();
+  stack.push(select);
+
+  while let Some(node) = stack.pop() {
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+    {
+      let node_id = ids
+        .get(&(node as *const DomNode))
+        .copied()
+        .expect("<option> node id should be present");
+      out.push(node_id);
+      // `<option>` nodes cannot contain other `<option>` nodes in well-formed HTML; mirror the
+      // select flattener by not traversing children once matched.
+      continue;
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  out
+}
+
+#[test]
+fn select_control_option_items_track_dom_node_ids() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = "<html><body><select id=\"s\">\
+  <option id=\"o1\">One</option>\
+  <optgroup id=\"g1\" label=\"Group\" disabled>\
+    <option id=\"o2\">Two</option>\
+    <option id=\"o3\" disabled>Three</option>\
+  </optgroup>\
+  <option id=\"o4\" disabled>Four</option>\
+</select></body></html>";
+
+  let dom = dom::parse_html(html).expect("parse html");
+  let dom_ids = dom::enumerate_dom_ids(&dom);
+  let select_node = find_node_by_id(&dom, "s").expect("expected <select id=s>");
+  let expected_option_ids = collect_option_dom_ids(select_node, &dom_ids);
+
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree(&styled);
+
+  let select = find_select_control(&box_tree.root).expect("select control");
+  let actual_option_ids: Vec<usize> = select
+    .items
+    .iter()
+    .filter_map(|item| match item {
+      SelectItem::Option { node_id, .. } => Some(*node_id),
+      _ => None,
+    })
+    .collect();
+
+  assert_eq!(
+    actual_option_ids, expected_option_ids,
+    "SelectControl option rows should map back to DOM preorder ids"
+  );
+}
+
+fn contains_tag(node: &BoxNode, tag: &str) -> bool {
+  if let Some(info) = &node.debug_info {
+    if info.tag_name.as_deref() == Some(tag) {
+      return true;
+    }
+  }
+
+  node.children.iter().any(|child| contains_tag(child, tag))
+}
+
+fn collect_replaced_tag_names(node: &BoxNode, out: &mut Vec<String>) {
+  if let BoxType::Replaced(_) = &node.box_type {
+    if let Some(tag) = node.debug_info.as_ref().and_then(|info| info.tag_name.clone()) {
+      out.push(tag);
+    }
+  }
+
+  for child in node.children.iter() {
+    collect_replaced_tag_names(child, out);
+  }
+}
+
+#[test]
+fn option_like_elements_outside_select_do_not_generate_boxes() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = "<html><body><option id=\"orphan\">Loose</option><optgroup label=\"g\"><option>One</option></optgroup></body></html>";
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree(&styled);
+
+  assert!(contains_tag(&box_tree.root, "html"));
+  assert!(!contains_tag(&box_tree.root, "option"));
+  assert!(!contains_tag(&box_tree.root, "optgroup"));
+}
+
+#[test]
+fn select_generates_single_replaced_box_without_option_children() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade::apply_styles;
+
+  let html = "<html><body><select id=\"flavors\"><option>Vanilla</option><optgroup label=\"sweet\"><option selected>Chocolate</option></optgroup></select></body></html>";
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = apply_styles(&dom, &StyleSheet::new());
+  let box_tree = generate_box_tree(&styled);
+
+  assert!(contains_tag(&box_tree.root, "select"));
+  assert!(!contains_tag(&box_tree.root, "option"));
+  assert!(!contains_tag(&box_tree.root, "optgroup"));
+
+  let mut replaced_tags = Vec::new();
+  collect_replaced_tag_names(&box_tree.root, &mut replaced_tags);
+  assert_eq!(replaced_tags, vec!["select".to_string()]);
+}
+
+fn find_inline_svg(node: &BoxNode) -> Option<&ReplacedBox> {
+  if let BoxType::Replaced(replaced) = &node.box_type {
+    if matches!(replaced.replaced_type, ReplacedType::Svg { .. }) {
+      return Some(replaced);
+    }
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_inline_svg(child) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn svg_replaced_box(svg_markup: &str) -> ReplacedBox {
+  svg_replaced_box_with_stylesheet(svg_markup, &crate::css::types::StyleSheet::new())
+}
+
+fn svg_replaced_box_with_stylesheet(svg_markup: &str, stylesheet: &crate::css::types::StyleSheet) -> ReplacedBox {
+  let html = format!("<html><body>{}</body></html>", svg_markup);
+  let dom = dom::parse_html(&html).expect("parse html");
+  let styled = crate::style::cascade::apply_styles(&dom, stylesheet);
+  let tree = generate_box_tree(&styled);
+  find_inline_svg(&tree.root)
+    .cloned()
+    .expect("inline svg replaced box")
+}
+
+#[test]
+fn svg_numeric_width_height_used_as_intrinsic_size() {
+  let replaced = svg_replaced_box(r#"<svg width="200" height="100"></svg>"#);
+  assert_eq!(replaced.intrinsic_size, Some(Size::new(200.0, 100.0)));
+}
+
+#[test]
+fn svg_parses_absolute_length_units() {
+  let replaced = svg_replaced_box(r#"<svg width="2in" height="1in"></svg>"#);
+  assert_eq!(replaced.intrinsic_size, Some(Size::new(192.0, 96.0)));
+}
+
+#[test]
+fn svg_percentage_lengths_fall_back_to_default_intrinsic_size() {
+  let replaced = svg_replaced_box(r#"<svg width="100%" height="100%"></svg>"#);
+  assert_eq!(replaced.intrinsic_size, Some(Size::new(300.0, 150.0)));
+  assert_eq!(replaced.aspect_ratio, None);
+}
+
+#[test]
+fn svg_viewbox_sets_aspect_ratio_with_default_dimensions() {
+  let replaced = svg_replaced_box(r#"<svg viewBox="0 0 40 20"></svg>"#);
+  assert_eq!(replaced.intrinsic_size, Some(Size::new(300.0, 150.0)));
+  assert_eq!(replaced.aspect_ratio, Some(2.0));
+}
+
+#[test]
+fn svg_em_units_resolve_against_default_font_size() {
+  let replaced = svg_replaced_box(r#"<svg width="1em" height="2em"></svg>"#);
+  let size = replaced.intrinsic_size.expect("intrinsic size");
+  assert!((size.width - 16.0).abs() < 0.01);
+  assert!((size.height - 32.0).abs() < 0.01);
+}
+
+#[test]
+fn svg_em_units_resolve_against_css_font_size() {
+  use crate::css::parser::parse_stylesheet;
+
+  let stylesheet = parse_stylesheet("svg{font-size:20px}").expect("parse css");
+  let replaced =
+    svg_replaced_box_with_stylesheet(r#"<svg width="1em" height="1em"></svg>"#, &stylesheet);
+  let size = replaced.intrinsic_size.expect("intrinsic size");
+  assert!((size.width - 20.0).abs() < 0.01);
+  assert!((size.height - 20.0).abs() < 0.01);
+}
+
+fn find_inline_svg_box(node: &BoxNode) -> Option<&BoxNode> {
+  if let BoxType::Replaced(replaced) = &node.box_type {
+    if matches!(replaced.replaced_type, ReplacedType::Svg { .. }) {
+      return Some(node);
+    }
+  }
+  for child in &node.children {
+    if let Some(found) = find_inline_svg_box(child) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+#[test]
+fn svg_root_transform_attribute_is_neutralized_in_serialized_markup() {
+  use crate::css::types::StyleSheet;
+  use crate::style::cascade;
+
+  let html = r#"
+  <html>
+    <body>
+      <svg transform="translate(10 0)" width="10" height="10">
+        <rect width="10" height="10" />
+      </svg>
+    </body>
+  </html>
+"#;
+
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = cascade::apply_styles(&dom, &StyleSheet::new());
+  let tree = generate_box_tree(&styled);
+
+  let svg_box = find_inline_svg_box(&tree.root).expect("inline svg box");
+  assert!(
+    svg_box.style.has_transform(),
+    "svg transform attribute should participate in cascade and be applied externally"
+  );
+
+  let BoxType::Replaced(replaced) = &svg_box.box_type else {
+    panic!("expected replaced box");
+  };
+  let ReplacedType::Svg { content } = &replaced.replaced_type else {
+    panic!("expected svg replaced type");
+  };
+
+  let doc = roxmltree::Document::parse(&content.svg).expect("parse serialized svg");
+  let root = doc.root_element();
+  assert_eq!(root.tag_name().name(), "svg");
+  assert!(
+    root.attribute("transform").is_none(),
+    "serialized root svg must not include transform attribute"
+  );
+  let style = root.attribute("style").expect("root style attribute");
+  assert!(
+    style.contains("transform: none"),
+    "serialized root svg must neutralize transform via style attribute: {style}"
+  );
+}
+
+fn find_inline_svg_content(node: &BoxNode) -> Option<&SvgContent> {
+  if let BoxType::Replaced(replaced) = &node.box_type {
+    if let ReplacedType::Svg { content } = &replaced.replaced_type {
+      return Some(content);
+    }
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_inline_svg_content(child) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn serialized_inline_svg(svg_markup: &str, stylesheet: &crate::css::types::StyleSheet) -> String {
+  let html = format!("<html><body>{}</body></html>", svg_markup);
+  let dom = dom::parse_html(&html).expect("parse html");
+  let styled = crate::style::cascade::apply_styles(&dom, stylesheet);
+  let tree = generate_box_tree(&styled);
+  find_inline_svg_content(&tree.root)
+    .expect("inline svg replaced box")
+    .svg
+    .clone()
+}
+
+#[test]
+fn css_transform_overrides_svg_transform_attribute_in_serialized_svg() {
+  use crate::css::parser::parse_stylesheet;
+
+  let svg_markup = r#"
+  <svg>
+    <g id="g" transform="translate(200 0)">
+      <rect width="10" height="10"></rect>
+    </g>
+  </svg>
+"#;
+  let stylesheet = parse_stylesheet("g { transform: translate(100px, 0px); }").unwrap();
+  let serialized = serialized_inline_svg(svg_markup, &stylesheet);
+  let doc = roxmltree::Document::parse(&serialized).expect("parse serialized svg");
+  let g = doc
+    .descendants()
+    .find(|node| node.is_element() && node.attribute("id") == Some("g"))
+    .expect("g element");
+  assert_eq!(g.attribute("transform"), Some("translate(100 0)"));
+}
+
+#[test]
+fn css_transform_none_removes_svg_transform_attribute_in_serialized_svg() {
+  use crate::css::parser::parse_stylesheet;
+
+  let svg_markup = r#"
+  <svg>
+    <g id="g" transform="translate(200 0)">
+      <rect width="10" height="10"></rect>
+    </g>
+  </svg>
+"#;
+  let stylesheet = parse_stylesheet("g { transform: none; }").unwrap();
+  let serialized = serialized_inline_svg(svg_markup, &stylesheet);
+  let doc = roxmltree::Document::parse(&serialized).expect("parse serialized svg");
+  let g = doc
+    .descendants()
+    .find(|node| node.is_element() && node.attribute("id") == Some("g"))
+    .expect("g element");
+  assert!(g.attribute("transform").is_none());
+}
+
+fn serialized_inline_svg_from_html(html: &str) -> String {
+  use crate::css::parser::extract_css;
+  use crate::style::cascade;
+
+  let html = format!("<html><body>{}</body></html>", html);
+  let dom = dom::parse_html(&html).expect("parse html");
+  let stylesheet = extract_css(&dom).expect("extract css");
+  let styled = cascade::apply_styles(&dom, &stylesheet);
+  let tree = generate_box_tree(&styled);
+  find_inline_svg_content(&tree.root)
+    .expect("inline svg replaced box")
+    .svg
+    .clone()
+}
+
+#[test]
+fn svg_serialization_overrides_pattern_transform_with_pattern_transform_attribute() {
+  let svg = serialized_inline_svg_from_html(
+    r#"
+  <style>pattern{transform:translate(100px,0px)}</style>
+  <svg width="10" height="10">
+    <defs>
+      <pattern id="p" patternTransform="translate(200 0)" width="10" height="10" patternUnits="userSpaceOnUse">
+        <rect width="10" height="10" fill="red" />
+      </pattern>
+    </defs>
+    <rect width="10" height="10" fill="url(#p)" />
+  </svg>
+  "#,
+  );
+
+  let doc = roxmltree::Document::parse(&svg).expect("parse serialized svg");
+  let pattern = doc
+    .descendants()
+    .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("pattern"))
+    .expect("pattern element");
+
+  assert_eq!(
+    pattern.attribute("patternTransform"),
+    Some("translate(100 0)"),
+    "expected CSS transform to override patternTransform during serialization"
+  );
+  assert!(
+    pattern.attribute("transform").is_none(),
+    "pattern elements must not receive a transform= attribute"
+  );
+}
+
+#[test]
+fn svg_serialization_transform_none_removes_pattern_transform_attribute() {
+  let svg = serialized_inline_svg_from_html(
+    r#"
+  <style>pattern{transform:none}</style>
+  <svg width="10" height="10">
+    <defs>
+      <pattern id="p" patternTransform="translate(200 0)" width="10" height="10" patternUnits="userSpaceOnUse">
+        <rect width="10" height="10" fill="red" />
+      </pattern>
+    </defs>
+    <rect width="10" height="10" fill="url(#p)" />
+  </svg>
+  "#,
+  );
+
+  let doc = roxmltree::Document::parse(&svg).expect("parse serialized svg");
+  let pattern = doc
+    .descendants()
+    .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("pattern"))
+    .expect("pattern element");
+
+  assert!(
+    pattern.attribute("patternTransform").is_none(),
+    "expected transform:none to cancel patternTransform during serialization"
+  );
+  assert!(pattern.attribute("transform").is_none());
+}
+
+#[test]
+fn svg_serialization_overrides_gradient_transform_with_gradient_transform_attribute() {
+  let svg = serialized_inline_svg_from_html(
+    r#"
+  <style>linearGradient{transform:translate(100px,0px)}</style>
+  <svg width="10" height="10">
+    <defs>
+      <linearGradient id="g" gradientTransform="translate(200 0)">
+        <stop offset="0" stop-color="red" />
+        <stop offset="1" stop-color="blue" />
+      </linearGradient>
+    </defs>
+    <rect width="10" height="10" fill="url(#g)" />
+  </svg>
+  "#,
+  );
+
+  let doc = roxmltree::Document::parse(&svg).expect("parse serialized svg");
+  let gradient = doc
+    .descendants()
+    .find(|node| {
+      node.is_element()
+        && node
+          .tag_name()
+          .name()
+          .eq_ignore_ascii_case("linearGradient")
+    })
+    .expect("linearGradient element");
+
+  assert_eq!(
+    gradient.attribute("gradientTransform"),
+    Some("translate(100 0)"),
+    "expected CSS transform to override gradientTransform during serialization"
+  );
+  assert!(
+    gradient.attribute("transform").is_none(),
+    "gradient elements must not receive a transform= attribute"
+  );
+}
+
+#[test]
+fn svg_serialization_transform_none_removes_gradient_transform_attribute() {
+  let svg = serialized_inline_svg_from_html(
+    r#"
+  <style>linearGradient{transform:none}</style>
+  <svg width="10" height="10">
+    <defs>
+      <linearGradient id="g" gradientTransform="translate(200 0)">
+        <stop offset="0" stop-color="red" />
+        <stop offset="1" stop-color="blue" />
+      </linearGradient>
+    </defs>
+    <rect width="10" height="10" fill="url(#g)" />
+  </svg>
+  "#,
+  );
+
+  let doc = roxmltree::Document::parse(&svg).expect("parse serialized svg");
+  let gradient = doc
+    .descendants()
+    .find(|node| {
+      node.is_element()
+        && node
+          .tag_name()
+          .name()
+          .eq_ignore_ascii_case("linearGradient")
+    })
+    .expect("linearGradient element");
+
+  assert!(
+    gradient.attribute("gradientTransform").is_none(),
+    "expected transform:none to cancel gradientTransform during serialization"
+  );
+  assert!(gradient.attribute("transform").is_none());
+}
+
+fn g_style_from_serialized_svg(svg: &str) -> Option<(Option<String>, Option<String>)> {
+  let doc = roxmltree::Document::parse(svg).ok()?;
+  let g = doc
+    .descendants()
+    .find(|node| node.has_tag_name("g") && node.attribute("id").is_some_and(|id| id == "g"))?;
+  Some((
+    g.attribute("transform").map(|v| v.to_string()),
+    g.attribute("style").map(|v| v.to_string()),
+  ))
+}
+
+#[test]
+fn svg_transform_percentage_falls_back_to_css_style_text() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade;
+
+  let html = r#"
+  <html>
+    <body>
+      <svg>
+        <g id="g">
+          <rect id="r" x="0" y="0" width="10" height="10"></rect>
+        </g>
+      </svg>
+    </body>
+  </html>
+"#;
+  let stylesheet = parse_stylesheet("g{ transform: translateX(100%); }").expect("parse css");
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = cascade::apply_styles(&dom, &stylesheet);
+  let tree = generate_box_tree(&styled);
+  let svg = find_inline_svg_content(&tree.root)
+    .expect("inline svg")
+    .svg
+    .as_str();
+
+  let (transform_attr, style_attr) =
+    g_style_from_serialized_svg(svg).expect("find g in serialized svg");
+  assert!(
+    transform_attr.is_none(),
+    "expected percentage transforms to be serialized as CSS text, not an SVG transform attribute"
+  );
+  let style_attr = style_attr.expect("style attribute");
+  assert!(
+    style_attr.contains("transform:"),
+    "expected serialized g style to include transform declaration: {style_attr:?}"
+  );
+  assert!(
+    style_attr.contains("100%"),
+    "expected serialized g style to preserve percent length: {style_attr:?}"
+  );
+}
+
+#[test]
+fn svg_transform_calc_falls_back_to_css_style_text() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade;
+
+  let html = r#"
+  <html>
+    <body>
+      <svg>
+        <g id="g">
+          <rect id="r" x="0" y="0" width="10" height="10"></rect>
+        </g>
+      </svg>
+    </body>
+  </html>
+"#;
+  let stylesheet =
+    parse_stylesheet("g{ transform: translateX(calc(100% + 2px)); }").expect("parse css");
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = cascade::apply_styles(&dom, &stylesheet);
+  let tree = generate_box_tree(&styled);
+  let svg = find_inline_svg_content(&tree.root)
+    .expect("inline svg")
+    .svg
+    .as_str();
+
+  let (transform_attr, style_attr) =
+    g_style_from_serialized_svg(svg).expect("find g in serialized svg");
+  assert!(
+    transform_attr.is_none(),
+    "expected calc transforms to be serialized as CSS text, not an SVG transform attribute"
+  );
+  let style_attr = style_attr.expect("style attribute");
+  assert!(
+    style_attr.contains("transform:"),
+    "expected serialized g style to include transform declaration: {style_attr:?}"
+  );
+  assert!(
+    style_attr.contains("calc("),
+    "expected serialized g style to preserve calc() text: {style_attr:?}"
+  );
+  assert!(
+    style_attr.contains("100%"),
+    "expected serialized g style to preserve percentage inside calc(): {style_attr:?}"
+  );
+}
+
+#[test]
+fn svg_transform_unserializable_keeps_authored_transform_attribute() {
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::cascade;
+
+  let html = r#"
+  <html>
+    <body>
+      <svg>
+        <g id="g" transform="translate(10 0)">
+          <rect id="r" x="0" y="0" width="10" height="10"></rect>
+        </g>
+      </svg>
+    </body>
+  </html>
+"#;
+  let stylesheet = parse_stylesheet("g{ transform: translateX(100%); }").expect("parse css");
+  let dom = dom::parse_html(html).expect("parse html");
+  let styled = cascade::apply_styles(&dom, &stylesheet);
+  let tree = generate_box_tree(&styled);
+  let svg = find_inline_svg_content(&tree.root)
+    .expect("inline svg")
+    .svg
+    .as_str();
+
+  let (transform_attr, style_attr) =
+    g_style_from_serialized_svg(svg).expect("find g in serialized svg");
+  let transform_attr = transform_attr.expect("authored transform attribute");
+  assert!(
+    transform_attr.contains("translate(10"),
+    "expected authored transform attribute to be preserved: {transform_attr:?}"
+  );
+
+  let style_attr = style_attr.expect("style attribute");
+  assert!(
+    style_attr.contains("transform:"),
+    "expected serialized g style to include transform declaration: {style_attr:?}"
+  );
+  assert!(
+    style_attr.contains("100%"),
+    "expected serialized g style to preserve percent length: {style_attr:?}"
+  );
+}

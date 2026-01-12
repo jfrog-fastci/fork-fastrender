@@ -364,8 +364,8 @@ fn with_realm_state_mut<R>(
   f: impl FnOnce(&mut StreamRealmState, &Heap) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
   let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
-
   let heap = scope.heap();
+
   let mut registry = registry()
     .lock()
     .unwrap_or_else(|err| err.into_inner());

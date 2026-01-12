@@ -74,25 +74,26 @@ When `appearance:none` is computed, the control stops using the native form-cont
 
 ## Regression coverage
 
-- Box-generation unit tests (run with `--lib`):
-  - `appearance_none_form_controls_generate_fallback_children`
-  - `appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
-  - `webkit_appearance_none_disables_form_control_replacement`
-  - `moz_appearance_none_disables_form_control_replacement`
-- Integration tests cover end-to-end behavior (box tree + paint). After consolidation they run under `--test integration`; during migration you can still run them by name if they haven’t moved yet. They are discoverable via filters like:
-  - `form_controls_appearance_none_fallback` (fallback children, slider/file pseudos)
-  - `form_control_placeholder_opacity` (`::placeholder` opacity in both paint backends)
-- Paint integration tests (run with `--test integration`) cover renderer output and are discoverable via filters like:
-  - `form_control_appearance_none_affordances` (spinner/dropdown affordance suppression)
-  - `range_track_pseudo_element` / `range_pseudo_opacity` (slider pseudos)
-  - `file_selector_button_pseudo_element` (`::file-selector-button` painting)
+- Box-generation unit tests:
+  - `src/tree/box_generation.rs::appearance_none_form_controls_generate_fallback_children`
+  - `src/tree/box_generation.rs::appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
+  - `src/tree/box_generation.rs::webkit_appearance_none_disables_form_control_replacement`
+  - `src/tree/box_generation.rs::moz_appearance_none_disables_form_control_replacement`
+  - `src/tree/box_generation.rs::button_appearance_none_preserves_dom_children`
+  - `src/tree/box_generation.rs::range_appearance_none_generates_slider_track_and_thumb_boxes`
+  - `src/tree/box_generation.rs::file_input_appearance_none_generates_file_selector_button_box`
+- Paint integration tests:
+  - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
+  - `tests/misc/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
+  - `tests/paint/range_track_pseudo_element.rs` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
+  - `tests/paint/range_pseudo_opacity.rs` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
+  - `tests/paint/file_selector_button_pseudo_element.rs` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
 
-To locate the exact test names (tests may migrate between unit and integration suites), list tests and filter by name:
+To locate the exact test names, list tests and filter by name:
 
 ```bash
-bash scripts/cargo_agent.sh test -p fastrender --lib -- --list | rg 'appearance_none|form_controls'
-bash scripts/cargo_agent.sh test -p fastrender --test integration -- --list | rg 'appearance_none|form_control|slider|placeholder|file_selector'
-bash scripts/cargo_agent.sh test -p fastrender --test integration -- --list | rg 'form_control|range_|file_selector'
+bash scripts/cargo_agent.sh test -p fastrender --lib -- --list | rg 'appearance_none|form_control|placeholder|range_|file_selector'
+bash scripts/cargo_agent.sh test -p fastrender --test integration -- --list | rg 'appearance_none|form_control|placeholder|range_|file_selector'
 ```
 
 Then run a specific regression via a filter:
