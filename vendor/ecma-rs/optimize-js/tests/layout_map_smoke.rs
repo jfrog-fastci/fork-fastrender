@@ -13,7 +13,10 @@ fn layout_map_smoke_every_value_def_has_layout() {
     r#"
       let x: number = 1;
       let y: number = x + 2;
+      const f = () => 123;
+      const z: number = f();
       console.log(y);
+      console.log(z);
     "#,
     TopLevelMode::Module,
     false,
@@ -41,4 +44,3 @@ fn layout_map_smoke_every_value_def_has_layout() {
     }
   }
 }
-

@@ -52,6 +52,24 @@ pub enum LayoutValidationMode {
 }
 
 static FALLBACK_STORE: Lazy<Arc<types_ts_interned::TypeStore>> = Lazy::new(types_ts_interned::TypeStore::new);
+static FALLBACK_FN_LAYOUT: Lazy<LayoutId> = Lazy::new(|| {
+  // Model `Arg::Fn` constants as the layout of a representative callable type.
+  // `types-ts-interned` uses a canonical closure payload layout, so the
+  // particular signature/return type chosen here does not matter for the ABI.
+  let store = &*FALLBACK_STORE;
+  let prim = store.primitive_ids();
+  let sig = types_ts_interned::Signature {
+    params: Vec::new(),
+    ret: prim.unknown,
+    this_param: None,
+    type_params: Vec::new(),
+  };
+  let sig_id = store.intern_signature(sig);
+  let ty = store.intern_type(types_ts_interned::TypeKind::Callable {
+    overloads: vec![sig_id],
+  });
+  store.layout_of(ty)
+});
 
 fn fallback_unknown_layout() -> LayoutId {
   let store = &*FALLBACK_STORE;
@@ -72,12 +90,17 @@ fn layout_of_const(value: &Const) -> LayoutId {
   store.layout_of(ty)
 }
 
-fn diagnostic_for_inst(mode: LayoutValidationMode, code: &'static str, message: String, inst: &Inst) -> Diagnostic {
-  // `optimize-js`'s IL does not retain enough context to reliably map `hir_expr`
-  // IDs back to byte ranges. Downstream native pipelines may provide richer
-  // mapping; for now we use a stable empty span and include the HIR expr id as a
-  // note when available.
-  let span = Span::new(FileId(0), TextRange::new(0, 0));
+fn diagnostic_for_inst(
+  mode: LayoutValidationMode,
+  code: &'static str,
+  message: String,
+  inst: &Inst,
+) -> Diagnostic {
+  // `validate_layouts` currently only sees a `Cfg`, not the full `Program`, so it
+  // cannot reliably recover the original file id. Most `optimize-js` entry
+  // points use `FileId(0)`; we still use the best-effort `InstMeta.span` to
+  // point at the right source range when available.
+  let span = Span::new(FileId(0), inst.meta.span.unwrap_or_else(|| TextRange::new(0, 0)));
   let mut diag = match mode {
     LayoutValidationMode::Strict => Diagnostic::error(code, message, span),
     LayoutValidationMode::BestEffort => Diagnostic::warning(code, message, span),
@@ -88,11 +111,28 @@ fn diagnostic_for_inst(mode: LayoutValidationMode, code: &'static str, message: 
   diag
 }
 
+fn layout_of_builtin(value: &str) -> Option<LayoutId> {
+  // Only handle builtins that are commonly treated as constants by the IL.
+  // Everything else is left as unknown (and should typically flow through a
+  // variable with `InstMeta.native_layout`).
+  let store = &*FALLBACK_STORE;
+  let prim = store.primitive_ids();
+  match value {
+    "undefined" => Some(store.layout_of(prim.undefined)),
+    "NaN" | "Infinity" => Some(store.layout_of(prim.number)),
+    // `Symbol.iterator`, etc. Symbols currently lower to opaque pointers in the
+    // layout model.
+    v if v.starts_with("Symbol.") => Some(store.layout_of(prim.symbol)),
+    _ => None,
+  }
+}
+
 fn arg_layout(arg: &Arg, map: &LayoutMap, unknown_layout: LayoutId) -> Option<LayoutId> {
   match arg {
     Arg::Var(v) => map.get(*v),
     Arg::Const(c) => Some(layout_of_const(c)),
-    Arg::Fn(_) | Arg::Builtin(_) => Some(unknown_layout),
+    Arg::Fn(_) => Some(*FALLBACK_FN_LAYOUT),
+    Arg::Builtin(name) => layout_of_builtin(name).or(Some(unknown_layout)),
   }
 }
 
@@ -212,47 +252,40 @@ pub fn validate_layouts(cfg: &Cfg, mode: LayoutValidationMode) -> Result<LayoutM
               ));
             }
 
-            let tgt_layout = map.get(tgt);
-            let src = inst.args.get(0);
-            let src_layout = src.and_then(|arg| arg_layout(arg, &map, unknown_layout));
+            // Validate copy assignments (`%tgt = %src`) preserve layouts. We only
+            // check `Arg::Var` sources: other RHS kinds (Const/Builtin/Fn) are
+            // not "copies" and their ABI/layout is defined by the target
+            // instruction metadata.
+            if let Some(Arg::Var(src_var)) = inst.args.get(0) {
+              let tgt_layout = map.get(tgt);
+              let src_layout = map.get(*src_var);
 
-            match (src, tgt_layout, src_layout) {
-              (Some(Arg::Var(src_var)), Some(tgt_layout), Some(src_layout)) => {
-                if tgt_layout != src_layout {
-                  map.diagnostics.push(diagnostic_for_inst(
-                    mode,
-                    "OPT0102",
-                    format!(
-                      "copy assigns between incompatible layouts: %{tgt}={tgt_layout:?} from %{src_var}={src_layout:?}"
-                    ),
-                    inst,
-                  ));
+              match (tgt_layout, src_layout) {
+                (Some(tgt_layout), Some(src_layout)) => {
+                  if tgt_layout != src_layout {
+                    map.diagnostics.push(diagnostic_for_inst(
+                      mode,
+                      "OPT0102",
+                      format!(
+                        "copy assigns between incompatible layouts: %{tgt}={tgt_layout:?} from %{src_var}={src_layout:?}"
+                      ),
+                      inst,
+                    ));
+                  }
                 }
-              }
-              (Some(Arg::Var(src_var)), Some(tgt_layout), None) => {
-                // Infer the source layout from the target (common for params).
-                changed |= set_layout(&mut map, mode, *src_var, tgt_layout, inst);
-              }
-              (Some(Arg::Var(src_var)), None, Some(src_layout)) => {
-                // Infer the target layout from the source when the VarAssign
-                // lacks metadata in best-effort mode.
-                if mode == LayoutValidationMode::BestEffort {
-                  changed |= set_layout(&mut map, mode, tgt, src_layout, inst);
-                } else if declared.is_some() {
-                  // `declared` was Some but `tgt_layout` is None; shouldn't
-                  // happen because we just set it.
-                  let _ = src_var;
+                (Some(tgt_layout), None) => {
+                  // Infer the source layout from the target (common for params).
+                  changed |= set_layout(&mut map, mode, *src_var, tgt_layout, inst);
                 }
+                (None, Some(src_layout)) => {
+                  // Infer the target layout from the source when the VarAssign
+                  // lacks metadata in best-effort mode.
+                  if mode == LayoutValidationMode::BestEffort {
+                    changed |= set_layout(&mut map, mode, tgt, src_layout, inst);
+                  }
+                }
+                _ => {}
               }
-              (Some(_), Some(tgt_layout), Some(src_layout)) if tgt_layout != src_layout => {
-                map.diagnostics.push(diagnostic_for_inst(
-                  mode,
-                  "OPT0102",
-                  format!("copy assigns between incompatible layouts: {tgt_layout:?} vs {src_layout:?}"),
-                  inst,
-                ));
-              }
-              _ => {}
             }
           }
 
