@@ -12,12 +12,17 @@ function event_spec_compliance_call_custom_event_constructor() {
   CustomEvent("x");
 }
 
+function event_spec_compliance_call_event_target_constructor() {
+  EventTarget();
+}
+
 function event_spec_compliance_constructors_require_new_test() {
   assert_throws_js(TypeError, event_spec_compliance_call_event_constructor);
   assert_throws_js(TypeError, event_spec_compliance_call_custom_event_constructor);
+  assert_throws_js(TypeError, event_spec_compliance_call_event_target_constructor);
 }
 
-test(event_spec_compliance_constructors_require_new_test, "Event constructors require new");
+test(event_spec_compliance_constructors_require_new_test, "Event/EventTarget constructors require new");
 
 // --- read-only attributes ---
 function event_spec_compliance_event_type_is_read_only_test() {
@@ -28,6 +33,27 @@ function event_spec_compliance_event_type_is_read_only_test() {
 }
 
 test(event_spec_compliance_event_type_is_read_only_test, "Event.type is a read-only attribute");
+
+function event_spec_compliance_event_type_domstring_conversion_test() {
+  var called = 0;
+  var type_obj = {
+    valueOf: function () {
+      return {};
+    },
+    toString: function () {
+      called++;
+      return "x";
+    },
+  };
+  var e = new Event(type_obj);
+  assert_equals(e.type, "x");
+  assert_equals(called, 1, "Event constructor should convert type to DOMString exactly once");
+}
+
+test(
+  event_spec_compliance_event_type_domstring_conversion_test,
+  "Event constructor converts its type argument to DOMString"
+);
 
 // --- brand checks / illegal invocation ---
 function event_spec_compliance_event_prevent_default_illegal_invocation() {
@@ -73,6 +99,20 @@ test(
   "dispatchEvent validates its Event argument"
 );
 
+// --- EventTarget brand checks ---
+function event_spec_compliance_eventtarget_dispatch_illegal_invocation() {
+  EventTarget.prototype.dispatchEvent.call({}, new Event("x"));
+}
+
+function event_spec_compliance_eventtarget_brand_checks_test() {
+  assert_throws_js(TypeError, event_spec_compliance_eventtarget_dispatch_illegal_invocation);
+}
+
+test(
+  event_spec_compliance_eventtarget_brand_checks_test,
+  "EventTarget methods perform WebIDL brand checks"
+);
+
 // --- InvalidStateError: legacy events must be initialized ---
 var event_spec_compliance_legacy_target = null;
 var event_spec_compliance_legacy_event = null;
@@ -94,6 +134,21 @@ function event_spec_compliance_dispatch_legacy_event_initialized_test() {
 test(
   event_spec_compliance_dispatch_legacy_event_initialized_test,
   "dispatchEvent throws InvalidStateError for uninitialized legacy events"
+);
+
+// --- dispatchEvent dispatch-flag lifecycle ---
+function event_spec_compliance_dispatch_event_multiple_times_test() {
+  var t = new EventTarget();
+  var e = new Event("multi");
+  assert_true(t.dispatchEvent(e));
+  // Spec: the event dispatch flag must be cleared once dispatch completes, so dispatching the same
+  // Event object again later is allowed.
+  assert_true(t.dispatchEvent(e));
+}
+
+test(
+  event_spec_compliance_dispatch_event_multiple_times_test,
+  "dispatchEvent clears the dispatch flag after dispatch completes"
 );
 
 // --- InvalidStateError: cannot re-dispatch the same event while dispatching ---
