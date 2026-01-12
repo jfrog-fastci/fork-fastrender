@@ -1,4 +1,4 @@
-use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;
 
 use super::{Document, NodeId, NodeKind};
@@ -10,7 +10,9 @@ struct Frame {
 }
 
 fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> NodeId {
-  let inert_subtree = src.template_contents_are_inert();
+  // `DomNode::template_contents_are_inert()` is an HTML-document-only semantic; XML documents treat
+  // `<template>` as an ordinary element.
+  let inert_subtree = doc.is_html_document() && src.template_contents_are_inert();
   let kind = match &src.node_type {
     DomNodeType::Document { quirks_mode, .. } => NodeKind::Document {
       quirks_mode: *quirks_mode,
@@ -26,11 +28,21 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
       namespace,
       attributes,
       assigned,
-    } => NodeKind::Slot {
-      namespace: namespace.clone(),
-      attributes: attributes.clone(),
-      assigned: *assigned,
-    },
+    } => {
+      if doc.is_html_document() {
+        NodeKind::Slot {
+          namespace: namespace.clone(),
+          attributes: attributes.clone(),
+          assigned: *assigned,
+        }
+      } else {
+        NodeKind::Element {
+          tag_name: "slot".to_string(),
+          namespace: namespace.clone(),
+          attributes: attributes.clone(),
+        }
+      }
+    }
     DomNodeType::Element {
       tag_name,
       namespace,
@@ -276,23 +288,24 @@ impl Document {
     }
 
     if matches!(&root.node_type, DomNodeType::Document { .. }) {
-      for node in &mut doc.nodes {
-        let NodeKind::Element {
-          tag_name,
-          namespace,
-          ..
-        } = &node.kind
-        else {
-          continue;
+      let nodes_len = doc.nodes.len();
+      for idx in 0..nodes_len {
+        let is_html_script = match &doc.nodes[idx].kind {
+          NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } => {
+            tag_name.eq_ignore_ascii_case("script")
+              && doc.is_html_case_insensitive_namespace(namespace)
+          }
+          _ => false,
         };
-        if !tag_name.eq_ignore_ascii_case("script") {
+        if !is_html_script {
           continue;
         }
-        if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
-          continue;
-        }
-        node.script_parser_document = true;
-        node.script_force_async = false;
+        doc.nodes[idx].script_parser_document = true;
+        doc.nodes[idx].script_force_async = false;
       }
     }
 

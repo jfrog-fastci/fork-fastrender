@@ -1,11 +1,4 @@
-use crate::dom::HTML_NAMESPACE;
-
 use super::{Document, DomError, NodeId, NodeKind};
-
-#[inline]
-fn is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == HTML_NAMESPACE
-}
 
 #[inline]
 fn name_matches(existing: &str, query: &str, is_html: bool) -> bool {
@@ -16,56 +9,23 @@ fn name_matches(existing: &str, query: &str, is_html: bool) -> bool {
   }
 }
 
-fn attrs_and_is_html(kind: &NodeKind) -> Option<(&Vec<(String, String)>, bool)> {
-  match kind {
-    NodeKind::Element {
-      namespace,
-      attributes,
-      ..
-    }
-    | NodeKind::Slot {
-      namespace,
-      attributes,
-      ..
-    } => Some((attributes, is_html_namespace(namespace))),
-    _ => None,
-  }
-}
-
-fn attrs_and_is_html_mut(kind: &mut NodeKind) -> Option<(&mut Vec<(String, String)>, bool)> {
-  match kind {
-    NodeKind::Element {
-      namespace,
-      attributes,
-      ..
-    }
-    | NodeKind::Slot {
-      namespace,
-      attributes,
-      ..
-    } => Some((attributes, is_html_namespace(namespace))),
-    _ => None,
-  }
-}
-
-#[inline]
-fn is_html_script_element(kind: &NodeKind) -> bool {
-  match kind {
-    NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } if is_html_namespace(namespace) && tag_name.eq_ignore_ascii_case("script") => true,
-    _ => false,
-  }
-}
-
 impl Document {
   pub fn get_attribute(&self, node: NodeId, name: &str) -> Result<Option<&str>, DomError> {
     let node = self.node_checked(node)?;
-    let Some((attrs, is_html)) = attrs_and_is_html(&node.kind) else {
-      return Err(DomError::InvalidNodeType);
+    let (namespace, attrs) = match &node.kind {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => (namespace.as_str(), attributes.as_slice()),
+      _ => return Err(DomError::InvalidNodeType),
     };
+    let is_html = self.is_html_case_insensitive_namespace(namespace);
     Ok(
       attrs
         .iter()
@@ -76,8 +36,16 @@ impl Document {
 
   pub fn has_attribute(&self, node: NodeId, name: &str) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
-    let Some((attrs, is_html)) = attrs_and_is_html(&node.kind) else {
-      return Err(DomError::InvalidNodeType);
+    let namespace = match &node.kind {
+      NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => namespace.as_str(),
+      _ => return Err(DomError::InvalidNodeType),
+    };
+    let is_html = self.is_html_case_insensitive_namespace(namespace);
+    let attrs = match &node.kind {
+      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => {
+        attributes.as_slice()
+      }
+      _ => return Err(DomError::InvalidNodeType),
     };
     Ok(
       attrs
@@ -88,9 +56,20 @@ impl Document {
 
   pub fn attribute_names(&self, node: NodeId) -> Result<Vec<String>, DomError> {
     let node = self.node_checked(node)?;
-    let Some((attrs, is_html)) = attrs_and_is_html(&node.kind) else {
-      return Err(DomError::InvalidNodeType);
+    let (namespace, attrs) = match &node.kind {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => (namespace.as_str(), attributes.as_slice()),
+      _ => return Err(DomError::InvalidNodeType),
     };
+    let is_html = self.is_html_case_insensitive_namespace(namespace);
     if is_html {
       Ok(attrs.iter().map(|(k, _)| k.to_ascii_lowercase()).collect())
     } else {
@@ -100,11 +79,30 @@ impl Document {
 
   pub fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) -> Result<bool, DomError> {
     let node_id = node;
+    let (is_html, is_script) = {
+      let node = self.node_checked(node_id)?;
+      match &node.kind {
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } => {
+          let is_html = self.is_html_case_insensitive_namespace(namespace);
+          let is_script = is_html && tag_name.eq_ignore_ascii_case("script");
+          (is_html, is_script)
+        }
+        NodeKind::Slot { namespace, .. } => {
+          (self.is_html_case_insensitive_namespace(namespace), false)
+        }
+        _ => return Err(DomError::InvalidNodeType),
+      }
+    };
+
     let (changed, old_value) = {
       let node = self.node_checked_mut(node_id)?;
-      let is_script = is_html_script_element(&node.kind);
-      let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
-        return Err(DomError::InvalidNodeType);
+      let attrs = match &mut node.kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+        _ => return Err(DomError::InvalidNodeType),
       };
 
       if let Some((_, existing)) = attrs
@@ -140,10 +138,21 @@ impl Document {
 
   pub fn remove_attribute(&mut self, node: NodeId, name: &str) -> Result<bool, DomError> {
     let node_id = node;
+    let is_html = {
+      let node = self.node_checked(node_id)?;
+      match &node.kind {
+        NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
+          self.is_html_case_insensitive_namespace(namespace)
+        }
+        _ => return Err(DomError::InvalidNodeType),
+      }
+    };
+
     let (changed, old_value) = {
       let node = self.node_checked_mut(node_id)?;
-      let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
-        return Err(DomError::InvalidNodeType);
+      let attrs = match &mut node.kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+        _ => return Err(DomError::InvalidNodeType),
       };
 
       if let Some(idx) = attrs
@@ -176,11 +185,30 @@ impl Document {
   ) -> Result<bool, DomError> {
     if present {
       let node_id = node;
+      let (is_html, is_script) = {
+        let node = self.node_checked(node_id)?;
+        match &node.kind {
+          NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } => {
+            let is_html = self.is_html_case_insensitive_namespace(namespace);
+            let is_script = is_html && tag_name.eq_ignore_ascii_case("script");
+            (is_html, is_script)
+          }
+          NodeKind::Slot { namespace, .. } => {
+            (self.is_html_case_insensitive_namespace(namespace), false)
+          }
+          _ => return Err(DomError::InvalidNodeType),
+        }
+      };
+
       let changed = {
         let node = self.node_checked_mut(node_id)?;
-        let is_script = is_html_script_element(&node.kind);
-        let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
-          return Err(DomError::InvalidNodeType);
+        let attrs = match &mut node.kind {
+          NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+          _ => return Err(DomError::InvalidNodeType),
         };
         if attrs
           .iter()

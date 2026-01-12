@@ -1,5 +1,3 @@
-use crate::dom::HTML_NAMESPACE;
-
 use super::{Document, DomError, NodeId, NodeKind};
 use std::collections::{HashMap, HashSet};
 
@@ -244,19 +242,6 @@ impl MutationObserverAgent {
     }
 
     Ok(())
-  }
-}
-
-fn is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == HTML_NAMESPACE
-}
-
-fn is_html_element_kind(kind: &NodeKind) -> bool {
-  match kind {
-    NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
-      is_html_namespace(namespace)
-    }
-    _ => false,
   }
 }
 
@@ -581,7 +566,12 @@ impl Document {
   ) -> Result<(), DomError> {
     self.node_checked(target)?;
 
-    let is_html = is_html_element_kind(&self.nodes[target.index()].kind);
+    let is_html = match &self.nodes[target.index()].kind {
+      NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
+        self.is_html_case_insensitive_namespace(namespace)
+      }
+      _ => false,
+    };
     let attr_name = if is_html {
       name.to_ascii_lowercase()
     } else {

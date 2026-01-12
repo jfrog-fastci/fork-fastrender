@@ -14,7 +14,7 @@ fn find_first_html_script(doc: &Document) -> NodeId {
         namespace,
         ..
       } if tag_name.eq_ignore_ascii_case("script")
-        && (namespace.is_empty() || namespace == HTML_NAMESPACE) =>
+        && doc.is_html_case_insensitive_namespace(namespace) =>
       {
         Some(NodeId::from_index(idx))
       }

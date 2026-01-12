@@ -1,23 +1,19 @@
-use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
+use crate::dom::{is_valid_shadow_host_name, ShadowRootMode};
 
 use super::{Document, NodeId, NodeKind};
-
-fn is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == HTML_NAMESPACE
-}
 
 fn node_is_element_like(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
 }
 
-fn node_is_template_element(kind: &NodeKind) -> bool {
+fn node_is_template_element(doc: &Document, kind: &NodeKind) -> bool {
   matches!(
     kind,
     NodeKind::Element {
       tag_name,
       namespace,
       ..
-    } if tag_name.eq_ignore_ascii_case("template") && is_html_namespace(namespace)
+    } if tag_name.eq_ignore_ascii_case("template") && doc.is_html_case_insensitive_namespace(namespace)
   )
 }
 
@@ -25,15 +21,15 @@ fn node_is_shadow_root(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::ShadowRoot { .. })
 }
 
-fn node_is_valid_shadow_host(kind: &NodeKind) -> bool {
+fn node_is_valid_shadow_host(doc: &Document, kind: &NodeKind) -> bool {
   match kind {
     NodeKind::Element {
       tag_name,
       namespace,
       ..
-    } => is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
+    } => doc.is_html_case_insensitive_namespace(namespace) && is_valid_shadow_host_name(tag_name),
     NodeKind::Slot { namespace, .. } => {
-      is_html_namespace(namespace) && is_valid_shadow_host_name("slot")
+      doc.is_html_case_insensitive_namespace(namespace) && is_valid_shadow_host_name("slot")
     }
     _ => false,
   }
@@ -50,7 +46,7 @@ fn has_attribute(attrs: &[(String, String)], name: &str) -> bool {
   attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case(name))
 }
 
-fn parse_shadow_root_definition(kind: &NodeKind) -> Option<(ShadowRootMode, bool)> {
+fn parse_shadow_root_definition(doc: &Document, kind: &NodeKind) -> Option<(ShadowRootMode, bool)> {
   let NodeKind::Element {
     tag_name,
     namespace,
@@ -65,7 +61,7 @@ fn parse_shadow_root_definition(kind: &NodeKind) -> Option<(ShadowRootMode, bool
     return None;
   }
   // Declarative shadow DOM only applies to HTML templates, not e.g. SVG <template>.
-  if !is_html_namespace(namespace) {
+  if !doc.is_html_case_insensitive_namespace(namespace) {
     return None;
   }
 
@@ -143,6 +139,9 @@ impl Document {
   /// This mirrors `crate::dom::attach_shadow_roots` and must run as a post-processing step once
   /// HTML parsing is complete.
   pub(crate) fn attach_shadow_roots(&mut self) {
+    if !self.is_html_document() {
+      return;
+    }
     // Run in post-order so nested declarative shadow roots are promoted before their ancestors.
     let mut stack: Vec<(NodeId, bool)> = Vec::new();
     stack.push((self.root, false));
@@ -156,14 +155,14 @@ impl Document {
         // element. Additional `<template shadowroot=...>` siblings must remain inert, so we skip
         // traversing into them here.
         let first_declarative_shadow_template = if node_is_element_like(&node.kind)
-          && !node_is_template_element(&node.kind)
-          && node_is_valid_shadow_host(&node.kind)
+          && !node_is_template_element(self, &node.kind)
+          && node_is_valid_shadow_host(self, &node.kind)
           && !node.children.iter().any(|&child_id| {
             self.node(child_id).parent == Some(id) && node_is_shadow_root(&self.node(child_id).kind)
           }) {
           node.children.iter().position(|&child_id| {
             self.node(child_id).parent == Some(id)
-              && parse_shadow_root_definition(&self.node(child_id).kind).is_some()
+              && parse_shadow_root_definition(self, &self.node(child_id).kind).is_some()
           })
         } else {
           None
@@ -179,7 +178,8 @@ impl Document {
 
           // Template contents are inert; only the first declarative shadow DOM template is walked so
           // nested declarative shadow roots inside it can be promoted.
-          if node_is_template_element(child_kind) && first_declarative_shadow_template != Some(idx)
+          if node_is_template_element(self, child_kind)
+            && first_declarative_shadow_template != Some(idx)
           {
             continue;
           }
@@ -193,8 +193,8 @@ impl Document {
       let shadow_template = {
         let node = self.node(id);
         if !node_is_element_like(&node.kind)
-          || node_is_template_element(&node.kind)
-          || !node_is_valid_shadow_host(&node.kind)
+          || node_is_template_element(self, &node.kind)
+          || !node_is_valid_shadow_host(self, &node.kind)
         {
           None
         } else if node.children.iter().any(|&child_id| {
@@ -211,7 +211,7 @@ impl Document {
                 return None;
               }
               let child_kind = &self.node(child_id).kind;
-              parse_shadow_root_definition(child_kind)
+              parse_shadow_root_definition(self, child_kind)
                 .map(|(mode, delegates_focus)| (idx, child_id, mode, delegates_focus))
             })
         }

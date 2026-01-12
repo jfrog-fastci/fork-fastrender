@@ -3,10 +3,6 @@ use crate::web::dom::DomException;
 
 use super::{Document, NodeId, NodeKind};
 
-fn is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == HTML_NAMESPACE
-}
-
 /// Returns the namespace URI for a stored namespace string.
 ///
 /// `dom2` normalizes HTML namespace elements to store `namespace=""`; for XML serialization we need
@@ -116,7 +112,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             prefix,
             ..
           } => {
-            let is_html = is_html_namespace(namespace);
+            let is_html = doc.is_html_case_insensitive_namespace(namespace);
             out.push_str("</");
             if let Some(prefix) = prefix.as_deref() {
               if is_html {
@@ -134,7 +130,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             out.push('>');
           }
           NodeKind::Slot { namespace, .. } => {
-            let is_html = is_html_namespace(namespace);
+            let is_html = doc.is_html_case_insensitive_namespace(namespace);
             out.push_str("</");
             if is_html {
               out.push_str("slot");
@@ -212,7 +208,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             attributes,
             ..
           } => {
-            let is_html = is_html_namespace(namespace);
+            let is_html = doc.is_html_case_insensitive_namespace(namespace);
             let ns_uri = namespace_uri_for_storage(namespace.as_str());
 
             // Validate any explicit `xmlns` attribute matches the element's actual namespace.
@@ -334,7 +330,7 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             attributes,
             ..
           } => {
-            let is_html = is_html_namespace(namespace);
+            let is_html = doc.is_html_case_insensitive_namespace(namespace);
             let ns_uri = namespace_uri_for_storage(namespace.as_str());
 
             let explicit_xmlns = attributes.iter().find_map(|(name, value)| {

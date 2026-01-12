@@ -1,4 +1,3 @@
-use crate::dom::HTML_NAMESPACE;
 use selectors::context::QuirksMode;
 
 use super::{Document, Node, NodeId, NodeKind};
@@ -10,11 +9,6 @@ use super::{Document, Node, NodeId, NodeKind};
 #[inline]
 fn is_dom_ascii_whitespace(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
-}
-
-#[inline]
-fn is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == HTML_NAMESPACE
 }
 
 fn parse_ordered_set(input: &str) -> Vec<&str> {
@@ -118,7 +112,7 @@ impl Document {
         if match_all {
           return true;
         }
-        if is_html_namespace(namespace) {
+        if self.is_html_case_insensitive_namespace(namespace) {
           tag_name.eq_ignore_ascii_case(qualified_name)
         } else {
           tag_name == qualified_name
@@ -128,7 +122,7 @@ impl Document {
         if match_all {
           return true;
         }
-        if is_html_namespace(namespace) {
+        if self.is_html_case_insensitive_namespace(namespace) {
           "slot".eq_ignore_ascii_case(qualified_name)
         } else {
           "slot" == qualified_name
@@ -169,8 +163,8 @@ impl Document {
           return false;
         };
 
-        if is_html_namespace(query_ns) {
-          is_html_namespace(node_ns)
+        if self.is_html_case_insensitive_namespace(query_ns) {
+          self.is_html_case_insensitive_namespace(node_ns)
         } else {
           node_ns == query_ns
         }
@@ -213,7 +207,7 @@ impl Document {
         _ => return false,
       };
 
-      let is_html = is_html_namespace(namespace);
+      let is_html = self.is_html_case_insensitive_namespace(namespace);
       let Some(class_value) = attributes.iter().find_map(|(name, value)| {
         let name_ok = if is_html {
           name.eq_ignore_ascii_case("class")
@@ -267,7 +261,7 @@ impl Document {
         _ => return false,
       };
 
-      let is_html = is_html_namespace(namespace);
+      let is_html = self.is_html_case_insensitive_namespace(namespace);
       attributes.iter().any(|(attr_name, value)| {
         let name_ok = if is_html {
           attr_name.eq_ignore_ascii_case("name")
@@ -279,4 +273,3 @@ impl Document {
     })
   }
 }
-

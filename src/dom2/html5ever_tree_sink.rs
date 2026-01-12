@@ -129,12 +129,8 @@ impl Dom2TreeSink {
     }
   }
 
-  fn is_html_namespace(namespace: &str) -> bool {
-    namespace.is_empty() || namespace == HTML_NAMESPACE
-  }
-
-  fn normalize_namespace_for_storage(ns: &str) -> String {
-    if ns == HTML_NAMESPACE {
+  fn normalize_namespace_for_storage(doc: &Document, ns: &str) -> String {
+    if doc.is_html_document() && ns == HTML_NAMESPACE {
       String::new()
     } else {
       ns.to_string()
@@ -165,15 +161,17 @@ impl Dom2TreeSink {
           namespace,
           ..
         } => {
-          if tag_name.eq_ignore_ascii_case("head") && Self::is_html_namespace(namespace) {
+          if tag_name.eq_ignore_ascii_case("head")
+            && doc.is_html_case_insensitive_namespace(namespace)
+          {
             in_head = true;
           }
-          if !Self::is_html_namespace(namespace) {
+          if !doc.is_html_case_insensitive_namespace(namespace) {
             in_foreign_namespace = true;
           }
         }
         NodeKind::Slot { namespace, .. } => {
-          if !Self::is_html_namespace(namespace) {
+          if !doc.is_html_case_insensitive_namespace(namespace) {
             in_foreign_namespace = true;
           }
         }
@@ -515,7 +513,7 @@ impl Dom2TreeSink {
       );
       return;
     }
-    if tag_name.eq_ignore_ascii_case("link") && Self::is_html_namespace(namespace) {
+    if tag_name.eq_ignore_ascii_case("link") && doc.is_html_case_insensitive_namespace(namespace) {
       if in_template || in_foreign_namespace {
         return;
       }
@@ -615,10 +613,10 @@ impl TreeSink for Dom2TreeSink {
         tag_name,
         namespace,
         ..
-      } => Self::is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
+      } => doc.is_html_case_insensitive_namespace(namespace) && is_valid_shadow_host_name(tag_name),
       NodeKind::Slot { namespace, .. } => {
         // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.
-        Self::is_html_namespace(namespace) && is_valid_shadow_host_name("slot")
+        doc.is_html_case_insensitive_namespace(namespace) && is_valid_shadow_host_name("slot")
       }
       _ => false,
     }
@@ -663,10 +661,10 @@ impl TreeSink for Dom2TreeSink {
         tag_name,
         namespace,
         ..
-      } => Self::is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
+      } => doc.is_html_case_insensitive_namespace(namespace) && is_valid_shadow_host_name(tag_name),
       NodeKind::Slot { namespace, .. } => {
         // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.
-        Self::is_html_namespace(namespace) && is_valid_shadow_host_name("slot")
+        doc.is_html_case_insensitive_namespace(namespace) && is_valid_shadow_host_name("slot")
       }
       _ => false,
     };
@@ -744,8 +742,12 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
-    let namespace = Self::normalize_namespace_for_storage(name.ns.as_ref());
-    let is_html_namespace = Self::is_html_namespace(namespace.as_str());
+    let (namespace, is_html_namespace) = {
+      let doc = self.document.borrow();
+      let namespace = Self::normalize_namespace_for_storage(&doc, name.ns.as_ref());
+      let is_html_namespace = doc.is_html_case_insensitive_namespace(namespace.as_str());
+      (namespace, is_html_namespace)
+    };
     let mut attributes = Vec::with_capacity(attrs.len());
     for attr in attrs {
       attributes.push((attr.name.local.to_string(), attr.value.to_string()));
@@ -1020,22 +1022,28 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn add_attrs_if_missing(&self, target: &NodeId, attrs: Vec<Attribute>) {
+    let Some(is_html) = (|| {
+      let doc = self.document.borrow();
+      if target.index() >= doc.nodes_len() {
+        return None;
+      }
+      match &doc.node(*target).kind {
+        NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
+          Some(doc.is_html_case_insensitive_namespace(namespace))
+        }
+        _ => None,
+      }
+    })() else {
+      return;
+    };
+
     let mut doc = self.document.borrow_mut();
     if target.index() >= doc.nodes_len() {
       return;
     }
     let kind = &mut doc.node_mut(*target).kind;
-    let (existing, is_html) = match kind {
-      NodeKind::Element {
-        namespace,
-        attributes,
-        ..
-      } => (attributes, Self::is_html_namespace(namespace)),
-      NodeKind::Slot {
-        namespace,
-        attributes,
-        ..
-      } => (attributes, Self::is_html_namespace(namespace)),
+    let existing = match kind {
+      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
       _ => return,
     };
 

@@ -1,5 +1,3 @@
-use crate::dom::HTML_NAMESPACE;
-
 use super::{Document, DomError, NodeId, NodeKind};
 
 #[derive(Debug, Clone)]
@@ -67,11 +65,21 @@ fn clone_node_shallow_from_other_document(
 ) -> Result<NodeId, DomError> {
   src.node_checked(src_id)?;
 
+  let dst_is_html = dst.is_html_document();
+
   // HTML cloning steps for form controls copy internal state (value/checkedness + dirty flags).
   // `push_node` initializes state from attributes in the destination document, so capture the live
   // source state and overwrite the freshly-allocated destination slots.
-  let input_state = src.input_states[src_id.index()].clone();
-  let textarea_state = src.textarea_states[src_id.index()].clone();
+  let input_state = if dst_is_html {
+    src.input_states[src_id.index()].clone()
+  } else {
+    None
+  };
+  let textarea_state = if dst_is_html {
+    src.textarea_states[src_id.index()].clone()
+  } else {
+    None
+  };
 
   let (
     kind,
@@ -83,15 +91,7 @@ fn clone_node_shallow_from_other_document(
     mathml_annotation_xml_integration_point,
   ) = {
     let node = &src.nodes[src_id.index()];
-    let is_html_script = matches!(
-      &node.kind,
-      NodeKind::Element {
-        tag_name,
-        namespace,
-        ..
-      } if tag_name.eq_ignore_ascii_case("script")
-        && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-    );
+    let is_html_script = dst.kind_is_html_script(&node.kind);
     let script_parser_document = node.script_parser_document;
     let script_force_async = match semantics {
       CrossDocumentCloneSemantics::Clone => {
@@ -152,12 +152,23 @@ fn clone_node_shallow_from_other_document(
         namespace,
         attributes,
         ..
-      } => NodeKind::Slot {
-        namespace: namespace.clone(),
-        attributes: attributes.clone(),
-        // Slot assignment is derived state; imported clones start detached.
-        assigned: false,
-      },
+      } => {
+        if dst.is_html_case_insensitive_namespace(namespace) {
+          NodeKind::Slot {
+            namespace: namespace.clone(),
+            attributes: attributes.clone(),
+            // Slot assignment is derived state; imported clones start detached.
+            assigned: false,
+          }
+        } else {
+          NodeKind::Element {
+            tag_name: "slot".to_string(),
+            namespace: namespace.clone(),
+            prefix: None,
+            attributes: attributes.clone(),
+          }
+        }
+      }
       NodeKind::Element {
         tag_name,
         namespace,
@@ -186,10 +197,19 @@ fn clone_node_shallow_from_other_document(
     )
   };
 
+  let inert_subtree = inert_subtree && dst_is_html;
   let dst_id = dst.push_node(kind, parent, inert_subtree);
 
-  dst.input_states[dst_id.index()] = input_state;
-  dst.textarea_states[dst_id.index()] = textarea_state;
+  if dst_is_html {
+    // Only overwrite freshly-initialized form control state when the source node actually had state
+    // to preserve. This avoids accidentally clearing state when cloning from an XML document.
+    if input_state.is_some() {
+      dst.input_states[dst_id.index()] = input_state;
+    }
+    if textarea_state.is_some() {
+      dst.textarea_states[dst_id.index()] = textarea_state;
+    }
+  }
 
   // Preserve HTML parser flags that affect future parsing behavior.
   dst.nodes[dst_id.index()].mathml_annotation_xml_integration_point =
@@ -212,8 +232,6 @@ fn clone_node_shallow_from_other_document(
       dst.nodes[dst_id.index()].script_parser_document = script_parser_document;
       dst.nodes[dst_id.index()].script_force_async = script_force_async;
       dst.nodes[dst_id.index()].script_already_started = script_already_started;
-      dst.input_states[dst_id.index()] = src.input_states[src_id.index()].clone();
-      dst.textarea_states[dst_id.index()] = src.textarea_states[src_id.index()].clone();
     }
   }
 

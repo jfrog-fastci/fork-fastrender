@@ -1,4 +1,3 @@
-use crate::dom::HTML_NAMESPACE;
 use selectors::context::QuirksMode;
 
 use super::html_fragment_parse::parse_html_fragment_to_dom2_document;
@@ -86,7 +85,7 @@ pub(super) fn parse_html_fragment_as_fragment(
     if !tag_name.eq_ignore_ascii_case("script") {
       continue;
     }
-    if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+    if !doc.is_html_case_insensitive_namespace(namespace) {
       continue;
     }
     doc.nodes[node_id.index()].script_force_async = false;

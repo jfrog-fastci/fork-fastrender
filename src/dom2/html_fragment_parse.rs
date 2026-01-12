@@ -117,7 +117,7 @@ fn is_synthetic_html_wrapper(doc: &Document, node_id: NodeId) -> bool {
   match &doc.node(node_id).kind {
     NodeKind::Element {
       tag_name, namespace, ..
-    } => (namespace.is_empty() || namespace == HTML_NAMESPACE) && tag_name.eq_ignore_ascii_case("html"),
+    } => doc.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("html"),
     _ => false,
   }
 }
@@ -214,4 +214,3 @@ pub(super) fn parse_html_fragment_to_dom2_document(
   let roots = fragment_roots_from_document(&document);
   Ok(ParsedFragment { document, roots })
 }
-

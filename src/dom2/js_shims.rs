@@ -6,7 +6,6 @@
 
 use super::style_attr::{parse_style_attribute, serialize_style_attribute};
 use super::{Document, DomError, NodeId, NodeKind};
-use crate::dom::HTML_NAMESPACE;
 
 fn dataset_prop_to_attr(prop: &str) -> Option<String> {
   if prop.is_empty() {
@@ -419,7 +418,7 @@ impl Document {
     else {
       return false;
     };
-    (namespace.is_empty() || namespace == HTML_NAMESPACE) && tag_name.eq_ignore_ascii_case(tag)
+    self.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case(tag)
   }
 
   pub fn select_options(&self, select: NodeId) -> Vec<NodeId> {

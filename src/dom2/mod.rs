@@ -223,7 +223,14 @@ impl MutationLog {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentKind {
+  Html,
+  Xml,
+}
+
 pub struct Document {
+  kind: DocumentKind,
   nodes: Vec<Node>,
   // Form control state slots keyed by `NodeId` index.
   input_states: Vec<Option<form_controls::InputState>>,
@@ -247,6 +254,7 @@ pub struct Document {
 impl Clone for Document {
   fn clone(&self) -> Self {
     Self {
+      kind: self.kind,
       nodes: self.nodes.clone(),
       input_states: self.input_states.clone(),
       textarea_states: self.textarea_states.clone(),
@@ -274,39 +282,12 @@ impl Clone for Document {
 impl std::fmt::Debug for Document {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("Document")
+      .field("kind", &self.kind)
       .field("nodes", &self.nodes)
       .field("root", &self.root)
       .field("scripting_enabled", &self.scripting_enabled)
       .field("mutation_generation", &self.mutation_generation)
       .finish()
-  }
-}
-
-fn kind_implies_inert_subtree(kind: &NodeKind) -> bool {
-  match kind {
-    NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } => {
-      tag_name.eq_ignore_ascii_case("template")
-        && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-    }
-    _ => false,
-  }
-}
-
-fn kind_is_html_script(kind: &NodeKind) -> bool {
-  match kind {
-    NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } => {
-      tag_name.eq_ignore_ascii_case("script")
-        && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-    }
-    _ => false,
   }
 }
 
@@ -425,6 +406,7 @@ impl Document {
   /// use this method instead.
   pub fn clone_with_events(&self) -> Self {
     Self {
+      kind: self.kind,
       nodes: self.nodes.clone(),
       input_states: self.input_states.clone(),
       textarea_states: self.textarea_states.clone(),
@@ -459,6 +441,9 @@ impl Document {
   }
 
   fn should_inject_wbr_zwsp(&self, node_id: NodeId) -> bool {
+    if !self.is_html_document() {
+      return false;
+    }
     let node = self.node(node_id);
     let NodeKind::Element {
       tag_name,
@@ -471,7 +456,7 @@ impl Document {
     if !tag_name.eq_ignore_ascii_case("wbr") {
       return false;
     }
-    if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+    if !self.is_html_case_insensitive_namespace(namespace) {
       return false;
     }
 
@@ -512,6 +497,7 @@ impl Document {
     mutation_observer_agent: Rc<RefCell<mutation_observer::MutationObserverAgent>>,
   ) -> Self {
     let mut doc = Self {
+      kind: DocumentKind::Html,
       nodes: Vec::new(),
       input_states: Vec::new(),
       textarea_states: Vec::new(),
@@ -542,6 +528,71 @@ impl Document {
 
   pub fn new(quirks_mode: QuirksMode) -> Self {
     Self::new_with_scripting(quirks_mode, true)
+  }
+
+  pub fn new_xml() -> Self {
+    let mut doc = Self {
+      kind: DocumentKind::Xml,
+      nodes: Vec::new(),
+      input_states: Vec::new(),
+      textarea_states: Vec::new(),
+      root: NodeId(0),
+      ready_state: DocumentReadyState::Loading,
+      events: web_events::EventListenerRegistry::new(),
+      // DOMParser "text/xml"/"application/xml"/... flavors return a Document with scripting disabled.
+      scripting_enabled: false,
+      mutations: MutationLog::default(),
+      mutation_generation: 0,
+      selector_snapshot_cache: None,
+      mutation_observer_agent: Rc::new(RefCell::new(mutation_observer::MutationObserverAgent::new())),
+      live_mutation: live_mutation::LiveMutation::default(),
+    };
+    let root = doc.push_node(
+      NodeKind::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      None,
+      /* inert_subtree */ false,
+    );
+    debug_assert_eq!(root, NodeId(0));
+    doc.root = root;
+    doc
+  }
+
+  pub fn is_html_document(&self) -> bool {
+    matches!(self.kind, DocumentKind::Html)
+  }
+
+  pub fn is_html_case_insensitive_namespace(&self, ns: &str) -> bool {
+    self.is_html_document() && (ns.is_empty() || ns == HTML_NAMESPACE)
+  }
+
+  fn kind_implies_inert_subtree(&self, kind: &NodeKind) -> bool {
+    match kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        tag_name.eq_ignore_ascii_case("template")
+          && self.is_html_case_insensitive_namespace(namespace)
+      }
+      _ => false,
+    }
+  }
+
+  fn kind_is_html_script(&self, kind: &NodeKind) -> bool {
+    match kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        tag_name.eq_ignore_ascii_case("script")
+          && self.is_html_case_insensitive_namespace(namespace)
+      }
+      _ => false,
+    }
   }
 
   pub fn root(&self) -> NodeId {
@@ -698,7 +749,7 @@ impl Document {
 
   pub fn script_already_started(&self, node: NodeId) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
-    if !kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&node.kind) {
       return Err(DomError::InvalidNodeType);
     }
     Ok(node.script_already_started)
@@ -708,7 +759,7 @@ impl Document {
     // This is a per-script-element internal slot that does not affect rendering. Avoid bumping the
     // mutation generation so hosts can use it to detect *real* DOM changes.
     let node = self.node_checked_mut(node)?;
-    if !kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&node.kind) {
       return Err(DomError::InvalidNodeType);
     }
     node.script_already_started = value;
@@ -717,7 +768,7 @@ impl Document {
 
   pub fn script_force_async(&self, node: NodeId) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
-    if !kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&node.kind) {
       return Err(DomError::InvalidNodeType);
     }
     Ok(node.script_force_async)
@@ -725,7 +776,7 @@ impl Document {
 
   pub fn set_script_force_async(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
     let node = self.node_checked_mut(node)?;
-    if !kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&node.kind) {
       return Err(DomError::InvalidNodeType);
     }
     node.script_force_async = value;
@@ -734,14 +785,14 @@ impl Document {
 
   pub fn script_parser_document(&self, node: NodeId) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
-    if !kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&node.kind) {
       return Err(DomError::InvalidNodeType);
     }
     Ok(node.script_parser_document)
   }
   pub fn set_script_parser_document(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
     let node = self.node_checked_mut(node)?;
-    if !kind_is_html_script(&node.kind) {
+    if !self.kind_is_html_script(&node.kind) {
       return Err(DomError::InvalidNodeType);
     }
     node.script_parser_document = value;
@@ -865,7 +916,7 @@ impl Document {
         ..
       } = &node.kind
       {
-        let is_html = namespace.is_empty() || namespace == HTML_NAMESPACE;
+        let is_html = self.is_html_case_insensitive_namespace(namespace);
         if attributes.iter().any(|(name, value)| {
           (if is_html {
             name.eq_ignore_ascii_case("id")
@@ -907,6 +958,9 @@ impl Document {
 
   #[inline]
   fn is_html_element(&self, node_id: NodeId, tag: &str) -> bool {
+    if !self.is_html_document() {
+      return false;
+    }
     let Some(node) = self.nodes.get(node_id.index()) else {
       return false;
     };
@@ -915,7 +969,7 @@ impl Document {
         tag_name,
         namespace,
         ..
-      } if (namespace.is_empty() || namespace == HTML_NAMESPACE)
+      } if self.is_html_case_insensitive_namespace(namespace)
         && tag_name.eq_ignore_ascii_case(tag) =>
       {
         true
@@ -991,7 +1045,7 @@ impl Document {
 
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {
     let id = NodeId(self.nodes.len());
-    let inert_subtree = inert_subtree || kind_implies_inert_subtree(&kind);
+    let inert_subtree = inert_subtree || self.kind_implies_inert_subtree(&kind);
     let (input_state, textarea_state) = self.init_form_control_state_for_node_kind(&kind);
     self.nodes.push(Node {
       kind,
@@ -2369,6 +2423,8 @@ mod shadow_boundary_tests;
 mod xml_parse_tests;
 #[cfg(test)]
 mod wbr_tests;
+#[cfg(test)]
+mod xml_document_tests;
 
 #[cfg(test)]
 mod helper_tests {

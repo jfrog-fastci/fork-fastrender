@@ -1,10 +1,4 @@
-use crate::dom::HTML_NAMESPACE;
-
 use super::{Document, NodeId, NodeKind};
-
-fn is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == HTML_NAMESPACE
-}
 
 fn is_void_html_element(tag_name: &str) -> bool {
   // https://html.spec.whatwg.org/multipage/syntax.html#void-elements
@@ -24,9 +18,9 @@ fn is_void_html_element(tag_name: &str) -> bool {
     || tag_name.eq_ignore_ascii_case("wbr")
 }
 
-fn is_rawtext_element(tag_name: &str, namespace: &str) -> bool {
+fn is_rawtext_element(doc: &Document, tag_name: &str, namespace: &str) -> bool {
   // Minimal raw text support: preserve JS/CSS text when serializing `<script>`/`<style>`.
-  is_html_namespace(namespace)
+  doc.is_html_case_insensitive_namespace(namespace)
     && (tag_name.eq_ignore_ascii_case("script") || tag_name.eq_ignore_ascii_case("style"))
 }
 
@@ -61,12 +55,13 @@ fn escape_attr_value(out: &mut String, value: &str) {
 }
 
 fn serialize_start_tag(
+  doc: &Document,
   out: &mut String,
   tag_name: &str,
   namespace: &str,
   attributes: &[(String, String)],
 ) -> bool {
-  let is_html = is_html_namespace(namespace);
+  let is_html = doc.is_html_case_insensitive_namespace(namespace);
   let is_void = is_html && is_void_html_element(tag_name);
 
   out.push('<');
@@ -93,8 +88,8 @@ fn serialize_start_tag(
   is_void
 }
 
-fn serialize_end_tag(out: &mut String, tag_name: &str, namespace: &str) {
-  let is_html = is_html_namespace(namespace);
+fn serialize_end_tag(doc: &Document, out: &mut String, tag_name: &str, namespace: &str) {
+  let is_html = doc.is_html_case_insensitive_namespace(namespace);
   out.push_str("</");
   if is_html {
     push_lowercase_ascii(out, tag_name);
@@ -135,13 +130,13 @@ fn serialize_nodes(
             namespace,
             ..
           } => {
-            if is_html_namespace(namespace) && is_void_html_element(tag_name) {
+            if doc.is_html_case_insensitive_namespace(namespace) && is_void_html_element(tag_name) {
               continue;
             }
-            serialize_end_tag(out, tag_name, namespace);
+            serialize_end_tag(doc, out, tag_name, namespace);
           }
           NodeKind::Slot { namespace, .. } => {
-            serialize_end_tag(out, "slot", namespace);
+            serialize_end_tag(doc, out, "slot", namespace);
           }
           _ => {}
         }
@@ -177,14 +172,14 @@ fn serialize_nodes(
             prefix: _,
             attributes,
           } => {
-            let wrote_void = serialize_start_tag(out, tag_name, namespace, attributes);
+            let wrote_void = serialize_start_tag(doc, out, tag_name, namespace, attributes);
             if wrote_void {
               continue;
             }
 
             stack.push(Frame::ExitElement { node: node_id });
 
-            let rawtext = is_rawtext_element(tag_name, namespace);
+            let rawtext = is_rawtext_element(doc, tag_name, namespace);
             for &child in node.children.iter().rev() {
               let Some(child_node) = doc.nodes.get(child.index()) else {
                 continue;
@@ -209,7 +204,7 @@ fn serialize_nodes(
             attributes,
             ..
           } => {
-            let wrote_void = serialize_start_tag(out, "slot", namespace, attributes);
+            let wrote_void = serialize_start_tag(doc, out, "slot", namespace, attributes);
             if wrote_void {
               continue;
             }
@@ -267,8 +262,8 @@ pub(super) fn serialize_children(doc: &Document, parent: NodeId) -> String {
       tag_name,
       namespace,
       ..
-    } => is_rawtext_element(tag_name, namespace),
-    NodeKind::Slot { namespace, .. } => is_rawtext_element("slot", namespace),
+    } => is_rawtext_element(doc, tag_name, namespace),
+    NodeKind::Slot { namespace, .. } => is_rawtext_element(doc, "slot", namespace),
     _ => false,
   };
 

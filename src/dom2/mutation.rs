@@ -12,16 +12,8 @@ struct CloneNodeData {
   mathml_annotation_xml_integration_point: bool,
 }
 
-fn clone_node_data(src: &Node, parent: Option<NodeId>) -> CloneNodeData {
-  let is_html_script = matches!(
-    &src.kind,
-    NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } if tag_name.eq_ignore_ascii_case("script")
-      && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-  );
+fn clone_node_data(doc: &Document, src: &Node, parent: Option<NodeId>) -> CloneNodeData {
+  let is_html_script = doc.kind_is_html_script(&src.kind);
 
   let script_force_async = if is_html_script {
     let NodeKind::Element { attributes, .. } = &src.kind else {
@@ -75,12 +67,31 @@ fn clone_node_data(src: &Node, parent: Option<NodeId>) -> CloneNodeData {
       namespace,
       attributes,
       ..
-    } => NodeKind::Slot {
-      namespace: namespace.clone(),
-      attributes: attributes.clone(),
-      // Slot assignment is derived state; cloned nodes start detached.
-      assigned: false,
-    },
+    } => {
+      // `NodeKind::Slot` is an HTML-only fast-path. When cloning into an XML document (or into a
+      // non-HTML namespace), treat it as a plain element.
+      let is_html_slot = doc.is_html_case_insensitive_namespace(namespace);
+      let namespace = if doc.is_html_document() && namespace == HTML_NAMESPACE {
+        String::new()
+      } else {
+        namespace.clone()
+      };
+      if is_html_slot {
+        NodeKind::Slot {
+          namespace,
+          attributes: attributes.clone(),
+          // Slot assignment is derived state; cloned nodes start detached.
+          assigned: false,
+        }
+      } else {
+        NodeKind::Element {
+          tag_name: "slot".to_string(),
+          namespace,
+          prefix: None,
+          attributes: attributes.clone(),
+        }
+      }
+    }
     NodeKind::Element {
       tag_name,
       namespace,
@@ -88,7 +99,11 @@ fn clone_node_data(src: &Node, parent: Option<NodeId>) -> CloneNodeData {
       attributes,
     } => NodeKind::Element {
       tag_name: tag_name.clone(),
-      namespace: namespace.clone(),
+      namespace: if doc.is_html_document() && namespace == HTML_NAMESPACE {
+        String::new()
+      } else {
+        namespace.clone()
+      },
       prefix: prefix.clone(),
       attributes: attributes.clone(),
     },
@@ -99,7 +114,8 @@ fn clone_node_data(src: &Node, parent: Option<NodeId>) -> CloneNodeData {
 
   CloneNodeData {
     kind,
-    inert_subtree: src.inert_subtree,
+    // Template inertness is an HTML-only behaviour; don't carry it into XML documents.
+    inert_subtree: src.inert_subtree && doc.is_html_document(),
     is_html_script,
     script_force_async,
     script_already_started: src.script_already_started,
@@ -127,17 +143,35 @@ fn push_cloned_node(doc: &mut Document, parent: Option<NodeId>, data: CloneNodeD
 
 impl Document {
   fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
+    let copy_form_state = self.is_html_document();
     let (data, input_state, textarea_state) = {
       let node = self.node_checked(src)?;
       (
-        clone_node_data(node, parent),
-        self.input_states[src.index()].clone(),
-        self.textarea_states[src.index()].clone(),
+        clone_node_data(self, node, parent),
+        if copy_form_state {
+          self.input_states[src.index()].clone()
+        } else {
+          None
+        },
+        if copy_form_state {
+          self.textarea_states[src.index()].clone()
+        } else {
+          None
+        },
       )
     };
     let dst = push_cloned_node(self, parent, data);
-    self.input_states[dst.index()] = input_state;
-    self.textarea_states[dst.index()] = textarea_state;
+    if copy_form_state {
+      // Only overwrite the destination's freshly-initialized form control state when the source
+      // node actually had state to preserve. This avoids accidentally clearing state when importing
+      // from an XML document (which never has HTML form control internal state).
+      if input_state.is_some() {
+        self.input_states[dst.index()] = input_state;
+      }
+      if textarea_state.is_some() {
+        self.textarea_states[dst.index()] = textarea_state;
+      }
+    }
     Ok(dst)
   }
 
@@ -147,17 +181,35 @@ impl Document {
     src: NodeId,
     parent: Option<NodeId>,
   ) -> Result<NodeId, DomError> {
+    let copy_form_state = self.is_html_document();
     let (data, input_state, textarea_state) = {
       let node = src_doc.node_checked(src)?;
       (
-        clone_node_data(node, parent),
-        src_doc.input_states[src.index()].clone(),
-        src_doc.textarea_states[src.index()].clone(),
+        clone_node_data(self, node, parent),
+        if copy_form_state {
+          src_doc.input_states[src.index()].clone()
+        } else {
+          None
+        },
+        if copy_form_state {
+          src_doc.textarea_states[src.index()].clone()
+        } else {
+          None
+        },
       )
     };
     let dst = push_cloned_node(self, parent, data);
-    self.input_states[dst.index()] = input_state;
-    self.textarea_states[dst.index()] = textarea_state;
+    if copy_form_state {
+      // Only overwrite the destination's freshly-initialized form control state when the source
+      // node actually had state to preserve. This avoids accidentally clearing state when importing
+      // from an XML document (which never has HTML form control internal state).
+      if input_state.is_some() {
+        self.input_states[dst.index()] = input_state;
+      }
+      if textarea_state.is_some() {
+        self.textarea_states[dst.index()] = textarea_state;
+      }
+    }
     Ok(dst)
   }
 
@@ -631,9 +683,10 @@ impl Document {
     namespace: &str,
     prefix: Option<&str>,
   ) -> NodeId {
-    let is_html_ns = namespace.is_empty() || namespace == HTML_NAMESPACE;
-    // Normalise HTML namespace to the empty string, matching the renderer DOM representation.
-    let namespace = if namespace == HTML_NAMESPACE {
+    let is_html_ns = self.is_html_case_insensitive_namespace(namespace);
+    // Normalise HTML namespace to the empty string for HTML documents, matching the renderer DOM
+    // representation.
+    let namespace = if is_html_ns && namespace == HTML_NAMESPACE {
       ""
     } else {
       namespace

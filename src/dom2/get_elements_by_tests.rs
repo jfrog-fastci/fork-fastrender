@@ -19,7 +19,7 @@ fn find_node_by_id(doc: &Document, id: &str) -> Option<NodeId> {
       } => (namespace, attributes),
       _ => continue,
     };
-    let is_html = namespace.is_empty() || namespace == HTML_NAMESPACE;
+    let is_html = doc.is_html_case_insensitive_namespace(namespace);
     if attributes.iter().any(|(name, value)| {
       (if is_html {
         name.eq_ignore_ascii_case("id")
@@ -413,4 +413,3 @@ fn template_element_has_no_element_children() {
   assert_eq!(doc.child_element_count(tpl), 0);
   assert!(doc.children_elements(tpl).is_empty());
 }
-

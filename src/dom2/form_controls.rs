@@ -1,5 +1,3 @@
-use crate::dom::HTML_NAMESPACE;
-
 use super::{Document, DomError, NodeId, NodeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,11 +12,6 @@ pub(crate) struct InputState {
 pub(crate) struct TextareaState {
   pub(crate) value: String,
   pub(crate) dirty_value: bool,
-}
-
-#[inline]
-fn is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == HTML_NAMESPACE
 }
 
 #[inline]
@@ -53,7 +46,7 @@ impl Document {
     else {
       return (None, None);
     };
-    if !is_html_namespace(namespace) {
+    if !self.is_html_case_insensitive_namespace(namespace) {
       return (None, None);
     }
 

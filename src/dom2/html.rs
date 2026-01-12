@@ -204,8 +204,8 @@ impl Document {
             tag_name,
             namespace,
             ..
-          }) if tag_name.eq_ignore_ascii_case("html")
-            && (namespace.is_empty() || namespace == HTML_NAMESPACE) =>
+           }) if tag_name.eq_ignore_ascii_case("html")
+             && self.is_html_case_insensitive_namespace(namespace) =>
           {
             self.create_element("body", HTML_NAMESPACE)
           }
@@ -223,8 +223,8 @@ impl Document {
             tag_name,
             namespace,
             ..
-          }) if tag_name.eq_ignore_ascii_case("html")
-            && (namespace.is_empty() || namespace == HTML_NAMESPACE) =>
+           }) if tag_name.eq_ignore_ascii_case("html")
+             && self.is_html_case_insensitive_namespace(namespace) =>
           {
             self.create_element("body", HTML_NAMESPACE)
           }
@@ -327,8 +327,7 @@ impl Document {
         ..
       } => (
         Some(context_node),
-        tag_name.eq_ignore_ascii_case("html")
-          && (namespace.is_empty() || namespace == HTML_NAMESPACE),
+        tag_name.eq_ignore_ascii_case("html") && self.is_html_case_insensitive_namespace(namespace),
       ),
       NodeKind::Slot { .. } => (Some(context_node), false),
       NodeKind::Text { .. } | NodeKind::Comment { .. } => {
@@ -342,7 +341,7 @@ impl Document {
               } => (
                 Some(parent),
                 tag_name.eq_ignore_ascii_case("html")
-                  && (namespace.is_empty() || namespace == HTML_NAMESPACE),
+                  && self.is_html_case_insensitive_namespace(namespace),
               ),
               NodeKind::Slot { .. } => (Some(parent), false),
               _ => (None, false),
@@ -375,7 +374,7 @@ impl Document {
           ..
         } => {
           tag_name.eq_ignore_ascii_case("script")
-            && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+             && self.is_html_case_insensitive_namespace(namespace)
         }
         _ => false,
       };
