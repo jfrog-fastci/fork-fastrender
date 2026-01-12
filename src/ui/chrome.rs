@@ -514,7 +514,7 @@ pub fn chrome_ui_with_bookmarks(
       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
       let address_bar_id = ui.make_persistent_id("address_bar");
       let egui_focus = ctx.memory(|mem| mem.has_focus(address_bar_id));
-      let show_text_edit =
+      let show_text_edit_initial =
         egui_focus || app.chrome.address_bar_has_focus || app.chrome.request_focus_address_bar;
 
       // Capture + consume navigation keys before building the text edit so they don't reach the
@@ -624,12 +624,19 @@ pub fn chrome_ui_with_bookmarks(
       let bar_height = ui.spacing().interact_size.y;
       let (bar_rect, bar_response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), bar_height),
-        if show_text_edit {
+        if show_text_edit_initial {
           egui::Sense::hover()
         } else {
           egui::Sense::click()
         },
       );
+      let clicked_display_mode = !show_text_edit_initial && bar_response.clicked();
+      if clicked_display_mode {
+        app.chrome.request_focus_address_bar = true;
+        app.chrome.request_select_all_address_bar = true;
+        ctx.request_repaint();
+      }
+      let show_text_edit = show_text_edit_initial || clicked_display_mode;
       address_bar_rect = Some(bar_rect);
       if !show_text_edit {
         // When the address bar is in display mode (non-editing), still expose a focusable element
@@ -901,23 +908,13 @@ pub fn chrome_ui_with_bookmarks(
         }
       }
 
-      // Display mode: click-to-focus and show the full URL on hover.
+      // Display mode: show the full URL on hover.
       if !show_text_edit {
-        let bar_response = if active_url.trim().is_empty() {
+        let _ = if active_url.trim().is_empty() {
           bar_response.on_hover_text("Enter URL…")
         } else {
           bar_response.on_hover_text(active_url.clone())
         };
-        if bar_response.clicked() {
-          app.chrome.request_focus_address_bar = true;
-          app.chrome.request_select_all_address_bar = true;
-          // Clicking the non-editing address bar flips state that is only observed on the *next*
-          // egui frame (because we don't build the `TextEdit` in the same frame as the click).
-          //
-          // Without an explicit repaint request, the windowed browser can stay stuck in display
-          // mode until another OS event arrives (making the address bar feel flaky).
-          ctx.request_repaint();
-        }
       }
 
       if let Some(response) = text_edit_response {
@@ -1595,43 +1592,19 @@ mod tests {
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let output = ctx.end_frame();
 
-    assert!(app.chrome.request_focus_address_bar);
-    assert!(app.chrome.request_select_all_address_bar);
     assert_eq!(
       output.repaint_after,
       std::time::Duration::ZERO,
       "expected click-to-focus to request a follow-up repaint so the address bar can enter editing mode"
     );
-  }
+    assert!(!app.chrome.request_focus_address_bar);
+    assert!(!app.chrome.request_select_all_address_bar);
 
-  #[test]
-  fn clicking_address_bar_focuses_on_first_follow_up_frame() {
-    let mut app = BrowserAppState::new();
-    let tab_id = TabId(1);
-    app.push_tab(
-      BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
-      true,
-    );
-
-    let ctx = egui::Context::default();
-
-    // Frame 1: click-to-focus sets request flags but does not build the `TextEdit` yet.
-    begin_frame(&ctx, left_click_at(egui::pos2(400.0, 60.0)));
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
-    let _ = ctx.end_frame();
-    assert!(app.chrome.request_focus_address_bar);
-    assert!(app.chrome.request_select_all_address_bar);
-    assert!(!app.chrome.address_bar_has_focus);
-
-    // Frame 2: follow-up repaint should apply the focus request immediately (no extra frame).
     begin_frame(&ctx, Vec::new());
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
-
     assert!(app.chrome.address_bar_has_focus);
     assert!(app.chrome.address_bar_editing);
-    assert!(!app.chrome.request_focus_address_bar);
-    assert!(!app.chrome.request_select_all_address_bar);
   }
 
   #[test]

@@ -13201,134 +13201,23 @@ impl Painter {
     }
   }
 
-  fn paint_inside_border_rect(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+  fn paint_fill_rect_crisp(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    if color.a <= 0.0
+      || !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+      || rect.width() <= 0.0
+      || rect.height() <= 0.0
+    {
+      return;
+    }
+
     let device_rect = self.device_rect(rect);
-
-    let Some(fill_rect) = SkiaRect::from_xywh(
-      device_rect.x(),
-      device_rect.y(),
-      device_rect.width(),
-      device_rect.height(),
-    ) else {
-      return;
-    };
-
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
-    paint.anti_alias = true;
-    self
-      .pixmap
-      .fill_rect(fill_rect, &paint, Transform::identity(), clip_mask);
-
-    let stroke_width = 1.0 * self.scale;
-    let half = stroke_width / 2.0;
-    let Some(border_rect) = SkiaRect::from_xywh(
-      device_rect.x() + half,
-      device_rect.y() + half,
-      (device_rect.width() - stroke_width).max(0.0),
-      (device_rect.height() - stroke_width).max(0.0),
-    ) else {
-      return;
-    };
-    let path = PathBuilder::from_rect(border_rect);
-    let mut stroke_paint = Paint::default();
-    stroke_paint.set_color_rgba8(150, 150, 150, 255);
-    stroke_paint.anti_alias = true;
-    let stroke = Stroke {
-      width: stroke_width,
-      ..Default::default()
-    };
-    self.pixmap.stroke_path(
-      &path,
-      &stroke_paint,
-      &stroke,
-      Transform::identity(),
-      clip_mask,
-    );
-  }
-
-  fn missing_image_icon_size(content_rect: Rect) -> f32 {
-    let min_side = content_rect.width().min(content_rect.height());
-    if !(min_side.is_finite() && min_side > 0.0) {
-      return 0.0;
-    }
-    let available = (min_side - 4.0).max(0.0);
-    let size = available.min(24.0);
-    if size >= 8.0 { size } else { 0.0 }
-  }
-
-  fn paint_broken_image_icon(&mut self, rect: Rect, clip_mask: Option<&Mask>) {
-    let device_rect = self.device_rect(rect);
-    let stroke_width = 1.0 * self.scale;
-    let half = stroke_width / 2.0;
-    let Some(outline_rect) = SkiaRect::from_xywh(
-      device_rect.x() + half,
-      device_rect.y() + half,
-      (device_rect.width() - stroke_width).max(0.0),
-      (device_rect.height() - stroke_width).max(0.0),
-    ) else {
-      return;
-    };
-
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(120, 120, 120, 255);
-    paint.anti_alias = true;
-    let stroke = Stroke {
-      width: stroke_width,
-      ..Default::default()
-    };
-
-    let outline_path = PathBuilder::from_rect(outline_rect);
-    self.pixmap.stroke_path(
-      &outline_path,
-      &paint,
-      &stroke,
-      Transform::identity(),
-      clip_mask,
-    );
-
-    let x0 = outline_rect.left();
-    let y0 = outline_rect.top();
-    let x1 = outline_rect.right();
-    let y1 = outline_rect.bottom();
-
-    let mut builder = PathBuilder::new();
-    builder.move_to(x0, y0);
-    builder.line_to(x1, y1);
-    builder.move_to(x0, y1);
-    builder.line_to(x1, y0);
-    if let Some(path) = builder.finish() {
-      self.pixmap.stroke_path(
-        &path,
-        &paint,
-        &stroke,
-        Transform::identity(),
-        clip_mask,
-      );
-    }
-  }
-  fn paint_missing_image_placeholder(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
-    self.paint_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192), clip_mask);
-    let icon_inset = 2.0;
-    let icon_size = Self::missing_image_icon_size(content_rect);
-    if icon_size <= 0.0 {
+    if device_rect.width() <= 0.0 || device_rect.height() <= 0.0 {
       return;
     }
 
-    let icon_rect = Rect::from_xywh(
-      content_rect.x() + icon_inset,
-      content_rect.y() + icon_inset,
-      icon_size,
-      icon_size,
-    );
-    self.paint_broken_image_icon(icon_rect, clip_mask);
-  }
-
-  fn paint_solid_rect_crisp(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
-    if color.a <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
-      return;
-    }
-    let device_rect = self.device_rect(rect);
     let Some(sk_rect) = SkiaRect::from_xywh(
       device_rect.x(),
       device_rect.y(),
@@ -13337,6 +13226,7 @@ impl Painter {
     ) else {
       return;
     };
+
     let mut paint = Paint::default();
     paint.set_color(tiny_skia::Color::from_rgba8(
       color.r,
@@ -13349,6 +13239,115 @@ impl Painter {
       .pixmap
       .fill_rect(sk_rect, &paint, Transform::identity(), clip_mask);
   }
+
+  fn missing_image_icon_size(content_rect: Rect) -> f32 {
+    if !content_rect.width().is_finite() || !content_rect.height().is_finite() {
+      return 0.0;
+    }
+    let icon_inset = 2.0;
+    let max_icon_size = 16.0;
+    let available_w = (content_rect.width() - icon_inset * 2.0).max(0.0);
+    let available_h = (content_rect.height() - icon_inset * 2.0).max(0.0);
+    let icon_size = (available_w.min(available_h) * 0.5)
+      .floor()
+      .clamp(0.0, max_icon_size);
+    if icon_size >= 8.0 { icon_size } else { 0.0 }
+  }
+
+  fn paint_inside_border_rect(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    if !rect.width().is_finite() || !rect.height().is_finite() {
+      return;
+    }
+    let w = rect.width().max(0.0);
+    let h = rect.height().max(0.0);
+    if w <= 0.0 || h <= 0.0 {
+      return;
+    }
+
+    let thickness: f32 = 1.0;
+    let th = thickness.min(h);
+    let tw = thickness.min(w);
+    let x = rect.x();
+    let y = rect.y();
+    let bottom_y = y + h - th;
+    let right_x = x + w - tw;
+
+    self.paint_fill_rect_crisp(Rect::from_xywh(x, y, w, th), color, clip_mask);
+    if bottom_y > y {
+      self.paint_fill_rect_crisp(Rect::from_xywh(x, bottom_y, w, th), color, clip_mask);
+    }
+
+    self.paint_fill_rect_crisp(Rect::from_xywh(x, y, tw, h), color, clip_mask);
+    if right_x > x {
+      self.paint_fill_rect_crisp(Rect::from_xywh(right_x, y, tw, h), color, clip_mask);
+    }
+  }
+
+  fn paint_broken_image_icon(&mut self, icon_rect: Rect, clip_mask: Option<&Mask>) {
+    let inner_rect = Rect::from_xywh(
+      icon_rect.x() + 1.0,
+      icon_rect.y() + 1.0,
+      (icon_rect.width() - 2.0).max(0.0),
+      (icon_rect.height() - 2.0).max(0.0),
+    );
+
+    if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+      self.paint_fill_rect_crisp(inner_rect, Rgba::WHITE, clip_mask);
+
+      let sky_h = (inner_rect.height() * 0.62)
+        .floor()
+        .clamp(0.0, inner_rect.height());
+      if sky_h > 0.0 {
+        self.paint_fill_rect_crisp(
+          Rect::from_xywh(inner_rect.x(), inner_rect.y(), inner_rect.width(), sky_h),
+          Rgba::rgb(198, 216, 244),
+          clip_mask,
+        );
+      }
+
+      let ground_h = (inner_rect.height() * 0.3)
+        .floor()
+        .clamp(0.0, inner_rect.height());
+      if ground_h > 0.0 {
+        self.paint_fill_rect_crisp(
+          Rect::from_xywh(
+            inner_rect.x(),
+            inner_rect.y() + inner_rect.height() - ground_h,
+            inner_rect.width(),
+            ground_h,
+          ),
+          Rgba::rgb(88, 174, 57),
+          clip_mask,
+        );
+      }
+
+      self.paint_fill_rect_crisp(
+        Rect::from_xywh(inner_rect.x() + 2.0, inner_rect.y() + 2.0, 3.0, 3.0),
+        Rgba::WHITE,
+        clip_mask,
+      );
+    }
+
+    self.paint_inside_border_rect(icon_rect, Rgba::rgb(192, 192, 192), clip_mask);
+  }
+
+  fn paint_missing_image_placeholder(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
+    self.paint_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192), clip_mask);
+    let icon_inset = 2.0;
+    let icon_size = Self::missing_image_icon_size(content_rect);
+    if icon_size > 0.0 {
+      self.paint_broken_image_icon(
+        Rect::from_xywh(
+          content_rect.x() + icon_inset,
+          content_rect.y() + icon_inset,
+          icon_size,
+          icon_size,
+        ),
+        clip_mask,
+      );
+    }
+  }
+
   fn effective_text_align(style: &ComputedStyle) -> crate::style::types::TextAlign {
     use crate::style::types::{Direction, TextAlign};
     match style.text_align {
