@@ -2899,6 +2899,7 @@ impl BrowserRuntime {
         about_pages::error_page_html(
           "Unknown about page",
           &format!("Unknown URL: {original_url}"),
+          None,
         )
       });
 
@@ -3348,7 +3349,7 @@ impl BrowserRuntime {
 
     let cancel_callback = snapshot.cancel_callback_for_prepare(&cancel);
 
-    let html = about_pages::error_page_html("Navigation failed", error);
+    let html = about_pages::error_page_html("Navigation failed", error, Some(original_url));
     let mut options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);

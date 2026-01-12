@@ -66,7 +66,7 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
     ABOUT_HELP => Some(help_html().to_string()),
     ABOUT_VERSION => Some(version_html()),
     ABOUT_GPU => Some(gpu_html()),
-    ABOUT_ERROR => Some(error_html("Navigation error", None)),
+    ABOUT_ERROR => Some(error_html("Navigation error", None, None)),
     ABOUT_TEST_SCROLL => Some(test_scroll_html()),
     ABOUT_TEST_HEAVY => Some(test_heavy_html()),
     ABOUT_TEST_FORM => Some(test_form_html()),
@@ -74,8 +74,8 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
   }
 }
 
-pub fn error_page_html(title: &str, message: &str) -> String {
-  error_html(title, Some(message))
+pub fn error_page_html(title: &str, message: &str, retry_url: Option<&str>) -> String {
+  error_html(title, Some(message), retry_url)
 }
 
 fn blank_html() -> &'static str {
@@ -403,14 +403,27 @@ fn gpu_html() -> String {
   )
 }
 
-fn error_html(title: &str, message: Option<&str>) -> String {
+fn error_html(title: &str, message: Option<&str>, retry_url: Option<&str>) -> String {
   let safe_title = escape_html(title);
-  let body = match message {
-    Some(message) => {
+  let safe_retry_url = retry_url
+    .map(str::trim)
+    .filter(|url| !url.is_empty())
+    .map(escape_html);
+  let retry_button = safe_retry_url
+    .as_deref()
+    .map(|url| format!("<a class=\"btn primary\" href=\"{url}\">Retry</a>"))
+    .unwrap_or_default();
+  let url_line = safe_retry_url
+    .as_deref()
+    .map(|url| format!("<p class=\"url\">URL: <code>{url}</code></p>"))
+    .unwrap_or_default();
+
+  let details_body = match message {
+    Some(message) if !message.trim().is_empty() => {
       let safe = escape_html(message);
-      format!("<pre class=\"msg\">{safe}</pre>")
+      format!("<pre>{safe}</pre>")
     }
-    None => "<p class=\"msg\">No details.</p>".to_string(),
+    _ => "<p class=\"details-empty\">No additional details are available.</p>".to_string(),
   };
 
   format!(
@@ -418,21 +431,177 @@ fn error_html(title: &str, message: Option<&str>) -> String {
 <html>
   <head>
     <meta charset=\"utf-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
     <title>{safe_title}</title>
     <style>
       :root {{ color-scheme: light dark; }}
-      body {{ font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }}
-      h1 {{ margin: 0 0 12px; font-size: 20px; }}
+
+      body {{
+        margin: 0;
+        font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+      }}
+
       a {{ color: inherit; }}
-      .msg {{ white-space: pre-wrap; padding: 12px; border-radius: 8px; background: rgba(255, 0, 0, 0.08); }}
-      .nav {{ margin-top: 16px; }}
+
+      .page {{
+        padding: 32px 24px;
+      }}
+
+      .card {{
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 24px;
+        border-radius: 16px;
+        border: 1px solid rgba(127,127,127,0.28);
+        background: rgba(127,127,127,0.08);
+      }}
+
+      .hdr {{
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+      }}
+
+      .icon {{
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        font-weight: 800;
+        font-size: 22px;
+        color: rgb(215, 0, 21);
+        background: rgba(255, 59, 48, 0.14);
+        border: 1px solid rgba(255, 59, 48, 0.35);
+      }}
+
+      h1 {{
+        margin: 0;
+        font-size: 20px;
+        line-height: 1.2;
+      }}
+
+      .sub {{
+        margin: 6px 0 0;
+        color: rgba(127,127,127,0.95);
+      }}
+
+      .url {{
+        margin: 12px 0 0;
+      }}
+
+      code {{
+        padding: 0.1em 0.35em;
+        border-radius: 6px;
+        background: rgba(127,127,127,0.22);
+        word-break: break-all;
+      }}
+
+      .actions {{
+        margin-top: 18px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }}
+
+      .btn {{
+        display: inline-block;
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid rgba(127,127,127,0.35);
+        text-decoration: none;
+        background: rgba(127,127,127,0.06);
+        font-weight: 600;
+      }}
+
+      .btn.primary {{
+        border-color: rgba(10, 132, 255, 0.55);
+        background: rgba(10, 132, 255, 0.18);
+      }}
+
+      .btn:focus {{
+        outline: 2px solid rgba(10, 132, 255, 0.65);
+        outline-offset: 2px;
+      }}
+
+      .help {{
+        margin-top: 18px;
+      }}
+
+      .help p {{
+        margin: 0 0 8px;
+      }}
+
+      .help ul {{
+        margin: 0;
+        padding-left: 18px;
+      }}
+
+      details {{
+        margin-top: 18px;
+      }}
+
+      summary {{
+        cursor: pointer;
+        font-weight: 600;
+      }}
+
+      .details-box {{
+        margin-top: 10px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(127,127,127,0.28);
+        background: rgba(255, 59, 48, 0.08);
+      }}
+
+      pre {{
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }}
+
+      .details-empty {{
+        margin: 0;
+        color: rgba(127,127,127,0.95);
+      }}
     </style>
   </head>
   <body>
-    <h1>{safe_title}</h1>
-    {body}
-    <div class=\"nav\">
-      <a href=\"about:newtab\">Back to new tab</a>
+    <div class=\"page\">
+      <div class=\"card\">
+        <div class=\"hdr\">
+          <div class=\"icon\" aria-hidden=\"true\">!</div>
+          <div>
+            <h1>{safe_title}</h1>
+            <p class=\"sub\">FastRender couldn&rsquo;t load this page.</p>
+          </div>
+        </div>
+
+        <div class=\"actions\">
+          {retry_button}
+          <a class=\"btn\" href=\"about:newtab\">Back to new tab</a>
+        </div>
+
+        {url_line}
+
+        <div class=\"help\">
+          <p>Try:</p>
+          <ul>
+            <li>Checking the URL for typos.</li>
+            <li>Verifying the file exists (for <code>file://</code> URLs).</li>
+            <li>Checking your network connection or firewall (for <code>http(s)://</code> URLs).</li>
+          </ul>
+        </div>
+
+        <details>
+          <summary>Technical details</summary>
+          <div class=\"details-box\">
+            {details_body}
+          </div>
+        </details>
+      </div>
     </div>
   </body>
 </html>"
@@ -572,5 +741,44 @@ mod tests {
         "expected about:newtab HTML to link to {url}"
       );
     }
+  }
+
+  #[test]
+  fn error_page_html_includes_retry_link_and_escapes_url() {
+    let retry_url = "https://example.com/?a=1&b=<x>\"'";
+    let html = error_page_html("Navigation failed", "boom", Some(retry_url));
+
+    let escaped = "https://example.com/?a=1&amp;b=&lt;x&gt;&quot;&#39;";
+    assert!(
+      html.contains(&format!("href=\"{escaped}\"")),
+      "expected escaped retry URL in href"
+    );
+    assert!(
+      html.contains(&format!("<code>{escaped}</code>")),
+      "expected escaped retry URL in visible URL line"
+    );
+    assert!(
+      html.contains(">Retry</a>"),
+      "expected retry button label to be present"
+    );
+    assert!(
+      !html.contains(retry_url),
+      "raw retry URL should not appear unescaped in HTML"
+    );
+  }
+
+  #[test]
+  fn error_page_html_hides_raw_error_in_details_element() {
+    let html = error_page_html(
+      "Navigation failed",
+      "network failed: <timeout>",
+      Some("https://example.com/"),
+    );
+    assert!(html.contains("<details>"));
+    assert!(html.contains("<summary>Technical details</summary>"));
+    assert!(
+      html.contains("<pre>network failed: &lt;timeout&gt;</pre>"),
+      "expected HTML-escaped raw error message inside <details>"
+    );
   }
 }

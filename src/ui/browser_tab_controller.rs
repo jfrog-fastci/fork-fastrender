@@ -750,7 +750,7 @@ impl BrowserTabController {
 
     let (committed_url, base_url) = if about_pages::is_about_url(url) {
       let html = about_pages::html_for_about_url(url).unwrap_or_else(|| {
-        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
+        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"), None)
       });
       self.document.navigate_html_with_options(
         url,
@@ -772,7 +772,7 @@ impl BrowserTabController {
             can_go_back: false,
             can_go_forward: false,
           });
-          let html = about_pages::error_page_html("Navigation failed", &err.to_string());
+          let html = about_pages::error_page_html("Navigation failed", &err.to_string(), Some(url));
           self.document.navigate_html_with_options(
             about_pages::ABOUT_ERROR,
             &html,
@@ -821,7 +821,7 @@ impl BrowserTabController {
     let (committed_url, base_url) = if about_pages::is_about_url(url) {
       // about: pages are internal; ignore the method/body and treat as a normal navigation.
       let html = about_pages::html_for_about_url(url).unwrap_or_else(|| {
-        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
+        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"), None)
       });
       self.document.navigate_html_with_options(
         url,
@@ -846,7 +846,7 @@ impl BrowserTabController {
             can_go_back: false,
             can_go_forward: false,
           });
-          let html = about_pages::error_page_html("Navigation failed", &err.to_string());
+          let html = about_pages::error_page_html("Navigation failed", &err.to_string(), Some(url));
           self.document.navigate_html_with_options(
             about_pages::ABOUT_ERROR,
             &html,

@@ -1,8 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
@@ -24,6 +24,28 @@ fn recv_until_deadline(rx: &Receiver<WorkerToUi>, deadline: Instant) -> Option<W
   }
 }
 
+fn context_menu_link_at(
+  tx: &Sender<UiToWorker>,
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  pos_css: (f32, f32),
+  deadline: Instant,
+) -> Option<Option<String>> {
+  tx.send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .expect("send context menu request");
+  loop {
+    let msg = recv_until_deadline(rx, deadline)?;
+    match msg {
+      WorkerToUi::ContextMenu {
+        tab_id: msg_tab,
+        pos_css: msg_pos,
+        link_url,
+      } if msg_tab == tab_id && msg_pos == pos_css => return Some(link_url),
+      _ => continue,
+    }
+  }
+}
+
 #[test]
 fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops_loading() {
   let _lock = super::stage_listener_test_lock();
@@ -41,8 +63,9 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
   ui_tx
     .send(create_tab_msg(tab_id, None))
     .expect("create tab");
+  let viewport_css = (320, 240);
   ui_tx
-    .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
+    .send(viewport_changed_msg(tab_id, viewport_css, 1.0))
     .expect("viewport");
 
   ui_tx
@@ -129,6 +152,35 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
       _ => {}
     }
   }
+
+  // The `about:error` fallback should include a Retry link pointing at the original URL. The
+  // integration test probes this via `ContextMenuRequest` hit-testing to avoid relying on pixel
+  // comparisons or fragile pointer coordinates.
+  let scan_deadline = Instant::now() + DEFAULT_TIMEOUT;
+  let mut found_retry_link = false;
+  let mut seen_links = std::collections::BTreeSet::new();
+  let max_y = viewport_css.1 as usize;
+  for y in (0..max_y).step_by(16) {
+    for x in (0..viewport_css.0 as usize).step_by(16) {
+      let pos = (x as f32 + 0.5, y as f32 + 0.5);
+      let link_url = context_menu_link_at(&ui_tx, &ui_rx, tab_id, pos, scan_deadline)
+        .unwrap_or(None);
+      if let Some(url) = link_url.as_deref() {
+        seen_links.insert(url.to_string());
+      }
+      if link_url.as_deref() == Some(missing_url.as_str()) {
+        found_retry_link = true;
+        break;
+      }
+    }
+    if found_retry_link {
+      break;
+    }
+  }
+  assert!(
+    found_retry_link,
+    "expected about:error to contain a Retry link to the original URL {missing_url} (seen link URLs: {seen_links:?})"
+  );
 
   drop(ui_tx);
   join.join().expect("join ui worker");
