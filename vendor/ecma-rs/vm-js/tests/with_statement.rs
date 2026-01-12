@@ -128,24 +128,27 @@ fn with_statement_proxy_traps_are_observable() -> Result<(), VmError> {
   let value = agent.run_script(
     "with_proxy_traps.js",
     r#"
-      var log = [];
-      var p = new Proxy({ x: 1 }, {
-        has(t, k) { log.push("has:" + String(k)); return Reflect.has(t, k); },
-        get(t, k, r) { log.push("get:" + String(k)); return Reflect.get(t, k, r); },
-        set(t, k, v, r) { log.push("set:" + String(k)); return Reflect.set(t, k, v); },
-        deleteProperty(t, k) { log.push("del:" + String(k)); return Reflect.deleteProperty(t, k); },
-      });
-      with (p) { x; x = 2; delete x; }
-      log.join(",")
-    "#,
+       var log = [];
+       var p = new Proxy({ x: 1 }, {
+         has(t, k) { log.push("has:" + String(k)); return (k in t); },
+         get(t, k, r) { log.push("get:" + String(k) + ":" + (r === p)); return t[k]; },
+         // `Reflect.set` is not fully Proxy-receiver-aware in vm-js yet, so avoid forwarding the
+         // receiver through it here. This test is specifically asserting that the receiver passed
+         // to the Proxy trap is the binding object (`p`) as required by ObjectEnvironmentRecord.
+         set(t, k, v, r) { log.push("set:" + String(k) + ":" + (r === p)); t[k] = v; return true; },
+         deleteProperty(t, k) { log.push("del:" + String(k)); return delete t[k]; },
+       });
+       with (p) { x; x = 2; delete x; }
+       log.join(",")
+     "#,
     Budget::unlimited(1),
     None,
   )?;
 
   let log = agent.value_to_error_string(value);
   assert!(log.contains("has:x"), "expected Proxy has trap to be observed, got {log}");
-  assert!(log.contains("get:x"), "expected Proxy get trap to be observed, got {log}");
-  assert!(log.contains("set:x"), "expected Proxy set trap to be observed, got {log}");
+  assert!(log.contains("get:x:true"), "expected Proxy get receiver to be the binding object, got {log}");
+  assert!(log.contains("set:x:true"), "expected Proxy set receiver to be the binding object, got {log}");
   assert!(log.contains("del:x"), "expected Proxy deleteProperty trap to be observed, got {log}");
   Ok(())
 }
@@ -156,15 +159,15 @@ fn with_statement_proxy_unscopables_get_is_observable() -> Result<(), VmError> {
   let value = agent.run_script(
     "with_proxy_unscopables_trap.js",
     r#"
-      var log = [];
-      var target = { x: 1 };
-      target[Symbol.unscopables] = { x: true };
-      var p = new Proxy(target, {
-        get(t, k, r) { log.push("get:" + String(k)); return Reflect.get(t, k, r); },
-      });
-      let x = 2;
-      var t;
-      with (p) { t = typeof x; }
+       var log = [];
+       var target = { x: 1 };
+       target[Symbol.unscopables] = { x: true };
+       var p = new Proxy(target, {
+         get(t, k, r) { log.push("get:" + String(k) + ":" + (r === p)); return t[k]; },
+       });
+       let x = 2;
+       var t;
+       with (p) { t = typeof x; }
       t + "|" + log.join(",")
     "#,
     Budget::unlimited(1),
@@ -179,6 +182,10 @@ fn with_statement_proxy_unscopables_get_is_observable() -> Result<(), VmError> {
   assert!(
     out.contains("Symbol.unscopables"),
     "expected @@unscopables Get to be observable via Proxy get trap, got {out}"
+  );
+  assert!(
+    out.contains("Symbol.unscopables):true"),
+    "expected @@unscopables Get receiver to be the binding object, got {out}"
   );
   Ok(())
 }
