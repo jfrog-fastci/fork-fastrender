@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod common;
+
 use diagnostics::FileId;
 use hir_js::{lower_from_source, BodyKind};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use typecheck_ts::check::caches::CheckerCaches;
 use typecheck_ts::check::hir_body::{check_body, AstIndex};
-use typecheck_ts::lib_support::ScriptTarget;
+use typecheck_ts::lib_support::{CompilerOptions, ScriptTarget};
+use typecheck_ts::{FileKey, MemoryHost, Program};
 use types_ts_interned::{TypeDisplay, TypeStore};
 
 fn check_function_return_type(source: &str) -> String {
@@ -83,4 +86,33 @@ fn tuple_index_access_is_typed_by_index() {
   let source = "function f() { const t: [string, number] = [\"a\", 1]; return t[1]; }";
   let ty = check_function_return_type(source);
   assert_eq!(ty, "number");
+}
+
+#[test]
+fn base_array_and_tuple_member_access_in_class_field_initializers() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let file = FileKey::new("main.ts");
+  let source = r#"
+export class C {
+  arr: number[] = [1];
+  len: number = this.arr.length;
+  first: number = this.arr[0];
+
+  tup: [string, number] = ["x", 1];
+  second: number = this.tup[1];
+}
+"#;
+  host.insert(file.clone(), Arc::from(source));
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics, got {diagnostics:#?}"
+  );
 }
