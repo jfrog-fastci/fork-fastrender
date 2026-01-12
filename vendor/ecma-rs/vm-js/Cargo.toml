@@ -13,3 +13,6 @@ hir-js = { workspace = true }
 ryu = { workspace = true }
 semantic-js = { workspace = true }
 fast-float = { workspace = true }
+
+[dev-dependencies]
+libc = { workspace = true }

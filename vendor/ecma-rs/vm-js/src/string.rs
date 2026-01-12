@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+use crate::VmError;
+
 /// A JavaScript String value.
 ///
 /// Per ECMAScript, strings are sequences of UTF-16 code units and may contain
@@ -55,6 +57,80 @@ impl JsString {
     // excludes `mem::size_of::<JsString>()` and only counts the backing UTF-16 buffer.
     units_len.checked_mul(2).unwrap_or(usize::MAX)
   }
+}
+
+/// Fallible UTF-16→UTF-8 conversion for VM internals.
+///
+/// JavaScript strings are UTF-16 code units and may contain unpaired surrogates. Rust `String`
+/// cannot represent surrogate code points, so this conversion mirrors `String::from_utf16_lossy`
+/// by replacing invalid sequences with `U+FFFD`.
+///
+/// This helper must be used for attacker-controlled inputs that could be extremely large, since
+/// the standard library's UTF-16 conversion routines may allocate infallibly and abort the
+/// process on OOM.
+#[allow(dead_code)]
+pub(crate) fn utf16_to_utf8_lossy(units: &[u16]) -> Result<String, VmError> {
+  utf16_to_utf8_lossy_with_tick(units, || Ok(()))
+}
+
+/// [`utf16_to_utf8_lossy`] with an optional `tick` hook.
+///
+/// The `tick` hook allows long conversions to observe VM budgets and host interrupts. Callers
+/// should pass something like `|| vm.tick()` when converting attacker-controlled strings.
+pub(crate) fn utf16_to_utf8_lossy_with_tick(
+  units: &[u16],
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<String, VmError> {
+  const TICK_EVERY: usize = 1024;
+  const RESERVE_CHUNK: usize = 8 * 1024;
+
+  let mut out = String::new();
+
+  let mut i = 0usize;
+  while i < units.len() {
+    if i % TICK_EVERY == 0 {
+      tick()?;
+    }
+
+    let u = units[i];
+
+    // Decode UTF-16, replacing invalid surrogate sequences with U+FFFD.
+    let (code_point, consumed) = if (0xD800..=0xDBFF).contains(&u) {
+      // High surrogate.
+      if i + 1 < units.len() {
+        let u2 = units[i + 1];
+        if (0xDC00..=0xDFFF).contains(&u2) {
+          let high = (u as u32) - 0xD800;
+          let low = (u2 as u32) - 0xDC00;
+          (0x10000 + ((high << 10) | low), 2)
+        } else {
+          (0xFFFD, 1)
+        }
+      } else {
+        (0xFFFD, 1)
+      }
+    } else if (0xDC00..=0xDFFF).contains(&u) {
+      // Unpaired low surrogate.
+      (0xFFFD, 1)
+    } else {
+      (u as u32, 1)
+    };
+    i = i.saturating_add(consumed);
+
+    let ch = char::from_u32(code_point).unwrap_or('\u{FFFD}');
+    let mut buf = [0u8; 4];
+    let encoded = ch.encode_utf8(&mut buf);
+    let needed = encoded.len();
+
+    if out.capacity().saturating_sub(out.len()) < needed {
+      out
+        .try_reserve(RESERVE_CHUNK.max(needed))
+        .map_err(|_| VmError::OutOfMemory)?;
+    }
+    out.push_str(encoded);
+  }
+
+  Ok(out)
 }
 
 impl PartialEq for JsString {

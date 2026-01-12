@@ -10,22 +10,100 @@ pub struct SourceText {
   pub name: Arc<str>,
   pub text: Arc<str>,
   line_starts: Vec<u32>,
+  line_start_stride: u32,
   #[allow(dead_code)]
   external_memory: Option<Arc<ExternalMemoryToken>>,
 }
 
 impl SourceText {
+  /// Store at most this many line-start checkpoints.
+  ///
+  /// `SourceText::new` is infallible, so it must avoid unbounded allocations. We cap the number of
+  /// stored entries to ensure hostile input (e.g. `eval` with millions of newlines) cannot force
+  /// the host to abort due to allocator OOM.
+  const MAX_LINE_STARTS: usize = 4096;
+
   pub fn new(name: impl Into<Arc<str>>, text: impl Into<Arc<str>>) -> Self {
     let name = name.into();
     let text = text.into();
-    let mut line_starts = vec![0u32];
+    let bytes = text.as_bytes();
+    let newline_count = bytes.iter().filter(|&&b| b == b'\n').count();
+    let line_count = newline_count.saturating_add(1);
 
-    for (idx, ch) in text.char_indices() {
-      if ch == '\n' {
-        let next = (idx + 1).min(text.len());
-        if let Ok(next) = u32::try_from(next) {
-          line_starts.push(next);
+    // When possible, store *dense* line starts to avoid per-call source scans in `line_col`. This
+    // is especially important for huge single-line sources, where scanning the entire source for
+    // every stack frame would otherwise allow O(n²) behavior.
+    if line_count <= Self::MAX_LINE_STARTS {
+      let mut line_starts: Vec<u32> = Vec::new();
+      if line_starts.try_reserve_exact(line_count).is_err() {
+        // If we can't even allocate a small bounded line-start table, fall back to a minimal table
+        // that still keeps `line_col` correct (but potentially slower on multi-line sources).
+        line_starts.push(0u32);
+        let stride = if newline_count == 0 { 1 } else { 2 };
+        return Self {
+          name,
+          text,
+          line_starts,
+          line_start_stride: stride,
+          external_memory: None,
+        };
+      }
+
+      line_starts.push(0u32);
+      for (idx, b) in bytes.iter().enumerate() {
+        if *b != b'\n' {
+          continue;
         }
+        let next = (idx + 1).min(text.len());
+        if let Ok(next_u32) = u32::try_from(next) {
+          line_starts.push(next_u32);
+        }
+      }
+
+      return Self {
+        name,
+        text,
+        line_starts,
+        line_start_stride: 1,
+        external_memory: None,
+      };
+    }
+
+    // Otherwise, store sparse checkpoints (every Nth newline) with a hard cap on the total number
+    // of stored entries, and compute exact `(line, col)` by scanning from the nearest checkpoint.
+    // Choose `stride` so we never exceed `MAX_LINE_STARTS`.
+    let stride = newline_count.div_ceil(Self::MAX_LINE_STARTS - 1).max(1);
+    let stride_u32 = u32::try_from(stride).unwrap_or(u32::MAX);
+
+    let mut line_starts: Vec<u32> = Vec::new();
+    if line_starts.try_reserve_exact(Self::MAX_LINE_STARTS).is_err() {
+      // Fall back to a minimal table; correctness comes from scanning in `line_col`.
+      line_starts.push(0u32);
+      return Self {
+        name,
+        text,
+        line_starts,
+        line_start_stride: 2,
+        external_memory: None,
+      };
+    }
+    line_starts.push(0u32);
+
+    let mut newlines_seen: usize = 0;
+    for (idx, b) in bytes.iter().enumerate() {
+      if *b != b'\n' {
+        continue;
+      }
+      newlines_seen += 1;
+      if newlines_seen % stride != 0 {
+        continue;
+      }
+      if line_starts.len() >= Self::MAX_LINE_STARTS {
+        break;
+      }
+      let next = (idx + 1).min(text.len());
+      if let Ok(next_u32) = u32::try_from(next) {
+        line_starts.push(next_u32);
       }
     }
 
@@ -33,6 +111,7 @@ impl SourceText {
       name,
       text,
       line_starts,
+      line_start_stride: stride_u32,
       external_memory: None,
     }
   }
@@ -74,6 +153,7 @@ impl SourceText {
       name,
       text,
       line_starts,
+      line_start_stride: 1,
       external_memory: Some(Arc::new(token)),
     })
   }
@@ -96,19 +176,37 @@ impl SourceText {
     }
 
     let offset_u32 = u32::try_from(offset).unwrap_or(u32::MAX);
-    let line_idx = match self.line_starts.binary_search(&offset_u32) {
+    let checkpoint_idx = match self.line_starts.binary_search(&offset_u32) {
       Ok(idx) => idx,
       Err(0) => 0,
       Err(idx) => idx - 1,
     };
 
-    let line_start = *self
+    let scan_start = *self
       .line_starts
-      .get(line_idx)
+      .get(checkpoint_idx)
       .unwrap_or(&u32::try_from(self.text.len()).unwrap_or(u32::MAX)) as usize;
+    let scan_start = scan_start.min(offset);
+
+    let mut line = (checkpoint_idx as u32)
+      .saturating_mul(self.line_start_stride)
+      .saturating_add(1);
+    let mut line_start = scan_start;
+
+    // When line starts are stored sparsely, scan forward from the checkpoint to compute the exact
+    // line start. When line starts are dense (`line_start_stride == 1`), the checkpoint is already
+    // exact.
+    if self.line_start_stride != 1 {
+      for (i, b) in self.text.as_bytes()[scan_start..offset].iter().enumerate() {
+        if *b == b'\n' {
+          line = line.saturating_add(1);
+          line_start = scan_start.saturating_add(i).saturating_add(1);
+        }
+      }
+    }
 
     let col0 = u32::try_from(offset.saturating_sub(line_start)).unwrap_or(u32::MAX);
-    (line_idx as u32 + 1, col0.saturating_add(1))
+    (line, col0.saturating_add(1))
   }
 }
 

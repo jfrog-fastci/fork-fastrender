@@ -1,6 +1,6 @@
 use crate::function::{CallHandler, FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
-use crate::string::JsString;
+use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
 use crate::{
   heap::TypedArrayKind,
   GcObject, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction, PromiseReactionType,
@@ -2840,31 +2840,45 @@ pub fn function_constructor_construct(
       vm.tick()?;
     }
     let s = scope.to_string(vm, host, hooks, param_value)?;
-    let text = scope.heap().get_string(s)?.to_utf8_lossy();
+    let units = scope.heap().get_string(s)?.as_code_units();
+    let text = utf16_to_utf8_lossy_with_tick(units, || vm.tick())?;
     if idx != 0 {
+      params_joined
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
       params_joined.push(',');
     }
+    params_joined
+      .try_reserve(text.len())
+      .map_err(|_| VmError::OutOfMemory)?;
     params_joined.push_str(&text);
   }
 
   let body_s = scope.to_string(vm, host, hooks, body_value)?;
-  let body_text = scope.heap().get_string(body_s)?.to_utf8_lossy();
+  let body_units = scope.heap().get_string(body_s)?.as_code_units();
+  let body_text = utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?;
 
   // Parse as a single function declaration statement so we can reuse the normal ECMAScript
   // function-object call path.
   let mut source: String = String::new();
+  const PREFIX: &str = "function anonymous(";
+  const MIDDLE: &str = "\n) {\n";
+  const SUFFIX: &str = "\n}";
+  let total_len = PREFIX
+    .len()
+    .checked_add(params_joined.len())
+    .and_then(|n| n.checked_add(MIDDLE.len()))
+    .and_then(|n| n.checked_add(body_text.len()))
+    .and_then(|n| n.checked_add(SUFFIX.len()))
+    .ok_or(VmError::OutOfMemory)?;
   source
-    .try_reserve(
-      "function anonymous(\n) {\n\n}".len()
-        .saturating_add(params_joined.len())
-        .saturating_add(body_text.len()),
-    )
+    .try_reserve(total_len)
     .map_err(|_| VmError::OutOfMemory)?;
-  source.push_str("function anonymous(");
+  source.push_str(PREFIX);
   source.push_str(&params_joined);
-  source.push_str("\n) {\n");
+  source.push_str(MIDDLE);
   source.push_str(&body_text);
-  source.push_str("\n}");
+  source.push_str(SUFFIX);
 
   // Parse eagerly so syntax errors become JS-catchable `SyntaxError` exceptions instead of
   // surfacing as non-catchable `VmError::Syntax`.
