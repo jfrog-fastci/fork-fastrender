@@ -138,6 +138,22 @@ fn bound_function_instanceof_does_not_use_bound_target_has_instance() {
 }
 
 #[test]
+fn instanceof_works_with_proxy_constructor() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function C() {}
+      var P = new Proxy(C, {});
+      var o = new C();
+      (o instanceof P) === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn instanceof_uses_inherited_function_prototype_has_instance_on_non_callable_object() {
   let mut rt = new_runtime();
   let value = rt

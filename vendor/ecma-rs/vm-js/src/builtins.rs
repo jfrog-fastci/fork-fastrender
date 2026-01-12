@@ -1554,7 +1554,6 @@ pub fn proxy_constructor_construct(
   // Root inputs across allocation/GC while creating the proxy object.
   let mut scope = scope.reborrow();
   scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
-
   let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
@@ -6753,7 +6752,7 @@ pub fn function_prototype_symbol_has_instance(
   // 4. Let P be Get(C, "prototype").
   let prototype_s = scope.alloc_string("prototype")?;
   scope.push_root(Value::String(prototype_s))?;
-  let prototype = scope.ordinary_get_with_host_and_hooks(
+  let prototype = scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,
