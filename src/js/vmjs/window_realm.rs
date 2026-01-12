@@ -5557,6 +5557,7 @@ fn history_state_change_native(
       read_only_data_desc(cloned_state_value),
     )?;
   }
+
   // Keep `history.length` in sync with the per-realm session history.
   {
     // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
@@ -30632,26 +30633,50 @@ fn init_window_globals(
       processing_instruction_key,
       data_desc(Value::Object(processing_instruction_ctor)),
     )?;
+
+    let event_target_key = alloc_key(&mut scope, "EventTarget")?;
+    let event_target_ctor = match scope
+      .heap()
+      .object_get_own_data_property_value(global, &event_target_key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    };
+    let node_key = alloc_key(&mut scope, "Node")?;
+    let node_ctor = match scope
+      .heap()
+      .object_get_own_data_property_value(global, &node_key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    };
+
     // WebIDL interface object inheritance chain.
     //
     // This makes `Object.getPrototypeOf(Node) === EventTarget` and ensures interface objects inherit
     // static members/constants from their parent interface (e.g. `Element.ELEMENT_NODE` via Node).
-    scope
-      .heap_mut()
-      .object_set_prototype(node_ctor, Some(event_target_ctor_func))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(document_type_ctor, Some(node_ctor))?;
-    scope.heap_mut().object_set_prototype(element_ctor, Some(node_ctor))?;
-    scope.heap_mut().object_set_prototype(document_ctor, Some(node_ctor))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(document_fragment_ctor, Some(node_ctor))?;
-    scope.heap_mut().object_set_prototype(text_ctor, Some(node_ctor))?;
-    scope.heap_mut().object_set_prototype(comment_ctor, Some(node_ctor))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(processing_instruction_ctor, Some(node_ctor))?;
+    if let (Some(node_ctor), Some(event_target_ctor)) = (node_ctor, event_target_ctor) {
+      scope
+        .heap_mut()
+        .object_set_prototype(node_ctor, Some(event_target_ctor))?;
+    }
+    if let Some(node_ctor) = node_ctor {
+      scope
+        .heap_mut()
+        .object_set_prototype(document_type_ctor, Some(node_ctor))?;
+      scope.heap_mut().object_set_prototype(element_ctor, Some(node_ctor))?;
+      scope.heap_mut().object_set_prototype(document_ctor, Some(node_ctor))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(document_fragment_ctor, Some(node_ctor))?;
+      scope.heap_mut().object_set_prototype(text_ctor, Some(node_ctor))?;
+      scope.heap_mut().object_set_prototype(comment_ctor, Some(node_ctor))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(processing_instruction_ctor, Some(node_ctor))?;
+    }
     scope
       .heap_mut()
       .object_set_prototype(html_element_ctor, Some(element_ctor))?;
