@@ -19270,7 +19270,9 @@ pub fn weak_map_constructor_construct(
       };
 
       let zero_key = string_key(&mut step_scope, "0")?;
-      let key = step_scope.ordinary_get_with_host_and_hooks(
+      // Spec: `AddEntriesFromIterable` reads entry values via `Get(entry, "0")` / `Get(entry, "1")`,
+      // which must be Proxy-aware.
+      let key = step_scope.get_with_host_and_hooks(
         vm,
         host,
         hooks,
@@ -19281,7 +19283,7 @@ pub fn weak_map_constructor_construct(
       step_scope.push_root(key)?;
 
       let one_key = string_key(&mut step_scope, "1")?;
-      let value = step_scope.ordinary_get_with_host_and_hooks(
+      let value = step_scope.get_with_host_and_hooks(
         vm,
         host,
         hooks,
