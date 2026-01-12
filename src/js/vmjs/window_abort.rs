@@ -927,6 +927,15 @@ pub fn install_window_abort_bindings(
   let abort_signal_proto = scope.alloc_object_with_prototype(Some(event_target_proto))?;
   scope.push_root(Value::Object(abort_signal_proto))?;
 
+  // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
+  let abort_signal_tag = scope.alloc_string("AbortSignal")?;
+  scope.push_root(Value::String(abort_signal_tag))?;
+  scope.define_property(
+    abort_signal_proto,
+    PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag),
+    data_desc(Value::String(abort_signal_tag), false),
+  )?;
+
   // Prototype method: throwIfAborted()
   let throw_if_aborted_id = vm.register_native_call(abort_signal_throw_if_aborted_native)?;
   let throw_if_aborted_name = scope.alloc_string("throwIfAborted")?;
@@ -1056,6 +1065,15 @@ pub fn install_window_abort_bindings(
     Some(realm.intrinsics().object_prototype()),
   )?;
 
+  // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
+  let abort_controller_tag = scope.alloc_string("AbortController")?;
+  scope.push_root(Value::String(abort_controller_tag))?;
+  scope.define_property(
+    abort_controller_proto,
+    PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag),
+    data_desc(Value::String(abort_controller_tag), false),
+  )?;
+
   let abort_id = vm.register_native_call(abort_controller_abort_native)?;
   let abort_name = scope.alloc_string("abort")?;
   scope.push_root(Value::String(abort_name))?;
@@ -1115,4 +1133,33 @@ pub fn install_window_abort_bindings(
   )?;
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+
+  fn get_string(heap: &Heap, value: Value) -> String {
+    let Value::String(s) = value else {
+      panic!("expected string value, got {value:?}");
+    };
+    heap.get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[test]
+  fn object_prototype_to_string_uses_abort_to_string_tags() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let controller =
+      realm.exec_script("Object.prototype.toString.call(new AbortController())")?;
+    assert_eq!(get_string(realm.heap(), controller), "[object AbortController]");
+
+    let signal =
+      realm.exec_script("Object.prototype.toString.call((new AbortController()).signal)")?;
+    assert_eq!(get_string(realm.heap(), signal), "[object AbortSignal]");
+
+    realm.teardown();
+    Ok(())
+  }
 }

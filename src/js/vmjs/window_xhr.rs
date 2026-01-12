@@ -2757,6 +2757,15 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   set_data_prop(&mut scope, proto, "onloadstart", Value::Null, true)?;
   set_data_prop(&mut scope, proto, "onloadend", Value::Null, true)?;
 
+  // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
+  let tag_value = scope.alloc_string("XMLHttpRequest")?;
+  scope.push_root(Value::String(tag_value))?;
+  scope.define_property(
+    proto,
+    PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag),
+    read_only_data_desc(Value::String(tag_value)),
+  )?;
+
   // Expose global constructor.
   let xhr_key = alloc_key(&mut scope, "XMLHttpRequest")?;
   scope.define_property(global, xhr_key, read_only_data_desc(Value::Object(ctor)))?;
@@ -2883,6 +2892,17 @@ mod tests {
       panic!("expected string");
     };
     heap.get_string(s).unwrap().to_utf8_lossy().to_string()
+  }
+
+  #[test]
+  fn object_prototype_to_string_uses_xhr_to_string_tag() -> Result<(), VmError> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let v = host
+      .window
+      .exec_script("Object.prototype.toString.call(new XMLHttpRequest())")?;
+    assert_eq!(get_string(host.window.heap(), v), "[object XMLHttpRequest]");
+    Ok(())
   }
 
   fn read_log(vm: &mut Vm, scope: &mut Scope<'_>, arr: GcObject) -> Vec<String> {

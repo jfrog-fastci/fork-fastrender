@@ -1698,6 +1698,57 @@ mod tests {
   }
 
   #[test]
+  fn object_prototype_to_string_uses_text_encoding_to_string_tags() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+
+    let intr = realm.intrinsics();
+    let obj_proto = intr.object_prototype();
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+    scope.push_root(Value::Object(obj_proto))?;
+
+    let to_string_key = alloc_key(&mut scope, "toString")?;
+    let to_string_fn = vm.get(&mut scope, obj_proto, to_string_key)?;
+
+    let te_ctor_key = alloc_key(&mut scope, "TextEncoder")?;
+    let te_ctor = vm.get(&mut scope, global, te_ctor_key)?;
+    let Value::Object(te_ctor_obj) = te_ctor else {
+      return Err(VmError::InvariantViolation("TextEncoder missing"));
+    };
+    let te = vm.construct_without_host(&mut scope, te_ctor, &[], Value::Object(te_ctor_obj))?;
+    let Value::Object(te_obj) = te else {
+      return Err(VmError::InvariantViolation(
+        "TextEncoder constructor must return object",
+      ));
+    };
+    let te_tag = vm.call_without_host(&mut scope, to_string_fn, Value::Object(te_obj), &[])?;
+    assert_eq!(get_string(scope.heap(), te_tag), "[object TextEncoder]");
+
+    let td_ctor_key = alloc_key(&mut scope, "TextDecoder")?;
+    let td_ctor = vm.get(&mut scope, global, td_ctor_key)?;
+    let Value::Object(td_ctor_obj) = td_ctor else {
+      return Err(VmError::InvariantViolation("TextDecoder missing"));
+    };
+    let td = vm.construct_without_host(&mut scope, td_ctor, &[], Value::Object(td_ctor_obj))?;
+    let Value::Object(td_obj) = td else {
+      return Err(VmError::InvariantViolation(
+        "TextDecoder constructor must return object",
+      ));
+    };
+    let td_tag = vm.call_without_host(&mut scope, to_string_fn, Value::Object(td_obj), &[])?;
+    assert_eq!(get_string(scope.heap(), td_tag), "[object TextDecoder]");
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
   fn text_encoder_encode_into_writes_into_destination_and_returns_counts() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));

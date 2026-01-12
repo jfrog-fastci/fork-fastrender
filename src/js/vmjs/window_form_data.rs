@@ -839,6 +839,15 @@ pub fn install_window_form_data_bindings(
     .heap_mut()
     .object_set_prototype(proto, Some(intr.object_prototype()))?;
 
+  // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
+  let tag_value = scope.alloc_string("FormData")?;
+  scope.push_root(Value::String(tag_value))?;
+  scope.define_property(
+    proto,
+    PropertyKey::from_symbol(intr.well_known_symbols().to_string_tag),
+    data_desc(Value::String(tag_value), false),
+  )?;
+
   // Iterator prototype (shared by entries/keys/values).
   let iter_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(iter_proto))?;
@@ -1177,6 +1186,15 @@ mod tests {
       panic!("expected string value, got {value:?}");
     };
     heap.get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[test]
+  fn object_prototype_to_string_uses_form_data_to_string_tag() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let v = realm.exec_script("Object.prototype.toString.call(new FormData())")?;
+    assert_eq!(get_string(realm.heap(), v), "[object FormData]");
+    realm.teardown();
+    Ok(())
   }
 
   #[test]

@@ -5833,6 +5833,15 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
     scope.define_property(proto, sym_key, data_desc(Value::Object(entries_fn), true))?;
 
+    // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
+    let tag_value = scope.alloc_string("Headers")?;
+    scope.push_root(Value::String(tag_value))?;
+    scope.define_property(
+      proto,
+      PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag),
+      data_desc(Value::String(tag_value), false),
+    )?;
+
     // Define global.
     let key = alloc_key(&mut scope, "Headers")?;
     scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
@@ -5959,6 +5968,15 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
           set: Value::Undefined,
         },
       },
+    )?;
+
+    // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
+    let tag_value = scope.alloc_string("Request")?;
+    scope.push_root(Value::String(tag_value))?;
+    scope.define_property(
+      proto,
+      PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag),
+      data_desc(Value::String(tag_value), false),
     )?;
 
     let key = alloc_key(&mut scope, "Request")?;
@@ -6232,6 +6250,15 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
       },
     )?;
 
+    // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
+    let tag_value = scope.alloc_string("Response")?;
+    scope.push_root(Value::String(tag_value))?;
+    scope.define_property(
+      proto,
+      PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag),
+      data_desc(Value::String(tag_value), false),
+    )?;
+
     // Static methods (`Response.error`, `Response.redirect`).
     let error_id = vm.register_native_call(response_error_native)?;
     let error_name = scope.alloc_string("error")?;
@@ -6367,6 +6394,13 @@ mod tests {
       None,
       config.web_storage_quota_utf16_bytes,
     )
+  }
+
+  fn get_string(heap: &Heap, value: Value) -> String {
+    let Value::String(s) = value else {
+      panic!("expected string value, got {value:?}");
+    };
+    heap.get_string(s).unwrap().to_utf8_lossy()
   }
 
   struct DummyHost;
@@ -6569,6 +6603,35 @@ mod tests {
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .contains_key(&env_id));
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn object_prototype_to_string_uses_fetch_to_string_tags() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let headers = window.exec_script("Object.prototype.toString.call(new Headers())")?;
+    assert_eq!(get_string(window.heap(), headers), "[object Headers]");
+
+    let request = window.exec_script(
+      "Object.prototype.toString.call(new Request('https://example.invalid/'))",
+    )?;
+    assert_eq!(get_string(window.heap(), request), "[object Request]");
+
+    let response = window.exec_script("Object.prototype.toString.call(new Response())")?;
+    assert_eq!(get_string(window.heap(), response), "[object Response]");
+
+    drop(fetch_bindings);
+    window.teardown();
     Ok(())
   }
 

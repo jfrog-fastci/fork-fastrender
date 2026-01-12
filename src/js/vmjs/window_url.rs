@@ -1972,6 +1972,37 @@ pub fn install_window_url_bindings(
     .heap_mut()
     .object_set_prototype(params_proto, Some(realm.intrinsics().object_prototype()))?;
 
+  // @@toStringTag branding for platform object detection (`Object.prototype.toString.call(x)`).
+  let to_string_tag = realm.intrinsics().well_known_symbols().to_string_tag;
+  let url_tag = scope.alloc_string("URL")?;
+  scope.push_root(Value::String(url_tag))?;
+  scope.define_property(
+    url_proto,
+    PropertyKey::from_symbol(to_string_tag),
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(url_tag),
+        writable: false,
+      },
+    },
+  )?;
+  let params_tag = scope.alloc_string("URLSearchParams")?;
+  scope.push_root(Value::String(params_tag))?;
+  scope.define_property(
+    params_proto,
+    PropertyKey::from_symbol(to_string_tag),
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(params_tag),
+        writable: false,
+      },
+    },
+  )?;
+
   // Hidden slot symbol for caching the `searchParams` object on URL instances.
   let search_params_slot_sym = scope.alloc_symbol(Some(SEARCH_PARAMS_SLOT_DESC))?;
   let search_params_slot_root = scope
@@ -2525,6 +2556,21 @@ mod tests {
       Value::Number(n) => n,
       other => panic!("expected number value, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn object_prototype_to_string_uses_url_to_string_tag() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let url = realm.exec_script("Object.prototype.toString.call(new URL('https://example.invalid/'))")?;
+    assert_eq!(get_string(realm.heap(), url), "[object URL]");
+
+    let params =
+      realm.exec_script("Object.prototype.toString.call(new URLSearchParams('a=1&b=2'))")?;
+    assert_eq!(get_string(realm.heap(), params), "[object URLSearchParams]");
+
+    realm.teardown();
+    Ok(())
   }
 
   #[test]
