@@ -2554,7 +2554,7 @@ impl Vm {
     }
   }
 
-  /// ECMAScript `Get(O, P)` for ordinary objects.
+  /// ECMAScript `Get(O, P)`.
   ///
   /// ## ⚠️ Dummy `VmHost` context
   ///
@@ -2569,9 +2569,8 @@ impl Vm {
     obj: GcObject,
     key: PropertyKey,
   ) -> Result<Value, VmError> {
-    // Delegate to the ordinary object internal-method implementation. `Get(O, P)` uses
-    // `receiver = O`.
-    scope.ordinary_get(self, obj, key, Value::Object(obj))
+    // `Get(O, P)` uses `receiver = O`.
+    scope.get(self, obj, key, Value::Object(obj))
   }
 
   /// ECMAScript `Get(O, P)` using an explicit embedder host context and host hook implementation.
@@ -2661,7 +2660,7 @@ impl Vm {
     };
 
     // GetMethod: callability checks and `null`/`undefined` normalization.
-    let func = scope.ordinary_get(self, obj, key, receiver)?;
+    let func = scope.get(self, obj, key, receiver)?;
     if matches!(func, Value::Undefined | Value::Null) {
       return Ok(None);
     }
@@ -3362,28 +3361,14 @@ impl Vm {
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
       .object_prototype();
-    let proto = match new_target {
-      Value::Object(nt) => {
-        let mut proto_scope = scope.reborrow();
-        proto_scope.push_root(Value::Object(nt))?;
-        let key_s = proto_scope.alloc_string("prototype")?;
-        proto_scope.push_root(Value::String(key_s))?;
-        let key = PropertyKey::from_string(key_s);
-        let value = proto_scope.ordinary_get_with_host_and_hooks(
-          self,
-          host,
-          hooks,
-          nt,
-          key,
-          Value::Object(nt),
-        )?;
-        match value {
-          Value::Object(o) => o,
-          _ => default_proto,
-        }
-      }
-      _ => default_proto,
-    };
+    let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+      self,
+      scope,
+      host,
+      hooks,
+      new_target,
+      default_proto,
+    )?;
 
     let mut this_scope = scope.reborrow();
     let this_obj = this_scope.alloc_object_with_prototype(Some(proto))?;

@@ -780,10 +780,82 @@ impl<'a> Scope<'a> {
     )
   }
 
-  /// ECMAScript `[[Get]]` internal method dispatch, using an explicit embedder host context and
-  /// host hook implementation.
+  /// ECMAScript `[[Get]]` internal method dispatch.
   ///
-  /// This dispatches to Proxy objects' `[[Get]]` algorithm when `obj` is a Proxy.
+  /// This dispatches to Proxy `[[Get]]` when `obj` is a Proxy object; otherwise it falls back to
+  /// ordinary object `[[Get]]` semantics.
+  ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// Proxy traps and accessor getters are invoked using a **dummy host context** (`()`), mirroring
+  /// [`Scope::ordinary_get`]. Host embeddings that need native handlers to observe real host state
+  /// should prefer [`Scope::get_with_host_and_hooks`].
+  pub fn get(
+    &mut self,
+    vm: &mut Vm,
+    obj: GcObject,
+    key: PropertyKey,
+    receiver: Value,
+  ) -> Result<Value, VmError> {
+    // Fast path: ordinary objects.
+    if !self.heap().is_proxy_object(obj) {
+      return self.ordinary_get(vm, obj, key, receiver);
+    }
+
+    // Root inputs across proxy trap lookup and invocation (which can allocate and trigger GC).
+    let mut scope = self.reborrow();
+    let key_value = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    scope.push_roots(&[Value::Object(obj), key_value, receiver])?;
+
+    // `GetMethod(handler, "get")` key.
+    let get_key_s = scope.alloc_string("get")?;
+    scope.push_root(Value::String(get_key_s))?;
+    let get_key = PropertyKey::from_string(get_key_s);
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      // Budget proxy chains to preserve interrupt/deadline responsiveness.
+      if steps != 0 && steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !scope.heap().is_proxy_object(current) {
+        return scope.ordinary_get(vm, current, key, receiver);
+      }
+
+      let (Some(target), Some(handler)) = (
+        scope.heap().proxy_target(current)?,
+        scope.heap().proxy_handler(current)?,
+      ) else {
+        return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+      };
+
+      let trap = vm.get_method(&mut scope, Value::Object(handler), get_key)?;
+      match trap {
+        None => {
+          current = target;
+          continue;
+        }
+        Some(trap) => {
+          let args = [Value::Object(target), key_value, receiver];
+          // Like `ordinary_get`, prefer `Vm::call` so any active host hooks override is honored.
+          let mut dummy_host = ();
+          return vm.call(&mut dummy_host, &mut scope, trap, Value::Object(handler), &args);
+        }
+      }
+    }
+  }
+
+  /// ECMAScript `[[Get]]` internal method dispatch, using an explicit embedder host context and host
+  /// hook implementation.
   pub fn get_with_host_and_hooks(
     &mut self,
     vm: &mut Vm,

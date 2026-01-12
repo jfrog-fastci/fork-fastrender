@@ -32,9 +32,11 @@ fn yield_star_over_array_delegates_values() -> Result<(), VmError> {
     // test will begin exercising delegation semantics (including array iterator acquisition).
     Err(VmError::Unimplemented(
       "generator functions"
-      | "async generator functions"
-      | "generator function call"
-      | "Generator.prototype.next",
+        | "async generator functions"
+        | "generator function call"
+        | "Generator.prototype.next"
+        | "GeneratorResume"
+        | "GeneratorResumeAbrupt",
     )) => Ok(()),
     Err(err) => Err(err),
   }

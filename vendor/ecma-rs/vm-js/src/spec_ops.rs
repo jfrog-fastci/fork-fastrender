@@ -547,7 +547,7 @@ pub fn get_prototype_from_constructor_with_host_and_hooks(
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
 
-  let proto = scope.ordinary_get_with_host_and_hooks(
+  let proto = scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,
