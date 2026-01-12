@@ -1581,6 +1581,9 @@ pub fn array_constructor_construct(
   array_constructor_impl(vm, scope, args)
 }
 
+/// `Proxy(..)` call behavior (ECMA-262).
+///
+/// The `Proxy` constructor is not callable without `new`.
 pub fn proxy_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -1596,6 +1599,7 @@ pub fn proxy_constructor_call(
   Err(VmError::TypeError("Proxy constructor requires 'new'"))
 }
 
+/// `new Proxy(target, handler)` (ECMA-262) (minimal).
 pub fn proxy_constructor_construct(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,

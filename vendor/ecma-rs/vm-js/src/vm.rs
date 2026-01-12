@@ -2339,6 +2339,12 @@ impl Vm {
           other => Err(other),
         };
       };
+      // Root `target`/`handler` across trap lookup/invocation.
+      //
+      // `GetMethod(handler, "apply")` can invoke user JS via accessors. That JS can revoke this
+      // Proxy (clearing its internal slots) and then trigger a GC, which would otherwise allow the
+      // `target` object to be collected while this call operation still needs it.
+      scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
       // Non-callable proxies do not have a `[[Call]]` internal method.
       if !scope.heap().is_callable(Value::Object(target))? {
@@ -2882,6 +2888,9 @@ impl Vm {
           other => Err(other),
         };
       };
+      // Root `target`/`handler` across trap lookup/invocation; see comment in the Proxy `[[Call]]`
+      // dispatch above.
+      scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
       // Non-constructable proxies do not have a `[[Construct]]` internal method.
       if !scope.heap().is_constructor(Value::Object(target))? {

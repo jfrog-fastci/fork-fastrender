@@ -110,6 +110,50 @@ fn proxy_delete_trap_deletes_target_property(
   Ok(Value::Bool(ok))
 }
 
+fn proxy_get_trap_returns_target_is_valid(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target else {
+    return Ok(Value::Bool(false));
+  };
+  Ok(Value::Bool(scope.heap().is_valid_object(target_obj)))
+}
+
+fn handler_getter_revokes_proxy_and_forces_gc(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(Value::Object(proxy)) = slots.first().copied() else {
+    return Err(VmError::InvariantViolation(
+      "handler getter missing proxy slot",
+    ));
+  };
+  let Some(Value::Object(trap)) = slots.get(1).copied() else {
+    return Err(VmError::InvariantViolation(
+      "handler getter missing trap slot",
+    ));
+  };
+
+  scope.heap_mut().proxy_revoke(proxy)?;
+  // Force a GC cycle while the Proxy is revoked and its target is otherwise unreachable. The
+  // engine must still keep using the original `[[ProxyTarget]]` for this operation.
+  scope.heap_mut().collect_garbage();
+  Ok(Value::Object(trap))
+}
+
 #[test]
 fn proxy_property_traps_are_observable_from_js() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
@@ -223,3 +267,61 @@ fn proxy_property_access_throws_on_revoked_proxy() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn proxy_get_trap_can_revoke_during_trap_lookup_without_breaking_operation() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let global = rt.realm().global_object();
+
+  {
+    let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let trap_id = vm.register_native_call(proxy_get_trap_returns_target_is_valid)?;
+    let getter_id = vm.register_native_call(handler_getter_revokes_proxy_and_forces_gc)?;
+
+    let mut scope = heap.scope();
+
+    let target = scope.alloc_object()?;
+    scope.push_root(Value::Object(target))?;
+
+    let handler = scope.alloc_object()?;
+    scope.push_root(Value::Object(handler))?;
+
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+
+    // The actual get trap (returns whether the passed `target` handle is still valid).
+    let trap_name = scope.alloc_string("getTrap")?;
+    scope.push_root(Value::String(trap_name))?;
+    let trap_fn = scope.alloc_native_function(trap_id, None, trap_name, 3)?;
+    scope.push_root(Value::Object(trap_fn))?;
+
+    // Accessor getter for `handler.get` that revokes `proxy` during `GetMethod(handler, "get")` and
+    // forces a GC before returning the trap function.
+    let getter_name = scope.alloc_string("getTrapGetter")?;
+    scope.push_root(Value::String(getter_name))?;
+    let slots = [Value::Object(proxy), Value::Object(trap_fn)];
+    let getter_fn = scope.alloc_native_function_with_slots(getter_id, None, getter_name, 0, &slots)?;
+    scope.push_root(Value::Object(getter_fn))?;
+
+    let get_key_s = scope.alloc_string("get")?;
+    scope.push_root(Value::String(get_key_s))?;
+    let get_key = PropertyKey::from_string(get_key_s);
+    let desc = PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(getter_fn),
+        set: Value::Undefined,
+      },
+    };
+    scope.define_property(handler, get_key, desc)?;
+
+    define_global(&mut scope, global, "p", Value::Object(proxy))?;
+  }
+
+  // The operation should still succeed even though the proxy is revoked during trap lookup, and
+  // the `target` passed to the trap must be a live object.
+  assert_eq!(rt.exec_script("p.foo")?, Value::Bool(true));
+  Ok(())
+}

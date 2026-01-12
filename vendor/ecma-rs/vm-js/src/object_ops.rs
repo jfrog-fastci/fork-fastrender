@@ -912,6 +912,14 @@ impl<'a> Scope<'a> {
       let Some(handler) = scope.heap().proxy_handler(current)? else {
         return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
       };
+      // Root the Proxy's `[[ProxyTarget]]` and `[[ProxyHandler]]` while we look up and invoke the
+      // `get` trap.
+      //
+      // `GetMethod(handler, "get")` can run user code via accessor properties. That user code can
+      // revoke `current` (clearing `[[ProxyTarget]]`/`[[ProxyHandler]]`) and then trigger a GC.
+      // If that happens, `target` could become unreachable and collected even though the Proxy
+      // algorithm is still required to use the original target object for this operation.
+      scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
       // Let trap be ? GetMethod(handler, "get").
       let get_key = match get_trap_key {
