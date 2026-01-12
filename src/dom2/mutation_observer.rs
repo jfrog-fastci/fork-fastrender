@@ -261,6 +261,48 @@ fn is_html_element_kind(kind: &NodeKind) -> bool {
 }
 
 impl Document {
+  pub(crate) fn mutation_observer_move_registrations(&mut self, old: NodeId, new: NodeId) {
+    if old == new {
+      return;
+    }
+    let old_idx = old.index();
+    let new_idx = new.index();
+    if old_idx >= self.nodes.len() || new_idx >= self.nodes.len() {
+      return;
+    }
+    if old_idx == new_idx {
+      return;
+    }
+
+    let (old_list, new_list) = if old_idx < new_idx {
+      let (left, right) = self.nodes.split_at_mut(new_idx);
+      (
+        &mut left[old_idx].registered_observers,
+        &mut right[0].registered_observers,
+      )
+    } else {
+      let (left, right) = self.nodes.split_at_mut(old_idx);
+      (
+        &mut right[0].registered_observers,
+        &mut left[new_idx].registered_observers,
+      )
+    };
+
+    if old_list.is_empty() {
+      return;
+    }
+
+    let moved = std::mem::take(old_list);
+    for reg in moved {
+      new_list.retain(|r| r.observer != reg.observer);
+      new_list.push(reg);
+    }
+  }
+
+  pub(crate) fn mutation_observer_remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
+    self.mutation_observer_agent.borrow_mut().remap_node_ids(mapping);
+  }
+
   pub fn mutation_observer_limits(&self) -> MutationObserverLimits {
     self.mutation_observer_agent.borrow().limits()
   }
