@@ -1,9 +1,13 @@
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp, ValueTypeSummary};
 use crate::symbol::semantics::SymbolId;
+#[cfg(feature = "typed")]
+use crate::types::TypeId;
 use crate::{FnId, Program};
 use effect_model::{EffectFlags, ThrowBehavior};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "typed")]
+use std::sync::Arc;
 
 use super::value_types::ValueTypeSummaries;
 
@@ -42,8 +46,213 @@ fn collect_insts(cfg: &Cfg) -> Vec<&Inst> {
   cfg
     .reverse_postorder()
     .into_iter()
-    .flat_map(|label| cfg.bblocks.maybe_get(label).into_iter().flat_map(|bb| bb.iter()))
+    .flat_map(|label| {
+      cfg
+        .bblocks
+        .maybe_get(label)
+        .into_iter()
+        .flat_map(|bb| bb.iter())
+    })
     .collect()
+}
+
+// --- Strict-native, typed field-level effect modeling ------------------------------------------
+//
+// In untyped mode (or non-strict-native TypeScript), property access/assignment is modeled as a
+// coarse Heap read/write because JavaScript semantics are extremely dynamic:
+// - prototype lookups can observe prototype mutation,
+// - assignment may create new properties and mutate hidden classes,
+// - getters/setters/proxies can run arbitrary user code.
+//
+// For the strict-native subset, the type checker enforces invariants that make it sound to treat
+// property operations as plain field loads/stores when:
+// - the property key is a constant (string/number), and
+// - the receiver has a known, finite set of object shapes (from `typecheck-ts` + `types-ts-interned`).
+//
+// When those conditions are met, we can model effects at field granularity via
+// `EffectLocation::Field { shape, key }`, enabling safe reordering and better load/store elimination.
+
+#[cfg(feature = "typed")]
+#[derive(Clone, Debug, Default)]
+struct VarTypeIds {
+  vars: BTreeMap<u32, Option<TypeId>>,
+}
+
+#[cfg(feature = "typed")]
+impl VarTypeIds {
+  fn new(cfg: &Cfg) -> Self {
+    let mut vars: BTreeMap<u32, Option<TypeId>> = BTreeMap::new();
+    for inst in collect_insts(cfg) {
+      let Some(type_id) = inst.meta.type_id else {
+        continue;
+      };
+      for &tgt in inst.tgts.iter() {
+        vars
+          .entry(tgt)
+          .and_modify(|existing| {
+            // Non-SSA CFGs may assign the same temp multiple times; only keep the type when we can
+            // prove it is constant.
+            *existing = match *existing {
+              None => None,
+              Some(prev) if prev == type_id => Some(prev),
+              Some(_) => None,
+            };
+          })
+          .or_insert(Some(type_id));
+      }
+    }
+    Self { vars }
+  }
+
+  fn var(&self, var: u32) -> Option<TypeId> {
+    self.vars.get(&var).copied().flatten()
+  }
+
+  fn arg(&self, arg: &Arg) -> Option<TypeId> {
+    match arg {
+      Arg::Var(v) => self.var(*v),
+      _ => None,
+    }
+  }
+}
+
+#[cfg(feature = "typed")]
+#[derive(Clone)]
+struct PreciseEffectCtx<'a> {
+  type_program: &'a typecheck_ts::Program,
+  store: Arc<types_ts_interned::TypeStore>,
+  var_types: VarTypeIds,
+  strict_native: bool,
+}
+
+#[cfg(feature = "typed")]
+impl<'a> PreciseEffectCtx<'a> {
+  fn new(cfg: &Cfg, type_program: &'a typecheck_ts::Program) -> Self {
+    let opts = type_program.compiler_options();
+    let strict_native = opts.native_strict || opts.strict_native;
+    Self {
+      type_program,
+      store: type_program.interned_type_store(),
+      var_types: VarTypeIds::new(cfg),
+      strict_native,
+    }
+  }
+}
+
+#[cfg(feature = "typed")]
+fn prop_key_from_const(
+  store: &types_ts_interned::TypeStore,
+  key: &Arg,
+) -> Option<types_ts_interned::PropKey> {
+  use crate::il::inst::Const;
+  match key {
+    Arg::Const(Const::Str(s)) => Some(types_ts_interned::PropKey::String(
+      store.intern_name(s.clone()),
+    )),
+    Arg::Const(Const::Num(n)) => {
+      let value = n.0;
+      if value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value <= i64::MAX as f64
+      {
+        Some(types_ts_interned::PropKey::Number(value as i64))
+      } else {
+        None
+      }
+    }
+    _ => None,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn shape_has_own_property(
+  store: &types_ts_interned::TypeStore,
+  shape: types_ts_interned::ShapeId,
+  key: &types_ts_interned::PropKey,
+) -> bool {
+  let shape = store.shape(shape);
+  shape.properties.iter().any(|prop| &prop.key == key)
+}
+
+#[cfg(feature = "typed")]
+fn type_to_object_shapes(
+  program: &typecheck_ts::Program,
+  store: &types_ts_interned::TypeStore,
+  ty: TypeId,
+  max_shapes: usize,
+  depth: u8,
+) -> Option<Vec<types_ts_interned::ShapeId>> {
+  if depth >= 8 {
+    return None;
+  }
+
+  use types_ts_interned::TypeKind as K;
+  match program.interned_type_kind(ty) {
+    K::Object(obj) => Some(vec![store.object(obj).shape]),
+    K::Ref { def, .. } => {
+      let declared = program.declared_type_of_def_interned(def);
+      type_to_object_shapes(program, store, declared, max_shapes, depth + 1)
+    }
+    K::Union(members) => {
+      let mut shapes: Vec<types_ts_interned::ShapeId> = Vec::new();
+      for member in members {
+        if matches!(program.interned_type_kind(member), K::Never) {
+          continue;
+        }
+        let mut member_shapes =
+          type_to_object_shapes(program, store, member, max_shapes, depth + 1)?;
+        shapes.append(&mut member_shapes);
+        if shapes.len() > max_shapes {
+          return None;
+        }
+      }
+      shapes.sort_unstable();
+      shapes.dedup();
+      if shapes.is_empty() {
+        None
+      } else {
+        Some(shapes)
+      }
+    }
+    _ => None,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn strict_native_field_locations(
+  ctx: &PreciseEffectCtx<'_>,
+  receiver: &Arg,
+  key: &Arg,
+) -> Option<Vec<EffectLocation>> {
+  // Soundness gate: only enable field-level modeling when `typecheck-ts` is configured to enforce
+  // the strict-native subset (no prototype mutation, no computed property access with dynamic keys,
+  // etc). Without this, JS property operations are too dynamic to model as plain field accesses.
+  if !ctx.strict_native {
+    return None;
+  }
+
+  let key = prop_key_from_const(&ctx.store, key)?;
+  let recv_ty = ctx.var_types.arg(receiver)?;
+
+  const MAX_SHAPES: usize = 4;
+  let shapes = type_to_object_shapes(ctx.type_program, &ctx.store, recv_ty, MAX_SHAPES, 0)?;
+  if shapes
+    .iter()
+    .any(|shape| !shape_has_own_property(&ctx.store, *shape, &key))
+  {
+    return None;
+  }
+
+  Some(
+    shapes
+      .into_iter()
+      .map(|shape| EffectLocation::Field {
+        shape,
+        key: key.clone(),
+      })
+      .collect(),
+  )
 }
 
 fn collect_constant_foreign_fns(program: &Program) -> BTreeMap<SymbolId, FnId> {
@@ -92,7 +301,10 @@ fn collect_constant_foreign_fns(program: &Program) -> BTreeMap<SymbolId, FnId> {
   candidates
 }
 
-fn build_callee_var_defs(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> BTreeMap<u32, CalleeVarDef> {
+fn build_callee_var_defs(
+  cfg: &Cfg,
+  foreign_fns: &BTreeMap<SymbolId, FnId>,
+) -> BTreeMap<u32, CalleeVarDef> {
   let mut defs = BTreeMap::<u32, CalleeVarDef>::new();
   for inst in collect_insts(cfg) {
     let Some(&tgt) = inst.tgts.get(0) else {
@@ -128,7 +340,11 @@ fn build_callee_var_defs(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> B
   defs
 }
 
-fn resolve_fn_id(arg: &Arg, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut Vec<u32>) -> Option<FnId> {
+fn resolve_fn_id(
+  arg: &Arg,
+  defs: &BTreeMap<u32, CalleeVarDef>,
+  visiting: &mut Vec<u32>,
+) -> Option<FnId> {
   match arg {
     Arg::Fn(id) => Some(*id),
     Arg::Var(v) => resolve_var_fn_id(*v, defs, visiting),
@@ -136,7 +352,11 @@ fn resolve_fn_id(arg: &Arg, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut V
   }
 }
 
-fn resolve_var_fn_id(var: u32, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut Vec<u32>) -> Option<FnId> {
+fn resolve_var_fn_id(
+  var: u32,
+  defs: &BTreeMap<u32, CalleeVarDef>,
+  visiting: &mut Vec<u32>,
+) -> Option<FnId> {
   if visiting.contains(&var) {
     return None;
   }
@@ -179,7 +399,10 @@ enum ToNumberConversion {
 }
 
 fn to_number_conversion(ty: ValueTypeSummary) -> ToNumberConversion {
-  if ty.is_unknown() || ty.contains(ValueTypeSummary::OBJECT) || ty.contains(ValueTypeSummary::FUNCTION) {
+  if ty.is_unknown()
+    || ty.contains(ValueTypeSummary::OBJECT)
+    || ty.contains(ValueTypeSummary::FUNCTION)
+  {
     return ToNumberConversion::Unknown;
   }
   if ty == ValueTypeSummary::BIGINT || ty == ValueTypeSummary::SYMBOL {
@@ -282,7 +505,10 @@ fn local_effect_for_tonumber_builtin(
 /// This excludes interprocedural callee summaries for direct `Arg::Fn` calls;
 /// those are incorporated by [`compute_program_effects`] (function summaries)
 /// and [`annotate_cfg_effects`] (per-instruction metadata).
-fn inst_local_effect_with_value_types(inst: &Inst, value_types: Option<&ValueTypeSummaries>) -> EffectSet {
+fn inst_local_effect_with_value_types(
+  inst: &Inst,
+  value_types: Option<&ValueTypeSummaries>,
+) -> EffectSet {
   let mut effects = EffectSet::default();
 
   match inst.t {
@@ -300,14 +526,10 @@ fn inst_local_effect_with_value_types(inst: &Inst, value_types: Option<&ValueTyp
       effects.summary.throws = ThrowBehavior::Maybe;
     }
     InstTyp::ForeignLoad => {
-      effects
-        .reads
-        .insert(EffectLocation::Foreign(inst.foreign));
+      effects.reads.insert(EffectLocation::Foreign(inst.foreign));
     }
     InstTyp::ForeignStore => {
-      effects
-        .writes
-        .insert(EffectLocation::Foreign(inst.foreign));
+      effects.writes.insert(EffectLocation::Foreign(inst.foreign));
     }
     InstTyp::UnknownLoad => {
       effects
@@ -335,7 +557,10 @@ fn inst_local_effect_with_value_types(inst: &Inst, value_types: Option<&ValueTyp
         }
         Arg::Builtin(path) => match path.as_str() {
           // Internal lowering helpers that construct literals / perform pure allocations.
-          "__optimize_js_array" | "__optimize_js_object" | "__optimize_js_regex" | "__optimize_js_template" => {
+          "__optimize_js_array"
+          | "__optimize_js_object"
+          | "__optimize_js_regex"
+          | "__optimize_js_template" => {
             effects.summary.flags |= EffectFlags::ALLOCATES;
           }
           // Tagged templates call the tag function; we conservatively treat them as unknown.
@@ -396,6 +621,39 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
   inst_local_effect_with_value_types(inst, None)
 }
 
+#[cfg(feature = "typed")]
+fn inst_local_effect_with_value_types_typed(
+  inst: &Inst,
+  value_types: Option<&ValueTypeSummaries>,
+  ctx: &PreciseEffectCtx<'_>,
+) -> EffectSet {
+  let mut effects = inst_local_effect_with_value_types(inst, value_types);
+
+  // Refine heap-level effects for property ops into field-level effects when strict-native typed
+  // invariants make it sound (see the module comment near `PreciseEffectCtx`).
+  match inst.t {
+    InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
+      if let (Some(receiver), Some(key)) = (inst.args.get(0), inst.args.get(1)) {
+        if let Some(fields) = strict_native_field_locations(ctx, receiver, key) {
+          effects.reads.remove(&EffectLocation::Heap);
+          effects.reads.extend(fields);
+        }
+      }
+    }
+    InstTyp::PropAssign => {
+      if let (Some(receiver), Some(key)) = (inst.args.get(0), inst.args.get(1)) {
+        if let Some(fields) = strict_native_field_locations(ctx, receiver, key) {
+          effects.writes.remove(&EffectLocation::Heap);
+          effects.writes.extend(fields);
+        }
+      }
+    }
+    _ => {}
+  }
+
+  effects
+}
+
 fn inst_total_effect(
   inst: &Inst,
   fn_summaries: &FnEffectMap,
@@ -426,8 +684,42 @@ fn inst_total_effect(
   effects
 }
 
+#[cfg(feature = "typed")]
+fn inst_total_effect_typed(
+  inst: &Inst,
+  fn_summaries: &FnEffectMap,
+  defs: &BTreeMap<u32, CalleeVarDef>,
+  value_types: Option<&ValueTypeSummaries>,
+  ctx: &PreciseEffectCtx<'_>,
+) -> EffectSet {
+  if inst.t != InstTyp::Call {
+    return inst_local_effect_with_value_types_typed(inst, value_types, ctx);
+  }
+
+  let (_, callee, _, _, _) = inst.as_call();
+  if matches!(callee, Arg::Builtin(_)) {
+    return inst_local_effect_with_value_types_typed(inst, value_types, ctx);
+  }
+
+  let Some(id) = resolve_fn_id(callee, defs, &mut Vec::new()) else {
+    return inst_local_effect_with_value_types_typed(inst, value_types, ctx);
+  };
+
+  let mut effects = EffectSet::default();
+  if let Some(summary) = fn_summaries.get(id) {
+    effects.merge(summary);
+  } else {
+    effects.mark_unknown();
+  }
+  effects
+}
+
 fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
-  let mut labels = cfg.bblocks.all().map(|(label, _)| label).collect::<Vec<_>>();
+  let mut labels = cfg
+    .bblocks
+    .all()
+    .map(|(label, _)| label)
+    .collect::<Vec<_>>();
   labels.sort_unstable();
   labels
 }
@@ -438,20 +730,71 @@ fn cfg_local_effects(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> Effec
   let mut effects = EffectSet::default();
   for inst in collect_insts(cfg) {
     if inst.t != InstTyp::Call {
-      effects.merge(&inst_local_effect_with_value_types(inst, Some(&value_types)));
+      effects.merge(&inst_local_effect_with_value_types(
+        inst,
+        Some(&value_types),
+      ));
       continue;
     }
     let (_, callee, _, _, _) = inst.as_call();
     // Builtin calls have intrinsic local effects.
     if matches!(callee, Arg::Builtin(_)) {
-      effects.merge(&inst_local_effect_with_value_types(inst, Some(&value_types)));
+      effects.merge(&inst_local_effect_with_value_types(
+        inst,
+        Some(&value_types),
+      ));
       continue;
     }
     // Direct calls to nested functions are accounted for interprocedurally.
     if resolve_fn_id(callee, &defs, &mut Vec::new()).is_some() {
       continue;
     }
-    effects.merge(&inst_local_effect_with_value_types(inst, Some(&value_types)));
+    effects.merge(&inst_local_effect_with_value_types(
+      inst,
+      Some(&value_types),
+    ));
+  }
+  effects
+}
+
+#[cfg(feature = "typed")]
+fn cfg_local_effects_typed(
+  cfg: &Cfg,
+  foreign_fns: &BTreeMap<SymbolId, FnId>,
+  type_program: &typecheck_ts::Program,
+) -> EffectSet {
+  let defs = build_callee_var_defs(cfg, foreign_fns);
+  let value_types = ValueTypeSummaries::new(cfg);
+  let ctx = PreciseEffectCtx::new(cfg, type_program);
+  let mut effects = EffectSet::default();
+  for inst in collect_insts(cfg) {
+    if inst.t != InstTyp::Call {
+      effects.merge(&inst_local_effect_with_value_types_typed(
+        inst,
+        Some(&value_types),
+        &ctx,
+      ));
+      continue;
+    }
+    let (_, callee, _, _, _) = inst.as_call();
+    // Builtin calls have intrinsic local effects.
+    if matches!(callee, Arg::Builtin(_)) {
+      effects.merge(&inst_local_effect_with_value_types_typed(
+        inst,
+        Some(&value_types),
+        &ctx,
+      ));
+      continue;
+    }
+    // Direct calls to nested functions are accounted for interprocedurally.
+    if resolve_fn_id(callee, &defs, &mut Vec::new()).is_some() {
+      continue;
+    }
+    effects.merge(&inst_local_effect_with_value_types_typed(
+      inst,
+      Some(&value_types),
+      &ctx,
+    ));
   }
   effects
 }
@@ -536,6 +879,78 @@ pub fn compute_program_effects(program: &Program) -> FnEffectMap {
   summaries
 }
 
+/// Whole-program effect analysis using `typecheck-ts` type information.
+///
+/// This refines heap-level property effects into field-level effects when strict-native invariants
+/// make it sound (see module comment near `PreciseEffectCtx`).
+#[cfg(feature = "typed")]
+pub fn compute_program_effects_typed(
+  program: &Program,
+  type_program: &typecheck_ts::Program,
+) -> FnEffectMap {
+  let foreign_fns = collect_constant_foreign_fns(program);
+  let locals = FnEffectMap {
+    top_level: cfg_local_effects_typed(
+      program.top_level.analyzed_cfg(),
+      &foreign_fns,
+      type_program,
+    ),
+    functions: program
+      .functions
+      .iter()
+      .map(|f| cfg_local_effects_typed(f.analyzed_cfg(), &foreign_fns, type_program))
+      .collect(),
+    constant_foreign_fns: foreign_fns.clone(),
+  };
+
+  let top_level_calls = cfg_direct_calls(program.top_level.analyzed_cfg(), &foreign_fns);
+  let function_calls: Vec<_> = program
+    .functions
+    .iter()
+    .map(|f| cfg_direct_calls(f.analyzed_cfg(), &foreign_fns))
+    .collect();
+
+  let mut summaries = locals.clone();
+
+  loop {
+    let mut changed = false;
+
+    let mut new_top = locals.top_level.clone();
+    for callee in top_level_calls.iter().copied() {
+      if let Some(summary) = summaries.get(callee) {
+        new_top.merge(summary);
+      } else {
+        new_top.mark_unknown();
+      }
+    }
+    if new_top != summaries.top_level {
+      summaries.top_level = new_top;
+      changed = true;
+    }
+
+    for fn_id in 0..program.functions.len() {
+      let mut new_summary = locals.functions[fn_id].clone();
+      for callee in function_calls[fn_id].iter().copied() {
+        if let Some(summary) = summaries.get(callee) {
+          new_summary.merge(summary);
+        } else {
+          new_summary.mark_unknown();
+        }
+      }
+      if new_summary != summaries.functions[fn_id] {
+        summaries.functions[fn_id] = new_summary;
+        changed = true;
+      }
+    }
+
+    if !changed {
+      break;
+    }
+  }
+
+  summaries
+}
+
 /// Write per-instruction effects into [`crate::il::inst::InstMeta`].
 ///
 /// This is intended to run on the finalized CFG (after `build_program_function`)
@@ -546,6 +961,27 @@ pub fn annotate_cfg_effects(cfg: &mut Cfg, fn_summaries: &FnEffectMap) {
   for label in cfg_labels_sorted(cfg) {
     for inst in cfg.bblocks.get_mut(label) {
       inst.meta.effects = inst_total_effect(inst, fn_summaries, &defs, Some(&value_types));
+    }
+  }
+}
+
+/// Typed variant of [`annotate_cfg_effects`].
+///
+/// This enables field-level modeling in strict-native typed code, falling back to the existing
+/// heap-level behavior otherwise.
+#[cfg(feature = "typed")]
+pub fn annotate_cfg_effects_typed(
+  cfg: &mut Cfg,
+  fn_summaries: &FnEffectMap,
+  type_program: &typecheck_ts::Program,
+) {
+  let defs = build_callee_var_defs(cfg, fn_summaries.constant_foreign_fns());
+  let value_types = ValueTypeSummaries::new(cfg);
+  let ctx = PreciseEffectCtx::new(cfg, type_program);
+  for label in cfg_labels_sorted(cfg) {
+    for inst in cfg.bblocks.get_mut(label) {
+      inst.meta.effects =
+        inst_total_effect_typed(inst, fn_summaries, &defs, Some(&value_types), &ctx);
     }
   }
 }
@@ -733,7 +1169,10 @@ mod tests {
     );
 
     let naive = inst_local_effect(&call);
-    assert!(naive.unknown, "expected no-type-context effect to be unknown");
+    assert!(
+      naive.unknown,
+      "expected no-type-context effect to be unknown"
+    );
 
     let cfg = cfg_single_block(vec![
       Inst::var_assign(0, Arg::Const(Const::Str("1".to_string()))),
@@ -807,9 +1246,7 @@ mod tests {
     // Per-instruction annotation should reflect the callee's summary on the call instruction.
     annotate_cfg_effects(&mut program.functions[1].body, &summaries);
     let call_effects = &program.functions[1].body.bblocks.get(0)[0].meta.effects;
-    assert!(call_effects
-      .writes
-      .contains(&EffectLocation::Foreign(sym)));
+    assert!(call_effects.writes.contains(&EffectLocation::Foreign(sym)));
   }
 
   #[test]
@@ -856,7 +1293,10 @@ mod tests {
     )]));
 
     // Top-level initializes the captured callee binding.
-    let top_level = func(cfg_single_block(vec![Inst::foreign_store(callee_sym, Arg::Fn(0))]));
+    let top_level = func(cfg_single_block(vec![Inst::foreign_store(
+      callee_sym,
+      Arg::Fn(0),
+    )]));
 
     // Fn1 loads the captured binding then calls it indirectly.
     let call_inst = Inst::call(

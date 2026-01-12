@@ -11,6 +11,7 @@ use crate::symbol::semantics::SymbolId;
 use crate::types::{TypeId, ValueTypeSummary};
 use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
 use hir_js::ExprId;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 #[cfg(feature = "serde")]
@@ -43,7 +44,7 @@ fn is_false(value: &bool) -> bool {
   !*value
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum EffectLocation {
@@ -54,11 +55,105 @@ pub enum EffectLocation {
   Foreign(SymbolId),
   /// Unknown/global identifier accesses in global mode.
   Unknown(String),
+  /// Field-level heap effect for strict-native typed programs.
+  ///
+  /// This is only sound when the strict-native checker has ruled out JavaScript
+  /// dynamic property behavior (notably prototype mutation and computed
+  /// property access with non-constant keys). See `analysis/effect.rs` for the
+  /// full set of assumptions.
+  #[cfg(feature = "typed")]
+  Field {
+    shape: types_ts_interned::ShapeId,
+    key: types_ts_interned::PropKey,
+  },
+  /// Effects on element storage for typed layouts (e.g. native arrays).
+  ///
+  /// Currently unused by `optimize-js`, but reserved for strict-native effect
+  /// modeling.
+  #[cfg(feature = "typed")]
+  ArrayElements { elem: types_ts_interned::LayoutId },
 }
 
 impl Default for EffectLocation {
   fn default() -> Self {
     Self::Unknown(String::new())
+  }
+}
+
+impl EffectLocation {
+  fn discriminant(&self) -> u8 {
+    match self {
+      EffectLocation::Heap => 0,
+      EffectLocation::Foreign(_) => 1,
+      EffectLocation::Unknown(_) => 2,
+      #[cfg(feature = "typed")]
+      EffectLocation::Field { .. } => 3,
+      #[cfg(feature = "typed")]
+      EffectLocation::ArrayElements { .. } => 4,
+    }
+  }
+}
+
+#[cfg(feature = "typed")]
+fn cmp_prop_key(a: &types_ts_interned::PropKey, b: &types_ts_interned::PropKey) -> Ordering {
+  use types_ts_interned::PropKey;
+
+  fn prop_key_discriminant(key: &PropKey) -> u8 {
+    match key {
+      PropKey::String(_) => 0,
+      PropKey::Number(_) => 1,
+      PropKey::Symbol(_) => 2,
+    }
+  }
+
+  let discr = prop_key_discriminant(a).cmp(&prop_key_discriminant(b));
+  if discr != Ordering::Equal {
+    return discr;
+  }
+  match (a, b) {
+    (PropKey::String(a), PropKey::String(b)) | (PropKey::Symbol(a), PropKey::Symbol(b)) => a.cmp(b),
+    (PropKey::Number(a), PropKey::Number(b)) => a.cmp(b),
+    _ => Ordering::Equal,
+  }
+}
+
+impl Ord for EffectLocation {
+  fn cmp(&self, other: &Self) -> Ordering {
+    let discr = self.discriminant().cmp(&other.discriminant());
+    if discr != Ordering::Equal {
+      return discr;
+    }
+
+    match (self, other) {
+      (EffectLocation::Heap, EffectLocation::Heap) => Ordering::Equal,
+      (EffectLocation::Foreign(a), EffectLocation::Foreign(b)) => a.cmp(b),
+      (EffectLocation::Unknown(a), EffectLocation::Unknown(b)) => a.cmp(b),
+      #[cfg(feature = "typed")]
+      (
+        EffectLocation::Field {
+          shape: a_shape,
+          key: a_key,
+        },
+        EffectLocation::Field {
+          shape: b_shape,
+          key: b_key,
+        },
+      ) => a_shape
+        .cmp(b_shape)
+        .then_with(|| cmp_prop_key(a_key, b_key)),
+      #[cfg(feature = "typed")]
+      (
+        EffectLocation::ArrayElements { elem: a_elem },
+        EffectLocation::ArrayElements { elem: b_elem },
+      ) => a_elem.cmp(b_elem),
+      _ => Ordering::Equal,
+    }
+  }
+}
+
+impl PartialOrd for EffectLocation {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Some(self.cmp(other))
   }
 }
 
@@ -74,10 +169,7 @@ pub struct EffectSet {
 
 impl EffectSet {
   pub fn is_default(&self) -> bool {
-    self.reads.is_empty()
-      && self.writes.is_empty()
-      && self.summary.is_pure()
-      && !self.unknown
+    self.reads.is_empty() && self.writes.is_empty() && self.summary.is_pure() && !self.unknown
   }
 
   pub fn is_pure(&self) -> bool {
@@ -610,6 +702,10 @@ impl InstMeta {
   /// Note: `arg_use_modes` may be empty to represent "all args are borrowed".
   /// This helper provides a stable query API for downstream backends.
   pub fn arg_use_mode(&self, idx: usize) -> ArgUseMode {
-    self.arg_use_modes.get(idx).copied().unwrap_or(ArgUseMode::Borrow)
+    self
+      .arg_use_modes
+      .get(idx)
+      .copied()
+      .unwrap_or(ArgUseMode::Borrow)
   }
 }
