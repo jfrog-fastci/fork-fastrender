@@ -127,6 +127,10 @@ controller.signal.addEventListener("abort", () => {});
 file.text();
 file.size;
 file.name;
+const date = new Date();
+date.toISOString();
+const re = new RegExp("a");
+re.test("a");
 "#;
 
   let file = FileKey::new("index.ts");
@@ -301,5 +305,41 @@ file.name;
   assert_eq!(
     resolved_file_name.api_id,
     ApiId::from_name("File.prototype.name")
+  );
+
+  let date_to_iso_span = range_of(source, "date.toISOString()");
+  let (date_to_iso_body, date_to_iso_expr) = find_call_expr(lower, date_to_iso_span);
+  let date_to_iso_body_ref = lower.body(date_to_iso_body).expect("body");
+  let resolved_date_to_iso = resolve_call(
+    lower,
+    date_to_iso_body,
+    date_to_iso_body_ref,
+    date_to_iso_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve Date.toISOString()");
+  assert_eq!(resolved_date_to_iso.api, "Date.prototype.toISOString");
+  assert_eq!(
+    resolved_date_to_iso.api_id,
+    ApiId::from_name("Date.prototype.toISOString")
+  );
+
+  let regexp_test_span = range_of(source, r#"re.test("a")"#);
+  let (regexp_test_body, regexp_test_expr) = find_call_expr(lower, regexp_test_span);
+  let regexp_test_body_ref = lower.body(regexp_test_body).expect("body");
+  let resolved_regexp_test = resolve_call(
+    lower,
+    regexp_test_body,
+    regexp_test_body_ref,
+    regexp_test_expr,
+    &kb,
+    Some(&types),
+  )
+  .expect("resolve RegExp.test()");
+  assert_eq!(resolved_regexp_test.api, "RegExp.prototype.test");
+  assert_eq!(
+    resolved_regexp_test.api_id,
+    ApiId::from_name("RegExp.prototype.test")
   );
 }

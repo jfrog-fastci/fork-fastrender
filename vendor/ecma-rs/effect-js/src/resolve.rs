@@ -371,6 +371,8 @@ impl<'a> ApiCallResolver<'a> {
       "Blob",
       "FormData",
       "EventTarget",
+      "Date",
+      "RegExp",
     ] {
       if types.expr_is_named_ref(body, member.object, ty) {
         if let Some(api) = resolve_prototype_call(ty) {
