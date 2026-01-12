@@ -55,5 +55,25 @@ bash scripts/cargo_agent.sh fuzz run image_decoding -- -runs=1000
 You can point any target at additional corpora (e.g. `tests/fuzz_corpus/` which
 contains curated real-world CSS animation/filter samples) to improve coverage.
 
+## Corpus replay smoke test (no cargo-fuzz)
+
+The checked-in corpora under `tests/fuzz_corpus/` are also replayed in the normal
+Rust test suite. This provides lightweight, deterministic coverage in CI without
+requiring `cargo-fuzz` (the goal is termination + no panics under strict
+timeouts/offline resource policies, not pixel-perfect output comparison).
+
+Run it scoped:
+
+```
+bash scripts/cargo_agent.sh test -p fastrender --test fuzz_corpus_smoke_test
+```
+
+Debug builds skip the heaviest corpus cases (currently `render_pipeline_stress.html`)
+unless you opt in:
+
+```
+FUZZ_CORPUS_SMOKE_IN_DEBUG=1 bash scripts/cargo_agent.sh test -p fastrender --test fuzz_corpus_smoke_test
+```
+
 Note: corpora live under `fuzz/corpus/<target>/` once you start fuzzing; these
 directories are intentionally not checked in.
