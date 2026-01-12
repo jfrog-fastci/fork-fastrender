@@ -3893,6 +3893,15 @@ pub fn rt_thread_set_parked(parked: bool);
 
 // Memory
 pub fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize);
+// Append-only shape registration API (dlopen/JIT/multi-module safe).
+//
+// Returns the first assigned shape id for the appended block:
+//   base, base+1, ..., base+len-1
+//
+// `rt_register_shape_table_append` is an older alias for `*_extend`; prefer `*_extend` for new code.
+pub fn rt_register_shape_table_extend(ptr: *const RtShapeDescriptor, len: usize) -> RtShapeId;
+pub fn rt_register_shape_table_append(ptr: *const RtShapeDescriptor, len: usize) -> RtShapeId;
+pub fn rt_register_shape(desc: *const RtShapeDescriptor) -> RtShapeId;
 pub fn rt_alloc(size: usize, shape: RtShapeId) -> GcPtr;
 pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> GcPtr;
 pub fn rt_alloc_array(len: usize, elem_size: usize) -> GcPtr;
