@@ -71,3 +71,39 @@ fn heap_limits_account_for_external_bytes() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn array_buffer_detach_take_data_is_idempotent_and_updates_external_bytes() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024 * 1024, 1024 * 1024 * 1024));
+
+  let size = 4 * 1024;
+  let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+
+  {
+    let mut scope = heap.scope();
+    let buf = scope.alloc_array_buffer_from_u8_vec(bytes.clone())?;
+    scope.push_root(Value::Object(buf))?;
+    assert_eq!(scope.heap().external_bytes(), size);
+
+    let detached = scope
+      .heap_mut()
+      .detach_array_buffer_take_data(buf)?
+      .expect("expected ArrayBuffer backing store");
+    assert_eq!(detached.len(), size);
+    assert_eq!(detached.as_ref(), bytes.as_slice());
+    assert_eq!(scope.heap().external_bytes(), 0);
+
+    // Detachment must be idempotent.
+    assert!(scope.heap_mut().detach_array_buffer_take_data(buf)?.is_none());
+    assert_eq!(scope.heap().external_bytes(), 0);
+
+    // GC while still rooted must not change external byte accounting.
+    scope.heap_mut().collect_garbage();
+    assert_eq!(scope.heap().external_bytes(), 0);
+  }
+
+  // Once unrooted the ArrayBuffer becomes unreachable; the next GC should not change external
+  // bytes because the backing store was already detached.
+  heap.collect_garbage();
+  assert_eq!(heap.external_bytes(), 0);
+  Ok(())
+}

@@ -6052,6 +6052,7 @@ impl Trace for JsObject {
 #[derive(Debug)]
 struct JsArrayBuffer {
   base: ObjectBase,
+  // `None` represents a detached (neutered) ArrayBuffer.
   data: Option<Box<[u8]>>,
 }
 
@@ -6065,7 +6066,7 @@ impl JsArrayBuffer {
 
   fn byte_length(&self) -> usize {
     // If `data` is missing, the buffer has been detached (transfer-list semantics).
-    self.data.as_deref().map(|d| d.len()).unwrap_or(0)
+    self.data.as_deref().map(|data| data.len()).unwrap_or(0)
   }
 
   #[allow(dead_code)]
