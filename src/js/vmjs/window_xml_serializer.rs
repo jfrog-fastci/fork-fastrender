@@ -7,6 +7,11 @@ use vm_js::{
 
 const XML_SERIALIZER_BRAND_KEY: &str = "__fastrender_xml_serializer";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
+const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+
+fn gc_object_id(obj: GcObject) -> u64 {
+  (obj.index() as u64) | ((obj.generation() as u64) << 32)
+}
 
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
@@ -122,7 +127,7 @@ fn require_xml_serializer_instance(scope: &mut Scope<'_>, this: Value) -> Result
 }
 
 fn xml_serializer_serialize_to_string_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -135,8 +140,22 @@ fn xml_serializer_serialize_to_string_native(
   let root = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(root_obj) = root else {
     return Err(VmError::TypeError(
-      "XMLSerializer.serializeToString requires a node argument",
+      "XMLSerializer.serializeToString: root must be a Node",
     ));
+  };
+
+  // Determine which `dom2::Document` this wrapper belongs to.
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(root_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "XMLSerializer.serializeToString: root must be a Node",
+      ));
+    }
   };
 
   let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
@@ -147,28 +166,39 @@ fn xml_serializer_serialize_to_string_native(
     Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
     _ => {
       return Err(VmError::TypeError(
-        "XMLSerializer.serializeToString requires a node argument",
+        "XMLSerializer.serializeToString: root must be a Node",
       ));
     }
   };
 
-  let Some(dom) = crate::js::window_realm::dom_from_vm_host(host) else {
+  let document_id = gc_object_id(document_obj);
+  let Some(dom_ptr) = crate::js::window_realm::dom_ptr_for_document_id_read(vm, host, document_id) else {
     return Err(VmError::TypeError(
-      "XMLSerializer.serializeToString requires a DOM-backed document",
+      "XMLSerializer.serializeToString requires a DOM-backed node",
     ));
   };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   let node_id = dom
     .node_id_from_index(root_index)
-    .map_err(|_| VmError::TypeError("XMLSerializer.serializeToString requires a node argument"))?;
+    .map_err(|_| VmError::TypeError("XMLSerializer.serializeToString: root must be a Node"))?;
 
   let serialized = match dom.xml_serialize(node_id) {
     Ok(s) => s,
-    Err(_err) => {
+    Err(err) => {
+      let (name, message) = match err {
+        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+        crate::web::dom::DomException::NoModificationAllowedError { message } => {
+          ("NoModificationAllowedError", message)
+        }
+        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
+        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+      };
       return Err(VmError::Throw(crate::js::window_realm::make_dom_exception(
         scope,
-        "InvalidStateError",
-        "Failed to serialize node",
+        name,
+        &message,
       )?));
     }
   };

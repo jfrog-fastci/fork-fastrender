@@ -20200,7 +20200,7 @@ fn element_handle_from_wrapper_obj_opt(
   })
 }
 
-fn dom_ptr_for_document_id_read(
+pub(crate) fn dom_ptr_for_document_id_read(
   vm: &mut Vm,
   host: &mut dyn VmHost,
   document_id: DocumentId,
@@ -25014,6 +25014,26 @@ fn init_window_globals(
       DomInterface::Document,
     );
   }
+
+  // The document wrapper is also a Node wrapper (`dom2` always uses node index 0 for the document
+  // node). Populate the same internal properties used by other wrapper nodes so generic bindings
+  // (e.g. XMLSerializer) can treat `document` like any other Node.
+  let node_id_key = alloc_key(&mut scope, NODE_ID_KEY)?;
+  scope.define_property(document_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+
+  let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+  scope.define_property(
+    document_obj,
+    wrapper_document_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(document_obj),
+        writable: false,
+      },
+    },
+  )?;
   scope.define_property(document_obj, document_url_key, data_desc(url_v))?;
 
   // `Document.documentURI` is a legacy alias for the document URL.
