@@ -49,6 +49,10 @@ fn annotate_program_preserves_typed_il_metadata() {
 
   let after = &insts_after[idx].meta;
   assert_eq!(after.type_id, before.type_id, "expected type_id to be preserved");
+  assert_eq!(
+    after.native_layout, before.native_layout,
+    "expected native_layout to be preserved"
+  );
   assert_eq!(after.hir_expr, before.hir_expr, "expected hir_expr to be preserved");
   assert_eq!(
     after.type_summary, before.type_summary,

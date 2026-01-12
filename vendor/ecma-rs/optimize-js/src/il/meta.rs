@@ -530,6 +530,12 @@ pub struct InstMeta {
     )
   )]
   pub type_id: Option<TypeId>,
+  /// Native codegen layout for the instruction's result value.
+  ///
+  /// In typed builds this is derived from the TypeScript type checker via
+  /// `types-ts-interned` layout computation. Downstream native backends require
+  /// this to be populated for every value-defining instruction that survives
+  /// optimization.
   #[cfg(feature = "typed")]
   #[cfg_attr(
     feature = "serde",
@@ -693,6 +699,14 @@ impl InstMeta {
   /// This is intended for SSA/CFG rewrites that replace one value-defining
   /// instruction with another (e.g. Phi lowering).
   pub fn copy_result_var_metadata_from(&mut self, src: &Self) {
+    #[cfg(debug_assertions)]
+    {
+      #[cfg(feature = "typed")]
+      debug_assert!(
+        src.type_id.is_none() || src.native_layout.is_some(),
+        "typed InstMeta invariant violated: type_id is set but native_layout is missing"
+      );
+    }
     self.result_type = src.result_type.clone();
     self.type_id = src.type_id;
     #[cfg(feature = "typed")]

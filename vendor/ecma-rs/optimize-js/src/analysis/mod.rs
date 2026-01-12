@@ -18,6 +18,8 @@ pub mod async_elision;
 pub mod consume;
 pub mod liveness;
 pub mod loop_info;
+#[cfg(feature = "typed")]
+pub mod layout;
 pub mod nullability;
 pub mod ownership;
 pub mod parallelize;
@@ -37,6 +39,9 @@ pub use driver::{
 
 #[cfg(feature = "typed")]
 pub use driver::{analyze_cfg_typed, analyze_program_function_typed, annotate_program_typed};
+
+#[cfg(feature = "typed")]
+pub use layout::{validate_layouts, LayoutMap, LayoutValidationMode};
 
 #[cfg(test)]
 mod tests;

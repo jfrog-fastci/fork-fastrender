@@ -199,6 +199,17 @@ impl TypeContext {
     }
   }
 
+  /// Native runtime layout for the given expression type, when available.
+  ///
+  /// This is only available in typed builds that were provided a `typecheck-ts`
+  /// program.
+  #[cfg(feature = "typed")]
+  pub fn expr_layout_id(&self, body: BodyId, expr: ExprId) -> Option<LayoutId> {
+    let program = self.program.as_ref()?;
+    let ty = self.expr_type(body, expr)?;
+    Some(program.layout_of_interned(ty))
+  }
+
   /// If `expr` is statically typed as a boolean literal, return that literal value.
   pub fn bool_literal_expr(&self, body: BodyId, expr: ExprId) -> Option<bool> {
     #[cfg(feature = "typed")]
@@ -324,6 +335,16 @@ pub type TypeId = typecheck_ts::TypeId;
 
 #[cfg(not(feature = "typed"))]
 pub type TypeId = ();
+
+/// Optional native-layout identifier for typed builds.
+///
+/// This mirrors [`TypeId`]: in untyped builds it is a zero-sized placeholder so
+/// downstream code can compile without the `types-ts-interned` dependency.
+#[cfg(feature = "typed")]
+pub type LayoutId = types_ts_interned::LayoutId;
+
+#[cfg(not(feature = "typed"))]
+pub type LayoutId = ();
 
 #[cfg(feature = "typed")]
 impl TypeContext {

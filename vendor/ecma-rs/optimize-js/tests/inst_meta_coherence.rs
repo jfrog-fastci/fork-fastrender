@@ -22,6 +22,11 @@ fn some_type_id() -> Option<optimize_js::types::TypeId> {
   }
 }
 
+#[cfg(feature = "typed")]
+fn some_native_layout() -> Option<types_ts_interned::LayoutId> {
+  Some(types_ts_interned::LayoutId(456))
+}
+
 fn non_default_type_info() -> TypeInfo {
   let mut info = TypeInfo::default();
   info.string_encoding = Some(StringEncoding::Utf8);
@@ -36,6 +41,10 @@ fn phi_simplify_preserves_result_metadata() {
   let mut phi = Inst::phi_empty(10);
   phi.insert_phi(0, Arg::Const(Const::Bool(true)));
   phi.meta.type_id = some_type_id();
+  #[cfg(feature = "typed")]
+  {
+    phi.meta.native_layout = some_native_layout();
+  }
   phi.meta.hir_expr = Some(ExprId(7));
   phi.meta.type_summary = Some(ValueTypeSummary::NUMBER);
   phi.meta.excludes_nullish = true;
@@ -61,6 +70,8 @@ fn phi_simplify_preserves_result_metadata() {
 
   let meta = &insts[0].meta;
   assert_eq!(meta.type_id, some_type_id());
+  #[cfg(feature = "typed")]
+  assert_eq!(meta.native_layout, some_native_layout());
   assert_eq!(meta.hir_expr, Some(ExprId(7)));
   assert_eq!(meta.type_summary, Some(ValueTypeSummary::NUMBER));
   assert!(meta.excludes_nullish);
@@ -80,6 +91,10 @@ fn ssa_deconstruct_propagates_phi_metadata_to_edge_copies() {
   phi.insert_phi(0, Arg::Const(Const::Bool(true)));
   phi.insert_phi(1, Arg::Const(Const::Bool(false)));
   phi.meta.type_id = some_type_id();
+  #[cfg(feature = "typed")]
+  {
+    phi.meta.native_layout = some_native_layout();
+  }
   phi.meta.hir_expr = Some(ExprId(42));
   phi.meta.type_summary = Some(ValueTypeSummary::BOOLEAN);
   phi.meta.excludes_nullish = true;
@@ -108,6 +123,8 @@ fn ssa_deconstruct_propagates_phi_metadata_to_edge_copies() {
 
     let meta = &insts[0].meta;
     assert_eq!(meta.type_id, some_type_id());
+    #[cfg(feature = "typed")]
+    assert_eq!(meta.native_layout, some_native_layout());
     assert_eq!(meta.hir_expr, Some(ExprId(42)));
     assert_eq!(meta.type_summary, Some(ValueTypeSummary::BOOLEAN));
     assert!(meta.excludes_nullish);
@@ -135,6 +152,10 @@ fn trivial_dce_clears_call_result_metadata_when_tgt_is_removed() {
   call.meta.callee_purity = Purity::Impure;
 
   call.meta.type_id = some_type_id();
+  #[cfg(feature = "typed")]
+  {
+    call.meta.native_layout = some_native_layout();
+  }
   call.meta.hir_expr = Some(ExprId(99));
   call.meta.type_summary = Some(ValueTypeSummary::OBJECT);
   call.meta.excludes_nullish = true;
@@ -166,6 +187,8 @@ fn trivial_dce_clears_call_result_metadata_when_tgt_is_removed() {
 
   // Result-value metadata should be cleared.
   assert_eq!(meta.type_id, None);
+  #[cfg(feature = "typed")]
+  assert_eq!(meta.native_layout, None);
   assert_eq!(meta.hir_expr, None);
   assert_eq!(meta.type_summary, None);
   assert!(!meta.excludes_nullish);
