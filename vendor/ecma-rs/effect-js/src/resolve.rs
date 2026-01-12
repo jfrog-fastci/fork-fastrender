@@ -57,8 +57,16 @@ impl<'a> ApiCallResolver<'a> {
   }
 
   #[cfg(feature = "typed")]
-  pub(crate) fn new_for_target(kb: &'a ApiDatabase, lowered: &'a LowerResult, target: TargetEnv) -> Self {
-    Self { kb, target, lowered }
+  pub(crate) fn new_for_target(
+    kb: &'a ApiDatabase,
+    lowered: &'a LowerResult,
+    target: TargetEnv,
+  ) -> Self {
+    Self {
+      kb,
+      target,
+      lowered,
+    }
   }
 
   fn callee_segments(&self, body: BodyId, id: ExprId) -> Option<Vec<String>> {
@@ -323,6 +331,33 @@ impl<'a> ApiCallResolver<'a> {
       }
     }
 
+    // Some platform types inherit behavior from base prototypes that are modeled
+    // in the KB (but not duplicated under the derived type name).
+    //
+    // Keep this mapping small and explicit; we do not attempt general prototype
+    // inheritance resolution.
+    if types.expr_is_named_ref(body, member.object, "File") {
+      if let Some(api) = resolve_prototype_call("File") {
+        return Some(api);
+      }
+      // `File` extends `Blob` (DOM + Node fetch globals), so allow resolving
+      // inherited `Blob.prototype.*` methods like `file.text()`.
+      if let Some(api) = resolve_prototype_call("Blob") {
+        return Some(api);
+      }
+    }
+
+    if types.expr_is_named_ref(body, member.object, "AbortSignal") {
+      if let Some(api) = resolve_prototype_call("AbortSignal") {
+        return Some(api);
+      }
+      // `AbortSignal` extends `EventTarget`, but the KB models listener methods
+      // on `EventTarget.prototype.*`.
+      if let Some(api) = resolve_prototype_call("EventTarget") {
+        return Some(api);
+      }
+    }
+
     for ty in [
       "URL",
       "URLSearchParams",
@@ -332,8 +367,10 @@ impl<'a> ApiCallResolver<'a> {
       "TextDecoder",
       "TextEncoder",
       "AbortController",
-      "AbortSignal",
       "Buffer",
+      "Blob",
+      "FormData",
+      "EventTarget",
     ] {
       if types.expr_is_named_ref(body, member.object, ty) {
         if let Some(api) = resolve_prototype_call(ty) {
@@ -796,7 +833,15 @@ pub fn resolve_call(
   db: &ApiDatabase,
   types: Option<&dyn TypeProvider>,
 ) -> Option<ResolvedCall> {
-  resolve_call_for_target(lower, body_id, body, call_expr, db, &TargetEnv::Unknown, types)
+  resolve_call_for_target(
+    lower,
+    body_id,
+    body,
+    call_expr,
+    db,
+    &TargetEnv::Unknown,
+    types,
+  )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -849,6 +894,10 @@ pub fn resolve_member_for_target(
     resolve_prototype_get("Map")
   } else if receiver_is_named_ref(types, body, member.object, "Set") {
     resolve_prototype_get("Set")
+  } else if receiver_is_named_ref(types, body, member.object, "File") {
+    resolve_prototype_get("File").or_else(|| resolve_prototype_get("Blob"))
+  } else if receiver_is_named_ref(types, body, member.object, "Blob") {
+    resolve_prototype_get("Blob")
   } else if receiver_is_named_ref(types, body, member.object, "URL") {
     resolve_prototype_get("URL")
   } else if receiver_is_named_ref(types, body, member.object, "URLSearchParams") {
@@ -862,7 +911,11 @@ pub fn resolve_member_for_target(
   } else if receiver_is_named_ref(types, body, member.object, "AbortController") {
     resolve_prototype_get("AbortController")
   } else if receiver_is_named_ref(types, body, member.object, "AbortSignal") {
-    resolve_prototype_get("AbortSignal")
+    resolve_prototype_get("AbortSignal").or_else(|| resolve_prototype_get("EventTarget"))
+  } else if receiver_is_named_ref(types, body, member.object, "FormData") {
+    resolve_prototype_get("FormData")
+  } else if receiver_is_named_ref(types, body, member.object, "EventTarget") {
+    resolve_prototype_get("EventTarget")
   } else {
     None
   }?;
@@ -883,7 +936,14 @@ pub fn resolve_member(
   member_expr_id: ExprId,
   types: &dyn crate::types::TypeProvider,
 ) -> Option<ResolvedMember> {
-  resolve_member_for_target(kb, &TargetEnv::Unknown, lowered, body, member_expr_id, types)
+  resolve_member_for_target(
+    kb,
+    &TargetEnv::Unknown,
+    lowered,
+    body,
+    member_expr_id,
+    types,
+  )
 }
 
 #[cfg(test)]
