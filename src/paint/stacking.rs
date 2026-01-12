@@ -2487,6 +2487,11 @@ mod tests {
   use crate::style::values::Length;
   use std::sync::Arc;
 
+  mod axis_specific_clips_stacking_context_test;
+  mod hidden_border_radius_clips_stacking_context_test;
+  mod hidden_clips_promoted_positioned_test;
+  mod hidden_clips_stacking_context_test;
+
   // Helper function to create a simple fragment
   fn create_block_fragment(x: f32, y: f32, width: f32, height: f32) -> FragmentNode {
     FragmentNode::new_block(Rect::from_xywh(x, y, width, height), vec![])

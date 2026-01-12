@@ -1,11 +1,11 @@
-use fastrender::geometry::Rect;
-use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::paint::display_list_renderer::DisplayListRenderer;
-use fastrender::style::position::Position;
-use fastrender::style::types::Overflow;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::{ComputedStyle, Rgba};
+use crate::geometry::Rect;
+use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::paint::display_list_renderer::DisplayListRenderer;
+use crate::style::position::Position;
+use crate::style::types::Overflow;
+use crate::text::font_loader::FontContext;
+use crate::tree::fragment_tree::FragmentNode;
+use crate::{ComputedStyle, Rgba};
 use std::sync::Arc;
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {

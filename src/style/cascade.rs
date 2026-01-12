@@ -19149,6 +19149,9 @@ mod tests {
   use crate::tree::box_tree::GeneratedPseudoElement;
   use std::sync::{Mutex, MutexGuard, OnceLock};
 
+  mod overflow_visibility_case_insensitive_test;
+  mod scroll_box_shorthand_parsing_test;
+
   fn cascade_global_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
