@@ -60,8 +60,10 @@ Notes:
   ```
 - Browser integration tests should be hermetic with respect to fonts: prefer
   `support::deterministic_renderer()` / `support::deterministic_factory()` (or pass an explicit
-  `FontConfig`) so text rendering does not depend on system-installed fonts. Avoid mutating
-  process-global env vars at runtime.
+  `FontConfig`, such as `FontConfig::bundled_only()`) so text rendering does not depend on
+  system-installed fonts. Under `--features browser_ui`, `FontConfig::default()` already prefers
+  bundled fonts by default, so the test harness does not mutate `FASTR_USE_BUNDLED_FONTS`
+  process-wide.
 
 ## Headless constraints (no winit/wgpu/egui)
 

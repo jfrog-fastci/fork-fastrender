@@ -1,41 +1,5 @@
 //! Browser integration tests consolidated from tests/browser_*.rs
 
-// -----------------------------------------------------------------------------
-// Test process initialization
-// -----------------------------------------------------------------------------
-//
-// Many integration tests create `FastRender` instances (directly or indirectly via browser worker
-// runtimes). On minimal/agent hosts, scanning system fonts can be very slow and can cause per-test
-// timeouts and worker thread shutdown hangs.
-//
-// Prefer deterministic bundled fonts for the entire integration test process unless the caller
-// explicitly opted out by setting `FASTR_USE_BUNDLED_FONTS=0`.
-//
-// We want this to run before *any* test executes, so use a small cross-platform "init array"
-// constructor rather than relying on a particular test calling a helper first.
-#[used]
-#[cfg_attr(
-  any(target_os = "linux", target_os = "android", target_os = "freebsd"),
-  link_section = ".init_array"
-)]
-#[cfg_attr(
-  any(target_os = "macos", target_os = "ios"),
-  link_section = "__DATA,__mod_init_func"
-)]
-#[cfg_attr(target_os = "windows", link_section = ".CRT$XCU")]
-static INIT_BROWSER_INTEGRATION_ENV: extern "C" fn() = {
-  extern "C" fn init() {
-    // Respect an explicit opt-out (e.g. FASTR_USE_BUNDLED_FONTS=0).
-    if let Some(raw) = std::env::var_os("FASTR_USE_BUNDLED_FONTS") {
-      if raw == "0" || raw.eq_ignore_ascii_case("false") {
-        return;
-      }
-    }
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-  }
-  init
-};
-
 mod author_css_cannot_observe_data_fastr_hover;
 mod browser_cli_gpu_flags;
 mod browser_cli_help;
