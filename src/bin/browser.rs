@@ -5997,9 +5997,12 @@ impl App {
     }
 
     let zoom_before = self.browser_state.active_tab().map(|t| t.zoom);
-    let chrome_actions = fastrender::ui::chrome_ui(&ctx, &mut self.browser_state, |tab_id| {
-      self.tab_favicons.get(&tab_id).map(|tex| tex.id())
-    });
+    let chrome_actions = fastrender::ui::chrome_ui_with_bookmarks(
+      &ctx,
+      &mut self.browser_state,
+      Some(&self.bookmarks),
+      |tab_id| self.tab_favicons.get(&tab_id).map(|tex| tex.id()),
+    );
     let zoom_after = self.browser_state.active_tab().map(|t| t.zoom);
 
     #[cfg(target_os = "macos")]

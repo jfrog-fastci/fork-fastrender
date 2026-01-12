@@ -2,6 +2,7 @@ use crate::ui::browser_app::{BrowserTabState, ClosedTabState};
 use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
 use crate::ui::messages::TabId;
 use crate::ui::about_pages;
+use crate::ui::profile_autosave::BookmarkStore;
 use crate::ui::visited::VisitedUrlStore;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -22,9 +23,8 @@ pub struct OmniboxContext<'a> {
   /// Optional active tab id; providers can use this to avoid suggesting "switch to tab" for the
   /// already-active tab.
   pub active_tab_id: Option<TabId>,
-  /// Optional bookmark store. Bookmarks are not implemented yet, but the omnibox provider
-  /// architecture expects to receive them via the context.
-  pub bookmarks: Option<&'a BrowserBookmarks>,
+  /// Optional bookmark store.
+  pub bookmarks: Option<&'a BookmarkStore>,
   /// Optional cache of remote search suggestions.
   ///
   /// This is intentionally a *synchronous* interface: async-backed suggest providers are expected
@@ -92,36 +92,6 @@ impl OmniboxSuggestion {
         .to_ascii_lowercase(),
       OmniboxAction::Search(query) => query.to_ascii_lowercase(),
     }
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Data stores (stubs / minimal implementations)
-// -----------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BookmarkEntry {
-  pub url: String,
-  pub title: Option<String>,
-}
-
-/// Placeholder for the future bookmarks implementation.
-#[derive(Debug, Default)]
-pub struct BrowserBookmarks {
-  entries: Vec<BookmarkEntry>,
-}
-
-impl BrowserBookmarks {
-  pub fn new() -> Self {
-    Self::default()
-  }
-
-  pub fn push(&mut self, entry: BookmarkEntry) {
-    self.entries.push(entry);
-  }
-
-  pub fn entries(&self) -> &[BookmarkEntry] {
-    &self.entries
   }
 }
 
@@ -316,14 +286,42 @@ impl OmniboxProvider for VisitedProvider {
   }
 }
 
-/// Stub provider: bookmarks suggestions are not implemented yet.
+/// Bookmark URL suggestions from the persisted [`BookmarkStore`].
 pub struct BookmarksProvider;
 
 impl OmniboxProvider for BookmarksProvider {
-  fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
-    // Future implementation will read from `ctx.bookmarks` and return URL suggestions with
-    // `OmniboxUrlSource::Bookmark`.
-    Vec::new()
+  fn suggestions(&self, ctx: &OmniboxContext<'_>, input: &str) -> Vec<OmniboxSuggestion> {
+    let Some(bookmarks) = ctx.bookmarks else {
+      return Vec::new();
+    };
+
+    let tokens: Vec<&str> = input.split_whitespace().filter(|t| !t.is_empty()).collect();
+    if tokens.is_empty() {
+      return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    'urls: for url in &bookmarks.urls {
+      let url = url.trim();
+      if url.is_empty() {
+        continue;
+      }
+
+      for token in &tokens {
+        if !contains_case_insensitive(url, token) {
+          continue 'urls;
+        }
+      }
+
+      out.push(OmniboxSuggestion {
+        action: OmniboxAction::NavigateToUrl(url.to_string()),
+        title: None,
+        url: Some(url.to_string()),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark),
+      });
+    }
+
+    out
   }
 }
 
@@ -421,9 +419,12 @@ struct ScoredSuggestion {
 fn score_suggestion(suggestion: &OmniboxSuggestion, input_lower: &str) -> Option<i64> {
   let base = match suggestion.source {
     OmniboxSuggestionSource::Primary => 1_000_000,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => 4_000,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => 2_700,
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 2_500,
+    // NOTE: Base scores are spaced far enough apart that match bonuses (see `match_score`) cannot
+    // reorder the key source group we care about:
+    // OpenTab > About > Bookmark > Visited.
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => 5_000,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => 3_700,
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => 2_400,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => 2_000,
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => 1_000,
     OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => 500,
@@ -455,6 +456,35 @@ fn match_score(haystack: &str, needle_lower: &str) -> Option<i64> {
   let prefix_bonus = if idx == 0 { 1_000 } else { 0 };
   let position_bonus = (200 - idx).max(0);
   Some(prefix_bonus + position_bonus)
+}
+
+fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+  // For omnibox usage we want lightweight, allocation-free matching. We use ASCII-only
+  // case-insensitivity: non-ASCII bytes are compared exactly.
+  if needle.is_empty() {
+    return true;
+  }
+
+  let hay = haystack.as_bytes();
+  let needle = needle.as_bytes();
+  if needle.len() > hay.len() {
+    return false;
+  }
+
+  for i in 0..=(hay.len() - needle.len()) {
+    let mut ok = true;
+    for j in 0..needle.len() {
+      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
+        ok = false;
+        break;
+      }
+    }
+    if ok {
+      return true;
+    }
+  }
+
+  false
 }
 
 fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ordering {
@@ -845,6 +875,56 @@ mod tests {
       a[2].url.as_deref(),
       Some("https://b.com/"),
       "expected dedup to run before truncation"
+    );
+  }
+
+  #[test]
+  fn bookmarks_are_suggested_and_ranked_above_visited_below_open_tabs() {
+    let tab_id = TabId(1);
+    let open_tabs = vec![BrowserTabState::new(
+      tab_id,
+      format!("https://{}/needle", "a".repeat(260)),
+    )];
+    let closed_tabs = Vec::new();
+
+    let mut visited = VisitedUrlStore::new();
+    visited.record_visit(
+      "https://visited.example/".to_string(),
+      Some("Needle Title".to_string()),
+    );
+
+    let bookmarks = BookmarkStore {
+      urls: ["https://needle.example/".to_string()].into_iter().collect(),
+    };
+
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: Some(&bookmarks),
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions(&ctx, "Needle", 10);
+
+    assert_eq!(suggestions.len(), 4, "unexpected suggestions: {suggestions:?}");
+    assert_eq!(suggestions[0].source, OmniboxSuggestionSource::Primary);
+    assert_eq!(
+      suggestions[1].source,
+      OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab)
+    );
+    assert_eq!(
+      suggestions[2].source,
+      OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
+    );
+    assert_eq!(
+      suggestions[2].url.as_deref(),
+      Some("https://needle.example/")
+    );
+    assert_eq!(
+      suggestions[3].source,
+      OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited)
     );
   }
 }

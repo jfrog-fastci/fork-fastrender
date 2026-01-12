@@ -111,10 +111,10 @@ pub use wgpu_pixmap_texture::WgpuPixmapTexture;
 
 pub use omnibox::{
   build_omnibox_suggestions, build_omnibox_suggestions_default_limit, AboutPagesProvider,
-  BookmarkEntry, BookmarksProvider, BrowserBookmarks, ClosedTabsProvider, DEFAULT_OMNIBOX_LIMIT,
-  OmniboxAction, OmniboxContext, OmniboxProvider, OmniboxSearchSource, OmniboxSuggestion,
-  OmniboxSuggestionSource, OmniboxUrlSource, OpenTabsProvider, PrimaryActionProvider,
-  RemoteSearchSuggestCache, RemoteSearchSuggestProvider, VisitedProvider,
+  BookmarksProvider, ClosedTabsProvider, DEFAULT_OMNIBOX_LIMIT, OmniboxAction, OmniboxContext,
+  OmniboxProvider, OmniboxSearchSource, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
+  OpenTabsProvider, PrimaryActionProvider, RemoteSearchSuggestCache, RemoteSearchSuggestProvider,
+  VisitedProvider,
 };
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,
@@ -136,7 +136,7 @@ pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUp
 pub use crate::select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
 #[cfg(feature = "browser_ui")]
-pub use chrome::{chrome_ui, ChromeAction};
+pub use chrome::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
 #[cfg(feature = "browser_ui")]
 pub use session::{BrowserSession, BrowserSessionTab, BrowserSessionWindow, BrowserWindowState};
 #[cfg(feature = "browser_ui")]

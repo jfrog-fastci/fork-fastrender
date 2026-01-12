@@ -4,6 +4,7 @@ use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
 use crate::ui::browser_app::BrowserAppState;
+use crate::ui::profile_autosave::BookmarkStore;
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
@@ -115,6 +116,8 @@ fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
 
 fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> &'static str {
   match suggestion.source {
+    OmniboxSuggestionSource::Primary => "↵",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => "ⓘ",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "T",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => "★",
     OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => "↩",
@@ -142,6 +145,15 @@ fn omnibox_suggestion_accept_action(suggestion: &OmniboxSuggestion) -> ChromeAct
 pub fn chrome_ui(
   ctx: &egui::Context,
   app: &mut BrowserAppState,
+  favicon_for_tab: impl FnMut(TabId) -> Option<egui::TextureId>,
+) -> Vec<ChromeAction> {
+  chrome_ui_with_bookmarks(ctx, app, None, favicon_for_tab)
+}
+
+pub fn chrome_ui_with_bookmarks(
+  ctx: &egui::Context,
+  app: &mut BrowserAppState,
+  omnibox_bookmarks: Option<&BookmarkStore>,
   mut favicon_for_tab: impl FnMut(TabId) -> Option<egui::TextureId>,
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
@@ -762,17 +774,17 @@ pub fn chrome_ui(
           app.chrome.omnibox.original_input = None;
 
           let input = app.chrome.address_bar_text.clone();
-          let suggestions = {
-            let ctx = OmniboxContext {
-              open_tabs: &app.tabs,
-              closed_tabs: &app.closed_tabs,
-              visited: &app.visited,
-              active_tab_id: app.active_tab_id(),
-              bookmarks: None,
-              remote_search_suggest: None,
-            };
-            build_omnibox_suggestions(&ctx, &input)
-          };
+           let suggestions = {
+             let ctx = OmniboxContext {
+               open_tabs: &app.tabs,
+               closed_tabs: &app.closed_tabs,
+               visited: &app.visited,
+               active_tab_id: app.active_tab_id(),
+               bookmarks: omnibox_bookmarks,
+               remote_search_suggest: None,
+             };
+             build_omnibox_suggestions(&ctx, &input)
+           };
           app.chrome.omnibox.suggestions = suggestions;
           app.chrome.omnibox.last_built_for_input = input;
           if app.chrome.omnibox.suggestions.is_empty() {
@@ -790,17 +802,17 @@ pub fn chrome_ui(
               || app.chrome.omnibox.suggestions.is_empty()
             {
               let input = app.chrome.address_bar_text.clone();
-              let suggestions = {
-                let ctx = OmniboxContext {
-                  open_tabs: &app.tabs,
-                  closed_tabs: &app.closed_tabs,
-                  visited: &app.visited,
-                  active_tab_id: app.active_tab_id(),
-                  bookmarks: None,
-                  remote_search_suggest: None,
-                };
-                build_omnibox_suggestions(&ctx, &input)
-              };
+               let suggestions = {
+                 let ctx = OmniboxContext {
+                   open_tabs: &app.tabs,
+                   closed_tabs: &app.closed_tabs,
+                   visited: &app.visited,
+                   active_tab_id: app.active_tab_id(),
+                   bookmarks: omnibox_bookmarks,
+                   remote_search_suggest: None,
+                 };
+                 build_omnibox_suggestions(&ctx, &input)
+               };
               app.chrome.omnibox.suggestions = suggestions;
               app.chrome.omnibox.last_built_for_input = input;
             }
@@ -1311,7 +1323,7 @@ mod tests {
     app.chrome.address_bar_editing = true;
 
     let ctx = new_context();
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "https://example.com");
@@ -1330,7 +1342,7 @@ mod tests {
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, left_click_at(egui::pos2(400.0, 60.0)));
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(app.chrome.request_focus_address_bar);
@@ -1345,7 +1357,7 @@ mod tests {
     app.active_tab_mut().unwrap().hovered_url = Some("https://example.com/".to_string());
 
     let ctx = new_context();
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let output = ctx.end_frame();
 
     let texts = status_bar_texts(&output);
@@ -1367,7 +1379,7 @@ mod tests {
     );
 
     let ctx = new_context();
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let output = ctx.end_frame();
 
     let texts = status_bar_texts(&output);
@@ -1387,7 +1399,7 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::L, modifiers);
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1406,7 +1418,7 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::K, modifiers);
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1425,7 +1437,7 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::F, modifiers);
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1445,7 +1457,7 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::D, modifiers);
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1460,7 +1472,7 @@ mod tests {
   fn f6_emits_focus_address_bar_action() {
     let mut app = BrowserAppState::new();
     let ctx = new_context_with_key(egui::Key::F6, Default::default());
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1476,7 +1488,7 @@ mod tests {
     let mut app = BrowserAppState::new();
 
     let ctx = new_context_with_key(egui::Key::F5, Default::default());
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1500,7 +1512,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1524,7 +1536,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1549,7 +1561,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1589,7 +1601,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1623,7 +1635,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1650,7 +1662,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1677,7 +1689,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     let zoom = app.active_tab().unwrap().zoom;
@@ -1700,7 +1712,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     let zoom = app.active_tab().unwrap().zoom;
@@ -1724,7 +1736,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
     assert!(app.active_tab().unwrap().zoom > 1.0);
 
@@ -1736,7 +1748,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
     assert!((app.active_tab().unwrap().zoom - crate::ui::zoom::DEFAULT_ZOOM).abs() < f32::EPSILON);
   }
@@ -1764,7 +1776,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1798,7 +1810,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1832,7 +1844,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1867,7 +1879,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1901,7 +1913,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1933,7 +1945,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1956,7 +1968,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1977,7 +1989,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -1998,7 +2010,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -2021,7 +2033,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -2052,12 +2064,12 @@ mod tests {
     app.chrome.request_focus_address_bar = true;
     app.chrome.request_select_all_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 2: let egui apply the focus request.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -2076,7 +2088,7 @@ mod tests {
     // Now type a character while focus stays in the address bar. This should re-enable the
     // `address_bar_editing` flag so worker updates don't clobber the typed text.
     begin_frame(&ctx, vec![egui::Event::Text("x".to_string())]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_editing);
@@ -2100,12 +2112,12 @@ mod tests {
 
     // Frame 1: warm up layout (some egui widgets adjust their final size after their first frame).
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 2: measure the first tab rect.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let (_strip_rect, tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let tab_rect = tab_rects
@@ -2115,7 +2127,7 @@ mod tests {
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, middle_click_at(tab_rect.center()));
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -2145,12 +2157,12 @@ mod tests {
 
     // Frame 1: warm up layout.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 2: measure the first tab rect.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let (_strip_rect, tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let tab_rect = tab_rects
@@ -2160,7 +2172,7 @@ mod tests {
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, middle_click_at(tab_rect.center()));
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -2187,7 +2199,7 @@ mod tests {
     // Wide frame.
     let ctx_wide = egui::Context::default();
     begin_frame_with_screen_size(&ctx_wide, egui::vec2(800.0, 600.0), Vec::new());
-    let _ = chrome_ui(&ctx_wide, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx_wide, &mut app, None, |_| None);
     let (wide_strip, wide_tabs) =
       super::tab_strip::load_test_layout(&ctx_wide).expect("missing tab strip layout metrics");
     let _ = ctx_wide.end_frame();
@@ -2195,7 +2207,7 @@ mod tests {
     // Narrow frame.
     let ctx_narrow = egui::Context::default();
     begin_frame_with_screen_size(&ctx_narrow, egui::vec2(240.0, 600.0), Vec::new());
-    let _ = chrome_ui(&ctx_narrow, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx_narrow, &mut app, None, |_| None);
     let (narrow_strip, narrow_tabs) =
       super::tab_strip::load_test_layout(&ctx_narrow).expect("missing tab strip layout metrics");
     let _ = ctx_narrow.end_frame();
@@ -2246,12 +2258,12 @@ mod tests {
 
     // Frame 1: warm up layout.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 2: grab the tab strip rect so we can click the "+" button (pinned to the right edge).
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let (strip_rect, _tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let _ = ctx.end_frame();
@@ -2259,7 +2271,7 @@ mod tests {
     // Frame 3: click the "+" button and ensure we get the expected action.
     let click_pos = egui::pos2(strip_rect.max.x - 10.0, strip_rect.center().y);
     begin_frame(&ctx, left_click_at(click_pos));
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -2281,12 +2293,12 @@ mod tests {
 
     // Frame 1: warm up layout.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 2: measure the pinned tab rect.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let (_strip_rect, tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let tab_rect = tab_rects
@@ -2297,7 +2309,7 @@ mod tests {
 
     // Frame 3: click the pinned tab.
     begin_frame(&ctx, left_click_at(tab_rect.center()));
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -2319,7 +2331,7 @@ mod tests {
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let (strip_rect, _tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let output = ctx.end_frame();
@@ -2351,7 +2363,7 @@ mod tests {
         },
       }],
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     let zoom_after_in = app.active_tab().unwrap().zoom;
@@ -2369,7 +2381,7 @@ mod tests {
         },
       }],
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     let zoom_after_out = app.active_tab().unwrap().zoom;
@@ -2396,14 +2408,14 @@ mod tests {
     // Focus address bar.
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_has_focus);
 
     // Type input.
     begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(app.chrome.omnibox.open);
@@ -2411,10 +2423,53 @@ mod tests {
 
     // ArrowDown previews first suggestion.
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "https://example.com/");
+  }
+
+  #[test]
+  fn omnibox_suggests_bookmarks_from_store() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app.chrome.address_bar_text.clear();
+
+    let bookmarks = BookmarkStore {
+      urls: ["https://example.com/".to_string()].into_iter().collect(),
+    };
+
+    let ctx = egui::Context::default();
+
+    // Focus address bar.
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_has_focus);
+
+    // Type input that matches the bookmark.
+    begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      app.chrome.omnibox.open,
+      "expected omnibox dropdown to open"
+    );
+    assert!(
+      app.chrome.omnibox.suggestions.iter().any(|s| {
+        s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
+          && s.url.as_deref() == Some("https://example.com/")
+      }),
+      "expected bookmark suggestion, got {:?}",
+      app.chrome.omnibox.suggestions
+    );
   }
 
   #[test]
@@ -2434,22 +2489,22 @@ mod tests {
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "https://example.com/");
 
     // Escape should close dropdown and restore original typed input without blurring.
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(!app.chrome.omnibox.open);
@@ -2474,26 +2529,26 @@ mod tests {
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     // First Escape closes dropdown and keeps focus.
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
     assert!(app.chrome.address_bar_has_focus);
 
     // Second Escape should blur and revert to active tab URL.
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(!app.chrome.address_bar_has_focus);
@@ -2517,19 +2572,19 @@ mod tests {
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
-    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
