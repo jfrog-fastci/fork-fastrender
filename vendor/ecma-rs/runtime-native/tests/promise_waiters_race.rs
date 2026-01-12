@@ -4,7 +4,6 @@ use runtime_native::abi::{
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::{promise_waiters_is_empty, PromiseWaiterRaceGuard, TestRuntimeGuard};
-use runtime_native_abi::PromiseHeader as AbiPromiseHeader;
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
@@ -65,10 +64,7 @@ extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         completed.store(true, Ordering::SeqCst);
 
         // Resolve the coroutine's own promise to mimic JS async function semantics.
-        runtime_native::rt_promise_resolve_legacy(
-          PromiseRef((*coro).header.promise.cast()),
-          core::ptr::null_mut::<core::ffi::c_void>(),
-        );
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -119,7 +115,7 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
 
   // The promise should not retain stale waiters: the waiter list must be empty even before the
   // coroutine runs its microtask.
-  assert!(promise_waiters_is_empty(PromiseRef(awaited.cast::<AbiPromiseHeader>())));
+  assert!(promise_waiters_is_empty(PromiseRef(awaited.cast())));
 
   let deadline = Instant::now() + Duration::from_secs(1);
   while !completed.load(Ordering::SeqCst) {
@@ -127,6 +123,6 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
     runtime_native::rt_async_poll_legacy();
   }
 
-  assert!(promise_waiters_is_empty(PromiseRef(awaited.cast::<AbiPromiseHeader>())));
+  assert!(promise_waiters_is_empty(PromiseRef(awaited.cast())));
   assert!(!runtime_native::rt_async_poll_legacy());
 }

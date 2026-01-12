@@ -13,7 +13,7 @@ use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::abi::{PromiseRef, ValueRef};
+use crate::abi::{LegacyPromiseRef, PromiseRef, ValueRef};
 use crate::async_abi::PromiseHeader;
 use crate::async_rt;
 use crate::sync::GcAwareMutex;
@@ -265,8 +265,8 @@ pub enum LegacyPromiseOutcome {
 }
 
 /// Debug/test helper: return the outcome of a legacy `async_rt::promise::RtPromise`.
-pub fn legacy_promise_outcome(p: PromiseRef) -> LegacyPromiseOutcome {
-  match async_rt::promise::promise_outcome(p) {
+pub fn legacy_promise_outcome(p: LegacyPromiseRef) -> LegacyPromiseOutcome {
+  match async_rt::promise::promise_outcome(PromiseRef(p.cast())) {
     async_rt::promise::PromiseOutcome::Pending => LegacyPromiseOutcome::Pending,
     async_rt::promise::PromiseOutcome::Fulfilled(v) => LegacyPromiseOutcome::Fulfilled(v),
     async_rt::promise::PromiseOutcome::Rejected(e) => LegacyPromiseOutcome::Rejected(e),
@@ -277,13 +277,13 @@ pub fn legacy_promise_outcome(p: PromiseRef) -> LegacyPromiseOutcome {
 ///
 /// # Safety
 /// `p` must be a legacy promise created by `rt_promise_new_legacy` (or any other runtime API that
-/// returns a legacy `PromiseRef`).
+/// returns a legacy `LegacyPromiseRef`).
 ///
-/// If `p` refers to a non-legacy promise allocation (e.g. a native async-ABI promise or a payload
-/// promise), this is a no-op.
-pub unsafe fn drop_legacy_promise(p: PromiseRef) {
+/// If `p` does not refer to a legacy `RtPromise` allocation (e.g. it is a native async-ABI promise
+/// or a payload promise), this is a no-op.
+pub unsafe fn drop_legacy_promise(p: LegacyPromiseRef) {
   unsafe {
-    async_rt::promise::debug_drop_promise(p);
+    async_rt::promise::debug_drop_promise(PromiseRef(p.cast()));
   }
 }
 

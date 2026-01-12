@@ -1,4 +1,4 @@
-use runtime_native::abi::{RtShapeDescriptor, RtShapeId};
+use runtime_native::abi::{PromiseRef, RtShapeDescriptor, RtShapeId};
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -29,6 +29,14 @@ fn ensure_shape_table() {
     }];
     shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
   });
+}
+
+unsafe fn promise_then_rooted_h_legacy_sendable(
+  promise: PromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: runtime_native::roots::GcHandle,
+) {
+  runtime_native::rt_promise_then_rooted_h_legacy(promise.0.cast(), on_settle, data);
 }
 
 static FIRED: AtomicUsize = AtomicUsize::new(0);
@@ -116,8 +124,7 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
   let new_ptr = runtime_native::rt_alloc_pinned(mem::size_of::<GcBox<u8>>(), shape);
 
   let promise = runtime_native::rt_promise_new_legacy();
-  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
-  let promise_bits = promise as usize;
+  let promise_send = PromiseRef(promise.cast());
 
   let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
 
@@ -157,11 +164,10 @@ fn promise_then_rooted_h_legacy_reads_slot_after_lock_acquired() {
 
       c_start_rx.recv().unwrap();
 
-      let promise = promise_bits as runtime_native::abi::LegacyPromiseRef;
       let slot_ptr = slot_ptr as runtime_native::roots::GcHandle;
       // Safety: `slot_ptr` points at a writable `GcPtr` slot that outlives this call.
       unsafe {
-        runtime_native::rt_promise_then_rooted_h_legacy(promise, on_settle, slot_ptr);
+        promise_then_rooted_h_legacy_sendable(promise_send, on_settle, slot_ptr);
       }
       c_done_tx.send(()).unwrap();
 

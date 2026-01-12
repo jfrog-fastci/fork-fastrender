@@ -29,8 +29,7 @@ struct ThenData {
 
 extern "C" fn on_settle_observe_outcome(data: *mut u8) {
   let data = unsafe { &*(data as *const ThenData) };
-  let (_state, value) =
-    runtime_native::rt_debug_promise_outcome(PromiseRef(data.promise.cast()));
+  let (_state, value) = runtime_native::rt_debug_promise_outcome(PromiseRef(data.promise.cast()));
   data.observed.store(value as usize, Ordering::Release);
 }
 

@@ -1,4 +1,4 @@
-use runtime_native::abi::PromiseRef;
+use runtime_native::abi::{LegacyPromiseRef, PromiseRef};
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::test_util::TestRuntimeGuard;
 use std::ptr;
@@ -36,10 +36,11 @@ fn async_sleep_fulfills_promise() {
 
   let p = unsafe { rt_async_sleep(10) };
   assert!(!p.is_null(), "rt_async_sleep returned a null promise");
+  let p_legacy: LegacyPromiseRef = p.0.cast();
 
   let settled = AtomicBool::new(false);
   runtime_native::rt_promise_then_legacy(
-    p.0.cast(),
+    p_legacy,
     set_bool,
     (&settled as *const AtomicBool).cast::<u8>().cast_mut(),
   );
@@ -78,7 +79,12 @@ fn sleep_promise_weak_handle_after_settle() -> u64 {
   let weak = runtime_native::rt_weak_add(p.0.cast::<u8>());
 
   let settled = AtomicBool::new(false);
-  runtime_native::rt_promise_then_legacy(p, set_bool, (&settled as *const AtomicBool).cast::<u8>().cast_mut());
+  let p_legacy: LegacyPromiseRef = p.0.cast();
+  runtime_native::rt_promise_then_legacy(
+    p_legacy,
+    set_bool,
+    (&settled as *const AtomicBool).cast::<u8>().cast_mut(),
+  );
 
   // Avoid accidentally keeping the promise alive via conservative stack scanning.
   let mut p = p;
@@ -175,8 +181,9 @@ fn async_sleep_promise_relocates_while_rooted_in_timer_queue() {
 
   let settled = AtomicBool::new(false);
   let promise_relocated = PromiseRef(relocated.cast());
+  let promise_relocated_legacy: LegacyPromiseRef = promise_relocated.0.cast();
   runtime_native::rt_promise_then_legacy(
-    promise_relocated,
+    promise_relocated_legacy,
     set_bool,
     (&settled as *const AtomicBool).cast::<u8>().cast_mut(),
   );

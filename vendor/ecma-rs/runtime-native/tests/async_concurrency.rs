@@ -1,5 +1,5 @@
 use runtime_native::abi::{
-  LegacyPromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+  LegacyPromiseRef, PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
 };
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
@@ -8,6 +8,10 @@ use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 use std::time::Duration;
+
+fn resolve_legacy_promise(p: PromiseRef, value: ValueRef) {
+  runtime_native::rt_promise_resolve_legacy(p.0.cast(), value);
+}
 
 #[repr(C)]
 struct GcBox<T> {
@@ -59,7 +63,7 @@ extern "C" fn resume_await_once(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
 
         (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
-        runtime_native::rt_promise_resolve_legacy(PromiseRef((*coro).header.promise.cast()), core::ptr::null_mut());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -90,11 +94,10 @@ fn cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait() {
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
-  let awaited_bits = awaited as usize;
+  let awaited_send = PromiseRef(awaited.cast());
   let resolver = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(50));
-    runtime_native::rt_promise_resolve_legacy(awaited_bits as LegacyPromiseRef, 0xCAFE_BABEusize as ValueRef);
+    resolve_legacy_promise(awaited_send, 0xCAFE_BABEusize as ValueRef);
   });
 
   runtime_native::rt_async_wait();
@@ -129,11 +132,10 @@ fn many_waiters_are_all_woken() {
     runtime_native::rt_async_spawn_legacy(&mut coro.header);
   }
 
-  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
-  let awaited_bits = awaited as usize;
+  let awaited_send = PromiseRef(awaited.cast());
   let resolver = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(50));
-    runtime_native::rt_promise_resolve_legacy(awaited_bits as LegacyPromiseRef, 0xCAFE_BABEusize as ValueRef);
+    resolve_legacy_promise(awaited_send, 0xCAFE_BABEusize as ValueRef);
   });
 
   runtime_native::rt_async_wait();

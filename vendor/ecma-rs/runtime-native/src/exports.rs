@@ -1636,6 +1636,7 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
     let _ = async_rt::global();
 
     let promise = async_rt::promise::promise_new();
+    let promise_legacy: LegacyPromiseRef = promise.0.cast();
     if !promise.is_null() {
       let header = promise.0.cast::<PromiseHeader>();
       if header.is_null() {
@@ -1669,10 +1670,10 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
     let work = Box::new(WorkItem {
       task,
       data,
-      promise: promise.0.cast(),
+      promise: promise_legacy,
     });
     crate::rt_parallel().spawn_detached(run_work_item, Box::into_raw(work) as *mut u8);
-    promise.0.cast()
+    promise_legacy
   })
 }
 

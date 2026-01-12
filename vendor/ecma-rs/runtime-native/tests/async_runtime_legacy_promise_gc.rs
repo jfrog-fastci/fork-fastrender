@@ -31,7 +31,7 @@ fn legacy_promise_fulfillment_value_is_rooted_and_relocatable() {
   runtime_native::rt_promise_resolve_legacy(p, obj1.cast::<c_void>());
 
   assert_eq!(
-    legacy_promise_outcome(runtime_native::abi::PromiseRef(p.cast())),
+    legacy_promise_outcome(p),
     LegacyPromiseOutcome::Fulfilled(obj1.cast::<c_void>())
   );
 
@@ -62,12 +62,12 @@ fn legacy_promise_fulfillment_value_is_rooted_and_relocatable() {
 
   // Observers must see the relocated pointer.
   assert_eq!(
-    legacy_promise_outcome(runtime_native::abi::PromiseRef(p.cast())),
+    legacy_promise_outcome(p),
     LegacyPromiseOutcome::Fulfilled(obj2.cast::<c_void>())
   );
 
   // Teardown should free the persistent handle so it no longer appears in the root set.
-  unsafe { drop_legacy_promise(runtime_native::abi::PromiseRef(p.cast())) };
+  unsafe { drop_legacy_promise(p) };
 
   let mut still_rooted = 0usize;
   threading::safepoint::with_world_stopped(|epoch| {
@@ -102,7 +102,7 @@ fn legacy_promise_rejection_reason_is_rooted_and_relocatable() {
   runtime_native::rt_promise_reject_legacy(p, err1.cast::<c_void>());
 
   assert_eq!(
-    legacy_promise_outcome(runtime_native::abi::PromiseRef(p.cast())),
+    legacy_promise_outcome(p),
     LegacyPromiseOutcome::Rejected(err1.cast::<c_void>())
   );
 
@@ -130,11 +130,11 @@ fn legacy_promise_rejection_reason_is_rooted_and_relocatable() {
   assert_eq!(updated, 1, "expected exactly one rooted rejection slot to update");
 
   assert_eq!(
-    legacy_promise_outcome(runtime_native::abi::PromiseRef(p.cast())),
+    legacy_promise_outcome(p),
     LegacyPromiseOutcome::Rejected(err2.cast::<c_void>())
   );
 
-  unsafe { drop_legacy_promise(runtime_native::abi::PromiseRef(p.cast())) };
+  unsafe { drop_legacy_promise(p) };
 
   let mut still_rooted = 0usize;
   threading::safepoint::with_world_stopped(|epoch| {

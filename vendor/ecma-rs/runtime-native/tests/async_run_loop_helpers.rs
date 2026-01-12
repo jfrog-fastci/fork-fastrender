@@ -13,6 +13,10 @@ use std::sync::Arc;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
+fn resolve_legacy_promise(p: PromiseRef, value: ValueRef) {
+  runtime_native::rt_promise_resolve_legacy(p.0.cast(), value);
+}
+
 #[repr(C)]
 struct GcBox<T> {
   header: ObjHeader,
@@ -73,7 +77,7 @@ extern "C" fn yield_twice_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
       }
       2 => {
         (*( (*coro).done)).store(true, Ordering::SeqCst);
-        runtime_native::rt_promise_resolve_legacy(PromiseRef((*coro).header.promise.cast()), core::ptr::null_mut());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -145,7 +149,7 @@ extern "C" fn await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         assert_eq!((*coro).header.await_is_error, 0);
         assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
         (*( (*coro).done)).store(true, Ordering::SeqCst);
-        runtime_native::rt_promise_resolve_legacy(PromiseRef((*coro).header.promise.cast()), core::ptr::null_mut());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -175,11 +179,12 @@ fn block_on_waits_for_promise_settlement() {
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
-  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
-  let awaited_bits = awaited as usize;
+  // `LegacyPromiseRef` is a raw pointer and therefore not `Send`. Wrap it in the ABI's opaque
+  // `PromiseRef` newtype so we can move it into the resolver thread.
+  let awaited_send = PromiseRef(awaited.cast());
   let t = std::thread::spawn(move || {
     std::thread::sleep(Duration::from_millis(20));
-    runtime_native::rt_promise_resolve_legacy(awaited_bits as LegacyPromiseRef, 0xCAFE_BABE as ValueRef);
+    resolve_legacy_promise(awaited_send, 0xCAFE_BABE as ValueRef);
   });
 
   let start = Instant::now();

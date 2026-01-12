@@ -58,10 +58,7 @@ extern "C" fn counter_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
   assert!(!coro.is_null());
   unsafe {
     (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
-    runtime_native::rt_promise_resolve_legacy(
-      PromiseRef((*coro).header.promise.cast()),
-      core::ptr::null_mut::<core::ffi::c_void>(),
-    );
+    runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
   }
   RtCoroStatus::Done
 }
@@ -86,7 +83,7 @@ fn spawn_vs_deferred_spawn_immediacy() {
 
   let promise = runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert_eq!(counter.load(Ordering::SeqCst), 1);
-  assert_eq!(promise.0, coro.header.promise.cast());
+  assert_eq!(promise, coro.header.promise);
 
   // `rt_async_spawn_deferred_legacy` only enqueues; no resume until `rt_async_poll_legacy`.
   let counter = AtomicUsize::new(0);
@@ -104,7 +101,7 @@ fn spawn_vs_deferred_spawn_immediacy() {
 
   let promise = runtime_native::rt_async_spawn_deferred_legacy(&mut coro.header);
   assert_eq!(counter.load(Ordering::SeqCst), 0);
-  assert_eq!(promise.0, coro.header.promise.cast());
+  assert_eq!(promise, coro.header.promise);
 
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -134,10 +131,7 @@ extern "C" fn yield_once_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
 
         *(*coro).completed = true;
-        runtime_native::rt_promise_resolve_legacy(
-          PromiseRef((*coro).header.promise.cast()),
-          core::ptr::null_mut::<core::ffi::c_void>(),
-        );
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -167,7 +161,7 @@ fn deferred_spawn_registers_waiter_when_polled() {
   coro.awaited = awaited;
 
   let promise = runtime_native::rt_async_spawn_deferred_legacy(&mut coro.header);
-  assert_eq!(promise.0, coro.header.promise.cast());
+  assert_eq!(promise, coro.header.promise);
   assert!(!started);
   assert!(!completed);
 

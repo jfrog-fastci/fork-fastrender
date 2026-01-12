@@ -75,7 +75,7 @@ extern "C" fn await_promise_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus
         *(*coro).out_value = (*coro).header.await_value;
         *(*coro).out_error = (*coro).header.await_error;
         *(*coro).done = true;
-        runtime_native::rt_promise_resolve_legacy(PromiseRef((*coro).header.promise.cast()), core::ptr::null_mut());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -108,7 +108,7 @@ extern "C" fn await_value_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
         *(*coro).out_value = (*coro).header.await_value;
         *(*coro).out_error = (*coro).header.await_error;
         *(*coro).done = true;
-        runtime_native::rt_promise_resolve_legacy(PromiseRef((*coro).header.promise.cast()), core::ptr::null_mut());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -243,7 +243,7 @@ unsafe extern "C" fn call_then_resolve_twice(
   data: *mut u8,
 ) -> ValueRef {
   let t = &*(thenable as *mut ResolveTwiceThenable);
-  on_fulfilled(data, PromiseResolveInput::promise(t.src.0.cast()));
+  on_fulfilled(data, PromiseResolveInput::promise(t.src));
   on_fulfilled(data, PromiseResolveInput::value(0x1111usize as ValueRef));
   core::ptr::null_mut()
 }
@@ -315,7 +315,7 @@ unsafe extern "C" fn call_then_resolve_then_reject(
   data: *mut u8,
 ) -> ValueRef {
   let t = &*(thenable as *mut ResolveThenRejectThenable);
-  on_fulfilled(data, PromiseResolveInput::promise(t.src.0.cast()));
+  on_fulfilled(data, PromiseResolveInput::promise(t.src));
   on_rejected(data, t.reject_reason);
   core::ptr::null_mut()
 }

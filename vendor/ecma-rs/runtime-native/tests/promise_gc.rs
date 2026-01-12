@@ -78,7 +78,7 @@ extern "C" fn await_value_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
       1 => {
         assert_eq!((*coro).header.await_is_error, 0);
         (*coro).observed = (*coro).header.await_value.cast();
-        runtime_native::rt_promise_resolve_legacy(PromiseRef((*coro).header.promise.cast()), core::ptr::null_mut());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),

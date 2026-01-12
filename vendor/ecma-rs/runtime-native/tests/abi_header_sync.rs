@@ -455,11 +455,20 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _io_unregister: extern "C" fn(runtime_native::abi::IoWatcherId) = runtime_native::rt_io_unregister;
 
   // Promise resolution helpers (legacy promises).
-  let _promise_resolve_into_legacy: extern "C" fn(runtime_native::abi::LegacyPromiseRef, runtime_native::abi::PromiseResolveInput) =
+  let _promise_resolve_into_legacy: extern "C" fn(
+    runtime_native::abi::LegacyPromiseRef,
+    runtime_native::abi::PromiseResolveInput,
+  ) =
     runtime_native::rt_promise_resolve_into_legacy;
-  let _promise_resolve_promise_legacy: extern "C" fn(runtime_native::abi::LegacyPromiseRef, runtime_native::abi::LegacyPromiseRef) =
+  let _promise_resolve_promise_legacy: extern "C" fn(
+    runtime_native::abi::LegacyPromiseRef,
+    runtime_native::abi::LegacyPromiseRef,
+  ) =
     runtime_native::rt_promise_resolve_promise_legacy;
-  let _promise_resolve_thenable_legacy: extern "C" fn(runtime_native::abi::LegacyPromiseRef, runtime_native::abi::ThenableRef) =
+  let _promise_resolve_thenable_legacy: extern "C" fn(
+    runtime_native::abi::LegacyPromiseRef,
+    runtime_native::abi::ThenableRef,
+  ) =
     runtime_native::rt_promise_resolve_thenable_legacy;
   let _coro_await_value_legacy: extern "C" fn(
     *mut runtime_native::abi::RtCoroutineHeader,

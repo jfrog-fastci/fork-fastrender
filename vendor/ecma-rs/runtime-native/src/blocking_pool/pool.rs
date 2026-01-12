@@ -108,18 +108,18 @@ impl BlockingPool {
     // Ensure the async runtime is initialized so promise settlement can wake a thread blocked in the
     // platform reactor wait syscall (`epoll_wait`/`kevent`).
     let _ = async_rt::global();
-    let promise = async_rt::promise::promise_new().0.cast();
+    let promise_legacy: LegacyPromiseRef = async_rt::promise::promise_new().0.cast();
 
     {
       let mut q = self.shared.queue.lock();
       q.push_back(WorkItem {
         task,
         data,
-        promise,
+        promise: promise_legacy,
       });
     }
     self.shared.cv.notify_one();
-    promise
+    promise_legacy
   }
 }
 

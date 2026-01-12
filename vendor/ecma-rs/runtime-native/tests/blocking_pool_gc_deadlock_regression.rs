@@ -1,4 +1,4 @@
-use runtime_native::abi::PromiseRef;
+use runtime_native::abi::LegacyPromiseRef;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading::ThreadKind;
 use runtime_native::{
@@ -19,7 +19,7 @@ struct BlockedTaskState {
   finished: AtomicBool,
 }
 
-extern "C" fn blocking_task_wait(data: *mut u8, promise: PromiseRef) {
+extern "C" fn blocking_task_wait(data: *mut u8, promise: LegacyPromiseRef) {
   let st = unsafe { &*(data as *const BlockedTaskState) };
   st.started.store(true, Ordering::Release);
 
@@ -131,4 +131,3 @@ fn stw_gc_does_not_deadlock_with_blocking_pool_tasks() {
 
   assert!(state.finished.load(Ordering::Acquire));
 }
-
