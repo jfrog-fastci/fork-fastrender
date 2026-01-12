@@ -15734,7 +15734,10 @@ fn init_window_globals(
 
   let add_event_listener_key = alloc_key(&mut scope, "addEventListener")?;
   // Minimal `EventTarget` constructor + prototype.
-  let event_target_proto = scope.alloc_object()?;
+  let event_target_proto = match dom_platform.as_ref() {
+    Some(platform) => platform.prototype_for(DomInterface::EventTarget),
+    None => scope.alloc_object()?,
+  };
   scope.push_root(Value::Object(event_target_proto))?;
   scope.define_property(
     event_target_proto,
@@ -18532,6 +18535,44 @@ mod tests {
       })()",
     )?;
     assert_eq!(removed, Value::Number(0.0));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_wrappers_are_instanceof_event_target() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const ok1 = document instanceof EventTarget;\n\
+        const ok2 = document.body instanceof EventTarget;\n\
+        const ok3 = document.createElement('div') instanceof EventTarget;\n\
+        const ok4 = new EventTarget() instanceof EventTarget;\n\
+        return ok1 && ok2 && ok3 && ok4;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let reaches_proto = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        let p = Object.getPrototypeOf(el);\n\
+        while (p) {\n\
+          if (p === EventTarget.prototype) return true;\n\
+          p = Object.getPrototypeOf(p);\n\
+        }\n\
+        return false;\n\
+      })()",
+    )?;
+    assert_eq!(reaches_proto, Value::Bool(true));
+
     Ok(())
   }
 
