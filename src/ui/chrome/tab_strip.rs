@@ -192,9 +192,15 @@ fn tab_ui(
       response = response.on_hover_text(lines.join("\n"));
     }
   }
+  let a11y_label = match (err.is_some(), warn.is_some()) {
+    (true, true) => format!("{title} (error, warning)"),
+    (true, false) => format!("{title} (error)"),
+    (false, true) => format!("{title} (warning)"),
+    (false, false) => title.clone(),
+  };
   response.widget_info({
-    let title = title.clone();
-    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
+    let a11y_label = a11y_label.clone();
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
 
   let visuals = ui.style().visuals.clone();
@@ -402,9 +408,15 @@ fn pinned_tab_ui(
       response = response.on_hover_text(lines.join("\n"));
     }
   }
+  let a11y_label = match (err.is_some(), warn.is_some()) {
+    (true, true) => format!("{title} (error, warning)"),
+    (true, false) => format!("{title} (error)"),
+    (false, true) => format!("{title} (warning)"),
+    (false, false) => title.clone(),
+  };
   response.widget_info({
-    let title = title.clone();
-    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
+    let a11y_label = a11y_label.clone();
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
 
   let visuals = ui.style().visuals.clone();
