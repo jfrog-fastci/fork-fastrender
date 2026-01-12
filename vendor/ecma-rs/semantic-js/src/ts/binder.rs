@@ -1798,15 +1798,8 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       }
     }
 
-    let is_namespace_import = matches!(&entry.imported, ImportItem::Namespace);
     let namespaces = if entry.type_only {
-      if is_namespace_import {
-        Namespace::TYPE | Namespace::NAMESPACE
-      } else {
-        Namespace::TYPE
-      }
-    } else if is_namespace_import {
-      Namespace::VALUE | Namespace::NAMESPACE | Namespace::TYPE
+      Namespace::TYPE | Namespace::NAMESPACE
     } else {
       Namespace::VALUE | Namespace::TYPE | Namespace::NAMESPACE
     };

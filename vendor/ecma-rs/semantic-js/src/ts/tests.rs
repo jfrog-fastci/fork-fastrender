@@ -336,6 +336,44 @@ fn locals_type_only_namespace_import_resolves_qualified_type_reference() {
 }
 
 #[test]
+fn locals_type_only_named_import_resolves_qualified_type_reference() {
+  let source = r#"
+     import type { ns2 } from "mod";
+     type T = ns2.Foo;
+  "#;
+  let mut ast = parse(source).expect("parse type-only named import");
+  let locals = bind_ts_locals(&mut ast, FileId(0));
+
+  let root = locals.root_scope();
+  let (ns_symbol, ns_data) = locals
+    .symbols
+    .iter()
+    .find_map(|(id, sym)| {
+      if sym.decl_scope != root {
+        return None;
+      }
+      let name = locals.names.get(&sym.name)?;
+      (name == "ns2").then_some((*id, sym))
+    })
+    .expect("ns2 symbol should be declared in root scope");
+
+  assert!(
+    ns_data.namespaces.contains(Namespace::NAMESPACE),
+    "type-only named imports should declare the namespace namespace"
+  );
+
+  let ns_offset = positions(source, "ns2.Foo")
+    .first()
+    .copied()
+    .expect("expected ns2.Foo occurrence");
+  let resolved = locals
+    .resolve_type_at_offset(ns_offset)
+    .map(|(_, sym)| sym)
+    .expect("qualified type reference should resolve in namespace space");
+  assert_eq!(resolved, ns_symbol);
+}
+
+#[test]
 fn reexport_chain_uses_original_symbols() {
   let file_a = FileId(1);
   let file_b = FileId(2);
@@ -2033,6 +2071,18 @@ fn type_only_imports_skip_value_namespace() {
   let type_symbol = semantics
     .resolve_in_module(file_b, "Foo", Namespace::TYPE)
     .expect("type-only import resolves in type namespace");
+  let namespace_symbol = semantics
+    .resolve_in_module(file_b, "Foo", Namespace::NAMESPACE)
+    .expect("type-only import resolves in namespace namespace");
+  assert_eq!(type_symbol, namespace_symbol);
+  assert!(
+    semantics
+      .symbols()
+      .symbol(type_symbol)
+      .namespaces
+      .contains(Namespace::NAMESPACE),
+    "type-only import binding should include the namespace namespace"
+  );
   match &semantics.symbols().symbol(type_symbol).origin {
     SymbolOrigin::Import {
       from: ModuleRef::File(from),
@@ -4319,7 +4369,10 @@ fn locals_imports_use_expected_namespaces() {
     symbol_named("baz").namespaces,
     Namespace::VALUE | Namespace::TYPE | Namespace::NAMESPACE
   );
-  assert_eq!(symbol_named("bar").namespaces, Namespace::TYPE);
+  assert_eq!(
+    symbol_named("bar").namespaces,
+    Namespace::TYPE | Namespace::NAMESPACE
+  );
   assert_eq!(
     symbol_named("ns").namespaces,
     Namespace::VALUE | Namespace::TYPE | Namespace::NAMESPACE

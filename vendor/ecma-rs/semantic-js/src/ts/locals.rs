@@ -1286,7 +1286,7 @@ impl DeclarePass {
   fn walk_import(&mut self, import: &mut Node<parse_js::ast::stmt::ImportStmt>) {
     self.mark_scope(&mut import.assoc);
     let base_ns = if import.stx.type_only {
-      Namespace::TYPE
+      Namespace::TYPE | Namespace::NAMESPACE
     } else {
       Namespace::VALUE | Namespace::TYPE | Namespace::NAMESPACE
     };
@@ -1304,7 +1304,7 @@ impl DeclarePass {
         ImportNames::Specific(list) => {
           for item in list.iter_mut() {
             let ns = if item.stx.type_only {
-              Namespace::TYPE
+              Namespace::TYPE | Namespace::NAMESPACE
             } else {
               base_ns
             };
@@ -2832,7 +2832,7 @@ impl DeclareTablesPass {
   fn walk_import(&mut self, import: &Node<parse_js::ast::stmt::ImportStmt>) {
     self.mark_scope(import);
     let base_ns = if import.stx.type_only {
-      Namespace::TYPE
+      Namespace::TYPE | Namespace::NAMESPACE
     } else {
       Namespace::VALUE | Namespace::TYPE | Namespace::NAMESPACE
     };
@@ -2850,7 +2850,7 @@ impl DeclareTablesPass {
         ImportNames::Specific(list) => {
           for item in list.iter() {
             let ns = if item.stx.type_only {
-              Namespace::TYPE
+              Namespace::TYPE | Namespace::NAMESPACE
             } else {
               base_ns
             };
