@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::js::console_sink::{fanout_console_sink, stderr_console_sink};
 use crate::js::time::update_time_bindings_clock;
 use crate::js::vm_error_format;
+use crate::js::window_file_reader::install_window_file_reader_bindings;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
 use crate::js::web_storage::{SessionNamespaceId, StorageListenerGuard, with_default_hub_mut};
 use crate::js::window_timers::VmJsEventLoopHooks;
@@ -295,6 +296,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       install_window_timers_bindings::<BrowserTabHost>(vm, realm_ref, heap)
         .map_err(|err| Error::Other(err.to_string()))?;
       install_window_animation_frame_bindings::<BrowserTabHost>(vm, realm_ref, heap)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      install_window_file_reader_bindings::<BrowserTabHost>(vm, realm_ref, heap)
         .map_err(|err| Error::Other(err.to_string()))?;
       let fetch_bindings = install_window_fetch_bindings_with_guard::<BrowserTabHost>(
         vm,

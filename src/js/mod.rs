@@ -254,6 +254,7 @@ pub use window::{WindowHost, WindowHostState};
 pub use window_animation_frame::install_window_animation_frame_bindings;
 pub use window_blob::install_window_blob_bindings;
 pub use window_file::install_window_file_bindings;
+pub use window_file_reader::install_window_file_reader_bindings;
 pub use window_fetch::{
   install_window_fetch_bindings, install_window_fetch_bindings_with_guard,
   unregister_window_fetch_env, WindowFetchBindings, WindowFetchEnv,

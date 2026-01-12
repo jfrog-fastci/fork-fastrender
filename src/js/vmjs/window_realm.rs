@@ -26711,7 +26711,6 @@ fn init_window_globals(
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
   crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;
   crate::js::window_file::install_window_file_bindings(vm, realm, heap)?;
-  crate::js::window_file_reader::install_window_file_reader_bindings(vm, realm, heap)?;
   crate::js::window_form_data::install_window_form_data_bindings(vm, realm, heap)?;
   crate::js::window_broadcast_channel::install_window_broadcast_channel_bindings(vm, realm, heap)?;
   crate::js::window_worker::install_window_worker_bindings(vm, realm, heap)?;
