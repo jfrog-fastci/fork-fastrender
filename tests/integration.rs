@@ -14,7 +14,6 @@ mod layout;
 mod paint;
 mod backdrop;
 mod legacy;
-mod css_integration;
 mod determinism;
 mod dom_integration;
 mod iframe;
