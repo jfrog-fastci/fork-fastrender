@@ -81,6 +81,7 @@ where
     await_allowed: opts.allow_top_level_await,
     yield_allowed: false,
     super_call_allowed: false,
+    arguments_allowed: true,
     return_allowed: false,
     loop_depth: 0,
     breakable_depth: 0,
@@ -110,6 +111,12 @@ struct ControlContext {
   /// `super()` is only valid in derived class constructors (and arrow functions lexically nested
   /// within those constructors).
   super_call_allowed: bool,
+  /// Whether `arguments` identifier references are permitted in the current context.
+  ///
+  /// Class static initialization blocks disallow `arguments` (ECMA-262 `ContainsArguments` early
+  /// error). This restriction is lexical, so arrow functions inherit this flag from their
+  /// surrounding context.
+  arguments_allowed: bool,
   /// Whether `return` statements are permitted in the current statement list.
   ///
   /// This is true only inside function bodies. (Notably, class static blocks are **not** function
@@ -125,6 +132,7 @@ struct SavedFunctionContext {
   await_allowed: bool,
   yield_allowed: bool,
   super_call_allowed: bool,
+  arguments_allowed: bool,
   return_allowed: bool,
   loop_depth: u32,
   breakable_depth: u32,
@@ -206,12 +214,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     await_allowed: bool,
     yield_allowed: bool,
     super_call_allowed: bool,
+    arguments_allowed: bool,
   ) -> SavedFunctionContext {
     let saved = SavedFunctionContext {
       strict: ctx.strict,
       await_allowed: ctx.await_allowed,
       yield_allowed: ctx.yield_allowed,
       super_call_allowed: ctx.super_call_allowed,
+      arguments_allowed: ctx.arguments_allowed,
       return_allowed: ctx.return_allowed,
       loop_depth: ctx.loop_depth,
       breakable_depth: ctx.breakable_depth,
@@ -221,6 +231,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.await_allowed = await_allowed;
     ctx.yield_allowed = yield_allowed;
     ctx.super_call_allowed = super_call_allowed;
+    ctx.arguments_allowed = arguments_allowed;
     ctx.return_allowed = true;
     ctx.loop_depth = 0;
     ctx.breakable_depth = 0;
@@ -233,6 +244,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.await_allowed = saved.await_allowed;
     ctx.yield_allowed = saved.yield_allowed;
     ctx.super_call_allowed = saved.super_call_allowed;
+    ctx.arguments_allowed = saved.arguments_allowed;
     ctx.return_allowed = saved.return_allowed;
     ctx.loop_depth = saved.loop_depth;
     ctx.breakable_depth = saved.breakable_depth;
@@ -653,6 +665,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       /* await_allowed */ false,
       /* yield_allowed */ false,
       /* super_call_allowed */ false,
+      /* arguments_allowed */ false,
     );
     ctx.return_allowed = false;
     let res = self.visit_stmt_list(ctx, stmts);
@@ -803,12 +816,18 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
 
     // Enter the function context when traversing parameter initializers and the function body.
+    let arguments_allowed = if func.stx.arrow {
+      ctx.arguments_allowed
+    } else {
+      true
+    };
     let saved = self.save_and_enter_function(
       ctx,
       func_strict,
       func.stx.async_,
       func.stx.generator,
       super_call_allowed,
+      arguments_allowed,
     );
 
     for param in params {
@@ -838,6 +857,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Expr::ComputedMember(member) => self.visit_computed_member(ctx, &member.stx),
       Expr::Cond(cond) => self.visit_cond(ctx, &cond.stx),
       Expr::Func(func) => self.visit_func_expr(ctx, &func.stx),
+      Expr::Id(id) => {
+        if id.stx.name == "arguments" && !ctx.arguments_allowed {
+          self.push_error(expr.loc, "arguments is not allowed in class static initialization blocks")?;
+        }
+        Ok(())
+      }
       Expr::Import(import) => self.visit_import(ctx, &import.stx),
       Expr::Member(member) => self.visit_member(ctx, &member.stx),
       Expr::TaggedTemplate(tagged) => self.visit_tagged_template(ctx, &tagged.stx),
