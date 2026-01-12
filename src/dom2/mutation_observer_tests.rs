@@ -71,3 +71,54 @@ fn transient_registered_observers_install_on_removed_root_only_and_track_descend
   assert!(!doc.take_mutation_observer_microtask_needed());
   assert!(doc.mutation_observer_take_deliveries().is_empty());
 }
+
+#[test]
+fn transient_registered_observers_do_not_duplicate_on_repeated_remove_before_delivery() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  let child = doc.create_element("span", "");
+
+  doc.append_child(root, parent).unwrap();
+  doc.append_child(parent, child).unwrap();
+
+  let observer: MutationObserverId = 1;
+  doc
+    .mutation_observer_observe(
+      observer,
+      parent,
+      MutationObserverInit {
+        attributes: true,
+        subtree: true,
+        ..Default::default()
+      },
+    )
+    .unwrap();
+
+  // First removal: installs a transient registered observer on the removed subtree root (`child`).
+  doc.remove_child(parent, child).unwrap();
+  assert_eq!(doc.mutation_observer_transient_registration_count(child), 1);
+
+  // Reinsert and remove again before delivering the microtask. The transient registration should
+  // not be duplicated.
+  doc.append_child(parent, child).unwrap();
+  doc.remove_child(parent, child).unwrap();
+  assert_eq!(doc.mutation_observer_transient_registration_count(child), 1);
+
+  // Mutations to the removed subtree are still observed until delivery.
+  doc.set_attribute(child, "data-x", "1").unwrap();
+  let deliveries = doc.mutation_observer_take_deliveries();
+  let records = deliveries
+    .into_iter()
+    .find(|(id, _)| *id == observer)
+    .map(|(_, recs)| recs)
+    .unwrap_or_default();
+  assert_eq!(records.len(), 1);
+  assert_eq!(records[0].type_, MutationRecordType::Attributes);
+  assert_eq!(records[0].target, child);
+  assert_eq!(records[0].attribute_name.as_deref(), Some("data-x"));
+
+  // After delivery, transient registrations are removed.
+  assert_eq!(doc.mutation_observer_transient_registration_count(child), 0);
+}

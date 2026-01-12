@@ -548,18 +548,23 @@ impl Document {
 
     let mut agent = self.mutation_observer_agent.borrow_mut();
     for (observer, options, source_id) in to_add {
-      let id = agent.alloc_registration_id();
-      if let Some(list) = self
-        .nodes
-        .get_mut(node.index())
-        .map(|n| &mut n.registered_observers)
-      {
-        list.push(RegisteredObserver {
-          id,
-          observer,
-          options,
-          transient_source: Some(source_id),
-        });
+      if let Some(list) = self.nodes.get_mut(node.index()).map(|n| &mut n.registered_observers) {
+        // Avoid creating duplicate transient registered observers when a node is removed multiple
+        // times before the next MutationObserver microtask checkpoint.
+        if let Some(existing) = list
+          .iter_mut()
+          .find(|reg| reg.observer == observer && reg.transient_source == Some(source_id))
+        {
+          existing.options = options;
+        } else {
+          let id = agent.alloc_registration_id();
+          list.push(RegisteredObserver {
+            id,
+            observer,
+            options,
+            transient_source: Some(source_id),
+          });
+        }
       }
 
       // The spec's node list is a list of weak references. `dom2` stores stable `NodeId`s for the
