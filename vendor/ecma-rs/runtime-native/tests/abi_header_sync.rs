@@ -97,6 +97,9 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_parallel_spawn_promise_with_shape(",
     "rt_parallel_spawn_promise_with_shape_rooted(",
     "rt_parallel_spawn_promise_with_shape_rooted_h(",
+    "rt_spawn_blocking_promise(",
+    "rt_spawn_blocking_promise_rooted(",
+    "rt_spawn_blocking_promise_rooted_h(",
     "rt_queue_microtask_rooted(",
     "rt_async_sleep(",
     "rt_queue_microtask_rooted_h(",
@@ -112,17 +115,17 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_io_register_rooted_h(",
     "rt_io_register_with_drop(",
     "rt_io_update(",
-     "rt_io_unregister(",
-      // Interned strings.
-      "rt_string_intern(",
-      "rt_string_pin_interned(",
-      "rt_string_lookup(",
-      "rt_string_lookup_pinned(",
-      // Legacy promise resolution ABI.
-      "rt_promise_resolve_into_legacy(",
-      "rt_promise_resolve_promise_legacy(",
-      "rt_promise_resolve_thenable_legacy(",
-      "rt_coro_await_value_legacy(",
+    "rt_io_unregister(",
+    // Interned strings.
+    "rt_string_intern(",
+    "rt_string_pin_interned(",
+    "rt_string_lookup(",
+    "rt_string_lookup_pinned(",
+    // Legacy promise resolution ABI.
+    "rt_promise_resolve_into_legacy(",
+    "rt_promise_resolve_promise_legacy(",
+    "rt_promise_resolve_thenable_legacy(",
+    "rt_coro_await_value_legacy(",
   ] {
     assert!(
       HEADER.contains(sym),
