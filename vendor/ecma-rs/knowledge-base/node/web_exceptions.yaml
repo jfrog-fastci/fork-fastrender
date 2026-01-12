@@ -1,0 +1,16 @@
+# Web exception types available as Node.js globals.
+#
+# Duplicated from `web/exceptions.yaml` so `TargetEnv::Node` lookups can resolve
+# these entries without matching browser-only APIs.
+#
+# Node notes:
+# - `DOMException` was introduced relatively recently. We conservatively gate to
+#   Node 17+.
+
+- name: DOMException
+  kind: constructor
+  since: "v17.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating

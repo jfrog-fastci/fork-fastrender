@@ -1,0 +1,13 @@
+# Web exception types.
+
+- name: DOMException
+  kind: constructor
+  aliases:
+    - DOMException
+    - window.DOMException
+    - globalThis.DOMException
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating

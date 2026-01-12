@@ -2706,13 +2706,26 @@ properties:
       kb.source_for_target("structuredClone", &node_20),
       Some("node/web_structured_clone.yaml")
     );
- 
+
+    let dom_exception = kb
+      .api_for_target("DOMException", &node_20)
+      .expect("DOMException should resolve for modern Node targets");
+    assert_eq!(dom_exception.name, "DOMException");
+    assert_eq!(
+      kb.source_for_target("DOMException", &node_20),
+      Some("node/web_exceptions.yaml")
+    );
+
     let node_16 = TargetEnv::Node {
       version: Version::parse("16.0.0").unwrap(),
     };
     assert!(
       kb.api_for_target("structuredClone", &node_16).is_none(),
       "structuredClone should not resolve for Node < 17"
+    );
+    assert!(
+      kb.api_for_target("DOMException", &node_16).is_none(),
+      "DOMException should not resolve for Node < 17"
     );
 
     let abort = kb
