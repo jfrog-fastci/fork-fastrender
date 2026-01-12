@@ -4,8 +4,11 @@ use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp, ParallelPlan, ParallelReason, Purity};
 use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
-use effect_model::ThrowBehavior;
 use std::collections::BTreeMap;
+
+#[cfg(feature = "native-async-ops")]
+use effect_model::ThrowBehavior;
+#[cfg(feature = "native-async-ops")]
 use std::collections::BTreeSet;
 
 #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
@@ -48,17 +51,20 @@ fn resolve_alias(mut var: u32, aliases: &BTreeMap<u32, u32>) -> u32 {
 }
 
 #[derive(Clone, Debug)]
+#[cfg(feature = "native-async-ops")]
 struct ValueDefInfo {
   uses: Vec<u32>,
   effects: EffectSet,
 }
 
 #[derive(Clone, Debug)]
+#[cfg(feature = "native-async-ops")]
 enum ValueDef {
   Known(ValueDefInfo),
   Unknown,
 }
 
+#[cfg(feature = "native-async-ops")]
 fn inst_used_vars(inst: &Inst) -> Vec<u32> {
   let mut out = Vec::new();
   for arg in &inst.args {
@@ -69,6 +75,7 @@ fn inst_used_vars(inst: &Inst) -> Vec<u32> {
   out
 }
 
+#[cfg(feature = "native-async-ops")]
 fn build_value_defs(cfg: &Cfg) -> BTreeMap<u32, ValueDef> {
   let mut defs = BTreeMap::<u32, ValueDef>::new();
   for label in cfg.graph.labels_sorted() {
@@ -93,12 +100,14 @@ fn build_value_defs(cfg: &Cfg) -> BTreeMap<u32, ValueDef> {
   defs
 }
 
+#[cfg(feature = "native-async-ops")]
 fn unknown_effects() -> EffectSet {
   let mut e = EffectSet::default();
   e.mark_unknown();
   e
 }
 
+#[cfg(feature = "native-async-ops")]
 fn var_total_effect(
   var: u32,
   defs: &BTreeMap<u32, ValueDef>,
@@ -136,6 +145,7 @@ fn var_total_effect(
   out
 }
 
+#[cfg(feature = "native-async-ops")]
 fn arg_total_effect(arg: &Arg, defs: &BTreeMap<u32, ValueDef>, memo: &mut BTreeMap<u32, EffectSet>) -> EffectSet {
   match arg {
     Arg::Var(v) => var_total_effect(*v, defs, memo, &mut Vec::new()),
@@ -143,6 +153,7 @@ fn arg_total_effect(arg: &Arg, defs: &BTreeMap<u32, ValueDef>, memo: &mut BTreeM
   }
 }
 
+#[cfg(feature = "native-async-ops")]
 fn var_depends_on(var: u32, target: u32, defs: &BTreeMap<u32, ValueDef>, visiting: &mut Vec<u32>) -> bool {
   if visiting.contains(&var) {
     return true;
@@ -169,6 +180,7 @@ fn var_depends_on(var: u32, target: u32, defs: &BTreeMap<u32, ValueDef>, visitin
   out
 }
 
+#[cfg(feature = "native-async-ops")]
 fn promise_components_plan(
   args: &[Arg],
   defs: &BTreeMap<u32, ValueDef>,
@@ -570,7 +582,9 @@ pub fn annotate_cfg_parallelize(
   foreign_fns: &BTreeMap<SymbolId, FnId>,
 ) {
   let defs = build_callee_var_defs(cfg, foreign_fns);
+  #[cfg(feature = "native-async-ops")]
   let value_defs = build_value_defs(cfg);
+  #[cfg(feature = "native-async-ops")]
   let mut value_memo = BTreeMap::<u32, EffectSet>::new();
 
   for label in cfg.graph.labels_sorted() {
