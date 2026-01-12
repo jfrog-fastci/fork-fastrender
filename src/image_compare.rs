@@ -261,11 +261,16 @@ pub fn compare_images(
   let mut first_mismatch: Option<(u32, u32)> = None;
   let mut first_mismatch_rgba: Option<([u8; 4], [u8; 4])> = None;
   let mut sum_squared_error = 0.0f64;
-  let mut ssim = SsimAccumulator::default();
+
+  // Perceptual metric (SSIM-derived) is computed on a downsampled luminance grid so it stays
+  // informative for real-world diffs without allocating full-frame floating point buffers.
+  let mut luma_downsample = DownsampledLumaPair::new(width, height);
 
   let tolerance = config.channel_tolerance as i16;
 
-  for (i, (actual_px, expected_px)) in actual.pixels().zip(expected.pixels()).enumerate() {
+  let mut x = 0u32;
+  let mut y = 0u32;
+  for (actual_px, expected_px) in actual.pixels().zip(expected.pixels()) {
     let diff_r = (actual_px[0] as i16 - expected_px[0] as i16).unsigned_abs() as u8;
     let diff_g = (actual_px[1] as i16 - expected_px[1] as i16).unsigned_abs() as u8;
     let diff_b = (actual_px[2] as i16 - expected_px[2] as i16).unsigned_abs() as u8;
@@ -291,8 +296,6 @@ pub fn compare_images(
     if is_different {
       different_pixels += 1;
       if first_mismatch.is_none() {
-        let x = i as u32 % width;
-        let y = i as u32 / width;
         first_mismatch = Some((x, y));
         first_mismatch_rgba = Some((
           [actual_px[0], actual_px[1], actual_px[2], actual_px[3]],
@@ -316,7 +319,6 @@ pub fn compare_images(
         0
       };
 
-      let (x, y) = (i as u32 % width, i as u32 / width);
       diff_img.put_pixel(
         x,
         y,
@@ -330,27 +332,15 @@ pub fn compare_images(
       );
     }
 
-    // Perceptual metric uses luminance; optionally include alpha as a multiplier.
-    let alpha_actual = if config.compare_alpha {
-      actual_px[3] as f64 / 255.0
-    } else {
-      1.0
-    };
-    let alpha_expected = if config.compare_alpha {
-      expected_px[3] as f64 / 255.0
-    } else {
-      1.0
-    };
+    let luma_actual = rgba_luma(actual_px, config.compare_alpha);
+    let luma_expected = rgba_luma(expected_px, config.compare_alpha);
+    luma_downsample.push(x, y, luma_actual, luma_expected);
 
-    let luma_actual =
-      (0.2126 * actual_px[0] as f64 + 0.7152 * actual_px[1] as f64 + 0.0722 * actual_px[2] as f64)
-        * alpha_actual;
-    let luma_expected = (0.2126 * expected_px[0] as f64
-      + 0.7152 * expected_px[1] as f64
-      + 0.0722 * expected_px[2] as f64)
-      * alpha_expected;
-
-    ssim.push(luma_actual, luma_expected);
+    x += 1;
+    if x == width {
+      x = 0;
+      y += 1;
+    }
   }
 
   let different_percent = if total_pixels > 0 {
@@ -371,8 +361,10 @@ pub fn compare_images(
     f64::INFINITY
   };
 
-  let perceptual_similarity = ssim.finish();
-  let perceptual_distance = 1.0 - perceptual_similarity.clamp(0.0, 1.0);
+  let (ds_w, ds_h, luma_actual, luma_expected) = luma_downsample.finish();
+  let perceptual_similarity =
+    windowed_ssim_similarity(&luma_actual, &luma_expected, ds_w, ds_h).clamp(0.0, 1.0);
+  let perceptual_distance = (1.0 - perceptual_similarity).clamp(0.0, 1.0);
 
   let statistics = DiffStatistics {
     total_pixels,
@@ -425,38 +417,21 @@ pub fn perceptual_distance_region(
     return 0.0;
   }
 
-  let mut ssim = SsimAccumulator::default();
+  let mut luma_downsample = DownsampledLumaPair::new(width, height);
   for y in 0..height {
     for x in 0..width {
       let actual_px = actual.get_pixel(x, y);
       let expected_px = expected.get_pixel(x, y);
 
-      // Perceptual metric uses luminance; optionally include alpha as a multiplier.
-      let alpha_actual = if compare_alpha {
-        actual_px[3] as f64 / 255.0
-      } else {
-        1.0
-      };
-      let alpha_expected = if compare_alpha {
-        expected_px[3] as f64 / 255.0
-      } else {
-        1.0
-      };
-
-      let luma_actual = (0.2126 * actual_px[0] as f64
-        + 0.7152 * actual_px[1] as f64
-        + 0.0722 * actual_px[2] as f64)
-        * alpha_actual;
-      let luma_expected = (0.2126 * expected_px[0] as f64
-        + 0.7152 * expected_px[1] as f64
-        + 0.0722 * expected_px[2] as f64)
-        * alpha_expected;
-      ssim.push(luma_actual, luma_expected);
+      let luma_actual = rgba_luma(actual_px, compare_alpha);
+      let luma_expected = rgba_luma(expected_px, compare_alpha);
+      luma_downsample.push(x, y, luma_actual, luma_expected);
     }
   }
 
-  let similarity = ssim.finish();
-  1.0 - similarity.clamp(0.0, 1.0)
+  let (ds_w, ds_h, luma_actual, luma_expected) = luma_downsample.finish();
+  let similarity = windowed_ssim_similarity(&luma_actual, &luma_expected, ds_w, ds_h);
+  (1.0 - similarity).clamp(0.0, 1.0)
 }
 
 /// Compare two PNG byte buffers.
@@ -745,6 +720,235 @@ pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, Error> {
   Ok(buffer.into_inner())
 }
 
+// Perceptual SSIM parameters.
+//
+// The perceptual metric is computed over a downsampled luminance grid to avoid large floating-point
+// allocations and to smooth out extremely high-frequency differences (e.g. subpixel text AA).
+const PERCEPTUAL_MAX_DOWNSAMPLED_SIDE: u32 = 256;
+const PERCEPTUAL_WINDOW_SIZE: u32 = 8;
+
+#[inline]
+fn rgba_luma(px: &Rgba<u8>, compare_alpha: bool) -> f64 {
+  let alpha = if compare_alpha {
+    px[3] as f64 / 255.0
+  } else {
+    1.0
+  };
+  (0.2126 * px[0] as f64 + 0.7152 * px[1] as f64 + 0.0722 * px[2] as f64) * alpha
+}
+
+fn downsample_dimensions(width: u32, height: u32) -> (u32, u32) {
+  let max_side = width.max(height);
+  if max_side <= PERCEPTUAL_MAX_DOWNSAMPLED_SIDE {
+    return (width, height);
+  }
+
+  let max_side_u64 = u64::from(max_side);
+  let target = u64::from(PERCEPTUAL_MAX_DOWNSAMPLED_SIDE);
+  let out_w = ((u64::from(width) * target) / max_side_u64).max(1) as u32;
+  let out_h = ((u64::from(height) * target) / max_side_u64).max(1) as u32;
+  (out_w, out_h)
+}
+
+#[derive(Debug)]
+struct DownsampledLumaPair {
+  in_width: u32,
+  in_height: u32,
+  out_width: u32,
+  out_height: u32,
+  sum_actual: Vec<f64>,
+  sum_expected: Vec<f64>,
+  count: Vec<u32>,
+}
+
+impl DownsampledLumaPair {
+  fn new(in_width: u32, in_height: u32) -> Self {
+    let (out_width, out_height) = downsample_dimensions(in_width, in_height);
+    let len = out_width
+      .checked_mul(out_height)
+      .and_then(|v| usize::try_from(v).ok())
+      .unwrap_or(0);
+    Self {
+      in_width,
+      in_height,
+      out_width,
+      out_height,
+      sum_actual: vec![0.0; len],
+      sum_expected: vec![0.0; len],
+      count: vec![0; len],
+    }
+  }
+
+  #[inline]
+  fn push(&mut self, x: u32, y: u32, luma_actual: f64, luma_expected: f64) {
+    debug_assert!(x < self.in_width);
+    debug_assert!(y < self.in_height);
+
+    if self.out_width == 0 || self.out_height == 0 {
+      return;
+    }
+
+    // Map source pixel coordinate into the downsampled grid.
+    //
+    // This implements a simple area partitioning where each input pixel contributes fully to one
+    // output cell. We then average by the number of contributing pixels.
+    let ds_x = (u64::from(x) * u64::from(self.out_width) / u64::from(self.in_width)) as u32;
+    let ds_y = (u64::from(y) * u64::from(self.out_height) / u64::from(self.in_height)) as u32;
+    debug_assert!(ds_x < self.out_width);
+    debug_assert!(ds_y < self.out_height);
+
+    let idx = (u64::from(ds_y) * u64::from(self.out_width) + u64::from(ds_x)) as usize;
+    self.sum_actual[idx] += luma_actual;
+    self.sum_expected[idx] += luma_expected;
+    self.count[idx] += 1;
+  }
+
+  fn finish(mut self) -> (u32, u32, Vec<f64>, Vec<f64>) {
+    for ((sum_a, sum_b), c) in self
+      .sum_actual
+      .iter_mut()
+      .zip(self.sum_expected.iter_mut())
+      .zip(self.count.iter())
+    {
+      if *c == 0 {
+        // Should be unreachable due to the coordinate mapping, but keep the function total and
+        // deterministic even for odd dimension combinations.
+        *sum_a = 0.0;
+        *sum_b = 0.0;
+        continue;
+      }
+      let inv = 1.0 / (*c as f64);
+      *sum_a *= inv;
+      *sum_b *= inv;
+    }
+    (self.out_width, self.out_height, self.sum_actual, self.sum_expected)
+  }
+}
+
+#[inline]
+fn sat_sum(sat: &[f64], stride: usize, x0: u32, y0: u32, x1: u32, y1: u32) -> f64 {
+  let (x0, y0, x1, y1) = (x0 as usize, y0 as usize, x1 as usize, y1 as usize);
+  let a = y1 * stride + x1;
+  let b = y0 * stride + x1;
+  let c = y1 * stride + x0;
+  let d = y0 * stride + x0;
+  sat[a] - sat[b] - sat[c] + sat[d]
+}
+
+fn windowed_ssim_similarity(actual: &[f64], expected: &[f64], width: u32, height: u32) -> f64 {
+  if width == 0 || height == 0 {
+    return 1.0;
+  }
+
+  debug_assert_eq!(actual.len(), expected.len());
+  debug_assert_eq!(actual.len(), (width as usize) * (height as usize));
+
+  // If the downsampled image is too small for local SSIM windows, fall back to a global SSIM.
+  if width < PERCEPTUAL_WINDOW_SIZE || height < PERCEPTUAL_WINDOW_SIZE {
+    let mut acc = SsimAccumulator::default();
+    for (a, b) in actual.iter().zip(expected.iter()) {
+      acc.push(*a, *b);
+    }
+    return acc.finish().clamp(0.0, 1.0);
+  }
+
+  let stride = (width + 1) as usize;
+  let sat_len = stride * (height as usize + 1);
+
+  // Summed-area tables for X, Y, X², Y², and X·Y.
+  let mut sat_x = vec![0.0f64; sat_len];
+  let mut sat_y = vec![0.0f64; sat_len];
+  let mut sat_x2 = vec![0.0f64; sat_len];
+  let mut sat_y2 = vec![0.0f64; sat_len];
+  let mut sat_xy = vec![0.0f64; sat_len];
+
+  for y in 0..height {
+    let mut row_sum_x = 0.0;
+    let mut row_sum_y = 0.0;
+    let mut row_sum_x2 = 0.0;
+    let mut row_sum_y2 = 0.0;
+    let mut row_sum_xy = 0.0;
+
+    let row_base = (y as usize) * (width as usize);
+    let sat_row = (y as usize + 1) * stride;
+    let sat_prev = (y as usize) * stride;
+
+    for x in 0..width {
+      let idx = row_base + x as usize;
+      let a = actual[idx];
+      let b = expected[idx];
+
+      row_sum_x += a;
+      row_sum_y += b;
+      row_sum_x2 += a * a;
+      row_sum_y2 += b * b;
+      row_sum_xy += a * b;
+
+      let sat_idx = sat_row + x as usize + 1;
+      let above = sat_prev + x as usize + 1;
+
+      sat_x[sat_idx] = sat_x[above] + row_sum_x;
+      sat_y[sat_idx] = sat_y[above] + row_sum_y;
+      sat_x2[sat_idx] = sat_x2[above] + row_sum_x2;
+      sat_y2[sat_idx] = sat_y2[above] + row_sum_y2;
+      sat_xy[sat_idx] = sat_xy[above] + row_sum_xy;
+    }
+  }
+
+  let c1 = (0.01f64 * 255.0f64).powi(2);
+  let c2 = (0.03f64 * 255.0f64).powi(2);
+  let win = PERCEPTUAL_WINDOW_SIZE;
+  let n = (win * win) as f64;
+
+  let mut ssim_sum = 0.0f64;
+  let mut windows = 0u64;
+
+  let max_x0 = (width - win) as usize;
+  let max_y0 = (height - win) as usize;
+
+  for y0 in 0..=max_y0 {
+    let y0 = y0 as u32;
+    let y1 = y0 + win;
+    for x0 in 0..=max_x0 {
+      let x0 = x0 as u32;
+      let x1 = x0 + win;
+
+      let sum_x = sat_sum(&sat_x, stride, x0, y0, x1, y1);
+      let sum_y = sat_sum(&sat_y, stride, x0, y0, x1, y1);
+      let sum_x2 = sat_sum(&sat_x2, stride, x0, y0, x1, y1);
+      let sum_y2 = sat_sum(&sat_y2, stride, x0, y0, x1, y1);
+      let sum_xy = sat_sum(&sat_xy, stride, x0, y0, x1, y1);
+
+      let mu_x = sum_x / n;
+      let mu_y = sum_y / n;
+
+      let var_x = (sum_x2 / n - mu_x * mu_x).max(0.0);
+      let var_y = (sum_y2 / n - mu_y * mu_y).max(0.0);
+      let cov_xy = sum_xy / n - mu_x * mu_y;
+
+      let numerator = (2.0 * mu_x * mu_y + c1) * (2.0 * cov_xy + c2);
+      let denominator = (mu_x * mu_x + mu_y * mu_y + c1) * (var_x + var_y + c2);
+
+      let ssim = if denominator.is_finite() && denominator != 0.0 {
+        numerator / denominator
+      } else {
+        1.0
+      };
+
+      // Clamp per-window SSIM to [0, 1] before aggregation. This prevents the global score from
+      // collapsing to 0 when only some windows are anti-correlated.
+      ssim_sum += ssim.clamp(0.0, 1.0);
+      windows += 1;
+    }
+  }
+
+  if windows == 0 {
+    1.0
+  } else {
+    (ssim_sum / windows as f64).clamp(0.0, 1.0)
+  }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct SsimAccumulator {
   n: u64,
@@ -820,6 +1024,35 @@ mod tests {
     RgbaImage::from_pixel(2, 2, Rgba(color))
   }
 
+  fn pattern(width: u32, height: u32) -> RgbaImage {
+    let mut img = RgbaImage::new(width, height);
+    for y in 0..height {
+      for x in 0..width {
+        // A deterministic, moderately high-frequency pattern that exercises both luma mean and
+        // variance.
+        let r = ((x.wrapping_mul(13) + y.wrapping_mul(7)) % 256) as u8;
+        let g = ((x.wrapping_mul(3) + y.wrapping_mul(17)) % 256) as u8;
+        let b = ((x.wrapping_mul(11) + y.wrapping_mul(5)) % 256) as u8;
+        img.put_pixel(x, y, Rgba([r, g, b, 255]));
+      }
+    }
+    img
+  }
+
+  fn add_noise(mut img: RgbaImage, seed: u64, amplitude: i16) -> RgbaImage {
+    // Simple deterministic LCG.
+    let mut s = seed;
+    for px in img.pixels_mut() {
+      s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+      let n = ((s >> 32) as u32 % (u32::from(amplitude as u16) * 2 + 1)) as i16 - amplitude;
+      for c in 0..3 {
+        let v = px[c] as i16 + n;
+        px[c] = v.clamp(0, 255) as u8;
+      }
+    }
+    img
+  }
+
   #[test]
   fn identical_images_match_strict() {
     let img = solid([10, 20, 30, 255]);
@@ -890,5 +1123,50 @@ mod tests {
   #[test]
   fn allocate_diff_image_rejects_oversized_buffers() {
     assert!(allocate_diff_image(u32::MAX, u32::MAX).is_none());
+  }
+
+  #[test]
+  fn perceptual_distance_does_not_saturate_for_partial_inversion() {
+    // Construct an image where the left half is identical and the right half is strongly
+    // anti-correlated. A global SSIM computed over the whole image can yield <= 0 similarity and
+    // saturate the distance at 1.0; a windowed SSIM should preserve the fact that half the image
+    // matches exactly.
+    let width = 64;
+    let height = 64;
+    let expected = pattern(width, height);
+    let mut actual = expected.clone();
+
+    // Invert right half.
+    for y in 0..height {
+      for x in (width / 2)..width {
+        let p = expected.get_pixel(x, y);
+        actual.put_pixel(x, y, Rgba([255 - p[0], 255 - p[1], 255 - p[2], 255]));
+      }
+    }
+
+    let config = CompareConfig::strict().with_generate_diff_image(false);
+    let diff = compare_images(&actual, &expected, &config);
+    assert!(diff.statistics.perceptual_distance > 0.0);
+    assert!(
+      diff.statistics.perceptual_distance < 0.99,
+      "distance unexpectedly saturated: {}",
+      diff.statistics.perceptual_distance
+    );
+  }
+
+  #[test]
+  fn perceptual_distance_increases_with_noise_amplitude() {
+    let base = pattern(64, 64);
+    let small_noise = add_noise(base.clone(), 1, 3);
+    let large_noise = add_noise(base.clone(), 1, 20);
+
+    let config = CompareConfig::strict().with_generate_diff_image(false);
+    let d_small = compare_images(&small_noise, &base, &config).statistics.perceptual_distance;
+    let d_large = compare_images(&large_noise, &base, &config).statistics.perceptual_distance;
+
+    assert!(
+      d_small < d_large,
+      "expected small noise distance < large noise distance, got {d_small} vs {d_large}"
+    );
   }
 }
