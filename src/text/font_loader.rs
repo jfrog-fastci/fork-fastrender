@@ -4114,17 +4114,17 @@ mod tests {
   fn weibo_fixture_font_face_relative_url_resolves_against_document_base_url() {
     // The `weibo.cn` page fixture declares a CJK font using `@font-face` inside an inline `<style>`
     // block. Inline styles do not have a stylesheet URL, so `url(...)` sources must resolve against
-    // the document URL passed as `base_url` to `FontContext::load_web_fonts`.
+    // the document URL passed as `base_url` to `FontContext::load_web_fonts_with_options`.
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let doc_dir = dir.path().join("pages/fixtures/weibo.cn");
-    fs::create_dir_all(&doc_dir).expect("create doc dir");
-    let doc_path = doc_dir.join("index.html");
+    let doc_path = dir.path().join("tests/pages/fixtures/weibo.cn/index.html");
+    fs::create_dir_all(doc_path.parent().expect("doc path has parent")).expect("create doc dir");
     fs::write(&doc_path, b"<!doctype html>").expect("write doc html");
 
-    let font_dir = dir.path().join("fixtures/fonts");
-    fs::create_dir_all(&font_dir).expect("create font dir");
-    let font_path = font_dir.join("DejaVuSans-subset.ttf");
+    let font_path = dir
+      .path()
+      .join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    fs::create_dir_all(font_path.parent().expect("font path has parent")).expect("create font dir");
     fs::write(
       &font_path,
       include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf"),
@@ -4140,7 +4140,7 @@ mod tests {
         src: url("../../../fixtures/fonts/DejaVuSans-subset.ttf") format("truetype");
         font-weight: 400;
         font-style: normal;
-        font-display: block;
+        font-display: swap;
       }
     "#;
     let sheet = crate::css::parser::parse_stylesheet(css).expect("stylesheet should parse");
