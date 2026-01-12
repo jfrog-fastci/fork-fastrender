@@ -12,14 +12,6 @@ pub enum SecurityIndicator {
 }
 
 impl SecurityIndicator {
-  pub fn icon(self) -> &'static str {
-    match self {
-      SecurityIndicator::Secure => "🔒",
-      SecurityIndicator::Insecure => "⚠",
-      SecurityIndicator::Neutral => "ⓘ",
-    }
-  }
-
   pub fn tooltip(self) -> &'static str {
     match self {
       SecurityIndicator::Secure => "Secure (https)",
@@ -77,4 +69,3 @@ mod tests {
     assert_eq!(indicator_for_url("foo:bar"), SecurityIndicator::Neutral);
   }
 }
-

@@ -1,4 +1,3 @@
-use crate::ui::a11y;
 use crate::ui::browser_app::{
   BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState,
 };
@@ -337,7 +336,7 @@ fn tab_ui(
       )
       .on_hover_text("Close tab (Ctrl/Cmd+W)");
     close_resp.widget_info({
-      let label = format!("{}: {}", a11y::ChromeIconButton::CloseTab.label(), title);
+      let label = format!("{}: {}", BrowserIcon::CloseTab.a11y_label(), title);
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     close_clicked = close_enabled && close_resp.clicked();
@@ -943,7 +942,7 @@ pub(super) fn tab_strip_ui(
     })
     .inner;
   new_tab_resp.widget_info(|| {
-    egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::ChromeIconButton::NewTab.label())
+    egui::WidgetInfo::labeled(egui::WidgetType::Button, BrowserIcon::NewTab.a11y_label())
   });
   if new_tab_resp.clicked() {
     actions.push(ChromeAction::NewTab);
