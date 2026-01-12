@@ -12,5 +12,6 @@ mod fetch_and_render_exit_presence;
 mod js_runtime_consolidation_guard;
 mod no_merge_markers;
 mod no_production_panics;
+mod test_cleanup_inventory_guard;
 mod style_regressions_presence;
 mod webidl_consolidation_guard;
