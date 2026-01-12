@@ -3,7 +3,7 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, NodeId, NodeKind};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom2_bindings;
-use crate::js::dom_platform::{DomInterface, DomNodeKey, DomPlatform};
+use crate::js::dom_platform::{DomInterface, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,

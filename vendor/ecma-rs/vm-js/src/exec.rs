@@ -27403,21 +27403,20 @@ fn gen_resume_from_frames(
             }
           };
 
-          let value = match iterator::iterator_value(
-            evaluator.vm,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            scope,
-            iter_result,
-          ) {
-            Ok(v) => v,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
           if done {
+            let value = match iterator::iterator_value(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              iter_result,
+            ) {
+              Ok(v) => v,
+              Err(err) => {
+                state = gen_error_to_completion(evaluator, scope, err)?;
+                continue;
+              }
+            };
             state = Completion::normal(value);
             continue;
           }
@@ -27496,21 +27495,20 @@ fn gen_resume_from_frames(
             }
           };
 
-          let value = match iterator::iterator_value(
-            evaluator.vm,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            scope,
-            iter_result,
-          ) {
-            Ok(v) => v,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          };
-
           if done {
+            let value = match iterator::iterator_value(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              iter_result,
+            ) {
+              Ok(v) => v,
+              Err(err) => {
+                state = gen_error_to_completion(evaluator, scope, err)?;
+                continue;
+              }
+            };
             state = Completion::Return(value);
             continue;
           }

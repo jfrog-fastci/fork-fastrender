@@ -7,7 +7,7 @@ use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::vm_error_format;
 use crate::js::window_realm::WindowRealmHost;
 use crate::js::window_timers::VmJsEventLoopHooks;
-use crate::js::{EventLoop, JsExecutionOptions};
+use crate::js::{EventLoop, JsExecutionOptions, MicrotaskCheckpointLimitedOutcome, RunState};
 use crate::resource::{
   cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success,
   ensure_script_mime_sane, origin_from_url, CorsMode, DocumentOrigin, FetchDestination,
@@ -20,6 +20,13 @@ use vm_js::{
   HostDefined, ImportMetaProperty, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
   ModuleRequest, PromiseState, PropertyKey, RootId, Scope, Value, Vm, VmError, VmHostHooks,
 };
+
+const ASYNC_MODULE_LOADING_EVALUATION_UNSUPPORTED_MESSAGE: &str =
+  "asynchronous module loading/evaluation is not supported";
+// When awaiting a module-loading/evaluation promise, attempt at most this many microtask checkpoints
+// before giving up. This is a guardrail on top of the normal event-loop run limits to ensure we
+// never spin unboundedly, even if the promise keeps scheduling new microtasks.
+const VM_JS_PROMISE_AWAIT_MAX_MICROTASK_CHECKPOINTS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImportMapThrowKind {
@@ -181,6 +188,11 @@ impl VmJsModuleLoader {
       let (_, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.js_execution_options()
     };
+    // Use a single run state for any microtask checkpoints we perform while loading/evaluating this
+    // module entry. This ensures:
+    // - max_microtasks and max_wall_time limits apply across *all* drains we perform here, and
+    // - wall-time limits include the time spent parsing/loading/evaluating modules before draining.
+    let mut microtask_run_state = event_loop.new_run_state(options.event_loop_run_limits);
 
     let mut hooks = VmJsModuleHooks::<Host> {
       inner: VmJsEventLoopHooks::<Host>::new_with_host(host)?,
@@ -322,20 +334,31 @@ impl VmJsModuleLoader {
       if let (Some(load_promise_value), Some(load_root)) =
         (load_promise.take(), load_promise_root.take())
       {
-        let microtask_result = event_loop.perform_microtask_checkpoint(host);
-        if let Err(err) = microtask_result {
-          outcome = Err(err);
-        }
-
-        let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
-        let heap = window_realm.heap_mut();
-        let mut scope = heap.scope();
-        if outcome.is_ok() {
-          if let Err(err) = ensure_promise_fulfilled(&mut scope, load_promise_value) {
-            outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
+        match await_vm_js_promise_via_microtasks(
+          host,
+          event_loop,
+          &mut microtask_run_state,
+          load_promise_value,
+          "module graph loading",
+        ) {
+          Ok(VmJsPromiseAwaitOutcome::Fulfilled) => {}
+          Ok(VmJsPromiseAwaitOutcome::Rejected(err)) => {
+            outcome = Err(err);
+          }
+          Ok(VmJsPromiseAwaitOutcome::Pending {
+            checkpoints,
+            microtasks_executed,
+          }) => {
+            outcome = Err(Error::Other(format!(
+              "{ASYNC_MODULE_LOADING_EVALUATION_UNSUPPORTED_MESSAGE} (promise remained pending after draining microtasks; checkpoints={checkpoints}, microtasks_executed={microtasks_executed})",
+            )));
+          }
+          Err(err) => {
+            outcome = Err(err);
           }
         }
-        scope.heap_mut().remove_root(load_root);
+        let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
+        window_realm.heap_mut().remove_root(load_root);
       }
     }
 
@@ -411,30 +434,36 @@ impl VmJsModuleLoader {
         (eval_promise.take(), eval_promise_root.take(), entry_module)
       {
         let mut abort_async_eval = false;
-
-        let microtask_result = event_loop.perform_microtask_checkpoint(host);
-        if let Err(err) = microtask_result {
-          abort_async_eval = true;
-          outcome = Err(err);
-        }
-
-        {
-          let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
-          let heap = window_realm.heap_mut();
-          let mut scope = heap.scope();
-          if outcome.is_ok() {
-            match ensure_promise_fulfilled(&mut scope, eval_promise_value) {
-              Ok(()) => {
-                outcome = Ok(eval_promise_value);
-              }
-              Err(err) => {
-                abort_async_eval = matches!(err, VmError::Unimplemented(_));
-                outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-              }
-            }
+        match await_vm_js_promise_via_microtasks(
+          host,
+          event_loop,
+          &mut microtask_run_state,
+          eval_promise_value,
+          "module evaluation",
+        ) {
+          Ok(VmJsPromiseAwaitOutcome::Fulfilled) => {
+            outcome = Ok(eval_promise_value);
           }
-          scope.heap_mut().remove_root(eval_root);
+          Ok(VmJsPromiseAwaitOutcome::Rejected(err)) => {
+            outcome = Err(err);
+          }
+          Ok(VmJsPromiseAwaitOutcome::Pending {
+            checkpoints,
+            microtasks_executed,
+          }) => {
+            abort_async_eval = true;
+            outcome = Err(Error::Other(format!(
+              "{ASYNC_MODULE_LOADING_EVALUATION_UNSUPPORTED_MESSAGE} (promise remained pending after draining microtasks; checkpoints={checkpoints}, microtasks_executed={microtasks_executed})",
+            )));
+          }
+          Err(err) => {
+            abort_async_eval = true;
+            outcome = Err(err);
+          }
         }
+
+        let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
+        window_realm.heap_mut().remove_root(eval_root);
 
         if abort_async_eval {
           let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
@@ -499,6 +528,89 @@ enum EntryModule<'a> {
   },
 }
 
+#[derive(Debug)]
+enum VmJsPromiseAwaitOutcome {
+  Fulfilled,
+  Pending {
+    checkpoints: usize,
+    microtasks_executed: usize,
+  },
+  Rejected(Error),
+}
+
+fn await_vm_js_promise_via_microtasks<Host: WindowRealmHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+  run_state: &mut RunState,
+  promise: Value,
+  context: &str,
+) -> Result<VmJsPromiseAwaitOutcome> {
+  let microtasks_executed_start = run_state.microtasks_executed();
+
+  // Check without draining microtasks first: if it's already settled, we can return immediately.
+  {
+    let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
+    let heap = window_realm.heap_mut();
+    let mut scope = heap.scope();
+    match ensure_promise_fulfilled(&mut scope, promise) {
+      Ok(()) => return Ok(VmJsPromiseAwaitOutcome::Fulfilled),
+      Err(err) => {
+        if !matches!(err, VmError::Unimplemented(_)) {
+          return Ok(VmJsPromiseAwaitOutcome::Rejected(vm_error_to_error_in_scope(
+            &mut scope, err,
+          )));
+        }
+      }
+    }
+  }
+
+  let mut checkpoints: usize = 0;
+  while checkpoints < VM_JS_PROMISE_AWAIT_MAX_MICROTASK_CHECKPOINTS {
+    checkpoints += 1;
+
+    let microtasks_before = run_state.microtasks_executed();
+    match event_loop.perform_microtask_checkpoint_limited(host, run_state)? {
+      MicrotaskCheckpointLimitedOutcome::Completed => {}
+      MicrotaskCheckpointLimitedOutcome::Stopped(reason) => {
+        return Err(Error::Other(format!(
+          "EventLoop microtask checkpoint stopped while awaiting {context} promise: {reason:?}"
+        )));
+      }
+    }
+    let microtasks_after = run_state.microtasks_executed();
+
+    // Re-check promise state after draining microtasks.
+    {
+      let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
+      let heap = window_realm.heap_mut();
+      let mut scope = heap.scope();
+      match ensure_promise_fulfilled(&mut scope, promise) {
+        Ok(()) => return Ok(VmJsPromiseAwaitOutcome::Fulfilled),
+        Err(err) => {
+          if !matches!(err, VmError::Unimplemented(_)) {
+            return Ok(VmJsPromiseAwaitOutcome::Rejected(vm_error_to_error_in_scope(
+              &mut scope, err,
+            )));
+          }
+        }
+      }
+    }
+
+    // If draining didn't run any microtasks and the promise is still pending, repeated checkpoints
+    // won't help.
+    if microtasks_after == microtasks_before {
+      break;
+    }
+  }
+
+  Ok(VmJsPromiseAwaitOutcome::Pending {
+    checkpoints,
+    microtasks_executed: run_state
+      .microtasks_executed()
+      .saturating_sub(microtasks_executed_start),
+  })
+}
+
 fn ensure_promise_fulfilled(
   scope: &mut Scope<'_>,
   promise: Value,
@@ -513,7 +625,7 @@ fn ensure_promise_fulfilled(
   let heap = scope.heap();
   match heap.promise_state(promise_obj)? {
     PromiseState::Pending => Err(VmError::Unimplemented(
-      "asynchronous module loading/evaluation is not supported",
+      ASYNC_MODULE_LOADING_EVALUATION_UNSUPPORTED_MESSAGE,
     )),
     PromiseState::Fulfilled => Ok(()),
     PromiseState::Rejected => {
