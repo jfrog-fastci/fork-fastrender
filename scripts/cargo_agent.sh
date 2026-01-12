@@ -10,6 +10,23 @@ if [[ "${FASTR_CARGO_USE_SCCACHE:-0}" != "1" ]]; then
   export SCCACHE_DISABLE=1
 fi
 
+# CI/agent builds are typically one-shot and prioritize throughput over debuggability.
+# Incremental compilation and full debug info can add meaningful overhead for this workspace, so
+# disable them by default. Opt back in via:
+#   FASTR_CARGO_INCREMENTAL=1  (or set CARGO_INCREMENTAL yourself)
+#   FASTR_CARGO_DEBUG_INFO=1   (or set CARGO_PROFILE_{DEV,TEST}_DEBUG yourself)
+if [[ "${FASTR_CARGO_INCREMENTAL:-0}" != "1" && -z "${CARGO_INCREMENTAL:-}" ]]; then
+  export CARGO_INCREMENTAL=0
+fi
+if [[ "${FASTR_CARGO_DEBUG_INFO:-0}" != "1" ]]; then
+  if [[ -z "${CARGO_PROFILE_DEV_DEBUG:-}" ]]; then
+    export CARGO_PROFILE_DEV_DEBUG=0
+  fi
+  if [[ -z "${CARGO_PROFILE_TEST_DEBUG:-}" ]]; then
+    export CARGO_PROFILE_TEST_DEBUG=0
+  fi
+fi
+
 # libaom (used for AVIF decoding via `avif-decode` → `aom-decode` → `libaom-sys`) requires an
 # assembler (yasm/nasm) for optimized builds. Our agent environments may not have these tools
 # installed, so default to the portable (non-asm) build.
@@ -52,11 +69,13 @@ fi
 #
 # Tuning knobs (env vars):
 #   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
-#   FASTR_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
+#   FASTR_CARGO_JOBS         cargo build jobs per command (default: auto from CPU/slots)
+#   FASTR_CARGO_INCREMENTAL  Enable incremental compilation (default: 0)
+#   FASTR_CARGO_DEBUG_INFO   Keep debug info enabled for dev/test builds (default: 0)
 #   FASTR_CARGO_LIMIT_AS     Address-space cap forwarded to run_limited (default: 64G)
 #   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
 #   FASTR_FUZZ_LIMIT_AS      Address-space cap for `scripts/cargo_agent.sh fuzz ...` runs (default: 32T)
-#   FASTR_CARGO_LOCK_DIR     Lock directory (default: ~/.cache/fastrender/cargo_agent_locks)
+#   FASTR_CARGO_LOCK_DIR     Lock directory (default: auto; prefers shared cache dirs when available)
 #   FASTR_RUST_TEST_THREADS  Default `RUST_TEST_THREADS` for `cargo test` (default: min(nproc, 32))
 #
 # Notes:
@@ -79,19 +98,21 @@ Examples:
 
 Environment:
   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
-  FASTR_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
+  FASTR_CARGO_JOBS         cargo build jobs per command (default: auto from CPU/slots)
+  FASTR_CARGO_INCREMENTAL  Enable incremental compilation (default: 0)
+  FASTR_CARGO_DEBUG_INFO   Keep debug info enabled for dev/test builds (default: 0)
   FASTR_CARGO_LIMIT_AS     Address-space cap (default: 64G)
   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
   FASTR_FUZZ_LIMIT_AS      Address-space cap for `scripts/cargo_agent.sh fuzz ...` runs (default: 32T)
-  FASTR_CARGO_LOCK_DIR     Lock directory (default: ~/.cache/fastrender/cargo_agent_locks)
+  FASTR_CARGO_LOCK_DIR     Lock directory (default: auto)
   FASTR_RUST_TEST_THREADS  Default RUST_TEST_THREADS for `cargo test` (default: min(nproc, 32))
 
 Notes:
   - This wrapper is intentionally simple:
     - It limits how many *cargo commands* can run concurrently (slots).
     - It enforces a RAM cap via RLIMIT_AS by default (through scripts/run_limited.sh).
-  - Set FASTR_CARGO_JOBS to force a fixed -j value (e.g. FASTR_CARGO_JOBS=192). When unset, we
-    do not pass `-j` and let Cargo choose.
+  - Set FASTR_CARGO_JOBS to force a fixed -j value (e.g. FASTR_CARGO_JOBS=64). When unset, the
+    wrapper sets `-j` automatically based on CPU + slot count to keep multi-agent hosts stable.
   - Set FASTR_CARGO_LIMIT_AS to override the default RAM cap (or `unlimited` to disable).
 EOF
 }
@@ -485,7 +506,7 @@ else
   fi
 fi
 
-# Default slots: keep concurrency low by default since each command uses -j nproc.
+# Default slots: keep concurrency low by default for multi-agent hosts.
 slots="${FASTR_CARGO_SLOTS:-}"
 if [[ "${slots}" == "auto" ]]; then
   slots=""
@@ -504,11 +525,24 @@ else
 fi
 
 jobs="${FASTR_CARGO_JOBS:-}"
+jobs_source="explicit"
 if [[ -n "${jobs}" ]]; then
   if ! [[ "${jobs}" =~ ^[0-9]+$ ]] || [[ "${jobs}" -lt 1 ]]; then
     echo "invalid FASTR_CARGO_JOBS: ${jobs}" >&2
     exit 2
   fi
+else
+  # Default jobs: distribute compilation across the configured slot count so the *aggregate*
+  # rustc parallelism across many agents stays close to the host's CPU count.
+  #
+  # Example: on a 192-thread host with the default 4 slots, each cargo command gets `-j 48`.
+  jobs_source="auto"
+  jobs=$(( nproc / slots ))
+  if [[ "${jobs}" -lt 1 ]]; then jobs=1; fi
+fi
+jobs_label="${jobs}"
+if [[ "${jobs_source}" == "auto" ]]; then
+  jobs_label="${jobs} (auto)"
 fi
 
 limit_as_defaulted=0
@@ -563,15 +597,27 @@ if [[ "${limit_as_defaulted}" -eq 1 ]]; then
   fi
 fi
 
-default_lock_dir="${repo_root}/target/.cargo_agent_locks"
-if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+# Prefer a shared lock dir when running on multi-agent hosts (e.g. Grind swarm) so independent
+# containers coordinate and we avoid host-wide cargo stampedes. Fall back to a per-user cache dir
+# for normal local development.
+default_lock_dir=""
+if [[ -d "/state/root" && -w "/state/root" ]]; then
+  default_lock_dir="/state/root/.cache/fastrender/cargo_agent_locks"
+elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then
   default_lock_dir="${XDG_CACHE_HOME}/fastrender/cargo_agent_locks"
 elif [[ -n "${HOME:-}" ]]; then
   default_lock_dir="${HOME}/.cache/fastrender/cargo_agent_locks"
+else
+  default_lock_dir="${repo_root}/target/.cargo_agent_locks"
 fi
 
 lock_dir="${FASTR_CARGO_LOCK_DIR:-${default_lock_dir}}"
-mkdir -p "${lock_dir}"
+if ! mkdir -p "${lock_dir}" 2>/dev/null; then
+  # Be defensive: if our default choice isn't writable, fall back to a repo-local lock dir so the
+  # wrapper still works instead of failing before Cargo runs.
+  lock_dir="${repo_root}/target/.cargo_agent_locks"
+  mkdir -p "${lock_dir}"
+fi
 
 run_cargo() {
   local cargo_cmd=(cargo)
@@ -758,7 +804,6 @@ run_cargo() {
 # Detect when we are already running under a cargo_agent slot and skip slot acquisition in that
 # case. We still enforce the per-command RLIMIT_AS cap and optional `-j` throttling.
 if [[ -n "${FASTR_CARGO_SLOT:-}" ]]; then
-  jobs_label="${jobs:-auto}"
   nested_as_label="${limit_as}"
   # Nested invocations inherit the parent's RLIMIT_AS already (e.g. when `scripts/cargo_agent.sh xtask`
   # runs the xtask binary under `scripts/run_limited.sh`). Re-applying the wrapper's default `--as`
@@ -857,7 +902,6 @@ slot_fd="${slot%%:*}"
 slot_idx="${slot#*:}"
 export FASTR_CARGO_SLOT="${slot_idx}"
 
-jobs_label="${jobs:-auto}"
 echo "cargo_agent: slot=${slot_idx}/${slots} jobs=${jobs_label} as=${limit_as}" >&2
 
 set +e

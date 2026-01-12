@@ -383,6 +383,7 @@ fn wrapper_document_key_from_wrapper_obj(
   };
   Ok(WeakGcObject::from(document_obj))
 }
+
 fn require_dom_platform_mut(vm: &mut Vm) -> Result<&mut DomPlatform, VmError> {
   dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))
 }
