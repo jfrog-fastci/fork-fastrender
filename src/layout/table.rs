@@ -99,6 +99,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 const TABLE_PARALLEL_MAX_THREADS: usize = 8;
+// HTML spec clamps `rowspan`/`colspan` to 1000. This is also a safety net against hostile tables.
+const TABLE_MAX_SPAN: usize = 1000;
 
 fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
   // Always perform at least one deadline check at the start of a traversal so a
@@ -134,6 +136,13 @@ fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
 /// +--------------------------------------------------+
 /// ```
 #[derive(Debug, Clone)]
+struct CellOccupancySegment {
+  start_col: usize,
+  end_col: usize,
+  cell_index: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct TableStructure {
   /// Number of columns in the table
   pub column_count: usize,
@@ -150,8 +159,10 @@ pub struct TableStructure {
   /// Cell information
   pub cells: Vec<CellInfo>,
 
-  /// Grid mapping: `grid[row][col]` = cell_index or None for spanned cells
-  pub grid: Vec<Vec<Option<usize>>>,
+  /// Per-row occupancy segments mapping columns to the cell occupying that range.
+  ///
+  /// Each row holds a sorted list of non-overlapping `[start_col, end_col)` ranges.
+  row_segments: Vec<Vec<CellOccupancySegment>>,
 
   /// Table border spacing (horizontal, vertical)
   pub border_spacing: (f32, f32),
@@ -1218,10 +1229,11 @@ fn compute_rows_that_collapse_due_to_empty_cells(
   for row_idx in 0..structure.row_count {
     let mut any_cells = false;
     let mut all_cells_hide_and_empty = true;
-    if let Some(grid_row) = structure.grid.get(row_idx) {
+    if let Some(segments) = structure.row_segments.get(row_idx) {
       let mut last_cell = None;
-      for cell_idx in grid_row.iter().copied().flatten() {
-        // Cell indices repeat for colspans/rowspans; avoid redundant checks while scanning.
+      for segment in segments {
+        let cell_idx = segment.cell_index;
+        // Cell indices can repeat (e.g. via pathological overlap); avoid redundant checks while scanning.
         if last_cell == Some(cell_idx) {
           continue;
         }
@@ -1771,7 +1783,7 @@ impl TableStructure {
       columns: Vec::new(),
       rows: Vec::new(),
       cells: Vec::new(),
-      grid: Vec::new(),
+      row_segments: Vec::new(),
       // CSS 2.1 initial value is 0; UA stylesheet may override (e.g., 2px 2px).
       border_spacing: (0.0, 0.0),
       border_collapse: BorderCollapse::Separate,
@@ -1825,15 +1837,33 @@ impl TableStructure {
   ///
   /// A fully resolved TableStructure ready for layout
   pub fn from_box_tree(table_box: &BoxNode) -> Self {
-    Self::from_box_tree_with_root_metrics(table_box, None)
+    Self::try_from_box_tree(table_box)
+      .expect("TableStructure::from_box_tree should not fail without an active layout deadline")
   }
 
-  #[allow(clippy::cognitive_complexity)]
   pub fn from_box_tree_with_root_metrics(
     table_box: &BoxNode,
     root_metrics: Option<RootFontMetrics>,
   ) -> Self {
+    Self::try_from_box_tree_with_root_metrics(table_box, root_metrics)
+      .expect(
+        "TableStructure::from_box_tree_with_root_metrics should not fail without an active layout deadline",
+      )
+  }
+
+  pub fn try_from_box_tree(table_box: &BoxNode) -> Result<Self, LayoutError> {
+    Self::try_from_box_tree_with_root_metrics(table_box, None)
+  }
+
+  #[allow(clippy::cognitive_complexity)]
+  pub fn try_from_box_tree_with_root_metrics(
+    table_box: &BoxNode,
+    root_metrics: Option<RootFontMetrics>,
+  ) -> Result<Self, LayoutError> {
     let mut structure = TableStructure::new();
+    let mut deadline_counter = 0usize;
+    // Give deadlines a chance to abort even before scanning the table tree.
+    check_layout_deadline(&mut deadline_counter)?;
     let mut percent_sensitive =
       Self::style_has_percent_sensitive_column_constraints(&table_box.style);
     let direction = table_box.style.direction;
@@ -1887,6 +1917,7 @@ impl TableStructure {
       .iter()
       .filter(|child| child.style.running_position.is_none())
     {
+      check_layout_deadline(&mut deadline_counter)?;
       match Self::get_table_element_type(child) {
         TableElementType::Column => {
           let span = child.table_column_span();
@@ -1920,6 +1951,7 @@ impl TableStructure {
 
     let mut child_idx = 0usize;
     while child_idx < table_children.len() {
+      check_layout_deadline(&mut deadline_counter)?;
       let child = table_children[child_idx];
       let element_type = Self::get_table_element_type(child);
       match element_type {
@@ -1957,6 +1989,7 @@ impl TableStructure {
           };
           // Collect rows within the group (source order).
           for row_child in &child.children {
+            check_layout_deadline(&mut deadline_counter)?;
             if matches!(
               Self::get_table_element_type(row_child),
               TableElementType::Row
@@ -2012,6 +2045,7 @@ impl TableStructure {
               TableElementType::Row
             )
           {
+            check_layout_deadline(&mut deadline_counter)?;
             run_len += 1;
           }
           let mut run = RowRun {
@@ -2019,6 +2053,7 @@ impl TableStructure {
             rows: Vec::with_capacity(run_len),
           };
           for offset in 0..run_len {
+            check_layout_deadline(&mut deadline_counter)?;
             let row = table_children[child_idx + offset];
             let spec_height = Self::length_to_specified_height_opt(
               row.style.height.as_ref(),
@@ -2091,11 +2126,13 @@ impl TableStructure {
 
     let mut row_order: Vec<usize> = Vec::with_capacity(current_row);
     for run in &ordered_runs {
+      check_layout_deadline(&mut deadline_counter)?;
       row_order.extend(run.rows.iter().copied());
     }
     // Store mapping so row order influences grid mapping and painting while source indices remain DOM-ordered.
     let mut row_index_map = vec![0usize; current_row];
     for (new_idx, old_idx) in row_order.iter().enumerate() {
+      check_layout_deadline(&mut deadline_counter)?;
       row_index_map[*old_idx] = new_idx;
     }
 
@@ -2106,8 +2143,10 @@ impl TableStructure {
     let mut occupied_columns: Vec<bool> = Vec::new();
     let mut next_display_row = 0usize;
     for run in &ordered_runs {
+      check_layout_deadline(&mut deadline_counter)?;
       let run_end = next_display_row + run.rows.len();
       for &source_row in &run.rows {
+        check_layout_deadline(&mut deadline_counter)?;
         let Some(row) = source_rows.get(source_row).copied() else {
           debug_assert!(false, "row index must be in bounds");
           continue;
@@ -2125,7 +2164,8 @@ impl TableStructure {
           &mut occupied_columns,
           &mut max_cols,
           &mut cell_data,
-        );
+          &mut deadline_counter,
+        )?;
         next_display_row += 1;
       }
     }
@@ -2134,25 +2174,31 @@ impl TableStructure {
       "expected to process every row in display order"
     );
 
-    let reorder_vec = |vec: &mut Vec<Option<SpecifiedHeight>>| {
+    let reorder_vec = |vec: &mut Vec<Option<SpecifiedHeight>>,
+                       deadline_counter: &mut usize|
+     -> Result<(), LayoutError> {
       let mut reordered = Vec::with_capacity(vec.len());
       for idx in &row_order {
+        check_layout_deadline(deadline_counter)?;
         reordered.push(vec.get(*idx).copied().unwrap_or(None));
       }
       *vec = reordered;
+      Ok(())
     };
-    reorder_vec(&mut row_heights);
-    reorder_vec(&mut row_min_heights);
-    reorder_vec(&mut row_max_heights);
+    reorder_vec(&mut row_heights, &mut deadline_counter)?;
+    reorder_vec(&mut row_min_heights, &mut deadline_counter)?;
+    reorder_vec(&mut row_max_heights, &mut deadline_counter)?;
 
     let mut reordered_aligns = Vec::with_capacity(row_vertical_aligns.len());
     for idx in &row_order {
+      check_layout_deadline(&mut deadline_counter)?;
       reordered_aligns.push(row_vertical_aligns.get(*idx).copied().unwrap_or(None));
     }
     row_vertical_aligns = reordered_aligns;
 
     let mut reordered_vis = Vec::with_capacity(row_visibilities.len());
     for idx in &row_order {
+      check_layout_deadline(&mut deadline_counter)?;
       reordered_vis.push(
         row_visibilities
           .get(*idx)
@@ -2167,6 +2213,7 @@ impl TableStructure {
 
     // Initialize columns
     for i in 0..structure.column_count {
+      check_layout_deadline(&mut deadline_counter)?;
       let mut col = ColumnInfo::new(i);
       col.font_size = table_box.style.font_size;
       structure.columns.push(col);
@@ -2179,10 +2226,12 @@ impl TableStructure {
       .iter()
       .filter(|child| child.style.running_position.is_none())
     {
+      check_layout_deadline(&mut deadline_counter)?;
       match Self::get_table_element_type(child) {
         TableElementType::Column => {
           let span = child.table_column_span();
           for _ in 0..span {
+            check_layout_deadline(&mut deadline_counter)?;
             if col_cursor >= structure.columns.len() {
               let mut col = ColumnInfo::new(col_cursor);
               col.font_size = child.style.font_size;
@@ -2213,9 +2262,11 @@ impl TableStructure {
           });
           if has_columns {
             for group_child in &child.children {
+              check_layout_deadline(&mut deadline_counter)?;
               if Self::get_table_element_type(group_child) == TableElementType::Column {
                 let span = group_child.table_column_span();
                 for _ in 0..span {
+                  check_layout_deadline(&mut deadline_counter)?;
                   if col_cursor >= structure.columns.len() {
                     let mut col = ColumnInfo::new(col_cursor);
                     col.font_size = group_child.style.font_size;
@@ -2261,6 +2312,7 @@ impl TableStructure {
           } else {
             let span = child.table_column_span();
             for _ in 0..span {
+              check_layout_deadline(&mut deadline_counter)?;
               if col_cursor >= structure.columns.len() {
                 let mut col = ColumnInfo::new(col_cursor);
                 col.font_size = child.style.font_size;
@@ -2310,6 +2362,7 @@ impl TableStructure {
 
     // Initialize rows
     for i in 0..structure.row_count {
+      check_layout_deadline(&mut deadline_counter)?;
       let mut row = RowInfo::new(i);
       row.specified_height = row_heights.get(i).copied().unwrap_or(None);
       row.author_min_height = row_min_heights.get(i).copied().unwrap_or(None);
@@ -2324,15 +2377,13 @@ impl TableStructure {
       row.source_index = source_idx;
       structure.rows.push(row);
     }
-
-    // Initialize grid
-    structure.grid = vec![vec![None; structure.column_count]; structure.row_count];
     structure.cells.reserve(cell_data.len());
 
-    // Create cells and populate grid
+    // Create cells
     for (idx, (source_row, col, rowspan, colspan, box_idx, cell_percent_sensitive)) in
       cell_data.iter().enumerate()
     {
+      check_layout_deadline(&mut deadline_counter)?;
       let new_row = row_index_map
         .get(*source_row)
         .copied()
@@ -2349,6 +2400,7 @@ impl TableStructure {
           let start = (*col).min(col_end);
           let mut has_visible_col = false;
           for col in &structure.columns[start..col_end] {
+            check_layout_deadline(&mut deadline_counter)?;
             if !matches!(col.visibility, Visibility::Collapse) {
               has_visible_col = true;
               break;
@@ -2380,16 +2432,6 @@ impl TableStructure {
       }
       cell.box_index = *box_idx;
 
-      // Mark grid cells
-      for r in new_row..(new_row + *rowspan).min(structure.row_count) {
-        let start_col = cell.col;
-        for c in start_col..(start_col + *colspan).min(structure.column_count) {
-          if structure.grid[r][c].is_none() {
-            structure.grid[r][c] = Some(idx);
-          }
-        }
-      }
-
       structure.cells.push(cell);
     }
 
@@ -2401,20 +2443,27 @@ impl TableStructure {
       // mirror into physical left-to-right column indices.
       structure.columns.reverse();
       for (idx, col) in structure.columns.iter_mut().enumerate() {
+        check_layout_deadline(&mut deadline_counter)?;
         col.index = idx;
       }
     }
 
-    structure.apply_visibility_collapse(explicit_columns)
+    structure.apply_visibility_collapse(explicit_columns, &mut deadline_counter)
   }
 
   /// Removes rows and columns with `visibility: collapse` from the structure
   /// while preserving source indices so cell lookup and styling can map back
   /// to the original table tree.
-  fn apply_visibility_collapse(self, explicit_columns: usize) -> Self {
+  fn apply_visibility_collapse(
+    self,
+    explicit_columns: usize,
+    deadline_counter: &mut usize,
+  ) -> Result<Self, LayoutError> {
+    check_layout_deadline(deadline_counter)?;
     let mut row_map: Vec<Option<usize>> = Vec::with_capacity(self.row_count);
     let mut next_row = 0usize;
     for row in &self.rows {
+      check_layout_deadline(deadline_counter)?;
       if matches!(row.visibility, Visibility::Collapse) {
         row_map.push(None);
       } else {
@@ -2426,6 +2475,7 @@ impl TableStructure {
     let mut col_map: Vec<Option<usize>> = Vec::with_capacity(self.column_count);
     let mut next_col = 0usize;
     for col in &self.columns {
+      check_layout_deadline(deadline_counter)?;
       if matches!(col.visibility, Visibility::Collapse) {
         col_map.push(None);
       } else {
@@ -2435,7 +2485,9 @@ impl TableStructure {
     }
 
     if next_row == self.row_count && next_col == self.column_count {
-      return self;
+      let mut structure = self;
+      structure.rebuild_row_segments(deadline_counter)?;
+      return Ok(structure);
     }
 
     let mut new_structure = TableStructure {
@@ -2444,7 +2496,7 @@ impl TableStructure {
       columns: Vec::with_capacity(next_col),
       rows: Vec::with_capacity(next_row),
       cells: Vec::with_capacity(self.cells.len()),
-      grid: vec![vec![None; next_col]; next_row],
+      row_segments: Vec::new(),
       border_spacing: self.border_spacing,
       border_collapse: self.border_collapse,
       is_fixed_layout: self.is_fixed_layout,
@@ -2452,6 +2504,7 @@ impl TableStructure {
     };
 
     for (old_idx, mut col) in self.columns.into_iter().enumerate() {
+      check_layout_deadline(deadline_counter)?;
       if let Some(new_idx) = col_map.get(old_idx).and_then(|m| *m) {
         col.index = new_idx;
         new_structure.columns.push(col);
@@ -2459,6 +2512,7 @@ impl TableStructure {
     }
 
     for (old_idx, mut row) in self.rows.into_iter().enumerate() {
+      check_layout_deadline(deadline_counter)?;
       if let Some(new_idx) = row_map.get(old_idx).and_then(|m| *m) {
         row.index = new_idx;
         new_structure.rows.push(row);
@@ -2466,12 +2520,14 @@ impl TableStructure {
     }
 
     for cell in self.cells {
+      check_layout_deadline(deadline_counter)?;
       let Some(new_row) = row_map.get(cell.row).and_then(|m| *m) else {
         continue;
       };
       let row_span_end = (cell.row + cell.rowspan).min(row_map.len());
       let mut visible_rows = 0usize;
       for r in cell.row..row_span_end {
+        check_layout_deadline(deadline_counter)?;
         if row_map.get(r).and_then(|m| *m).is_some() {
           visible_rows += 1;
         }
@@ -2484,6 +2540,7 @@ impl TableStructure {
       let mut first_visible_col = None;
       let mut visible_cols = 0usize;
       for c in cell.col..col_span_end {
+        check_layout_deadline(deadline_counter)?;
         if let Some(mapped) = col_map.get(c).and_then(|m| *m) {
           if first_visible_col.is_none() {
             first_visible_col = Some(mapped);
@@ -2502,18 +2559,6 @@ impl TableStructure {
       new_cell.colspan = visible_cols;
       new_cell.index = new_structure.cells.len();
       new_structure.cells.push(new_cell);
-    }
-
-    for cell in &new_structure.cells {
-      let row_end = (cell.row + cell.rowspan).min(new_structure.row_count);
-      let col_end = (cell.col + cell.colspan).min(new_structure.column_count);
-      for r in cell.row..row_end {
-        for c in cell.col..col_end {
-          if let Some(slot) = new_structure.grid.get_mut(r).and_then(|row| row.get_mut(c)) {
-            *slot = Some(cell.index);
-          }
-        }
-      }
     }
 
     let used_cols = new_structure
@@ -2537,12 +2582,10 @@ impl TableStructure {
     if keep_cols < new_structure.column_count {
       new_structure.column_count = keep_cols;
       new_structure.columns.truncate(keep_cols);
-      for row in &mut new_structure.grid {
-        row.truncate(keep_cols);
-      }
     }
 
-    new_structure
+    new_structure.rebuild_row_segments(deadline_counter)?;
+    Ok(new_structure)
   }
 
   /// Gets the table element type from a box node
@@ -2579,11 +2622,17 @@ impl TableStructure {
     TableElementType::Unknown
   }
 
-  fn advance_row_span_remaining(row_span_remaining: &mut Vec<usize>, occupied: &mut Vec<bool>) {
+  fn advance_row_span_remaining(
+    row_span_remaining: &mut Vec<usize>,
+    occupied: &mut Vec<bool>,
+    deadline_counter: &mut usize,
+  ) -> Result<(), LayoutError> {
+    check_layout_deadline(deadline_counter)?;
     if occupied.len() < row_span_remaining.len() {
       occupied.resize(row_span_remaining.len(), false);
     }
     for (idx, span) in row_span_remaining.iter_mut().enumerate() {
+      check_layout_deadline(deadline_counter)?;
       let active = *span > 0;
       if active {
         *span -= 1;
@@ -2592,9 +2641,11 @@ impl TableStructure {
     }
     if occupied.len() > row_span_remaining.len() {
       for idx in row_span_remaining.len()..occupied.len() {
+        check_layout_deadline(deadline_counter)?;
         occupied[idx] = false;
       }
     }
+    Ok(())
   }
 
   /// Processes a table row and records cell information with collision-aware placement.
@@ -2608,12 +2659,14 @@ impl TableStructure {
     occupied: &mut Vec<bool>,
     max_cols: &mut usize,
     cell_data: &mut Vec<(usize, usize, usize, usize, usize, bool)>,
-  ) {
+    deadline_counter: &mut usize,
+  ) -> Result<(), LayoutError> {
+    check_layout_deadline(deadline_counter)?;
     // Even collapsed rows affect rowspans. Advance `row_span_remaining` for every row, but only
     // include cells from visible rows when building the structure/grid.
-    Self::advance_row_span_remaining(row_span_remaining, occupied);
+    Self::advance_row_span_remaining(row_span_remaining, occupied, deadline_counter)?;
     if !row_visible {
-      return;
+      return Ok(());
     }
 
     // HTML table cell placement is source-order driven: cells are assigned to the first available
@@ -2624,23 +2677,26 @@ impl TableStructure {
     let mut col_cursor = 0usize;
 
     for (cell_idx, cell_child) in row.children.iter().enumerate() {
+      check_layout_deadline(deadline_counter)?;
       if matches!(
         Self::get_table_element_type(cell_child),
         TableElementType::Cell
       ) {
         let percent_sensitive =
           Self::style_has_percent_sensitive_column_constraints(&cell_child.style);
-        let colspan = cell_child.table_colspan();
+        let colspan = cell_child.table_colspan().clamp(1, TABLE_MAX_SPAN);
         let rowspan = match cell_child.table_rowspan_raw() {
           Some(0) => row_group_end.saturating_sub(row_idx).max(1),
           Some(span) => span.max(1) as usize,
           None => 1,
-        };
+        }
+        .clamp(1, TABLE_MAX_SPAN);
 
         // Find the first free block of columns that can fit the span in linear time. Start each
         // search from the current insertion point so cell placement remains source-order stable.
         let mut run_len = 0usize;
         let start_col = loop {
+          check_layout_deadline(deadline_counter)?;
           if col_cursor >= occupied.len() {
             occupied.push(false);
             row_span_remaining.push(0);
@@ -2664,11 +2720,11 @@ impl TableStructure {
           cell_idx,
           percent_sensitive,
         ));
-        *max_cols = (*max_cols).max(start_col + colspan);
+        let col_end = start_col.saturating_add(colspan);
+        *max_cols = (*max_cols).max(col_end);
 
         // Mark the covered columns as occupied for this row and future rows.
         let span_rows = rowspan.saturating_sub(1);
-        let col_end = start_col + colspan;
         if occupied.len() < col_end {
           occupied.resize(col_end, false);
         }
@@ -2676,6 +2732,7 @@ impl TableStructure {
           row_span_remaining.resize(col_end, 0);
         }
         for col in start_col..col_end {
+          check_layout_deadline(deadline_counter)?;
           occupied[col] = true;
           if let Some(slot) = row_span_remaining.get_mut(col) {
             *slot = (*slot).max(span_rows);
@@ -2686,16 +2743,82 @@ impl TableStructure {
         col_cursor = col_end;
       }
     }
+    Ok(())
+  }
+
+  fn rebuild_row_segments(&mut self, deadline_counter: &mut usize) -> Result<(), LayoutError> {
+    check_layout_deadline(deadline_counter)?;
+    self.row_segments.clear();
+    self.row_segments.resize_with(self.row_count, Vec::new);
+
+    if self.row_count == 0 || self.column_count == 0 || self.cells.is_empty() {
+      return Ok(());
+    }
+
+    // Reserve per-row segment counts to avoid repeated allocations.
+    let mut counts: Vec<usize> = vec![0; self.row_count];
+    for cell in &self.cells {
+      check_layout_deadline(deadline_counter)?;
+      let row_end = (cell.row + cell.rowspan).min(self.row_count);
+      for row in cell.row..row_end {
+        check_layout_deadline(deadline_counter)?;
+        if let Some(slot) = counts.get_mut(row) {
+          *slot = slot.saturating_add(1);
+        }
+      }
+    }
+    for (segments, count) in self.row_segments.iter_mut().zip(counts.into_iter()) {
+      segments.reserve(count);
+    }
+
+    for cell in &self.cells {
+      check_layout_deadline(deadline_counter)?;
+      let row_end = (cell.row + cell.rowspan).min(self.row_count);
+      let start_col = cell.col.min(self.column_count);
+      let end_col = cell
+        .col
+        .saturating_add(cell.colspan)
+        .min(self.column_count);
+      if start_col >= end_col {
+        continue;
+      }
+      for row in cell.row..row_end {
+        check_layout_deadline(deadline_counter)?;
+        if let Some(segments) = self.row_segments.get_mut(row) {
+          segments.push(CellOccupancySegment {
+            start_col,
+            end_col,
+            cell_index: cell.index,
+          });
+        }
+      }
+    }
+
+    for segments in &mut self.row_segments {
+      check_layout_deadline(deadline_counter)?;
+      segments.sort_by_key(|seg| seg.start_col);
+    }
+
+    Ok(())
   }
 
   /// Gets the cell at a grid position, if any
   pub fn get_cell_at(&self, row: usize, col: usize) -> Option<&CellInfo> {
-    self
-      .grid
-      .get(row)
-      .and_then(|r| r.get(col))
-      .and_then(|idx| idx.as_ref())
-      .and_then(|idx| self.cells.get(*idx))
+    if row >= self.row_count || col >= self.column_count {
+      return None;
+    }
+    let segments = self.row_segments.get(row)?;
+    // Find the last segment that starts at or before `col`.
+    let idx = segments.partition_point(|seg| seg.start_col <= col);
+    if idx == 0 {
+      return None;
+    }
+    let seg = &segments[idx - 1];
+    if col < seg.end_col {
+      self.cells.get(seg.cell_index)
+    } else {
+      None
+    }
   }
 
   /// Returns the total width of border spacing
@@ -5124,23 +5247,25 @@ fn table_structure_cache_key(table_box: &BoxNode) -> Option<TableStructureCacheK
 fn table_structure_cached(
   table_box: &BoxNode,
   root_metrics: Option<RootFontMetrics>,
-) -> Arc<TableStructure> {
+) -> Result<Arc<TableStructure>, LayoutError> {
   let epoch = ensure_table_cache_epoch();
   let key = table_structure_cache_key(table_box);
-  let build_structure = || {
-    Arc::new(TableStructure::from_box_tree_with_root_metrics(
+  let build_structure = || -> Result<Arc<TableStructure>, LayoutError> {
+    Ok(Arc::new(TableStructure::try_from_box_tree_with_root_metrics(
       table_box,
       root_metrics,
-    ))
+    )?))
   };
   if let Some(key) = key {
-    TABLE_STRUCTURE_CACHE.with(|cache| {
-      if let Some(entry) = cache.borrow().get(&key) {
-        if entry.epoch == epoch {
-          return entry.structure.clone();
-        }
+    TABLE_STRUCTURE_CACHE.with(|cache| -> Result<Arc<TableStructure>, LayoutError> {
+      let hit = cache
+        .borrow()
+        .get(&key)
+        .and_then(|entry| if entry.epoch == epoch { Some(entry.structure.clone()) } else { None });
+      if let Some(hit) = hit {
+        return Ok(hit);
       }
-      let structure = build_structure();
+      let structure = build_structure()?;
       let mut map = cache.borrow_mut();
       if map.len() >= TABLE_STRUCTURE_CACHE_MAX_ENTRIES && !map.contains_key(&key) {
         map.clear();
@@ -5152,7 +5277,7 @@ fn table_structure_cached(
           structure: structure.clone(),
         },
       );
-      structure
+      Ok(structure)
     })
   } else {
     build_structure()
@@ -6353,21 +6478,21 @@ impl FormattingContext for TableFormattingContext {
       }
       let has_running_children = !running_children.is_empty();
 
-      let structure = table_structure_cached(table_box, root_metrics);
-      if dump {
-        let cw = match constraints.available_width {
-          AvailableSpace::Definite(w) => format!("{:.2}", w),
-          AvailableSpace::MaxContent => "max-content".to_string(),
-          AvailableSpace::MinContent => "min-content".to_string(),
-          AvailableSpace::Indefinite => "indefinite".to_string(),
-        };
-        let ch = match constraints.available_height {
-          AvailableSpace::Definite(h) => format!("{:.2}", h),
-          AvailableSpace::MaxContent => "max-content".to_string(),
-          AvailableSpace::MinContent => "min-content".to_string(),
-          AvailableSpace::Indefinite => "indefinite".to_string(),
-        };
-        eprintln!(
+    let structure = table_structure_cached(table_box, root_metrics)?;
+    if dump {
+      let cw = match constraints.available_width {
+        AvailableSpace::Definite(w) => format!("{:.2}", w),
+        AvailableSpace::MaxContent => "max-content".to_string(),
+        AvailableSpace::MinContent => "min-content".to_string(),
+        AvailableSpace::Indefinite => "indefinite".to_string(),
+      };
+      let ch = match constraints.available_height {
+        AvailableSpace::Definite(h) => format!("{:.2}", h),
+        AvailableSpace::MaxContent => "max-content".to_string(),
+        AvailableSpace::MinContent => "min-content".to_string(),
+        AvailableSpace::Indefinite => "indefinite".to_string(),
+      };
+      eprintln!(
                 "table constraints: width={} height={} display={:?} id={} border_spacing=({:.2},{:.2}) collapse={:?}",
                 cw,
                 ch,
@@ -9512,7 +9637,7 @@ impl FormattingContext for TableFormattingContext {
       let clamped = clamp_to_min_max(edges, min_w, max_w);
       return Ok(clamped.max(0.0));
     }
-    let structure = table_structure_cached(table_box, root_metrics);
+    let structure = table_structure_cached(table_box, root_metrics)?;
     let spacing = structure.total_horizontal_spacing();
     let font_size = table_root_style.font_size;
     let root_font_size = table_root_style.root_font_size;
@@ -10058,6 +10183,99 @@ mod tests {
     assert!(matches!(result, Err(LayoutError::Timeout { .. })));
   }
 
+  #[test]
+  fn table_structure_build_times_out_under_deadline() {
+    fn table_with_row_group(rows: usize, cols: usize) -> BoxNode {
+      let mut table_style = ComputedStyle::default();
+      table_style.display = Display::Table;
+      let table_style = Arc::new(table_style);
+ 
+      let mut group_style = ComputedStyle::default();
+      group_style.display = Display::TableRowGroup;
+      let group_style = Arc::new(group_style);
+ 
+      let mut row_style = ComputedStyle::default();
+      row_style.display = Display::TableRow;
+      let row_style = Arc::new(row_style);
+ 
+      let mut cell_style = ComputedStyle::default();
+      cell_style.display = Display::TableCell;
+      let cell_style = Arc::new(cell_style);
+ 
+      let mut rows_out = Vec::with_capacity(rows);
+      for _ in 0..rows {
+        let mut cells = Vec::with_capacity(cols);
+        for _ in 0..cols {
+          cells.push(BoxNode::new_block(
+            cell_style.clone(),
+            FormattingContextType::Block,
+            vec![],
+          ));
+        }
+        rows_out.push(BoxNode::new_block(
+          row_style.clone(),
+          FormattingContextType::Block,
+          cells,
+        ));
+      }
+ 
+      let group = BoxNode::new_block(group_style, FormattingContextType::Block, rows_out);
+      BoxNode::new_block(table_style, FormattingContextType::Table, vec![group])
+    }
+ 
+    let viewport = crate::geometry::Size::new(800.0, 600.0);
+    let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+    let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+      .with_parallelism(LayoutParallelism::disabled());
+    let tfc = TableFormattingContext::with_factory(factory);
+  
+    let table = table_with_row_group(2000, 2);
+    let structure_result = {
+      let deadline = RenderDeadline::new(Some(Duration::ZERO), None);
+      with_deadline(Some(&deadline), || TableStructure::try_from_box_tree(&table))
+    };
+    assert!(matches!(structure_result, Err(LayoutError::Timeout { .. })));
+
+    let layout_result = {
+      let deadline = RenderDeadline::new(Some(Duration::ZERO), None);
+      with_deadline(Some(&deadline), || {
+        tfc.layout(&table, &LayoutConstraints::definite_width(800.0))
+      })
+    };
+    assert!(matches!(layout_result, Err(LayoutError::Timeout { .. })));
+  }
+ 
+  #[test]
+  fn huge_colspan_is_clamped_and_does_not_allocate_unbounded_memory() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+ 
+    let mut group_style = ComputedStyle::default();
+    group_style.display = Display::TableRowGroup;
+ 
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+ 
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+ 
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+      .with_table_cell_spans(TABLE_MAX_SPAN * 10, 1);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let group =
+      BoxNode::new_block(Arc::new(group_style), FormattingContextType::Block, vec![row]);
+    let table =
+      BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![group]);
+ 
+    let structure = TableStructure::try_from_box_tree(&table).expect("table structure");
+    assert!(
+      structure.column_count <= TABLE_MAX_SPAN,
+      "colspan should be clamped: column_count={} max={}",
+      structure.column_count,
+      TABLE_MAX_SPAN
+    );
+  }
+ 
   fn table_with_loose_cell() -> BoxNode {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
@@ -10622,12 +10840,12 @@ mod tests {
     intrinsic_cache_use_epoch(starting_epoch.saturating_add(1), true);
 
     let table = BoxTree::new(create_simple_table(1, 1)).root;
-    let first = table_structure_cached(&table, None);
-    let second = table_structure_cached(&table, None);
+    let first = table_structure_cached(&table, None).expect("table structure");
+    let second = table_structure_cached(&table, None).expect("table structure");
     assert!(Arc::ptr_eq(&first, &second));
 
     intrinsic_cache_use_epoch(intrinsic_cache_epoch().saturating_add(1), false);
-    let third = table_structure_cached(&table, None);
+    let third = table_structure_cached(&table, None).expect("table structure");
     assert!(!Arc::ptr_eq(&first, &third));
 
     intrinsic_cache_use_epoch(starting_epoch, true);
@@ -10686,7 +10904,7 @@ mod tests {
       assert_eq!(lens_before.cell_intrinsic, 0);
 
       for table in tree.root.children.iter() {
-        let structure = table_structure_cached(table, None);
+        let structure = table_structure_cached(table, None)?;
         collapsed_borders_cached(table, structure.as_ref())?;
         let style_overrides = StyleOverrideCache::for_intrinsic_measurement(
           "test_table_epoch_scoped",
@@ -10743,7 +10961,7 @@ mod tests {
     });
 
     let table = BoxTree::new(create_simple_table(1, 1)).root;
-    table_structure_cached(&table, None);
+    table_structure_cached(&table, None).expect("table structure");
 
     let lens = table_cache_lens_for_test();
     assert_eq!(
@@ -11335,8 +11553,6 @@ mod tests {
     let structure = TableStructure::from_box_tree(&table);
     assert_eq!(structure.column_count, 2);
     assert_eq!(structure.row_count, 2);
-    assert_eq!(structure.grid.len(), 2);
-    assert_eq!(structure.grid[0].len(), 2);
 
     let spanning = structure
       .cells
@@ -13201,8 +13417,6 @@ mod tests {
     let structure = TableStructure::from_box_tree(&table);
     assert_eq!(structure.row_count, rows);
     assert_eq!(structure.column_count, cols);
-    assert_eq!(structure.grid.len(), rows);
-    assert_eq!(structure.grid[0].len(), cols);
 
     let spanning = structure
       .get_cell_at(1, 0)
@@ -15658,8 +15872,14 @@ mod tests {
     assert_eq!(spanning.rowspan, 2);
     assert_eq!(first_row_second.col, 1);
     assert_eq!(second_row_only.col, 1);
-    assert_eq!(structure.grid[1][0], Some(spanning.index));
-    assert_eq!(structure.grid[1][1], Some(second_row_only.index));
+    assert_eq!(
+      structure.get_cell_at(1, 0).map(|c| c.index),
+      Some(spanning.index)
+    );
+    assert_eq!(
+      structure.get_cell_at(1, 1).map(|c| c.index),
+      Some(second_row_only.index)
+    );
 
     let tfc = TableFormattingContext::new();
     let fragment = tfc
@@ -15761,9 +15981,18 @@ mod tests {
     assert_eq!(neighbor.col, 1);
     assert_eq!(spanning_two.col, 1);
     assert_eq!(spanning_two.colspan, 2);
-    assert_eq!(structure.grid[1][0], Some(spanning.index));
-    assert_eq!(structure.grid[1][1], Some(spanning_two.index));
-    assert_eq!(structure.grid[1][2], Some(spanning_two.index));
+    assert_eq!(
+      structure.get_cell_at(1, 0).map(|c| c.index),
+      Some(spanning.index)
+    );
+    assert_eq!(
+      structure.get_cell_at(1, 1).map(|c| c.index),
+      Some(spanning_two.index)
+    );
+    assert_eq!(
+      structure.get_cell_at(1, 2).map(|c| c.index),
+      Some(spanning_two.index)
+    );
 
     let tfc = TableFormattingContext::new();
     let fragment = tfc
@@ -20729,8 +20958,8 @@ mod tests {
     let cell = &structure.cells[0];
     assert_eq!(cell.col, 0);
     assert_eq!(cell.colspan, 2);
-    assert_eq!(structure.grid[0][0], Some(cell.index));
-    assert_eq!(structure.grid[0][1], Some(cell.index));
+    assert_eq!(structure.get_cell_at(0, 0).map(|c| c.index), Some(cell.index));
+    assert_eq!(structure.get_cell_at(0, 1).map(|c| c.index), Some(cell.index));
   }
 
   #[test]
