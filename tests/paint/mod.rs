@@ -37,6 +37,7 @@ mod color_font_helpers;
 mod color_font_test;
 mod color_mix_display_list_test;
 mod color_mix_polar_display_list_test;
+mod css2_clip_rect_integration;
 mod contain_paint;
 mod determinism_repeat_test;
 mod display_contents;

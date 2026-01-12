@@ -2245,6 +2245,12 @@ impl DisplayListBuilder {
           None
         };
 
+        // CSS 2.1 `clip` applies to the element's own border/background in addition to its
+        // descendants. We intentionally keep this scoped to the element itself (the content
+        // traversal below still pushes `clip_rect` again) so outer effects like box shadows and
+        // outlines remain unaffected.
+        let mut clip_rect_pushed = false;
+
         if !style.box_shadow.is_empty() {
           let mut decoration_rects: Option<BackgroundRects> = None;
           let rects = if decoration_rect == absolute_rect {
@@ -2288,6 +2294,10 @@ impl DisplayListBuilder {
               false,
             );
           }
+          if let Some(clip) = clip_rect.as_ref() {
+            self.list.push(DisplayItem::PushClip(clip.clone()));
+            clip_rect_pushed = true;
+          }
           if !suppress_background {
             self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
               rects,
@@ -2306,6 +2316,10 @@ impl DisplayListBuilder {
             );
           }
         } else if decoration_rect == absolute_rect {
+          if let Some(clip) = clip_rect.as_ref() {
+            self.list.push(DisplayItem::PushClip(clip.clone()));
+            clip_rect_pushed = true;
+          }
           if !suppress_background {
             if let Some(rects) = absolute_rects.as_ref() {
               self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
@@ -2323,18 +2337,30 @@ impl DisplayListBuilder {
               );
             }
           }
-        } else if !suppress_background {
-          self.emit_background_from_style_with_text_clip_and_culling_rect(
-            decoration_rect,
-            style,
-            text_clip.as_ref(),
-            visibility.rect,
-          );
+        } else {
+          if let Some(clip) = clip_rect
+            .as_ref()
+            .filter(|_| !suppress_background || !suppress_border)
+          {
+            self.list.push(DisplayItem::PushClip(clip.clone()));
+            clip_rect_pushed = true;
+          }
+          if !suppress_background {
+            self.emit_background_from_style_with_text_clip_and_culling_rect(
+              decoration_rect,
+              style,
+              text_clip.as_ref(),
+              visibility.rect,
+            );
+          }
         }
 
         if !suppress_border {
           let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
           self.emit_border_from_style(decoration_rect, style, gap);
+        }
+        if clip_rect_pushed {
+          self.list.push(DisplayItem::PopClip);
         }
         if decoration_clip_pushed {
           self.list.push(DisplayItem::PopClip);
