@@ -1,3 +1,6 @@
-// @lib: es2015
-Reflect.setPrototypeOf({}, {});
+// @lib: es5
+const Reflect = {
+  setPrototypeOf: (_o: object, _p: object) => {},
+};
 
+Reflect.setPrototypeOf({}, {});

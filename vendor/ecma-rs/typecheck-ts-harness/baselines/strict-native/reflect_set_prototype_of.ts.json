@@ -5,8 +5,8 @@
       "engine": "rust",
       "code": "TC4009",
       "file": "/reflect_set_prototype_of.ts",
-      "start": 0,
-      "end": 30,
+      "start": 72,
+      "end": 102,
       "severity": "error",
       "message": "prototype mutation is forbidden when `native_strict` is enabled"
     }
