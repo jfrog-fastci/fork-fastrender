@@ -2762,6 +2762,28 @@ mod tests {
   }
 
   #[test]
+  fn module_early_error_undefined_break_label() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      while (false) {
+        break undef;
+      }
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_undefined_continue_label() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      while (false) {
+        continue undef;
+      }
+    "#,
+    ));
+  }
+
+  #[test]
   fn module_early_error_export_alias_string_literal_invalid_unicode() {
     assert_syntax(SourceTextModuleRecord::parse(
       r#"export { Moon as "\uD83C" } from "./m.js";"#,

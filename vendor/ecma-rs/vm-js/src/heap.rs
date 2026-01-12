@@ -7647,7 +7647,7 @@ mod detached_array_buffer_tests {
   }
 
   #[test]
-  fn uint8_array_data_out_of_bounds_is_type_error_and_writes_throw_type_error() -> Result<(), VmError> {
+  fn uint8_array_data_out_of_bounds_is_type_error_and_writes_are_noop() -> Result<(), VmError> {
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut scope = heap.scope();
 

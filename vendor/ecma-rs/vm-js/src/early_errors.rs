@@ -243,7 +243,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Stmt::ForOf(for_of) => self.visit_for_of(ctx, stmt.loc, &for_of.stx),
       Stmt::ForTriple(for_triple) => self.visit_for_triple(ctx, &for_triple.stx),
       Stmt::If(if_stmt) => self.visit_if(ctx, &if_stmt.stx),
-      Stmt::Label(label) => self.visit_label(ctx, &label.stx),
+      Stmt::Label(label) => self.visit_label(ctx, stmt.loc, &label.stx),
       Stmt::Return(ret) => self.visit_return(ctx, stmt.loc, &ret.stx),
       Stmt::Switch(sw) => self.visit_switch(ctx, &sw.stx),
       Stmt::Throw(th) => self.visit_expr(ctx, &th.stx.value),
@@ -423,8 +423,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self.visit_stmt_list(ctx, &branch.body)
   }
 
-  fn visit_label(&mut self, ctx: &mut ControlContext, stmt: &LabelStmt) -> Result<(), VmError> {
+  fn visit_label(&mut self, ctx: &mut ControlContext, loc: Loc, stmt: &LabelStmt) -> Result<(), VmError> {
     let is_iteration = Self::is_iteration_statement(&stmt.statement);
+    if ctx.labels.iter().any(|l| l.name == stmt.name) {
+      self.push_error(loc, format!("duplicate label '{}'", stmt.name))?;
+    }
     ctx.labels.push(LabelInfo {
       name: stmt.name.clone(),
       is_iteration,
