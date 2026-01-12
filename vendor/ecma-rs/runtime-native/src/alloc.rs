@@ -239,10 +239,12 @@ mod imp {
           .unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
         let (start, end) = ARENA.reserve(needed, context);
         let ptr = align_up(start, align).unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
-        debug_assert!(
-          ptr.checked_add(size).map(|end_ptr| end_ptr <= end).unwrap_or(false),
-          "arena reserve must provide enough space for allocation"
-        );
+        let end_ptr = ptr
+          .checked_add(size)
+          .unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
+        if end_ptr > end {
+          trap::rt_trap_invalid_arg("bump arena reservation was too small for aligned allocation");
+        }
         ptr as *mut u8
       }
     }
