@@ -7922,7 +7922,8 @@ fn grown_capacity(current_capacity: usize, required_len: usize) -> usize {
   }
   let mut cap = current_capacity.max(MIN_VEC_CAPACITY);
   while cap < required_len {
-    cap = match cap.checked_mul(2) {
+    let grow = (cap / 2).max(1);
+    cap = match cap.checked_add(grow) {
       Some(next) => next,
       None => return usize::MAX,
     };

@@ -1090,6 +1090,59 @@ fn await_in_for_in_lhs_object_pattern_computed_key() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_for_triple_init_decl_pattern_default() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        for (let { x = await Promise.resolve("ok") } = {}; ; ) {
+          return x;
+        }
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_for_in_loop_header_object_computed_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        var s = "";
+        for (const { [await Promise.resolve("length")]: v } in { a: 1 }) {
+          s = String(v);
+          break;
+        }
+        return s;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "1");
+  Ok(())
+}
+
+#[test]
 fn await_in_for_triple_init_decl_pattern() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

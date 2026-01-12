@@ -11987,11 +11987,19 @@ fn async_bind_array_pattern(
       return Err(VmError::InvariantViolation("missing destructuring value root"));
     }
   };
-  let Value::Object(obj) = value else {
-    scope.heap_mut().remove_root(value_root);
-    return Err(
-      throw_type_error(evaluator.vm, scope, "array destructuring requires object").unwrap_or_else(|e| e),
-    );
+  let obj = match value {
+    Value::Object(obj) => obj,
+    other => {
+      let obj = match scope.to_object(evaluator.vm, &mut *evaluator.host, &mut *evaluator.hooks, other) {
+        Ok(obj) => obj,
+        Err(err) => {
+          scope.heap_mut().remove_root(value_root);
+          return Err(coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+        }
+      };
+      scope.heap_mut().set_root(value_root, Value::Object(obj));
+      obj
+    }
   };
 
   let len = match async_array_like_length(evaluator, scope, obj) {
@@ -13806,7 +13814,6 @@ fn async_for_in_loop_from(
           async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
           return Err(VmError::OutOfMemory);
         }
-
         suspend.frames.push_back(AsyncFrame::ForInAfterBind {
           stmt: stmt as *const ForInStmt,
           label_set,
