@@ -22,13 +22,23 @@ if [[ $# -lt 1 ]]; then
   exit 2
 fi
 
-if ! command -v llvm-objcopy-18 >/dev/null 2>&1; then
-  echo "error: llvm-objcopy-18 not found in PATH" >&2
+pick_cmd() {
+  for c in "$@"; do
+    if command -v "${c}" >/dev/null 2>&1; then
+      echo "${c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! llvm_objcopy="$(pick_cmd llvm-objcopy-18 llvm-objcopy)"; then
+  echo "error: llvm-objcopy not found in PATH (expected llvm-objcopy-18 or llvm-objcopy)" >&2
   exit 1
 fi
 
-if ! command -v llvm-readobj-18 >/dev/null 2>&1; then
-  echo "error: llvm-readobj-18 not found in PATH" >&2
+if ! llvm_readobj="$(pick_cmd llvm-readobj-18 llvm-readobj)"; then
+  echo "error: llvm-readobj not found in PATH (expected llvm-readobj-18 or llvm-readobj)" >&2
   exit 1
 fi
 
@@ -43,21 +53,21 @@ for obj in "$@"; do
   # Do NOT use `grep -q` under `set -o pipefail`: `llvm-readobj` can emit enough
   # output that `grep -q` exits early and triggers EPIPE/SIGPIPE in `llvm-readobj`,
   # making the pipeline return non-zero (flaky false negatives).
-  if llvm-readobj-18 --sections "${obj}" | grep -- ".data.rel.ro.llvm_stackmaps" >/dev/null; then
+  if "${llvm_readobj}" --sections "${obj}" | grep -- ".data.rel.ro.llvm_stackmaps" >/dev/null; then
     : # already renamed
-  elif llvm-readobj-18 --sections "${obj}" | grep -- ".llvm_stackmaps" >/dev/null; then
+  elif "${llvm_readobj}" --sections "${obj}" | grep -- ".llvm_stackmaps" >/dev/null; then
     # Important: set section flags to "data" (writable) so linkers that don't
     # automatically fold `.data.rel.ro.*` into `.data.rel.ro` still won't emit TEXTREL.
-    llvm-objcopy-18 \
+    "${llvm_objcopy}" \
       --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
       "${obj}"
   fi
 
   # Same policy for `.llvm_faultmaps` when present.
-  if llvm-readobj-18 --sections "${obj}" | grep -- ".data.rel.ro.llvm_faultmaps" >/dev/null; then
+  if "${llvm_readobj}" --sections "${obj}" | grep -- ".data.rel.ro.llvm_faultmaps" >/dev/null; then
     : # already renamed
-  elif llvm-readobj-18 --sections "${obj}" | grep -- ".llvm_faultmaps" >/dev/null; then
-    llvm-objcopy-18 \
+  elif "${llvm_readobj}" --sections "${obj}" | grep -- ".llvm_faultmaps" >/dev/null; then
+    "${llvm_objcopy}" \
       --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
       "${obj}"
   fi
