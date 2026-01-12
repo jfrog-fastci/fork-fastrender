@@ -117,3 +117,43 @@ fn json_has_symbol_to_string_tag() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn json_stringify_is_proxy_aware_for_object_enumeration() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (function () {
+          var log = [];
+          var target = { a: 1, b: 2 };
+          var proxy;
+          proxy = new Proxy(target, {
+            ownKeys(t) {
+              log.push("ownKeys");
+              return ["a", "b"];
+            },
+            getOwnPropertyDescriptor(t, k) {
+              log.push("gopd:" + String(k));
+              return Object.getOwnPropertyDescriptor(t, k);
+            },
+            get(t, k, r) {
+              log.push("get:" + String(k) + ":" + (r === proxy));
+              return t[k];
+            },
+          });
+          var s = JSON.stringify(proxy);
+          return (
+            s === '{"a":1,"b":2}' &&
+            log.indexOf("ownKeys") !== -1 &&
+            log.indexOf("gopd:a") !== -1 &&
+            log.indexOf("gopd:b") !== -1 &&
+            log.indexOf("get:a:true") !== -1 &&
+            log.indexOf("get:b:true") !== -1
+          );
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

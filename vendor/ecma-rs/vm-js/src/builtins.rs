@@ -19936,6 +19936,11 @@ pub fn json_stringify(
     obj: GcObject,
     markers: WrapperMarkerKeys,
   ) -> Result<Option<Value>, VmError> {
+    // Wrapper objects are ordinary objects with internal marker properties; Proxies are never
+    // wrapper objects (even if their target is).
+    if scope.heap().is_proxy_object(obj) {
+      return Ok(None);
+    }
     if let Some(v) = scope
       .heap()
       .object_get_own_data_property_value(obj, &markers.number)?
@@ -20258,19 +20263,38 @@ pub fn json_stringify(
       }
       out_keys
     } else {
-      let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+      // EnumerableOwnProperties (ECMA-262): uses `OwnPropertyKeys` + `GetOwnProperty`, which must be
+      // Proxy-aware.
+      let mut tick = Vm::tick;
+      let keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+      // `OwnPropertyKeys` on a Proxy reads keys from the trap result, which may not be referenced by
+      // the JS heap once the trap completes. Root string keys up-front so they cannot be collected
+      // during `GetOwnProperty` / `Get` side effects below.
+      let mut key_roots: Vec<Value> = Vec::new();
+      key_roots
+        .try_reserve_exact(keys.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for k in &keys {
+        if let PropertyKey::String(s) = *k {
+          key_roots.push(Value::String(s));
+        }
+      }
+      scope.push_roots(&key_roots)?;
+
       let mut out_keys: Vec<crate::GcString> = Vec::new();
       out_keys
         .try_reserve_exact(keys.len())
         .map_err(|_| VmError::OutOfMemory)?;
       for (i, k) in keys.into_iter().enumerate() {
         if i % 1024 == 0 {
-          vm.tick()?;
+          tick(vm)?;
         }
         let PropertyKey::String(s) = k else {
           continue;
         };
-        let Some(desc) = scope.ordinary_get_own_property(obj, k)? else {
+        let Some(desc) =
+          scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, PropertyKey::from_string(s), &mut tick)?
+        else {
           continue;
         };
         if desc.enumerable {
