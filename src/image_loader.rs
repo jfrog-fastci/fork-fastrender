@@ -2267,7 +2267,8 @@ fn inline_svg_image_references<'a>(
           continue;
         };
         resolved_url.set_fragment(None);
-        if resolved_url.scheme() != "http" && resolved_url.scheme() != "https" {
+        let scheme = resolved_url.scheme();
+        if scheme != "http" && scheme != "https" && scheme != "file" {
           continue;
         }
         let resolved_url = resolved_url.to_string();
@@ -2328,6 +2329,12 @@ fn inline_svg_image_references<'a>(
 
           if let Err(_) = ensure_http_success(&res, &resolved_url)
             .and_then(|()| ensure_image_mime_sane(&res, &resolved_url))
+          {
+            continue;
+          }
+          if scheme == "file"
+            && crate::resource::strict_mime_checks_enabled()
+            && payload_looks_like_markup_but_not_svg(&res.bytes)
           {
             continue;
           }
@@ -2430,7 +2437,8 @@ fn inline_svg_image_references<'a>(
         continue;
       };
       resolved_url.set_fragment(None);
-      if resolved_url.scheme() != "http" && resolved_url.scheme() != "https" {
+      let scheme = resolved_url.scheme();
+      if scheme != "http" && scheme != "https" && scheme != "file" {
         continue;
       }
       let resolved_url = resolved_url.to_string();
@@ -2490,6 +2498,12 @@ fn inline_svg_image_references<'a>(
 
         if let Err(_) = ensure_http_success(&res, &resolved_url)
           .and_then(|()| ensure_image_mime_sane(&res, &resolved_url))
+        {
+          continue;
+        }
+        if scheme == "file"
+          && crate::resource::strict_mime_checks_enabled()
+          && payload_looks_like_markup_but_not_svg(&res.bytes)
         {
           continue;
         }
@@ -14717,6 +14731,60 @@ mod tests {
     assert_eq!(
       (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
       (255, 0, 0, 255)
+    );
+  }
+
+  #[test]
+  fn inline_svg_image_references_inlines_file_scheme_when_called_from_use_inliner() {
+    let tmp = tempdir().expect("tempdir");
+    let icons_dir = tmp.path().join("icons");
+    std::fs::create_dir_all(&icons_dir).expect("create icons dir");
+
+    let sprite_path = icons_dir.join("sprite.svg");
+    let img_path = icons_dir.join("img.png");
+    let main_path = tmp.path().join("main.svg");
+
+    let sprite_url = Url::from_file_path(&sprite_path)
+      .expect("sprite.svg file URL")
+      .to_string();
+    let img_url = Url::from_file_path(&img_path)
+      .expect("img.png file URL")
+      .to_string();
+    let main_url = Url::from_file_path(&main_path)
+      .expect("main.svg file URL")
+      .to_string();
+
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><image href="img.png" width="1" height="1"/></symbol></svg>"#;
+    let main_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg"><use href="{}#icon"/></svg>"#,
+      sprite_url
+    );
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (sprite_url.to_string(), sprite_res),
+      (img_url.to_string(), img_res),
+    ]);
+
+    let inlined =
+      inline_svg_use_references(&main_svg, &main_url, &fetcher, None).expect("inlined svg");
+    assert!(
+      inlined.as_ref().contains("data:image/png;base64,"),
+      "expected sprite-nested <image> to be inlined for file:// sprites, got: {}",
+      inlined.as_ref()
     );
   }
 
