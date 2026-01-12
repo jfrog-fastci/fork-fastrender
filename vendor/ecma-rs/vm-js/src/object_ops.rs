@@ -23,14 +23,8 @@ fn proxy_own_keys_result_to_property_keys(
   scope.push_root(Value::String(length_key_s))?;
   let length_key = PropertyKey::from_string(length_key_s);
 
-  let length_value = scope.ordinary_get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    array_like,
-    length_key,
-    Value::Object(array_like),
-  )?;
+  let length_value =
+    scope.get_with_host_and_hooks(vm, host, hooks, array_like, length_key, Value::Object(array_like))?;
   let len = scope.to_length(vm, host, hooks, length_value)?;
 
   let mut out: Vec<PropertyKey> = Vec::new();
@@ -45,14 +39,7 @@ fn proxy_own_keys_result_to_property_keys(
     }
     let idx_s = scope.alloc_string(&idx.to_string())?;
     let key = PropertyKey::from_string(idx_s);
-    let value = scope.ordinary_get_with_host_and_hooks(
-      vm,
-      host,
-      hooks,
-      array_like,
-      key,
-      Value::Object(array_like),
-    )?;
+    let value = scope.get_with_host_and_hooks(vm, host, hooks, array_like, key, Value::Object(array_like))?;
     match value {
       Value::String(s) => out.push(PropertyKey::from_string(s)),
       Value::Symbol(sym) => out.push(PropertyKey::from_symbol(sym)),

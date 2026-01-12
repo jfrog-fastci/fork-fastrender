@@ -1687,7 +1687,8 @@ pub fn reflect_delete_property(
   let key = scope.to_property_key(vm, host, hooks, prop)?;
   root_property_key(&mut scope, key)?;
 
-  let ok = scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, target, key)?;
+  let ok =
+    crate::spec_ops::internal_delete_with_host_and_hooks(vm, &mut scope, host, hooks, target, key)?;
   Ok(Value::Bool(ok))
 }
 
@@ -1712,7 +1713,7 @@ pub fn reflect_get(
   root_property_key(&mut scope, key)?;
 
   let receiver = args.get(2).copied().unwrap_or(Value::Object(target));
-  scope.ordinary_get_with_host_and_hooks(vm, host, hooks, target, key, receiver)
+  scope.get_with_host_and_hooks(vm, host, hooks, target, key, receiver)
 }
 
 pub fn reflect_get_own_property_descriptor(
@@ -1746,19 +1747,21 @@ pub fn reflect_get_own_property_descriptor(
 }
 
 pub fn reflect_get_prototype_of(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.getprototypeof
+  let mut scope = scope.reborrow();
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
 
-  match scope.object_get_prototype(target)? {
+  match scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, target)? {
     Some(proto) => Ok(Value::Object(proto)),
     None => Ok(Value::Null),
   }
@@ -1784,7 +1787,8 @@ pub fn reflect_has(
   let key = scope.to_property_key(vm, host, hooks, prop)?;
   root_property_key(&mut scope, key)?;
 
-  let ok = scope.ordinary_has_property_with_tick(target, key, || vm.tick())?;
+  let ok =
+    crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut scope, host, hooks, target, key)?;
   Ok(Value::Bool(ok))
 }
 
@@ -1806,8 +1810,8 @@ pub fn reflect_is_extensible(
 pub fn reflect_own_keys(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1819,7 +1823,7 @@ pub fn reflect_own_keys(
   let target = require_object(target_val)?;
   scope.push_root(Value::Object(target))?;
 
-  let keys = scope.ordinary_own_property_keys_with_tick(target, || vm.tick())?;
+  let keys = scope.object_own_property_keys_with_host_and_hooks(vm, host, hooks, target)?;
 
   let len = u32::try_from(keys.len()).map_err(|_| VmError::OutOfMemory)?;
   let array = create_array_object(vm, &mut scope, len)?;
@@ -1883,7 +1887,8 @@ pub fn reflect_set(
   let value = args.get(2).copied().unwrap_or(Value::Undefined);
   let receiver = args.get(3).copied().unwrap_or(Value::Object(target));
 
-  let ok = scope.ordinary_set_with_host_and_hooks(vm, host, hooks, target, key, value, receiver)?;
+  let ok =
+    crate::spec_ops::internal_set_with_host_and_hooks(vm, &mut scope, host, hooks, target, key, value, receiver)?;
   Ok(Value::Bool(ok))
 }
 
