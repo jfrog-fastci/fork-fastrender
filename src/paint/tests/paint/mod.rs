@@ -231,6 +231,7 @@ mod table_cell_max_height;
 mod table_row_striping;
 mod text_cache_test;
 mod text_decoration_auto_snapping;
+mod text_decoration_underline_metrics;
 mod text_decoration_line_through_golden_test;
 mod text_decoration_spelling_grammar_golden_test;
 mod text_decoration_spelling_grammar_legacy_test;

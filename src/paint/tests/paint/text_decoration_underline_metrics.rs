@@ -78,4 +78,3 @@ fn underline_center_uses_font_metrics_without_double_counting_thickness() {
     scaled.underline_thickness
   );
 }
-
