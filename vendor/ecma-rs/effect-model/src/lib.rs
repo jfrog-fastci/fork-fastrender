@@ -454,7 +454,7 @@ pub enum EffectTemplate {
   Io,
   #[cfg_attr(feature = "serde", serde(alias = "Custom"))]
   Custom(EffectSet),
-  #[cfg_attr(feature = "serde", serde(alias = "DependsOnArgs"))]
+  #[cfg_attr(feature = "serde", serde(alias = "DependsOnArgs", alias = "dependsOnArgs"))]
   DependsOnArgs { base: EffectSet, args: Vec<usize> },
   #[default]
   #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
@@ -516,7 +516,7 @@ pub enum PurityTemplate {
   Allocating,
   #[cfg_attr(feature = "serde", serde(alias = "Impure"))]
   Impure,
-  #[cfg_attr(feature = "serde", serde(alias = "DependsOnArgs"))]
+  #[cfg_attr(feature = "serde", serde(alias = "DependsOnArgs", alias = "dependsOnArgs"))]
   DependsOnArgs { base: Purity, args: Vec<usize> },
   #[default]
   #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
@@ -726,5 +726,29 @@ mod tests {
     )
     .unwrap();
     assert_eq!(expr, EffectSet::READS_GLOBAL | EffectSet::WRITES_GLOBAL);
+  }
+
+  #[cfg(feature = "serde")]
+  #[test]
+  fn templates_deserialize_accept_camel_case_depends_on_args_variant() {
+    let effects: EffectTemplate =
+      serde_json::from_str(r#"{"dependsOnArgs":{"base":"ALLOCATES","args":[0]}}"#).unwrap();
+    assert_eq!(
+      effects,
+      EffectTemplate::DependsOnArgs {
+        base: EffectSet::ALLOCATES,
+        args: vec![0],
+      }
+    );
+
+    let purity: PurityTemplate =
+      serde_json::from_str(r#"{"dependsOnArgs":{"base":"Allocating","args":[0]}}"#).unwrap();
+    assert_eq!(
+      purity,
+      PurityTemplate::DependsOnArgs {
+        base: Purity::Allocating,
+        args: vec![0],
+      }
+    );
   }
 }

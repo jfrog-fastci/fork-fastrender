@@ -13,3 +13,5 @@ serde = ["dep:serde", "bitflags/serde"]
 bitflags = { workspace = true }
 serde = { workspace = true, optional = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
