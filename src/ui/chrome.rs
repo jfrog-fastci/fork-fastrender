@@ -2084,19 +2084,27 @@ pub fn chrome_ui_with_bookmarks(
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.horizontal(|ui| {
                   ui.add_space(6.0);
-                    match omnibox_suggestion_icon(suggestion) {
-                      OmniboxSuggestionIcon::Icon(icon) => {
-                        let _ = icon_tinted(
-                          ui,
-                          icon,
-                          ui.spacing().icon_width,
-                          with_alpha(ui.visuals().text_color(), open_opacity),
-                        );
-                      }
-                      OmniboxSuggestionIcon::Text(text) => {
-                        ui.label(egui::RichText::new(text).strong());
-                      }
+                  match omnibox_suggestion_icon(suggestion) {
+                    OmniboxSuggestionIcon::Icon(icon) => {
+                      // Render decorative row icons without allocating an egui widget so we don't
+                      // add noise to the accessibility tree (the row itself has a semantic label).
+                      let icon_side = ui.spacing().icon_width;
+                      let (icon_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(icon_side, row_height),
+                        egui::Sense::hover(),
+                      );
+                      paint_icon_in_rect(
+                        ui,
+                        icon_rect,
+                        icon,
+                        icon_side,
+                        with_alpha(ui.visuals().text_color(), open_opacity),
+                      );
                     }
+                    OmniboxSuggestionIcon::Text(text) => {
+                      ui.label(egui::RichText::new(text).strong());
+                    }
+                  }
 
                   let title = suggestion
                     .title
