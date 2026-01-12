@@ -3,7 +3,7 @@ use parse_js::ast::expr::pat::Pat;
 use parse_js::ast::expr::{CallArg, Expr};
 use parse_js::ast::func::FuncBody;
 use parse_js::ast::node::Node;
-use parse_js::ast::stmt::decl::FuncDecl;
+use parse_js::ast::stmt::decl::{FuncDecl, VarDecl};
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stx::TopLevel;
 use parse_js::ast::type_expr::TypeExpr;
@@ -749,6 +749,126 @@ impl Codegen {
     }
   }
 
+  fn compile_var_decl(&mut self, decl: &Node<VarDecl>) -> Result<(), CodegenError> {
+    for declarator in &decl.stx.declarators {
+      let name = match declarator.pattern.stx.pat.stx.as_ref() {
+        Pat::Id(id) => id.stx.name.clone(),
+        _ => {
+          return Err(CodegenError::UnsupportedStmt {
+            loc: declarator.pattern.loc,
+          });
+        }
+      };
+
+      let value = if let Some(init) = declarator.initializer.as_ref() {
+        self.compile_expr(init)?
+      } else {
+        Value {
+          ty: Ty::Undefined,
+          ir: "0".to_string(),
+        }
+      };
+
+      let slot = self.emit_alloca(value.ty, declarator.pattern.loc)?;
+      let store_val = match value.ty {
+        Ty::Null | Ty::Undefined => "0",
+        _ => value.ir.as_str(),
+      };
+      self.emit_store(value.ty, store_val, &slot)?;
+      self.vars.insert(name, (value.ty, slot));
+    }
+    Ok(())
+  }
+
+  fn infer_expr_ty(&self, expr: &Node<Expr>) -> Result<Ty, CodegenError> {
+    match expr.stx.as_ref() {
+      Expr::LitNum(_) => Ok(Ty::Number),
+      Expr::LitBool(_) => Ok(Ty::Bool),
+      Expr::LitNull(_) => Ok(Ty::Null),
+      Expr::LitStr(_) => Ok(Ty::String),
+      Expr::Id(id) => {
+        if let Some((ty, _)) = self.vars.get(id.stx.name.as_str()) {
+          return Ok(*ty);
+        }
+        match id.stx.name.as_str() {
+          "undefined" => Ok(Ty::Undefined),
+          "NaN" | "Infinity" => Ok(Ty::Number),
+          _ => Err(CodegenError::UnsupportedExpr { loc: expr.loc }),
+        }
+      }
+      Expr::Binary(bin) => match bin.stx.operator {
+        OperatorName::Assignment => self.infer_expr_ty(&bin.stx.right),
+        OperatorName::AssignmentAddition
+        | OperatorName::Addition
+        | OperatorName::Subtraction
+        | OperatorName::Multiplication
+        | OperatorName::Division
+        | OperatorName::Remainder => Ok(Ty::Number),
+        OperatorName::StrictEquality
+        | OperatorName::StrictInequality
+        | OperatorName::LessThan
+        | OperatorName::LessThanOrEqual
+        | OperatorName::GreaterThan
+        | OperatorName::GreaterThanOrEqual
+        | OperatorName::LogicalAnd
+        | OperatorName::LogicalOr => Ok(Ty::Bool),
+        other => Err(CodegenError::UnsupportedOperator {
+          op: other,
+          loc: bin.loc,
+        }),
+      },
+      Expr::Unary(unary) => match unary.stx.operator {
+        OperatorName::UnaryNegation | OperatorName::UnaryPlus => Ok(Ty::Number),
+        OperatorName::LogicalNot => Ok(Ty::Bool),
+        other => Err(CodegenError::UnsupportedOperator {
+          op: other,
+          loc: unary.loc,
+        }),
+      },
+      Expr::Call(call) => {
+        if call.stx.optional_chaining {
+          return Err(CodegenError::UnsupportedExpr { loc: call.loc });
+        }
+
+        if let Some(builtin) = recognize_builtin(call) {
+          match builtin {
+            BuiltinCall::Print { .. }
+            | BuiltinCall::Assert { .. }
+            | BuiltinCall::Panic { .. }
+            | BuiltinCall::Trap => Ok(Ty::Void),
+          }
+        } else {
+          let callee = match call.stx.callee.stx.as_ref() {
+            Expr::Id(id) => id.stx.name.as_str(),
+            _ => return Err(CodegenError::UnsupportedExpr { loc: call.stx.callee.loc }),
+          };
+          let sig = self
+            .function_sigs
+            .get(callee)
+            .ok_or_else(|| CodegenError::TypeError {
+              message: format!("call to unknown function `{callee}`"),
+              loc: call.loc,
+            })?;
+          Ok(sig.ret)
+        }
+      }
+      Expr::Cond(cond) => {
+        let cons = self.infer_expr_ty(&cond.stx.consequent)?;
+        let alt = self.infer_expr_ty(&cond.stx.alternate)?;
+        if cons != alt {
+          return Err(CodegenError::TypeError {
+            message: format!(
+              "conditional operator type mismatch: expected {cons:?}, got {alt:?}"
+            ),
+            loc: expr.loc,
+          });
+        }
+        Ok(cons)
+      }
+      _ => Err(CodegenError::UnsupportedExpr { loc: expr.loc }),
+    }
+  }
+
   fn compile_stmt(&mut self, stmt: &Node<Stmt>) -> Result<(), CodegenError> {
     let saved_dbg_pos = self.dbg_current_pos;
     self.dbg_current_pos = self.dbg_pos_for_loc(stmt.loc);
@@ -833,6 +953,59 @@ impl Codegen {
           self.emit(format!("{end_label}:"));
           Ok(())
         }
+        Stmt::ForTriple(for_stmt) => {
+          // Minimal `for(init; cond; post) { body }` support.
+          //
+          // Note: this emitter does not model lexical scoping differences between `var`/`let`/`const`;
+          // bindings declared in the loop initializer will be visible after the loop as well.
+          match &for_stmt.stx.init {
+            parse_js::ast::stmt::ForTripleStmtInit::None => {}
+            parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => {
+              let _ = self.compile_expr(expr)?;
+            }
+            parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) => {
+              self.compile_var_decl(decl)?;
+            }
+          }
+
+          let cond_label = self.fresh_block("for.cond");
+          let body_label = self.fresh_block("for.body");
+          let post_label = self.fresh_block("for.post");
+          let end_label = self.fresh_block("for.end");
+
+          self.emit(format!("  br label %{cond_label}"));
+
+          self.emit(format!("{cond_label}:"));
+          if let Some(cond) = for_stmt.stx.cond.as_ref() {
+            let cond_v = self.compile_expr(cond)?;
+            let cond_bool = self.emit_truthy_to_bool(cond_v, cond.loc)?;
+            self.emit(format!(
+              "  br i1 {cond_bool}, label %{body_label}, label %{end_label}"
+            ));
+          } else {
+            // `for (;;)` is an infinite loop.
+            self.emit(format!("  br label %{body_label}"));
+          }
+
+          self.emit(format!("{body_label}:"));
+          for stmt in &for_stmt.stx.body.stx.body {
+            self.compile_stmt(stmt)?;
+          }
+          if !self.block_terminated {
+            self.emit(format!("  br label %{post_label}"));
+          }
+
+          self.emit(format!("{post_label}:"));
+          if let Some(post) = for_stmt.stx.post.as_ref() {
+            let _ = self.compile_expr(post)?;
+          }
+          if !self.block_terminated {
+            self.emit(format!("  br label %{cond_label}"));
+          }
+
+          self.emit(format!("{end_label}:"));
+          Ok(())
+        }
         Stmt::Return(ret) => {
           let Some(expected) = self.current_return_ty else {
             return Err(CodegenError::TypeError {
@@ -895,33 +1068,7 @@ impl Codegen {
         // function declarations in the minimal emitter.
         Stmt::FunctionDecl(_) => Ok(()),
         Stmt::VarDecl(decl) => {
-          for declarator in &decl.stx.declarators {
-            let name = match declarator.pattern.stx.pat.stx.as_ref() {
-              Pat::Id(id) => id.stx.name.clone(),
-              _ => {
-                return Err(CodegenError::UnsupportedStmt {
-                  loc: declarator.pattern.loc,
-                });
-              }
-            };
-
-            let value = if let Some(init) = declarator.initializer.as_ref() {
-              self.compile_expr(init)?
-            } else {
-              Value {
-                ty: Ty::Undefined,
-                ir: "0".to_string(),
-              }
-            };
-
-            let slot = self.emit_alloca(value.ty, declarator.pattern.loc)?;
-            let store_val = match value.ty {
-              Ty::Null | Ty::Undefined => "0",
-              _ => value.ir.as_str(),
-            };
-            self.emit_store(value.ty, store_val, &slot)?;
-            self.vars.insert(name, (value.ty, slot));
-          }
+          self.compile_var_decl(decl)?;
           Ok(())
         }
         _ => Err(CodegenError::UnsupportedStmt { loc: stmt.loc }),
@@ -990,6 +1137,94 @@ impl Codegen {
           }
         }
       },
+      Expr::Cond(cond) => {
+        // `test ? consequent : alternate`
+        //
+        // Keep this implementation minimal but semantically correct (only the chosen branch is
+        // evaluated).
+        let out_ty = self.infer_expr_ty(expr)?;
+        let test = self.compile_expr(&cond.stx.test)?;
+        let test_bool = self.emit_truthy_to_bool(test, cond.stx.test.loc)?;
+
+        let then_label = self.fresh_block("cond.then");
+        let else_label = self.fresh_block("cond.else");
+        let cont_label = self.fresh_block("cond.cont");
+
+        // Allocate the output slot *before* emitting the branch terminator, otherwise the
+        // instruction would appear after a terminator and the LLVM parser would reject the IR.
+        let result_slot = if out_ty == Ty::Void {
+          None
+        } else {
+          Some(self.emit_alloca(out_ty, cond.loc)?)
+        };
+
+        self.emit(format!(
+          "  br i1 {test_bool}, label %{then_label}, label %{else_label}"
+        ));
+
+        if out_ty == Ty::Void {
+          self.emit(format!("{then_label}:"));
+          let _ = self.compile_expr(&cond.stx.consequent)?;
+          if !self.block_terminated {
+            self.emit(format!("  br label %{cont_label}"));
+          }
+
+          self.emit(format!("{else_label}:"));
+          let _ = self.compile_expr(&cond.stx.alternate)?;
+          if !self.block_terminated {
+            self.emit(format!("  br label %{cont_label}"));
+          }
+
+          self.emit(format!("{cont_label}:"));
+          Ok(Value::void())
+        } else {
+          let result_slot = result_slot.expect("non-void conditional allocates a slot");
+
+          self.emit(format!("{then_label}:"));
+          let then_v = self.compile_expr(&cond.stx.consequent)?;
+          if then_v.ty != out_ty {
+            return Err(CodegenError::TypeError {
+              message: format!(
+                "conditional consequent type mismatch: expected {out_ty:?}, got {got:?}",
+                got = then_v.ty
+              ),
+              loc: cond.stx.consequent.loc,
+            });
+          }
+          let then_store = match then_v.ty {
+            Ty::Null | Ty::Undefined => "0".to_string(),
+            _ => then_v.ir,
+          };
+          self.emit_store(out_ty, &then_store, &result_slot)?;
+          if !self.block_terminated {
+            self.emit(format!("  br label %{cont_label}"));
+          }
+
+          self.emit(format!("{else_label}:"));
+          let else_v = self.compile_expr(&cond.stx.alternate)?;
+          if else_v.ty != out_ty {
+            return Err(CodegenError::TypeError {
+              message: format!(
+                "conditional alternate type mismatch: expected {out_ty:?}, got {got:?}",
+                got = else_v.ty
+              ),
+              loc: cond.stx.alternate.loc,
+            });
+          }
+          let else_store = match else_v.ty {
+            Ty::Null | Ty::Undefined => "0".to_string(),
+            _ => else_v.ir,
+          };
+          self.emit_store(out_ty, &else_store, &result_slot)?;
+          if !self.block_terminated {
+            self.emit(format!("  br label %{cont_label}"));
+          }
+
+          self.emit(format!("{cont_label}:"));
+          let loaded = self.emit_load(out_ty, &result_slot)?;
+          Ok(Value { ty: out_ty, ir: loaded })
+        }
+      }
 
       Expr::Binary(bin) => {
         match bin.stx.operator {
@@ -1141,6 +1376,22 @@ impl Codegen {
             }
             let out = self.tmp();
             self.emit(format!("  {out} = fdiv double {}, {}", left.ir, right.ir));
+            Ok(Value {
+              ty: Ty::Number,
+              ir: out,
+            })
+          }
+          OperatorName::Remainder => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
+            if left.ty != Ty::Number || right.ty != Ty::Number {
+              return Err(CodegenError::TypeError {
+                message: "binary `%` currently only supports numbers".to_string(),
+                loc: bin.loc,
+              });
+            }
+            let out = self.tmp();
+            self.emit(format!("  {out} = frem double {}, {}", left.ir, right.ir));
             Ok(Value {
               ty: Ty::Number,
               ir: out,
