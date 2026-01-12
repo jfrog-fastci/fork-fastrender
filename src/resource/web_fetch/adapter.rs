@@ -2847,6 +2847,157 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_omits_redirect_suppressed_authorization() {
+    if skip_if_curl_backend_missing("cors_preflight_omits_redirect_suppressed_authorization") {
+      return;
+    }
+    let Some(listener) = try_bind_localhost("cors_preflight_omits_redirect_suppressed_authorization")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let port = addr.port();
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      let mut last_connection: Option<Instant> = None;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            last_connection = Some(Instant::now());
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let (headers, _body) = read_http_request(&mut stream);
+            captured_req.lock().unwrap().push(headers.clone());
+            let req_lower = headers.to_ascii_lowercase();
+            if req_lower.starts_with("options /start") {
+              assert!(
+                req_lower.contains("access-control-request-method: put"),
+                "expected Access-Control-Request-Method: PUT, got:\n{headers}"
+              );
+              assert!(
+                req_lower.contains("access-control-request-headers: authorization"),
+                "expected Authorization to be requested in preflight, got:\n{headers}"
+              );
+              assert!(
+                req_lower.contains("x-test"),
+                "expected X-Test to be requested in preflight, got:\n{headers}"
+              );
+              let response = concat!(
+                "HTTP/1.1 204 No Content\r\n",
+                "Access-Control-Allow-Origin: http://client.example\r\n",
+                "Access-Control-Allow-Methods: PUT\r\n",
+                "Access-Control-Allow-Headers: authorization, x-test\r\n",
+                "Content-Length: 0\r\n",
+                "Connection: close\r\n",
+                "\r\n"
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+            } else if req_lower.starts_with("put /start") {
+              assert!(
+                req_lower.contains("authorization: bearer test"),
+                "expected Authorization header on initial request, got:\n{headers}"
+              );
+              assert!(
+                req_lower.contains("x-test: 1"),
+                "expected X-Test header on initial request, got:\n{headers}"
+              );
+              let location = format!("http://localhost:{port}/final");
+              let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+            } else if req_lower.starts_with("options /final") {
+              assert!(
+                req_lower.contains("access-control-request-method: put"),
+                "expected Access-Control-Request-Method: PUT, got:\n{headers}"
+              );
+              assert!(
+                req_lower.contains("access-control-request-headers: x-test")
+                  && !req_lower.contains("authorization"),
+                "expected follow-up preflight to request only X-Test (Authorization is redirect-suppressed), got:\n{headers}"
+              );
+              let response = concat!(
+                "HTTP/1.1 204 No Content\r\n",
+                "Access-Control-Allow-Origin: http://client.example\r\n",
+                "Access-Control-Allow-Methods: PUT\r\n",
+                "Access-Control-Allow-Headers: x-test\r\n",
+                "Content-Length: 0\r\n",
+                "Connection: close\r\n",
+                "\r\n"
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+            } else if req_lower.starts_with("put /final") {
+              assert!(
+                req_lower.contains("x-test: 1"),
+                "expected X-Test header on redirect follow-up request, got:\n{headers}"
+              );
+              assert!(
+                !req_lower.contains("authorization:"),
+                "expected Authorization to be suppressed on cross-origin redirect, got:\n{headers}"
+              );
+              let body = b"ok";
+              let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+              stream.write_all(body).unwrap();
+            } else {
+              panic!("unexpected request:\n{headers}");
+            }
+          }
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
+              break;
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/start");
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut request = Request::new("PUT", &url);
+    request
+      .headers
+      .append("Authorization", "Bearer test")
+      .unwrap();
+    request.headers.append("X-Test", "1").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(
+      captured.len(),
+      4,
+      "expected OPTIONS /start + PUT /start + OPTIONS /final + PUT /final, got:\n{captured:#?}"
+    );
+    let lines: Vec<String> = captured
+      .iter()
+      .map(|headers| headers.lines().next().unwrap_or("").to_ascii_lowercase())
+      .collect();
+    assert!(lines[0].starts_with("options /start"), "request[0]: {}", lines[0]);
+    assert!(lines[1].starts_with("put /start"), "request[1]: {}", lines[1]);
+    assert!(lines[2].starts_with("options /final"), "request[2]: {}", lines[2]);
+    assert!(lines[3].starts_with("put /final"), "request[3]: {}", lines[3]);
+  }
+
+  #[test]
   fn cors_redirect_suppresses_content_type_after_303() {
     if skip_if_curl_backend_missing("cors_redirect_suppresses_content_type_after_303") {
       return;
