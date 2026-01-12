@@ -5273,7 +5273,15 @@ impl App {
               _ => "",
             };
             ui.label(format!("Value ({hint})"));
-            ui.add(egui::TextEdit::singleline(draft).desired_width(180.0));
+            let value_resp = ui.add(egui::TextEdit::singleline(draft).desired_width(180.0));
+            value_resp.widget_info({
+              let label = if hint.is_empty() {
+                "Value".to_string()
+              } else {
+                format!("Value ({hint})")
+              };
+              move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, label)
+            });
 
             let trimmed = draft.trim();
             let valid = trimmed.is_empty()
