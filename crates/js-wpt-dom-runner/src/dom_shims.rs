@@ -3907,4 +3907,67 @@ mod tests {
       assert_eq!(v["optBSelectedAttrAfterFalse"], false);
     });
   }
+
+  #[test]
+  fn input_attributes_reflect_to_properties() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var input = document.createElement("input");
+
+          // value: reflect attribute <-> property, defaulting to "" when absent.
+          var valueDefault = input.value;
+          input.setAttribute("value", "x");
+          var valueAfterSetAttr = input.value;
+          input.removeAttribute("value");
+          var valueAfterRemoveAttr = input.value;
+
+          // checked: presence/absence of attribute.
+          var checkedDefault = input.checked;
+          input.setAttribute("checked", "");
+          var checkedAfterSetAttr = input.checked;
+          input.removeAttribute("checked");
+          var checkedAfterRemoveAttr = input.checked;
+
+          // disabled: presence/absence of attribute.
+          var disabledDefault = input.disabled;
+          input.setAttribute("disabled", "");
+          var disabledAfterSetAttr = input.disabled;
+          input.removeAttribute("disabled");
+          var disabledAfterRemoveAttr = input.disabled;
+
+          return JSON.stringify({
+            valueDefault: valueDefault,
+            valueAfterSetAttr: valueAfterSetAttr,
+            valueAfterRemoveAttr: valueAfterRemoveAttr,
+            checkedDefault: checkedDefault,
+            checkedAfterSetAttr: checkedAfterSetAttr,
+            checkedAfterRemoveAttr: checkedAfterRemoveAttr,
+            disabledDefault: disabledDefault,
+            disabledAfterSetAttr: disabledAfterSetAttr,
+            disabledAfterRemoveAttr: disabledAfterRemoveAttr,
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["valueDefault"], "");
+      assert_eq!(v["valueAfterSetAttr"], "x");
+      assert_eq!(v["valueAfterRemoveAttr"], "");
+
+      assert_eq!(v["checkedDefault"], false);
+      assert_eq!(v["checkedAfterSetAttr"], true);
+      assert_eq!(v["checkedAfterRemoveAttr"], false);
+
+      assert_eq!(v["disabledDefault"], false);
+      assert_eq!(v["disabledAfterSetAttr"], true);
+      assert_eq!(v["disabledAfterRemoveAttr"], false);
+    });
+  }
 }
