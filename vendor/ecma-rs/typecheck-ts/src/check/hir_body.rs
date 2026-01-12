@@ -4014,13 +4014,65 @@ impl<'a> Checker<'a> {
         }
 
         let range = loc_to_range(self.file, expr.loc);
-        if let Some(ty) = self
-          .expr_value_overrides
-          .and_then(|overrides| overrides.get(&range).copied())
-        {
+        let prim = self.store.primitive_ids();
+        let override_ty = (|| {
+          let overrides = self.expr_value_overrides?;
+          if let Some(ty) = overrides.get(&range).copied().filter(|ty| *ty != prim.unknown) {
+            return Some(ty);
+          }
+
+          // HIR and AST spans can diverge slightly in some nested contexts (e.g.
+          // truncated/adjusted loc ranges). When an exact span match fails,
+          // conservatively choose the tightest override span that overlaps the
+          // class expression.
+          let mut best: Option<(u32, TextRange, TypeId)> = None;
+          for (span, ty) in overrides.iter() {
+            let span = *span;
+            let ty = *ty;
+            if ty == prim.unknown || !ranges_overlap(span, range) {
+              continue;
+            }
+            let len = span.end.saturating_sub(span.start);
+            let replace = match best {
+              Some((best_len, best_span, _)) => len < best_len || (len == best_len && span.start < best_span.start),
+              None => true,
+            };
+            if replace {
+              best = Some((len, span, ty));
+            }
+          }
+          best.map(|(_, _, ty)| ty)
+        })();
+
+        if let Some(ty) = override_ty {
           ty
         } else {
-          match self.class_expr_def_by_span.get(&range).copied() {
+          let class_def = self
+            .class_expr_def_by_span
+            .get(&range)
+            .copied()
+            .or_else(|| {
+              let mut best: Option<(u32, TextRange, DefId)> = None;
+              for (span, def) in self.class_expr_def_by_span.iter() {
+                let span = *span;
+                if !ranges_overlap(span, range) {
+                  continue;
+                }
+                let len = span.end.saturating_sub(span.start);
+                let replace = match best {
+                  Some((best_len, best_span, _)) => {
+                    len < best_len || (len == best_len && span.start < best_span.start)
+                  }
+                  None => true,
+                };
+                if replace {
+                  best = Some((len, span, *def));
+                }
+              }
+              best.map(|(_, _, def)| def)
+            });
+
+          match class_def {
             Some(type_def) => {
               let value_def = self.value_defs.get(&type_def).copied().unwrap_or(type_def);
               self.store.intern_type(TypeKind::Ref {
@@ -4028,7 +4080,7 @@ impl<'a> Checker<'a> {
                 args: Vec::new(),
               })
             }
-            None => self.store.primitive_ids().unknown,
+            None => prim.unknown,
           }
         }
       }

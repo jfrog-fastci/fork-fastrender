@@ -27,6 +27,35 @@ fn class_expression_initializer_has_concrete_type_with_no_implicit_any() {
 }
 
 #[test]
+fn class_expression_local_const_has_concrete_type_with_no_implicit_any() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    no_implicit_any: true,
+    ..Default::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let file = FileKey::new("main.ts");
+  let source = r#"
+function f() {
+  const C = class {};
+  return C;
+}
+"#;
+  host.insert(file.clone(), source);
+
+  let program = Program::new(host, vec![file.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    !diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::IMPLICIT_ANY.as_str()),
+    "unexpected implicit-any diagnostics: {diagnostics:?}"
+  );
+  assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+}
+
+#[test]
 fn class_expression_static_member_access_is_typed() {
   let mut host = MemoryHost::with_options(CompilerOptions {
     no_default_lib: true,

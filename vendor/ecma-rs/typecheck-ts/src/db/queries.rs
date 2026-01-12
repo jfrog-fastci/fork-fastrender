@@ -2236,108 +2236,123 @@ pub mod body_check {
         )
       })();
       let mut expr_value_overrides: HashMap<TextRange, TypeId> = HashMap::new();
+      let mut cached_def_types: HashMap<DefId, TypeId> = HashMap::new();
+      let mut scan_counter = 0usize;
+
+      // Function/arrow expressions are only needed for the current body (they
+      // participate in contextual typing). Do not override with `unknown`: the
+      // body checker can still compute function expression types directly from
+      // the AST (including return type inference from the function body).
       if !body.exprs.is_empty() {
-        let mut cached_def_types: HashMap<DefId, TypeId> = HashMap::new();
-        let mut local_defs: Option<HashMap<String, DefId>> = None;
-        let file_key = ctx.file_registry.lookup_key(meta.file);
-        let key_to_id = |key: &crate::FileKey| ctx.file_registry.lookup_id(key);
-        for (idx, expr) in body.exprs.iter().enumerate() {
-          if idx % 4096 == 0 && ctx.cancelled.load(Ordering::Relaxed) {
+        for expr in body.exprs.iter() {
+          scan_counter = scan_counter.wrapping_add(1);
+          if scan_counter % 4096 == 0 && ctx.cancelled.load(Ordering::Relaxed) {
             panic_any(crate::FatalError::Cancelled);
           }
-          match expr.kind {
-            hir_js::ExprKind::FunctionExpr { def, .. } => {
-              let ty = if let Some(ty) = cached_def_types.get(&def).copied() {
-                ty
-              } else {
-                let raw = ctx.interned_def_types.get(&def).copied().unwrap_or(prim.unknown);
-                let ty = if ctx.store.contains_type_id(raw) {
-                  ctx.store.canon(raw)
-                } else {
-                  prim.unknown
-                };
-                cached_def_types.insert(def, ty);
-                ty
-              };
-              // Do not override with `unknown`: the body checker can still compute
-              // function expression types directly from the AST (including return
-              // type inference from the function body). Overriding with `unknown`
-              // would erase that information and break downstream return-type
-              // inference for enclosing functions.
-              if ty != prim.unknown {
-                expr_value_overrides.insert(expr.span, ty);
-              }
-            }
-            hir_js::ExprKind::ClassExpr { def, .. } => {
-              let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
-              let ty = if let Some(ty) = cached_def_types.get(&value_def).copied() {
-                ty
-              } else {
-                let raw = ctx
-                  .interned_def_types
-                  .get(&value_def)
-                  .copied()
-                  .unwrap_or(prim.unknown);
-                let mut ty = if ctx.store.contains_type_id(raw) {
-                  ctx.store.canon(raw)
-                } else {
-                  prim.unknown
-                };
+          let hir_js::ExprKind::FunctionExpr { def, .. } = expr.kind else {
+            continue;
+          };
+          let ty = if let Some(ty) = cached_def_types.get(&def).copied() {
+            ty
+          } else {
+            let raw = ctx.interned_def_types.get(&def).copied().unwrap_or(prim.unknown);
+            let ty = if ctx.store.contains_type_id(raw) {
+              ctx.store.canon(raw)
+            } else {
+              prim.unknown
+            };
+            cached_def_types.insert(def, ty);
+            ty
+          };
+          if ty != prim.unknown {
+            expr_value_overrides.insert(expr.span, ty);
+          }
+        }
+      }
 
-                // Some bodies (e.g. files containing only expression statements)
-                // do not seed `interned_def_types` for nested class-expression
-                // defs. Fall back to lowering the class definition's declared
-                // *value* type so downstream `new (...)()` and static member
-                // access can be checked in the base checker.
-                if ty == prim.unknown {
-                  if let Some(hir_def) = lowered.def(def) {
-                    if let Some(type_info) = hir_def.type_info.as_ref() {
-                      let local_defs = local_defs.get_or_insert_with(|| {
-                        let mut defs = HashMap::new();
-                        for def in lowered.defs.iter() {
-                          if let Some(name) = lowered.names.resolve(def.name) {
-                            defs.insert(name.to_string(), def.id);
-                          }
-                        }
-                        defs
-                      });
-                      let mut diagnostics = Vec::new();
-                      let mut lowerer = HirDeclLowerer::new(
-                        Arc::clone(&ctx.store),
-                        &lowered.types,
-                        ctx.semantics.as_deref(),
-                        HashMap::new(),
-                        meta.file,
-                        file_key.clone(),
-                        strict_native,
-                        local_defs.clone(),
-                        &mut diagnostics,
-                        None,
-                        None,
-                        Some(ctx.host.as_ref()),
-                        Some(&key_to_id),
-                        Some(ctx.module_namespace_defs.as_ref()),
-                        Some(ctx.value_defs.as_ref()),
-                      );
-                      ty = lowerer
-                        .lower_class_instance_and_value_types(def, type_info, &lowered.names)
-                        .map(|(_, value, _)| ctx.store.canon(value))
-                        .unwrap_or(prim.unknown);
-                    }
+      // Class expressions are also evaluated while inferring return types for
+      // nested function declarations (`function_type` checks nested bodies
+      // directly). Those checks execute under the *enclosing* body's checker
+      // instance, so include class-expression overrides for all bodies in the
+      // file (not just the current body's HIR expr list).
+      let mut local_defs: Option<HashMap<String, DefId>> = None;
+      let file_key = ctx.file_registry.lookup_key(meta.file);
+      let key_to_id = |key: &crate::FileKey| ctx.file_registry.lookup_id(key);
+      let mut class_expr_value_type = |def: DefId| -> TypeId {
+        let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
+        if let Some(ty) = cached_def_types.get(&value_def).copied() {
+          return ty;
+        }
+
+        let raw = ctx
+          .interned_def_types
+          .get(&value_def)
+          .copied()
+          .unwrap_or(prim.unknown);
+        let mut ty = if ctx.store.contains_type_id(raw) {
+          ctx.store.canon(raw)
+        } else {
+          prim.unknown
+        };
+
+        // Nested class expressions are frequently missing from the shared
+        // `interned_def_types` snapshot (which is primarily seeded for stable,
+        // root-scope bindings). When that happens, fall back to lowering the
+        // class definition's declared *value* type so base-checker expression
+        // typing does not collapse to `unknown`.
+        if ty == prim.unknown {
+          if let Some(hir_def) = lowered.def(def) {
+            if let Some(type_info) = hir_def.type_info.as_ref() {
+              let local_defs = local_defs.get_or_insert_with(|| {
+                let mut defs = HashMap::new();
+                for def in lowered.defs.iter() {
+                  if let Some(name) = lowered.names.resolve(def.name) {
+                    defs.insert(name.to_string(), def.id);
                   }
                 }
-
-                cached_def_types.insert(value_def, ty);
-                ty
-              };
-              // Similar to function expressions, avoid overriding with `unknown`
-              // so the base checker can fall back to its own inference when a
-              // class expression's value-side type isn't available.
-              if ty != prim.unknown {
-                expr_value_overrides.insert(expr.span, ty);
-              }
+                defs
+              });
+              let mut diagnostics = Vec::new();
+              let mut lowerer = HirDeclLowerer::new(
+                Arc::clone(&ctx.store),
+                &lowered.types,
+                ctx.semantics.as_deref(),
+                HashMap::new(),
+                meta.file,
+                file_key.clone(),
+                strict_native,
+                local_defs.clone(),
+                &mut diagnostics,
+                None,
+                None,
+                Some(ctx.host.as_ref()),
+                Some(&key_to_id),
+                Some(ctx.module_namespace_defs.as_ref()),
+                Some(ctx.value_defs.as_ref()),
+              );
+              ty = lowerer
+                .lower_class_instance_and_value_types(def, type_info, &lowered.names)
+                .map(|(_, value, _)| ctx.store.canon(value))
+                .unwrap_or(prim.unknown);
             }
-            _ => {}
+          }
+        }
+
+        cached_def_types.insert(value_def, ty);
+        ty
+      };
+
+      for hir_body in lowered.bodies.iter() {
+        for expr in hir_body.exprs.iter() {
+          scan_counter = scan_counter.wrapping_add(1);
+          if scan_counter % 4096 == 0 && ctx.cancelled.load(Ordering::Relaxed) {
+            panic_any(crate::FatalError::Cancelled);
+          }
+          if let hir_js::ExprKind::ClassExpr { def, .. } = expr.kind {
+            let ty = class_expr_value_type(def);
+            if ty != prim.unknown {
+              expr_value_overrides.insert(expr.span, ty);
+            }
           }
         }
       }
@@ -2405,10 +2420,13 @@ pub mod body_check {
         Some(&ctx.cancelled),
       );
 
-      // The base checker does not (yet) type `AstExpr::Class`, leaving HIR class
-      // expressions as `unknown`. Fill those slots from the class definition's
-      // value-side type so `Program::type_at` works even when we don't run the
-      // flow checker (notably `BodyKind::Class` / `BodyKind::Initializer`).
+      // Not all bodies run the flow checker (notably `BodyKind::Class` /
+      // `BodyKind::Initializer`). Ensure HIR `ClassExpr` slots have a usable
+      // value-side type for offset-based queries like `Program::type_at` by
+      // filling any remaining `unknown` slots from the class definition.
+      let file_key = ctx.file_registry.lookup_key(meta.file);
+      let key_to_id = |key: &crate::FileKey| ctx.file_registry.lookup_id(key);
+      let mut class_expr_local_defs: Option<HashMap<String, DefId>> = None;
       for (idx, expr) in body.exprs.iter().enumerate() {
         let hir_js::ExprKind::ClassExpr { def, .. } = expr.kind else {
           continue;
@@ -2420,13 +2438,50 @@ pub mod body_check {
           continue;
         }
         let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
-        let ty = ctx
+        let mut ty = ctx
           .interned_def_types
           .get(&value_def)
           .copied()
           .filter(|ty| ctx.store.contains_type_id(*ty))
           .map(|ty| ctx.store.canon(ty))
           .unwrap_or(prim.unknown);
+        if ty == prim.unknown {
+          if let Some(hir_def) = lowered.def(def) {
+            if let Some(type_info) = hir_def.type_info.as_ref() {
+              let local_defs = class_expr_local_defs.get_or_insert_with(|| {
+                let mut defs = HashMap::new();
+                for def in lowered.defs.iter() {
+                  if let Some(name) = lowered.names.resolve(def.name) {
+                    defs.insert(name.to_string(), def.id);
+                  }
+                }
+                defs
+              });
+              let mut diagnostics = Vec::new();
+              let mut lowerer = HirDeclLowerer::new(
+                Arc::clone(&ctx.store),
+                &lowered.types,
+                ctx.semantics.as_deref(),
+                HashMap::new(),
+                meta.file,
+                file_key.clone(),
+                strict_native,
+                local_defs.clone(),
+                &mut diagnostics,
+                None,
+                None,
+                Some(ctx.host.as_ref()),
+                Some(&key_to_id),
+                Some(ctx.module_namespace_defs.as_ref()),
+                Some(ctx.value_defs.as_ref()),
+              );
+              ty = lowerer
+                .lower_class_instance_and_value_types(def, type_info, &lowered.names)
+                .map(|(_, value, _)| ctx.store.canon(value))
+                .unwrap_or(prim.unknown);
+            }
+          }
+        }
         *slot = ty;
       }
 
@@ -2527,6 +2582,9 @@ pub mod body_check {
           caches.relation.clone(),
         );
         let mut expr_def_types: HashMap<DefId, TypeId> = HashMap::new();
+        let file_key = ctx.file_registry.lookup_key(meta.file);
+        let key_to_id = |key: &crate::FileKey| ctx.file_registry.lookup_id(key);
+        let mut local_defs: Option<HashMap<String, DefId>> = None;
         for (idx, expr) in body.exprs.iter().enumerate() {
           match expr.kind {
             hir_js::ExprKind::FunctionExpr { def, .. } => {
@@ -2550,7 +2608,7 @@ pub mod body_check {
                     .filter(|ty| ctx.store.contains_type_id(*ty))
                     .map(|ty| ctx.store.canon(ty))
                     .unwrap_or(prim.unknown)
-                });
+              });
               expr_def_types.insert(def, ty);
             }
             hir_js::ExprKind::ClassExpr { def, .. } => {
@@ -2559,7 +2617,7 @@ pub mod body_check {
               }
               // Like function expressions, prefer the base checker output when it
               // already computed a concrete class value type for this expression.
-              let ty = result
+              let mut ty = result
                 .expr_types
                 .get(idx)
                 .copied()
@@ -2575,6 +2633,50 @@ pub mod body_check {
                     .map(|ty| ctx.store.canon(ty))
                     .unwrap_or(prim.unknown)
                 });
+
+              // Nested class expressions are often not present in the shared
+              // `interned_def_types` snapshot (we only precompute stable types
+              // for root-scope bindings). When that happens, fall back to
+              // lowering the class definition's value-side type so the flow
+              // checker can evaluate `new (class {...})()` and static member
+              // access without collapsing to `unknown`.
+              if ty == prim.unknown {
+                if let Some(hir_def) = lowered.def(def) {
+                  if let Some(type_info) = hir_def.type_info.as_ref() {
+                    let local_defs = local_defs.get_or_insert_with(|| {
+                      let mut defs = HashMap::new();
+                      for def in lowered.defs.iter() {
+                        if let Some(name) = lowered.names.resolve(def.name) {
+                          defs.insert(name.to_string(), def.id);
+                        }
+                      }
+                      defs
+                    });
+                    let mut diagnostics = Vec::new();
+                    let mut lowerer = HirDeclLowerer::new(
+                      Arc::clone(&ctx.store),
+                      &lowered.types,
+                      ctx.semantics.as_deref(),
+                      HashMap::new(),
+                      meta.file,
+                      file_key.clone(),
+                      strict_native,
+                      local_defs.clone(),
+                      &mut diagnostics,
+                      None,
+                      None,
+                      Some(ctx.host.as_ref()),
+                      Some(&key_to_id),
+                      Some(ctx.module_namespace_defs.as_ref()),
+                      Some(ctx.value_defs.as_ref()),
+                    );
+                    ty = lowerer
+                      .lower_class_instance_and_value_types(def, type_info, &lowered.names)
+                      .map(|(_, value, _)| ctx.store.canon(value))
+                      .unwrap_or(prim.unknown);
+                  }
+                }
+              }
               expr_def_types.insert(def, ty);
             }
             _ => {}
