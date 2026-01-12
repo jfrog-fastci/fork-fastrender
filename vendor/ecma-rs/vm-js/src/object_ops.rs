@@ -1615,6 +1615,19 @@ impl<'a> Scope<'a> {
       return self.object_get_prototype(obj);
     }
 
+    // When walking Proxy chains, avoid recursion: attacker-controlled Proxy chains can be very deep
+    // and can otherwise overflow the Rust stack.
+    //
+    // We mirror the recursive spec algorithm by:
+    // - descending through Proxy targets when the `"getPrototypeOf"` trap is absent, and
+    // - for present traps on **non-extensible targets**, recording the trap results and validating
+    //   the invariants while unwinding (ECMA-262 Proxy `[[GetPrototypeOf]]`).
+    //
+    // Invariants (ECMA-262):
+    // - If the target is extensible, any object/null trap result is allowed.
+    // - If the target is non-extensible, the trap result must be the target's actual prototype.
+    let mut pending_non_extensible_trap_protos: Vec<Option<GcObject>> = Vec::new();
+
     let mut current = obj;
     let mut steps = 0usize;
     let mut get_proto_trap_key: Option<PropertyKey> = None;
@@ -1630,7 +1643,15 @@ impl<'a> Scope<'a> {
       steps += 1;
 
       if !self.heap().is_proxy_object(current) {
-        return self.object_get_prototype(current);
+        let proto = self.object_get_prototype(current)?;
+        for expected in pending_non_extensible_trap_protos.iter().rev() {
+          if *expected != proto {
+            return Err(VmError::TypeError(
+              "Proxy getPrototypeOf trap returned invalid prototype for non-extensible target",
+            ));
+          }
+        }
+        return Ok(proto);
       }
 
       let Some(target) = self.heap().proxy_target(current)? else {
@@ -1675,13 +1696,40 @@ impl<'a> Scope<'a> {
         Value::Object(handler),
         &[Value::Object(target)],
       )?;
-      return match trap_result {
-        Value::Null => Ok(None),
-        Value::Object(o) => Ok(Some(o)),
-        _ => Err(VmError::TypeError(
-          "Proxy getPrototypeOf trap returned non-object",
-        )),
+      // Root the trap result: we may need it to remain alive across further proxy traversal and/or
+      // `IsExtensible(target)` checks.
+      self.push_root(trap_result)?;
+
+      let trap_proto = match trap_result {
+        Value::Null => None,
+        Value::Object(o) => Some(o),
+        _ => {
+          return Err(VmError::TypeError(
+            "Proxy getPrototypeOf trap returned non-object",
+          ))
+        }
       };
+
+      // Proxy invariant: only constrain trap result if the target is non-extensible.
+      let extensible_target = self.is_extensible_with_host_and_hooks(vm, host, hooks, target)?;
+      if extensible_target {
+        for expected in pending_non_extensible_trap_protos.iter().rev() {
+          if *expected != trap_proto {
+            return Err(VmError::TypeError(
+              "Proxy getPrototypeOf trap returned invalid prototype for non-extensible target",
+            ));
+          }
+        }
+        return Ok(trap_proto);
+      }
+
+      pending_non_extensible_trap_protos
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      pending_non_extensible_trap_protos.push(trap_proto);
+
+      // Continue evaluating `target.[[GetPrototypeOf]]()` to validate the invariant.
+      current = target;
     }
   }
 
