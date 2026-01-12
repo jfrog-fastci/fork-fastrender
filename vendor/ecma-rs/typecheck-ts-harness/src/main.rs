@@ -162,6 +162,13 @@ enum Commands {
     #[arg(long)]
     json: bool,
 
+    /// Emit suggested manifest entries as a TOML snippet to stdout
+    ///
+    /// This is intended for pasting into an expectations manifest after review.
+    /// Human-readable triage output is still printed to stderr.
+    #[arg(long, conflicts_with = "json")]
+    emit_manifest: bool,
+
     /// Number of top groups/cases to include
     #[arg(long, default_value_t = triage::DEFAULT_TOP)]
     top: usize,
@@ -370,6 +377,7 @@ fn main() -> ExitCode {
       input,
       baseline,
       json,
+      emit_manifest,
       top,
     } => {
       let input_raw = if input.as_os_str() == "-" {
@@ -422,6 +430,14 @@ fn main() -> ExitCode {
           return print_error(err);
         }
         if let Err(err) = writeln!(&mut handle) {
+          return print_error(err);
+        }
+      }
+
+      if emit_manifest {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        if let Err(err) = triage::print_manifest_suggestions_toml(&report, &mut handle) {
           return print_error(err);
         }
       }

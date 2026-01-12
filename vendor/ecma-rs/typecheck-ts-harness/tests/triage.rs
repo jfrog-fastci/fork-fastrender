@@ -230,6 +230,25 @@ const EXPECTED_CONFORMANCE_TRIAGE: &str = r#"{
 }
 "#;
 
+const EXPECTED_CONFORMANCE_MANIFEST_SNIPPET: &str = r#"[[expectations]]
+id = "checker/c.ts"
+status = "xfail"
+reason = "triage: rust_extra_diagnostics TS1111"
+tracking_issue = "TODO"
+
+[[expectations]]
+id = "checker/d.ts"
+status = "xfail"
+reason = "triage: rust_extra_diagnostics TS9999"
+tracking_issue = "TODO"
+
+[[expectations]]
+id = "compiler/a.ts"
+status = "xfail"
+reason = "triage: rust_missing_diagnostics TS1111"
+tracking_issue = "TODO"
+"#;
+
 const EXPECTED_CONFORMANCE_TRIAGE_WITH_BASELINE: &str = r#"{
   "kind": "conformance",
   "top": 5,
@@ -602,6 +621,32 @@ fn triage_conformance_json_output_is_stable() {
   );
   let stdout = String::from_utf8_lossy(&output.stdout);
   assert_eq!(stdout, EXPECTED_CONFORMANCE_TRIAGE);
+}
+
+#[test]
+fn triage_can_emit_manifest_suggestions_as_toml() {
+  let dir = tempdir().expect("tempdir");
+  let path = dir.path().join("report.json");
+  fs::write(&path, CONFORMANCE_REPORT).expect("write report");
+
+  let mut cmd = harness_cli();
+  cmd.timeout(CLI_TIMEOUT);
+  cmd
+    .arg("triage")
+    .arg("--input")
+    .arg(&path)
+    .arg("--top")
+    .arg("5")
+    .arg("--emit-manifest");
+
+  let assert = cmd.assert().success();
+  let output = assert.get_output();
+  assert!(
+    !output.stderr.is_empty(),
+    "expected human summary on stderr"
+  );
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert_eq!(stdout, EXPECTED_CONFORMANCE_MANIFEST_SNIPPET);
 }
 
 #[test]

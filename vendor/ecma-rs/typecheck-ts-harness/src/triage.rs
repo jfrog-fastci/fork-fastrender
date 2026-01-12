@@ -366,6 +366,62 @@ pub fn print_human_summary(report: &TriageReport, out: &mut impl Write) -> io::R
   Ok(())
 }
 
+#[derive(Debug, Serialize)]
+struct ManifestSnippet {
+  expectations: Vec<ManifestSnippetEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct ManifestSnippetEntry {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  id: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  glob: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  regex: Option<String>,
+  status: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  reason: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  tracking_issue: Option<String>,
+}
+
+pub fn print_manifest_suggestions_toml(
+  report: &TriageReport,
+  out: &mut impl Write,
+) -> io::Result<()> {
+  if report.suggestions.is_empty() {
+    writeln!(out, "# no suggested manifest entries")?;
+    return Ok(());
+  }
+
+  let snippet = ManifestSnippet {
+    expectations: report
+      .suggestions
+      .iter()
+      .map(|entry| ManifestSnippetEntry {
+        id: entry.id.clone(),
+        glob: entry.glob.clone(),
+        regex: None,
+        status: entry.status.clone(),
+        reason: entry.reason.clone(),
+        tracking_issue: match entry.status.as_str() {
+          "pass" => None,
+          _ => Some("TODO".to_string()),
+        },
+      })
+      .collect(),
+  };
+
+  let mut rendered = toml::to_string_pretty(&snippet)
+    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+  if !rendered.ends_with('\n') {
+    rendered.push('\n');
+  }
+  write!(out, "{rendered}")?;
+  Ok(())
+}
+
 fn write_top(out: &mut impl Write, title: &str, groups: &[CountGroup]) -> io::Result<()> {
   writeln!(out, "{title}:")?;
   if groups.is_empty() {
