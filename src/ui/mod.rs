@@ -114,7 +114,7 @@ pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, ChromeAction};
 #[cfg(feature = "browser_ui")]
-pub use session::{BrowserSession, BrowserSessionTab};
+pub use session::{BrowserSession, BrowserSessionTab, BrowserSessionWindow, BrowserWindowState};
 #[cfg(feature = "browser_ui")]
 pub use icons::{icon, icon_button, icon_tinted, spinner, BrowserIcon};
 #[cfg(feature = "browser_ui")]

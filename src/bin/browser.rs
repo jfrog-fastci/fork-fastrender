@@ -459,7 +459,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
     let (startup_session, source) = match std::env::var(OVERRIDE_ENV) {
       Ok(raw) if !raw.trim().is_empty() => {
-        let session: fastrender::ui::BrowserSession = serde_json::from_str(&raw)
+        let session = fastrender::ui::session::parse_session_json(&raw)
           .map_err(|err| format!("{OVERRIDE_ENV}: invalid JSON: {err}"))?;
         (session, StartupSessionSource::HeadlessOverride)
       }
@@ -946,8 +946,9 @@ fn run_headless_smoke_mode(
   let (ui_to_worker_tx, worker_to_ui_rx, join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
 
-  let mut tab_ids = Vec::with_capacity(session.tabs.len());
-  for tab in &session.tabs {
+  let window = &session.windows[session.active_window_index];
+  let mut tab_ids = Vec::with_capacity(window.tabs.len());
+  for tab in &window.tabs {
     let tab_id = TabId::new();
     tab_ids.push(tab_id);
     ui_to_worker_tx.send(UiToWorker::CreateTab {
@@ -957,7 +958,7 @@ fn run_headless_smoke_mode(
     })?;
   }
 
-  let active_idx = session
+  let active_idx = window
     .active_tab_index
     .min(tab_ids.len().saturating_sub(1));
   let active_tab_id = tab_ids[active_idx];
@@ -1073,7 +1074,7 @@ fn run_headless_smoke_mode(
 >>>>>>> a61fb6fe (feat(browser): modernize <select> dropdown popup)
   }
 
-  let active_url = session
+  let active_url = window
     .tabs
     .get(active_idx)
     .map(|t| t.url.as_str())
@@ -1736,9 +1737,21 @@ error: {err}",
     use fastrender::ui::UiToWorker;
 
     let session = session.sanitized();
-    let mut tab_ids = Vec::with_capacity(session.tabs.len());
+    let window = session
+      .windows
+      .into_iter()
+      .nth(session.active_window_index)
+      .unwrap_or_else(|| fastrender::ui::BrowserSessionWindow {
+        tabs: vec![fastrender::ui::BrowserSessionTab {
+          url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
+          zoom: None,
+        }],
+        active_tab_index: 0,
+        window_state: None,
+      });
+    let mut tab_ids = Vec::with_capacity(window.tabs.len());
 
-    for tab in session.tabs {
+    for tab in window.tabs {
       let tab_id = fastrender::ui::TabId::new();
       tab_ids.push(tab_id);
 
@@ -1757,7 +1770,7 @@ error: {err}",
       });
     }
 
-    let active_idx = session
+    let active_idx = window
       .active_tab_index
       .min(tab_ids.len().saturating_sub(1));
     let active_tab_id = tab_ids[active_idx];
