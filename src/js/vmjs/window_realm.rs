@@ -19525,6 +19525,26 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
 
     define_event_is_trusted_legacy_unforgeable(scope, event_obj, event.is_trusted)?;
 
+    // UIEvent.view is commonly used (e.g. `event.view === window`). For host-dispatched UIEvent
+    // types we best-effort set it to the document's window.
+    if matches!(
+      interface,
+      EventInterface::MouseEvent
+        | EventInterface::KeyboardEvent
+        | EventInterface::FocusEvent
+        | EventInterface::InputEvent
+    ) {
+      let view = match document_window_from_document(scope, document_obj)? {
+        Some(window_obj) => {
+          scope.push_root(Value::Object(window_obj))?;
+          Value::Object(window_obj)
+        }
+        None => Value::Null,
+      };
+      let view_key = alloc_key(scope, "view")?;
+      scope.define_property(event_obj, view_key, read_only_data_desc(view))?;
+    }
+
     if interface == EventInterface::CustomEvent {
       let detail_key = alloc_key(scope, "detail")?;
       let detail = event.detail.unwrap_or(Value::Null);
@@ -41585,6 +41605,7 @@ mod tests {
        globalThis.__shift = null;\n\
        globalThis.__alt = null;\n\
        globalThis.__meta = null;\n\
+       globalThis.__view_ok = null;\n\
        document.getElementById('t').addEventListener('click', (e) => {\n\
          globalThis.__is_mouse = (e instanceof MouseEvent);\n\
          globalThis.__cx = e.clientX;\n\
@@ -41595,6 +41616,7 @@ mod tests {
          globalThis.__shift = e.shiftKey;\n\
          globalThis.__alt = e.altKey;\n\
          globalThis.__meta = e.metaKey;\n\
+         globalThis.__view_ok = (e.view === globalThis);\n\
        });",
     )?;
 
@@ -41664,6 +41686,7 @@ mod tests {
     assert_eq!(realm.exec_script("globalThis.__shift")?, Value::Bool(false));
     assert_eq!(realm.exec_script("globalThis.__alt")?, Value::Bool(true));
     assert_eq!(realm.exec_script("globalThis.__meta")?, Value::Bool(false));
+    assert_eq!(realm.exec_script("globalThis.__view_ok")?, Value::Bool(true));
 
     Ok(())
   }
