@@ -409,6 +409,29 @@ pub enum UiToWorker {
     tab_id: TabId,
     key: KeyAction,
   },
+  /// Begin/update an active "find in page" query for this tab.
+  ///
+  /// An empty query clears all find highlights/results for the tab.
+  FindQuery {
+    tab_id: TabId,
+    query: String,
+    case_sensitive: bool,
+  },
+  /// Jump to the next match for the active find query.
+  FindNext {
+    tab_id: TabId,
+  },
+  /// Jump to the previous match for the active find query.
+  FindPrev {
+    tab_id: TabId,
+  },
+  /// Explicitly stop/close find in page for this tab (clears highlights/results).
+  ///
+  /// This is equivalent to sending [`UiToWorker::FindQuery`] with an empty query, but is exposed as
+  /// a distinct message for clearer front-end UX and intent.
+  FindStop {
+    tab_id: TabId,
+  },
   RequestRepaint {
     tab_id: TabId,
     reason: RepaintReason,
@@ -539,6 +562,17 @@ pub enum WorkerToUi {
     hovered_url: Option<String>,
     cursor: CursorKind,
   },
+  /// Updated find-in-page results for a tab.
+  ///
+  /// - `active_match_index` is **0-based** (UIs can display `+1`).
+  /// - When `match_count == 0`, `active_match_index` must be `None`.
+  FindResult {
+    tab_id: TabId,
+    query: String,
+    case_sensitive: bool,
+    match_count: usize,
+    active_match_index: Option<usize>,
+  },
   /// Request that the UI set the OS clipboard text.
   ///
   /// This is typically emitted in response to [`UiToWorker::Copy`] or [`UiToWorker::Cut`].
@@ -604,5 +638,39 @@ mod tests {
       let formatted = format!("{msg:?}");
       assert!(!formatted.is_empty());
     }
+  }
+
+  #[test]
+  fn find_in_page_messages_are_debug_constructible() {
+    let tab_id = TabId(1);
+    let query = "test".to_string();
+
+    // Ensure the new variants can be constructed and formatted. This is intentionally lightweight:
+    // we just want compilation coverage for the message protocol.
+    let ui_msgs = [
+      UiToWorker::FindQuery {
+        tab_id,
+        query: query.clone(),
+        case_sensitive: false,
+      },
+      UiToWorker::FindNext { tab_id },
+      UiToWorker::FindPrev { tab_id },
+      UiToWorker::FindStop { tab_id },
+    ];
+
+    for msg in ui_msgs {
+      let formatted = format!("{msg:?}");
+      assert!(!formatted.is_empty());
+    }
+
+    let worker_msg = WorkerToUi::FindResult {
+      tab_id,
+      query,
+      case_sensitive: false,
+      match_count: 3,
+      active_match_index: Some(1),
+    };
+    let formatted = format!("{worker_msg:?}");
+    assert!(!formatted.is_empty());
   }
 }

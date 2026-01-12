@@ -1411,6 +1411,13 @@ impl BrowserRuntime {
       UiToWorker::KeyAction { tab_id, key } => {
         self.handle_key_action(tab_id, key);
       }
+      UiToWorker::FindQuery { .. }
+      | UiToWorker::FindNext { .. }
+      | UiToWorker::FindPrev { .. }
+      | UiToWorker::FindStop { .. } => {
+        // Find-in-page is wired through the protocol + shared UI state model, but worker-side find
+        // implementation/highlighting lives in a separate task. Ignore these messages for now.
+      }
       UiToWorker::RequestRepaint { tab_id, reason: _ } => {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;

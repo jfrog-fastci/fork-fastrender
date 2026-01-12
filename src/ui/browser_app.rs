@@ -56,6 +56,27 @@ pub struct FaviconReadyUpdate {
   pub height: u32,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FindInPageState {
+  pub open: bool,
+  pub query: String,
+  pub case_sensitive: bool,
+  pub match_count: usize,
+  pub active_match_index: Option<usize>,
+}
+
+impl Default for FindInPageState {
+  fn default() -> Self {
+    Self {
+      open: false,
+      query: String::new(),
+      case_sensitive: false,
+      match_count: 0,
+      active_match_index: None,
+    }
+  }
+}
+
 impl std::fmt::Debug for FaviconReadyUpdate {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("FaviconReadyUpdate")
@@ -133,6 +154,7 @@ pub struct BrowserTabState {
   pub zoom: f32,
   pub hovered_url: Option<String>,
   pub cursor: CursorKind,
+  pub find: FindInPageState,
   pub scroll_state: ScrollState,
   pub scroll_metrics: Option<ScrollMetrics>,
   pub latest_frame_meta: Option<LatestFrameMeta>,
@@ -161,6 +183,7 @@ impl BrowserTabState {
       zoom: crate::ui::zoom::DEFAULT_ZOOM,
       hovered_url: None,
       cursor: CursorKind::Default,
+      find: FindInPageState::default(),
       scroll_state: ScrollState::default(),
       scroll_metrics: None,
       latest_frame_meta: None,
@@ -814,6 +837,25 @@ impl BrowserAppState {
         }
         update.request_redraw = self.active_tab_id() == Some(tab_id);
       }
+      WorkerToUi::FindResult {
+        tab_id,
+        query,
+        case_sensitive,
+        match_count,
+        active_match_index,
+      } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.find.query = query;
+          tab.find.case_sensitive = case_sensitive;
+          tab.find.match_count = match_count;
+          tab.find.active_match_index = if match_count == 0 {
+            None
+          } else {
+            active_match_index
+          };
+        }
+        update.request_redraw = self.active_tab_id() == Some(tab_id);
+      }
       WorkerToUi::SetClipboardText { .. } => {
         // Clipboard is handled by the front-end (e.g. `src/bin/browser.rs`); the shared app state
         // model does not store clipboard contents.
@@ -1208,6 +1250,44 @@ mod browser_app_tests {
     let tab = app.active_tab().unwrap();
     assert_eq!(tab.load_stage, None);
     assert_eq!(tab.load_progress, Some(0.0));
+  }
+
+  #[test]
+  fn find_result_updates_only_target_tab_and_does_not_mutate_open() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(
+      BrowserTabState::new(tab_a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+
+    // UI controls find visibility; the worker must not mutate it.
+    app.tab_mut(tab_a).unwrap().find.open = true;
+    app.tab_mut(tab_b).unwrap().find.open = false;
+
+    app.apply_worker_msg(WorkerToUi::FindResult {
+      tab_id: tab_a,
+      query: "needle".to_string(),
+      case_sensitive: true,
+      match_count: 5,
+      active_match_index: Some(2),
+    });
+
+    let a = app.tab(tab_a).unwrap();
+    assert!(a.find.open, "open should be UI-owned and preserved");
+    assert_eq!(a.find.query, "needle");
+    assert!(a.find.case_sensitive);
+    assert_eq!(a.find.match_count, 5);
+    assert_eq!(a.find.active_match_index, Some(2));
+
+    let b = app.tab(tab_b).unwrap();
+    assert!(!b.find.open);
+    assert_eq!(b.find, FindInPageState::default());
   }
 
   // Note: scroll restoration is worker-owned (see `ui::render_worker`), so the windowed UI state

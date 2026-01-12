@@ -84,7 +84,7 @@ pub use wgpu_pixmap_texture::WgpuPixmapTexture;
 
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,
-  LatestFrameMeta, OpenSelectDropdownUpdate,
+  FindInPageState, LatestFrameMeta, OpenSelectDropdownUpdate,
 };
 pub use history::{HistoryEntry, TabHistory};
 pub use zoom::{

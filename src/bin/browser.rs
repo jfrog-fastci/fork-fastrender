@@ -1731,6 +1731,10 @@ error: {err}",
       | UiToWorker::Cut { tab_id }
       | UiToWorker::SelectAll { tab_id }
       | UiToWorker::KeyAction { tab_id, .. }
+      | UiToWorker::FindQuery { tab_id, .. }
+      | UiToWorker::FindNext { tab_id }
+      | UiToWorker::FindPrev { tab_id }
+      | UiToWorker::FindStop { tab_id }
       | UiToWorker::RequestRepaint { tab_id, .. } => *tab_id,
     };
 
@@ -1759,6 +1763,10 @@ error: {err}",
         | UiToWorker::Paste { .. }
         | UiToWorker::Cut { .. }
         | UiToWorker::KeyAction { .. }
+        | UiToWorker::FindQuery { .. }
+        | UiToWorker::FindNext { .. }
+        | UiToWorker::FindPrev { .. }
+        | UiToWorker::FindStop { .. }
         | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
         // `Tick` and tab-management messages should not force cancellation.
         UiToWorker::Tick { .. }
