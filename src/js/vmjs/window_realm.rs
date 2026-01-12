@@ -2475,7 +2475,7 @@ const OPTION_SELECTED_SET_KEY: &str = "__fastrender_option_selected_set";
 const SELECT_OPTIONS_CACHE_KEY: &str = "__fastrender_select_options_cache";
 
 /// List of internal (non-standard) document-owned `__fastrender_*` properties that store shared
-/// native function objects.
+/// native function/prototype objects used by wrapper bindings.
 ///
 /// `get_or_create_node_wrapper(..)` installs many DOM APIs on newly created node wrappers by
 /// reading these hidden properties from the owning `Document` wrapper object. Detached documents
@@ -2569,6 +2569,10 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   ELEMENT_HEIGHT_SET_KEY,
   ELEMENT_WIDTH_GET_KEY,
   ELEMENT_WIDTH_SET_KEY,
+  // Collection/prototype helpers.
+  HTML_COLLECTION_PROTOTYPE_KEY,
+  NODE_LIST_PROTOTYPE_KEY,
+  MUTATION_RECORD_PROTOTYPE_KEY,
   // HTMLFormElement/HTMLInputElement/HTMLTextAreaElement helpers.
   INPUT_VALUE_GET_KEY,
   INPUT_VALUE_SET_KEY,
@@ -37995,6 +37999,23 @@ mod tests {
   }
 
   #[test]
+  fn create_html_document_children_returns_html_collection() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      "(() => {\n\
+         const d = document.implementation.createHTMLDocument();\n\
+         d.body.innerHTML = '<div id=\"a\"></div>';\n\
+         const children = d.body.children;\n\
+         return (children instanceof HTMLCollection) + '|' + children.length + '|' + children.item(0).id;\n\
+       })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "true|1|a");
+    Ok(())
+  }
+
+  #[test]
   fn document_ready_state_reflects_dom2_document_ready_state() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
@@ -38062,13 +38083,17 @@ mod tests {
       &mut host,
       r#"(() => {
         const doc = new DOMParser().parseFromString('<html><body><div id="a">hi</div></body></html>', 'text/html');
+        const children = doc.body.children;
         return typeof doc.body.appendChild + '|' +
           doc.getElementById('a').textContent + '|' +
-          (doc.documentElement.parentNode === doc);
+          (doc.documentElement.parentNode === doc) + '|' +
+          (children instanceof HTMLCollection) + '|' +
+          children.length + '|' +
+          children.item(0).id;
       })()"#,
     )?;
 
-    assert_eq!(get_string(realm.heap(), result), "function|hi|true");
+    assert_eq!(get_string(realm.heap(), result), "function|hi|true|true|1|a");
     Ok(())
   }
 
