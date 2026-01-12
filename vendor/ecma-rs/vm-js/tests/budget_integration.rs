@@ -785,9 +785,10 @@ fn builtins_function_apply_consumes_fuel_in_native_loop() {
     }
   }
 
+  // Use a larger heap so the failure mode is budget termination rather than OOM while iterating
+  // over a large "array-like" argument list.
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-  let mut rt = JsRuntime::new(vm, heap).unwrap();
+  let mut rt = new_runtime_with_vm(vm);
 
   let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
   let intr = realm.intrinsics();
