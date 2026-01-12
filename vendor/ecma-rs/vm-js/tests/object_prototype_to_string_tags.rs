@@ -161,6 +161,13 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   let out = rt.exec_script("Object.prototype.toString.call(weakSet)")?;
   assert_eq!(expect_string(&rt, out), "[object WeakSet]");
 
+  // Iterator objects via @@toStringTag on their intrinsic iterator prototypes.
+  let out = rt.exec_script(r#"Object.prototype.toString.call([].values())"#)?;
+  assert_eq!(expect_string(&rt, out), "[object Array Iterator]");
+
+  let out = rt.exec_script(r#"Object.prototype.toString.call(""[Symbol.iterator]())"#)?;
+  assert_eq!(expect_string(&rt, out), "[object String Iterator]");
+
   // Revoked Proxies must throw when `Object.prototype.toString` performs `Get(O, @@toStringTag)`.
   let out = rt.exec_script(
     r#"try { Object.prototype.toString.call(revokedCallableProxy) } catch (e) { e.message }"#,
