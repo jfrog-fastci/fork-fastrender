@@ -248,6 +248,7 @@ pub struct WindowRealm {
   console_sink_id: Option<u64>,
   match_media_env_id: Option<u64>,
   time_bindings: Option<TimeBindings>,
+  text_encoding_bindings: Option<crate::js::window_text_encoding::TextEncodingBindings>,
   interrupt_flag: Arc<AtomicBool>,
   /// Tracks whether `runtime.heap` is still alive.
   ///
@@ -529,7 +530,7 @@ impl WindowRealm {
 
     let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
 
-    let (console_sink_id, match_media_env_id, console_obj, console_sink_id_key_s) =
+    let (console_sink_id, match_media_env_id, text_encoding_bindings, console_obj, console_sink_id_key_s) =
       init_window_globals(vm, heap, realm, &config)?;
     let time_bindings = match crate::js::time::install_time_bindings(
       vm,
@@ -568,6 +569,7 @@ impl WindowRealm {
       console_sink_id,
       match_media_env_id,
       time_bindings: Some(time_bindings),
+      text_encoding_bindings: Some(text_encoding_bindings),
       interrupt_flag,
       heap_alive,
       js_execution_options,
@@ -695,6 +697,7 @@ impl WindowRealm {
     }
     self.runtime.vm.clear_module_graph();
     self.time_bindings.take();
+    self.text_encoding_bindings.take();
     if let Some(id) = self.console_sink_id.take() {
       unregister_console_sink(id);
     }
@@ -30297,7 +30300,16 @@ fn init_window_globals(
   heap: &mut Heap,
   realm: &Realm,
   config: &WindowRealmConfig,
-) -> Result<(Option<u64>, Option<u64>, GcObject, GcString), VmError> {
+) -> Result<
+  (
+    Option<u64>,
+    Option<u64>,
+    crate::js::window_text_encoding::TextEncodingBindings,
+    GcObject,
+    GcString,
+  ),
+  VmError,
+> {
   {
     let mut scope = heap.scope();
     // Ensure `DOMException` exists early: many real-world libraries use it for quota errors, token
@@ -30319,7 +30331,6 @@ fn init_window_globals(
     crate::js::bindings::install_document_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_fragment_bindings_vm_js(vm, heap, realm)?;
   }
-
   let mut scope = heap.scope();
   let global = realm.global_object();
   scope.heap_mut().object_set_host_slots(
@@ -37687,7 +37698,8 @@ fn init_window_globals(
   // Install these before text encoding because `TextEncoderStream` is implemented on top of
   // `TransformStream`.
   crate::js::window_streams::install_window_streams_bindings(vm, realm, heap)?;
-  crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
+  let text_encoding_bindings =
+    crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
   crate::js::window_dom_rect::install_window_dom_rect_bindings(vm, realm, heap)?;
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
   crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;
@@ -37701,6 +37713,7 @@ fn init_window_globals(
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),
     Some(match_media_guard.disarm()),
+    text_encoding_bindings,
     console_obj,
     sink_id_key_s,
   ))
@@ -45924,8 +45937,9 @@ mod tests {
       scope.push_root(Value::Object(doc2_obj))?;
 
       let mut dom2 = dom2::Document::new(QuirksMode::NoQuirks);
+      let doc2_root = dom2.root();
       let node2_id = dom2.create_element("x", "");
-      dom2.append_child(dom2.root(), node2_id).unwrap();
+      dom2.append_child(doc2_root, node2_id).unwrap();
 
       let mut dom2_box = Box::new(dom2);
       let dom2_ptr = NonNull::from(dom2_box.as_mut());
@@ -45947,12 +45961,19 @@ mod tests {
         doc2_obj,
         Some(platform.prototype_for(DomInterface::Document)),
       )?;
+      scope.heap_mut().object_set_host_slots(
+        doc2_obj,
+        HostSlots {
+          a: DOM_WRAPPER_HOST_TAG,
+          b: 0,
+        },
+      )?;
       let doc2_key = vm_js::WeakGcObject::from(doc2_obj);
       platform.register_wrapper(
         scope.heap(),
         doc2_obj,
         doc2_key,
-        NodeId::from_index(0),
+        doc2_root,
         DomInterface::Document,
       );
 

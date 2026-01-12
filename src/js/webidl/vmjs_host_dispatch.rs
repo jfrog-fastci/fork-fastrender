@@ -3802,6 +3802,9 @@ mod element_dispatch_tests {
       .expect("append div to document");
     let mut host = DocumentHostState::new(dom);
 
+    // `DomPlatform` wrapper caching is keyed by a (weak) JS document wrapper identity. WebIDL
+    // dispatch tests don't need a full Document implementation, but they must supply a stable
+    // document key so wrapper identity remains consistent.
     let document_obj = scope.alloc_object()?;
     scope.push_root(Value::Object(document_obj))?;
     let document_key = WeakGcObject::from(document_obj);

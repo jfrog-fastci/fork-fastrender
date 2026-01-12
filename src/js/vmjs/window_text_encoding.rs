@@ -5,11 +5,14 @@
 //! `Uint8Array` primitives.
 
 use std::char;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use encoding_rs::{Encoding, UTF_16BE, UTF_16LE, UTF_8, WINDOWS_1252};
 use vm_js::{
-  new_range_error, HostSlots, Intrinsics, NativeConstructId, NativeFunctionId, PropertyDescriptor,
-  PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  new_range_error, Heap, HostSlots, Intrinsics, NativeConstructId, NativeFunctionId,
+  PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks, WeakGcObject,
 };
 
 const TEXT_ENCODER_HOST_TAG: u64 = 0x5445_5854_454E_4344; // "TEXTENCD"
@@ -28,6 +31,65 @@ const TEXT_DECODER_ENCODING_UTF16LE: u64 = 2;
 const TEXT_DECODER_ENCODING_UTF16BE: u64 = 3;
 
 const TEXT_DECODER_ENCODING_SHIFT: u64 = 2;
+
+#[derive(Debug)]
+#[must_use = "Text encoding bindings are only valid while the returned TextEncodingBindings is kept alive"]
+pub(crate) struct TextEncodingBindings {
+  heap_key: usize,
+}
+
+#[derive(Default)]
+struct TextEncodingContext {
+  last_gc_runs: u64,
+  decoders: HashMap<WeakGcObject, TextDecoderRuntimeState>,
+}
+
+struct TextDecoderRuntimeState {
+  decoder: encoding_rs::Decoder,
+}
+
+static TEXT_ENCODING_CONTEXTS: OnceLock<Mutex<HashMap<usize, TextEncodingContext>>> = OnceLock::new();
+
+fn text_encoding_contexts() -> &'static Mutex<HashMap<usize, TextEncodingContext>> {
+  TEXT_ENCODING_CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+impl Drop for TextEncodingBindings {
+  fn drop(&mut self) {
+    if let Ok(mut map) = text_encoding_contexts().lock() {
+      map.remove(&self.heap_key);
+    }
+  }
+}
+
+fn new_streaming_decoder(encoding: &'static Encoding, ignore_bom: bool) -> encoding_rs::Decoder {
+  if ignore_bom {
+    encoding.new_decoder_without_bom_handling()
+  } else {
+    encoding.new_decoder_with_bom_removal()
+  }
+}
+
+fn with_text_encoding_context_mut<R>(
+  heap: &Heap,
+  f: impl FnOnce(&mut TextEncodingContext) -> Result<R, VmError>,
+) -> Result<R, VmError> {
+  let heap_key = heap as *const Heap as usize;
+  let mut lock = text_encoding_contexts()
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  let ctx = lock.get_mut(&heap_key).ok_or(VmError::Unimplemented(
+    "Text encoding bindings not installed for this heap",
+  ))?;
+
+  let gc_runs = heap.gc_runs();
+  if gc_runs != ctx.last_gc_runs {
+    ctx.last_gc_runs = gc_runs;
+    ctx.decoders.retain(|weak, _| weak.upgrade(heap).is_some());
+  }
+
+  f(ctx)
+}
 
 /// Upper bound on the number of UTF-16 code units accepted for a `TextDecoder` label.
 ///
@@ -727,6 +789,16 @@ fn text_decoder_construct(
     .heap_mut()
     .object_set_host_slots(obj, HostSlots { a: TEXT_DECODER_HOST_TAG, b: state })?;
 
+  // Initialize the per-instance streaming decoder state used by `TextDecoder.decode(.., {stream:true})`.
+  let ignore_bom = (flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0;
+  let decoder = new_streaming_decoder(encoding, ignore_bom);
+  with_text_encoding_context_mut(scope.heap(), |ctx| {
+    ctx
+      .decoders
+      .insert(WeakGcObject::from(obj), TextDecoderRuntimeState { decoder });
+    Ok(())
+  })?;
+
   Ok(Value::Object(obj))
 }
 
@@ -1004,71 +1076,151 @@ fn text_encoder_encode_into(
 }
 
 fn text_decoder_decode(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (_obj, state) = require_text_decoder_receiver(scope, this)?;
+  let (obj, state) = require_text_decoder_receiver(scope, this)?;
   let flags = text_decoder_state_flags(state);
   let ignore_bom = (flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0;
   let fatal = (flags & TEXT_DECODER_FLAG_FATAL) != 0;
   let encoding = text_decoder_state_encoding(state)?;
 
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  let options = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  match input {
-    Value::Undefined => {
-      let empty = scope.alloc_string("")?;
-      Ok(Value::String(empty))
+  // WebIDL `TextDecodeOptions` `{ stream }`.
+  let stream = match options {
+    Value::Object(options_obj) => {
+      // Root the options object while retrieving the property.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(options_obj))?;
+      let stream_key = alloc_key(&mut scope, "stream")?;
+      let stream_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, stream_key)?;
+      scope.heap().to_boolean(stream_value)?
     }
-    Value::Object(obj) => {
-      let decoded: String = {
-        let heap = scope.heap();
-        let data = if heap.is_array_buffer_object(obj) {
-          heap.array_buffer_data(obj)?
-        } else if heap.is_uint8_array_object(obj) {
-          heap.uint8_array_data(obj)?
-        } else {
-          return Err(VmError::TypeError(
-            "TextDecoder.decode expects an ArrayBuffer or Uint8Array",
-          ));
-        };
+    _ => false,
+  };
 
-        if data.len() > MAX_TEXT_DECODER_INPUT_BYTES {
-          return Err(VmError::TypeError("TextDecoder input too large"));
-        }
-
-        let (decoded, had_errors) = if ignore_bom {
-          encoding.decode_without_bom_handling(data)
-        } else {
-          encoding.decode_with_bom_removal(data)
-        };
-        if fatal && had_errors {
-          return Err(VmError::TypeError(
-            "The encoded data was not valid for the specified encoding",
-          ));
-        }
-        decoded.into_owned()
-      };
-
-      let out = scope.alloc_string(&decoded)?;
-      Ok(Value::String(out))
+  let heap = scope.heap();
+  let data = match input {
+    Value::Undefined => &[][..],
+    Value::Object(input_obj) => {
+      if heap.is_array_buffer_object(input_obj) {
+        heap.array_buffer_data(input_obj)?
+      } else if heap.is_uint8_array_object(input_obj) {
+        heap.uint8_array_data(input_obj)?
+      } else {
+        return Err(VmError::TypeError(
+          "TextDecoder.decode expects an ArrayBuffer or Uint8Array",
+        ));
+      }
     }
-    _ => Err(VmError::TypeError(
-      "TextDecoder.decode expects an ArrayBuffer or Uint8Array",
-    )),
+    _ => {
+      return Err(VmError::TypeError(
+        "TextDecoder.decode expects an ArrayBuffer or Uint8Array",
+      ))
+    }
+  };
+
+  if data.len() > MAX_TEXT_DECODER_INPUT_BYTES {
+    return Err(VmError::TypeError("TextDecoder input too large"));
   }
+
+  let decoded = with_text_encoding_context_mut(heap, |ctx| {
+    use encoding_rs::CoderResult;
+
+    // If runtime state is missing (e.g. due to unexpected registry mutation), recreate a decoder
+    // so `TextDecoder.decode` still functions.
+    let key = WeakGcObject::from(obj);
+    let state = ctx.decoders.entry(key).or_insert_with(|| TextDecoderRuntimeState {
+      decoder: new_streaming_decoder(encoding, ignore_bom),
+    });
+
+    let last = !stream;
+
+    // Decode to a host `String`, then allocate a JS string.
+    //
+    // Reserve a pessimistic hint: the output byte length should be at most a small multiple of the
+    // input length (U+FFFD replacement is 3 bytes). Keep it bounded by input size.
+    let mut out = String::new();
+    out
+      .try_reserve(data.len().saturating_mul(3).min(MAX_TEXT_DECODER_INPUT_BYTES))
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    let mut had_errors = false;
+    let mut src = data;
+
+    loop {
+      let (result, read, errors) = state.decoder.decode_to_string(src, &mut out, last);
+      had_errors |= errors;
+      if read > src.len() {
+        return Err(VmError::InvariantViolation(
+          "TextDecoder.decode consumed more bytes than available",
+        ));
+      }
+      src = &src[read..];
+
+      match result {
+        CoderResult::InputEmpty => break,
+        CoderResult::OutputFull => {
+          // `decode_to_string` should generally grow the String, but be defensive in case the
+          // implementation reports output saturation.
+          out.try_reserve(1024).map_err(|_| VmError::OutOfMemory)?;
+          continue;
+        }
+      }
+    }
+
+    if fatal && had_errors {
+      // Reset decoder state on error so subsequent calls start fresh.
+      state.decoder = new_streaming_decoder(encoding, ignore_bom);
+      return Err(VmError::TypeError(
+        "The encoded data was not valid for the specified encoding",
+      ));
+    }
+
+    // `stream: false` flushes and resets the decoder for the next call.
+    if last {
+      state.decoder = new_streaming_decoder(encoding, ignore_bom);
+    }
+
+    Ok(out)
+  })?;
+
+  let out = scope.alloc_string(&decoded)?;
+  Ok(Value::String(out))
 }
 
 pub(crate) fn install_window_text_encoding_bindings(
   vm: &mut Vm,
   realm: &Realm,
   heap: &mut vm_js::Heap,
-) -> Result<(), VmError> {
+) -> Result<TextEncodingBindings, VmError> {
+  let heap_key = heap as *const vm_js::Heap as usize;
+  {
+    let mut map = text_encoding_contexts()
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if map.contains_key(&heap_key) {
+      return Err(VmError::Unimplemented(
+        "install_window_text_encoding_bindings called more than once for the same heap",
+      ));
+    }
+    map.insert(
+      heap_key,
+      TextEncodingContext {
+        last_gc_runs: heap.gc_runs(),
+        decoders: HashMap::new(),
+      },
+    );
+  }
+
+  let result = (|| -> Result<(), VmError> {
   let intr = realm.intrinsics();
   let mut scope = heap.scope();
   let global = realm.global_object();
@@ -1399,6 +1551,16 @@ pub(crate) fn install_window_text_encoding_bindings(
   scope.define_property(global, td_key, data_desc(Value::Object(td_ctor)))?;
 
   Ok(())
+  })();
+
+  if let Err(err) = result {
+    if let Ok(mut map) = text_encoding_contexts().lock() {
+      map.remove(&heap_key);
+    }
+    return Err(err);
+  }
+
+  Ok(TextEncodingBindings { heap_key })
 }
 
 #[cfg(test)]
@@ -1418,7 +1580,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let mut scope = heap.scope();
     let global = realm.global_object();
@@ -1476,7 +1638,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let mut scope = heap.scope();
     let global = realm.global_object();
@@ -1549,11 +1711,144 @@ mod tests {
   }
 
   #[test]
+  fn text_decoder_decode_streaming_preserves_partial_utf8_sequences() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+
+    let intr = realm.intrinsics();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    // new TextDecoder()
+    let decoder_ctor_key = alloc_key(&mut scope, "TextDecoder")?;
+    let decoder_ctor = vm.get(&mut scope, global, decoder_ctor_key)?;
+    let decoder = vm.construct_without_host(&mut scope, decoder_ctor, &[], decoder_ctor)?;
+    let Value::Object(decoder_obj) = decoder else {
+      return Err(VmError::InvariantViolation(
+        "TextDecoder must construct object",
+      ));
+    };
+    scope.push_root(Value::Object(decoder_obj))?;
+
+    // Options object: `{ stream: true }`.
+    let options_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(options_obj))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(options_obj, Some(intr.object_prototype()))?;
+    let stream_key = alloc_key(&mut scope, "stream")?;
+    scope.define_property(options_obj, stream_key, data_desc(Value::Bool(true)))?;
+
+    // Shared helpers: Uint8Array constructor and decoder.decode function.
+    let u8_ctor_key = alloc_key(&mut scope, "Uint8Array")?;
+    let u8_ctor = vm.get(&mut scope, global, u8_ctor_key)?;
+    let Value::Object(u8_ctor_obj) = u8_ctor else {
+      return Err(VmError::InvariantViolation("Uint8Array missing"));
+    };
+    let decode_key = alloc_key(&mut scope, "decode")?;
+    let decode_fn = vm.get(&mut scope, decoder_obj, decode_key)?;
+
+    // chunk1 = new Uint8Array([0xE2, 0x82]) (partial "€" sequence).
+    let chunk1 = vm.construct_without_host(
+      &mut scope,
+      u8_ctor,
+      &[Value::Number(2.0)],
+      Value::Object(u8_ctor_obj),
+    )?;
+    let Value::Object(chunk1_obj) = chunk1 else {
+      return Err(VmError::InvariantViolation(
+        "Uint8Array construct must return object",
+      ));
+    };
+    scope.push_root(Value::Object(chunk1_obj))?;
+    let key0_s = scope.alloc_string("0")?;
+    scope.push_root(Value::String(key0_s))?;
+    let key0 = PropertyKey::from_string(key0_s);
+    scope.ordinary_set(
+      &mut vm,
+      chunk1_obj,
+      key0,
+      Value::Number(0xE2 as f64),
+      Value::Object(chunk1_obj),
+    )?;
+    let key1_s = scope.alloc_string("1")?;
+    scope.push_root(Value::String(key1_s))?;
+    let key1 = PropertyKey::from_string(key1_s);
+    scope.ordinary_set(
+      &mut vm,
+      chunk1_obj,
+      key1,
+      Value::Number(0x82 as f64),
+      Value::Object(chunk1_obj),
+    )?;
+
+    let decoded1 = vm.call_without_host(
+      &mut scope,
+      decode_fn,
+      Value::Object(decoder_obj),
+      &[Value::Object(chunk1_obj), Value::Object(options_obj)],
+    )?;
+    assert_eq!(get_string(scope.heap(), decoded1), "");
+
+    // chunk2 = new Uint8Array([0xAC]) (completes "€").
+    let chunk2 = vm.construct_without_host(
+      &mut scope,
+      u8_ctor,
+      &[Value::Number(1.0)],
+      Value::Object(u8_ctor_obj),
+    )?;
+    let Value::Object(chunk2_obj) = chunk2 else {
+      return Err(VmError::InvariantViolation(
+        "Uint8Array construct must return object",
+      ));
+    };
+    scope.push_root(Value::Object(chunk2_obj))?;
+    let key0_s = scope.alloc_string("0")?;
+    scope.push_root(Value::String(key0_s))?;
+    let key0 = PropertyKey::from_string(key0_s);
+    scope.ordinary_set(
+      &mut vm,
+      chunk2_obj,
+      key0,
+      Value::Number(0xAC as f64),
+      Value::Object(chunk2_obj),
+    )?;
+
+    let decoded2 = vm.call_without_host(
+      &mut scope,
+      decode_fn,
+      Value::Object(decoder_obj),
+      &[Value::Object(chunk2_obj), Value::Object(options_obj)],
+    )?;
+    assert_eq!(get_string(scope.heap(), decoded2), "€");
+
+    // Flush/reset: decoder.decode() with stream=false default should clear any buffered state.
+    let flushed = vm.call_without_host(&mut scope, decode_fn, Value::Object(decoder_obj), &[])?;
+    assert_eq!(get_string(scope.heap(), flushed), "");
+
+    // After reset, decoding a continuation byte alone should produce U+FFFD.
+    let decoded_after_reset = vm.call_without_host(
+      &mut scope,
+      decode_fn,
+      Value::Object(decoder_obj),
+      &[Value::Object(chunk2_obj)],
+    )?;
+    assert_eq!(get_string(scope.heap(), decoded_after_reset), "�");
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
   fn text_decoder_windows_1252_decodes_euro_sign() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let mut scope = heap.scope();
     let global = realm.global_object();
@@ -1626,7 +1921,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let mut scope = heap.scope();
     let global = realm.global_object();
@@ -1702,7 +1997,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let intr = realm.intrinsics();
     let obj_proto = intr.object_prototype();
@@ -1753,7 +2048,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let mut scope = heap.scope();
     let global = realm.global_object();
@@ -1830,7 +2125,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let mut scope = heap.scope();
     let global = realm.global_object();
@@ -1905,7 +2200,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let mut scope = heap.scope();
     let global = realm.global_object();
@@ -1948,7 +2243,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
 
     let intr = realm.intrinsics();
     let to_string_tag_key = PropertyKey::Symbol(intr.well_known_symbols().to_string_tag);
