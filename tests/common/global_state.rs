@@ -1,16 +1,16 @@
 //! Process-global state guards for the consolidated integration test binary.
 //!
-//! As more tests move into `tests/integration.rs`, they begin sharing process-global state:
-//! environment variables, the current directory, and global callbacks like the render stage
-//! listener. These helpers provide one place to coordinate that state and keep tests deterministic
-//! under `cargo test`'s default parallelism.
+//! When tests were split across many `tests/*.rs` integration binaries, each test suite ran in its
+//! own process. As more suites are consolidated into the unified `tests/integration.rs` harness,
+//! tests that mutate process-global state (environment variables, current directory, stage
+//! listeners, etc.) must coordinate to remain deterministic under parallel execution.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Serialises tests that mutate process-global state (environment variables, current directory,
-/// etc.).
+/// stage listeners, etc).
 pub fn global_test_lock() -> MutexGuard<'static, ()> {
   static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
   LOCK
@@ -19,40 +19,25 @@ pub fn global_test_lock() -> MutexGuard<'static, ()> {
     .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// RAII guard for temporary process environment changes.
-///
-/// This guard holds [`global_test_lock`] for its entire lifetime and restores the previous values
-/// on drop.
+/// Run `f` while holding the process-global test lock.
+pub(crate) fn with_global_lock<R>(f: impl FnOnce() -> R) -> R {
+  let _lock = global_test_lock();
+  f()
+}
+
+/// RAII guard that sets a single environment variable (or removes it) while holding the global
+/// test lock.
 #[must_use]
-pub struct EnvVarGuard {
+pub(crate) struct EnvVarGuard {
   _lock: MutexGuard<'static, ()>,
-  saved: Vec<(OsString, Option<OsString>)>,
+  key: OsString,
+  previous: Option<OsString>,
 }
 
 /// Alias used by some tests for readability.
 pub type ScopedEnv = EnvVarGuard;
 
 impl EnvVarGuard {
-  /// Create an empty environment scope.
-  ///
-  /// Use [`EnvVarGuard::set_var`] / [`EnvVarGuard::remove_var`] to mutate vars after construction,
-  /// or [`EnvVarGuard::set`] / [`EnvVarGuard::remove`] for a builder-style API.
-  pub fn new() -> Self {
-    Self {
-      _lock: global_test_lock(),
-      saved: Vec::new(),
-    }
-  }
-
-  fn save_if_needed(&mut self, key: &OsStr) {
-    if self.saved.iter().any(|(saved_key, _)| saved_key == key) {
-      return;
-    }
-    self
-      .saved
-      .push((key.to_os_string(), std::env::var_os(key)));
-  }
-
   fn assert_env_var_allowed(key: &OsStr) {
     if key == OsStr::new("FASTR_USE_BUNDLED_FONTS") {
       panic!(
@@ -61,39 +46,92 @@ impl EnvVarGuard {
     }
   }
 
-  /// Set an environment variable, saving the previous value for later restoration.
-  pub fn set_var(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
+  /// Set `key` to `value` for the lifetime of this guard.
+  pub(crate) fn set(key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
     let key = key.as_ref();
     Self::assert_env_var_allowed(key);
-    self.save_if_needed(key);
-    std::env::set_var(key, value);
+    let lock = global_test_lock();
+    let key = key.to_owned();
+    let previous = std::env::var_os(&key);
+    std::env::set_var(&key, value);
+    Self {
+      _lock: lock,
+      key,
+      previous,
+    }
   }
 
-  /// Remove an environment variable, saving the previous value for later restoration.
-  pub fn remove_var(&mut self, key: impl AsRef<OsStr>) {
+  /// Remove `key` for the lifetime of this guard.
+  pub(crate) fn remove(key: impl AsRef<OsStr>) -> Self {
     let key = key.as_ref();
     Self::assert_env_var_allowed(key);
-    self.save_if_needed(key);
-    std::env::remove_var(key);
-  }
-
-  /// Builder-style helper to set an environment variable.
-  pub fn set(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
-    self.set_var(key, value);
-    self
-  }
-
-  /// Builder-style helper to remove an environment variable.
-  pub fn remove(mut self, key: impl AsRef<OsStr>) -> Self {
-    self.remove_var(key);
-    self
+    let lock = global_test_lock();
+    let key = key.to_owned();
+    let previous = std::env::var_os(&key);
+    std::env::remove_var(&key);
+    Self {
+      _lock: lock,
+      key,
+      previous,
+    }
   }
 }
 
 impl Drop for EnvVarGuard {
   fn drop(&mut self) {
-    while let Some((key, previous)) = self.saved.pop() {
-      match previous {
+    match self.previous.take() {
+      Some(value) => std::env::set_var(&self.key, value),
+      None => std::env::remove_var(&self.key),
+    }
+  }
+}
+
+/// RAII guard that sets/removes multiple environment variables while holding the global test lock.
+#[must_use]
+pub(crate) struct EnvVarsGuard {
+  _lock: MutexGuard<'static, ()>,
+  // Restore in reverse order so repeated keys behave intuitively.
+  saved: Vec<(OsString, Option<OsString>)>,
+}
+
+impl EnvVarsGuard {
+  /// Apply `vars` for the lifetime of this guard.
+  ///
+  /// Each entry is `(key, Some(value))` to set the variable or `(key, None)` to remove it.
+  pub(crate) fn new(vars: &[(&str, Option<&str>)]) -> Self {
+    let lock = global_test_lock();
+    let mut saved = Vec::with_capacity(vars.len());
+    for (key, value) in vars {
+      EnvVarGuard::assert_env_var_allowed(OsStr::new(key));
+      let key_os: OsString = OsString::from(key);
+      let prev = std::env::var_os(&key_os);
+      saved.push((key_os.clone(), prev));
+      match value {
+        Some(v) => std::env::set_var(&key_os, v),
+        None => std::env::remove_var(&key_os),
+      }
+    }
+    Self { _lock: lock, saved }
+  }
+
+  /// Convenience for setting multiple environment variables.
+  pub(crate) fn set(vars: &[(&str, &str)]) -> Self {
+    // Build a temporary `Vec` rather than requiring `Some(...)` at call-sites.
+    let mapped: Vec<(&str, Option<&str>)> = vars.iter().map(|(k, v)| (*k, Some(*v))).collect();
+    Self::new(&mapped)
+  }
+
+  /// Convenience for removing multiple environment variables.
+  pub(crate) fn remove(keys: &[&str]) -> Self {
+    let mapped: Vec<(&str, Option<&str>)> = keys.iter().map(|k| (*k, None)).collect();
+    Self::new(&mapped)
+  }
+}
+
+impl Drop for EnvVarsGuard {
+  fn drop(&mut self) {
+    while let Some((key, prev)) = self.saved.pop() {
+      match prev {
         Some(value) => std::env::set_var(&key, value),
         None => std::env::remove_var(&key),
       }
@@ -101,47 +139,60 @@ impl Drop for EnvVarGuard {
   }
 }
 
-/// RAII guard for temporary current directory changes.
-///
-/// This guard holds [`global_test_lock`] for its entire lifetime and restores the previous current
-/// directory on drop.
+/// RAII guard that changes the current working directory while holding the global test lock.
 #[must_use]
-pub struct CurrentDirGuard {
+pub(crate) struct CurrentDirGuard {
   _lock: MutexGuard<'static, ()>,
   previous: PathBuf,
 }
 
 impl CurrentDirGuard {
-  pub fn new(path: impl AsRef<Path>) -> Self {
+  pub(crate) fn new(dir: impl AsRef<Path>) -> Self {
     let lock = global_test_lock();
-    let previous = std::env::current_dir().expect("failed to read current dir");
-    std::env::set_current_dir(path.as_ref()).expect("failed to set current dir");
-    Self {
-      _lock: lock,
-      previous,
-    }
+    let previous = std::env::current_dir().expect("failed to read current_dir");
+    std::env::set_current_dir(dir.as_ref()).unwrap_or_else(|err| {
+      panic!(
+        "failed to set_current_dir to {}: {err}",
+        dir.as_ref().display()
+      )
+    });
+    Self { _lock: lock, previous }
   }
 }
 
 impl Drop for CurrentDirGuard {
   fn drop(&mut self) {
-    std::env::set_current_dir(&self.previous).expect("failed to restore current dir");
+    std::env::set_current_dir(&self.previous).unwrap_or_else(|err| {
+      panic!(
+        "failed to restore current_dir to {}: {err}",
+        self.previous.display()
+      )
+    });
   }
 }
 
-/// RAII guard that installs a global stage listener and restores the previous listener on drop.
-///
-/// Prefer [`fastrender::render_control::push_stage_listener`] when thread-local observation is
-/// sufficient; the global listener is invoked by *all* threads.
+/// RAII guard that installs a process-global stage listener while holding the global test lock.
 #[must_use]
-pub struct StageListenerGuard {
-  _guard: fastrender::render_control::GlobalStageListenerGuard,
+pub(crate) struct StageListenerGuard {
+  _lock: MutexGuard<'static, ()>,
 }
 
 impl StageListenerGuard {
-  pub fn new(listener: fastrender::render_control::StageListener) -> Self {
-    Self {
-      _guard: fastrender::render_control::GlobalStageListenerGuard::new(listener),
-    }
+  pub(crate) fn new(listener: fastrender::render_control::StageListener) -> Self {
+    let lock = global_test_lock();
+    fastrender::render_control::set_stage_listener(Some(listener));
+    Self { _lock: lock }
   }
+}
+
+impl Drop for StageListenerGuard {
+  fn drop(&mut self) {
+    fastrender::render_control::set_stage_listener(None);
+  }
+}
+
+/// Run `f` while `vars` are set.
+pub(crate) fn with_env_vars<R>(vars: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
+  let _guard = EnvVarsGuard::set(vars);
+  f()
 }

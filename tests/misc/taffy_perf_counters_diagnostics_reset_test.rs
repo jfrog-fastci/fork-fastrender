@@ -1,5 +1,5 @@
-use fastrender::debug::runtime::RuntimeToggles;
 use crate::common::StageListenerGuard;
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::render_control::StageHeartbeat;
 use fastrender::{
   DiagnosticsLevel, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Point,
@@ -214,7 +214,6 @@ fn taffy_perf_counters_do_not_reset_between_layout_passes_in_one_render() {
 
 #[test]
 fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
-  let _lock = crate::common::global_test_lock();
   // Block one diagnostics render mid-pipeline to ensure another thread can attempt to start while
   // the global diagnostics session lock is held. This used to expose a bug where Taffy perf
   // counters could be enabled before acquiring the diagnostics session lock, leaking counters

@@ -43,7 +43,6 @@ use std::path::PathBuf;
 /// Test configuration for fixtures
 const FIXTURE_WIDTH: u32 = 600;
 const FIXTURE_HEIGHT: u32 = 800;
-
 /// Get the fixtures directory path
 fn fixtures_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")

@@ -1,4 +1,4 @@
-use crate::common::{global_test_lock, StageListenerGuard};
+use crate::common::StageListenerGuard;
 use fastrender::api::FastRender;
 use fastrender::api::RenderOptions;
 use fastrender::error::{Error, RenderError, RenderStage};
@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn cascade_selector_matching_obeys_timeout() {
-  let _lock = global_test_lock();
   let cascade_checks = Arc::new(AtomicUsize::new(0));
 
   // Use stage heartbeats to only trip the cancel callback once cascade begins. This avoids relying

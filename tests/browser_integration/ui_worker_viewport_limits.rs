@@ -14,7 +14,6 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
 fn absurd_viewport_changed_is_clamped_before_pixmap_allocation() {
-  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
   // Keep this test cheap and deterministic: clamp to a small pixmap limit so we don't allocate
@@ -110,7 +109,6 @@ fn absurd_viewport_changed_is_clamped_before_pixmap_allocation() {
         saw_warning,
         "expected worker to emit a Warning when clamping viewport"
       );
-
       drop(ui_tx);
       join.join().expect("join ui worker");
     },

@@ -1,4 +1,4 @@
-use crate::common::{global_test_lock, StageListenerGuard};
+use crate::common::StageListenerGuard;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -11,7 +11,6 @@ use url::Url;
 
 #[test]
 fn css_inlining_respects_deadline() {
-  let _lock = global_test_lock();
   let css_checks = Arc::new(AtomicUsize::new(0));
   let cancel_fired = Arc::new(AtomicBool::new(false));
   let saw_css_inline_heartbeat = Arc::new(AtomicBool::new(false));

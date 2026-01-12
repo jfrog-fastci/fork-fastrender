@@ -80,7 +80,8 @@ where
 
 #[test]
 fn preserve3d_disable_warp_env_forces_affine_approximation() {
-  // Force the warp path to be "available", then ensure the disable flag still wins.
+  // Force the warp path to be "available", then ensure the disable flag still wins. This matches
+  // how the CLI/libraries consume FASTR_PRESERVE3D_* via RuntimeToggles sourced from env.
   let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
     ("FASTR_PRESERVE3D_WARP".to_string(), "1".to_string()),
     (

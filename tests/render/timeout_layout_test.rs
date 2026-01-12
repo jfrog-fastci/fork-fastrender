@@ -1,4 +1,4 @@
-use crate::common::{global_test_lock, StageListenerGuard};
+use crate::common::StageListenerGuard;
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::error::{Error, RenderError, RenderStage};
 use fastrender::render_control::StageHeartbeat;
@@ -17,7 +17,6 @@ fn heavy_inline_html(count: usize) -> String {
 
 #[test]
 fn layout_loops_respect_timeout() {
-  let _lock = global_test_lock();
   let layout_checks = Arc::new(AtomicUsize::new(0));
   let saw_layout_heartbeat = Arc::new(AtomicBool::new(false));
   let saw_layout_heartbeat_listener = Arc::clone(&saw_layout_heartbeat);
@@ -68,7 +67,6 @@ fn layout_loops_respect_timeout() {
 
 #[test]
 fn layout_timeout_records_diagnostics() {
-  let _lock = global_test_lock();
   let layout_checks = Arc::new(AtomicUsize::new(0));
   let saw_layout_heartbeat = Arc::new(AtomicBool::new(false));
   let saw_layout_heartbeat_listener = Arc::clone(&saw_layout_heartbeat);
