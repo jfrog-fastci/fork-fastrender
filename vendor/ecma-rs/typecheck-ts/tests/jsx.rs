@@ -1469,6 +1469,51 @@ declare namespace JSX {
 }
 
 #[test]
+fn element_children_attribute_is_ignored_in_react_jsx() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::ReactJsx);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementChildrenAttribute { offspring: {} }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+declare function Title(props: { children: string }): JSX.Element;
+declare function Wrong(props: { offspring: string }): JSX.Element;
+const ok = <Title>Hello</Title>;
+const bad = <Wrong>Byebye</Wrong>;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert_eq!(
+    diagnostics.len(),
+    1,
+    "expected exactly one diagnostic, got {diagnostics:?}"
+  );
+  assert_eq!(
+    diagnostics[0].code.as_str(),
+    codes::MISSING_REQUIRED_PROPERTY.as_str(),
+    "expected MISSING_REQUIRED_PROPERTY for `offspring` prop, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn qualified_jsx_element_return_type_is_resolved() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
@@ -1659,8 +1704,8 @@ const bad = <Foo y={1} />;
   );
   assert_eq!(
     diagnostics[0].code.as_str(),
-    codes::EXCESS_PROPERTY.as_str(),
-    "expected excess property, got {diagnostics:?}"
+    codes::MISSING_REQUIRED_PROPERTY.as_str(),
+    "expected missing required property diagnostic, got {diagnostics:?}"
   );
 }
 

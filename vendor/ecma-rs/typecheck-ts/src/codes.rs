@@ -188,6 +188,20 @@ pub const TYPE_MISMATCH: Code = Code::new(
   &[],
 );
 
+/// TS2741: Property is missing in type but required in the target type.
+///
+/// - Primary span: the source expression being assigned (or the JSX tag name for
+///   JSX attribute checks).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const MISSING_REQUIRED_PROPERTY: Code = Code::new(
+  "TS2741",
+  "missing required property",
+  "source expression (or JSX tag name) when a required property is missing",
+  &["primary: source expression"],
+  &[],
+);
+
 /// TS18048: Identifier is possibly `undefined`.
 ///
 /// TypeScript emits this diagnostic when an identifier is used without

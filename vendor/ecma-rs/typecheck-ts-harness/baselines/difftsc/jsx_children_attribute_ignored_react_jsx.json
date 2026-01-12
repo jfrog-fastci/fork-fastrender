@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "jsx": 4,
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2741,
+      "file": "main.tsx",
+      "start": 200,
+      "end": 205,
+      "category": "error",
+      "message": "Property 'offspring' is missing in type '{ children: string; }' but required in type '{ offspring: string; }'."
+    }
+  ]
+}

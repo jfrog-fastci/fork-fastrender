@@ -3929,7 +3929,7 @@ impl<'a> Checker<'a> {
             &elem.stx.children,
             Some(expected_props_ty),
           );
-          self.check_jsx_props(elem.loc, &actual_props, expected_props_ty);
+          self.check_jsx_props(name.loc, &actual_props, expected_props_ty);
         }
       }
       Some(JsxElemName::Id(id)) => {
@@ -3973,7 +3973,7 @@ impl<'a> Checker<'a> {
               &elem.stx.children,
               Some(expected_props_ty),
             );
-            self.check_jsx_props(elem.loc, &actual_props, expected_props_ty);
+            self.check_jsx_props(id.loc, &actual_props, expected_props_ty);
           }
         } else {
           let component_ty = self
@@ -4055,7 +4055,7 @@ impl<'a> Checker<'a> {
               &elem.stx.children,
               Some(expected_props_ty),
             );
-            self.check_jsx_props(elem.loc, &actual_props, expected_props_ty);
+            self.check_jsx_props(member.loc, &actual_props, expected_props_ty);
           }
         } else {
           // Member expressions like `<Foo.Bar />` are treated like looking up
@@ -4153,10 +4153,10 @@ impl<'a> Checker<'a> {
           return;
         }
         let expected_props_ty = self.jsx_apply_intrinsic_attributes(expected_props_ty);
-        self.check_jsx_props(elem_loc, actual_props, expected_props_ty);
+        self.check_jsx_props(tag_loc, actual_props, expected_props_ty);
       }
       _ => {
-        self.check_jsx_component(tag_ty, actual_props, element_ty, elem_loc);
+        self.check_jsx_component(tag_ty, actual_props, element_ty, tag_loc);
       }
     }
   }
@@ -4293,7 +4293,7 @@ impl<'a> Checker<'a> {
       return;
     }
     let expected_props_ty = self.jsx_apply_intrinsic_attributes(expected_props_ty);
-    self.check_jsx_props(elem_loc, actual_props, expected_props_ty);
+    self.check_jsx_props(tag_loc, actual_props, expected_props_ty);
   }
 
   fn jsx_actual_props(
@@ -4769,6 +4769,58 @@ impl<'a> Checker<'a> {
     Some(self.store.intern_type(TypeKind::StringLiteral(name)))
   }
 
+  fn jsx_first_missing_required_prop(&self, target: TypeId, actual_ty: TypeId) -> Option<String> {
+    let mut required = Vec::new();
+    let mut seen = HashSet::new();
+    self.jsx_collect_required_props(target, &mut required, &mut seen);
+    required.sort();
+    required.dedup();
+    required
+      .into_iter()
+      .find(|prop| !self.type_has_prop(actual_ty, prop.as_str()))
+  }
+
+  fn jsx_collect_required_props(
+    &self,
+    target: TypeId,
+    out: &mut Vec<String>,
+    seen: &mut HashSet<TypeId>,
+  ) {
+    let target = self.expand_ref(target);
+    let expanded = self.expand_for_props(target);
+    if expanded != target {
+      self.jsx_collect_required_props(expanded, out, seen);
+      return;
+    }
+    if !seen.insert(target) {
+      return;
+    }
+    match self.store.type_kind(target) {
+      TypeKind::Object(obj_id) => {
+        let shape = self.store.shape(self.store.object(obj_id).shape);
+        for prop in shape.properties.iter() {
+          if prop.data.optional {
+            continue;
+          }
+          match prop.key {
+            PropKey::String(name) | PropKey::Symbol(name) => out.push(self.store.name(name)),
+            PropKey::Number(num) => out.push(num.to_string()),
+          }
+        }
+      }
+      TypeKind::Intersection(members) => {
+        for member in members {
+          self.jsx_collect_required_props(member, out, seen);
+        }
+      }
+      // Required property sets for unions depend on which branch is selected, so
+      // avoid reporting TS2741 in that case and fall back to assignability
+      // diagnostics.
+      TypeKind::Union(_) => {}
+      _ => {}
+    }
+  }
+
   fn check_jsx_props(&mut self, loc: Loc, actual: &JsxActualProps, expected: TypeId) {
     if matches!(
       self.store.type_kind(expected),
@@ -4776,6 +4828,19 @@ impl<'a> Checker<'a> {
     ) {
       return;
     }
+    if !matches!(
+      self.store.type_kind(actual.ty),
+      TypeKind::Any | TypeKind::Unknown
+    ) {
+      if let Some(missing) = self.jsx_first_missing_required_prop(expected, actual.ty) {
+        self.diagnostics.push(codes::MISSING_REQUIRED_PROPERTY.error(
+          format!("Property '{missing}' is missing in JSX props."),
+          Span::new(self.file, loc_to_range(self.file, loc)),
+        ));
+        return;
+      }
+    }
+
     let filtered;
     let props_for_excess_check = if actual.props.iter().any(|p| p.contains('-')) {
       filtered = actual
@@ -5269,10 +5334,7 @@ impl<'a> Checker<'a> {
       return id;
     }
     let fallback = self.store.intern_name_ref("children");
-    if matches!(
-      self.jsx_mode,
-      Some(JsxMode::ReactJsx | JsxMode::ReactJsxdev)
-    ) {
+    if matches!(self.jsx_mode, Some(JsxMode::ReactJsx | JsxMode::ReactJsxdev)) {
       self.jsx_children_prop_name = Some(fallback);
       return fallback;
     }
