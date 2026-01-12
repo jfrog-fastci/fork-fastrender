@@ -67,6 +67,12 @@ fn clone_node_shallow_from_other_document(
 ) -> Result<NodeId, DomError> {
   src.node_checked(src_id)?;
 
+  // HTML cloning steps for form controls copy internal state (value/checkedness + dirty flags).
+  // `push_node` initializes state from attributes in the destination document, so capture the live
+  // source state and overwrite the freshly-allocated destination slots.
+  let input_state = src.input_states[src_id.index()].clone();
+  let textarea_state = src.textarea_states[src_id.index()].clone();
+
   let (
     kind,
     inert_subtree,
@@ -181,6 +187,9 @@ fn clone_node_shallow_from_other_document(
   };
 
   let dst_id = dst.push_node(kind, parent, inert_subtree);
+
+  dst.input_states[dst_id.index()] = input_state;
+  dst.textarea_states[dst_id.index()] = textarea_state;
 
   // Preserve HTML parser flags that affect future parsing behavior.
   dst.nodes[dst_id.index()].mathml_annotation_xml_integration_point =

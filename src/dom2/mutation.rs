@@ -127,11 +127,18 @@ fn push_cloned_node(doc: &mut Document, parent: Option<NodeId>, data: CloneNodeD
 
 impl Document {
   fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
-    let data = {
+    let (data, input_state, textarea_state) = {
       let node = self.node_checked(src)?;
-      clone_node_data(node, parent)
+      (
+        clone_node_data(node, parent),
+        self.input_states[src.index()].clone(),
+        self.textarea_states[src.index()].clone(),
+      )
     };
-    Ok(push_cloned_node(self, parent, data))
+    let dst = push_cloned_node(self, parent, data);
+    self.input_states[dst.index()] = input_state;
+    self.textarea_states[dst.index()] = textarea_state;
+    Ok(dst)
   }
 
   fn clone_node_shallow_from_document(
@@ -140,11 +147,18 @@ impl Document {
     src: NodeId,
     parent: Option<NodeId>,
   ) -> Result<NodeId, DomError> {
-    let data = {
+    let (data, input_state, textarea_state) = {
       let node = src_doc.node_checked(src)?;
-      clone_node_data(node, parent)
+      (
+        clone_node_data(node, parent),
+        src_doc.input_states[src.index()].clone(),
+        src_doc.textarea_states[src.index()].clone(),
+      )
     };
-    Ok(push_cloned_node(self, parent, data))
+    let dst = push_cloned_node(self, parent, data);
+    self.input_states[dst.index()] = input_state;
+    self.textarea_states[dst.index()] = textarea_state;
+    Ok(dst)
   }
 
   /// Clone a single node, optionally cloning its descendant subtree.

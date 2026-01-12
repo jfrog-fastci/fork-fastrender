@@ -880,3 +880,74 @@ fn adopt_shadow_root_throws_hierarchy_request_error() {
     DomError::HierarchyRequestError
   );
 }
+
+#[test]
+fn clone_node_propagates_input_state_and_dirty_flags() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let input = doc.create_element("input", HTML_NAMESPACE);
+  doc.set_attribute(input, "type", "checkbox").unwrap();
+  doc.set_attribute(input, "checked", "").unwrap();
+  doc.set_input_value(input, "b").unwrap();
+  doc.set_input_checked(input, false).unwrap();
+
+  let cloned = doc.clone_node(input, /* deep */ false).unwrap();
+  assert_eq!(doc.input_value(cloned).unwrap(), "b");
+  assert_eq!(doc.input_checked(cloned).unwrap(), false);
+
+  // Dirty value flag: attribute mutations must not affect the current value.
+  doc.set_attribute(cloned, "value", "c").unwrap();
+  assert_eq!(doc.input_value(cloned).unwrap(), "b");
+
+  // Dirty checkedness flag: attribute mutations must not affect checkedness.
+  doc.remove_attribute(cloned, "checked").unwrap();
+  assert_eq!(doc.input_checked(cloned).unwrap(), false);
+  doc.set_attribute(cloned, "checked", "").unwrap();
+  assert_eq!(doc.input_checked(cloned).unwrap(), false);
+}
+
+#[test]
+fn import_node_from_propagates_textarea_state_and_dirty_value_flag() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let textarea = src.create_element("textarea", HTML_NAMESPACE);
+  let text = src.create_text("a");
+  src.append_child(textarea, text).unwrap();
+  src.set_textarea_value(textarea, "b").unwrap();
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let imported = dst
+    .import_node_from(&src, textarea, /* deep */ true)
+    .unwrap();
+  assert_eq!(dst.textarea_value(imported).unwrap(), "b");
+
+  let children = dst.children(imported).unwrap();
+  assert_eq!(children.len(), 1);
+  let imported_text = children[0];
+  dst.set_text_data(imported_text, "c").unwrap();
+  assert_eq!(dst.textarea_value(imported).unwrap(), "b");
+}
+
+#[test]
+fn adopt_node_from_preserves_input_state_and_dirty_flags() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let input = src.create_element("input", HTML_NAMESPACE);
+  src.set_attribute(input, "type", "checkbox").unwrap();
+  src.set_attribute(input, "checked", "").unwrap();
+  src.set_input_value(input, "b").unwrap();
+  src.set_input_checked(input, false).unwrap();
+  src.append_child(src.root(), input).unwrap();
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, input).unwrap();
+  let new_root = adopted.new_root;
+
+  assert_eq!(dst.input_value(new_root).unwrap(), "b");
+  assert_eq!(dst.input_checked(new_root).unwrap(), false);
+
+  dst.set_attribute(new_root, "value", "c").unwrap();
+  assert_eq!(dst.input_value(new_root).unwrap(), "b");
+
+  dst.remove_attribute(new_root, "checked").unwrap();
+  assert_eq!(dst.input_checked(new_root).unwrap(), false);
+  dst.set_attribute(new_root, "checked", "").unwrap();
+  assert_eq!(dst.input_checked(new_root).unwrap(), false);
+}
