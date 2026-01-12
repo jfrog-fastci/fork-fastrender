@@ -750,7 +750,20 @@ impl Intrinsics {
     let string_prototype_iterator = vm.register_native_call(builtins::string_prototype_iterator)?;
     let string_iterator_next = vm.register_native_call(builtins::string_iterator_next)?;
     let number_prototype_value_of = vm.register_native_call(builtins::number_prototype_value_of)?;
+    let number_prototype_to_string = vm.register_native_call(builtins::number_prototype_to_string)?;
+    let number_prototype_to_fixed = vm.register_native_call(builtins::number_prototype_to_fixed)?;
+    let number_prototype_to_exponential =
+      vm.register_native_call(builtins::number_prototype_to_exponential)?;
+    let number_prototype_to_precision =
+      vm.register_native_call(builtins::number_prototype_to_precision)?;
+    let number_prototype_to_locale_string =
+      vm.register_native_call(builtins::number_prototype_to_locale_string)?;
     let boolean_prototype_value_of = vm.register_native_call(builtins::boolean_prototype_value_of)?;
+    let boolean_prototype_to_string = vm.register_native_call(builtins::boolean_prototype_to_string)?;
+    let number_is_nan = vm.register_native_call(builtins::number_is_nan)?;
+    let number_is_finite = vm.register_native_call(builtins::number_is_finite)?;
+    let number_is_integer = vm.register_native_call(builtins::number_is_integer)?;
+    let number_is_safe_integer = vm.register_native_call(builtins::number_is_safe_integer)?;
     let bigint_prototype_value_of = vm.register_native_call(builtins::bigint_prototype_value_of)?;
     let date_prototype_to_string = vm.register_native_call(builtins::date_prototype_to_string)?;
     let date_prototype_to_utc_string = vm.register_native_call(builtins::date_prototype_to_utc_string)?;
@@ -2348,9 +2361,95 @@ impl Intrinsics {
       )?;
     }
 
+    // Number.prototype.toString
+    {
+      let to_string_s = scope.alloc_string("toString")?;
+      scope.push_root(Value::String(to_string_s))?;
+      let key = PropertyKey::from_string(to_string_s);
+      let func = scope.alloc_native_function(number_prototype_to_string, None, to_string_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        number_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Number.prototype.toFixed
+    {
+      let to_fixed_s = scope.alloc_string("toFixed")?;
+      scope.push_root(Value::String(to_fixed_s))?;
+      let key = PropertyKey::from_string(to_fixed_s);
+      let func = scope.alloc_native_function(number_prototype_to_fixed, None, to_fixed_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        number_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Number.prototype.toExponential
+    {
+      let to_exp_s = scope.alloc_string("toExponential")?;
+      scope.push_root(Value::String(to_exp_s))?;
+      let key = PropertyKey::from_string(to_exp_s);
+      let func = scope.alloc_native_function(number_prototype_to_exponential, None, to_exp_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        number_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Number.prototype.toPrecision
+    {
+      let to_prec_s = scope.alloc_string("toPrecision")?;
+      scope.push_root(Value::String(to_prec_s))?;
+      let key = PropertyKey::from_string(to_prec_s);
+      let func = scope.alloc_native_function(number_prototype_to_precision, None, to_prec_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        number_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Number.prototype.toLocaleString
+    {
+      let to_locale_s = scope.alloc_string("toLocaleString")?;
+      scope.push_root(Value::String(to_locale_s))?;
+      let key = PropertyKey::from_string(to_locale_s);
+      let func =
+        scope.alloc_native_function(number_prototype_to_locale_string, None, to_locale_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        number_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
     // Number static properties.
     {
-      let cases: [(&str, Value); 5] = [
+      let cases: [(&str, Value); 8] = [
         ("NaN", Value::Number(f64::NAN)),
         ("POSITIVE_INFINITY", Value::Number(f64::INFINITY)),
         ("NEGATIVE_INFINITY", Value::Number(f64::NEG_INFINITY)),
@@ -2358,12 +2457,36 @@ impl Intrinsics {
         // JS `Number.MIN_VALUE` is the smallest positive **subnormal** (`5e-324`), not
         // `f64::MIN_POSITIVE` (smallest positive normal).
         ("MIN_VALUE", Value::Number(f64::from_bits(1))),
+        ("EPSILON", Value::Number(f64::EPSILON)),
+        ("MAX_SAFE_INTEGER", Value::Number(9007199254740991.0)),
+        ("MIN_SAFE_INTEGER", Value::Number(-9007199254740991.0)),
       ];
       for (name, value) in cases {
         let key_s = scope.alloc_string(name)?;
         scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
         scope.define_property(number_constructor, key, data_desc(value, false, false, false))?;
+      }
+    }
+
+    // Number static methods.
+    {
+      let cases = [
+        ("isNaN", number_is_nan, 1u32),
+        ("isFinite", number_is_finite, 1u32),
+        ("isInteger", number_is_integer, 1u32),
+        ("isSafeInteger", number_is_safe_integer, 1u32),
+      ];
+      for (name, call, length) in cases {
+        let name_s = scope.alloc_string(name)?;
+        scope.push_root(Value::String(name_s))?;
+        let key = PropertyKey::from_string(name_s);
+        let func = scope.alloc_native_function(call, None, name_s, length)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(number_constructor, key, data_desc(Value::Object(func), true, false, true))?;
       }
     }
 
@@ -2407,6 +2530,23 @@ impl Intrinsics {
       scope.push_root(Value::String(value_of_s))?;
       let key = PropertyKey::from_string(value_of_s);
       let func = scope.alloc_native_function(boolean_prototype_value_of, None, value_of_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        boolean_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Boolean.prototype.toString
+    {
+      let to_string_s = scope.alloc_string("toString")?;
+      scope.push_root(Value::String(to_string_s))?;
+      let key = PropertyKey::from_string(to_string_s);
+      let func = scope.alloc_native_function(boolean_prototype_to_string, None, to_string_s, 0)?;
       scope.push_root(Value::Object(func))?;
       scope
         .heap_mut()
@@ -2647,6 +2787,27 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(parse_float, Some(function_prototype))?;
+
+    // Number.parseInt / Number.parseFloat (aliases of global functions per ECMA-262).
+    {
+      let parse_int_key_s = scope.alloc_string("parseInt")?;
+      scope.push_root(Value::String(parse_int_key_s))?;
+      let parse_int_key = PropertyKey::from_string(parse_int_key_s);
+      scope.define_property(
+        number_constructor,
+        parse_int_key,
+        data_desc(Value::Object(parse_int), true, false, true),
+      )?;
+
+      let parse_float_key_s = scope.alloc_string("parseFloat")?;
+      scope.push_root(Value::String(parse_float_key_s))?;
+      let parse_float_key = PropertyKey::from_string(parse_float_key_s);
+      scope.define_property(
+        number_constructor,
+        parse_float_key,
+        data_desc(Value::Object(parse_float), true, false, true),
+      )?;
+    }
 
     // `%encodeURI%` (global function)
     let encode_uri_name = scope.alloc_string("encodeURI")?;

@@ -13,6 +13,7 @@ use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
 use std::collections::HashSet;
+use std::fmt::Write;
 use std::sync::Arc;
 
 fn strict_mode_stmts_contain_with(
@@ -1659,7 +1660,6 @@ pub fn proxy_revocable(
     0,
     &[Value::Object(proxy)],
   )?;
-  scope.push_root(Value::Object(revoke))?;
   scope
     .heap_mut()
     .object_set_prototype(revoke, Some(intr.function_prototype()))?;
@@ -4318,13 +4318,38 @@ fn resolve_promise(
     return Err(VmError::Unimplemented("callable then is not an object"));
   };
 
-  // Enqueue PromiseResolveThenableJob(promise, thenable, then).
-  let then_job_callback = hooks.host_make_job_callback(then_obj);
-
   // Per spec, the thenable job must use *fresh* resolving functions for `promise` (with their own
   // alreadyResolved record).
   scope.push_root(Value::Object(thenable_obj))?;
+
+  // Fast path for native Promises: if `then` is the intrinsic `%Promise.prototype%.then`, adopt the
+  // thenable's state via `PerformPromiseThen` (without a derived promise/capability). This avoids
+  // invoking `SpeciesConstructor` via `Promise.prototype.then`, which must not be observable in
+  // async/await (`Await` uses `PromiseResolve(%Promise%, value)`).
+  if scope.heap().is_promise_object(thenable_obj) {
+    let then_key_s = scope.alloc_string("then")?;
+    scope.push_root(Value::String(then_key_s))?;
+    let then_key = PropertyKey::from_string(then_key_s);
+    let intrinsic_then = scope.heap().get(intr.promise_prototype(), &then_key)?;
+    if then.same_value(intrinsic_then, scope.heap()) {
+      let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
+      scope.push_roots(&[resolve, reject])?;
+      perform_promise_then_no_capability(
+        vm,
+        scope,
+        hooks,
+        Value::Object(thenable_obj),
+        resolve,
+        reject,
+      )?;
+      return Ok(());
+    }
+  }
+
   let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
+
+  // Enqueue PromiseResolveThenableJob(promise, thenable, then).
+  let then_job_callback = hooks.host_make_job_callback(then_obj);
 
   let callback_obj = then_job_callback.callback_object();
   let realm = then_job_callback
@@ -11592,6 +11617,193 @@ pub fn number_constructor_construct(
   Ok(Value::Object(obj))
 }
 
+fn this_number_value(scope: &mut Scope<'_>, this: Value, method: &'static str) -> Result<f64, VmError> {
+  match this {
+    Value::Number(n) => Ok(n),
+    Value::Object(obj) => {
+      let marker = scope.alloc_string("vm-js.internal.NumberData")?;
+      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
+        Some(Value::Number(n)) => Ok(n),
+        _ => Err(VmError::TypeError(method)),
+      }
+    }
+    _ => Err(VmError::TypeError(method)),
+  }
+}
+
+fn this_boolean_value(scope: &mut Scope<'_>, this: Value, method: &'static str) -> Result<bool, VmError> {
+  match this {
+    Value::Bool(b) => Ok(b),
+    Value::Object(obj) => {
+      let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
+      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
+        Some(Value::Bool(b)) => Ok(b),
+        _ => Err(VmError::TypeError(method)),
+      }
+    }
+    _ => Err(VmError::TypeError(method)),
+  }
+}
+
+#[derive(Clone, Debug)]
+struct BigUint {
+  // Little-endian base-2^32 limbs.
+  limbs: Vec<u32>,
+}
+
+impl BigUint {
+  fn zero() -> Self {
+    Self { limbs: Vec::new() }
+  }
+
+  fn from_u64(n: u64) -> Self {
+    if n == 0 {
+      return Self::zero();
+    }
+    let lo = n as u32;
+    let hi = (n >> 32) as u32;
+    if hi == 0 {
+      Self { limbs: vec![lo] }
+    } else {
+      Self { limbs: vec![lo, hi] }
+    }
+  }
+
+  fn is_zero(&self) -> bool {
+    self.limbs.is_empty()
+  }
+
+  fn normalize(&mut self) {
+    while self.limbs.last().is_some_and(|&x| x == 0) {
+      self.limbs.pop();
+    }
+  }
+
+  fn bit_len(&self) -> u32 {
+    let Some(&last) = self.limbs.last() else {
+      return 0;
+    };
+    let hi = 32 - last.leading_zeros();
+    (self.limbs.len() as u32 - 1) * 32 + hi
+  }
+
+  fn shl_bits(&mut self, bits: u32) -> Result<(), VmError> {
+    if self.is_zero() || bits == 0 {
+      return Ok(());
+    }
+
+    let word_shift = (bits / 32) as usize;
+    let bit_shift = bits % 32;
+
+    let mut out: Vec<u32> = Vec::new();
+    out
+      .try_reserve_exact(self.limbs.len().saturating_add(word_shift).saturating_add(1))
+      .map_err(|_| VmError::OutOfMemory)?;
+    out.extend(std::iter::repeat(0).take(word_shift));
+    out.extend_from_slice(&self.limbs);
+
+    if bit_shift != 0 {
+      let mut carry: u64 = 0;
+      for limb in out.iter_mut() {
+        let v = ((*limb as u64) << bit_shift) | carry;
+        *limb = v as u32;
+        carry = v >> 32;
+      }
+      if carry != 0 {
+        out.push(carry as u32);
+      }
+    }
+
+    self.limbs = out;
+    self.normalize();
+    Ok(())
+  }
+
+  fn mul_small(&mut self, mul: u32) -> Result<(), VmError> {
+    if self.is_zero() || mul == 1 {
+      return Ok(());
+    }
+    if mul == 0 {
+      self.limbs.clear();
+      return Ok(());
+    }
+
+    let mut carry: u64 = 0;
+    for limb in self.limbs.iter_mut() {
+      let v = (*limb as u64) * (mul as u64) + carry;
+      *limb = v as u32;
+      carry = v >> 32;
+    }
+    if carry != 0 {
+      self.limbs.try_reserve_exact(1).map_err(|_| VmError::OutOfMemory)?;
+      self.limbs.push(carry as u32);
+    }
+    Ok(())
+  }
+
+  fn div_rem_small(&mut self, div: u32) -> Result<u32, VmError> {
+    debug_assert!(div != 0);
+    if self.is_zero() {
+      return Ok(0);
+    }
+
+    let mut rem: u64 = 0;
+    for limb in self.limbs.iter_mut().rev() {
+      let cur = (rem << 32) | (*limb as u64);
+      let q = cur / (div as u64);
+      rem = cur % (div as u64);
+      *limb = q as u32;
+    }
+    self.normalize();
+    Ok(rem as u32)
+  }
+
+  fn shr_to_u32(&self, shift: u32) -> u32 {
+    if self.is_zero() {
+      return 0;
+    }
+    let word_shift = (shift / 32) as usize;
+    let bit_shift = shift % 32;
+    if word_shift >= self.limbs.len() {
+      return 0;
+    }
+    let mut v = (self.limbs[word_shift] as u64) >> bit_shift;
+    if bit_shift != 0 && word_shift + 1 < self.limbs.len() {
+      v |= (self.limbs[word_shift + 1] as u64) << (32 - bit_shift);
+    }
+    v as u32
+  }
+
+  fn truncate_bits(&mut self, bits: u32) {
+    if bits == 0 {
+      self.limbs.clear();
+      return;
+    }
+    let limbs_len = ((bits + 31) / 32) as usize;
+    if self.limbs.len() > limbs_len {
+      self.limbs.truncate(limbs_len);
+    }
+    let rem_bits = bits % 32;
+    if rem_bits != 0 {
+      if let Some(last) = self.limbs.last_mut() {
+        let mask = (1u32 << rem_bits) - 1;
+        *last &= mask;
+      }
+    }
+    self.normalize();
+  }
+}
+
 /// `Number.prototype.valueOf` (minimal).
 pub fn number_prototype_value_of(
   _vm: &mut Vm,
@@ -11602,26 +11814,511 @@ pub fn number_prototype_value_of(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  match this {
-    Value::Number(n) => Ok(Value::Number(n)),
-    Value::Object(obj) => {
-      let marker = scope.alloc_string("vm-js.internal.NumberData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
-      let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope
-        .heap()
-        .object_get_own_data_property_value(obj, &marker_key)?
-      {
-        Some(Value::Number(n)) => Ok(Value::Number(n)),
-        _ => Err(VmError::Unimplemented(
-          "Number.prototype.valueOf on non-Number object",
-        )),
+  Ok(Value::Number(this_number_value(
+    scope,
+    this,
+    "Number.prototype.valueOf called on incompatible receiver",
+  )?))
+}
+
+fn digit_to_ascii(digit: u32) -> u8 {
+  debug_assert!(digit < 36);
+  if digit < 10 {
+    b'0' + (digit as u8)
+  } else {
+    b'a' + (digit as u8 - 10)
+  }
+}
+
+fn number_to_string_radix(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  x: f64,
+  radix: u32,
+) -> Result<crate::GcString, VmError> {
+  debug_assert!(radix >= 2 && radix <= 36);
+  debug_assert!(x.is_finite());
+  debug_assert!(x != 0.0);
+
+  let x = if x == 0.0 { 0.0 } else { x };
+  let negative = x < 0.0;
+  let abs = if negative { -x } else { x };
+
+  let bits = abs.to_bits();
+  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+  let frac_bits = bits & ((1u64 << 52) - 1);
+
+  // Decompose `abs` into `mantissa * 2^shift` where `mantissa` is an integer and `shift` can be
+  // negative. This is an exact representation of the IEEE-754 binary64 value.
+  let (mantissa, shift): (u64, i32) = if exp_bits == 0 {
+    // subnormal
+    (frac_bits, -1074)
+  } else {
+    let e = exp_bits - 1023;
+    ((1u64 << 52) | frac_bits, e - 52)
+  };
+
+  // Integer part.
+  let mut int = if shift >= 0 {
+    let mut v = BigUint::from_u64(mantissa);
+    v.shl_bits(shift as u32)?;
+    v
+  } else {
+    let k = (-shift) as u32;
+    if k >= 64 {
+      BigUint::zero()
+    } else {
+      BigUint::from_u64(mantissa >> k)
+    }
+  };
+
+  // Fractional remainder: `rem / 2^denom_bits`.
+  let (mut rem, denom_bits): (BigUint, u32) = if shift >= 0 {
+    (BigUint::zero(), 0)
+  } else {
+    let k = (-shift) as u32;
+    let r = if k >= 64 {
+      mantissa
+    } else {
+      mantissa & ((1u64 << k) - 1)
+    };
+    (BigUint::from_u64(r), k)
+  };
+
+  // Convert integer part to digits by repeated division.
+  let int_bit_len = int.bit_len().max(1);
+  let max_int_digits = ((int_bit_len + 1) as usize).min(2048);
+  let mut int_digits_rev: Vec<u8> = Vec::new();
+  int_digits_rev
+    .try_reserve_exact(max_int_digits)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  if int.is_zero() {
+    int_digits_rev.push(b'0');
+  } else {
+    let mut steps = 0usize;
+    while !int.is_zero() {
+      if steps % 1024 == 0 {
+        vm.tick()?;
+      }
+      let d = int.div_rem_small(radix)? as u32;
+      int_digits_rev.push(digit_to_ascii(d));
+      steps = steps.saturating_add(1);
+      if steps >= 4096 {
+        // Hard cap: string outputs should never be unbounded, even for hostile inputs.
+        break;
       }
     }
-    _ => Err(VmError::Unimplemented(
-      "Number.prototype.valueOf on non-number",
-    )),
   }
+
+  // Reverse integer digits.
+  let mut out: Vec<u16> = Vec::new();
+
+  // Fractional digits will terminate for even radices; for odd radices, cap to keep runtime bounded.
+  let max_frac_digits: usize = if denom_bits == 0 {
+    0
+  } else if radix % 2 == 0 {
+    // Each digit in an even radix consumes at least one factor-of-two from the denominator.
+    denom_bits as usize
+  } else {
+    2048
+  };
+
+  // Compute conservative output length up-front so we can allocate fallibly once.
+  let sign_len = if negative { 1usize } else { 0usize };
+  let int_len = int_digits_rev.len();
+  let frac_len = if rem.is_zero() { 0usize } else { max_frac_digits.min(2048) };
+  let dot_len = if frac_len != 0 { 1usize } else { 0usize };
+  let total_len = sign_len
+    .saturating_add(int_len)
+    .saturating_add(dot_len)
+    .saturating_add(frac_len);
+  out
+    .try_reserve_exact(total_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  if negative {
+    out.push(b'-' as u16);
+  }
+
+  for &b in int_digits_rev.iter().rev() {
+    out.push(b as u16);
+  }
+
+  if !rem.is_zero() {
+    out.push(b'.' as u16);
+
+    let mut digits_written = 0usize;
+    while !rem.is_zero() && digits_written < max_frac_digits {
+      if digits_written % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      // rem = rem * radix
+      rem.mul_small(radix)?;
+      // digit = floor(rem / 2^denom_bits)
+      let digit = rem.shr_to_u32(denom_bits);
+      // rem = rem mod 2^denom_bits
+      rem.truncate_bits(denom_bits);
+
+      out.push(digit_to_ascii(digit) as u16);
+      digits_written = digits_written.saturating_add(1);
+    }
+  }
+
+  scope.alloc_string_from_u16_vec(out)
+}
+
+fn add_plus_to_exponent(s: &str) -> Result<String, VmError> {
+  let Some((mant, exp)) = s.split_once('e') else {
+    let mut out = String::new();
+    out.try_reserve_exact(s.len()).map_err(|_| VmError::OutOfMemory)?;
+    out.push_str(s);
+    return Ok(out);
+  };
+  let mut out = String::new();
+  out
+    .try_reserve_exact(mant.len().saturating_add(1).saturating_add(exp.len()).saturating_add(1))
+    .map_err(|_| VmError::OutOfMemory)?;
+  out.push_str(mant);
+  out.push('e');
+  if exp.starts_with('-') {
+    out.push_str(exp);
+  } else {
+    out.push('+');
+    out.push_str(exp);
+  }
+  Ok(out)
+}
+
+/// `Number.prototype.toString(radix)` (ECMA-262).
+pub fn number_prototype_to_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let x = this_number_value(
+    &mut scope,
+    this,
+    "Number.prototype.toString called on incompatible receiver",
+  )?;
+
+  let radix_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(radix_val, Value::Undefined) {
+    return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
+  }
+
+  let mut radix = scope.to_number(vm, host, hooks, radix_val)?;
+  if radix.is_nan() {
+    radix = 0.0;
+  }
+  if !radix.is_finite() {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid radix")?;
+    return Err(VmError::Throw(err));
+  }
+  radix = radix.trunc();
+  if radix < 2.0 || radix > 36.0 {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid radix")?;
+    return Err(VmError::Throw(err));
+  }
+  let radix_u32 = radix as u32;
+
+  if x.is_nan() {
+    return Ok(Value::String(scope.alloc_string("NaN")?));
+  }
+  if x == 0.0 {
+    return Ok(Value::String(scope.alloc_string("0")?));
+  }
+  if x.is_infinite() || radix_u32 == 10 {
+    return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
+  }
+
+  let s = number_to_string_radix(vm, &mut scope, x, radix_u32)?;
+  Ok(Value::String(s))
+}
+
+/// `Number.prototype.toFixed(fractionDigits)` (ECMA-262).
+pub fn number_prototype_to_fixed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let x = this_number_value(
+    &mut scope,
+    this,
+    "Number.prototype.toFixed called on incompatible receiver",
+  )?;
+
+  let fd_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut f = if matches!(fd_val, Value::Undefined) {
+    0.0
+  } else {
+    scope.to_number(vm, host, hooks, fd_val)?
+  };
+  if f.is_nan() {
+    f = 0.0;
+  }
+  if !f.is_finite() {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid fractionDigits")?;
+    return Err(VmError::Throw(err));
+  }
+  f = f.trunc();
+  if f < 0.0 || f > 100.0 {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid fractionDigits")?;
+    return Err(VmError::Throw(err));
+  }
+  let f = f as usize;
+
+  if x.is_nan() || x.is_infinite() {
+    return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
+  }
+  if x.abs() >= 1e21 {
+    return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
+  }
+
+  // Normalize -0 to +0 so Rust's formatting doesn't produce "-0.00" etc.
+  let x = if x == 0.0 { 0.0 } else { x };
+
+  let mut buf = String::new();
+  buf
+    .try_reserve_exact(256)
+    .map_err(|_| VmError::OutOfMemory)?;
+  write!(&mut buf, "{:.*}", f, x).unwrap();
+  let out = scope.alloc_string(&buf)?;
+  Ok(Value::String(out))
+}
+
+/// `Number.prototype.toExponential(fractionDigits)` (ECMA-262).
+pub fn number_prototype_to_exponential(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let x = this_number_value(
+    &mut scope,
+    this,
+    "Number.prototype.toExponential called on incompatible receiver",
+  )?;
+
+  if x.is_nan() || x.is_infinite() {
+    return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
+  }
+
+  // Normalize -0 to +0 so Rust doesn't emit "-0e0".
+  let x = if x == 0.0 { 0.0 } else { x };
+
+  let fd_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let raw = if matches!(fd_val, Value::Undefined) {
+    let mut buf = String::new();
+    buf.try_reserve_exact(64).map_err(|_| VmError::OutOfMemory)?;
+    write!(&mut buf, "{:e}", x).unwrap();
+    buf
+  } else {
+    let mut f = scope.to_number(vm, host, hooks, fd_val)?;
+    if f.is_nan() {
+      f = 0.0;
+    }
+    if !f.is_finite() {
+      let intr = require_intrinsics(vm)?;
+      let err = crate::new_range_error(&mut scope, intr, "Invalid fractionDigits")?;
+      return Err(VmError::Throw(err));
+    }
+    f = f.trunc();
+    if f < 0.0 || f > 100.0 {
+      let intr = require_intrinsics(vm)?;
+      let err = crate::new_range_error(&mut scope, intr, "Invalid fractionDigits")?;
+      return Err(VmError::Throw(err));
+    }
+    let f = f as usize;
+
+    let mut buf = String::new();
+    buf.try_reserve_exact(256).map_err(|_| VmError::OutOfMemory)?;
+    write!(&mut buf, "{:.*e}", f, x).unwrap();
+    buf
+  };
+
+  let fixed = add_plus_to_exponent(&raw)?;
+  let out = scope.alloc_string(&fixed)?;
+  Ok(Value::String(out))
+}
+
+/// `Number.prototype.toPrecision(precision)` (ECMA-262).
+pub fn number_prototype_to_precision(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let x = this_number_value(
+    &mut scope,
+    this,
+    "Number.prototype.toPrecision called on incompatible receiver",
+  )?;
+
+  let precision_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(precision_val, Value::Undefined) {
+    return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
+  }
+
+  let mut p = scope.to_number(vm, host, hooks, precision_val)?;
+  if p.is_nan() {
+    p = 0.0;
+  }
+  if !p.is_finite() {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid precision")?;
+    return Err(VmError::Throw(err));
+  }
+  p = p.trunc();
+  if p < 1.0 || p > 100.0 {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid precision")?;
+    return Err(VmError::Throw(err));
+  }
+  let p = p as usize;
+
+  if x.is_nan() || x.is_infinite() {
+    return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
+  }
+
+  // Normalize -0 to +0.
+  let x = if x == 0.0 { 0.0 } else { x };
+  let negative = x < 0.0;
+  let abs = if negative { -x } else { x };
+
+  // Start with exponential form at the requested precision so any rounding is consistent.
+  let mut exp_buf = String::new();
+  exp_buf
+    .try_reserve_exact(256)
+    .map_err(|_| VmError::OutOfMemory)?;
+  write!(&mut exp_buf, "{:.*e}", p.saturating_sub(1), abs).unwrap();
+
+  let Some((mantissa, exp_part)) = exp_buf.split_once('e') else {
+    return Err(VmError::InvariantViolation("expected exponential formatting to contain 'e'"));
+  };
+  let exp: i32 = exp_part.parse().unwrap_or(0);
+
+  // Extract mantissa digits (ASCII) without the decimal point.
+  let mantissa_bytes = mantissa.as_bytes();
+  let mut digits: Vec<u8> = Vec::new();
+  digits
+    .try_reserve_exact(p)
+    .map_err(|_| VmError::OutOfMemory)?;
+  for &b in mantissa_bytes {
+    if b == b'.' {
+      continue;
+    }
+    digits.push(b);
+  }
+
+  let use_exponential = exp < -6 || exp >= (p as i32);
+  let mut out = String::new();
+
+  if use_exponential {
+    // `mantissa` already contains the decimal point and trailing zeros to produce exactly `p`
+    // significant digits.
+    let exp_fixed = add_plus_to_exponent(&exp_buf)?;
+    out
+      .try_reserve_exact((if negative { 1 } else { 0 }) + exp_fixed.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    if negative {
+      out.push('-');
+    }
+    out.push_str(&exp_fixed);
+  } else {
+    // Convert to fixed notation by shifting the decimal point within `digits`.
+    let decimal_pos: i32 = exp + 1;
+
+    // Estimate output length for a single fallible reservation.
+    let sign_len = if negative { 1usize } else { 0usize };
+    let leading_zeros = if decimal_pos <= 0 { (-decimal_pos) as usize } else { 0 };
+    let dot_len = if decimal_pos < (digits.len() as i32) { 1usize } else { 0usize };
+    let int_pad_zeros = if decimal_pos > (digits.len() as i32) {
+      (decimal_pos as usize).saturating_sub(digits.len())
+    } else {
+      0usize
+    };
+
+    let total_len = sign_len
+      .saturating_add(1) // at least "0"
+      .saturating_add(dot_len)
+      .saturating_add(leading_zeros)
+      .saturating_add(digits.len())
+      .saturating_add(int_pad_zeros);
+    out.try_reserve_exact(total_len).map_err(|_| VmError::OutOfMemory)?;
+
+    if negative {
+      out.push('-');
+    }
+
+    if decimal_pos <= 0 {
+      out.push('0');
+      out.push('.');
+      for _ in 0..leading_zeros {
+        out.push('0');
+      }
+      for &b in &digits {
+        out.push(b as char);
+      }
+    } else {
+      let dec = decimal_pos as usize;
+      if dec >= digits.len() {
+        for &b in &digits {
+          out.push(b as char);
+        }
+        for _ in 0..int_pad_zeros {
+          out.push('0');
+        }
+      } else {
+        for &b in &digits[..dec] {
+          out.push(b as char);
+        }
+        out.push('.');
+        for &b in &digits[dec..] {
+          out.push(b as char);
+        }
+      }
+    }
+  }
+
+  let out = scope.alloc_string(&out)?;
+  Ok(Value::String(out))
+}
+
+/// `Number.prototype.toLocaleString` (placeholder).
+pub fn number_prototype_to_locale_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  number_prototype_to_string(vm, scope, host, hooks, callee, this, &[])
 }
 
 /// `Boolean` constructor called as a function.
@@ -11691,26 +12388,106 @@ pub fn boolean_prototype_value_of(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  match this {
-    Value::Bool(b) => Ok(Value::Bool(b)),
-    Value::Object(obj) => {
-      let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
-      let marker_sym = scope.heap_mut().symbol_for(marker)?;
-      let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope
-        .heap()
-        .object_get_own_data_property_value(obj, &marker_key)?
-      {
-        Some(Value::Bool(b)) => Ok(Value::Bool(b)),
-        _ => Err(VmError::Unimplemented(
-          "Boolean.prototype.valueOf on non-Boolean object",
-        )),
-      }
-    }
-    _ => Err(VmError::Unimplemented(
-      "Boolean.prototype.valueOf on non-boolean",
-    )),
+  Ok(Value::Bool(this_boolean_value(
+    scope,
+    this,
+    "Boolean.prototype.valueOf called on incompatible receiver",
+  )?))
+}
+
+/// `Boolean.prototype.toString`.
+pub fn boolean_prototype_to_string(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let b = this_boolean_value(scope, this, "Boolean.prototype.toString called on incompatible receiver")?;
+  if b {
+    Ok(Value::String(scope.alloc_string("true")?))
+  } else {
+    Ok(Value::String(scope.alloc_string("false")?))
   }
+}
+
+/// `Number.isNaN`.
+pub fn number_is_nan(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+  match v {
+    Value::Number(n) => Ok(Value::Bool(n.is_nan())),
+    _ => Ok(Value::Bool(false)),
+  }
+}
+
+/// `Number.isFinite`.
+pub fn number_is_finite(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+  match v {
+    Value::Number(n) => Ok(Value::Bool(n.is_finite())),
+    _ => Ok(Value::Bool(false)),
+  }
+}
+
+/// `Number.isInteger`.
+pub fn number_is_integer(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Number(n) = v else {
+    return Ok(Value::Bool(false));
+  };
+  if !n.is_finite() {
+    return Ok(Value::Bool(false));
+  }
+  Ok(Value::Bool(n.trunc() == n))
+}
+
+/// `Number.isSafeInteger`.
+pub fn number_is_safe_integer(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Number(n) = v else {
+    return Ok(Value::Bool(false));
+  };
+  if !n.is_finite() {
+    return Ok(Value::Bool(false));
+  }
+  if n.trunc() != n {
+    return Ok(Value::Bool(false));
+  }
+  Ok(Value::Bool(n.abs() <= 9007199254740991.0))
 }
 
 /// `BigInt.prototype.valueOf` (minimal).
