@@ -13,7 +13,10 @@ fn compile_with_typecheck(
   native_strict: bool,
 ) -> (optimize_js::Program, Arc<typecheck_ts::Program>) {
   let mut host = MemoryHost::with_options(TsCompilerOptions {
-    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    libs: vec![
+      LibName::parse("es5").expect("LibName::parse(es5)"),
+      LibName::parse("es2015").expect("LibName::parse(es2015)"),
+    ],
     native_strict,
     ..Default::default()
   });
@@ -423,4 +426,117 @@ fn dynamic_key_falls_back_to_heap_effects_even_in_strict_native() {
     "expected no AllocField locations for dynamic key but got {:?}",
     assign.meta.effects.writes
   );
+}
+
+#[test]
+fn strict_native_array_index_and_length_use_array_elements_location() {
+  let (mut program, type_program) = compile_with_typecheck(
+    r#"
+      interface Arr {
+        [idx: number]: number;
+        length: number;
+      }
+      const arr: Arr = { length: 3, 0: 0, 1: 1, 2: 2 };
+      arr[0] = 42;
+      const x = arr[0];
+      const len = arr.length;
+      void x; void len;
+    "#,
+    true,
+  );
+
+  annotate_top_level_effects(&mut program, &type_program);
+
+  let cfg = program
+    .top_level
+    .ssa_body
+    .as_ref()
+    .unwrap_or(&program.top_level.body);
+  let insts = collect_insts(cfg);
+
+  let store = type_program.interned_type_store();
+  let expected_elem = store.layout_of(store.primitive_ids().number);
+
+  let write = insts
+    .iter()
+    .find(|inst| inst.t == InstTyp::PropAssign)
+    .expect("expected PropAssign to arr[0]");
+  let read_index = insts
+    .iter()
+    .find(|inst| {
+      inst.t == InstTyp::Bin
+        && inst.bin_op == BinOp::GetProp
+        && matches!(inst.args.get(1), Some(Arg::Const(Const::Num(n))) if n.0 == 0.0)
+    })
+    .expect("expected GetProp for arr[0]");
+  let read_len = insts
+    .iter()
+    .find(|inst| {
+      inst.t == InstTyp::Bin
+        && inst.bin_op == BinOp::GetProp
+        && matches!(inst.args.get(1), Some(Arg::Const(Const::Str(s))) if s == "length")
+    })
+    .expect("expected GetProp for arr.length");
+
+  // Ensure we refined away the coarse heap effects.
+  assert!(
+    !write.meta.effects.writes.contains(&EffectLocation::Heap),
+    "expected array write to avoid Heap but got {:?}",
+    write.meta.effects.writes
+  );
+  assert!(
+    !read_index.meta.effects.reads.contains(&EffectLocation::Heap),
+    "expected array read to avoid Heap but got {:?}",
+    read_index.meta.effects.reads
+  );
+  assert!(
+    !read_len.meta.effects.reads.contains(&EffectLocation::Heap),
+    "expected length read to avoid Heap but got {:?}",
+    read_len.meta.effects.reads
+  );
+
+  let write_loc = write
+    .meta
+    .effects
+    .writes
+    .iter()
+    .next()
+    .expect("expected write location");
+  match write_loc {
+    EffectLocation::ArrayElements { elem } => assert_eq!(
+      *elem, expected_elem,
+      "expected array element layout to match number layout"
+    ),
+    other => panic!("expected ArrayElements location but got {other:?}"),
+  }
+
+  let read_loc = read_index
+    .meta
+    .effects
+    .reads
+    .iter()
+    .next()
+    .expect("expected read location");
+  match read_loc {
+    EffectLocation::ArrayElements { elem } => assert_eq!(
+      *elem, expected_elem,
+      "expected array read element layout to match number layout"
+    ),
+    other => panic!("expected ArrayElements location but got {other:?}"),
+  }
+
+  let len_loc = read_len
+    .meta
+    .effects
+    .reads
+    .iter()
+    .next()
+    .expect("expected length read location");
+  match len_loc {
+    EffectLocation::ArrayElements { elem } => assert_eq!(
+      *elem, expected_elem,
+      "expected length read to share the array elements location"
+    ),
+    other => panic!("expected ArrayElements location but got {other:?}"),
+  }
 }

@@ -186,6 +186,31 @@ fn shape_has_own_property(
 }
 
 #[cfg(feature = "typed")]
+fn key_is_array_index_or_length(key: &Arg) -> bool {
+  use crate::il::inst::Const;
+  match key {
+    Arg::Const(Const::Str(s)) => {
+      if s == "length" {
+        return true;
+      }
+      let Ok(index) = s.parse::<u32>() else {
+        return false;
+      };
+      // Array indices are canonical uint32 strings excluding 2^32-1.
+      index != u32::MAX && index.to_string() == *s
+    }
+    Arg::Const(Const::Num(n)) => {
+      let value = n.0;
+      value.is_finite()
+        && value.fract() == 0.0
+        && value >= 0.0
+        && value < (u32::MAX as f64)
+    }
+    _ => false,
+  }
+}
+
+#[cfg(feature = "typed")]
 fn type_to_object_shapes(
   program: &typecheck_ts::Program,
   store: &types_ts_interned::TypeStore,
@@ -223,6 +248,92 @@ fn type_to_object_shapes(
         None
       } else {
         Some(shapes)
+      }
+    }
+    _ => None,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn type_to_array_elem_layouts(
+  program: &typecheck_ts::Program,
+  store: &types_ts_interned::TypeStore,
+  ty: TypeId,
+  max_layouts: usize,
+  depth: u8,
+) -> Option<Vec<types_ts_interned::LayoutId>> {
+  if depth >= 8 {
+    return None;
+  }
+
+  use types_ts_interned::TypeKind as K;
+  fn type_is_number_like(program: &typecheck_ts::Program, ty: TypeId, depth: u8) -> bool {
+    if depth >= 8 {
+      return false;
+    }
+    use types_ts_interned::TypeKind as K;
+    match program.interned_type_kind(ty) {
+      K::Number | K::NumberLiteral(_) => true,
+      K::Ref { def, .. } => {
+        let declared = program.declared_type_of_def_interned(def);
+        type_is_number_like(program, declared, depth + 1)
+      }
+      K::Union(members) => members.iter().all(|member| {
+        matches!(program.interned_type_kind(*member), K::Never)
+          || type_is_number_like(program, *member, depth + 1)
+      }),
+      _ => false,
+    }
+  }
+
+  match program.interned_type_kind(ty) {
+    K::Array { ty: elem_ty, .. } => Some(vec![program.layout_of_interned(elem_ty)]),
+    K::Object(obj) => {
+      // Treat structural objects with a numeric index signature as "array-like" for effect
+      // purposes. This complements the strict-native rule that allows dynamic numeric keys when a
+      // numeric indexer is present.
+      let shape_id = store.object(obj).shape;
+      let shape = store.shape(shape_id);
+      let mut layouts: Vec<types_ts_interned::LayoutId> = Vec::new();
+      for indexer in shape.indexers.iter() {
+        if type_is_number_like(program, indexer.key_type, depth + 1) {
+          layouts.push(program.layout_of_interned(indexer.value_type));
+          if layouts.len() > max_layouts {
+            return None;
+          }
+        }
+      }
+      layouts.sort_unstable();
+      layouts.dedup();
+      if layouts.is_empty() {
+        None
+      } else {
+        Some(layouts)
+      }
+    }
+    K::Ref { def, .. } => {
+      let declared = program.declared_type_of_def_interned(def);
+      type_to_array_elem_layouts(program, store, declared, max_layouts, depth + 1)
+    }
+    K::Union(members) => {
+      let mut layouts: Vec<types_ts_interned::LayoutId> = Vec::new();
+      for member in members {
+        if matches!(program.interned_type_kind(member), K::Never) {
+          continue;
+        }
+        let mut member_layouts =
+          type_to_array_elem_layouts(program, store, member, max_layouts, depth + 1)?;
+        layouts.append(&mut member_layouts);
+        if layouts.len() > max_layouts {
+          return None;
+        }
+      }
+      layouts.sort_unstable();
+      layouts.dedup();
+      if layouts.is_empty() {
+        None
+      } else {
+        Some(layouts)
       }
     }
     _ => None,
@@ -296,6 +407,40 @@ fn strict_native_field_locations(
     });
   }
   Some(out)
+}
+
+#[cfg(feature = "typed")]
+fn strict_native_array_element_locations(
+  ctx: &PreciseEffectCtx<'_>,
+  receiver: &Arg,
+  key: &Arg,
+) -> Option<Vec<EffectLocation>> {
+  if !ctx.strict_native {
+    return None;
+  }
+  if !key_is_array_index_or_length(key) {
+    return None;
+  }
+  let recv_ty = ctx.var_types.arg(receiver)?;
+  const MAX_LAYOUTS: usize = 4;
+  let elem_layouts =
+    type_to_array_elem_layouts(ctx.type_program, &ctx.store, recv_ty, MAX_LAYOUTS, 0)?;
+  Some(
+    elem_layouts
+      .into_iter()
+      .map(|elem| EffectLocation::ArrayElements { elem })
+      .collect(),
+  )
+}
+
+#[cfg(feature = "typed")]
+fn strict_native_prop_locations(
+  ctx: &PreciseEffectCtx<'_>,
+  receiver: &Arg,
+  key: &Arg,
+) -> Option<Vec<EffectLocation>> {
+  strict_native_array_element_locations(ctx, receiver, key)
+    .or_else(|| strict_native_field_locations(ctx, receiver, key))
 }
 
 fn collect_constant_foreign_fns(program: &Program) -> BTreeMap<SymbolId, FnId> {
@@ -690,17 +835,17 @@ fn inst_local_effect_with_value_types_typed(
   match inst.t {
     InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
       if let (Some(receiver), Some(key)) = (inst.args.get(0), inst.args.get(1)) {
-        if let Some(fields) = strict_native_field_locations(ctx, receiver, key) {
+        if let Some(locs) = strict_native_prop_locations(ctx, receiver, key) {
           effects.reads.remove(&EffectLocation::Heap);
-          effects.reads.extend(fields);
+          effects.reads.extend(locs);
         }
       }
     }
     InstTyp::PropAssign => {
       if let (Some(receiver), Some(key)) = (inst.args.get(0), inst.args.get(1)) {
-        if let Some(fields) = strict_native_field_locations(ctx, receiver, key) {
+        if let Some(locs) = strict_native_prop_locations(ctx, receiver, key) {
           effects.writes.remove(&EffectLocation::Heap);
-          effects.writes.extend(fields);
+          effects.writes.extend(locs);
         }
       }
     }
