@@ -385,32 +385,20 @@ pub fn text_content_set<Host: DomHost + ?Sized>(
         Ok(changed) => (Ok(changed), changed),
         Err(err) => (Err(err), false),
       },
-      TextContentTarget::Comment => {
-        let mut changed = false;
-        let node = dom.node_mut(node_id);
-        if let NodeKind::Comment { content } = &mut node.kind {
-          if content != value {
-            content.clear();
-            content.push_str(value);
-            changed = true;
-          }
+      TextContentTarget::Comment => match dom.set_comment_data(node_id, value) {
+        Ok(changed) => {
+          // Comments do not affect rendering (they're ignored by renderer snapshots).
+          (Ok(changed), false)
         }
-        // Comments do not affect rendering (they're ignored by renderer snapshots).
-        (Ok(changed), false)
-      }
-      TextContentTarget::ProcessingInstruction => {
-        let mut changed = false;
-        let node = dom.node_mut(node_id);
-        if let NodeKind::ProcessingInstruction { data, .. } = &mut node.kind {
-          if data != value {
-            data.clear();
-            data.push_str(value);
-            changed = true;
-          }
+        Err(err) => (Err(err), false),
+      },
+      TextContentTarget::ProcessingInstruction => match dom.set_processing_instruction_data(node_id, value) {
+        Ok(changed) => {
+          // Processing instructions do not affect rendering.
+          (Ok(changed), false)
         }
-        // Processing instructions do not affect rendering.
-        (Ok(changed), false)
-      }
+        Err(err) => (Err(err), false),
+      },
       TextContentTarget::ReplaceChildren {
         preserve_shadow_roots,
       } => {
