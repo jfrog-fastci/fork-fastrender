@@ -1127,15 +1127,30 @@ impl Canvas {
     origin: (i32, i32),
   ) {
     let blend_mode = composite_blend.unwrap_or(self.current_state.blend_mode);
+    // `clip_rect` is frequently tracked without a full per-pixel mask (see
+    // `set_clip_with_radii_impl`'s bounds-only optimization). Most draw paths can scissor against
+    // `clip_rect`, but layer compositing needs to respect it explicitly or filter/opacity layers
+    // will leak outside `overflow:hidden` clips.
+    //
+    // For non-source-over blend modes we rely on tiny-skia compositing, which only supports mask
+    // clipping. Materialize a rectangular mask on demand in that case.
+    let clip_rect = self.current_state.clip_rect;
+    if blend_mode != SkiaBlendMode::SourceOver
+      && clip_rect.is_some()
+      && self.current_state.clip_mask.is_none()
+    {
+      self.materialize_rect_clip_mask_if_needed();
+    }
     let clip_mask = self.current_state.clip_mask.clone();
     self.mirror_to_source_alpha(|canvas| {
-      composite_layer_into_pixmap(
+      composite_layer_into_pixmap_with_clip_rect(
         &mut canvas.pixmap,
         layer,
         opacity,
         blend_mode,
         origin,
         clip_mask.as_deref(),
+        clip_rect,
       );
     });
   }
@@ -4342,12 +4357,25 @@ pub(crate) fn composite_layer_into_pixmap(
   origin: (i32, i32),
   clip: Option<&Mask>,
 ) {
+  composite_layer_into_pixmap_with_clip_rect(target, layer, opacity, blend_mode, origin, clip, None)
+}
+
+pub(crate) fn composite_layer_into_pixmap_with_clip_rect(
+  target: &mut Pixmap,
+  layer: &Pixmap,
+  opacity: f32,
+  blend_mode: SkiaBlendMode,
+  origin: (i32, i32),
+  clip: Option<&Mask>,
+  clip_rect: Option<Rect>,
+) {
   fn composite_source_over(
     target: &mut Pixmap,
     layer: &Pixmap,
     opacity: f32,
     origin: (i32, i32),
     clip: Option<&Mask>,
+    clip_rect: Option<Rect>,
   ) {
     // Match Chrome/Skia: evaluate `opacity` using unbiased 8-bit math.
     //
@@ -4386,10 +4414,37 @@ pub(crate) fn composite_layer_into_pixmap(
       return;
     }
 
-    let dst_x0 = origin.0.max(0);
-    let dst_y0 = origin.1.max(0);
-    let dst_x1 = origin.0.saturating_add(src_w).min(dst_w);
-    let dst_y1 = origin.1.saturating_add(src_h).min(dst_h);
+    let mut dst_x0 = origin.0.max(0);
+    let mut dst_y0 = origin.1.max(0);
+    let mut dst_x1 = origin.0.saturating_add(src_w).min(dst_w);
+    let mut dst_y1 = origin.1.saturating_add(src_h).min(dst_h);
+    if let Some(clip_rect) = clip_rect {
+      // `clip_rect` is specified in device space and uses a non-AA pixel-center inclusion rule,
+      // matching the mask construction in `materialize_rect_clip_mask_if_needed`.
+      if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
+        return;
+      }
+      let min_x = clip_rect.min_x();
+      let max_x = clip_rect.max_x();
+      let min_y = clip_rect.min_y();
+      let max_y = clip_rect.max_y();
+      if min_x.is_finite() && max_x.is_finite() && min_y.is_finite() && max_y.is_finite() {
+        let cx0 = (min_x - 0.5).ceil() as i64;
+        let cy0 = (min_y - 0.5).ceil() as i64;
+        let cx1 = (max_x - 0.5).floor() as i64 + 1;
+        let cy1 = (max_y - 0.5).floor() as i64 + 1;
+        let w = dst_w as i64;
+        let h = dst_h as i64;
+        let cx0 = cx0.clamp(0, w) as i32;
+        let cy0 = cy0.clamp(0, h) as i32;
+        let cx1 = cx1.clamp(0, w) as i32;
+        let cy1 = cy1.clamp(0, h) as i32;
+        dst_x0 = dst_x0.max(cx0);
+        dst_y0 = dst_y0.max(cy0);
+        dst_x1 = dst_x1.min(cx1);
+        dst_y1 = dst_y1.min(cy1);
+      }
+    }
     if dst_x0 >= dst_x1 || dst_y0 >= dst_y1 {
       return;
     }
@@ -4478,9 +4533,55 @@ pub(crate) fn composite_layer_into_pixmap(
   }
 
   if blend_mode == SkiaBlendMode::SourceOver {
-    composite_source_over(target, layer, opacity, origin, clip);
+    composite_source_over(target, layer, opacity, origin, clip, clip_rect);
     return;
   }
+
+  // tiny-skia's `draw_pixmap` only supports mask clipping. When callers have a rectangular clip
+  // bounds but no materialized mask, build a temporary mask so non-source-over blend modes still
+  // respect the clip.
+  let mut rect_mask_storage: Option<Mask> = None;
+  let clip = clip.or_else(|| {
+    let rect = clip_rect?;
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+      return None;
+    }
+    let w = target.width();
+    let h = target.height();
+    if w == 0 || h == 0 {
+      return None;
+    }
+    let mut mask = Mask::new(w, h)?;
+    mask.data_mut().fill(0);
+
+    let w_i64 = w as i64;
+    let h_i64 = h as i64;
+    let min_x = rect.min_x();
+    let max_x = rect.max_x();
+    let min_y = rect.min_y();
+    let max_y = rect.max_y();
+    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
+      return None;
+    }
+    let x0 = (min_x - 0.5).ceil() as i64;
+    let y0 = (min_y - 0.5).ceil() as i64;
+    let x1 = (max_x - 0.5).floor() as i64 + 1;
+    let y1 = (max_y - 0.5).floor() as i64 + 1;
+    let x0 = x0.clamp(0, w_i64) as usize;
+    let y0 = y0.clamp(0, h_i64) as usize;
+    let x1 = x1.clamp(0, w_i64) as usize;
+    let y1 = y1.clamp(0, h_i64) as usize;
+    if x1 <= x0 || y1 <= y0 {
+      return None;
+    }
+    let stride = w as usize;
+    for y in y0..y1 {
+      let start = y * stride + x0;
+      mask.data_mut()[start..start + (x1 - x0)].fill(255);
+    }
+    rect_mask_storage = Some(mask);
+    rect_mask_storage.as_ref()
+  });
 
   let mut paint = PixmapPaint::default();
   paint.opacity = opacity;
@@ -6115,6 +6216,41 @@ mod tests {
           (178, 178, 178, 255),
           "unexpected pixel at ({x}, {y})"
         );
+      }
+    }
+  }
+
+  #[test]
+  fn composite_layer_respects_rect_clip_without_mask() {
+    // Regression for pages with `filter` inside `overflow:hidden` ancestors (e.g. gitlab.io):
+    // rectangular clips are often represented as bounds-only `clip_rect` for performance, but
+    // layer compositing must still respect the clip even when no per-pixel mask was built.
+    let mut canvas = Canvas::new(4, 4, Rgba::WHITE).unwrap();
+    canvas
+      .set_clip(Rect::from_xywh(0.0, 2.0, 4.0, 2.0))
+      .expect("set_clip");
+    assert!(
+      canvas.clip_mask().is_none(),
+      "expected bounds-only clip mask fast path"
+    );
+
+    let mut layer = new_pixmap(4, 4).expect("pixmap");
+    layer
+      .pixels_mut()
+      .fill(PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("premultiplied"));
+
+    canvas.composite_layer(&layer, 1.0, None, (0, 0));
+    let pixmap = canvas.into_pixmap();
+
+    // Top half should remain unclipped (white); bottom half should be red.
+    for y in 0..2u32 {
+      for x in 0..4u32 {
+        assert_eq!(pixel(&pixmap, x, y), (255, 255, 255, 255), "pixel {x},{y}");
+      }
+    }
+    for y in 2..4u32 {
+      for x in 0..4u32 {
+        assert_eq!(pixel(&pixmap, x, y), (255, 0, 0, 255), "pixel {x},{y}");
       }
     }
   }

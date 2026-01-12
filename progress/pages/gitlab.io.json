@@ -14,7 +14,7 @@
     "layout": 152.04510966795365,
     "paint": 166.04926450579148
   },
-  "notes": "",
+  "notes": "High diff% is dominated by subtle per-pixel differences in large blurred gradient backgrounds (filter: blur + gradients) vs Chrome/Skia; overall layout/structure matches.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 644486,
