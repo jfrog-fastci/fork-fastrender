@@ -60,6 +60,22 @@ By default, imports are resolved relative to the importing file, checking
 `index.*` variants. `--node-resolve` additionally walks up the directory tree
 looking in `node_modules/`.
 
+### `typeRoots` / `types` packages
+
+The CLI follows the `typecheck-ts` core policy for ambient type packages:
+
+- Both `compilerOptions.types` and `/// <reference types="..." />` are resolved
+  by `typecheck-ts` via the host's `Host::resolve` hook, with a fallback that
+  maps `foo` to `@types/foo` and `@scope/pkg` to `@types/scope__pkg` (matching
+  `tsc`'s `@types` naming).
+- In project mode, the CLI host uses `compilerOptions.typeRoots` (or the default
+  `node_modules/@types` ancestors) to resolve `@types/*` specifiers to their
+  `.d.ts` entrypoints.
+- When `compilerOptions.types` is omitted in `tsconfig.json`, the CLI matches
+  `tsc` by including all discoverable packages under `typeRoots` (in stable,
+  sorted order) by expanding them into `CompilerOptions.types` before invoking
+  the checker.
+
 ### Diagnostics
 
 Human output uses `diagnostics::render` with file context. JSON output uses

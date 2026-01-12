@@ -158,7 +158,7 @@ impl ProgramState {
             }
           }
           TripleSlashReferenceKind::Types => {
-            if let Some(target) = self.record_module_resolution(file_id, value, host) {
+            if let Some(target) = self.record_type_package_resolution(file_id, value, host) {
               queue.push_back(target);
             } else {
               self.push_program_diagnostic(codes::TYPE_DEFINITION_FILE_NOT_FOUND.error(

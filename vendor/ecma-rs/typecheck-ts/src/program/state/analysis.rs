@@ -5,6 +5,74 @@ mod libs;
 mod sem_diagnostics;
 
 impl ProgramState {
+  /// Map a type package name (as used by `/// <reference types="..." />` and
+  /// `compilerOptions.types`) to the corresponding `@types/*` specifier.
+  ///
+  /// This mirrors TypeScript's scoped package mapping:
+  /// - `@scope/pkg` -> `@types/scope__pkg`
+  ///
+  /// Returning `None` means no fallback should be attempted (e.g. the caller
+  /// already specified an `@types/*` package).
+  fn type_package_fallback_specifier(specifier: &str) -> Option<String> {
+    let (package, rest) = if let Some(stripped) = specifier.strip_prefix('@') {
+      let Some((scope, after_scope)) = stripped.split_once('/') else {
+        return None;
+      };
+      if let Some((name, _trailing)) = after_scope.split_once('/') {
+        let package_len = 1 + scope.len() + 1 + name.len();
+        (&specifier[..package_len], &specifier[package_len..])
+      } else {
+        (specifier, "")
+      }
+    } else if let Some((package, _trailing)) = specifier.split_once('/') {
+      let package_len = package.len();
+      (&specifier[..package_len], &specifier[package_len..])
+    } else {
+      (specifier, "")
+    };
+
+    if package.starts_with("@types/") {
+      return None;
+    }
+
+    let mapped = if let Some(stripped) = package.strip_prefix('@') {
+      let (scope, name) = stripped.split_once('/')?;
+      format!("{scope}__{name}")
+    } else {
+      package.to_string()
+    };
+    Some(format!("@types/{mapped}{rest}"))
+  }
+
+  /// Resolve a type package specifier using normal module resolution with an
+  /// additional `@types/*` fallback.
+  ///
+  /// Policy: `typecheck-ts` core owns type-package resolution for both
+  /// `compilerOptions.types` and `/// <reference types="..." />`. Hosts only
+  /// need to implement [`Host::resolve`] such that `@types/*` specifiers can be
+  /// mapped to the correct `.d.ts` entrypoints (the CLI does this via
+  /// `typeRoots`).
+  pub(super) fn record_type_package_resolution(
+    &mut self,
+    from: FileId,
+    specifier: &str,
+    host: &Arc<dyn Host>,
+  ) -> Option<FileId> {
+    if let Some(target) = self.record_module_resolution(from, specifier, host) {
+      return Some(target);
+    }
+    let fallback = Self::type_package_fallback_specifier(specifier)?;
+    let Some(target) = self.record_module_resolution(from, &fallback, host) else {
+      return None;
+    };
+    // Treat the resolved `@types/*` package as satisfying the original
+    // specifier so downstream module graph queries see the dependency.
+    self
+      .typecheck_db
+      .set_module_resolution_ref(from, specifier, Some(target));
+    Some(target)
+  }
+
   pub(super) fn ensure_analyzed(&mut self, host: &Arc<dyn Host>, roots: &[FileKey]) {
     if let Err(fatal) = self.ensure_analyzed_result(host, roots) {
       self.diagnostics.push(fatal_to_diagnostic(fatal));
@@ -27,42 +95,6 @@ impl ProgramState {
     let mut lib_queue = VecDeque::new();
     self.process_libs(&libs, host, &mut lib_queue)?;
 
-    fn type_package_fallback_specifier(name: &str) -> Option<String> {
-      if name.starts_with("@types/") {
-        return None;
-      }
-
-      // Match TypeScript's scoped package mapping for `@types`:
-      // `@scope/pkg` -> `@types/scope__pkg`.
-      let mapped = if let Some(stripped) = name.strip_prefix('@') {
-        stripped.replace('/', "__")
-      } else {
-        name.to_string()
-      };
-      Some(format!("@types/{mapped}"))
-    }
-
-    fn record_type_package_resolution(
-      state: &mut ProgramState,
-      from: FileId,
-      specifier: &str,
-      host: &Arc<dyn Host>,
-    ) -> Option<FileId> {
-      if let Some(target) = state.record_module_resolution(from, specifier, host) {
-        return Some(target);
-      }
-      let fallback = type_package_fallback_specifier(specifier)?;
-      let Some(target) = state.record_module_resolution(from, &fallback, host) else {
-        return None;
-      };
-      // Treat the resolved `@types/*` package as satisfying the original
-      // specifier so downstream module graph queries see the dependency.
-      state
-        .typecheck_db
-        .set_module_resolution_ref(from, specifier, Some(target));
-      Some(target)
-    }
-
     let mut root_keys: Vec<FileKey> = roots.to_vec();
     let mut root_ids: Vec<FileId> = roots
       .iter()
@@ -72,40 +104,6 @@ impl ProgramState {
     let mut type_packages = self.compiler_options.types.clone();
     type_packages.sort();
     type_packages.dedup();
-
-    if !type_packages.is_empty() {
-      let primary = if let Some(base_root) = roots.first() {
-        let file_id = self.intern_file_key(base_root.clone(), FileOrigin::Source);
-        Span::new(file_id, TextRange::new(0, 0))
-      } else {
-        Span::new(FileId(u32::MAX), TextRange::new(0, 0))
-      };
-
-      if let Some(base_root) = roots.first() {
-        for name in type_packages.iter() {
-          self.check_cancelled()?;
-          let resolved = host.resolve(base_root, name).or_else(|| {
-            type_package_fallback_specifier(name).and_then(|spec| host.resolve(base_root, &spec))
-          });
-          if let Some(key) = resolved {
-            root_keys.push(key.clone());
-            root_ids.push(self.intern_file_key(key, FileOrigin::Source));
-          } else {
-            self.push_program_diagnostic(
-              codes::UNRESOLVED_MODULE
-                .error(format!("cannot resolve type package \"{name}\""), primary),
-            );
-          }
-        }
-      } else {
-        for name in type_packages.iter() {
-          self.push_program_diagnostic(
-            codes::UNRESOLVED_MODULE
-              .error(format!("cannot resolve type package \"{name}\""), primary),
-          );
-        }
-      }
-    }
 
     root_keys.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
     root_keys.dedup_by(|a, b| a.as_str() == b.as_str());
@@ -117,26 +115,33 @@ impl ProgramState {
       .set_roots(Arc::<[FileKey]>::from(root_keys));
     let mut queue: VecDeque<FileId> = self.root_ids.iter().copied().collect();
     queue.extend(lib_queue);
-    if !self.compiler_options.types.is_empty() && !self.root_ids.is_empty() {
-      let root_ids = self.root_ids.clone();
-      let mut type_names = self.compiler_options.types.clone();
-      type_names.sort();
-      type_names.dedup();
-      for name in type_names {
-        self.check_cancelled()?;
-        let mut resolved_any = false;
-        for root in root_ids.iter().copied() {
-          if let Some(target) = record_type_package_resolution(self, root, name.as_str(), host) {
-            resolved_any = true;
-            queue.push_back(target);
-          }
-        }
-        if !resolved_any {
-          let primary_file = self.root_ids.first().copied().unwrap_or(FileId(u32::MAX));
-          self.push_program_diagnostic(codes::UNRESOLVED_MODULE.error(
-            format!("unresolved type package \"{name}\""),
-            Span::new(primary_file, TextRange::new(0, 0)),
+    if !type_packages.is_empty() {
+      if self.root_ids.is_empty() {
+        for name in type_packages.iter() {
+          self.check_cancelled()?;
+          self.push_program_diagnostic(codes::TYPE_DEFINITION_FILE_NOT_FOUND.error(
+            format!("cannot find type definition file for \"{name}\""),
+            Span::new(FileId(u32::MAX), TextRange::new(0, 0)),
           ));
+        }
+      } else {
+        let root_ids = self.root_ids.clone();
+        for name in type_packages.iter() {
+          self.check_cancelled()?;
+          let mut resolved_any = false;
+          for root in root_ids.iter().copied() {
+            if let Some(target) = self.record_type_package_resolution(root, name.as_str(), host) {
+              resolved_any = true;
+              queue.push_back(target);
+            }
+          }
+          if !resolved_any {
+            let primary_file = self.root_ids.first().copied().unwrap_or(FileId(u32::MAX));
+            self.push_program_diagnostic(codes::TYPE_DEFINITION_FILE_NOT_FOUND.error(
+              format!("cannot find type definition file for \"{name}\""),
+              Span::new(primary_file, TextRange::new(0, 0)),
+            ));
+          }
         }
       }
     }
@@ -193,7 +198,7 @@ impl ProgramState {
           }
           TripleSlashReferenceKind::Types => {
             triple_slash_types.push(value);
-            if let Some(target) = record_type_package_resolution(self, file, value, host) {
+            if let Some(target) = self.record_type_package_resolution(file, value, host) {
               queue.push_back(target);
             } else {
               self.push_program_diagnostic(codes::TYPE_DEFINITION_FILE_NOT_FOUND.error(
@@ -246,31 +251,17 @@ impl ProgramState {
       for specifier in triple_slash_types.iter().copied() {
         type_package_specifiers.insert(specifier);
       }
-      if is_root {
-        for specifier in type_packages.iter() {
-          type_package_specifiers.insert(specifier.as_str());
-        }
-      }
 
       for specifier in current_specifiers.iter() {
         self.check_cancelled()?;
         let specifier = specifier.as_ref();
         let target = if type_package_specifiers.contains(specifier) {
-          record_type_package_resolution(self, file, specifier, host)
+          self.record_type_package_resolution(file, specifier, host)
         } else {
           self.record_module_resolution(file, specifier, host)
         };
         if let Some(target) = target {
           queue.push_back(target);
-        }
-      }
-      if is_root {
-        for specifier in type_packages.iter() {
-          self.check_cancelled()?;
-          if let Some(target) = record_type_package_resolution(self, file, specifier.as_str(), host)
-          {
-            queue.push_back(target);
-          }
         }
       }
 

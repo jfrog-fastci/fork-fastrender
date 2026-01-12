@@ -304,6 +304,17 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
       return ExitCode::FAILURE;
     }
   };
+  let type_roots = match project.as_ref() {
+    Some(cfg) => cfg
+      .type_roots
+      .clone()
+      .unwrap_or_else(|| default_type_roots(&cfg.root_dir)),
+    None => Vec::new(),
+  };
+  if let Some(cfg) = project.as_ref() {
+    options.types = effective_type_packages(cfg, &options, &type_roots);
+  }
+
   let module_resolution = options
     .module_resolution
     .as_deref()
@@ -362,31 +373,7 @@ fn run_typecheck(args: TypecheckArgs) -> ExitCode {
     tsconfig: tsconfig_resolver,
   };
 
-  let (type_roots, extra_libs) = match project.as_ref() {
-    Some(cfg) => {
-      let type_roots = cfg
-        .type_roots
-        .clone()
-        .unwrap_or_else(|| default_type_roots(&cfg.root_dir));
-      let libs = match load_type_libs(cfg, &options, &type_roots) {
-        Ok(libs) => libs,
-        Err(err) => {
-          eprintln!("{err}");
-          return ExitCode::FAILURE;
-        }
-      };
-      (type_roots, libs)
-    }
-    None => (Vec::new(), Vec::new()),
-  };
-  // The CLI loads `typeRoots`/`types` packages as host-provided libs, which is closer to how `tsc`
-  // treats them (ambient `.d.ts` inputs). Clear the compiler option so `typecheck-ts` doesn't also
-  // try to resolve them via module resolution.
-  if project.is_some() {
-    options.types.clear();
-  }
-
-  let (host, roots) = match DiskHost::new(&root_paths, resolver, options, extra_libs, type_roots) {
+  let (host, roots) = match DiskHost::new(&root_paths, resolver, options, Vec::new(), type_roots) {
     Ok(res) => res,
     Err(err) => {
       eprintln!("{err}");
@@ -786,16 +773,20 @@ impl Host for DiskHost {
   }
 }
 
-fn load_type_libs(
+fn effective_type_packages(
   cfg: &tsconfig::ProjectConfig,
   options: &CompilerOptions,
   type_roots: &[PathBuf],
-) -> Result<Vec<LibFile>, String> {
-  let mut libs = Vec::new();
-  if type_roots.is_empty() {
-    return Ok(ensure_placeholder_libs(libs, options));
-  }
-
+) -> Vec<String> {
+  // `typecheck-ts` core treats `CompilerOptions.types` the same way it treats
+  // `/// <reference types="..." />`: it resolves each entry using the host's
+  // `resolve` hook (with an `@types/*` fallback) and queues the resulting `.d.ts`
+  // file as an ambient input.
+  //
+  // The CLI is responsible for implementing TypeScript's `typeRoots` semantics:
+  // - if `compilerOptions.types` is present in tsconfig, use it as-is (plus
+  //   `jsxImportSource` injection when needed)
+  // - if `types` is omitted, include all packages present under `typeRoots`
   let mut types_override = cfg.types.clone();
   if matches!(
     options.jsx,
@@ -806,70 +797,62 @@ fn load_type_libs(
     {
       if !types.iter().any(|name| name == import_source) {
         types.push(import_source.clone());
-        types.sort();
-        types.dedup();
       }
     }
   }
 
-  if let Some(types) = types_override.as_ref() {
-    for name in types {
-      let Some(dir) = resolve_type_package(type_roots, name) else {
-        return Err(format!(
-          "failed to resolve type definition package '{name}' from {}",
-          cfg.root_dir.display()
-        ));
-      };
-      if let Some(lib) = lib_file_from_type_package(name, &dir)? {
-        libs.push(lib);
+  let mut packages: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+  match types_override {
+    Some(types) => {
+      for name in types {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+          packages.insert(trimmed.to_string());
+        }
       }
     }
-  } else {
-    // No explicit `types` list: include all packages in the type roots.
-    let mut packages: BTreeMap<String, PathBuf> = BTreeMap::new();
-    for root in type_roots {
-      let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(_) => continue,
-      };
-      for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-          continue;
+    None => {
+      for root in type_roots {
+        let entries = match fs::read_dir(root) {
+          Ok(entries) => entries,
+          Err(_) => continue,
         };
-        if !file_type.is_dir() {
-          continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('@') {
-          if let Ok(children) = fs::read_dir(&path) {
-            for child in children.filter_map(|e| e.ok()) {
-              let child_path = child.path();
-              let Ok(child_type) = child.file_type() else {
-                continue;
-              };
-              if !child_type.is_dir() {
-                continue;
+        for entry in entries.filter_map(|e| e.ok()) {
+          let path = entry.path();
+          let Ok(file_type) = entry.file_type() else {
+            continue;
+          };
+          if !file_type.is_dir() {
+            continue;
+          }
+          let name = entry.file_name().to_string_lossy().to_string();
+          if name.starts_with('@') {
+            if let Ok(children) = fs::read_dir(&path) {
+              for child in children.filter_map(|e| e.ok()) {
+                let child_path = child.path();
+                let Ok(child_type) = child.file_type() else {
+                  continue;
+                };
+                if !child_type.is_dir() {
+                  continue;
+                }
+                let child_name = child.file_name().to_string_lossy().to_string();
+                if type_package_entry(&child_path).is_some() {
+                  packages.insert(format!("{name}/{child_name}"));
+                }
               }
-              let child_name = child.file_name().to_string_lossy().to_string();
-              let scoped = format!("{name}/{child_name}");
-              packages.entry(scoped).or_insert(child_path);
+            }
+          } else {
+            if type_package_entry(&path).is_some() {
+              packages.insert(name);
             }
           }
-        } else {
-          packages.entry(name).or_insert(path);
         }
-      }
-    }
-
-    for (name, dir) in packages {
-      if let Some(lib) = lib_file_from_type_package(&name, &dir)? {
-        libs.push(lib);
       }
     }
   }
 
-  Ok(ensure_placeholder_libs(libs, options))
+  packages.into_iter().collect()
 }
 
 fn resolve_at_types_entry(type_roots: &[PathBuf], specifier: &str) -> Option<PathBuf> {
@@ -888,22 +871,6 @@ fn resolve_at_types_entry(type_roots: &[PathBuf], specifier: &str) -> Option<Pat
   None
 }
 
-fn ensure_placeholder_libs(mut libs: Vec<LibFile>, options: &CompilerOptions) -> Vec<LibFile> {
-  if !libs.is_empty() || !options.no_default_lib {
-    return libs;
-  }
-  // `typecheck-ts` emits an error diagnostic when zero libs are loaded. Mirror `tsc --noLib`
-  // by injecting a single empty `.d.ts` placeholder so the program can proceed without
-  // default libs.
-  libs.push(LibFile {
-    key: FileKey::new("lib:empty.d.ts"),
-    name: Arc::from("empty.d.ts"),
-    kind: FileKind::Dts,
-    text: Arc::from(""),
-  });
-  libs
-}
-
 fn default_type_roots(root_dir: &Path) -> Vec<PathBuf> {
   let mut roots = Vec::new();
   for ancestor in root_dir.ancestors() {
@@ -913,51 +880,6 @@ fn default_type_roots(root_dir: &Path) -> Vec<PathBuf> {
     }
   }
   roots
-}
-
-fn resolve_type_package(type_roots: &[PathBuf], package: &str) -> Option<PathBuf> {
-  for root in type_roots {
-    let dir = root.join(package);
-    if dir.is_dir() {
-      return Some(dir);
-    }
-    if let Some(encoded) = encode_types_package_name(package) {
-      let dir = root.join(encoded);
-      if dir.is_dir() {
-        return Some(dir);
-      }
-    }
-  }
-  None
-}
-
-fn encode_types_package_name(package: &str) -> Option<String> {
-  let (scope, name) = package.split_once('/')?;
-  if !scope.starts_with('@') || name.is_empty() {
-    return None;
-  }
-  let scope = scope.trim_start_matches('@');
-  Some(format!("{scope}__{name}"))
-}
-
-fn lib_file_from_type_package(package: &str, dir: &Path) -> Result<Option<LibFile>, String> {
-  let entry = match type_package_entry(dir) {
-    Some(path) => path,
-    None => return Ok(None),
-  };
-  let canonical = entry.canonicalize().unwrap_or(entry.clone());
-  let text = fs::read_to_string(&canonical).map_err(|err| {
-    format!(
-      "failed to read type definitions {}: {err}",
-      canonical.display()
-    )
-  })?;
-  Ok(Some(LibFile {
-    key: FileKey::new(normalize_fs_path(&canonical)),
-    name: Arc::from(format!("types:{package}")),
-    kind: FileKind::Dts,
-    text: Arc::from(text),
-  }))
 }
 
 fn type_package_entry(dir: &Path) -> Option<PathBuf> {

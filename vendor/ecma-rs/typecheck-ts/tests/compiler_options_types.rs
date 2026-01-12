@@ -27,3 +27,62 @@ fn compiler_options_types_includes_ambient_type_packages() {
     "expected no diagnostics, got {diagnostics:?}"
   );
 }
+
+#[test]
+fn compiler_options_types_resolves_via_at_types_fallback() {
+  let mut options = CompilerOptions::default();
+  options.types = vec!["node".to_string()];
+  options.no_default_lib = true;
+
+  let mut host = MemoryHost::with_options(options);
+  host.add_lib(common::core_globals_lib());
+  let entry = FileKey::new("entry.ts");
+  let types = FileKey::new("@types/node/index.d.ts");
+
+  host.insert(entry.clone(), Arc::from("const value = process;"));
+  host.insert(types.clone(), Arc::from("declare const process: number;"));
+  // Simulate a host that only knows about the explicit `@types/*` package path.
+  host.link(entry.clone(), "@types/node", types);
+
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn compiler_options_types_order_does_not_affect_file_ids() {
+  fn run(types: Vec<String>) -> Vec<(u32, String)> {
+    let mut options = CompilerOptions::default();
+    options.types = types;
+    options.no_default_lib = true;
+
+    let mut host = MemoryHost::with_options(options);
+    host.add_lib(common::core_globals_lib());
+    let entry = FileKey::new("entry.ts");
+    let a = FileKey::new("a.d.ts");
+    let b = FileKey::new("b.d.ts");
+
+    host.insert(entry.clone(), Arc::from("const a1 = AGlobal; const b1 = BGlobal;"));
+    host.insert(a.clone(), Arc::from("declare const AGlobal: string;"));
+    host.insert(b.clone(), Arc::from("declare const BGlobal: string;"));
+
+    host.link(entry.clone(), "a", a);
+    host.link(entry.clone(), "b", b);
+
+    let program = Program::new(host, vec![entry]);
+    assert!(program.check().is_empty());
+
+    program
+      .files()
+      .into_iter()
+      .filter_map(|id| program.file_key(id).map(|key| (id.0, key.to_string())))
+      .collect()
+  }
+
+  let first = run(vec!["b".to_string(), "a".to_string()]);
+  let second = run(vec!["a".to_string(), "b".to_string()]);
+  assert_eq!(first, second);
+}

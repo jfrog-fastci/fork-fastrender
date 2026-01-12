@@ -950,6 +950,70 @@ fn project_mode_uses_module_resolution_from_tsconfig() {
 }
 
 #[test]
+fn project_mode_resolves_types_via_core_and_preserves_options_types() {
+  let tmp = tempdir().expect("temp dir");
+  let tsconfig = tmp.path().join("tsconfig.json");
+  let main = tmp.path().join("src/main.ts");
+  let types = tmp.path().join("node_modules/@types/foo/index.d.ts");
+
+  write_file(
+    &tsconfig,
+    r#"{ "compilerOptions": { "types": ["foo"], "typeRoots": ["./node_modules/@types"] }, "files": ["src/main.ts"] }"#,
+  );
+  write_file(&main, "export const value = FooGlobal;\n");
+  write_file(&types, "declare const FooGlobal: number;\n");
+
+  let output = typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck", "--lib", "es5"])
+    .arg("--project")
+    .arg(tsconfig.as_os_str())
+    .arg("--json")
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+
+  let json: Value = serde_json::from_slice(&output).expect("valid JSON output");
+  let diagnostics = json
+    .get("diagnostics")
+    .and_then(|d| d.as_array())
+    .expect("diagnostics array");
+  assert!(
+    diagnostics.is_empty(),
+    "expected no diagnostics, got {diagnostics:?}"
+  );
+
+  let compiler_options = json
+    .get("compiler_options")
+    .and_then(|o| o.as_object())
+    .expect("compiler_options object");
+  let types_list: Vec<&str> = compiler_options
+    .get("types")
+    .and_then(|t| t.as_array())
+    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+    .unwrap_or_default();
+  assert!(
+    types_list.contains(&"foo"),
+    "expected compiler_options.types to include foo, got {types_list:?}"
+  );
+
+  let files: Vec<_> = json
+    .get("files")
+    .and_then(|f| f.as_array())
+    .expect("files array")
+    .iter()
+    .filter_map(|v| v.as_str())
+    .collect();
+  assert!(files.contains(&normalized(&main).as_str()));
+  assert!(
+    files.contains(&normalized(&types).as_str()),
+    "expected program to include type package entrypoint, got {files:?}"
+  );
+}
+
+#[test]
 fn project_mode_resolves_types_and_type_roots() {
   let tsconfig = fixture("project_mode/types/tsconfig.json");
   let foo = fixture("project_mode/types/node_modules/@types/foo/index.d.ts");
