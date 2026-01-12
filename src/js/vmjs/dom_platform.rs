@@ -1,5 +1,5 @@
-use crate::dom2::{NodeId, NodeKind};
 use crate::dom::HTML_NAMESPACE;
+use crate::dom2::{NodeId, NodeKind};
 use crate::web::events::EventTargetId;
 use std::collections::HashMap;
 use vm_js::{
@@ -130,7 +130,7 @@ impl DomInterface {
 
         Self::HTMLElement
       }
-      NodeKind::Slot { .. } => Self::Element,
+      NodeKind::Slot { .. } => Self::HTMLElement,
       NodeKind::Doctype { .. } => Self::DocumentType,
       _ => Self::Node,
     }
@@ -881,28 +881,40 @@ impl DomPlatform {
       .ok_or(VmError::TypeError("Illegal invocation"))
   }
 
-  pub fn require_node_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
+  pub fn require_interface_node_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+    interface: DomInterface,
+  ) -> Result<DomNodeKey, VmError> {
     let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta.primary_interface.implements(DomInterface::Node) {
+    if !meta.primary_interface.implements(interface) {
       return Err(VmError::TypeError("Illegal invocation"));
     }
     Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+  }
+
+  pub fn require_interface_node_id(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+    interface: DomInterface,
+  ) -> Result<NodeId, VmError> {
+    Ok(self
+      .require_interface_node_handle(heap, value, interface)?
+      .node_id)
+  }
+
+  pub fn require_node_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
+    self.require_interface_node_handle(heap, value, DomInterface::Node)
   }
 
   pub fn require_element_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
-    let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta.primary_interface.implements(DomInterface::Element) {
-      return Err(VmError::TypeError("Illegal invocation"));
-    }
-    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+    self.require_interface_node_handle(heap, value, DomInterface::Element)
   }
 
   pub fn require_text_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
-    let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta.primary_interface.implements(DomInterface::Text) {
-      return Err(VmError::TypeError("Illegal invocation"));
-    }
-    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+    self.require_interface_node_handle(heap, value, DomInterface::Text)
   }
 
   pub fn require_comment_handle(
@@ -910,11 +922,7 @@ impl DomPlatform {
     heap: &Heap,
     value: Value,
   ) -> Result<DomNodeKey, VmError> {
-    let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta.primary_interface.implements(DomInterface::Comment) {
-      return Err(VmError::TypeError("Illegal invocation"));
-    }
-    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+    self.require_interface_node_handle(heap, value, DomInterface::Comment)
   }
 
   pub fn require_processing_instruction_handle(
@@ -922,14 +930,7 @@ impl DomPlatform {
     heap: &Heap,
     value: Value,
   ) -> Result<DomNodeKey, VmError> {
-    let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta
-      .primary_interface
-      .implements(DomInterface::ProcessingInstruction)
-    {
-      return Err(VmError::TypeError("Illegal invocation"));
-    }
-    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+    self.require_interface_node_handle(heap, value, DomInterface::ProcessingInstruction)
   }
 
   pub fn require_document_type_handle(
@@ -937,11 +938,7 @@ impl DomPlatform {
     heap: &Heap,
     value: Value,
   ) -> Result<DomNodeKey, VmError> {
-    let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta.primary_interface.implements(DomInterface::DocumentType) {
-      return Err(VmError::TypeError("Illegal invocation"));
-    }
-    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+    self.require_interface_node_handle(heap, value, DomInterface::DocumentType)
   }
 
   pub fn require_document_handle(
@@ -949,11 +946,7 @@ impl DomPlatform {
     heap: &Heap,
     value: Value,
   ) -> Result<DomNodeKey, VmError> {
-    let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta.primary_interface.implements(DomInterface::Document) {
-      return Err(VmError::TypeError("Illegal invocation"));
-    }
-    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+    self.require_interface_node_handle(heap, value, DomInterface::Document)
   }
 
   pub fn require_document_fragment_handle(
@@ -961,26 +954,19 @@ impl DomPlatform {
     heap: &Heap,
     value: Value,
   ) -> Result<DomNodeKey, VmError> {
-    let meta = self.require_wrapper_meta(heap, value)?;
-    if !meta
-      .primary_interface
-      .implements(DomInterface::DocumentFragment)
-    {
-      return Err(VmError::TypeError("Illegal invocation"));
-    }
-    Ok(DomNodeKey::new(meta.document_id, meta.node_id))
+    self.require_interface_node_handle(heap, value, DomInterface::DocumentFragment)
   }
 
   pub fn require_node_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
-    Ok(self.require_node_handle(heap, value)?.node_id)
+    self.require_interface_node_id(heap, value, DomInterface::Node)
   }
 
   pub fn require_element_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
-    Ok(self.require_element_handle(heap, value)?.node_id)
+    self.require_interface_node_id(heap, value, DomInterface::Element)
   }
 
   pub fn require_text_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
-    Ok(self.require_text_handle(heap, value)?.node_id)
+    self.require_interface_node_id(heap, value, DomInterface::Text)
   }
 
   pub fn require_comment_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
@@ -996,11 +982,11 @@ impl DomPlatform {
   }
 
   pub fn require_document_type_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
-    Ok(self.require_document_type_handle(heap, value)?.node_id)
+    self.require_interface_node_id(heap, value, DomInterface::DocumentType)
   }
 
   pub fn require_document_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
-    Ok(self.require_document_handle(heap, value)?.node_id)
+    self.require_interface_node_id(heap, value, DomInterface::Document)
   }
 
   pub fn require_document_fragment_id(
@@ -1008,7 +994,7 @@ impl DomPlatform {
     heap: &Heap,
     value: Value,
   ) -> Result<NodeId, VmError> {
-    Ok(self.require_document_fragment_handle(heap, value)?.node_id)
+    self.require_interface_node_id(heap, value, DomInterface::DocumentFragment)
   }
 
   pub fn event_target_id_for_value(
@@ -1024,6 +1010,7 @@ impl DomPlatform {
 #[cfg(test)]
 mod tests {
   use super::{DomInterface, DomNodeKey, DomPlatform};
+  use crate::dom::{HTML_NAMESPACE, SVG_NAMESPACE};
   use crate::dom2::{NodeId, NodeKind};
   use std::collections::HashMap;
   use vm_js::{
@@ -1535,5 +1522,152 @@ mod tests {
       Some(event_target_proto)
     );
     Ok(())
+  }
+
+  #[test]
+  fn implements_follows_html_element_inheritance_chain() {
+    assert!(DomInterface::HTMLElement.implements(DomInterface::Element));
+    assert!(DomInterface::HTMLElement.implements(DomInterface::Node));
+    assert!(DomInterface::HTMLElement.implements(DomInterface::EventTarget));
+
+    assert!(DomInterface::HTMLInputElement.implements(DomInterface::HTMLElement));
+    assert!(DomInterface::HTMLInputElement.implements(DomInterface::Element));
+    assert!(DomInterface::HTMLInputElement.implements(DomInterface::Node));
+    assert!(DomInterface::HTMLInputElement.implements(DomInterface::EventTarget));
+
+    assert!(!DomInterface::HTMLElement.implements(DomInterface::HTMLInputElement));
+    assert!(!DomInterface::Element.implements(DomInterface::HTMLElement));
+  }
+
+  #[test]
+  fn primary_for_node_kind_maps_html_tags_to_interfaces() {
+    let kind = NodeKind::Element {
+      tag_name: "INPUT".into(),
+      namespace: "".into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLInputElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "textarea".into(),
+      namespace: HTML_NAMESPACE.into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLTextAreaElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "select".into(),
+      namespace: "".into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLSelectElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "option".into(),
+      namespace: "".into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLOptionElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "form".into(),
+      namespace: "".into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLFormElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "img".into(),
+      namespace: "".into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLImageElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "a".into(),
+      namespace: "".into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLAnchorElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "link".into(),
+      namespace: "".into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLLinkElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "script".into(),
+      namespace: "".into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLScriptElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "div".into(),
+      namespace: HTML_NAMESPACE.into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLDivElement
+    );
+
+    // Unknown HTML tags still brand as generic HTMLElement.
+    let kind = NodeKind::Element {
+      tag_name: "article".into(),
+      namespace: HTML_NAMESPACE.into(),
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLElement
+    );
+
+    // Non-HTML namespace always falls back to the generic Element brand.
+    let kind = NodeKind::Element {
+      tag_name: "input".into(),
+      namespace: SVG_NAMESPACE.into(),
+      attributes: vec![],
+    };
+    assert_eq!(DomInterface::primary_for_node_kind(&kind), DomInterface::Element);
+
+    let kind = NodeKind::Slot {
+      namespace: "".into(),
+      attributes: vec![],
+      assigned: false,
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLElement
+    );
   }
 }
