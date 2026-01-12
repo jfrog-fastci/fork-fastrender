@@ -1,7 +1,9 @@
 use fastrender::geometry::Rect;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
+use fastrender::paint::stacking::build_stacking_tree_from_fragment_tree_checked;
 use fastrender::style::types::{BackgroundBox, BackgroundLayer};
 use fastrender::tree::fragment_tree::FragmentNode;
+use fastrender::system::DEFAULT_RENDER_STACK_SIZE;
 use fastrender::ComputedStyle;
 use fastrender::Rgba;
 use std::collections::HashSet;
@@ -182,4 +184,56 @@ fn display_list_builder_deep_background_clip_text_nesting_does_not_overflow_stac
       break;
     }
   }
+}
+
+#[test]
+fn display_list_builder_deep_stacking_context_nesting_fails_cleanly_without_stack_overflow() {
+  // Stacking-context painting is still recursive. Ensure we fail cleanly (Err) on hostile depth
+  // rather than stack overflowing.
+  const DEPTH: usize = 2_000;
+  let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+
+  let mut style = ComputedStyle::default();
+  style.opacity = 0.99;
+  let style = Arc::new(style);
+
+  // Deep block chain where every node establishes a stacking context due to opacity < 1.
+  let mut root = FragmentNode::new_block_styled(rect, vec![], Arc::clone(&style));
+  for _ in 0..DEPTH {
+    root = FragmentNode::new_block_styled(rect, vec![root], Arc::clone(&style));
+  }
+
+  // Build the stacking tree on a large-stack thread (the stacking-tree builder itself is still
+  // recursive).
+  let build_handle = std::thread::Builder::new()
+    .name("build_deep_stacking_tree".to_string())
+    .stack_size(DEFAULT_RENDER_STACK_SIZE)
+    .spawn(move || build_stacking_tree_from_fragment_tree_checked(&root))
+    .expect("spawn stacking-tree build thread");
+
+  let stacking = build_handle
+    .join()
+    .expect("join stacking-tree build thread")
+    .expect("build stacking tree");
+
+  // Paint on a small-stack thread; this used to risk stack overflow due to recursive stacking-context
+  // traversal.
+  let handle = std::thread::Builder::new()
+    .name("paint_deep_stacking_context_nesting".to_string())
+    .stack_size(256 * 1024)
+    .spawn(move || {
+      let result = DisplayListBuilder::new().build_from_stacking_checked(&stacking);
+      // Avoid recursive drop of the deep stacking context tree on the small-stack thread.
+      std::mem::forget(stacking);
+      result
+    })
+    .expect("spawn paint thread");
+
+  let result = handle.join().expect("paint thread panicked");
+  assert!(
+    result.is_err(),
+    "expected deep stacking-context paint to fail cleanly; got {result:?}"
+  );
+
+  // `stacking` is forgotten inside the paint thread to avoid recursive drops.
 }

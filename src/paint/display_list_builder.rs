@@ -215,6 +215,12 @@ const ENV_DECODED_IMAGE_CACHE_BYTES: &str = "FASTR_DECODED_IMAGE_CACHE_BYTES";
 // Keep this threshold high enough to avoid hiding typical hero images.
 const ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS: u64 = 200_000;
 const DEADLINE_STRIDE: usize = 256;
+/// Conservative recursion-depth cap for stacking-context painting.
+///
+/// `DisplayListBuilder::build_stacking_context` is still implemented recursively. Deep stacking
+/// context chains (e.g. adversarial `opacity < 1` wrappers) can otherwise overflow the call stack
+/// and abort the process. Prefer the non-recursive fragment path (`build_checked`) when possible.
+const MAX_STACKING_CONTEXT_DEPTH: usize = 64;
 
 /// Builder that converts a fragment tree to a display list
 ///
@@ -1748,7 +1754,8 @@ impl DisplayListBuilder {
     }
     let visibility = self.root_visibility();
     for context in &contexts {
-      let _ = self.build_stacking_context(context, Point::ZERO, true, &mut svg_filters, visibility);
+      let _ =
+        self.build_stacking_context(context, Point::ZERO, true, &mut svg_filters, visibility, 0);
     }
 
     self.finish()
@@ -1785,6 +1792,7 @@ impl DisplayListBuilder {
       true,
       &mut svg_filters,
       self.root_visibility(),
+      0,
     );
     self.finish()
   }
@@ -1824,6 +1832,7 @@ impl DisplayListBuilder {
       true,
       &mut svg_filters,
       self.root_visibility(),
+      0,
     );
     self.finish()
   }
@@ -1874,6 +1883,7 @@ impl DisplayListBuilder {
       true,
       &mut svg_filters,
       self.root_visibility(),
+      0,
     );
     self.finish()
   }
@@ -1914,8 +1924,14 @@ impl DisplayListBuilder {
     );
     let visibility = self.root_visibility();
     for stacking in stackings {
-      let _ =
-        self.build_stacking_context(stacking, Point::ZERO, true, &mut svg_filters, visibility);
+      let _ = self.build_stacking_context(
+        stacking,
+        Point::ZERO,
+        true,
+        &mut svg_filters,
+        visibility,
+        0,
+      );
     }
     self.finish()
   }
@@ -3409,7 +3425,20 @@ impl DisplayListBuilder {
     is_root: bool,
     svg_filters: &mut SvgFilterResolver,
     visibility: Visibility,
+    depth: usize,
   ) -> bool {
+    if depth >= MAX_STACKING_CONTEXT_DEPTH {
+      // Stacking-context painting is still recursive. Bail out early on hostile nesting rather than
+      // risking a process-wide stack overflow.
+      if self.error.is_none() {
+        self.error = Some(RenderError::PaintFailed {
+          operation: format!(
+            "stacking context nesting too deep (limit {MAX_STACKING_CONTEXT_DEPTH})"
+          ),
+        });
+      }
+      return false;
+    }
     if self.deadline_reached() {
       return false;
     }
@@ -4042,6 +4071,7 @@ impl DisplayListBuilder {
           false,
           svg_filters,
           local_child_visibility,
+          depth + 1,
         );
       }
 
@@ -4109,6 +4139,7 @@ impl DisplayListBuilder {
               false,
               svg_filters,
               local_child_visibility,
+              depth + 1,
             );
           }
         }
@@ -4124,6 +4155,7 @@ impl DisplayListBuilder {
           false,
           svg_filters,
           local_child_visibility,
+          depth + 1,
         );
       }
       self.pop_clips(ancestor_clips_pushed);
@@ -4245,6 +4277,7 @@ impl DisplayListBuilder {
         false,
         svg_filters,
         local_child_visibility,
+        depth + 1,
       );
     }
     if is_paged_media_page_root {
@@ -4311,6 +4344,7 @@ impl DisplayListBuilder {
             false,
             svg_filters,
             local_child_visibility,
+            depth + 1,
           );
         }
       }
@@ -4326,6 +4360,7 @@ impl DisplayListBuilder {
         false,
         svg_filters,
         local_child_visibility,
+        depth + 1,
       );
     }
 
