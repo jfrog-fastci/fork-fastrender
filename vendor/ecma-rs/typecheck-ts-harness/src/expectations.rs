@@ -399,6 +399,21 @@ reason = "second"
   }
 
   #[test]
+  fn manifest_loads_other_fixture_manifests() {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    for rel in [
+      "conformance-mini/manifest.toml",
+      "conformance-lite/manifest.toml",
+      "difftsc/manifest.toml",
+    ] {
+      let path = base.join(rel);
+      Expectations::from_path(&path).unwrap_or_else(|err| {
+        panic!("failed to parse fixture manifest {}: {err}", path.display())
+      });
+    }
+  }
+
+  #[test]
   fn manifest_rejects_backslashes_in_id_and_glob() {
     let err = Expectations::from_str(
       r#"
