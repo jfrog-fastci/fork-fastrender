@@ -1,4 +1,5 @@
 use conformance_harness::{Expectations, TimeoutManager};
+use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::time::Duration;
@@ -44,7 +45,7 @@ fn vm_js_executor_smoke_pass_and_timeout() {
 
   let results = test262_semantic::runner::run_cases(
     temp.path(),
-    HarnessMode::Inline,
+    HarnessMode::Test262,
     &cases,
     &expectations,
     executor.as_ref(),
@@ -73,4 +74,84 @@ fn vm_js_executor_smoke_pass_and_timeout() {
     by_id[&("timeout.js", test262_semantic::report::Variant::Strict)].outcome,
     TestOutcome::TimedOut
   );
+}
+
+#[test]
+fn vm_js_executor_module_smoke_imports_and_harness_globals() {
+  let temp = tempdir().unwrap();
+
+  // Minimal fake test262 checkout: harness + test directories.
+  fs::create_dir_all(temp.path().join("harness")).unwrap();
+  // Intentionally define `assert` as a global binding (not `globalThis.assert`) so that the module
+  // test can only see it if the harness prelude runs in the global realm.
+  fs::write(
+    temp.path().join("harness/assert.js"),
+    r#"
+var assert = {};
+assert.sameValue = function (actual, expected) {
+  if (actual !== expected) {
+    throw new Error("assert.sameValue failed: expected " + expected + ", got " + actual);
+  }
+};
+"#,
+  )
+  .unwrap();
+  fs::write(temp.path().join("harness/sta.js"), "").unwrap();
+
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+
+  // Module dependency imported via a relative path.
+  fs::write(test_dir.join("dep.js"), "export const y = 1;\n").unwrap();
+
+  // Module test case that:
+  // - imports `./dep.js` (exercises file-based module resolution), and
+  // - calls `assert.sameValue` (ensures the harness prelude ran in the global realm).
+  fs::write(
+    test_dir.join("mod.js"),
+    r#"/*---
+flags: [module]
+---*/
+import { y } from "./dep.js";
+assert.sameValue(y, 1);
+"#,
+  )
+  .unwrap();
+
+  let discovered = discover_tests(temp.path()).unwrap();
+  let cases = expand_cases(
+    &discovered,
+    &Filter::Regex(Regex::new(r"^mod\.js$").unwrap()),
+  )
+  .unwrap();
+  assert_eq!(cases.len(), 1);
+  assert_eq!(cases[0].variant, test262_semantic::report::Variant::Module);
+
+  let expectations = Expectations::empty();
+  let executor = default_executor();
+  let timeout_manager = TimeoutManager::new();
+
+  let results = test262_semantic::runner::run_cases(
+    temp.path(),
+    HarnessMode::Test262,
+    &cases,
+    &expectations,
+    executor.as_ref(),
+    Duration::from_secs(1),
+    &timeout_manager,
+  );
+
+  assert_eq!(results.len(), 1);
+  let result = &results[0];
+  assert_eq!(result.id, "mod.js");
+  assert_eq!(result.variant, test262_semantic::report::Variant::Module);
+
+  match result.outcome {
+    TestOutcome::Passed => {}
+    // Until module execution lands in `VmJsExecutor`, module cases are expected to be skipped.
+    TestOutcome::Skipped => {
+      assert_eq!(result.skip_reason.as_deref(), Some("modules not supported"));
+    }
+    other => panic!("expected module case to pass (or be skipped until supported), got {other:?}: {result:#?}"),
+  }
 }
