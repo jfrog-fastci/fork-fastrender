@@ -2164,17 +2164,31 @@ impl Heap {
     // Integer-indexed exotic behaviour for typed arrays:
     // - numeric index properties are not stored in the object's property table
     // - they are materialized on demand from the view's `[[ViewedArrayBuffer]]`.
-    if let PropertyKey::String(s) = key {
-      if let Some(index) = self.string_to_array_index(*s) {
-        if let HeapObject::TypedArray(view) = self.get_heap_object(obj.0)? {
-          // Integer-indexed properties are only present when the view is in-bounds (and the
-          // backing buffer is not detached).
+    if let HeapObject::TypedArray(view) = self.get_heap_object(obj.0)? {
+      if let PropertyKey::String(s) = key {
+        if let Some(numeric_index) = self.canonical_numeric_index_string(*s)? {
+          // Integer-indexed properties are only present when the view is in-bounds (and the backing
+          // buffer is not detached).
           //
           // Spec: `IsValidIntegerIndex` / `TypedArrayGetElement`.
           if self.typed_array_view_is_out_of_bounds(view)? {
             return Ok(None);
           }
-          let idx = index as usize;
+          if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
+            return Ok(None);
+          }
+          if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+            // -0 is a canonical numeric index string but never a valid integer index.
+            return Ok(None);
+          }
+          if numeric_index < 0.0 {
+            return Ok(None);
+          }
+          if numeric_index > usize::MAX as f64 {
+            return Ok(None);
+          }
+
+          let idx = numeric_index as usize;
           if idx < view.length {
             return Ok(Some(PropertyDescriptor {
               enumerable: true,
