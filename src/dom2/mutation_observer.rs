@@ -190,7 +190,6 @@ impl MutationObserverAgent {
     self.next_registration_id = self.next_registration_id.wrapping_add(1);
     id
   }
-
   fn state_for_observer_mut(
     &mut self,
     observer: MutationObserverId,
@@ -258,59 +257,6 @@ impl MutationObserverAgent {
 }
 
 impl Document {
-  pub(super) fn mutation_observer_move_registrations(&mut self, from: NodeId, to: NodeId) {
-    if from == to {
-      return;
-    }
-    let moved = {
-      let Some(from_node) = self.nodes.get_mut(from.index()) else {
-        return;
-      };
-      std::mem::take(&mut from_node.registered_observers)
-    };
-    if moved.is_empty() {
-      return;
-    }
-    let Some(to_node) = self.nodes.get_mut(to.index()) else {
-      if let Some(from_node) = self.nodes.get_mut(from.index()) {
-        from_node.registered_observers = moved;
-      }
-      return;
-    };
-    for reg in moved {
-      if let Some(existing) = to_node
-        .registered_observers
-        .iter_mut()
-        .find(|r| r.observer == reg.observer && r.transient_source == reg.transient_source)
-      {
-        existing.options = reg.options;
-      } else {
-        to_node.registered_observers.push(reg);
-      }
-    }
-  }
-
-  pub(super) fn mutation_observer_remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
-    if mapping.is_empty() {
-      return;
-    }
-
-    self
-      .mutation_observer_agent
-      .borrow_mut()
-      .remap_node_ids(mapping);
-
-    for node in &mut self.nodes {
-      for reg in &mut node.registered_observers {
-        if let Some(source) = reg.transient_source {
-          if let Some(&new_source) = mapping.get(&source) {
-            reg.transient_source = Some(new_source);
-          }
-        }
-      }
-    }
-  }
-
   pub fn mutation_observer_limits(&self) -> MutationObserverLimits {
     self.mutation_observer_agent.borrow().limits()
   }
@@ -339,7 +285,20 @@ impl Document {
     if mapping.is_empty() {
       return;
     }
-    self.mutation_observer_agent.borrow_mut().remap_node_ids(mapping);
+    self
+      .mutation_observer_agent
+      .borrow_mut()
+      .remap_node_ids(mapping);
+
+    for node in &mut self.nodes {
+      for reg in &mut node.registered_observers {
+        if let Some(source) = reg.transient_source {
+          if let Some(&new_source) = mapping.get(&source) {
+            reg.transient_source = Some(new_source);
+          }
+        }
+      }
+    }
   }
 
   /// Move mutation observer registrations stored on `old` to `new`.
@@ -352,17 +311,34 @@ impl Document {
     if old == new {
       return;
     }
-    let old_idx = old.index();
-    let new_idx = new.index();
-    if old_idx >= self.nodes.len() || new_idx >= self.nodes.len() {
-      return;
-    }
-    let moved = std::mem::take(&mut self.nodes[old_idx].registered_observers);
+    let moved = {
+      let Some(old_node) = self.nodes.get_mut(old.index()) else {
+        return;
+      };
+      std::mem::take(&mut old_node.registered_observers)
+    };
     if moved.is_empty() {
       return;
     }
-    self.nodes[new_idx].registered_observers.extend(moved);
+    let Some(new_node) = self.nodes.get_mut(new.index()) else {
+      if let Some(old_node) = self.nodes.get_mut(old.index()) {
+        old_node.registered_observers = moved;
+      }
+      return;
+    };
+    for reg in moved {
+      if let Some(existing) = new_node
+        .registered_observers
+        .iter_mut()
+        .find(|r| r.observer == reg.observer && r.transient_source == reg.transient_source)
+      {
+        existing.options = reg.options;
+      } else {
+        new_node.registered_observers.push(reg);
+      }
+    }
   }
+
   pub fn mutation_observer_observe(
     &mut self,
     observer: MutationObserverId,
