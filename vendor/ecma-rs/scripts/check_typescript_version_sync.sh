@@ -9,8 +9,13 @@ set -euo pipefail
 # This is enforced in CI to prevent “drift” where baselines/libs are generated
 # with one TypeScript version but the Rust build points at another.
 
-if ! command -v rg >/dev/null 2>&1; then
-  echo "error: rg (ripgrep) is required for TypeScript version sync checks" >&2
+json_runtime=""
+if command -v python3 >/dev/null 2>&1; then
+  json_runtime="python3"
+elif command -v node >/dev/null 2>&1; then
+  json_runtime="node"
+else
+  echo "error: python3 or node is required for TypeScript version sync checks" >&2
   exit 1
 fi
 
@@ -37,27 +42,21 @@ if [[ ! -f "$package_lock" ]]; then
   exit 1
 fi
 
-rust_version_raw="$(
-  rg --no-line-number --no-filename --pcre2 \
-    'const\s+TYPESCRIPT_VERSION:\s*&str\s*=\s*"([^"]+)"\s*;' \
-    "$build_rs" \
-    --replace '$1'
-)"
+if [[ "$json_runtime" == "python3" ]]; then
+  rust_version="$(
+    python3 - <<'PY'
+import re
+from pathlib import Path
 
-rust_version="$(printf '%s' "$rust_version_raw" | head -n 1)"
+path = Path("typecheck-ts/build.rs")
+text = path.read_text(encoding="utf-8")
+matches = re.findall(r'const\s+TYPESCRIPT_VERSION:\s*&str\s*=\s*"([^"]+)"\s*;', text)
+if len(matches) != 1:
+  raise SystemExit(f"error: expected exactly 1 TYPESCRIPT_VERSION in {path}, found {len(matches)}")
+print(matches[0])
+PY
+  )"
 
-if [[ -z "$rust_version" ]]; then
-  echo "error: failed to read TYPESCRIPT_VERSION from ${build_rs}" >&2
-  exit 1
-fi
-
-if [[ "$(printf '%s\n' "$rust_version_raw" | wc -l | tr -d ' ')" != "1" ]]; then
-  echo "error: expected exactly one TYPESCRIPT_VERSION in ${build_rs}, got:" >&2
-  printf '%s\n' "$rust_version_raw" >&2
-  exit 1
-fi
-
-if command -v python3 >/dev/null 2>&1; then
   harness_package_json_version="$(
     python3 - <<'PY'
 import json
@@ -87,12 +86,34 @@ data = json.loads(Path("typecheck-ts-harness/package-lock.json").read_text(encod
 print(data["packages"]["node_modules/typescript"]["version"])
 PY
   )"
-elif command -v node >/dev/null 2>&1; then
+elif [[ "$json_runtime" == "node" ]]; then
+  rust_version="$(
+    node - <<'NODE'
+const fs = require("fs");
+
+const text = fs.readFileSync("typecheck-ts/build.rs", "utf8");
+const re = /const\s+TYPESCRIPT_VERSION:\s*&str\s*=\s*"([^"]+)"\s*;/g;
+const matches = [...text.matchAll(re)].map((m) => m[1]);
+if (matches.length !== 1) {
+  console.error(
+    `error: expected exactly 1 TYPESCRIPT_VERSION in typecheck-ts/build.rs, found ${matches.length}`,
+  );
+  process.exit(1);
+}
+process.stdout.write(matches[0]);
+NODE
+  )"
+
   harness_package_json_version="$(node -p "require('./${package_json}').dependencies.typescript")"
   harness_package_lock_root_version="$(node -p "require('./${package_lock}').packages[''].dependencies.typescript")"
   harness_package_lock_module_version="$(node -p "require('./${package_lock}').packages['node_modules/typescript'].version")"
 else
-  echo "error: python3 or node is required to parse ${package_lock}" >&2
+  echo "error: unreachable: unknown json runtime '${json_runtime}'" >&2
+  exit 2
+fi
+
+if [[ -z "${rust_version}" ]]; then
+  echo "error: failed to read TYPESCRIPT_VERSION from ${build_rs}" >&2
   exit 1
 fi
 

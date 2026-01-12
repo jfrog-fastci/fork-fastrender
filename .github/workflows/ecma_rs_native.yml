@@ -102,6 +102,9 @@ jobs:
       - name: Cargo hygiene (ecma-rs tooling)
         run: bash vendor/ecma-rs/scripts/check_no_raw_cargo.sh
 
+      - name: TypeScript version sync (ecma-rs)
+        run: bash vendor/ecma-rs/scripts/check_typescript_version_sync.sh
+
       - name: Cache cargo registry (ecma-rs native)
         uses: actions/cache@v4
         with:
