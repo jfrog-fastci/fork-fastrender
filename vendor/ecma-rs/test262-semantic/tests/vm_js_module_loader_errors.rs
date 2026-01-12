@@ -242,3 +242,43 @@ fn module_absolute_path_specifier_rejects_with_typeerror_reason() {
     js.message
   );
 }
+
+#[cfg(unix)]
+#[test]
+fn module_symlink_sandbox_escape_rejects_with_typeerror_reason() {
+  use std::os::unix::fs::symlink;
+
+  let temp = tempdir().unwrap();
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+
+  // Create a file outside the sandbox root and a symlink inside the sandbox pointing to it.
+  let outside = temp.path().join("outside.js");
+  fs::write(&outside, "export const SHOULD_NOT_LOAD = true;\n").unwrap();
+  symlink(&outside, test_dir.join("link.js")).unwrap();
+
+  let case = module_case(&temp, "entry.js");
+  let executor = default_executor();
+  let cancel = Arc::new(AtomicBool::new(false));
+
+  let err = executor
+    .execute(&case, r#"import "./link.js";"#, &cancel)
+    .unwrap_err();
+
+  let ExecError::Js(js) = err else {
+    panic!("expected JS error, got {err:?}");
+  };
+
+  assert_eq!(js.phase, ExecPhase::Resolution);
+  assert_eq!(js.typ.as_deref(), Some("TypeError"));
+  assert!(
+    !js.message.trim().is_empty() && js.message != "undefined",
+    "expected non-empty rejection message, got: {:?}",
+    js.message
+  );
+  assert!(
+    js.message.contains("sandbox") || js.message.contains("escapes"),
+    "expected helpful message, got: {:?}",
+    js.message
+  );
+}
