@@ -1140,6 +1140,56 @@ fn stop_propagation_prevents_subsequent_targets() {
 }
 
 #[test]
+fn propagation_flags_are_cleared_after_dispatch() {
+  let doc = Document::new(QuirksMode::NoQuirks);
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id_stop = ListenerId::new(1);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_stop,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Document,
+    [(
+      id_stop,
+      Behavior {
+        label: "stop",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Document,
+        action: Action::StopPropagation,
+      },
+    )],
+  );
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Document,
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["stop"]);
+  assert!(!event.propagation_stopped);
+  assert!(!event.immediate_propagation_stopped);
+}
+
+#[test]
 fn stop_immediate_propagation_stops_other_listeners_on_same_target() {
   let (doc, _a, b, c) = make_dom_abc();
   let registry = EventListenerRegistry::new();

@@ -1100,6 +1100,8 @@ pub fn dispatch_event(
   event.target = Some(original_target);
   event.event_phase = EventPhase::None;
   event.current_target = None;
+  event.propagation_stopped = false;
+  event.immediate_propagation_stopped = false;
   // The DOM dispatch algorithm clears the computed path at the end of dispatch.
   event.path.clear();
   event.propagation_stopped = false;

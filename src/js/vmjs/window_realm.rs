@@ -17973,6 +17973,10 @@ pub(crate) fn event_target_dispatch_event_dom2(
     scope.define_property(event_obj, current_target_key, data_desc(Value::Null))?;
     let event_phase_key = alloc_key(scope, "eventPhase")?;
     scope.define_property(event_obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+    let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+    scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+    let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+    scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
     let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
     scope.define_property(
       event_obj,
@@ -33359,6 +33363,40 @@ mod tests {
       })()",
     )?;
     assert_eq!(dispatched, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn dispatch_event_clears_cancel_bubble_after_dispatch() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const et = new EventTarget();\n\
+        const ev = new Event('x', { bubbles: true });\n\
+        et.addEventListener('x', e => e.stopPropagation());\n\
+        et.dispatchEvent(ev);\n\
+        return ev.cancelBubble === false;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn dispatch_event_clears_stop_immediate_propagation_after_dispatch() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const et = new EventTarget();\n\
+        const ev = new Event('x', { bubbles: true });\n\
+        et.addEventListener('x', e => e.stopImmediatePropagation());\n\
+        et.dispatchEvent(ev);\n\
+        return ev.cancelBubble === false && ev.__fastrender_event_stop_immediate === false;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
