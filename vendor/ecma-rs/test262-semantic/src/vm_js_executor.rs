@@ -322,8 +322,33 @@ impl VmHostHooks for Test262ModuleHooks {
 
     let source_text = Arc::new(SourceText::new(canonical.to_string_lossy().into_owned(), source));
 
-    let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source_text) {
+    let record = match SourceTextModuleRecord::parse_source_with_vm(vm, Arc::clone(&source_text)) {
       Ok(record) => record,
+      Err(VmError::Syntax(mut diags)) => {
+        // Preserve parse diagnostics when rejecting the module-loading promise.
+        //
+        // If we passed `Err(VmError::Syntax(..))` through to `FinishLoadingImportedModule`,
+        // `GraphLoadingState::reject_promise` would reject with `undefined` (because
+        // `VmError::Syntax` has no `thrown_value()`), losing the error type/message.
+        let message = render_syntax_diagnostics(&specifier, source_text.text.as_ref(), &mut diags);
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let err_value = vm_js::new_syntax_error_object(scope, &intr, &message)?;
+        scope.push_root(err_value)?;
+        let result = Err(VmError::Throw(err_value));
+        return finish_loading_imported_module(
+          vm,
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          result,
+        );
+      }
+      Err(err @ VmError::Termination(_)) => return Err(err),
       Err(err) => {
         let result = Err(module_load_syntax_error(vm, scope, &err)?);
         return finish_loading_imported_module(
@@ -558,12 +583,8 @@ fn execute_module(
           })?
           .unwrap_or(Value::Undefined);
         let (typ, message, stack) = describe_thrown_value_with_stack(runtime, reason);
-        let phase = match typ.as_deref() {
-          Some("SyntaxError") => ExecPhase::Parse,
-          _ => ExecPhase::Resolution,
-        };
         Err(ExecError::Js(JsError {
-          phase,
+          phase: ExecPhase::Resolution,
           typ,
           message,
           stack,
@@ -844,21 +865,12 @@ fn map_vm_error(
  
   match err {
     VmError::Syntax(mut diags) => {
-      diagnostics::sort_diagnostics(&mut diags);
- 
       let file_name = if case.id.is_empty() {
-        "<test262>".to_string()
+        "<test262>"
       } else {
-        case.id.clone()
+        case.id.as_str()
       };
-      let mut files = SimpleFiles::new();
-      let _ = files.add(file_name, source);
- 
-      let message = diags
-        .iter()
-        .map(|d| render_diagnostic(&files, d).trim_end().to_string())
-        .collect::<Vec<_>>()
-        .join("\n\n");
+      let message = render_syntax_diagnostics(file_name, source, &mut diags);
  
       ExecError::Js(JsError::new(
         ExecPhase::Parse,
@@ -953,6 +965,23 @@ fn map_vm_error(
       stack: stack_from_frames(runtime.vm.capture_stack()),
     }),
   }
+}
+
+fn render_syntax_diagnostics(
+  file_name: &str,
+  source: &str,
+  diags: &mut Vec<diagnostics::Diagnostic>,
+) -> String {
+  diagnostics::sort_diagnostics(diags);
+
+  let mut files = SimpleFiles::new();
+  let _ = files.add(file_name, source);
+
+  diags
+    .iter()
+    .map(|d| render_diagnostic(&files, d).trim_end().to_string())
+    .collect::<Vec<_>>()
+    .join("\n\n")
 }
  
 fn describe_thrown_value(runtime: &mut vm_js::JsRuntime, value: Value) -> (Option<String>, String) {
