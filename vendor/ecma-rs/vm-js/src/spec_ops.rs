@@ -705,7 +705,7 @@ pub fn get_method_with_host_and_hooks(
   };
 
   // GetMethod: callability checks and `null`/`undefined` normalization.
-  let func = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, receiver)?;
+  let func = scope.get_with_host_and_hooks(vm, host, hooks, obj, key, receiver)?;
   if matches!(func, Value::Undefined | Value::Null) {
     return Ok(None);
   }

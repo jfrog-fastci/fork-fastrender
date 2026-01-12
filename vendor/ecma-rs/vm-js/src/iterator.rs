@@ -89,7 +89,7 @@ pub fn get_iterator_from_method(
   next_scope.push_root(iterator)?;
 
   let next_key = string_key(&mut next_scope, "next")?;
-  let next = next_scope.ordinary_get_with_host_and_hooks(
+  let next = next_scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,
@@ -144,14 +144,7 @@ pub fn iterator_complete(
     ));
   };
   let done_key = string_key(&mut complete_scope, "done")?;
-  let done = complete_scope.ordinary_get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    obj,
-    done_key,
-    iter_result,
-  )?;
+  let done = complete_scope.get_with_host_and_hooks(vm, host, hooks, obj, done_key, iter_result)?;
   complete_scope.heap().to_boolean(done)
 }
 
@@ -178,7 +171,7 @@ pub fn iterator_value(
     ));
   };
   let value_key = string_key(&mut value_scope, "value")?;
-  value_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, value_key, iter_result)
+  value_scope.get_with_host_and_hooks(vm, host, hooks, obj, value_key, iter_result)
 }
 
 /// `IteratorStepValue` (ECMA-262).
