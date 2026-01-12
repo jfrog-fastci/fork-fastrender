@@ -3933,6 +3933,8 @@ mod tests {
           var valueAfterSetAttr = input.value;
           input.removeAttribute("value");
           var valueAfterRemoveAttr = input.value;
+          input.value = "y";
+          var valueAttrAfterSetProp = input.getAttribute("value");
 
           // checked: presence/absence of attribute.
           var checkedDefault = input.checked;
@@ -3940,6 +3942,10 @@ mod tests {
           var checkedAfterSetAttr = input.checked;
           input.removeAttribute("checked");
           var checkedAfterRemoveAttr = input.checked;
+          input.checked = true;
+          var checkedAttrAfterSetProp = input.getAttribute("checked") !== null;
+          input.checked = false;
+          var checkedAttrAfterClearProp = input.getAttribute("checked") !== null;
 
           // disabled: presence/absence of attribute.
           var disabledDefault = input.disabled;
@@ -3947,17 +3953,26 @@ mod tests {
           var disabledAfterSetAttr = input.disabled;
           input.removeAttribute("disabled");
           var disabledAfterRemoveAttr = input.disabled;
+          input.disabled = true;
+          var disabledAttrAfterSetProp = input.getAttribute("disabled") !== null;
+          input.disabled = false;
+          var disabledAttrAfterClearProp = input.getAttribute("disabled") !== null;
 
           return JSON.stringify({
             valueDefault: valueDefault,
             valueAfterSetAttr: valueAfterSetAttr,
             valueAfterRemoveAttr: valueAfterRemoveAttr,
+            valueAttrAfterSetProp: valueAttrAfterSetProp,
             checkedDefault: checkedDefault,
             checkedAfterSetAttr: checkedAfterSetAttr,
             checkedAfterRemoveAttr: checkedAfterRemoveAttr,
+            checkedAttrAfterSetProp: checkedAttrAfterSetProp,
+            checkedAttrAfterClearProp: checkedAttrAfterClearProp,
             disabledDefault: disabledDefault,
             disabledAfterSetAttr: disabledAfterSetAttr,
             disabledAfterRemoveAttr: disabledAfterRemoveAttr,
+            disabledAttrAfterSetProp: disabledAttrAfterSetProp,
+            disabledAttrAfterClearProp: disabledAttrAfterClearProp,
           });
         })()
         "#,
@@ -3966,14 +3981,19 @@ mod tests {
       assert_eq!(v["valueDefault"], "");
       assert_eq!(v["valueAfterSetAttr"], "x");
       assert_eq!(v["valueAfterRemoveAttr"], "");
+      assert_eq!(v["valueAttrAfterSetProp"], "y");
 
       assert_eq!(v["checkedDefault"], false);
       assert_eq!(v["checkedAfterSetAttr"], true);
       assert_eq!(v["checkedAfterRemoveAttr"], false);
+      assert_eq!(v["checkedAttrAfterSetProp"], true);
+      assert_eq!(v["checkedAttrAfterClearProp"], false);
 
       assert_eq!(v["disabledDefault"], false);
       assert_eq!(v["disabledAfterSetAttr"], true);
       assert_eq!(v["disabledAfterRemoveAttr"], false);
+      assert_eq!(v["disabledAttrAfterSetProp"], true);
+      assert_eq!(v["disabledAttrAfterClearProp"], false);
     });
   }
 }
