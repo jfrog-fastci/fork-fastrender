@@ -150,3 +150,95 @@ fn module_unsupported_module_type_rejects_with_syntaxerror_reason() {
     js.message
   );
 }
+
+#[test]
+fn module_empty_specifier_rejects_with_typeerror_reason() {
+  let temp = tempdir().unwrap();
+  fs::create_dir_all(temp.path().join("test")).unwrap();
+
+  let case = module_case(&temp, "entry.js");
+  let executor = default_executor();
+  let cancel = Arc::new(AtomicBool::new(false));
+
+  let err = executor.execute(&case, r#"import "";"#, &cancel).unwrap_err();
+
+  let ExecError::Js(js) = err else {
+    panic!("expected JS error, got {err:?}");
+  };
+
+  assert_eq!(js.phase, ExecPhase::Resolution);
+  assert_eq!(js.typ.as_deref(), Some("TypeError"));
+  assert!(
+    !js.message.trim().is_empty() && js.message != "undefined",
+    "expected non-empty rejection message, got: {:?}",
+    js.message
+  );
+  assert!(
+    js.message.contains("empty"),
+    "expected helpful message, got: {:?}",
+    js.message
+  );
+}
+
+#[test]
+fn module_nul_specifier_rejects_with_typeerror_reason() {
+  let temp = tempdir().unwrap();
+  fs::create_dir_all(temp.path().join("test")).unwrap();
+
+  let case = module_case(&temp, "entry.js");
+  let executor = default_executor();
+  let cancel = Arc::new(AtomicBool::new(false));
+
+  // `\\0` is a NUL code point in JS string literals.
+  let err = executor
+    .execute(&case, r#"import "\0.js";"#, &cancel)
+    .unwrap_err();
+
+  let ExecError::Js(js) = err else {
+    panic!("expected JS error, got {err:?}");
+  };
+
+  assert_eq!(js.phase, ExecPhase::Resolution);
+  assert_eq!(js.typ.as_deref(), Some("TypeError"));
+  assert!(
+    !js.message.trim().is_empty() && js.message != "undefined",
+    "expected non-empty rejection message, got: {:?}",
+    js.message
+  );
+  assert!(
+    js.message.to_lowercase().contains("nul"),
+    "expected helpful message, got: {:?}",
+    js.message
+  );
+}
+
+#[test]
+fn module_absolute_path_specifier_rejects_with_typeerror_reason() {
+  let temp = tempdir().unwrap();
+  fs::create_dir_all(temp.path().join("test")).unwrap();
+
+  let case = module_case(&temp, "entry.js");
+  let executor = default_executor();
+  let cancel = Arc::new(AtomicBool::new(false));
+
+  let err = executor
+    .execute(&case, r#"import "/abs.js";"#, &cancel)
+    .unwrap_err();
+
+  let ExecError::Js(js) = err else {
+    panic!("expected JS error, got {err:?}");
+  };
+
+  assert_eq!(js.phase, ExecPhase::Resolution);
+  assert_eq!(js.typ.as_deref(), Some("TypeError"));
+  assert!(
+    !js.message.trim().is_empty() && js.message != "undefined",
+    "expected non-empty rejection message, got: {:?}",
+    js.message
+  );
+  assert!(
+    js.message.contains("absolute"),
+    "expected helpful message, got: {:?}",
+    js.message
+  );
+}
