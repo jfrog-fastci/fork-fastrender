@@ -475,7 +475,7 @@ jobs:
             conformance \
             --filter "${CONFORMANCE_FILTER}" \
             --compare tsc \
-            --manifest typecheck-ts-harness/fixtures/upstream_manifest.toml \
+            --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
             --fail-on new \
             --shard "${SHARD_INDEX}/${SHARD_TOTAL}" \
             --shard-strategy hash \

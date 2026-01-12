@@ -3545,4 +3545,73 @@ echo '{"diagnostics":[]}'
       "expected cancelled run to finish quickly; elapsed={elapsed:?}"
     );
   }
+
+  #[test]
+  fn xpass_is_counted_and_fails_when_fail_on_is_not_none() {
+    let _lock = CONFORMANCE_ENV_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+      dir.path().join("case.ts"),
+      "// @noLib: true\nconst x = 1;\n",
+    )
+    .unwrap();
+
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+      &manifest_path,
+      r#"
+[[expectations]]
+id = "case.ts"
+status = "xfail"
+reason = "exercise XPASS hygiene"
+"#,
+    )
+    .unwrap();
+
+    let opts = ConformanceOptions {
+      root: dir.path().to_path_buf(),
+      filter: crate::build_filter(None).unwrap(),
+      filter_pattern: None,
+      shard: None,
+      shard_strategy: ShardStrategy::Index,
+      json: false,
+      update_snapshots: false,
+      timeout: Duration::from_secs(5),
+      trace: false,
+      profile: false,
+      profile_out: crate::DEFAULT_PROFILE_OUT.into(),
+      extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
+      allow_empty: false,
+      compare: CompareMode::None,
+      node_path: "node".into(),
+      span_tolerance: 0,
+      allow_mismatches: true,
+      jobs: 1,
+      manifest: Some(manifest_path),
+      fail_on: FailOn::New,
+    };
+
+    let report = run_conformance(opts.clone()).expect("run_conformance");
+    let mismatches = report.summary.mismatches.expect("mismatch summary");
+    assert_eq!(mismatches.xpass, 1, "{mismatches:?}");
+
+    // The suite has no actual mismatches (comparison is disabled), but XPASS is
+    // still treated as a failure when `--fail-on` is not `none`.
+    assert_eq!(report.summary.outcomes.mismatches(), 0);
+
+    let mut failing_opts = opts.clone();
+    failing_opts.allow_mismatches = false;
+    assert!(
+      run_conformance(failing_opts).is_err(),
+      "expected XPASS to fail the run when fail_on != none"
+    );
+
+    let mut ignore_opts = opts;
+    ignore_opts.allow_mismatches = false;
+    ignore_opts.fail_on = FailOn::None;
+    run_conformance(ignore_opts).expect("fail_on none should ignore XPASS");
+  }
 }

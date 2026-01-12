@@ -1,0 +1,39 @@
+# Expectations for upstream TypeScript conformance runs (CI + local).
+#
+# Test ids are paths under the upstream suite root:
+#   parse-js/tests/TypeScript/tests/cases/conformance
+#
+# Policy:
+# - Keep this file curated and relatively small (prefer globs for clusters).
+# - Every `xfail`/`flaky` entry must have a human-readable `reason`.
+# - Add `tracking_issue` whenever there is a specific issue/PR tracking the gap.
+
+[[expectations]]
+glob = "es2020/bigintMissingES*.ts"
+status = "xfail"
+reason = "`bigint` assignability/intrinsic typing not yet aligned with tsc (TS2344 in generic constraint checks)"
+
+[[expectations]]
+id = "es2020/es2020IntlAPIs.ts"
+status = "xfail"
+reason = "Intl lib typings incomplete; missing constructor/call arity diagnostics (TS2554)"
+
+[[expectations]]
+id = "es2020/intlNumberFormatES2020.ts"
+status = "xfail"
+reason = "Intl.NumberFormat typings incomplete; destructuring leads to implicit-any/assignability mismatches"
+
+[[expectations]]
+glob = "es2020/modules/exportAsNamespace[1-4].ts"
+status = "xfail"
+reason = "`// @module:` multi-value directive parsing and `export * as ns from` namespace export semantics not yet aligned with tsc"
+
+[[expectations]]
+id = "es2020/modules/exportAsNamespace_exportAssignment.ts"
+status = "xfail"
+reason = "`export =` / `export * as ns` interoperability not yet aligned with tsc diagnostics"
+
+[[expectations]]
+id = "es2020/modules/exportAsNamespace_nonExistent.ts"
+status = "xfail"
+reason = "Module resolution diagnostic code differs (tsc TS2792 vs rust TC1001)"

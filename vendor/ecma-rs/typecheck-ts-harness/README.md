@@ -349,8 +349,23 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
 ### Expectations manifests
 
 Both `conformance` and `difftsc` accept `--manifest <path>` describing expected
-skips or failures. Statuses are `skip`, `xfail`, or `flaky` (like `xfail` but
-reported separately). Example (`toml` or JSON):
+skips or failures.
+
+Each `[[expectations]]` entry matches test ids by `id`, `glob`, or `regex` and
+assigns a `status`:
+
+- `pass`: test is expected to match the oracle (default; mainly useful to
+  override a broader `glob`).
+- `skip`: don't run the test at all (recorded as "skipped by manifest").
+- `xfail`: expected to mismatch vs the oracle (known gap).
+- `flaky`: like `xfail`, but counted separately (use sparingly; prefer fixing
+  determinism).
+
+Policy:
+- Every `xfail`/`flaky` entry must have a human-readable `reason`.
+- Add `tracking_issue` whenever there is a specific issue/PR tracking the gap.
+
+Example (`toml` or JSON):
 
 ```
 [[expectations]]
@@ -361,6 +376,7 @@ reason = "parser gaps"
 [[expectations]]
 glob = "flaky/**"
 status = "flaky"
+reason = "intermittent mismatch (investigate)"
 tracking_issue = "TICKET-123"
 ```
 
@@ -445,7 +461,7 @@ Current CI configuration:
 - shards: 8 (`--shard-strategy hash`)
 - timeout: 20s per case
 - workers: `--jobs 2`
-- expectations: `typecheck-ts-harness/fixtures/upstream_manifest.toml`
+- expectations: `typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml`
 
 To reproduce shard `0/8` locally:
 
@@ -458,7 +474,7 @@ cd typecheck-ts-harness && npm ci
 cd ..
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
   --filter "es2020/**" \
-  --manifest typecheck-ts-harness/fixtures/upstream_manifest.toml \
+  --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
   --fail-on new \
   --shard 0/8 \
   --shard-strategy hash \
@@ -467,3 +483,30 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conforma
   --json \
   > upstream-es2020-shard0.json
 ```
+
+Triage workflow:
+
+```bash
+# Keep the JSON report even if the run would fail (useful for local iteration).
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
+  --filter "es2020/**" \
+  --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
+  --fail-on none \
+  --shard 0/8 \
+  --shard-strategy hash \
+  --timeout-secs 20 \
+  --jobs 2 \
+  --json \
+  > upstream-es2020-shard0.json
+
+# Compare against a previous report and print suggested manifest entries.
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage \
+  --input upstream-es2020-shard0.json \
+  --baseline previous-upstream-es2020-shard0.json
+```
+
+- `triage` prints suggested `[[expectations]]` entries for common mismatch
+  clusters; copy the entries you accept into
+  `fixtures/conformance-upstream/manifest.toml`.
+- XPASS means a manifest entry is now stale; remove it (or narrow the `glob`) so
+  the passing case is covered by the default `pass` behavior.
