@@ -13224,6 +13224,8 @@ fn async_for_await_of_close(
   // We're exiting the loop, so `V` is no longer needed.
   scope.heap_mut().remove_root(v_root);
 
+  let completion_is_throw = matches!(&completion, Completion::Throw(_));
+
   let close_value: Result<Option<Value>, VmError> = (|| {
     // Root completion value (if any) across the `return` lookup/call, since those operations can
     // allocate and trigger GC.
@@ -13247,6 +13249,11 @@ fn async_for_await_of_close(
     Err(err) => {
       scope.heap_mut().remove_root(iterator_root);
       scope.heap_mut().remove_root(next_method_root);
+      // Spec: `AsyncIteratorClose` suppresses `return` lookup/call errors when closing due to a
+      // throw completion.
+      if completion_is_throw && err.is_throw_completion() {
+        return Ok(AsyncEval::Complete(completion));
+      }
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
           return Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?));
@@ -21709,6 +21716,7 @@ fn async_resume_from_frames(
           let pending_completion = pending.to_completion(scope.heap());
           pending.teardown(scope.heap_mut());
           let pending_completion = pending_completion?;
+          let pending_is_throw = matches!(&pending_completion, Completion::Throw(_));
 
           // Iterator roots are no longer needed once `return` has settled.
           scope.heap_mut().remove_root(iterator_root);
@@ -21717,17 +21725,33 @@ fn async_resume_from_frames(
           match close_res {
             Ok(v) => {
               if !matches!(v, Value::Object(_)) {
-                let err = throw_type_error(
-                  evaluator.vm,
-                  scope,
-                  "AsyncIteratorClose: return value is not an object",
-                )?;
-                state = AsyncState::Completion(completion_from_expr_result(Err(err))?);
+                // Spec: `AsyncIteratorClose` skips the return-value object check when closing due
+                // to a throw completion.
+                if pending_is_throw {
+                  state = AsyncState::Completion(pending_completion);
+                } else {
+                  let err = throw_type_error(
+                    evaluator.vm,
+                    scope,
+                    "AsyncIteratorClose: return value is not an object",
+                  )?;
+                  state = AsyncState::Completion(completion_from_expr_result(Err(err))?);
+                }
               } else {
                 state = AsyncState::Completion(pending_completion);
               }
             }
-            Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
+            Err(err) => {
+              // Spec: `AsyncIteratorClose` suppression rules:
+              // - If the pending completion is a throw completion, suppress throw-completion errors
+              //   produced by awaiting `return`.
+              // - Never suppress fatal VM errors (OOM/termination/etc).
+              if pending_is_throw && err.is_throw_completion() {
+                state = AsyncState::Completion(pending_completion);
+              } else {
+                state = AsyncState::Completion(completion_from_expr_result(Err(err))?);
+              }
+            }
           }
         }
         AsyncState::Completion(_) => {

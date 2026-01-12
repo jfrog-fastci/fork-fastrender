@@ -386,3 +386,181 @@ fn for_await_of_break_does_not_call_array_return_getter_with_default_iterator() 
   assert_eq!(value_to_string(&rt, out), "ok");
   Ok(())
 }
+
+#[test]
+fn for_await_of_throw_suppresses_iterator_return_throw() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          return() {
+            returnCalls++;
+            throw "close";
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          throw "body";
+        }
+      }
+
+      f().then(function () { out = "bad"; }, function (e) { out = e; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "body");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn for_await_of_break_propagates_iterator_return_throw() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          return() {
+            returnCalls++;
+            throw "close";
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          break;
+        }
+        return "ok";
+      }
+
+      f().then(function (v) { out = v; }, function (e) { out = e; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "close");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn for_await_of_throw_suppresses_iterator_return_rejection() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          return() {
+            returnCalls++;
+            return Promise.reject("close");
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          throw "body";
+        }
+      }
+
+      f().then(function () { out = "bad"; }, function (e) { out = e; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "body");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn for_await_of_break_propagates_iterator_return_rejection() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          return() {
+            returnCalls++;
+            return Promise.reject("close");
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          break;
+        }
+        return "ok";
+      }
+
+      f().then(function (v) { out = v; }, function (e) { out = e; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "close");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}
