@@ -59,10 +59,39 @@ fn bench_available_width_in_range(c: &mut Criterion) {
   });
 }
 
+fn bench_compute_float_position_overlap_stress(c: &mut Criterion) {
+  common::bench_print_config_once("float_bench", &[]);
+  // A stress pattern that resembles float-heavy real sites:
+  // - many overlapping floats (varying heights) starting at the same y
+  // - small float widths so each "row" packs many floats
+  // - repeated `compute_float_position` calls that often must step through many float-boundary
+  //   events to find a y that fits
+  c.bench_function("float_place_overlap_boundary_steps", |b| {
+    b.iter(|| {
+      let mut ctx = FloatContext::new(320.0);
+      let float_width = 5.0f32;
+      let floats_per_row = (ctx.containing_block_width() / float_width) as usize;
+      let total_floats = 2_000usize;
+
+      for i in 0..total_floats {
+        // Heights increase left-to-right within a packed row so when the row is full the next float
+        // must often step through many distinct end boundaries before the constraining rightmost
+        // float ends.
+        let height = 1.0 + (i % floats_per_row) as f32;
+        let (x, y) = ctx.compute_float_position(FloatSide::Left, float_width, height, 0.0);
+        ctx.add_float_at(FloatSide::Left, x, y, float_width, height);
+      }
+
+      black_box(ctx.float_count());
+    })
+  });
+}
+
 criterion_group!(
   float_benches,
   bench_available_width,
   bench_available_width_in_range,
-  bench_compute_float_position
+  bench_compute_float_position,
+  bench_compute_float_position_overlap_stress
 );
 criterion_main!(float_benches);
