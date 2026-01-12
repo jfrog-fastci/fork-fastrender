@@ -189,3 +189,67 @@ assert.sameValue(y, 1);
     "expected module case to pass: {result:#?}"
   );
 }
+
+#[test]
+fn vm_js_executor_module_import_meta_url_is_present() {
+  let _guard = VM_JS_SMOKE_LOCK
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  let temp = tempdir().unwrap();
+
+  // Minimal fake test262 checkout: harness + test directories.
+  fs::create_dir_all(temp.path().join("harness")).unwrap();
+  fs::write(temp.path().join("harness/assert.js"), "").unwrap();
+  fs::write(temp.path().join("harness/sta.js"), "").unwrap();
+
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+
+  fs::write(
+    test_dir.join("import_meta_url.js"),
+    r#"/*---
+flags: [module]
+---*/
+if (typeof import.meta.url !== "string") {
+  throw new Error("expected import.meta.url to be a string, got: " + (typeof import.meta.url));
+}
+if (!import.meta.url.includes("import_meta_url.js")) {
+  throw new Error("unexpected import.meta.url: " + import.meta.url);
+}
+"#,
+  )
+  .unwrap();
+
+  let discovered = discover_tests(temp.path()).unwrap();
+  let cases = expand_cases(
+    &discovered,
+    &Filter::Regex(Regex::new(r"^import_meta_url\.js$").unwrap()),
+  )
+  .unwrap();
+  assert_eq!(cases.len(), 1);
+  assert_eq!(cases[0].variant, test262_semantic::report::Variant::Module);
+
+  let expectations = Expectations::empty();
+  let executor = default_executor();
+  let timeout_manager = TimeoutManager::new();
+
+  let results = test262_semantic::runner::run_cases(
+    temp.path(),
+    HarnessMode::Test262,
+    &cases,
+    &expectations,
+    executor.as_ref(),
+    Duration::from_secs(1),
+    &timeout_manager,
+  );
+
+  assert_eq!(results.len(), 1);
+  let result = &results[0];
+  assert_eq!(result.id, "import_meta_url.js");
+  assert_eq!(result.variant, test262_semantic::report::Variant::Module);
+  assert_eq!(
+    result.outcome,
+    TestOutcome::Passed,
+    "expected module case to pass: {result:#?}"
+  );
+}

@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use vm_js::format_stack_trace;
 use vm_js::{
-  finish_loading_imported_module, HostDefined, ImportAttribute, Job, ModuleGraph, ModuleId, ModuleLoadPayload,
-  ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, VmHostHooks, VmJobContext,
+  finish_loading_imported_module, HostDefined, ImportAttribute, ImportMetaProperty, Job, ModuleGraph, ModuleId,
+  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, VmHostHooks, VmJobContext,
 };
 use vm_js::{
   Heap, HeapLimits, MicrotaskQueue, PropertyKey, PropertyKind, SourceText, SourceTextModuleRecord,
@@ -44,6 +44,7 @@ struct Test262ModuleHooks {
   test_root_dir_normalized: PathBuf,
   test_root_dir_canonical: PathBuf,
   module_paths: HashMap<ModuleId, PathBuf>,
+  module_urls: HashMap<ModuleId, String>,
   module_cache: HashMap<ModuleCacheKey, ModuleId>,
 }
 
@@ -64,16 +65,34 @@ impl Test262ModuleHooks {
       test_root_dir_normalized,
       test_root_dir_canonical,
       module_paths: HashMap::new(),
+      module_urls: HashMap::new(),
       module_cache: HashMap::new(),
     }
   }
 
   fn register_module_path(&mut self, id: ModuleId, path: PathBuf) {
+    let url = self.module_url_for_path(&path);
     self.module_paths.insert(id, path);
+    self.module_urls.insert(id, url);
   }
 
   fn register_module_cache(&mut self, path: PathBuf, attributes: Vec<ImportAttribute>, id: ModuleId) {
     self.module_cache.insert(ModuleCacheKey { path, attributes }, id);
+  }
+
+  fn module_url_for_path(&self, path: &Path) -> String {
+    let relative = path
+      .strip_prefix(&self.test_root_dir_canonical)
+      .or_else(|_| path.strip_prefix(&self.test_root_dir_normalized))
+      .unwrap_or(path);
+    let mut rel_str = relative.to_string_lossy().into_owned();
+    if rel_str.contains('\\') {
+      rel_str = rel_str.replace('\\', "/");
+    }
+    // `strip_prefix` should yield a relative path, but keep this deterministic in case the path
+    // isn't under the derived test root for some reason (e.g. non-existent paths in unit tests).
+    let rel_str = rel_str.trim_start_matches('/');
+    format!("test262:///{rel_str}")
   }
 
   fn resolve_base_dir(&self, referrer: ModuleReferrer) -> Result<PathBuf, VmError> {
@@ -130,6 +149,29 @@ impl VmHostHooks for Test262ModuleHooks {
 
   fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
     Some(self)
+  }
+
+  fn host_get_import_meta_properties(
+    &mut self,
+    _vm: &mut Vm,
+    scope: &mut vm_js::Scope<'_>,
+    module: ModuleId,
+  ) -> Result<Vec<ImportMetaProperty>, VmError> {
+    let Some(url) = self.module_urls.get(&module) else {
+      return Ok(Vec::new());
+    };
+
+    let key_s = scope.alloc_string("url")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let url_s = scope.alloc_string(url.as_str())?;
+    scope.push_root(Value::String(url_s))?;
+
+    Ok(vec![ImportMetaProperty {
+      key,
+      value: Value::String(url_s),
+    }])
   }
 
   fn host_load_imported_module(
