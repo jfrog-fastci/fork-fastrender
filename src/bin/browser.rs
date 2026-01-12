@@ -119,7 +119,8 @@ use clap::Parser;
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
-  WorkerWake,
+  WorkerWake(winit::window::WindowId),
+  RequestNewWindow(winit::window::WindowId),
 }
 
 #[cfg(feature = "browser_ui")]
@@ -755,6 +756,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // immediately (including persisted state) before any new navigation commits happen.
   fastrender::ui::about_pages::set_about_snapshot_from_stores(&bookmarks, &history);
 
+  use std::collections::HashMap;
   use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
   let mut session_autosave =
     fastrender::ui::session_autosave::SessionAutosave::new(session_path.clone());
@@ -765,6 +767,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use winit::event_loop::EventLoopBuilder;
   use winit::window::Theme;
   use winit::window::WindowBuilder;
+  use winit::window::WindowId;
+
+  struct BrowserWindow {
+    app: App,
+    ui_rx: std::sync::mpsc::Receiver<fastrender::ui::WorkerToUi>,
+    bridge_join: Option<std::thread::JoinHandle<()>>,
+  }
+
+  impl BrowserWindow {
+    fn shutdown(mut self) {
+      self.app.shutdown();
+
+      if let Some(join) = self.bridge_join.take() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
+        let _ = std::thread::spawn(move || {
+          let _ = done_tx.send(join.join());
+        });
+        match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+          Ok(_) => {}
+          Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            eprintln!("timed out waiting for browser worker bridge thread to exit");
+          }
+          Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            eprintln!("browser worker bridge join helper thread disconnected during shutdown");
+          }
+        }
+      }
+    }
+  }
 
   let appearance_env = fastrender::ui::appearance::AppearanceEnvOverrides::from_env();
   let theme_accent = fastrender::ui::theme::accent_color_override_from_env();
@@ -774,77 +805,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(Theme::Dark),
     _ => None,
   };
-  let window_state = startup_session
-    .windows
-    .get(startup_session.active_window_index)
-    .and_then(|w| w.window_state.as_ref())
-    .cloned();
 
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
   let window_icon = load_window_icon();
-  let mut window_builder = WindowBuilder::new()
-    .with_title("FastRender")
-    .with_inner_size(LogicalSize::new(1200.0, 800.0))
-    .with_min_inner_size(LogicalSize::new(480.0, 320.0))
-    .with_window_icon(window_icon)
-    // Match native window chrome to the browser theme override when one is set; otherwise follow
-    // the system theme.
-    .with_theme(window_theme_override);
 
-  if let Some(state) = window_state.as_ref() {
-    if let (Some(width), Some(height)) = (state.width, state.height) {
-      window_builder = window_builder.with_inner_size(PhysicalSize::new(
-        width.clamp(1, i64::from(u32::MAX)) as u32,
-        height.clamp(1, i64::from(u32::MAX)) as u32,
-      ));
-    }
-    if let (Some(x), Some(y)) = (state.x, state.y) {
-      window_builder = window_builder.with_position(PhysicalPosition::new(
-        x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-      ));
-    }
-    if state.maximized {
-      window_builder = window_builder.with_maximized(true);
-    }
-  }
+  // Keep a single profile autosave worker (bookmarks/history) across all windows.
+  let (profile_autosave_tx, mut profile_autosave) =
+    match fastrender::ui::ProfileAutosaveHandle::spawn(bookmarks_path.clone(), history_path.clone()) {
+      Ok(handle) => (Some(handle.sender()), Some(handle)),
+      Err(err) => {
+        eprintln!("failed to start profile autosave: {err}");
+        (None, None)
+      }
+    };
 
-  // Platform-native titlebar integration.
-  //
-  // On macOS, render the chrome into the titlebar area (unified toolbar look).
-  #[cfg(target_os = "macos")]
-  let window_builder = {
-    use winit::platform::macos::WindowBuilderExtMacOS;
-
-    window_builder
-      .with_title_hidden(true)
-      .with_titlebar_transparent(true)
-      .with_fullsize_content_view(true)
-  };
-
-  let window = window_builder.build(&event_loop)?;
-
-  #[cfg(target_os = "macos")]
-  {
-    use winit::platform::macos::WindowExtMacOS;
-
-    // Ensure the titlebar settings are applied on the native window as well.
-    //
-    // NOTE: These are best-effort; on older macOS versions some settings may be ignored.
-    window.set_title_hidden(true);
-    window.set_titlebar_transparent(true);
-    window.set_fullsize_content_view(true);
-  }
-
-  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
-    fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
-
-  // Set the download directory once during startup, before any `CreateTab { initial_url: Some(..) }`
-  // messages trigger a navigation.
-  ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
-    path: download_dir.clone(),
-  })?;
+  let mut global_bookmarks = bookmarks;
+  let mut global_history = history;
 
   let wgpu_init = {
     let cli_backends = cli.wgpu_backends.as_deref().map(|backends| {
@@ -875,72 +852,190 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       force_fallback_adapter: wgpu_options.force_fallback_adapter,
     }
   };
-  let gpu = pollster::block_on(GpuContext::new(&window, wgpu_init))?;
-  let mut app = App::new(
-    window,
-    &event_loop,
-    ui_to_worker_tx,
-    worker_join,
-    &gpu,
-    appearance_env,
-    applied_appearance,
-    theme_accent,
-    bookmarks_path,
-    history_path,
-    bookmarks,
-    history,
-  )?;
-  app.startup(startup_session);
-  match fastrender::ui::ProfileAutosaveHandle::spawn(
-    app.bookmarks_path.clone(),
-    app.history_path.clone(),
-  ) {
-    Ok(autosave) => {
-      app.profile_autosave = Some(autosave);
+  let home_url = startup_session.home_url.clone();
+  let startup_appearance = startup_session.appearance;
+  let startup_active_window_index = startup_session.active_window_index;
+  let startup_windows = startup_session.windows;
+  let window_count = startup_windows.len();
+  let active_idx = startup_active_window_index.min(window_count.saturating_sub(1));
+
+  let build_window = move |target: &winit::event_loop::EventLoopWindowTarget<UserEvent>,
+                           window_state: Option<fastrender::ui::BrowserWindowState>,
+                           inherit_size: Option<PhysicalSize<u32>>,
+                           inherit_pos: Option<PhysicalPosition<i32>>|
+        -> Result<winit::window::Window, Box<dyn std::error::Error>> {
+    let mut window_builder = WindowBuilder::new()
+      .with_title("FastRender")
+      .with_inner_size(LogicalSize::new(1200.0, 800.0))
+      .with_min_inner_size(LogicalSize::new(480.0, 320.0))
+      .with_window_icon(window_icon.clone())
+      // Match native window chrome to the browser theme override when one is set; otherwise follow
+      // the system theme.
+      .with_theme(window_theme_override);
+
+    if let Some(size) = inherit_size {
+      window_builder = window_builder.with_inner_size(size);
     }
-    Err(err) => {
-      eprintln!("profile autosave disabled: {err}");
-      app.profile_autosave = None;
+    if let Some(pos) = inherit_pos {
+      window_builder = window_builder.with_position(pos);
     }
+
+    if let Some(state) = window_state.as_ref() {
+      if let (Some(width), Some(height)) = (state.width, state.height) {
+        window_builder = window_builder.with_inner_size(PhysicalSize::new(
+          width.clamp(1, i64::from(u32::MAX)) as u32,
+          height.clamp(1, i64::from(u32::MAX)) as u32,
+        ));
+      }
+      if let (Some(x), Some(y)) = (state.x, state.y) {
+        window_builder = window_builder.with_position(PhysicalPosition::new(
+          x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+          y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        ));
+      }
+      if state.maximized {
+        window_builder = window_builder.with_maximized(true);
+      }
+    }
+
+    // Platform-native titlebar integration.
+    //
+    // On macOS, render the chrome into the titlebar area (unified toolbar look).
+    #[cfg(target_os = "macos")]
+    let window_builder = {
+      use winit::platform::macos::WindowBuilderExtMacOS;
+
+      window_builder
+        .with_title_hidden(true)
+        .with_titlebar_transparent(true)
+        .with_fullsize_content_view(true)
+    };
+
+    let window = window_builder.build(target)?;
+
+    #[cfg(target_os = "macos")]
+    {
+      use winit::platform::macos::WindowExtMacOS;
+
+      // Ensure the titlebar settings are applied on the native window as well.
+      //
+      // NOTE: These are best-effort; on older macOS versions some settings may be ignored.
+      window.set_title_hidden(true);
+      window.set_titlebar_transparent(true);
+      window.set_fullsize_content_view(true);
+    }
+
+    Ok(window)
+  };
+
+  if window_count == 0 {
+    return Err("no windows to create".into());
   }
 
-  // Mark the session as "running" as soon as the restored session state is in memory.
-  //
-  // This is the crash marker: if the process is terminated unexpectedly, `did_exit_cleanly`
-  // remains false on disk and the next launch can restore + log.
-  let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
-  session.home_url = app.home_url.clone();
-  session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
-  session.did_exit_cleanly = false;
-  session_autosave.request_save(session);
+  // Create all native windows first (so adapter selection can use a real surface), then wire up one
+  // `App` + render worker per window.
+  let mut create_order: Vec<usize> = (0..window_count).collect();
+  if window_count > 1 {
+    create_order.retain(|idx| *idx != active_idx);
+    create_order.push(active_idx);
+  }
 
-  let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+  let mut winit_windows: Vec<Option<winit::window::Window>> =
+    (0..window_count).map(|_| None).collect();
+  for idx in create_order {
+    let window_state = startup_windows.get(idx).and_then(|w| w.window_state.clone());
+    winit_windows[idx] = Some(build_window(&event_loop, window_state, None, None)?);
+  }
 
-  // Worker → UI messages are forwarded through a small bridge thread so that we can keep the winit
-  // event loop in `ControlFlow::Wait` (no busy polling), while still waking immediately when a new
-  // frame/message arrives.
-  let bridge_join = std::thread::Builder::new()
-    .name("browser_worker_bridge".to_string())
-    .spawn({
-      let event_loop_proxy = event_loop_proxy.clone();
-      move || {
-        while let Ok(msg) = worker_to_ui_rx.recv() {
-          if ui_tx.send(msg).is_err() {
-            break;
-          }
-          // Ignore failures during shutdown (event loop already dropped).
-          let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
-        }
-      }
+  let first_window = winit_windows
+    .iter()
+    .find_map(|w| w.as_ref())
+    .ok_or("failed to create any window")?;
+  let gpu = pollster::block_on(GpuContext::new(first_window, wgpu_init))?;
+
+  let mut windows: HashMap<WindowId, BrowserWindow> = HashMap::new();
+  let mut window_ids_by_index: Vec<Option<WindowId>> = vec![None; window_count];
+
+  for (idx, session_window) in startup_windows.into_iter().enumerate() {
+    let Some(window) = winit_windows.get_mut(idx).and_then(Option::take) else {
+      continue;
+    };
+
+    let worker_name = format!("fastr-browser-ui-worker-{idx}");
+    let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
+      fastrender::ui::spawn_browser_ui_worker(&worker_name)?;
+
+    // Set the download directory once during startup, before any `CreateTab { initial_url: Some(..) }`
+    // messages trigger a navigation.
+    ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
+      path: download_dir.clone(),
     })?;
 
-  // Kick the first frame so the window shows chrome immediately even before the worker responds.
-  app.window.request_redraw();
+    let mut app = App::new(
+      window,
+      &event_loop,
+      event_loop_proxy.clone(),
+      ui_to_worker_tx,
+      worker_join,
+      &gpu,
+      appearance_env,
+      applied_appearance,
+      theme_accent,
+      bookmarks_path.clone(),
+      history_path.clone(),
+      global_bookmarks.clone(),
+      global_history.clone(),
+    )?;
+    app.profile_autosave_tx = profile_autosave_tx.clone();
+    app.home_url = home_url.clone();
+    app.browser_state.appearance = startup_appearance;
+    app.startup(session_window);
 
-  let mut app = Some(app);
-  let mut bridge_join = Some(bridge_join);
+    let window_id = app.window.id();
+    window_ids_by_index[idx] = Some(window_id);
 
-  event_loop.run(move |event, _, control_flow| {
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+
+    // Worker → UI messages are forwarded through a small bridge thread so that we can keep the winit
+    // event loop in `ControlFlow::Wait` (no busy polling), while still waking immediately when a new
+    // frame/message arrives.
+    let bridge_join = std::thread::Builder::new()
+      .name(format!("browser_worker_bridge_{window_id:?}"))
+      .spawn({
+        let event_loop_proxy = event_loop_proxy.clone();
+        move || {
+          while let Ok(msg) = worker_to_ui_rx.recv() {
+            if ui_tx.send(msg).is_err() {
+              break;
+            }
+            // Ignore failures during shutdown (event loop already dropped).
+            let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+          }
+        }
+      })?;
+
+    // Kick the first frame so the window shows chrome immediately even before the worker responds.
+    app.window.request_redraw();
+
+    windows.insert(
+      window_id,
+      BrowserWindow {
+        app,
+        ui_rx,
+        bridge_join: Some(bridge_join),
+      },
+    );
+  }
+
+  let mut window_order: Vec<WindowId> = window_ids_by_index.into_iter().flatten().collect();
+  if window_order.is_empty() {
+    return Err("no windows created".into());
+  }
+
+  let mut active_window_id: Option<WindowId> = window_order.get(active_idx).copied();
+  let mut next_window_index: usize = window_order.len();
+
+  event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
     let _ = &session_lock;
     // Keep the event loop idle when there is no work to do.
@@ -949,78 +1044,109 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
     // threads) explicitly when the loop is torn down.
     if matches!(event, Event::LoopDestroyed) {
-      if let Some(mut app) = app.take() {
-        let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
-        session.home_url = app.home_url.clone();
-        session.windows[session.active_window_index].window_state =
-          capture_window_state(&app.window);
-        session.did_exit_cleanly = true;
-        session_autosave.request_save(session.clone());
+      let active_window_index = active_window_id
+        .and_then(|id| window_order.iter().position(|other| *other == id))
+        .unwrap_or(0)
+        .min(window_order.len().saturating_sub(1));
 
-        // Best-effort flush + mark clean. If the autosave worker isn't running, fall back to a
-        // direct atomic save on the UI thread (bounded by the same timeout).
-        if let Err(err) = session_autosave.shutdown(std::time::Duration::from_millis(500)) {
-          eprintln!("session autosave shutdown failed: {err}");
-          if let Err(err) =
-            fastrender::ui::session::save_session_atomic(&session_path, &session)
-          {
-            eprintln!("failed to save session to {}: {err}", session_path.display());
-          }
+      let mut session_windows: Vec<fastrender::ui::BrowserSessionWindow> =
+        Vec::with_capacity(window_order.len());
+      for id in &window_order {
+        if let Some(win) = windows.get(id) {
+          let mut session_window =
+            fastrender::ui::BrowserSessionWindow::from_app_state(&win.app.browser_state);
+          session_window.window_state = capture_window_state(&win.app.window);
+          session_windows.push(session_window);
         }
-        if let Err(err) = fastrender::ui::save_bookmarks_atomic(&app.bookmarks_path, &app.bookmarks)
-        {
-          eprintln!(
-            "failed to save bookmarks to {}: {err}",
-            app.bookmarks_path.display()
-          );
-        }
-        if let Err(err) =
-          fastrender::ui::save_history_atomic(&app.history_path, &app.browser_state.history)
-        {
-          eprintln!(
-            "failed to save history to {}: {err}",
-            app.history_path.display()
-          );
-        }
-
-        if let Some(autosave) = app.profile_autosave.take() {
-          autosave.shutdown_with_timeout(std::time::Duration::from_millis(500));
-        }
-        app.shutdown();
       }
 
-      if let Some(join) = bridge_join.take() {
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
-        let _ = std::thread::spawn(move || {
-          let _ = done_tx.send(join.join());
-        });
-        match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-          Ok(_) => {}
-          Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            eprintln!("timed out waiting for browser worker bridge thread to exit");
-          }
-          Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            eprintln!("browser worker bridge join helper thread disconnected during shutdown");
-          }
+      let mut appearance = startup_appearance;
+      let mut home_url = home_url.clone();
+      if let Some(active_id) = active_window_id.and_then(|id| windows.get(&id).map(|_| id)) {
+        if let Some(active) = windows.get(&active_id) {
+          appearance = active.app.browser_state.appearance;
+          home_url = active.app.home_url.clone();
+        }
+      }
+
+      let mut session = fastrender::ui::BrowserSession::from_windows(
+        session_windows,
+        active_window_index,
+        appearance,
+      );
+      session.home_url = home_url;
+      session.did_exit_cleanly = true;
+
+      if let Some(autosave) = profile_autosave.take() {
+        autosave.shutdown_with_timeout(std::time::Duration::from_millis(500));
+      } else {
+        // Best-effort fallback: if profile autosave isn't running, persist synchronously on shutdown.
+        if let Err(err) = fastrender::ui::save_bookmarks_atomic(&bookmarks_path, &global_bookmarks) {
+          eprintln!(
+            "failed to save bookmarks to {}: {err}",
+            bookmarks_path.display()
+          );
+        }
+        if let Err(err) = fastrender::ui::save_history_atomic(&history_path, &global_history) {
+          eprintln!(
+            "failed to save history to {}: {err}",
+            history_path.display()
+          );
+        }
+      }
+
+      for (_, win) in windows.drain() {
+        win.shutdown();
+      }
+
+      // Mark the session as clean on shutdown (best-effort).
+      session_autosave.request_save(session.clone());
+      if let Err(err) = session_autosave.shutdown(std::time::Duration::from_millis(500)) {
+        eprintln!("session autosave shutdown failed: {err}");
+        if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
+          eprintln!("failed to save session to {}: {err}", session_path.display());
         }
       }
       return;
     }
 
-    let Some(app) = app.as_mut() else {
-      return;
-    };
+    let request_autosave = |windows: &HashMap<WindowId, BrowserWindow>,
+                            window_order: &[WindowId],
+                            active_window_id: Option<WindowId>| {
+      let active_window_index = active_window_id
+        .and_then(|id| window_order.iter().position(|other| *other == id))
+        .unwrap_or(0)
+        .min(window_order.len().saturating_sub(1));
 
-    let request_autosave = |app: &App| {
-      let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
-      session.home_url = app.home_url.clone();
-      session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
+      let mut session_windows: Vec<fastrender::ui::BrowserSessionWindow> =
+        Vec::with_capacity(window_order.len());
+      for id in window_order {
+        if let Some(win) = windows.get(id) {
+          let mut session_window =
+            fastrender::ui::BrowserSessionWindow::from_app_state(&win.app.browser_state);
+          session_window.window_state = capture_window_state(&win.app.window);
+          session_windows.push(session_window);
+        }
+      }
+
+      let mut appearance = startup_appearance;
+      let mut home_url = home_url.clone();
+      if let Some(active_id) = active_window_id.and_then(|id| windows.get(&id).map(|_| id)) {
+        if let Some(active) = windows.get(&active_id) {
+          appearance = active.app.browser_state.appearance;
+          home_url = active.app.home_url.clone();
+        }
+      }
+
+      let mut session =
+        fastrender::ui::BrowserSession::from_windows(session_windows, active_window_index, appearance);
+      session.home_url = home_url;
       session.did_exit_cleanly = false;
       session_autosave.request_save(session);
     };
 
     match event {
-      Event::WindowEvent { window_id, event } if window_id == app.window.id() => {
+      Event::WindowEvent { window_id, event } => {
         let mut session_dirty = matches!(
           event,
           WindowEvent::Focused(_)
@@ -1029,88 +1155,309 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | WindowEvent::ScaleFactorChanged { .. }
         );
 
-        let response = app.egui_state.on_event(&app.egui_ctx, &event);
-        app.handle_winit_input_event(&event);
-        // Always redraw on keyboard events so chrome shortcuts (handled inside the egui frame via
-        // `ui::chrome_ui`) are evaluated even when egui doesn't request a repaint.
-        if response.repaint
-          || matches!(
-            event,
-            WindowEvent::KeyboardInput { .. } | WindowEvent::MouseWheel { .. }
-          )
-        {
-          app.window.request_redraw();
-        }
-
-        match event {
-          WindowEvent::CloseRequested => {
-            app.shutdown();
+        // Window close is handled specially so we can drop its worker + textures immediately.
+        if matches!(event, WindowEvent::CloseRequested) {
+          if windows.len() <= 1 {
             *control_flow = ControlFlow::Exit;
-          }
-          WindowEvent::Resized(new_size) => {
-            session_dirty = true;
-            app.window_minimized = new_size.width == 0 || new_size.height == 0;
-            app.resize(new_size);
-            app.window.request_redraw();
-          }
-          WindowEvent::ScaleFactorChanged {
-            scale_factor,
-            new_inner_size,
-          } => {
-            session_dirty = true;
-            app.window_minimized = new_inner_size.width == 0 || new_inner_size.height == 0;
-            app.set_system_pixels_per_point(scale_factor as f32);
-            app.resize(*new_inner_size);
-            app.window.request_redraw();
-          }
-          WindowEvent::ThemeChanged(theme) => {
-            if app.refresh_theme_from_system_theme(Some(theme)) {
-              app.window.request_redraw();
+          } else if let Some(win) = windows.remove(&window_id) {
+            window_order.retain(|id| *id != window_id);
+            if active_window_id == Some(window_id) {
+              active_window_id = window_order.last().copied();
             }
+            win.shutdown();
+            session_dirty = true;
           }
-          _ => {}
+        } else if let Some(win) = windows.get_mut(&window_id) {
+          let response = win.app.egui_state.on_event(&win.app.egui_ctx, &event);
+          win.app.handle_winit_input_event(&event);
+
+          // Always redraw on keyboard events so chrome shortcuts (handled inside the egui frame via
+          // `ui::chrome_ui`) are evaluated even when egui doesn't request a repaint.
+          if response.repaint
+            || matches!(
+              event,
+              WindowEvent::KeyboardInput { .. } | WindowEvent::MouseWheel { .. }
+            )
+          {
+            win.app.window.request_redraw();
+          }
+
+          match event {
+            WindowEvent::Focused(true) => {
+              active_window_id = Some(window_id);
+            }
+            WindowEvent::Resized(new_size) => {
+              win.app.window_minimized = new_size.width == 0 || new_size.height == 0;
+              win.app.resize(new_size);
+              win.app.window.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged {
+              scale_factor,
+              new_inner_size,
+            } => {
+              win.app.window_minimized = new_inner_size.width == 0 || new_inner_size.height == 0;
+              win.app.set_system_pixels_per_point(scale_factor as f32);
+              win.app.resize(*new_inner_size);
+              win.app.window.request_redraw();
+            }
+            WindowEvent::ThemeChanged(theme) => {
+              if win.app.refresh_theme_from_system_theme(Some(theme)) {
+                win.app.window.request_redraw();
+              }
+            }
+            _ => {}
+          }
         }
 
         if session_dirty {
-          request_autosave(app);
+          request_autosave(&windows, &window_order, active_window_id);
         }
       }
-      Event::UserEvent(UserEvent::WorkerWake) => {
+      Event::UserEvent(UserEvent::WorkerWake(window_id)) => {
         // Drain all pending worker messages. The bridge thread emits one wake event per message but
         // draining here ensures we coalesce renders if multiple arrive in quick succession.
         let mut request_redraw = false;
+        let mut history_changed = false;
         let mut session_dirty = false;
-        while let Ok(msg) = ui_rx.try_recv() {
-          session_dirty |= matches!(
-            &msg,
-            fastrender::ui::WorkerToUi::NavigationCommitted { .. }
-              | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
-          );
-          request_redraw |= app.handle_worker_message(msg);
+        if let Some(win) = windows.get_mut(&window_id) {
+          while let Ok(msg) = win.ui_rx.try_recv() {
+            session_dirty |= matches!(
+              &msg,
+              fastrender::ui::WorkerToUi::NavigationCommitted { .. }
+                | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
+            );
+
+            let result = win.app.handle_worker_message(msg);
+            request_redraw |= result.request_redraw;
+            history_changed |= result.history_changed;
+          }
+
+          if request_redraw {
+            win.app.window.request_redraw();
+          }
         }
-        if request_redraw {
-          app.window.request_redraw();
+
+        if history_changed {
+          if let Some(source) = windows.get(&window_id) {
+            global_history = source.app.browser_state.history.clone();
+          }
+          fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
+            &global_history,
+          );
+          if let Some(tx) = profile_autosave_tx.as_ref() {
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+              global_history.clone(),
+            ));
+          }
+          for win in windows.values_mut() {
+            win.app.browser_state.history = global_history.clone();
+            win.app.browser_state.visited.clear();
+            win.app.browser_state.seed_visited_from_history();
+            win.app.browser_state.chrome.omnibox.reset();
+            win.app.window.request_redraw();
+          }
         }
         if session_dirty {
-          request_autosave(app);
+          request_autosave(&windows, &window_order, active_window_id);
         }
       }
-      Event::RedrawRequested(window_id) if window_id == app.window.id() => {
-        let session_dirty = app.render_frame(control_flow);
+      Event::UserEvent(UserEvent::RequestNewWindow(from_id)) => {
+        let inherit_size = windows.get(&from_id).map(|win| win.app.window.inner_size());
+        let inherit_pos = windows.get(&from_id).and_then(|win| {
+          win
+            .app
+            .window
+            .outer_position()
+            .ok()
+            .map(|pos| PhysicalPosition::new(pos.x.saturating_add(32), pos.y.saturating_add(32)))
+        });
+
+        let window = match build_window(event_loop_target, None, inherit_size, inherit_pos) {
+          Ok(window) => window,
+          Err(err) => {
+            eprintln!("failed to create new window: {err}");
+            return;
+          }
+        };
+
+        let worker_name = format!("fastr-browser-ui-worker-{next_window_index}");
+        next_window_index = next_window_index.saturating_add(1);
+
+        let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
+          match fastrender::ui::spawn_browser_ui_worker(&worker_name) {
+            Ok(v) => v,
+            Err(err) => {
+              eprintln!("failed to spawn browser worker for new window: {err}");
+              return;
+            }
+          };
+
+        if let Err(err) = ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
+          path: download_dir.clone(),
+        }) {
+          eprintln!("failed to send download dir to new window worker: {err}");
+        }
+
+        let mut app = match App::new(
+          window,
+          event_loop_target,
+          event_loop_proxy.clone(),
+          ui_to_worker_tx,
+          worker_join,
+          &gpu,
+          appearance_env,
+          applied_appearance,
+          theme_accent,
+          bookmarks_path.clone(),
+          history_path.clone(),
+          global_bookmarks.clone(),
+          global_history.clone(),
+        ) {
+          Ok(app) => app,
+          Err(err) => {
+            eprintln!("failed to create new window app: {err}");
+            return;
+          }
+        };
+        app.profile_autosave_tx = profile_autosave_tx.clone();
+        app.home_url = home_url.clone();
+        app.browser_state.appearance = startup_appearance;
+
+        app.startup(fastrender::ui::BrowserSessionWindow {
+          tabs: vec![fastrender::ui::BrowserSessionTab {
+            url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
+            zoom: None,
+            scroll_css: None,
+          }],
+          active_tab_index: 0,
+          window_state: None,
+        });
+
+        let window_id = app.window.id();
+        let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+        let bridge_join = match std::thread::Builder::new()
+          .name(format!("browser_worker_bridge_{window_id:?}"))
+          .spawn({
+            let event_loop_proxy = event_loop_proxy.clone();
+            move || {
+              while let Ok(msg) = worker_to_ui_rx.recv() {
+                if ui_tx.send(msg).is_err() {
+                  break;
+                }
+                let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+              }
+            }
+          }) {
+          Ok(join) => join,
+          Err(err) => {
+            eprintln!("failed to spawn new window bridge thread: {err}");
+            return;
+          }
+        };
+
+        app.window.request_redraw();
+        windows.insert(
+          window_id,
+          BrowserWindow {
+            app,
+            ui_rx,
+            bridge_join: Some(bridge_join),
+          },
+        );
+        window_order.push(window_id);
+        active_window_id = Some(window_id);
+        request_autosave(&windows, &window_order, active_window_id);
+      }
+      Event::RedrawRequested(window_id) => {
+        let mut session_dirty = false;
+        if let Some(win) = windows.get_mut(&window_id) {
+          session_dirty = win.app.render_frame(control_flow);
+        }
         if session_dirty {
-          request_autosave(app);
+          request_autosave(&windows, &window_order, active_window_id);
         }
       }
       Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
         // Used for UI animations that need to progress even when there is no input/worker activity.
         // Today this is used for overlay scrollbar fade-in/out.
-        app.maybe_request_redraw_for_ui_timers();
+        for win in windows.values_mut() {
+          win.app.maybe_request_redraw_for_ui_timers();
+        }
       }
       Event::NewEvents(StartCause::Init) => {
+        // Mark the session as "running" as soon as the restored session state is in memory.
+        //
+        // This is the crash marker: if the process is terminated unexpectedly, `did_exit_cleanly`
+        // remains false on disk and the next launch can restore + log.
+        request_autosave(&windows, &window_order, active_window_id);
+
         // Ensure we draw at least one frame on startup.
-        app.window.request_redraw();
+        for win in windows.values() {
+          win.app.window.request_redraw();
+        }
       }
       _ => {}
+    }
+
+    // Synchronize profile state (bookmarks/history) across all windows.
+    let mut bookmarks_update: Option<(fastrender::ui::BookmarkStore, bool)> = None;
+    let mut history_update: Option<(fastrender::ui::GlobalHistoryStore, bool)> = None;
+    for win in windows.values_mut() {
+      if win.app.profile_bookmarks_dirty {
+        win.app.profile_bookmarks_dirty = false;
+        let flush = win.app.profile_bookmarks_flush_requested;
+        win.app.profile_bookmarks_flush_requested = false;
+        bookmarks_update = Some((win.app.bookmarks.clone(), flush));
+      }
+      if win.app.profile_history_dirty {
+        win.app.profile_history_dirty = false;
+        let flush = win.app.profile_history_flush_requested;
+        win.app.profile_history_flush_requested = false;
+        history_update = Some((win.app.browser_state.history.clone(), flush));
+      }
+    }
+
+    if let Some((new_bookmarks, flush)) = bookmarks_update {
+      global_bookmarks = new_bookmarks;
+      fastrender::ui::about_pages::sync_about_page_snapshot_bookmarks_from_bookmark_store(
+        &global_bookmarks,
+      );
+      if let Some(tx) = profile_autosave_tx.as_ref() {
+        let _ =
+          tx.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(global_bookmarks.clone()));
+        if flush {
+          let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+          let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
+          let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
+        }
+      }
+      for win in windows.values_mut() {
+        win.app.bookmarks = global_bookmarks.clone();
+        win.app.window.request_redraw();
+      }
+    }
+
+    if let Some((new_history, flush)) = history_update {
+      global_history = new_history;
+      fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
+        &global_history,
+      );
+      if let Some(tx) = profile_autosave_tx.as_ref() {
+        let _ =
+          tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(global_history.clone()));
+        if flush {
+          let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+          let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
+          let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
+        }
+      }
+      for win in windows.values_mut() {
+        win.app.browser_state.history = global_history.clone();
+        win.app.browser_state.visited.clear();
+        win.app.browser_state.seed_visited_from_history();
+        win.app.browser_state.chrome.omnibox.reset();
+        win.app.window.request_redraw();
+      }
     }
 
     if matches!(*control_flow, ControlFlow::Exit) {
@@ -1119,7 +1466,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
     // pending deadline (worker ticks, viewport throttling, egui repaint scheduling).
-    app.drive_periodic_tasks_and_update_control_flow(control_flow);
+    for win in windows.values_mut() {
+      win
+        .app
+        .drive_periodic_tasks_and_update_control_flow(control_flow);
+    }
   });
 }
 
@@ -1841,6 +2192,7 @@ error: {err}",
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
+  event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
 
   surface: wgpu::Surface,
   device: std::sync::Arc<wgpu::Device>,
@@ -1877,7 +2229,11 @@ struct App {
   bookmarks_path: std::path::PathBuf,
   history_path: std::path::PathBuf,
   bookmarks: fastrender::ui::BookmarkStore,
-  profile_autosave: Option<fastrender::ui::ProfileAutosaveHandle>,
+  profile_autosave_tx: Option<std::sync::mpsc::Sender<fastrender::ui::AutosaveMsg>>,
+  profile_bookmarks_dirty: bool,
+  profile_bookmarks_flush_requested: bool,
+  profile_history_dirty: bool,
+  profile_history_flush_requested: bool,
   history_panel_open: bool,
   history_panel_request_focus_search: bool,
   bookmarks_panel_open: bool,
@@ -1994,6 +2350,13 @@ struct App {
   /// can display multi-frame animations without busy-polling the event loop.
   animation_tick_tab: Option<fastrender::ui::TabId>,
   next_animation_tick: Option<std::time::Instant>,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, Default)]
+struct WorkerMessageResult {
+  request_redraw: bool,
+  history_changed: bool,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -2207,9 +2570,10 @@ impl App {
     count
   }
 
-  fn new<T: 'static>(
+  fn new(
     window: winit::window::Window,
-    event_loop: &winit::event_loop::EventLoopWindowTarget<T>,
+    event_loop: &winit::event_loop::EventLoopWindowTarget<UserEvent>,
+    event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
     worker_join: std::thread::JoinHandle<()>,
     gpu: &GpuContext,
@@ -2319,6 +2683,7 @@ impl App {
     Ok(Self {
       window,
       window_title_cache: String::new(),
+      event_loop_proxy,
       surface,
       device,
       queue,
@@ -2347,7 +2712,11 @@ impl App {
       bookmarks_path,
       history_path,
       bookmarks,
-      profile_autosave: None,
+      profile_autosave_tx: None,
+      profile_bookmarks_dirty: false,
+      profile_bookmarks_flush_requested: false,
+      profile_history_dirty: false,
+      profile_history_flush_requested: false,
       history_panel_open: false,
       history_panel_request_focus_search: false,
       bookmarks_panel_open: false,
@@ -2416,30 +2785,14 @@ impl App {
     })
   }
 
-  fn startup(&mut self, session: fastrender::ui::BrowserSession) {
+  fn startup(&mut self, window: fastrender::ui::BrowserSessionWindow) {
     use fastrender::ui::UiToWorker;
 
-    let session = session.sanitized();
-    self.home_url = session.home_url.clone();
-    self.browser_state.appearance = session.appearance;
-    let active_window_index = session.active_window_index;
     let fastrender::ui::BrowserSessionWindow {
       tabs,
       active_tab_index,
       ..
-    } = session
-      .windows
-      .into_iter()
-      .nth(active_window_index)
-      .unwrap_or_else(|| fastrender::ui::BrowserSessionWindow {
-        tabs: vec![fastrender::ui::BrowserSessionTab {
-          url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
-          zoom: None,
-          scroll_css: None,
-        }],
-        active_tab_index: 0,
-        window_state: None,
-      });
+    } = window.sanitized();
 
     let mut tab_ids = Vec::with_capacity(tabs.len());
 
@@ -3162,11 +3515,14 @@ impl App {
     true
   }
 
-  fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> bool {
+  fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> WorkerMessageResult {
     // Worker-initiated tab creation/navigation.
     if let fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id: _, url } = msg {
       self.open_url_in_new_tab(url);
-      return true;
+      return WorkerMessageResult {
+        request_redraw: true,
+        history_changed: false,
+      };
     }
 
     // UI-only side effects that depend on the raw message before the shared reducer consumes it.
@@ -3214,6 +3570,7 @@ impl App {
     }
 
     let mut request_redraw = false;
+    let mut history_changed = false;
 
     if let fastrender::ui::WorkerToUi::DebugLog { tab_id, line } = &msg {
       eprintln!("[worker:{tab_id:?}] {line}");
@@ -3337,19 +3694,7 @@ impl App {
     }
 
     let update = self.browser_state.apply_worker_msg(msg);
-
-    if update.history_changed {
-      // Avoid rebuilding bookmark snapshots on every navigation commit: bookmarks are relatively
-      // static compared to history updates.
-      fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
-        &self.browser_state.history,
-      );
-      if let Some(autosave) = self.profile_autosave.as_ref() {
-        let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(
-          self.browser_state.history.clone(),
-        ));
-      }
-    }
+    history_changed |= update.history_changed;
 
     if let Some(frame_ready) = update.frame_ready {
       // Ignore stale frames for tabs that have already been closed.
@@ -3436,7 +3781,10 @@ impl App {
     }
 
     request_redraw |= update.request_redraw;
-    request_redraw
+    WorkerMessageResult {
+      request_redraw,
+      history_changed,
+    }
   }
 
   fn flush_pending_frame_uploads(&mut self) {
@@ -5519,12 +5867,8 @@ impl App {
     }
   }
 
-  fn autosave_bookmarks(&self) {
-    if let Some(autosave) = self.profile_autosave.as_ref() {
-      let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
-        self.bookmarks.clone(),
-      ));
-    }
+  fn autosave_bookmarks(&mut self) {
+    self.profile_bookmarks_dirty = true;
   }
 
   fn sync_about_newtab_bookmarks_snapshot(&self) {
@@ -5583,21 +5927,9 @@ impl App {
       &self.browser_state.history,
     );
     self.window.request_redraw();
-
-    let Some(autosave) = self.profile_autosave.as_ref() else {
-      return;
-    };
-
-    let _ = autosave.send(fastrender::ui::AutosaveMsg::UpdateHistory(
-      self.browser_state.history.clone(),
-    ));
-
+    self.profile_history_dirty = true;
     if flush {
-      // Force an immediate write of the cleared state, but don't block the UI thread waiting for
-      // the ack.
-      let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-      drop(done_rx);
-      let _ = autosave.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
+      self.profile_history_flush_requested = true;
     }
   }
 
@@ -6810,6 +7142,12 @@ impl App {
           // Request another redraw so egui can apply the focus/select-all request.
           self.window.request_redraw();
         }
+        ChromeAction::NewWindow => {
+          // The winit event loop owns native window creation; request a new window via a user event.
+          let _ = self
+            .event_loop_proxy
+            .send_event(UserEvent::RequestNewWindow(self.window.id()));
+        }
         ChromeAction::OpenFindInPage => {
           // Treat the find bar as chrome text input: while it's opening/active, don't forward
           // keyboard events to the page.
@@ -7686,9 +8024,7 @@ impl App {
         self.sync_about_newtab_bookmarks_snapshot();
 
         if output.request_flush {
-          if let Some(autosave) = self.profile_autosave.as_ref() {
-            let _ = autosave.flush(std::time::Duration::from_millis(200));
-          }
+          self.profile_bookmarks_flush_requested = true;
         }
       }
 

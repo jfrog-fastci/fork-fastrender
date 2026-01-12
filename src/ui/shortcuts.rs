@@ -8,7 +8,9 @@ pub enum ShortcutAction {
   /// Focus the address bar and select all contents.
   FocusAddressBar,
   FindInPage,
+  /// Toggle the bookmarks manager UI surface.
   ToggleBookmarksManager,
+  /// Open a new top-level browser window.
   NewWindow,
   /// Open the tab search / quick switcher overlay (Ctrl/Cmd+Shift+A).
   OpenTabSearch,

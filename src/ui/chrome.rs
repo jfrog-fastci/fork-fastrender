@@ -39,6 +39,8 @@ pub enum ChromeAction {
   /// Front-ends are expected to translate this into UI state changes (e.g. setting
   /// `ChromeState::request_focus_address_bar` / `request_select_all_address_bar`).
   FocusAddressBar,
+  /// Open a new top-level browser window.
+  NewWindow,
   OpenFindInPage,
   /// Begin/update an active "find in page" query for a tab.
   FindQuery {
@@ -776,6 +778,7 @@ pub fn chrome_ui_with_bookmarks(
   };
   let (
     focus_address_bar,
+    new_window,
     open_find_in_page,
     toggle_bookmarks_manager,
     new_tab,
@@ -797,6 +800,7 @@ pub fn chrome_ui_with_bookmarks(
     // Use the key event's modifier snapshot rather than `i.modifiers`: the winit integration feeds
     // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
     let mut focus_address_bar = false;
+    let mut new_window = false;
     let mut open_find_in_page = false;
     let mut toggle_bookmarks_manager = false;
     let mut new_tab = false;
@@ -838,6 +842,7 @@ pub fn chrome_ui_with_bookmarks(
         ShortcutAction::FocusAddressBar if allow_focus_address_bar => {
           focus_address_bar = true;
         }
+        ShortcutAction::NewWindow => new_window = true,
         ShortcutAction::FindInPage => open_find_in_page = true,
         ShortcutAction::ToggleBookmarksManager => toggle_bookmarks_manager = true,
         ShortcutAction::NewTab => new_tab = true,
@@ -865,6 +870,7 @@ pub fn chrome_ui_with_bookmarks(
 
     (
       focus_address_bar,
+      new_window,
       open_find_in_page,
       toggle_bookmarks_manager,
       new_tab,
@@ -929,6 +935,9 @@ pub fn chrome_ui_with_bookmarks(
     // consume them when it's built below.
     app.chrome.request_focus_address_bar = true;
     app.chrome.request_select_all_address_bar = true;
+  }
+  if new_window {
+    actions.push(ChromeAction::NewWindow);
   }
   if open_find_in_page {
     actions.push(ChromeAction::OpenFindInPage);
@@ -3895,6 +3904,30 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::Reload)),
       "expected ChromeAction::Reload, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_n_emits_new_window_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::N,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::NewWindow)),
+      "expected ChromeAction::NewWindow, got {actions:?}"
     );
   }
 

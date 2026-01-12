@@ -106,6 +106,52 @@ pub struct BrowserSessionWindow {
 }
 
 impl BrowserSessionWindow {
+  /// Build a session snapshot from the current windowed UI state model.
+  ///
+  /// This intentionally stores only lightweight serializable data (URLs, zoom, viewport scroll).
+  pub fn from_app_state(app: &BrowserAppState) -> Self {
+    let mut tabs = Vec::new();
+    for tab in &app.tabs {
+      let mut url = tab
+        .current_url
+        .clone()
+        .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
+      if validate_user_navigation_url_scheme(&url).is_err() {
+        url = about_pages::ABOUT_NEWTAB.to_string();
+      }
+
+      let scroll_css = {
+        let viewport = tab.scroll_state.viewport;
+        let x = viewport.x;
+        let y = viewport.y;
+        if !x.is_finite() || !y.is_finite() {
+          None
+        } else {
+          let x = x.max(0.0);
+          let y = y.max(0.0);
+          ((x, y) != (0.0, 0.0)).then_some((x, y))
+        }
+      };
+      tabs.push(BrowserSessionTab {
+        url,
+        zoom: Some(tab.zoom),
+        scroll_css,
+      });
+    }
+
+    let active_tab_index = app
+      .active_tab_id()
+      .and_then(|id| app.tabs.iter().position(|t| t.id == id))
+      .unwrap_or(0);
+
+    Self {
+      tabs,
+      active_tab_index,
+      window_state: None,
+    }
+    .sanitized()
+  }
+
   /// Ensure the window is well-formed and contains only supported URLs.
   pub fn sanitized(mut self) -> Self {
     if self.tabs.is_empty() {
@@ -186,59 +232,36 @@ impl BrowserSession {
     .sanitized()
   }
 
-  /// Build a session snapshot from the current windowed UI state model.
+  /// Build a session snapshot from a set of windowed UI state models.
   ///
   /// This intentionally stores only lightweight serializable data (URLs, zoom, viewport scroll).
-  pub fn from_app_state(app: &BrowserAppState) -> Self {
-    let ui_scale = appearance::clamp_ui_scale(app.appearance.ui_scale);
-    let mut tabs = Vec::new();
-    for tab in &app.tabs {
-      let mut url = tab
-        .current_url
-        .clone()
-        .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
-      if validate_user_navigation_url_scheme(&url).is_err() {
-        url = about_pages::ABOUT_NEWTAB.to_string();
-      }
-
-      let scroll_css = {
-        let viewport = tab.scroll_state.viewport;
-        let x = viewport.x;
-        let y = viewport.y;
-        if !x.is_finite() || !y.is_finite() {
-          None
-        } else {
-          let x = x.max(0.0);
-          let y = y.max(0.0);
-          ((x, y) != (0.0, 0.0)).then_some((x, y))
-        }
-      };
-      tabs.push(BrowserSessionTab {
-        url,
-        zoom: Some(tab.zoom),
-        scroll_css,
-      });
-    }
-
-    let active_tab_index = app
-      .active_tab_id()
-      .and_then(|id| app.tabs.iter().position(|t| t.id == id))
-      .unwrap_or(0);
-
+  pub fn from_windows(
+    windows: impl IntoIterator<Item = BrowserSessionWindow>,
+    active_window_index: usize,
+    appearance: AppearanceSettings,
+  ) -> Self {
+    let ui_scale = appearance::clamp_ui_scale(appearance.ui_scale);
     Self {
       version: SESSION_VERSION,
       home_url: default_home_url(),
-      windows: vec![BrowserSessionWindow {
-        tabs,
-        active_tab_index,
-        window_state: None,
-      }],
-      active_window_index: 0,
-      appearance: app.appearance,
+      windows: windows.into_iter().collect(),
+      active_window_index,
+      appearance,
       did_exit_cleanly: true,
       ui_scale: (ui_scale != appearance::DEFAULT_UI_SCALE).then_some(ui_scale),
     }
     .sanitized()
+  }
+
+  /// Build a session snapshot from the current windowed UI state model.
+  ///
+  /// This intentionally stores only lightweight serializable data (URLs, zoom, viewport scroll).
+  pub fn from_app_state(app: &BrowserAppState) -> Self {
+    Self::from_windows(
+      [BrowserSessionWindow::from_app_state(app)],
+      0,
+      app.appearance,
+    )
   }
 
   /// Ensure the session is well-formed and contains only supported URLs.

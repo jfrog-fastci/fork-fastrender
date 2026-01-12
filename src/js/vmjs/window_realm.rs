@@ -5949,6 +5949,7 @@ fn history_state_change_native(
       state_key,
       read_only_data_desc(cloned_state_value),
     )?;
+  }
 
     // Keep `history.length` in sync with the per-realm session history.
     let length_key = alloc_key(&mut scope, "length")?;
