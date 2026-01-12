@@ -82,6 +82,27 @@ fn math_round_coerces_primitives_via_to_number() {
 }
 
 #[test]
+fn math_pow_coerces_to_number_and_rejects_bigint() {
+  let eval_pow = |base: optimize_js::il::inst::Const, exp: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call("Math.pow", &[base, exp]) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result: {other:?}"),
+  };
+
+  assert_eq!(eval_pow(ConstNum(JN(2.0)), ConstNum(JN(3.0))), 8.0);
+  assert_eq!(eval_pow(ConstStr("2".into()), ConstStr("3".into())), 8.0);
+  assert!(eval_pow(ConstStr("not a number".into()), ConstNum(JN(3.0))).is_nan());
+
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.pow", &[ConstBigInt(BigInt::from(2)), ConstNum(JN(3.0))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.pow", &[ConstNum(JN(2.0)), ConstBigInt(BigInt::from(3))]),
+    None
+  );
+}
+
+#[test]
 fn bigint_and_string_loose_equality_follows_string_to_bigint() {
   assert!(js_loose_eq(
     &ConstBigInt(BigInt::from(1)),

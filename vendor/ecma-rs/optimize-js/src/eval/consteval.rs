@@ -863,6 +863,8 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       _ => return None,
     }
     2 => match (func, &args[0], &args[1]) {
+      ("Math.pow", BigInt(_), _) | ("Math.pow", _, BigInt(_)) => return None,
+      ("Math.pow", base, exp) => Num(JN(coerce_to_num(base).powf(coerce_to_num(exp)))),
       ("BigInt.asIntN", bits, value) => {
         let bits = coerce_to_index(bits)?;
         let value = coerce_to_bigint_for_bigint_bitop(value)?;
