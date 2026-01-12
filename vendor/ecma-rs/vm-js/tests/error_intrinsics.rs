@@ -86,14 +86,11 @@ fn error_subclass_intrinsics_exist_and_are_wired_correctly() -> Result<(), VmErr
     assert_eq!(scope.heap().object_prototype(obj)?, Some(error_prototype));
 
     let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
-    let name_value = scope
-      .heap()
-      .object_get_own_data_property_value(obj, &name_key)?
-      .expect("Error object should have own 'name' property");
-    let Value::String(name_string) = name_value else {
-      panic!("Error object 'name' should be a string");
-    };
-    assert_eq!(scope.heap().get_string(name_string)?.to_utf8_lossy(), "Error");
+    assert_eq!(
+      scope.heap().object_get_own_data_property_value(obj, &name_key)?,
+      None,
+      "Error instances should inherit 'name' from %Error.prototype%",
+    );
 
     let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
     let message_value = scope
@@ -129,16 +126,10 @@ fn error_subclass_intrinsics_exist_and_are_wired_correctly() -> Result<(), VmErr
     );
 
     let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
-    let name_value = scope
-      .heap()
-      .object_get_own_data_property_value(obj, &name_key)?
-      .expect("TypeError object should have own 'name' property");
-    let Value::String(name_string) = name_value else {
-      panic!("TypeError object 'name' should be a string");
-    };
     assert_eq!(
-      scope.heap().get_string(name_string)?.to_utf8_lossy(),
-      "TypeError"
+      scope.heap().object_get_own_data_property_value(obj, &name_key)?,
+      None,
+      "TypeError instances should inherit 'name' from %TypeError.prototype%",
     );
   }
 
@@ -162,7 +153,7 @@ fn error_subclass_intrinsics_exist_and_are_wired_correctly() -> Result<(), VmErr
   assert_eq!(rt.heap.object_prototype(error_prototype)?, Some(object_prototype));
 
   // Constructors are function objects (at least by prototype chain).
-  assert_eq!(rt.heap.object_prototype(type_error)?, Some(function_prototype));
+  assert_eq!(rt.heap.object_prototype(type_error)?, Some(error));
   assert_eq!(rt.heap.object_prototype(error)?, Some(function_prototype));
 
   // --- constructor/prototype wiring ---

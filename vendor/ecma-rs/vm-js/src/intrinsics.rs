@@ -154,7 +154,7 @@ fn init_native_error(
   scope: &mut Scope<'_>,
   roots: &mut Vec<RootId>,
   common: CommonKeys,
-  function_prototype: GcObject,
+  constructor_prototype: GcObject,
   base_prototype: GcObject,
   call: NativeFunctionId,
   construct: NativeConstructId,
@@ -181,7 +181,7 @@ fn init_native_error(
   )?;
   scope
     .heap_mut()
-    .object_set_prototype(constructor, Some(function_prototype))?;
+    .object_set_prototype(constructor, Some(constructor_prototype))?;
 
   // X.prototype.constructor
   scope.define_property(
@@ -2397,6 +2397,23 @@ impl Intrinsics {
       1,
     )?;
 
+    // Error.prototype.message
+    //
+    // Per ECMA-262, Error instances created without an explicit message argument inherit the empty
+    // string `message` from `%Error.prototype%`.
+    {
+      let message_s = scope.alloc_string("message")?;
+      scope.push_root(Value::String(message_s))?;
+      let key = PropertyKey::from_string(message_s);
+      let empty = scope.alloc_string("")?;
+      scope.push_root(Value::String(empty))?;
+      scope.define_property(
+        error_prototype,
+        key,
+        data_desc(Value::String(empty), true, false, true),
+      )?;
+    }
+
     // Error.prototype.toString
     {
       let to_string_s = scope.alloc_string("toString")?;
@@ -2419,7 +2436,7 @@ impl Intrinsics {
       scope,
       roots,
       common,
-      function_prototype,
+      error,
       error_prototype,
       error_call,
       error_construct,
@@ -2432,7 +2449,7 @@ impl Intrinsics {
       scope,
       roots,
       common,
-      function_prototype,
+      error,
       error_prototype,
       error_call,
       error_construct,
@@ -2445,7 +2462,7 @@ impl Intrinsics {
       scope,
       roots,
       common,
-      function_prototype,
+      error,
       error_prototype,
       error_call,
       error_construct,
@@ -2458,7 +2475,7 @@ impl Intrinsics {
       scope,
       roots,
       common,
-      function_prototype,
+      error,
       error_prototype,
       error_call,
       error_construct,
@@ -2471,7 +2488,7 @@ impl Intrinsics {
       scope,
       roots,
       common,
-      function_prototype,
+      error,
       error_prototype,
       error_call,
       error_construct,
@@ -2484,7 +2501,7 @@ impl Intrinsics {
       scope,
       roots,
       common,
-      function_prototype,
+      error,
       error_prototype,
       error_call,
       error_construct,
@@ -2497,7 +2514,7 @@ impl Intrinsics {
       scope,
       roots,
       common,
-      function_prototype,
+      error,
       error_prototype,
       error_call,
       error_construct,

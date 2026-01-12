@@ -2001,82 +2001,171 @@ pub fn error_constructor_construct(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
-  let name = scope.heap().get_function_name(callee)?;
+  let intr = require_intrinsics(vm)?;
 
-  // `new Error(message)` uses `GetPrototypeFromConstructor(newTarget, defaultProto)`.
-  // Approximate this by:
-  // 1. Reading `callee.prototype` as the default.
-  // 2. If `new_target` is an object, prefer `new_target.prototype` when it is an object.
-  let prototype_key = string_key(scope, "prototype")?;
-  let default_proto_value = scope
-    .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
-    .ok_or(VmError::Unimplemented(
-      "Error constructor missing own prototype property",
-    ))?;
-  let Value::Object(default_prototype) = default_proto_value else {
-    return Err(VmError::Unimplemented(
-      "Error constructor prototype property is not an object",
-    ));
+  // --- Determine which intrinsic default prototype to use ---
+  //
+  // Each NativeError constructor uses a different intrinsic fallback (e.g. `TypeError` uses
+  // `%TypeError.prototype%`). This must not depend on the user-mutable `callee.prototype` data
+  // property.
+  let default_proto = if callee == intr.error() {
+    intr.error_prototype()
+  } else if callee == intr.type_error() {
+    intr.type_error_prototype()
+  } else if callee == intr.range_error() {
+    intr.range_error_prototype()
+  } else if callee == intr.reference_error() {
+    intr.reference_error_prototype()
+  } else if callee == intr.syntax_error() {
+    intr.syntax_error_prototype()
+  } else if callee == intr.eval_error() {
+    intr.eval_error_prototype()
+  } else if callee == intr.uri_error() {
+    intr.uri_error_prototype()
+  } else if callee == intr.aggregate_error() {
+    intr.aggregate_error_prototype()
+  } else {
+    // Defensive fallback: this call/construct handler is only registered for error constructors.
+    intr.error_prototype()
   };
 
-  let instance_prototype = match new_target {
-    Value::Object(nt) => match scope.heap().get(nt, &prototype_key)? {
-      Value::Object(p) => p,
-      _ => default_prototype,
-    },
-    _ => default_prototype,
-  };
+  let is_aggregate_error = callee == intr.aggregate_error();
 
-  let is_aggregate_error = scope.heap().get_string(name)?.to_utf8_lossy() == "AggregateError";
+  // --- Create the instance (spec: OrdinaryCreateFromConstructor) ---
+  let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    default_proto,
+    &[],
+    |scope| scope.alloc_object(),
+  )?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  // AggregateError: `errors` is created from the provided iterable.
+  if is_aggregate_error {
+    let errors_iterable = args.get(0).copied().unwrap_or(Value::Undefined);
+    scope.push_root(errors_iterable)?;
+    let errors_array = aggregate_error_iterable_to_list_array(vm, &mut scope, host, hooks, errors_iterable)?;
+    scope.push_root(Value::Object(errors_array))?;
+
+    let errors_key = string_key(&mut scope, "errors")?;
+    scope.define_property(
+      obj,
+      errors_key,
+      data_desc(Value::Object(errors_array), true, false, true),
+    )?;
+  }
 
   // Message argument: for AggregateError, the message is the *second* argument.
-  // Spec: `new AggregateError(errors, message)` (ECMA-262).
+  // Spec: `new AggregateError(errors, message [, options])` (ECMA-262).
   let message_arg = if is_aggregate_error {
     args.get(1).copied()
   } else {
-    args.first().copied()
+    args.get(0).copied()
   };
+  if let Some(message_value) = message_arg {
+    if !matches!(message_value, Value::Undefined) {
+      let message_string = scope.to_string(vm, host, hooks, message_value)?;
+      scope.push_root(Value::String(message_string))?;
+      let message_key = string_key(&mut scope, "message")?;
+      scope.define_property(
+        obj,
+        message_key,
+        data_desc(Value::String(message_string), true, false, true),
+      )?;
+    }
+  }
 
-  let message_string = match message_arg {
-    Some(Value::Undefined) | None => scope.alloc_string("")?,
-    Some(other) => scope.to_string(vm, host, hooks, other)?,
+  // ES2022 Error cause option.
+  // Spec: `InstallErrorCause(O, options)`.
+  let options_arg = if is_aggregate_error {
+    args.get(2).copied()
+  } else {
+    args.get(1).copied()
   };
-  scope.push_root(Value::String(message_string))?;
+  if let Some(options_value) = options_arg {
+    if !matches!(options_value, Value::Undefined) {
+      let Value::Object(options_obj) = options_value else {
+        return Err(VmError::TypeError("Error options must be an object"));
+      };
+      scope.push_root(Value::Object(options_obj))?;
 
-  let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(obj, Some(instance_prototype))?;
-
-  let name_key = string_key(scope, "name")?;
-  scope.define_property(
-    obj,
-    name_key,
-    data_desc(Value::String(name), true, false, true),
-  )?;
-
-  let message_key = string_key(scope, "message")?;
-  scope.define_property(
-    obj,
-    message_key,
-    data_desc(Value::String(message_string), true, false, true),
-  )?;
-
-  // AggregateError `errors` property.
-  //
-  // Spec: `new AggregateError(errors, message)` creates an `errors` own data property containing an
-  // Array created from the provided iterable. `vm-js` does not yet implement full iterable-to-list
-  // conversion here, so we store the first argument directly (sufficient for Promise.any, which
-  // passes an Array).
-  if is_aggregate_error {
-    let errors = args.get(0).copied().unwrap_or(Value::Undefined);
-    let errors_key = string_key(scope, "errors")?;
-    scope.define_property(obj, errors_key, data_desc(errors, true, false, true))?;
+      let cause_key = string_key(&mut scope, "cause")?;
+      let cause = scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        options_obj,
+        cause_key,
+        Value::Object(options_obj),
+      )?;
+      if !matches!(cause, Value::Undefined) {
+        scope.push_root(cause)?;
+        scope.define_property(obj, cause_key, data_desc(cause, true, false, true))?;
+      }
+    }
   }
 
   Ok(Value::Object(obj))
+}
+
+fn aggregate_error_iterable_to_list_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  iterable: Value,
+) -> Result<GcObject, VmError> {
+  // Spec: `IterableToList` followed by `CreateArrayFromList`.
+  //
+  // This is intentionally implemented by iterating and constructing the output array rather than
+  // collecting into an intermediate `Vec<Value>`, so element values become GC-reachable
+  // incrementally (important for large iterables).
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, scope, iterable)?;
+  // Root iterator record values for the duration of iteration.
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  // Create the output array with length 0 and push elements as we iterate.
+  let array = create_array_object(vm, scope, 0)?;
+  scope.push_root(Value::Object(array))?;
+
+  let mut idx: u32 = 0;
+  loop {
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, scope, &mut iterator_record) {
+      Ok(v) => v,
+      Err(err) => {
+        if !iterator_record.done {
+          let _ = crate::iterator::iterator_close(vm, host, hooks, scope, &iterator_record);
+        }
+        return Err(err);
+      }
+    };
+    let Some(next_value) = next_value else {
+      break;
+    };
+
+    // Root `array` and the per-element value while creating the property key.
+    let mut idx_scope = scope.reborrow();
+    idx_scope.push_root(Value::Object(array))?;
+    idx_scope.push_root(next_value)?;
+
+    let key_s = idx_scope.alloc_string(&idx.to_string())?;
+    idx_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    idx_scope.create_data_property_or_throw(array, key, next_value)?;
+    idx = idx.wrapping_add(1);
+  }
+
+  Ok(array)
 }
 
 fn create_type_error(
@@ -9694,19 +9783,35 @@ pub fn error_prototype_to_string(
   let this_obj = match this {
     Value::Object(o) => o,
     _ => {
-      return Err(VmError::Unimplemented(
-        "Error.prototype.toString on non-object",
+      return Err(VmError::TypeError(
+        "Error.prototype.toString called on non-object",
       ))
     }
   };
 
+  // Root `this_obj` while allocating property keys and potentially invoking accessors.
+  scope.push_root(Value::Object(this_obj))?;
+
   let name_key = string_key(scope, "name")?;
   let message_key = string_key(scope, "message")?;
 
-  let name_value =
-    get_data_property_value(vm, scope, this_obj, &name_key)?.unwrap_or(Value::Undefined);
-  let message_value =
-    get_data_property_value(vm, scope, this_obj, &message_key)?.unwrap_or(Value::Undefined);
+  // Spec: `Get(O, "name")` / `Get(O, "message")` (walk prototype chain + invoke accessors).
+  let name_value = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    this_obj,
+    name_key,
+    Value::Object(this_obj),
+  )?;
+  let message_value = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    this_obj,
+    message_key,
+    Value::Object(this_obj),
+  )?;
 
   let name = match name_value {
     Value::Undefined => scope.alloc_string("Error")?,
