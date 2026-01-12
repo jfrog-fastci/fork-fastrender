@@ -6,6 +6,24 @@ use object::Object;
 use std::process::{Command, Stdio};
 use tempfile::tempdir;
 
+fn command_works(cmd: &str) -> bool {
+  Command::new(cmd)
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
+}
+
+fn find_readobj() -> Option<&'static str> {
+  for cand in ["llvm-readobj-18", "llvm-readobj"] {
+    if command_works(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 #[test]
 fn rewrite_statepoints_emits_stackmaps() {
   native_js::llvm::init_native_target().expect("failed to init native target");
@@ -90,29 +108,26 @@ fn rewrite_statepoints_emits_stackmaps() {
 
   // Cross-check via llvm-readobj (matches how we debug stackmap emission in
   // practice and ensures the external tool sees the section).
-  let readobj = match Command::new("llvm-readobj-18")
+  let Some(readobj_bin) = find_readobj() else {
+    eprintln!("skipping llvm-readobj check: llvm-readobj not found in PATH (need llvm-readobj-18 or llvm-readobj)");
+    return;
+  };
+  let readobj = Command::new(readobj_bin)
     .arg("--sections")
     .arg(&obj)
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .output()
-  {
-    Ok(out) => out,
-    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-      eprintln!("skipping llvm-readobj-18 check: llvm-readobj-18 not found in PATH");
-      return;
-    }
-    Err(err) => panic!("failed to run llvm-readobj-18: {err}"),
-  };
+    .unwrap_or_else(|err| panic!("failed to run {readobj_bin}: {err}"));
   assert!(
     readobj.status.success(),
-    "llvm-readobj-18 failed:\nstdout:\n{}\nstderr:\n{}",
+    "{readobj_bin} failed:\nstdout:\n{}\nstderr:\n{}",
     String::from_utf8_lossy(&readobj.stdout),
     String::from_utf8_lossy(&readobj.stderr)
   );
   let stdout = String::from_utf8_lossy(&readobj.stdout);
   assert!(
     stdout.contains(".llvm_stackmaps"),
-    "expected `.llvm_stackmaps` in llvm-readobj-18 output:\n{stdout}"
+    "expected `.llvm_stackmaps` in {readobj_bin} output:\n{stdout}"
   );
 }

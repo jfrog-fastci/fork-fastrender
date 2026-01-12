@@ -14,6 +14,15 @@ fn cmd_exists(cmd: &str) -> bool {
     .unwrap_or(false)
 }
 
+fn find_tool(candidates: &[&'static str]) -> Option<&'static str> {
+  for &cand in candidates {
+    if cmd_exists(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn run(cmd: &str, args: &[&str]) {
   let status = Command::new(cmd)
     .args(args)
@@ -46,20 +55,27 @@ fn write(path: &Path, contents: &str) {
 
 #[test]
 fn pie_stackmaps_are_in_gnu_relro_and_no_load_segment_is_rwx() {
-  for tool in [
-    "llc-18",
-    "llvm-objcopy-18",
-    "llvm-readobj-18",
-    "ld.bfd",
-    "gcc",
-    "readelf",
-    "bash",
-  ] {
+  for tool in ["ld.bfd", "gcc", "readelf", "bash"] {
     if !cmd_exists(tool) {
       eprintln!("skipping: missing tool {tool}");
       return;
     }
   }
+
+  let Some(llc) = find_tool(&["llc-18", "llc"]) else {
+    eprintln!("skipping: llc not found in PATH (need llc-18 or llc)");
+    return;
+  };
+  // `rename_llvm_stackmaps_section.sh` uses llvm-readobj/llvm-objcopy, so ensure they're available
+  // before spawning the helper.
+  let Some(readobj) = find_tool(&["llvm-readobj-18", "llvm-readobj"]) else {
+    eprintln!("skipping: llvm-readobj not found in PATH (need llvm-readobj-18 or llvm-readobj)");
+    return;
+  };
+  let Some(_objcopy) = find_tool(&["llvm-objcopy-18", "llvm-objcopy"]) else {
+    eprintln!("skipping: llvm-objcopy not found in PATH (need llvm-objcopy-18 or llvm-objcopy)");
+    return;
+  };
 
   // Use GNU ld (bfd) for this test. lld is intentionally not used here: it rejects placing custom
   // writable sections inside its RELRO block, and therefore cannot cover
@@ -90,7 +106,7 @@ entry:
   );
 
   run(
-    "llc-18",
+    llc,
     &[
       "-O0",
       "-filetype=obj",
@@ -102,7 +118,7 @@ entry:
   );
 
   // Sanity check: object contains the legacy section before rename.
-  let sections_before = output("llvm-readobj-18", &["--sections", foo_o.to_str().unwrap()]);
+  let sections_before = output(readobj, &["--sections", foo_o.to_str().unwrap()]);
   assert!(
     sections_before.contains(".llvm_stackmaps"),
     "expected foo.o to contain .llvm_stackmaps before rename; got:\n{sections_before}"
@@ -126,7 +142,7 @@ entry:
   run("bash", &[rename_script.to_str().unwrap(), foo_o.to_str().unwrap()]);
 
   // Sanity check: the rename succeeded so the test truly exercises `.data.rel.ro.*` placement.
-  let sections_after = output("llvm-readobj-18", &["--sections", foo_o.to_str().unwrap()]);
+  let sections_after = output(readobj, &["--sections", foo_o.to_str().unwrap()]);
   assert!(
     sections_after.contains(".data.rel.ro.llvm_stackmaps"),
     "expected foo.o to contain .data.rel.ro.llvm_stackmaps after rename; got:\n{sections_after}"

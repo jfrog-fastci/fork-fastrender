@@ -14,6 +14,15 @@ fn cmd_exists(cmd: &str) -> bool {
     .unwrap_or(false)
 }
 
+fn find_tool(candidates: &[&'static str]) -> Option<&'static str> {
+  for &cand in candidates {
+    if cmd_exists(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn run(cmd: &str, args: &[&str]) {
   let status = Command::new(cmd)
     .args(args)
@@ -50,19 +59,27 @@ fn pie_stackmaps_have_no_dt_textrel_and_loader_finds_section() {
     return;
   }
 
-  for tool in [
-    "llc-18",
-    "llvm-objcopy-18",
-    "llvm-readobj-18",
-    "gcc",
-    "readelf",
-    "bash",
-  ] {
+  for tool in ["gcc", "readelf", "bash"] {
     if !cmd_exists(tool) {
       eprintln!("skipping: missing tool {tool}");
       return;
     }
   }
+
+  let Some(llc) = find_tool(&["llc-18", "llc"]) else {
+    eprintln!("skipping: llc not found in PATH (need llc-18 or llc)");
+    return;
+  };
+  // `rename_llvm_stackmaps_section.sh` uses llvm-readobj/llvm-objcopy, so ensure they're available
+  // before spawning the helper.
+  let Some(readobj) = find_tool(&["llvm-readobj-18", "llvm-readobj"]) else {
+    eprintln!("skipping: llvm-readobj not found in PATH (need llvm-readobj-18 or llvm-readobj)");
+    return;
+  };
+  let Some(_objcopy) = find_tool(&["llvm-objcopy-18", "llvm-objcopy"]) else {
+    eprintln!("skipping: llvm-objcopy not found in PATH (need llvm-objcopy-18 or llvm-objcopy)");
+    return;
+  };
 
   let tmp = tempfile::tempdir().expect("tempdir");
   let dir = tmp.path();
@@ -102,7 +119,7 @@ entry:
   );
 
   run(
-    "llc-18",
+    llc,
     &[
       "-filetype=obj",
       "-relocation-model=pic",
@@ -112,7 +129,7 @@ entry:
     ],
   );
   run(
-    "llc-18",
+    llc,
     &[
       "-filetype=obj",
       "-relocation-model=pic",
@@ -123,7 +140,7 @@ entry:
   );
 
   // Sanity check: object contains the legacy section before rename.
-  let foo1_sections = output("llvm-readobj-18", &["--sections", foo1_o.to_str().unwrap()]);
+  let foo1_sections = output(readobj, &["--sections", foo1_o.to_str().unwrap()]);
   assert!(
     foo1_sections.contains(".llvm_stackmaps"),
     "expected foo1.o to contain .llvm_stackmaps before rename; got:\n{foo1_sections}"
