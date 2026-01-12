@@ -1807,6 +1807,12 @@ const NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_REMOVE_ATTRIBUTE_KEY: &str = "__fastrender_element_remove_attribute";
+const ELEMENT_HAS_ATTRIBUTE_KEY: &str = "__fastrender_element_has_attribute";
+const ELEMENT_TOGGLE_ATTRIBUTE_KEY: &str = "__fastrender_element_toggle_attribute";
+const ELEMENT_GET_ATTRIBUTE_NAMES_KEY: &str = "__fastrender_element_get_attribute_names";
+const ELEMENT_GET_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_get_attribute_ns";
+const ELEMENT_SET_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_set_attribute_ns";
+const ELEMENT_REMOVE_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_remove_attribute_ns";
 const ELEMENT_INNER_HTML_GET_KEY: &str = "__fastrender_element_inner_html_get";
 const ELEMENT_INNER_HTML_SET_KEY: &str = "__fastrender_element_inner_html_set";
 const ELEMENT_OUTER_HTML_GET_KEY: &str = "__fastrender_element_outer_html_get";
@@ -13037,6 +13043,572 @@ fn element_get_attribute_native(
   }
 }
 
+fn element_has_attribute_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.hasAttribute must be called on an element object",
+    ));
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.hasAttribute must be called on an element object",
+      ));
+    }
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "Element.hasAttribute requires a DOM-backed document",
+  ))?;
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.hasAttribute must be called on an element object"))?;
+
+  match dom.has_attribute(node_id, &name) {
+    Ok(v) => Ok(Value::Bool(v)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_get_attribute_names_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.getAttributeNames must be called on an element object",
+    ));
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.getAttributeNames must be called on an element object",
+      ));
+    }
+  };
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "Element.getAttributeNames requires a DOM-backed document",
+  ))?;
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.getAttributeNames must be called on an element object")
+  })?;
+
+  let names = match dom.attribute_names(node_id) {
+    Ok(v) => v,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  for (idx, name) in names.iter().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let name_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(name_s))?;
+    scope.define_property(array, key, data_desc(Value::String(name_s)))?;
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(names.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(array))
+}
+
+fn element_toggle_attribute_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.toggleAttribute must be called on an element object",
+    ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.toggleAttribute must be called on an element object",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.toggleAttribute must be called on an element object",
+      ));
+    }
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let force = if args.len() >= 2 {
+    Some(scope.heap().to_boolean(args[1])?)
+  } else {
+    None
+  };
+
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    let node_id = document.dom().node_id_from_index(node_index).map_err(|_| {
+      VmError::TypeError("Element.toggleAttribute must be called on an element object")
+    })?;
+    let dom_ptr = document.dom_non_null();
+
+    let before_present = if force.is_none() {
+      match document.dom().has_attribute(node_id, &name) {
+        Ok(v) => v,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      }
+    } else {
+      false
+    };
+    let after_present = force.unwrap_or(!before_present);
+
+    let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+      match dom.set_bool_attribute(node_id, &name, after_present) {
+        Ok(changed) => {
+          let needs_microtask = dom.take_mutation_observer_microtask_needed();
+          ((Ok(changed), needs_microtask), changed)
+        }
+        Err(err) => ((Err(err), false), false),
+      }
+    });
+    let changed = match result {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+
+    if changed && name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id)
+    {
+      run_dynamic_script_src_attribute_changed_steps(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        dom_ptr,
+        node_id,
+      )?;
+    }
+
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    return Ok(Value::Bool(after_present));
+  }
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "Element.toggleAttribute requires a DOM-backed document",
+  ))?;
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.toggleAttribute must be called on an element object")
+  })?;
+  let mut dom_ptr = NonNull::from(&mut *dom);
+
+  let before_present = if force.is_none() {
+    match dom.has_attribute(node_id, &name) {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    }
+  } else {
+    false
+  };
+  let after_present = force.unwrap_or(!before_present);
+
+  let changed = match dom.set_bool_attribute(node_id, &name, after_present) {
+    Ok(v) => v,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+
+  if changed && name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id) {
+    run_dynamic_script_src_attribute_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      node_id,
+    )?;
+  }
+
+  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  Ok(Value::Bool(after_present))
+}
+
+fn element_get_attribute_ns_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.getAttributeNS must be called on an element object",
+    ));
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.getAttributeNS must be called on an element object",
+      ));
+    }
+  };
+
+  // NOTE: `dom2` does not currently track attribute namespace/prefix separately. For now we treat
+  // `getAttributeNS` as a lookup by the provided `localName` using the same dom2 name matching rules.
+  let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let local_name_value = scope.heap_mut().to_string(local_name_value)?;
+  let local_name = scope
+    .heap()
+    .get_string(local_name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+    "Element.getAttributeNS requires a DOM-backed document",
+  ))?;
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.getAttributeNS must be called on an element object")
+  })?;
+
+  match dom.get_attribute(node_id, &local_name) {
+    Ok(Some(value)) => Ok(Value::String(scope.alloc_string(value)?)),
+    Ok(None) => Ok(Value::Null),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_set_attribute_ns_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.setAttributeNS must be called on an element object",
+    ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.setAttributeNS must be called on an element object",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.setAttributeNS must be called on an element object",
+      ));
+    }
+  };
+
+  // Namespace argument is currently ignored; see `element_get_attribute_ns_native`.
+  let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let qualified_name_value = scope.heap_mut().to_string(qualified_name_value)?;
+  let qualified_name = scope
+    .heap()
+    .get_string(qualified_name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let value_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let value_value = scope.heap_mut().to_string(value_value)?;
+  let value = scope
+    .heap()
+    .get_string(value_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    let node_id = document.dom().node_id_from_index(node_index).map_err(|_| {
+      VmError::TypeError("Element.setAttributeNS must be called on an element object")
+    })?;
+    let dom_ptr = document.dom_non_null();
+
+    let should_run_src_attribute_changed_steps =
+      qualified_name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
+
+    let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+      match dom.set_attribute(node_id, &qualified_name, &value) {
+        Ok(changed) => {
+          let needs_microtask = dom.take_mutation_observer_microtask_needed();
+          ((Ok(changed), needs_microtask), changed)
+        }
+        Err(err) => ((Err(err), false), false),
+      }
+    });
+    let changed = match result {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+
+    if changed && should_run_src_attribute_changed_steps {
+      run_dynamic_script_src_attribute_changed_steps(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        dom_ptr,
+        node_id,
+      )?;
+    }
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+    return Ok(Value::Undefined);
+  }
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "Element.setAttributeNS requires a DOM-backed document",
+  ))?;
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.setAttributeNS must be called on an element object")
+  })?;
+  let mut dom_ptr = NonNull::from(&mut *dom);
+
+  let changed = match dom.set_attribute(node_id, &qualified_name, &value) {
+    Ok(v) => v,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+  let should_run_src_attribute_changed_steps =
+    qualified_name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id);
+
+  if changed && should_run_src_attribute_changed_steps {
+    run_dynamic_script_src_attribute_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      node_id,
+    )?;
+  }
+  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  Ok(Value::Undefined)
+}
+
+fn element_remove_attribute_ns_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.removeAttributeNS must be called on an element object",
+    ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.removeAttributeNS must be called on an element object",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.removeAttributeNS must be called on an element object",
+      ));
+    }
+  };
+
+  // Namespace argument is currently ignored; see `element_get_attribute_ns_native`.
+  let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let local_name_value = scope.heap_mut().to_string(local_name_value)?;
+  let local_name = scope
+    .heap()
+    .get_string(local_name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    let node_id = document.dom().node_id_from_index(node_index).map_err(|_| {
+      VmError::TypeError("Element.removeAttributeNS must be called on an element object")
+    })?;
+    let dom_ptr = document.dom_non_null();
+
+    let should_run_src_attribute_changed_steps =
+      local_name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
+
+    let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+      match dom.remove_attribute(node_id, &local_name) {
+        Ok(changed) => {
+          let needs_microtask = dom.take_mutation_observer_microtask_needed();
+          ((Ok(changed), needs_microtask), changed)
+        }
+        Err(err) => ((Err(err), false), false),
+      }
+    });
+    let changed = match result {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+
+    if changed && should_run_src_attribute_changed_steps {
+      run_dynamic_script_src_attribute_changed_steps(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        dom_ptr,
+        node_id,
+      )?;
+    }
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+    return Ok(Value::Undefined);
+  }
+
+  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+    "Element.removeAttributeNS requires a DOM-backed document",
+  ))?;
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.removeAttributeNS must be called on an element object")
+  })?;
+  let mut dom_ptr = NonNull::from(&mut *dom);
+
+  let changed = match dom.remove_attribute(node_id, &local_name) {
+    Ok(v) => v,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+  let should_run_src_attribute_changed_steps =
+    local_name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id);
+
+  if changed && should_run_src_attribute_changed_steps {
+    run_dynamic_script_src_attribute_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      node_id,
+    )?;
+  }
+  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  Ok(Value::Undefined)
+}
+
 fn element_set_attribute_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -13094,20 +13666,58 @@ fn element_set_attribute_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    let node_id = document.dom().node_id_from_index(node_index).map_err(|_| {
+      VmError::TypeError("Element.setAttribute must be called on an element object")
+    })?;
+    let dom_ptr = document.dom_non_null();
+    let should_run_src_attribute_changed_steps =
+      name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
+
+    let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+      match dom.set_attribute(node_id, &name, &value) {
+        Ok(changed) => {
+          let needs_microtask = dom.take_mutation_observer_microtask_needed();
+          ((Ok(changed), needs_microtask), changed)
+        }
+        Err(err) => ((Err(err), false), false),
+      }
+    });
+    let changed = match result {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+
+    if changed && should_run_src_attribute_changed_steps {
+      run_dynamic_script_src_attribute_changed_steps(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        dom_ptr,
+        node_id,
+      )?;
+    }
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    return Ok(Value::Undefined);
+  }
+
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
     "Element.setAttribute requires a DOM-backed document",
   ))?;
   let mut dom_ptr = NonNull::from(&mut *dom);
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("Element.setAttribute must be called on an element object"))?;
-  if let Err(err) = dom.set_attribute(node_id, &name, &value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.setAttribute must be called on an element object")
+  })?;
+  let changed = match dom.set_attribute(node_id, &name, &value) {
+    Ok(v) => v,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
   let should_run_src_attribute_changed_steps =
     name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id);
 
-  if should_run_src_attribute_changed_steps {
+  if changed && should_run_src_attribute_changed_steps {
     run_dynamic_script_src_attribute_changed_steps(
       vm,
       scope,
@@ -13172,6 +13782,43 @@ fn element_remove_attribute_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    let node_id = document.dom().node_id_from_index(node_index).map_err(|_| {
+      VmError::TypeError("Element.removeAttribute must be called on an element object")
+    })?;
+    let dom_ptr = document.dom_non_null();
+    let should_run_src_attribute_changed_steps =
+      name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
+
+    let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
+      match dom.remove_attribute(node_id, &name) {
+        Ok(changed) => {
+          let needs_microtask = dom.take_mutation_observer_microtask_needed();
+          ((Ok(changed), needs_microtask), changed)
+        }
+        Err(err) => ((Err(err), false), false),
+      }
+    });
+    let changed = match result {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+
+    if changed && should_run_src_attribute_changed_steps {
+      run_dynamic_script_src_attribute_changed_steps(
+        vm,
+        scope,
+        host,
+        hooks,
+        document_obj,
+        dom_ptr,
+        node_id,
+      )?;
+    }
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    return Ok(Value::Undefined);
+  }
+
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
     "Element.removeAttribute requires a DOM-backed document",
   ))?;
@@ -13180,13 +13827,14 @@ fn element_remove_attribute_native(
   })?;
   let mut dom_ptr = NonNull::from(&mut *dom);
 
-  if let Err(err) = dom.remove_attribute(node_id, &name) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+  let changed = match dom.remove_attribute(node_id, &name) {
+    Ok(v) => v,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
   let should_run_src_attribute_changed_steps =
     name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id);
 
-  if should_run_src_attribute_changed_steps {
+  if changed && should_run_src_attribute_changed_steps {
     run_dynamic_script_src_attribute_changed_steps(
       vm,
       scope,
@@ -16729,6 +17377,190 @@ fn init_window_globals(
     data_desc(Value::Object(remove_attribute_func)),
   )?;
 
+  // Element attribute helpers: install on `document` for wrapper reuse, and also on `Element.prototype`
+  // for WebIDL / WPT conformance.
+  let element_proto = dom_platform
+    .as_ref()
+    .map(|platform| platform.prototype_for(DomInterface::Element));
+  if let Some(element_proto) = element_proto {
+    let key = alloc_key(&mut scope, "getAttribute")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(get_attribute_func)),
+    )?;
+    let key = alloc_key(&mut scope, "setAttribute")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(set_attribute_func)),
+    )?;
+    let key = alloc_key(&mut scope, "removeAttribute")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(remove_attribute_func)),
+    )?;
+  }
+
+  let has_attribute_call_id = vm.register_native_call(element_has_attribute_native)?;
+  let has_attribute_name = scope.alloc_string("hasAttribute")?;
+  scope.push_root(Value::String(has_attribute_name))?;
+  let has_attribute_func =
+    scope.alloc_native_function(has_attribute_call_id, None, has_attribute_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    has_attribute_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(has_attribute_func))?;
+  let has_attribute_key = alloc_key(&mut scope, ELEMENT_HAS_ATTRIBUTE_KEY)?;
+  scope.define_property(
+    document_obj,
+    has_attribute_key,
+    data_desc(Value::Object(has_attribute_func)),
+  )?;
+  if let Some(element_proto) = element_proto {
+    let key = alloc_key(&mut scope, "hasAttribute")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(has_attribute_func)),
+    )?;
+  }
+
+  let toggle_attribute_call_id = vm.register_native_call(element_toggle_attribute_native)?;
+  let toggle_attribute_name = scope.alloc_string("toggleAttribute")?;
+  scope.push_root(Value::String(toggle_attribute_name))?;
+  let toggle_attribute_func =
+    scope.alloc_native_function(toggle_attribute_call_id, None, toggle_attribute_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    toggle_attribute_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(toggle_attribute_func))?;
+  let toggle_attribute_key = alloc_key(&mut scope, ELEMENT_TOGGLE_ATTRIBUTE_KEY)?;
+  scope.define_property(
+    document_obj,
+    toggle_attribute_key,
+    data_desc(Value::Object(toggle_attribute_func)),
+  )?;
+  if let Some(element_proto) = element_proto {
+    let key = alloc_key(&mut scope, "toggleAttribute")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(toggle_attribute_func)),
+    )?;
+  }
+
+  let get_attribute_names_call_id = vm.register_native_call(element_get_attribute_names_native)?;
+  let get_attribute_names_name = scope.alloc_string("getAttributeNames")?;
+  scope.push_root(Value::String(get_attribute_names_name))?;
+  let get_attribute_names_func = scope.alloc_native_function(
+    get_attribute_names_call_id,
+    None,
+    get_attribute_names_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    get_attribute_names_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(get_attribute_names_func))?;
+  let get_attribute_names_key = alloc_key(&mut scope, ELEMENT_GET_ATTRIBUTE_NAMES_KEY)?;
+  scope.define_property(
+    document_obj,
+    get_attribute_names_key,
+    data_desc(Value::Object(get_attribute_names_func)),
+  )?;
+  if let Some(element_proto) = element_proto {
+    let key = alloc_key(&mut scope, "getAttributeNames")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(get_attribute_names_func)),
+    )?;
+  }
+
+  let get_attribute_ns_call_id = vm.register_native_call(element_get_attribute_ns_native)?;
+  let get_attribute_ns_name = scope.alloc_string("getAttributeNS")?;
+  scope.push_root(Value::String(get_attribute_ns_name))?;
+  let get_attribute_ns_func =
+    scope.alloc_native_function(get_attribute_ns_call_id, None, get_attribute_ns_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    get_attribute_ns_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(get_attribute_ns_func))?;
+  let get_attribute_ns_key = alloc_key(&mut scope, ELEMENT_GET_ATTRIBUTE_NS_KEY)?;
+  scope.define_property(
+    document_obj,
+    get_attribute_ns_key,
+    data_desc(Value::Object(get_attribute_ns_func)),
+  )?;
+  if let Some(element_proto) = element_proto {
+    let key = alloc_key(&mut scope, "getAttributeNS")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(get_attribute_ns_func)),
+    )?;
+  }
+
+  let set_attribute_ns_call_id = vm.register_native_call(element_set_attribute_ns_native)?;
+  let set_attribute_ns_name = scope.alloc_string("setAttributeNS")?;
+  scope.push_root(Value::String(set_attribute_ns_name))?;
+  let set_attribute_ns_func =
+    scope.alloc_native_function(set_attribute_ns_call_id, None, set_attribute_ns_name, 3)?;
+  scope.heap_mut().object_set_prototype(
+    set_attribute_ns_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(set_attribute_ns_func))?;
+  let set_attribute_ns_key = alloc_key(&mut scope, ELEMENT_SET_ATTRIBUTE_NS_KEY)?;
+  scope.define_property(
+    document_obj,
+    set_attribute_ns_key,
+    data_desc(Value::Object(set_attribute_ns_func)),
+  )?;
+  if let Some(element_proto) = element_proto {
+    let key = alloc_key(&mut scope, "setAttributeNS")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(set_attribute_ns_func)),
+    )?;
+  }
+
+  let remove_attribute_ns_call_id = vm.register_native_call(element_remove_attribute_ns_native)?;
+  let remove_attribute_ns_name = scope.alloc_string("removeAttributeNS")?;
+  scope.push_root(Value::String(remove_attribute_ns_name))?;
+  let remove_attribute_ns_func = scope.alloc_native_function(
+    remove_attribute_ns_call_id,
+    None,
+    remove_attribute_ns_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    remove_attribute_ns_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(remove_attribute_ns_func))?;
+  let remove_attribute_ns_key = alloc_key(&mut scope, ELEMENT_REMOVE_ATTRIBUTE_NS_KEY)?;
+  scope.define_property(
+    document_obj,
+    remove_attribute_ns_key,
+    data_desc(Value::Object(remove_attribute_ns_func)),
+  )?;
+  if let Some(element_proto) = element_proto {
+    let key = alloc_key(&mut scope, "removeAttributeNS")?;
+    scope.define_property(
+      element_proto,
+      key,
+      data_desc(Value::Object(remove_attribute_ns_func)),
+    )?;
+  }
+
   // Store shared Element.className getter/setter functions on `document` so wrappers can reuse them.
   let class_name_get_call_id = vm.register_native_call(element_class_name_get_native)?;
   let class_name_get_name = scope.alloc_string("get className")?;
@@ -17950,6 +18782,42 @@ mod tests {
     // Keep the heap limits configured by `WindowRealmConfig` (some tests tweak it).
     js_execution_options.max_vm_heap_bytes = None;
     WindowRealm::new_with_js_execution_options(config, js_execution_options)
+  }
+
+  #[test]
+  fn no_op_element_attribute_writes_do_not_invalidate_browser_document_dom2() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      "<!doctype html><html id=\"a\"><head></head><body></body></html>",
+      RenderOptions::default(),
+    )
+    .expect("BrowserDocumentDom2::from_html should succeed");
+    let _ = document
+      .render_if_needed()
+      .expect("initial render should succeed");
+    assert!(
+      !document.is_dirty(),
+      "expected document to be clean after initial render"
+    );
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+         const el = document.documentElement;\n\
+         el.setAttribute('id', 'a');\n\
+         el.toggleAttribute('id', true);\n\
+         el.setAttributeNS(null, 'id', 'a');\n\
+       })()",
+    )?;
+
+    assert!(
+      !document.is_dirty(),
+      "no-op attribute writes must not mark BrowserDocumentDom2 dirty"
+    );
+    Ok(())
   }
 
   fn check_hooks_payload_native(

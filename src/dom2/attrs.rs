@@ -86,6 +86,18 @@ impl Document {
     )
   }
 
+  pub fn attribute_names(&self, node: NodeId) -> Result<Vec<String>, DomError> {
+    let node = self.node_checked(node)?;
+    let Some((attrs, is_html)) = attrs_and_is_html(&node.kind) else {
+      return Err(DomError::InvalidNodeType);
+    };
+    if is_html {
+      Ok(attrs.iter().map(|(k, _)| k.to_ascii_lowercase()).collect())
+    } else {
+      Ok(attrs.iter().map(|(k, _)| k.clone()).collect())
+    }
+  }
+
   pub fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) -> Result<bool, DomError> {
     let node_id = node;
     let (changed, old_value) = {

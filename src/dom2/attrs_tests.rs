@@ -106,6 +106,21 @@ fn set_bool_attribute_matches_existing_interaction_helpers() {
 }
 
 #[test]
+fn get_attribute_names_returns_qualified_names_in_order() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let el = make_element(&mut doc, /* namespace */ "");
+  assert_eq!(doc.attribute_names(el).unwrap(), Vec::<String>::new());
+
+  assert_eq!(doc.set_attribute(el, "ID", "a").unwrap(), true);
+  assert_eq!(doc.set_attribute(el, "class", "b").unwrap(), true);
+  assert_eq!(doc.attribute_names(el).unwrap(), vec!["id", "class"]);
+
+  // Updating an existing attribute should preserve order.
+  assert_eq!(doc.set_attribute(el, "id", "c").unwrap(), true);
+  assert_eq!(doc.attribute_names(el).unwrap(), vec!["id", "class"]);
+}
+
+#[test]
 fn set_attribute_errors_on_non_element_nodes() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let text = make_text(&mut doc, "x");
@@ -158,6 +173,7 @@ fn invalid_nodeid_attribute_and_text_apis_are_deterministic() {
     doc.set_bool_attribute(bogus, "disabled", true),
     Err(DomError::NotFoundError)
   );
+  assert_eq!(doc.attribute_names(bogus), Err(DomError::NotFoundError));
   assert_eq!(doc.text_data(bogus), Err(DomError::NotFoundError));
   assert_eq!(doc.set_text_data(bogus, "y"), Err(DomError::NotFoundError));
 
