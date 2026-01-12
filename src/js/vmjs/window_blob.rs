@@ -828,4 +828,55 @@ mod tests {
     realm.teardown();
     Ok(())
   }
+
+  #[test]
+  fn blob_ctor_does_not_crash_on_detached_array_buffer() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      r#"
+(() => {
+  // ArrayBuffer detachment is introduced via the ES2024 transfer APIs.
+  // If the engine doesn't implement it yet, skip this regression test.
+  if (typeof ArrayBuffer.prototype.transfer !== "function") {
+    return "skip";
+  }
+
+  const buf = new ArrayBuffer(1);
+  buf.transfer(); // Detaches `buf`.
+  if (buf.byteLength !== 0) {
+    return "transfer did not detach";
+  }
+
+  try {
+    new Blob([buf]);
+    return true;
+  } catch (e) {
+    return e && e.name ? e.name : String(e);
+  }
+})()
+"#,
+    )?;
+
+    match result {
+      Value::Bool(true) => {}
+      Value::String(s) => {
+        let name = realm.heap().get_string(s)?.to_utf8_lossy();
+        if name != "skip" {
+          assert_ne!(name, "transfer did not detach");
+          // Allow any JS-catchable error; the invariant is that detached buffers must not abort the
+          // VM with a non-catchable `InvariantViolation`.
+          assert!(!name.is_empty());
+        }
+      }
+      _other => {
+        return Err(VmError::InvariantViolation(
+          "expected boolean or string result from detached ArrayBuffer Blob test",
+        ));
+      }
+    }
+
+    realm.teardown();
+    Ok(())
+  }
 }
