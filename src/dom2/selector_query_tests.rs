@@ -2,6 +2,7 @@
 
 use crate::dom::parse_html;
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
+use crate::web::dom::DomException;
 use selectors::context::QuirksMode;
 
 use super::{Document, NodeId, NodeKind};
@@ -80,6 +81,15 @@ fn query_selector_skips_inert_template_contents() {
     Some("out"),
     "query_selector should skip inert template descendants"
   );
+}
+
+#[test]
+fn invalid_selector_returns_syntax_error() {
+  let root = parse_html(r#"<!doctype html><div></div>"#).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let err = doc.query_selector("div[", None).unwrap_err();
+  assert!(matches!(err, DomException::SyntaxError { .. }));
 }
 
 #[test]
