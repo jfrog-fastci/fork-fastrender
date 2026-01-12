@@ -86,6 +86,7 @@ mod image_src_rect_clips_to_dest_rect;
 mod image_upscale_sampling;
 mod individual_transform_properties_test;
 mod intrinsic_srcset;
+mod srcset_density_object_fit_none;
 mod lazy_image_loading;
 mod linear_gradient_dither_phase;
 mod linear_gradient_pattern_transform_scale_y;
