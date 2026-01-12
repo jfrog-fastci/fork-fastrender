@@ -5951,6 +5951,7 @@ impl ImageCache {
         svg_url: &str,
         record: &mut F,
         depth: usize,
+        in_font_face: bool,
       ) -> Result<()> {
         // Avoid pathological recursion on deeply nested blocks.
         const MAX_DEPTH: usize = 32;
@@ -5961,10 +5962,20 @@ impl ImageCache {
           }));
         }
 
+        // Track whether we've seen a `@font-face` at-rule token and are now looking for its `{...}`
+        // block. Once we enter the block, all `url(...)` tokens inside are treated as font loads
+        // so CSP `font-src` is enforced for SVG-embedded CSS.
+        let mut pending_font_face_block = false;
+
         while let Ok(token) = parser.next_including_whitespace_and_comments() {
           match token {
             Token::UnquotedUrl(url) => {
-              record(url.as_ref(), ResourceKind::Image)?;
+              let kind = if in_font_face {
+                ResourceKind::Font
+              } else {
+                ResourceKind::Image
+              };
+              record(url.as_ref(), kind)?;
             }
             Token::Function(ref name) if name.eq_ignore_ascii_case("url") => {
               let mut nested_error: Option<Error> = None;
@@ -6006,8 +6017,16 @@ impl ImageCache {
               }
 
               if let Ok(Some(url)) = parsed {
-                record(url.as_ref(), ResourceKind::Image)?;
+                let kind = if in_font_face {
+                  ResourceKind::Font
+                } else {
+                  ResourceKind::Image
+                };
+                record(url.as_ref(), kind)?;
               }
+            }
+            Token::AtKeyword(ref name) if name.eq_ignore_ascii_case("font-face") => {
+              pending_font_face_block = true;
             }
             Token::AtKeyword(ref name)
               if include_imports && name.eq_ignore_ascii_case("import") =>
@@ -6056,13 +6075,40 @@ impl ImageCache {
                 }
               }
             }
-            Token::Function(_)
-            | Token::ParenthesisBlock
-            | Token::SquareBracketBlock
-            | Token::CurlyBracketBlock => {
+            Token::Semicolon => {
+              // At-rules without blocks terminate at the next semicolon. Clear any pending
+              // `@font-face` state so we don't mis-classify the next `{...}` block.
+              pending_font_face_block = false;
+            }
+            Token::CurlyBracketBlock => {
+              let nested_in_font_face = in_font_face || pending_font_face_block;
+              pending_font_face_block = false;
+
               let mut nested_error: Option<Error> = None;
               let _ = parser.parse_nested_block(|nested| {
-                if let Err(err) = scan_parser(nested, include_imports, svg_url, record, depth + 1) {
+                if let Err(err) = scan_parser(
+                  nested,
+                  include_imports,
+                  svg_url,
+                  record,
+                  depth + 1,
+                  nested_in_font_face,
+                ) {
+                  nested_error = Some(err);
+                  return Err(nested.new_custom_error(()));
+                }
+                Ok::<_, cssparser::ParseError<'i, ()>>(())
+              });
+              if let Some(err) = nested_error {
+                return Err(err);
+              }
+            }
+            Token::Function(_) | Token::ParenthesisBlock | Token::SquareBracketBlock => {
+              let mut nested_error: Option<Error> = None;
+              let _ = parser.parse_nested_block(|nested| {
+                if let Err(err) =
+                  scan_parser(nested, include_imports, svg_url, record, depth + 1, in_font_face)
+                {
                   nested_error = Some(err);
                   return Err(nested.new_custom_error(()));
                 }
@@ -6079,7 +6125,7 @@ impl ImageCache {
         Ok(())
       }
 
-      scan_parser(&mut parser, include_imports, svg_url, record, 0)
+      scan_parser(&mut parser, include_imports, svg_url, record, 0, false)
     }
 
     let svg_for_parse = svg_markup_for_roxmltree(svg_content);
@@ -10689,6 +10735,50 @@ mod tests {
         assert_eq!(url, "https://cross.test/a.css");
         assert!(
           reason.contains("Content-Security-Policy") && reason.contains("style-src"),
+          "{reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_blocks_external_font_face_by_csp_font_src() {
+    use crate::html::content_security_policy::CspPolicy;
+
+    let doc_url = "https://doc.test/";
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+
+    // Allow cross-origin network loads by default, but use CSP to block cross-origin fonts loaded
+    // through SVG-embedded CSS `@font-face`.
+    let mut cache = ImageCache::new();
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = false;
+    ctx.csp = CspPolicy::from_values(["font-src 'self'; img-src *; style-src *"]);
+    assert!(ctx.csp.is_some(), "CSP should parse");
+    cache.set_resource_context(Some(ctx));
+
+    let svg = r#"
+      <svg xmlns="http://www.w3.org/2000/svg">
+        <style>
+          @font-face { font-family: X; src: url(https://cross.test/a.woff2); }
+          text { font-family: X; }
+        </style>
+        <text x="0" y="10">A</text>
+      </svg>
+    "#;
+
+    let err = cache
+      .probe_svg_content(svg, "https://doc.test/icon.svg")
+      .expect_err("expected SVG CSS @font-face to be blocked by CSP font-src");
+
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, "https://cross.test/a.woff2");
+        assert!(
+          reason.contains("Content-Security-Policy") && reason.contains("font-src"),
           "{reason}"
         );
       }
