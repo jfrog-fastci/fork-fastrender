@@ -8051,7 +8051,9 @@ fn regexp_exec_array(
       scope.push_root(Value::String(s))?;
       Value::String(s)
     };
-    let key_s = scope.alloc_string(&i.to_string())?;
+    // Avoid intermediate Rust `String` allocations (which are infallible and can abort the process on
+    // allocator OOM).
+    let key_s = alloc_string_from_usize(&mut scope, i)?;
     scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     scope.define_property(array, key, data_desc(value, true, true, true))?;
