@@ -55,8 +55,9 @@ reason = "Multi-document DOMImplementation APIs not implemented yet"
 
 [[expectations]]
 id = "dom/domimplementation_create_document_type.window.js"
+backend = "quickjs"
 status = "xfail"
-reason = "Multi-document DOMImplementation APIs not implemented yet"
+reason = "DOMImplementation.createDocumentType is not implemented in the QuickJS WebIDL runtime yet (vm-js shim supports it)."
 
 [[expectations]]
 id = "dom/domimplementation-createhtmldocument.window.js"
