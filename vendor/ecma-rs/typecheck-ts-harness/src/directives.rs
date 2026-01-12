@@ -681,9 +681,19 @@ impl HarnessOptions {
       map.insert("module".to_string(), Value::String(module.clone()));
     }
     if let Some(mode) = compiler.jsx {
+      let jsx_value = if mode == JsxMode::Preserve
+        && self
+          .jsx
+          .as_deref()
+          .is_some_and(|raw| normalize_scalar(raw).eq_ignore_ascii_case("react-native"))
+      {
+        "react-native".to_string()
+      } else {
+        jsx_mode_str(mode).to_string()
+      };
       map.insert(
         "jsx".to_string(),
-        Value::String(jsx_mode_str(mode).to_string()),
+        Value::String(jsx_value),
       );
     } else if let Some(raw) = &self.jsx {
       map.insert("jsx".to_string(), Value::String(raw.clone()));
@@ -799,7 +809,7 @@ fn parse_script_target(raw: &str) -> Option<ScriptTarget> {
   match normalize_scalar(raw).to_ascii_lowercase().as_str() {
     "es3" => Some(ScriptTarget::Es3),
     "es5" => Some(ScriptTarget::Es5),
-    "es2015" => Some(ScriptTarget::Es2015),
+    "es6" | "es2015" => Some(ScriptTarget::Es2015),
     "es2016" => Some(ScriptTarget::Es2016),
     "es2017" => Some(ScriptTarget::Es2017),
     "es2018" => Some(ScriptTarget::Es2018),
@@ -830,7 +840,7 @@ fn script_target_str(target: ScriptTarget) -> &'static str {
 
 fn parse_jsx_mode(raw: &str) -> Option<JsxMode> {
   match normalize_scalar(raw).to_ascii_lowercase().as_str() {
-    "preserve" => Some(JsxMode::Preserve),
+    "preserve" | "react-native" => Some(JsxMode::Preserve),
     "react" => Some(JsxMode::React),
     "react-jsx" => Some(JsxMode::ReactJsx),
     "react-jsxdev" => Some(JsxMode::ReactJsxdev),
@@ -1085,6 +1095,32 @@ mod tests {
     let directive =
       parse_directive("// @noUncheckedIndexedAccess: true", 1).expect("directive should parse");
     assert_eq!(directive.name, "nouncheckedindexedaccess");
+  }
+
+  #[test]
+  fn supports_es6_target_alias() {
+    let directives = vec![dir("target", Some("ES6"))];
+    let options = HarnessOptions::from_directives(&directives);
+    let compiler = options.to_compiler_options();
+    assert_eq!(compiler.target, ScriptTarget::Es2015);
+    let tsc = options.to_tsc_options_map();
+    assert_eq!(
+      tsc.get("target"),
+      Some(&Value::String("ES2015".to_string()))
+    );
+  }
+
+  #[test]
+  fn supports_react_native_jsx_alias() {
+    let directives = vec![dir("jsx", Some("react-native"))];
+    let options = HarnessOptions::from_directives(&directives);
+    let compiler = options.to_compiler_options();
+    assert_eq!(compiler.jsx, Some(JsxMode::Preserve));
+    let tsc = options.to_tsc_options_map();
+    assert_eq!(
+      tsc.get("jsx"),
+      Some(&Value::String("react-native".to_string()))
+    );
   }
 
   #[test]
