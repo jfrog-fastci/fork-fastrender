@@ -685,6 +685,20 @@ fn resolve_overload_set(
     }
   }
 
+  // TypeScript breaks overload ties deterministically by picking the first best
+  // candidate (after applying its own ordering rules) rather than reporting an
+  // "ambiguous call" error.
+  //
+  // In particular, with:
+  //   declare function pick(x: any): number;
+  //   declare function pick(x: any): string;
+  //
+  // `pick(0)` resolves to the first overload (`number`) and any assignment
+  // mismatch is reported at the assignment site (TS2322), not as a call
+  // diagnostic.
+  //
+  // We mirror that behaviour by selecting `best` even when multiple candidates
+  // tie on the ranking criteria.
   if tied.len() > 1 {
     // TypeScript does not report an ambiguity error when multiple overloads are
     // equally applicable. Instead, it deterministically selects the first
