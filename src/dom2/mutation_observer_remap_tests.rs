@@ -47,7 +47,7 @@ fn remap_node_ids_updates_queued_records_and_observed_targets() {
 
   // Simulate adoption: registrations move with the node, but observer state + queued records still
   // reference the old NodeIds until we remap.
-  doc.mutation_observers.move_registrations(target, target_new);
+  doc.mutation_observer_move_registrations(target, target_new);
 
   let mapping: HashMap<_, _> = HashMap::from([
     (target, target_new),
@@ -56,7 +56,7 @@ fn remap_node_ids_updates_queued_records_and_observed_targets() {
     (removed, removed_new),
     (next, next_new),
   ]);
-  doc.mutation_observers.remap_node_ids(&mapping);
+  doc.mutation_observer_remap_node_ids(&mapping);
 
   // Remapping should not interfere with microtask scheduling.
   assert!(doc.take_mutation_observer_microtask_needed());
@@ -115,11 +115,11 @@ fn remap_node_ids_leaves_unmapped_entries_unchanged() {
   let target_new = doc.create_element("div", "");
   let added_new = doc.create_element("b", "");
 
-  doc.mutation_observers.move_registrations(target, target_new);
+  doc.mutation_observer_move_registrations(target, target_new);
 
   // Only remap some entries; others should remain as-is.
   let mapping: HashMap<_, _> = HashMap::from([(target, target_new), (added, added_new)]);
-  doc.mutation_observers.remap_node_ids(&mapping);
+  doc.mutation_observer_remap_node_ids(&mapping);
 
   let records = doc.mutation_observer_take_records(observer);
   assert_eq!(records.len(), 1);
@@ -130,4 +130,3 @@ fn remap_node_ids_leaves_unmapped_entries_unchanged() {
   assert_eq!(record.previous_sibling, Some(prev));
   assert_eq!(record.next_sibling, Some(next));
 }
-
