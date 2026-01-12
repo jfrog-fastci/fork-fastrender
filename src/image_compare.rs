@@ -6,6 +6,12 @@ use image::{Rgba, RgbaImage};
 use std::io::Cursor;
 use std::io::Write;
 
+/// Stable identifier for the perceptual distance metric used by this crate.
+///
+/// This value is embedded in diff reports (e.g. `diff_renders` JSON/HTML output) so that reports
+/// remain self-describing even if the perceptual distance implementation changes over time.
+pub const PERCEPTUAL_METRIC_ID: &str = "ssim_luma_v1";
+
 /// Configuration for comparing two images.
 #[derive(Debug, Clone)]
 pub struct CompareConfig {

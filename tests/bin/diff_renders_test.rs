@@ -616,6 +616,10 @@ fn diff_renders_reports_perceptual_metric() {
     &fs::read_to_string(tmp.path().join("diff_report.json")).expect("read json"),
   )
   .unwrap();
+  let metric_id = report["perceptual_metric"]
+    .as_str()
+    .expect("perceptual_metric missing");
+  assert_eq!(metric_id, fastrender::image_compare::PERCEPTUAL_METRIC_ID);
   let dist = report["results"][0]["metrics"]["perceptual_distance"]
     .as_f64()
     .expect("perceptual_distance missing");

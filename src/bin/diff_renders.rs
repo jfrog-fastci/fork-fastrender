@@ -85,6 +85,7 @@ struct DiffReport {
   max_diff_percent: f64,
   #[serde(skip_serializing_if = "Option::is_none")]
   max_perceptual_distance: Option<f64>,
+  perceptual_metric: &'static str,
   ignore_alpha: bool,
   sort_by: SortBy,
   shard: Option<ShardInfo>,
@@ -380,6 +381,7 @@ fn run() -> Result<i32, String> {
     tolerance,
     max_diff_percent,
     max_perceptual_distance,
+    perceptual_metric: fastrender::image_compare::PERCEPTUAL_METRIC_ID,
     ignore_alpha: !compare_alpha,
     sort_by: args.sort_by,
     shard,
@@ -1079,7 +1081,7 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
     <h1>Render diff report</h1>
     <p><strong>Before:</strong> {before}</p>
     <p><strong>After:</strong> {after}</p>
-    <p><strong>Tolerance:</strong> {tolerance} | <strong>Max diff %:</strong> {max_diff_percent:.4} | <strong>Max perceptual:</strong> {max_perceptual} | <strong>Ignore alpha:</strong> {ignore_alpha} | <strong>Sort:</strong> {sort_by} {shard}</p>
+    <p><strong>Tolerance:</strong> {tolerance} | <strong>Max diff %:</strong> {max_diff_percent:.4} | <strong>Max perceptual:</strong> {max_perceptual} | <strong>Perceptual metric:</strong> {perceptual_metric} | <strong>Ignore alpha:</strong> {ignore_alpha} | <strong>Sort:</strong> {sort_by} {shard}</p>
     <p>Processed {processed} of {discovered} candidates ({matches} exact, {within} within threshold, {diffs} failing, {missing} missing, {errors} errors{skipped}).</p>
     {failing_section}
     <div id="results-controls">
@@ -1132,6 +1134,7 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
       .max_perceptual_distance
       .map(|d| format!("{d:.4}"))
       .unwrap_or_else(|| "-".to_string()),
+    perceptual_metric = escape_html(report.perceptual_metric),
     ignore_alpha = if report.ignore_alpha { "yes" } else { "no" },
     sort_by = escape_html(report.sort_by.label()),
     shard = if shard_info.is_empty() {
