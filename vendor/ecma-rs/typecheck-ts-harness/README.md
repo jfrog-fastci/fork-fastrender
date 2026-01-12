@@ -389,6 +389,9 @@ the suite name (e.g. `difftsc/assignability`).
   `.json`, so single-file tests become e.g. `<name>.json`).
 - Baselines carry a schema version plus the `typescript` version/options used to
   generate them.
+  - CI runs `typecheck-ts-harness lint-baselines` which requires
+    `metadata.typescript_version` to match the pinned TypeScript dependency from
+    `typecheck-ts-harness/package-lock.json`.
 - To add/update tests:
   1. Drop files under `fixtures/<suite>/...`
   2. Regenerate baselines: `bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/<suite> --update-baselines`
