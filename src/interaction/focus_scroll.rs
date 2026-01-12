@@ -18,10 +18,37 @@ fn sanitize_point(point: Point) -> Point {
   )
 }
 
-fn scrollport_size_for_state(state: &ScrollChainState<'_>) -> Size {
+fn scrollport_size_for_state(state: &ScrollChainState<'_>, is_viewport: bool) -> Size {
+  if !is_viewport {
+    if let Some(style) = state.container.style.as_deref() {
+      return crate::scroll::scrollport_rect_for_fragment(state.container, style).size;
+    }
+  }
+
   let reservation = state.container.scrollbar_reservation;
-  let width = state.viewport.width - reservation.left - reservation.right;
-  let height = state.viewport.height - reservation.top - reservation.bottom;
+  let reserve_left = if reservation.left.is_finite() {
+    reservation.left.max(0.0)
+  } else {
+    0.0
+  };
+  let reserve_right = if reservation.right.is_finite() {
+    reservation.right.max(0.0)
+  } else {
+    0.0
+  };
+  let reserve_top = if reservation.top.is_finite() {
+    reservation.top.max(0.0)
+  } else {
+    0.0
+  };
+  let reserve_bottom = if reservation.bottom.is_finite() {
+    reservation.bottom.max(0.0)
+  } else {
+    0.0
+  };
+
+  let width = state.viewport.width - reserve_left - reserve_right;
+  let height = state.viewport.height - reserve_top - reserve_bottom;
   Size::new(
     if width.is_finite() {
       width.max(0.0)
@@ -262,7 +289,7 @@ fn apply_focus_scroll_chain(
       .translate(Point::new(-origin.x, -origin.y))
       .translate(Point::new(-descendant_scroll.x, -descendant_scroll.y));
 
-    let viewport = scrollport_size_for_state(state);
+    let viewport = scrollport_size_for_state(state, is_viewport);
     if can_scroll {
       state.scroll = scroll_to_reveal_rect(
         state.scroll,
@@ -354,7 +381,7 @@ pub fn scroll_state_for_focus(
 
       let target_in_viewport_space =
         target_bounds.translate(Point::new(-element_shift.x, -element_shift.y));
-      let viewport_scrollport = scrollport_size_for_state(viewport_state);
+      let viewport_scrollport = scrollport_size_for_state(viewport_state, true);
 
       next.viewport = scroll_to_reveal_rect(
         next.viewport,

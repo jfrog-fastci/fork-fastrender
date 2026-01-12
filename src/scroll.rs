@@ -403,7 +403,12 @@ fn used_border_insets(style: &ComputedStyle) -> (f32, f32, f32, f32) {
   )
 }
 
-fn scrollport_rect(node: &FragmentNode, style: &ComputedStyle) -> Rect {
+/// Returns the scrollport rectangle for `node` in the fragment's local coordinate space.
+///
+/// The scrollport is the viewport through which a scroll container's contents are scrolled.
+/// `FragmentNode::bounds` describes the fragment's border box; the scrollport corresponds to the
+/// padding box, further reduced by any reserved classic scrollbar gutters.
+pub fn scrollport_rect_for_fragment(node: &FragmentNode, style: &ComputedStyle) -> Rect {
   let width = node.bounds.width();
   let height = node.bounds.height();
   let (border_left, border_right, border_top, border_bottom) = used_border_insets(style);
@@ -429,8 +434,13 @@ fn scrollport_rect(node: &FragmentNode, style: &ComputedStyle) -> Rect {
   rect
 }
 
+pub fn client_width_height_for_fragment(node: &FragmentNode, style: &ComputedStyle) -> (f32, f32) {
+  let rect = scrollport_rect_for_fragment(node, style);
+  (rect.size.width, rect.size.height)
+}
+
 fn content_rect(node: &FragmentNode, style: &ComputedStyle, viewport: Size) -> Rect {
-  let mut rect = scrollport_rect(node, style);
+  let mut rect = scrollport_rect_for_fragment(node, style);
   let percentage_base = node.bounds.width().max(0.0);
   let left = sanitize_nonneg(resolve_length_with_context(
     style.padding_left,
@@ -466,7 +476,7 @@ fn content_rect(node: &FragmentNode, style: &ComputedStyle, viewport: Size) -> R
 
 fn overflow_clip_rect(node: &FragmentNode, style: &ComputedStyle, viewport: Size) -> Rect {
   let border = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
-  let padding = scrollport_rect(node, style);
+  let padding = scrollport_rect_for_fragment(node, style);
   let content = content_rect(node, style, viewport);
 
   let resolved_margin = resolve_length_with_context(
@@ -1607,7 +1617,7 @@ pub(crate) fn scroll_bounds_for_fragment(
       ),
     )
   } else if let Some(style) = container.style.as_deref() {
-    let rect = scrollport_rect(container, style);
+    let rect = scrollport_rect_for_fragment(container, style);
     (rect.origin, rect.size)
   } else {
     // Fallback for synthetic fragment trees without styles: assume no borders, but still honor any
@@ -2301,7 +2311,9 @@ pub(crate) fn find_snap_container<'a>(
 mod tests {
   use super::*;
   use crate::geometry::{Point, Rect, Size};
+  use crate::style::types::BorderStyle;
   use crate::tree::fragment_tree::FragmentContent;
+  use crate::tree::fragment_tree::ScrollbarReservation;
   use std::sync::Arc;
 
   fn container_style(axis: ScrollSnapAxis, strictness: ScrollSnapStrictness) -> Arc<ComputedStyle> {
@@ -2316,6 +2328,54 @@ mod tests {
     style.scroll_snap_align.inline = inline;
     style.scroll_snap_align.block = block;
     Arc::new(style)
+  }
+
+  #[test]
+  fn scrollport_rect_for_fragment_subtracts_borders_and_scrollbar_reservation() {
+    let mut node = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 100.0), vec![]);
+    node.scrollbar_reservation = ScrollbarReservation {
+      left: 10.0,
+      right: 5.0,
+      top: 3.0,
+      bottom: 7.0,
+    };
+
+    let mut style = ComputedStyle::default();
+    style.border_left_style = BorderStyle::Solid;
+    style.border_right_style = BorderStyle::Solid;
+    style.border_top_style = BorderStyle::Solid;
+    style.border_bottom_style = BorderStyle::Solid;
+    style.border_left_width = Length::px(2.0);
+    style.border_right_width = Length::px(4.0);
+    style.border_top_width = Length::px(6.0);
+    style.border_bottom_width = Length::px(8.0);
+
+    let rect = scrollport_rect_for_fragment(&node, &style);
+    assert_eq!(rect, Rect::from_xywh(12.0, 9.0, 179.0, 76.0));
+  }
+
+  #[test]
+  fn scrollport_rect_for_fragment_clamps_to_non_negative_sizes() {
+    let mut node = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![]);
+    node.scrollbar_reservation = ScrollbarReservation {
+      left: 5.0,
+      right: 5.0,
+      top: 5.0,
+      bottom: 5.0,
+    };
+
+    let mut style = ComputedStyle::default();
+    style.border_left_style = BorderStyle::Solid;
+    style.border_right_style = BorderStyle::Solid;
+    style.border_top_style = BorderStyle::Solid;
+    style.border_bottom_style = BorderStyle::Solid;
+    style.border_left_width = Length::px(8.0);
+    style.border_right_width = Length::px(8.0);
+    style.border_top_width = Length::px(8.0);
+    style.border_bottom_width = Length::px(8.0);
+
+    let rect = scrollport_rect_for_fragment(&node, &style);
+    assert_eq!(rect, Rect::from_xywh(13.0, 13.0, 0.0, 0.0));
   }
 
   #[test]
