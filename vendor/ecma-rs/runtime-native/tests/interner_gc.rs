@@ -68,3 +68,31 @@ fn pinned_interned_string_survives_gc() {
     assert_eq!(after.len, before.len);
   });
 }
+
+#[test]
+fn reinterning_after_reclamation_returns_new_id() {
+  let _rt = TestRuntimeGuard::new();
+  runtime_native::test_util::with_interner_test_lock(|| {
+    let id1 = rt_string_intern(b"temp".as_ptr(), b"temp".len());
+    let before = rt_string_lookup(id1);
+    assert!(!before.ptr.is_null());
+    // Safety: `rt_string_lookup` returned a non-null byte pointer for `before.len` bytes.
+    let bytes_before = unsafe { std::slice::from_raw_parts(before.ptr, before.len) };
+    assert_eq!(bytes_before, b"temp");
+
+    // After GC, the unpinned interned entry may be reclaimed and the ID becomes permanently invalid.
+    rt_gc_collect();
+    let after = rt_string_lookup(id1);
+    assert!(after.ptr.is_null());
+    assert_eq!(after.len, 0);
+
+    // Re-interning the same bytes yields a new monotonic ID; IDs are never reused.
+    let id2 = rt_string_intern(b"temp".as_ptr(), b"temp".len());
+    assert_ne!(id2, id1);
+    let got2 = rt_string_lookup(id2);
+    assert!(!got2.ptr.is_null());
+    // Safety: `rt_string_lookup` returned a non-null byte pointer for `got2.len` bytes.
+    let bytes2 = unsafe { std::slice::from_raw_parts(got2.ptr, got2.len) };
+    assert_eq!(bytes2, b"temp");
+  });
+}
