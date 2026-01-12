@@ -1,12 +1,15 @@
 # Native compiler quickstart (strict-native + VM oracle)
 
-This is a practical guide for the **native compiler** track described in [`EXEC.plan.md`](../EXEC.plan.md).
+This is a practical guide for the **native compiler** track described in [`EXEC.plan.md`](../EXEC.plan.md)
+(note: `EXEC.plan.md` is a compatibility shim; the canonical native-AOT plan lives in
+[`instructions/native_aot.md`](../instructions/native_aot.md)).
 It’s aimed at developers/agents working on:
 
 - the **strict-native** TypeScript dialect (a strict subset we can compile/optimize reliably), and
 - the **TS → JS → `vm-js`** oracle harness used to validate native output.
 
-For the full rationale and long-form plan, read [`EXEC.plan.md`](../EXEC.plan.md) (source of truth).
+For the full rationale and long-form plan, start at [`EXEC.plan.md`](../EXEC.plan.md) and follow its
+workstream links (especially [`instructions/native_aot.md`](../instructions/native_aot.md)).
 
 ---
 

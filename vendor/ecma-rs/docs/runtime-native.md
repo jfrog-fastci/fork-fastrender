@@ -2,10 +2,10 @@
 This document describes how `native-js` output links to and interacts with
 `runtime-native` (GC + statepoints + scheduler + async).
 
-For the **Milestone 1 (POC) ABI**, `vendor/ecma-rs/EXEC.plan.md` is the
-authoritative source of truth. The “Milestone 1 (POC) ABI — CURRENT” section in
-this document is intended to mirror the plan exactly; update the plan first if
-they ever diverge.
+For the **Milestone 1 (POC) ABI**, `vendor/ecma-rs/instructions/native_aot.md` is the
+authoritative source of truth (reachable via the stable permalink `vendor/ecma-rs/EXEC.plan.md`).
+The “Milestone 1 (POC) ABI — CURRENT” section in this document is intended to mirror the plan
+exactly; update the plan first if they ever diverge.
 
 The intent is that a new contributor can implement:
 1) **The runtime ABI surface**, and
@@ -174,7 +174,7 @@ cross-language unwinding hazards.
 
 This section documents the **current** ABI surface expected by `native-js`
 Milestone 1, and must match the runtime-native API sketch in
-`vendor/ecma-rs/EXEC.plan.md`.
+`vendor/ecma-rs/instructions/native_aot.md`.
 
 #### 3.1.1 Types (FFI-safe)
 
@@ -269,7 +269,7 @@ pub struct PromiseRef(pub *mut PromiseHeader);
 #### 3.1.2 Exported symbols (names + signatures)
 
 All functions are exported as `#[no_mangle] extern "C"` from `runtime-native`.
-The signatures below intentionally mirror the sketch in `EXEC.plan.md`:
+The signatures below intentionally mirror the sketch in `instructions/native_aot.md`:
 
 ```rust
 // Memory
@@ -448,7 +448,7 @@ Contract:
 - All field offsets and pointer-map offsets are addressed relative to this base
   pointer (no “hidden header before payload”).
 
-This matches the object layout described in `EXEC.plan.md`, e.g.:
+This matches the object layout described in `instructions/native_aot.md`, e.g.:
 `struct MyObject { header: ObjectHeader, field1, ... }` — the header is the
 first field in memory.
 
