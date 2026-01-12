@@ -6,8 +6,8 @@ use crate::js::dom2_bindings;
 use crate::js::dom_platform::{DomInterface, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
-  event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, make_dom_exception,
-  WindowRealmUserData, EVENT_TARGET_HOST_TAG,
+  event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
+  EVENT_TARGET_HOST_TAG,
 };
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
@@ -365,12 +365,6 @@ fn key_from_str(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
-fn gc_object_id(obj: GcObject) -> u64 {
-  // Must match `window_realm::gc_object_id`. Duplicated here to avoid introducing a large module
-  // dependency edge from WebIDL host dispatch to `window_realm`.
-  (obj.index() as u64) | ((obj.generation() as u64) << 32)
-}
-
 fn wrapper_document_key_from_wrapper_obj(
   scope: &mut Scope<'_>,
   wrapper_obj: GcObject,
@@ -389,7 +383,6 @@ fn wrapper_document_key_from_wrapper_obj(
   };
   Ok(WeakGcObject::from(document_obj))
 }
-
 fn require_dom_platform_mut(vm: &mut Vm) -> Result<&mut DomPlatform, VmError> {
   dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))
 }
@@ -426,7 +419,6 @@ fn with_embedder_state_from_hooks<Host: 'static, R>(
 
   f(host)
 }
-
 fn js_string_to_rust_string(scope: &Scope<'_>, value: Value) -> Result<String, VmError> {
   let Value::String(s) = value else {
     return Err(VmError::TypeError("expected string"));
