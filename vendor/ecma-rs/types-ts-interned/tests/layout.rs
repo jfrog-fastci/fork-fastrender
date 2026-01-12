@@ -580,10 +580,52 @@ fn gc_ptr_offsets_include_pointers_common_to_all_union_variants() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
 
-  let name = store.intern_name_ref("x");
+  let tuple1 = store.intern_type(TypeKind::Tuple(vec![TupleElem {
+    ty: primitives.string,
+    optional: false,
+    rest: false,
+    readonly: false,
+  }]));
+  let tuple2 = store.intern_type(TypeKind::Tuple(vec![
+    TupleElem {
+      ty: primitives.string,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+  ]));
+
+  // Both variants contain a GC pointer at the same offset within the payload, so
+  // the union layout has an unconditional GC pointer slot regardless of the
+  // discriminant.
+  let union = store.intern_type(TypeKind::Union(vec![tuple1, tuple2]));
+  let union_layout = store.layout_of(union);
+  let Layout::TaggedUnion { payload_offset, .. } = store.layout(union_layout) else {
+    panic!("expected union to lower to TaggedUnion layout");
+  };
+  assert_eq!(store.gc_ptr_offsets(union_layout), vec![payload_offset]);
+
+  // Mixed pointer/scalar union has no unconditional GC pointer slots.
+  let mixed_union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.number]));
+  let mixed_layout = store.layout_of(mixed_union);
+  assert!(store.gc_ptr_offsets(mixed_layout).is_empty());
+}
+
+#[test]
+fn union_of_gc_pointers_lowers_to_ptr_layout() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let name_a = store.intern_name_ref("a");
   let mut shape = Shape::new();
   shape.properties.push(Property {
-    key: PropKey::String(name),
+    key: PropKey::String(name_a),
     data: PropData {
       ty: primitives.number,
       optional: false,
@@ -598,20 +640,45 @@ fn gc_ptr_offsets_include_pointers_common_to_all_union_variants() {
   let obj_id = store.intern_object(ObjectType { shape: shape_id });
   let obj_ty = store.intern_type(TypeKind::Object(obj_id));
 
-  // Both members are GC pointers, so the union collapses to a single GC pointer
-  // word.
-  let ptr_union = store.intern_type(TypeKind::Union(vec![primitives.string, obj_ty]));
-  let ptr_union_layout = store.layout_of(ptr_union);
-  let Layout::Ptr { to } = store.layout(ptr_union_layout) else {
-    panic!("expected GC pointer-only union to lower to Ptr layout");
+  // Both members are GC pointers, so the union layout should be a single pointer
+  // word rather than a tagged union.
+  let union = store.intern_type(TypeKind::Union(vec![primitives.string, obj_ty]));
+  let layout = store.layout_of(union);
+  let Layout::Ptr { to } = store.layout(layout) else {
+    panic!("expected union of GC pointers to lower to Ptr layout");
   };
   assert_eq!(to, types_ts_interned::PtrKind::GcAny);
-  assert_eq!(store.gc_ptr_offsets(ptr_union_layout), vec![0]);
+  assert_eq!(store.gc_ptr_offsets(layout), vec![0]);
+}
 
-  // Mixed pointer/scalar union has no unconditional GC pointer slots.
-  let mixed_union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.number]));
-  let mixed_layout = store.layout_of(mixed_union);
-  assert!(store.gc_ptr_offsets(mixed_layout).is_empty());
+#[test]
+fn union_of_gc_pointer_and_null_lowers_to_ptr_layout() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.null]));
+  let layout = store.layout_of(union);
+  let Layout::Ptr { to } = store.layout(layout) else {
+    panic!("expected string|null union to lower to Ptr layout");
+  };
+  assert!(
+    matches!(to, types_ts_interned::PtrKind::GcString),
+    "expected string|null union to retain GcString ptr kind, got {to:?}"
+  );
+  assert_eq!(store.gc_ptr_offsets(layout), vec![0]);
+}
+
+#[test]
+fn union_of_gc_pointer_and_scalar_still_lowers_to_tagged_union() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.number]));
+  let layout = store.layout_of(union);
+  assert!(
+    matches!(store.layout(layout), Layout::TaggedUnion { .. }),
+    "expected string|number to lower to TaggedUnion layout"
+  );
 }
 
 #[test]

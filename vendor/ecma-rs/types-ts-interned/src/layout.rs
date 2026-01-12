@@ -692,6 +692,23 @@ impl LayoutStore {
     members.sort_by(|a, b| store.type_cmp(*a, *b));
     members.dedup();
 
+    // If every union member is a GC-managed pointer (or nullish), the union can
+    // be represented as a single pointer word instead of a tagged union.
+    //
+    // This improves native ABI lowering and (more importantly) allows the GC
+    // trace plan to remain flat: offset 0 is always a root slot, and the null
+    // sentinel is safe for tracing.
+    fn is_gc_ptr_kind(kind: &PtrKind) -> bool {
+      matches!(
+        kind,
+        PtrKind::GcObject { .. } | PtrKind::GcArray { .. } | PtrKind::GcString | PtrKind::GcAny
+      )
+    }
+
+    let mut all_gc_ptr_or_nullish = true;
+    let mut has_gc_ptr = false;
+    let mut canonical_ptr: Option<PtrKind> = None;
+
     let mut variant_layouts = Vec::with_capacity(members.len());
     let mut payload_size: u32 = 0;
     let mut payload_align: u32 = 1;
@@ -701,6 +718,31 @@ impl LayoutStore {
       payload_size = payload_size.max(l.size());
       payload_align = payload_align.max(l.align());
       variant_layouts.push((*ty, layout));
+
+      let is_nullish = matches!(store.type_kind(*ty), TypeKind::Null | TypeKind::Undefined | TypeKind::Void);
+      if is_nullish {
+        continue;
+      }
+
+      match &l {
+        Layout::Ptr { to } if is_gc_ptr_kind(to) => {
+          has_gc_ptr = true;
+          match &canonical_ptr {
+            None => canonical_ptr = Some(to.clone()),
+            Some(existing) if existing == to => {}
+            Some(_) => canonical_ptr = Some(PtrKind::GcAny),
+          }
+        }
+        _ => {
+          all_gc_ptr_or_nullish = false;
+        }
+      }
+    }
+
+    if all_gc_ptr_or_nullish && has_gc_ptr {
+      return Layout::Ptr {
+        to: canonical_ptr.unwrap_or(PtrKind::GcAny),
+      };
     }
 
     // Phase 4.5 (native AOT) layout optimization:
