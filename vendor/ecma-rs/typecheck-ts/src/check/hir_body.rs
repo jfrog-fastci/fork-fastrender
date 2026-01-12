@@ -88,6 +88,51 @@ impl TypeResolver for BindingTypeResolver {
   }
 }
 
+#[derive(Clone)]
+struct BodyLocalTypeResolver {
+  locals_type: HashMap<String, DefId>,
+  locals_value: HashMap<String, DefId>,
+  inner: Option<Arc<dyn TypeResolver>>,
+}
+
+impl TypeResolver for BodyLocalTypeResolver {
+  fn resolve_type_name(&self, path: &[String]) -> Option<DefId> {
+    match path {
+      [name] => self
+        .locals_type
+        .get(name)
+        .copied()
+        .or_else(|| self.inner.as_ref()?.resolve_type_name(path)),
+      _ => self.inner.as_ref()?.resolve_type_name(path),
+    }
+  }
+
+  fn resolve_typeof(&self, path: &[String]) -> Option<DefId> {
+    match path {
+      [name] => self
+        .locals_value
+        .get(name)
+        .copied()
+        .or_else(|| self.inner.as_ref()?.resolve_typeof(path)),
+      _ => self.inner.as_ref()?.resolve_typeof(path),
+    }
+  }
+
+  fn resolve_import_type(&self, module: &str, qualifier: Option<&[String]>) -> Option<DefId> {
+    self
+      .inner
+      .as_ref()
+      .and_then(|inner| inner.resolve_import_type(module, qualifier))
+  }
+
+  fn resolve_import_typeof(&self, module: &str, qualifier: Option<&[String]>) -> Option<DefId> {
+    self
+      .inner
+      .as_ref()
+      .and_then(|inner| inner.resolve_import_typeof(module, qualifier))
+  }
+}
+
 pub struct AstIndex {
   ast: Arc<Node<parse_js::ast::stx::TopLevel>>,
   stmts: HashMap<TextRange, *const Node<Stmt>>,
@@ -1152,6 +1197,7 @@ pub fn check_body(
     None,
     None,
     None,
+    None,
     BodyThisSuperContext::default(),
     expr_value_overrides,
     None,
@@ -1179,6 +1225,7 @@ pub fn check_body_with_expander(
   bindings: &HashMap<String, TypeId>,
   resolver: Option<Arc<dyn TypeResolver>>,
   value_defs: &HashMap<DefId, DefId>,
+  def_spans: Option<&HashMap<(FileId, TextRange), DefId>>,
   relate_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
   type_param_decls: Option<&HashMap<DefId, Arc<[TypeParamDecl]>>>,
   contextual_fn_ty: Option<TypeId>,
@@ -1229,6 +1276,45 @@ pub fn check_body_with_expander(
     }
   }
 
+  // TypeLowerer normally resolves names via module/file bindings. However,
+  // classes declared inside a body introduce both a value binding (constructor)
+  // and a type binding (instance type), so we build a body-scoped resolver that
+  // knows about local class declarations.
+  //
+  // Note: We approximate block scoping by picking a deterministic "winner" per
+  // name across the whole body, since the AST body checker does not currently
+  // model nested type scopes.
+  let mut local_class_defs: HashMap<String, (TextRange, DefId, DefId)> = HashMap::new();
+  for (span, def_id) in decl_def_by_span.iter() {
+    let Some(stmt) = ast_index.stmts.get(span).copied() else {
+      continue;
+    };
+    // Safety: `AstIndex` stores immutable pointers into an Arc-owned AST.
+    let stmt = unsafe { &*stmt };
+    let Stmt::ClassDecl(class_decl) = stmt.stx.as_ref() else {
+      continue;
+    };
+    let Some(name) = class_decl.stx.name.as_ref() else {
+      continue;
+    };
+    let name = name.stx.name.clone();
+    let value_def = value_defs.get(def_id).copied().unwrap_or(*def_id);
+    let replace = match local_class_defs.get(&name) {
+      None => true,
+      Some((existing_span, existing_def_id, _)) => {
+        (span.start, span.end, def_id.0) < (existing_span.start, existing_span.end, existing_def_id.0)
+      }
+    };
+    if replace {
+      local_class_defs.insert(name, (*span, *def_id, value_def));
+    }
+  }
+  let (local_type_defs, local_value_defs): (HashMap<String, DefId>, HashMap<String, DefId>) =
+    local_class_defs
+      .into_iter()
+      .map(|(name, (_span, type_def, value_def))| ((name.clone(), type_def), (name, value_def)))
+      .unzip();
+
   let body_range = body_range(body);
   let mut relate_hooks = super::relate_hooks();
   let check_cancelled = || {
@@ -1248,6 +1334,15 @@ pub fn check_body_with_expander(
     relate_hooks,
     caches.relation.clone(),
   );
+  let resolver = if local_type_defs.is_empty() && local_value_defs.is_empty() {
+    resolver
+  } else {
+    Some(Arc::new(BodyLocalTypeResolver {
+      locals_type: local_type_defs,
+      locals_value: local_value_defs,
+      inner: resolver,
+    }) as Arc<_>)
+  };
   let type_resolver = resolver.clone();
   let mut lowerer = match resolver {
     Some(resolver) => TypeLowerer::with_resolver(Arc::clone(&store), resolver),
@@ -1314,6 +1409,7 @@ pub fn check_body_with_expander(
     return_types: Vec::new(),
     index: ast_index,
     value_defs,
+    def_spans,
     scopes: vec![Scope::default()],
     var_scopes: vec![0],
     type_param_scopes: Vec::new(),
@@ -1475,6 +1571,7 @@ struct Checker<'a> {
   return_types: Vec<TypeId>,
   index: &'a AstIndex,
   value_defs: &'a HashMap<DefId, DefId>,
+  def_spans: Option<&'a HashMap<(FileId, TextRange), DefId>>,
   scopes: Vec<Scope>,
   /// Index of the nearest "var scope" in `scopes`.
   ///
@@ -3135,7 +3232,12 @@ impl<'a> Checker<'a> {
         if let Some(name) = class_decl.stx.name.as_ref() {
           let name_str = name.stx.name.clone();
           let stmt_span = loc_to_range(self.file, stmt.loc);
-          if let Some(type_def) = self.decl_def_by_span.get(&stmt_span).copied() {
+          let type_def = self
+            .decl_def_by_span
+            .get(&stmt_span)
+            .copied()
+            .or_else(|| self.def_spans.and_then(|spans| spans.get(&(self.file, stmt_span)).copied()));
+          if let Some(type_def) = type_def {
             let value_def = self.value_defs.get(&type_def).copied().unwrap_or(type_def);
             let class_ty = self.store.intern_type(TypeKind::Ref {
               def: value_def,
@@ -8816,8 +8918,9 @@ impl<'a> Checker<'a> {
       keys.dedup();
       let preview: Vec<&str> = keys.iter().take(32).map(|s| s.as_str()).collect();
       eprintln!(
-        "DEBUG_RESOLVE_IDENT: file={:?} name={:?} range={:?} scopes_rev={:?} keys={} preview={:?}",
+        "DEBUG_RESOLVE_IDENT: file={:?} body_kind={:?} name={:?} range={:?} scopes_rev={:?} keys={} preview={:?}",
         self.file,
+        self.body_kind,
         name,
         range,
         scopes,
@@ -10022,6 +10125,8 @@ impl<'a> Checker<'a> {
         self.current_super_ty,
         self.current_super_ctor_ty,
       );
+      let saved_type_resolver = self.type_resolver.clone();
+      let saved_lowerer_resolver = saved_type_resolver.clone();
 
       let pushed_scope = Scope::default();
       let pushed_type_param_scope = !type_params.is_empty();
@@ -10050,8 +10155,175 @@ impl<'a> Checker<'a> {
       }
       self.scopes.push(pushed_scope);
       self.bind_params(func, &type_params, None);
+      // `function_type` can be called while checking an *outer* body (e.g. the
+      // top-level body binding a function declaration). When inferring a return
+      // type by checking the nested function body, ensure local class
+      // declarations inside that body are visible to type references (`C`) and
+      // `typeof` queries by layering a body-local resolver.
+      //
+      // This mirrors `check_body_with_expander`, but is driven directly from the
+      // parse-js AST rather than HIR since return inference happens without
+      // switching to the function's dedicated HIR body checker.
+      let body_resolver = match func.stx.body.as_ref() {
+        Some(FuncBody::Block(block)) => {
+          let mut local_class_defs: HashMap<String, (TextRange, DefId, DefId)> = HashMap::new();
+          fn walk_namespace(
+            checker: &Checker<'_>,
+            body: &NamespaceBody,
+            local_class_defs: &mut HashMap<String, (TextRange, DefId, DefId)>,
+          ) {
+            match body {
+              NamespaceBody::Block(stmts) => {
+                for stmt in stmts.iter() {
+                  walk_stmt(checker, stmt, local_class_defs);
+                }
+              }
+              NamespaceBody::Namespace(inner) => walk_namespace(checker, &inner.stx.body, local_class_defs),
+            }
+          }
+          fn walk_stmt(
+            checker: &Checker<'_>,
+            stmt: &Node<Stmt>,
+            local_class_defs: &mut HashMap<String, (TextRange, DefId, DefId)>,
+          ) {
+            match stmt.stx.as_ref() {
+              Stmt::Block(block) => {
+                for stmt in block.stx.body.iter() {
+                  walk_stmt(checker, stmt, local_class_defs);
+                }
+              }
+              Stmt::If(if_stmt) => {
+                walk_stmt(checker, &if_stmt.stx.consequent, local_class_defs);
+                if let Some(alt) = &if_stmt.stx.alternate {
+                  walk_stmt(checker, alt, local_class_defs);
+                }
+              }
+              Stmt::While(while_stmt) => {
+                walk_stmt(checker, &while_stmt.stx.body, local_class_defs);
+              }
+              Stmt::DoWhile(do_while) => {
+                walk_stmt(checker, &do_while.stx.body, local_class_defs);
+              }
+              Stmt::ForTriple(for_stmt) => {
+                for stmt in for_stmt.stx.body.stx.body.iter() {
+                  walk_stmt(checker, stmt, local_class_defs);
+                }
+              }
+              Stmt::ForIn(for_in) => {
+                for stmt in for_in.stx.body.stx.body.iter() {
+                  walk_stmt(checker, stmt, local_class_defs);
+                }
+              }
+              Stmt::ForOf(for_of) => {
+                for stmt in for_of.stx.body.stx.body.iter() {
+                  walk_stmt(checker, stmt, local_class_defs);
+                }
+              }
+              Stmt::Switch(sw) => {
+                for branch in sw.stx.branches.iter() {
+                  for stmt in branch.stx.body.iter() {
+                    walk_stmt(checker, stmt, local_class_defs);
+                  }
+                }
+              }
+              Stmt::Try(tr) => {
+                for stmt in tr.stx.wrapped.stx.body.iter() {
+                  walk_stmt(checker, stmt, local_class_defs);
+                }
+                if let Some(catch) = &tr.stx.catch {
+                  for stmt in catch.stx.body.iter() {
+                    walk_stmt(checker, stmt, local_class_defs);
+                  }
+                }
+                if let Some(finally) = &tr.stx.finally {
+                  for stmt in finally.stx.body.iter() {
+                    walk_stmt(checker, stmt, local_class_defs);
+                  }
+                }
+              }
+              Stmt::Label(label) => {
+                walk_stmt(checker, &label.stx.statement, local_class_defs);
+              }
+              Stmt::With(w) => {
+                walk_stmt(checker, &w.stx.body, local_class_defs);
+              }
+              Stmt::NamespaceDecl(ns) => walk_namespace(checker, &ns.stx.body, local_class_defs),
+              Stmt::ModuleDecl(module) => {
+                if let Some(body) = &module.stx.body {
+                  for stmt in body.iter() {
+                    walk_stmt(checker, stmt, local_class_defs);
+                  }
+                }
+              }
+              Stmt::GlobalDecl(global) => {
+                for stmt in global.stx.body.iter() {
+                  walk_stmt(checker, stmt, local_class_defs);
+                }
+              }
+              Stmt::ClassDecl(class_decl) => {
+                let Some(name) = class_decl.stx.name.as_ref() else {
+                  return;
+                };
+                let name = name.stx.name.clone();
+                let stmt_span = loc_to_range(checker.file, stmt.loc);
+                let type_def = checker
+                  .decl_def_by_span
+                  .get(&stmt_span)
+                  .copied()
+                  .or_else(|| {
+                    checker
+                      .def_spans
+                      .and_then(|spans| spans.get(&(checker.file, stmt_span)).copied())
+                  });
+                let Some(type_def) = type_def else {
+                  return;
+                };
+                let value_def = checker.value_defs.get(&type_def).copied().unwrap_or(type_def);
+                let replace = match local_class_defs.get(&name) {
+                  None => true,
+                  Some((existing_span, existing_def_id, _)) => {
+                    (stmt_span.start, stmt_span.end, type_def.0)
+                      < (existing_span.start, existing_span.end, existing_def_id.0)
+                  }
+                };
+                if replace {
+                  local_class_defs.insert(name, (stmt_span, type_def, value_def));
+                }
+              }
+              // Do not descend into nested function/class bodies.
+              Stmt::FunctionDecl(_) => {}
+              _ => {}
+            }
+          }
+          for stmt in block.iter() {
+            walk_stmt(self, stmt, &mut local_class_defs);
+          }
+          let (locals_type, locals_value): (HashMap<String, DefId>, HashMap<String, DefId>) =
+            local_class_defs
+              .into_iter()
+              .map(|(name, (_span, type_def, value_def))| {
+                ((name.clone(), type_def), (name, value_def))
+              })
+              .unzip();
+
+          if locals_type.is_empty() && locals_value.is_empty() {
+            saved_type_resolver.clone()
+          } else {
+            Some(Arc::new(BodyLocalTypeResolver {
+              locals_type: locals_type,
+              locals_value: locals_value,
+              inner: saved_type_resolver.clone(),
+            }) as Arc<_>)
+          }
+        }
+        _ => saved_type_resolver.clone(),
+      };
+      self.lowerer.set_resolver(body_resolver.clone());
+      self.type_resolver = body_resolver;
       self.check_function_body(func);
       self.scopes.pop();
+      self.type_resolver = saved_type_resolver;
+      self.lowerer.set_resolver(saved_lowerer_resolver);
 
       let inferred_ret = if self.return_types.is_empty() {
         prim.void

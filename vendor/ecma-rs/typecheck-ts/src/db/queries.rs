@@ -2128,6 +2128,7 @@ pub mod body_check {
         &bindings,
         resolver.clone(),
         ctx.value_defs.as_ref(),
+        Some(&ctx.def_spans),
         Some(&expander),
         Some(&ctx.interned_type_param_decls),
         contextual_fn_ty,
@@ -2783,12 +2784,12 @@ pub mod body_check {
         let hir_js::StmtKind::Decl(type_def) = &stmt.kind else {
           continue;
         };
-        if !matches!(ctx.def_kinds.get(type_def), Some(crate::DefKind::Class(_))) {
-          continue;
-        }
         let Some(def_data) = lowered.def(*type_def) else {
           continue;
         };
+        if def_data.path.kind != hir_js::DefKind::Class {
+          continue;
+        }
         let Some(name) = lowered.names.resolve(def_data.name) else {
           continue;
         };
