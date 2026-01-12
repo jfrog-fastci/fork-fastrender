@@ -3,11 +3,11 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, NodeId, NodeKind};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom2_bindings;
-use crate::js::dom_platform::{DomInterface, DomPlatform};
+use crate::js::dom_platform::DomPlatform;
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
-  EVENT_TARGET_HOST_TAG,
+  make_dom_exception, EVENT_TARGET_HOST_TAG,
 };
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
@@ -2026,12 +2026,12 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
             let any = host.as_any_mut();
             if let Some(host) = any.downcast_mut::<DocumentHostState>() {
-              Ok(host.mutate_dom(|dom| match dom.set_element_id(element_id, &value) {
+              Ok(DomHost::mutate_dom(host, |dom| match dom.set_element_id(element_id, &value) {
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
               }))
             } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
-              Ok(host.mutate_dom(|dom| match dom.set_element_id(element_id, &value) {
+              Ok(DomHost::mutate_dom(host, |dom| match dom.set_element_id(element_id, &value) {
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
               }))
@@ -2067,15 +2067,21 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
             let any = host.as_any_mut();
             if let Some(host) = any.downcast_mut::<DocumentHostState>() {
-              Ok(host.mutate_dom(|dom| match dom.set_element_class_name(element_id, &value) {
+              Ok(DomHost::mutate_dom(
+                host,
+                |dom| match dom.set_element_class_name(element_id, &value) {
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
-              }))
+              },
+              ))
             } else if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
-              Ok(host.mutate_dom(|dom| match dom.set_element_class_name(element_id, &value) {
+              Ok(DomHost::mutate_dom(
+                host,
+                |dom| match dom.set_element_class_name(element_id, &value) {
                 Ok(changed) => (Ok(()), changed),
                 Err(err) => (Err(err), false),
-              }))
+              },
+              ))
             } else {
               Err(VmError::TypeError("DOM host not available"))
             }
@@ -2534,7 +2540,7 @@ mod tests {
   use webidl_vm_js::host_from_hooks;
 
   #[derive(Debug, Default)]
-  struct RecordingDomWebIdlHost {
+  pub(super) struct RecordingDomWebIdlHost {
     last_call: Option<RecordingCall>,
     last_iterable: Option<RecordingIterableSnapshot>,
   }
@@ -2612,7 +2618,9 @@ mod tests {
   struct DummyWindowRealmHost;
 
   impl WindowRealmHost for DummyWindowRealmHost {
-    fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut crate::js::WindowRealm) {
+    fn vm_host_and_window_realm(
+      &mut self,
+    ) -> crate::error::Result<(&mut dyn VmHost, &mut crate::js::WindowRealm)> {
       unreachable!("DummyWindowRealmHost is only used as a type parameter in tests")
     }
   }
@@ -2818,6 +2826,7 @@ mod tests {
 #[cfg(test)]
 mod element_dispatch_tests {
   use super::*;
+  use crate::js::dom_platform::DomInterface;
   use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
   use selectors::context::QuirksMode;
   use std::any::Any;
