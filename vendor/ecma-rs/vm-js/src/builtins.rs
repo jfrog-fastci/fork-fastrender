@@ -1,5 +1,5 @@
 use crate::function::{CallHandler, FunctionData, ThisMode};
-use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
+use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::regexp::{advance_string_index, compile_regexp, RegExpCompileError, RegExpFlags};
 use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
 use crate::{
@@ -286,6 +286,175 @@ fn root_property_key(scope: &mut Scope<'_>, key: PropertyKey) -> Result<(), VmEr
   Ok(())
 }
 
+// https://tc39.es/ecma262/#sec-topropertydescriptor
+fn to_property_descriptor_patch(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<PropertyDescriptorPatch, VmError> {
+  let Value::Object(desc_obj) = value else {
+    return Err(VmError::TypeError("property descriptor must be an object"));
+  };
+
+  // Root `desc_obj` for the duration of the conversion so `HasProperty`/`Get` can allocate freely.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(desc_obj))?;
+
+  let mut out = PropertyDescriptorPatch::default();
+
+  // Helper to read `HasProperty` + `Get` (so we can distinguish "absent" from "present with
+  // undefined") per `ToPropertyDescriptor`.
+  let mut read_prop = |scope: &mut Scope<'_>, name: &str| -> Result<Option<Value>, VmError> {
+    let key = string_key(scope, name)?;
+    if !scope.ordinary_has_property_with_tick(desc_obj, key, || vm.tick())? {
+      return Ok(None);
+    }
+    let v = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, desc_obj, key, Value::Object(desc_obj))?;
+    Ok(Some(v))
+  };
+
+  if let Some(v) = read_prop(&mut scope, "enumerable")? {
+    out.enumerable = Some(scope.heap().to_boolean(v)?);
+  }
+  if let Some(v) = read_prop(&mut scope, "configurable")? {
+    out.configurable = Some(scope.heap().to_boolean(v)?);
+  }
+  if let Some(v) = read_prop(&mut scope, "value")? {
+    out.value = Some(v);
+  }
+  if let Some(v) = read_prop(&mut scope, "writable")? {
+    out.writable = Some(scope.heap().to_boolean(v)?);
+  }
+  if let Some(v) = read_prop(&mut scope, "get")? {
+    if !matches!(v, Value::Undefined) && !scope.heap().is_callable(v)? {
+      return Err(VmError::TypeError("getter must be callable"));
+    }
+    out.get = Some(v);
+  }
+  if let Some(v) = read_prop(&mut scope, "set")? {
+    if !matches!(v, Value::Undefined) && !scope.heap().is_callable(v)? {
+      return Err(VmError::TypeError("setter must be callable"));
+    }
+    out.set = Some(v);
+  }
+
+  out.validate()?;
+  Ok(out)
+}
+
+// https://tc39.es/ecma262/#sec-frompropertydescriptor
+fn from_property_descriptor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  desc: PropertyDescriptor,
+) -> Result<GcObject, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intr.object_prototype()))?;
+
+  let enumerable_key = string_key(scope, "enumerable")?;
+  let configurable_key = string_key(scope, "configurable")?;
+
+  scope.create_data_property_or_throw(out, enumerable_key, Value::Bool(desc.enumerable))?;
+  scope.create_data_property_or_throw(out, configurable_key, Value::Bool(desc.configurable))?;
+
+  match desc.kind {
+    PropertyKind::Data { value, writable } => {
+      scope.push_root(value)?;
+      let value_key = string_key(scope, "value")?;
+      let writable_key = string_key(scope, "writable")?;
+      scope.create_data_property_or_throw(out, value_key, value)?;
+      scope.create_data_property_or_throw(out, writable_key, Value::Bool(writable))?;
+    }
+    PropertyKind::Accessor { get, set } => {
+      scope.push_root(get)?;
+      scope.push_root(set)?;
+      let get_key = string_key(scope, "get")?;
+      let set_key = string_key(scope, "set")?;
+      scope.create_data_property_or_throw(out, get_key, get)?;
+      scope.create_data_property_or_throw(out, set_key, set)?;
+    }
+  }
+
+  Ok(out)
+}
+
+// https://tc39.es/ecma262/#sec-defineproperties
+fn define_properties(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  target: GcObject,
+  properties: Value,
+) -> Result<(), VmError> {
+  let props_obj = scope.to_object(vm, host, hooks, properties)?;
+
+  // Root `target`/`props_obj` for the duration of the operation so intermediate descriptor values
+  // are reachable even if GC is triggered during `Get` or descriptor conversion.
+  scope.push_roots(&[Value::Object(target), Value::Object(props_obj)])?;
+
+  let keys = scope.ordinary_own_property_keys_with_tick(props_obj, || vm.tick())?;
+  let mut descriptors: Vec<(PropertyKey, PropertyDescriptorPatch)> = Vec::new();
+  descriptors
+    .try_reserve_exact(keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  // Collect descriptors first (per spec) so any getters on `properties` run before we start
+  // mutating `target`.
+  for (i, key) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    // `descValue = ? Get(properties, key)`
+    let desc_value =
+      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, props_obj, key, Value::Object(props_obj))?;
+
+    // Root `key` + `desc_value` during conversion so `ToPropertyDescriptor` can allocate freely.
+    let desc = {
+      let mut convert_scope = scope.reborrow();
+      root_property_key(&mut convert_scope, key)?;
+      convert_scope.push_root(desc_value)?;
+      to_property_descriptor_patch(vm, &mut convert_scope, host, hooks, desc_value)?
+    };
+
+    // Persist any descriptor values across the subsequent define loop. These can be newly-allocated
+    // objects returned from accessors and otherwise unreachable from the heap.
+    if let Some(v) = desc.value {
+      scope.push_root(v)?;
+    }
+    if let Some(v) = desc.get {
+      scope.push_root(v)?;
+    }
+    if let Some(v) = desc.set {
+      scope.push_root(v)?;
+    }
+    root_property_key(scope, key)?;
+
+    descriptors.push((key, desc));
+  }
+
+  for (i, (key, desc)) in descriptors.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let mut define_scope = scope.reborrow();
+    let ok = define_scope.define_own_property_with_tick(target, key, desc, || vm.tick())?;
+    if !ok {
+      return Err(VmError::TypeError("DefineOwnProperty rejected"));
+    }
+  }
+
+  Ok(())
+}
+
 pub fn function_prototype_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -500,7 +669,7 @@ pub fn object_define_property(
   let mut scope = scope.reborrow();
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let target = scope.to_object(vm, host, hooks, target_val)?;
+  let target = require_object(target_val)?;
   scope.push_root(Value::Object(target))?;
 
   let prop = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -518,11 +687,30 @@ pub fn object_define_property(
   Ok(Value::Object(target))
 }
 
-pub fn object_create(
-  _vm: &mut Vm,
+pub fn object_define_properties(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  scope.push_root(Value::Object(target))?;
+
+  let props_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(props_val)?;
+
+  define_properties(vm, scope, host, hooks, target, props_val)?;
+  Ok(Value::Object(target))
+}
+pub fn object_create(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -538,14 +726,21 @@ pub fn object_create(
     }
   };
 
+  // Root the prototype across allocation/GC.
+  if let Some(proto_obj) = proto {
+    scope.push_root(Value::Object(proto_obj))?;
+  }
+
+  let obj = scope.alloc_object_with_prototype(proto)?;
+  scope.push_root(Value::Object(obj))?;
+
   if let Some(properties_object) = args.get(1).copied() {
     if !matches!(properties_object, Value::Undefined) {
-      return Err(VmError::Unimplemented("Object.create propertiesObject"));
+      scope.push_root(properties_object)?;
+      define_properties(vm, scope, host, hooks, obj, properties_object)?;
     }
   }
 
-  let obj = scope.alloc_object()?;
-  scope.heap_mut().object_set_prototype(obj, proto)?;
   Ok(Value::Object(obj))
 }
 
@@ -559,26 +754,82 @@ pub fn object_get_own_property_descriptor(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Spec: https://tc39.es/ecma262/#sec-object.getownpropertydescriptor
-  let mut scope = scope.reborrow();
-
+  // https://tc39.es/ecma262/#sec-object.getownpropertydescriptor
   let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let obj = scope.to_object(vm, host, hooks, obj_val)?;
   scope.push_root(Value::Object(obj))?;
 
-  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
-  let key = scope.to_property_key(vm, host, hooks, prop)?;
-  root_property_key(&mut scope, key)?;
+  let prop_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop_val)?;
+  root_property_key(scope, key)?;
 
-  let Some(desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
+  let is_proxy = scope.heap().get_proxy_data(obj)?.is_some();
+  let Some(mut desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
     return Ok(Value::Undefined);
   };
 
-  let desc_obj = crate::property_descriptor_ops::from_property_descriptor(&mut scope, desc)?;
-  Ok(Value::Object(desc_obj))
+  // Ensure string exotic index properties report their actual value (which is not stored in the
+  // property table).
+  if !is_proxy {
+    if let PropertyKind::Data { writable, .. } = desc.kind {
+      let value = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+      desc.kind = PropertyKind::Data { value, writable };
+    }
+  }
+
+  let out = from_property_descriptor(vm, scope, desc)?;
+  Ok(Value::Object(out))
 }
 
-/// `Object.getOwnPropertyNames(O)` (ECMA-262).
+pub fn object_get_own_property_descriptors(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.getownpropertydescriptors
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let is_proxy = scope.heap().get_proxy_data(obj)?.is_some();
+
+  let intr = require_intrinsics(vm)?;
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intr.object_prototype()))?;
+
+  for (i, key) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let Some(mut desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
+      continue;
+    };
+
+    if !is_proxy {
+      if let PropertyKind::Data { writable, .. } = desc.kind {
+        let value = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+        desc.kind = PropertyKind::Data { value, writable };
+      }
+    }
+
+    let mut item_scope = scope.reborrow();
+    item_scope.push_root(Value::Object(out))?;
+    root_property_key(&mut item_scope, key)?;
+    let desc_obj = from_property_descriptor(vm, &mut item_scope, desc)?;
+    item_scope.create_data_property_or_throw(out, key, Value::Object(desc_obj))?;
+  }
+
+  Ok(Value::Object(out))
+}
 pub fn object_get_own_property_names(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -629,6 +880,232 @@ pub fn object_get_own_property_names(
   Ok(Value::Object(array))
 }
 
+pub fn object_get_own_property_symbols(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.getownpropertysymbols
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut symbols: Vec<crate::GcSymbol> = Vec::new();
+  symbols
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, key) in own_keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let PropertyKey::Symbol(s) = key else {
+      continue;
+    };
+    symbols.push(s);
+  }
+
+  let len = u32::try_from(symbols.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, scope, len)?;
+
+  for (i, sym) in symbols.iter().copied().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let mut idx_scope = scope.reborrow();
+    idx_scope.push_root(Value::Object(array))?;
+    idx_scope.push_root(Value::Symbol(sym))?;
+
+    let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
+    idx_scope.define_property(array, key, data_desc(Value::Symbol(sym), true, true, true))?;
+  }
+
+  Ok(Value::Object(array))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IntegrityLevel {
+  Sealed,
+  Frozen,
+}
+
+fn set_integrity_level(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  level: IntegrityLevel,
+) -> Result<(), VmError> {
+  // https://tc39.es/ecma262/#sec-setintegritylevel
+  scope.object_prevent_extensions(obj)?;
+
+  let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  for (i, key) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+      continue;
+    };
+
+    let mut patch = PropertyDescriptorPatch {
+      configurable: Some(false),
+      ..Default::default()
+    };
+    if matches!(level, IntegrityLevel::Frozen) && desc.is_data_descriptor() {
+      patch.writable = Some(false);
+    }
+
+    let mut define_scope = scope.reborrow();
+    let ok = define_scope.define_own_property_with_tick(obj, key, patch, || vm.tick())?;
+    if !ok {
+      return Err(VmError::TypeError("DefineOwnProperty rejected"));
+    }
+  }
+
+  Ok(())
+}
+
+fn test_integrity_level(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  level: IntegrityLevel,
+) -> Result<bool, VmError> {
+  // https://tc39.es/ecma262/#sec-testintegritylevel
+  if scope.object_is_extensible(obj)? {
+    return Ok(false);
+  }
+
+  let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  for (i, key) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+      continue;
+    };
+    if desc.configurable {
+      return Ok(false);
+    }
+    if matches!(level, IntegrityLevel::Frozen) && desc.is_data_descriptor() {
+      if let PropertyKind::Data { writable, .. } = desc.kind {
+        if writable {
+          return Ok(false);
+        }
+      }
+    }
+  }
+
+  Ok(true)
+}
+
+pub fn object_prevent_extensions(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.preventextensions
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = obj_val else {
+    return Ok(obj_val);
+  };
+  scope.object_prevent_extensions(obj)?;
+  Ok(Value::Object(obj))
+}
+
+pub fn object_seal(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.seal
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = obj_val else {
+    return Ok(obj_val);
+  };
+  scope.push_root(Value::Object(obj))?;
+  set_integrity_level(vm, scope, obj, IntegrityLevel::Sealed)?;
+  Ok(Value::Object(obj))
+}
+
+pub fn object_is_sealed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.issealed
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = obj_val else {
+    return Ok(Value::Bool(true));
+  };
+  scope.push_root(Value::Object(obj))?;
+  Ok(Value::Bool(test_integrity_level(
+    vm,
+    scope,
+    obj,
+    IntegrityLevel::Sealed,
+  )?))
+}
+
+pub fn object_freeze(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.freeze
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = obj_val else {
+    return Ok(obj_val);
+  };
+  scope.push_root(Value::Object(obj))?;
+  set_integrity_level(vm, scope, obj, IntegrityLevel::Frozen)?;
+  Ok(Value::Object(obj))
+}
+
+pub fn object_is_frozen(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-object.isfrozen
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = obj_val else {
+    return Ok(Value::Bool(true));
+  };
+  scope.push_root(Value::Object(obj))?;
+  Ok(Value::Bool(test_integrity_level(
+    vm,
+    scope,
+    obj,
+    IntegrityLevel::Frozen,
+  )?))
+}
 pub fn object_keys(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1071,56 +1548,6 @@ pub fn object_set_prototype_of(
     // If `O` is not an object, the spec returns it unchanged.
     other => Ok(other),
   }
-}
-
-pub fn object_get_own_property_symbols(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  // Spec: https://tc39.es/ecma262/#sec-object.getownpropertysymbols
-  let mut scope = scope.reborrow();
-
-  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let obj = scope.to_object(vm, host, hooks, obj_val)?;
-  scope.push_root(Value::Object(obj))?;
-
-  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
-  let mut symbols: Vec<crate::GcSymbol> = Vec::new();
-  symbols
-    .try_reserve_exact(own_keys.len())
-    .map_err(|_| VmError::OutOfMemory)?;
-
-  for (i, key) in own_keys.into_iter().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    let PropertyKey::Symbol(sym) = key else {
-      continue;
-    };
-    symbols.push(sym);
-  }
-
-  let len = u32::try_from(symbols.len()).map_err(|_| VmError::OutOfMemory)?;
-  let array = create_array_object(vm, &mut scope, len)?;
-  scope.push_root(Value::Object(array))?;
-
-  for (i, sym) in symbols.iter().copied().enumerate() {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    let mut idx_scope = scope.reborrow();
-    idx_scope.push_roots(&[Value::Object(array), Value::Symbol(sym)])?;
-
-    let key = PropertyKey::from_string(idx_scope.alloc_string(&i.to_string())?);
-    idx_scope.define_property(array, key, data_desc(Value::Symbol(sym), true, true, true))?;
-  }
-
-  Ok(Value::Object(array))
 }
 
 pub fn object_is_extensible(
@@ -1808,7 +2235,6 @@ pub fn proxy_constructor_construct(
   proxy_constructor_impl(&mut scope, target, handler)
 }
 
-/// `Proxy.revocable(target, handler)` (ECMA-262).
 pub fn proxy_revocable(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -7991,6 +8417,97 @@ pub fn object_prototype___proto___set(
     Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(Value::Undefined),
     Err(err) => Err(err),
   }
+}
+
+/// `Object.prototype.isPrototypeOf(V)` (ECMA-262).
+pub fn object_prototype_is_prototype_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let o = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(o))?;
+
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(mut v_obj) = v else {
+    return Ok(Value::Bool(false));
+  };
+
+  let mut steps = 0usize;
+  loop {
+    if steps >= crate::heap::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+    if steps % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let Some(p) = scope.heap().object_prototype(v_obj)? else {
+      return Ok(Value::Bool(false));
+    };
+    if p == o {
+      return Ok(Value::Bool(true));
+    }
+    v_obj = p;
+    steps += 1;
+  }
+}
+
+/// `Object.prototype.propertyIsEnumerable(V)` (ECMA-262).
+pub fn object_prototype_property_is_enumerable(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let Some(desc) = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)? else {
+    return Ok(Value::Bool(false));
+  };
+  Ok(Value::Bool(desc.enumerable))
+}
+
+/// `Object.prototype.toLocaleString` (ECMA-262) (minimal).
+pub fn object_prototype_to_locale_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: return ? Invoke(this, "toString")
+  let mut scope = scope.reborrow();
+  let receiver = scope.push_root(this)?;
+
+  let obj = scope.to_object(vm, host, hooks, receiver)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let to_string_key = string_key(&mut scope, "toString")?;
+  let func = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, to_string_key, receiver)?;
+  if !scope.heap().is_callable(func)? {
+    return Err(VmError::TypeError("toString is not callable"));
+  }
+  scope.push_root(func)?;
+
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, func, receiver, &[])
 }
 
 fn get_array_length(

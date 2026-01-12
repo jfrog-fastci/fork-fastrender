@@ -325,9 +325,9 @@ fn install_object_static_methods(
     roots,
     function_prototype,
     object_constructor,
-    "getOwnPropertyDescriptor",
+    "defineProperties",
     2,
-    builtins::object_get_own_property_descriptor,
+    builtins::object_define_properties,
   )?;
   install_object_static_method(
     vm,
@@ -365,9 +365,79 @@ fn install_object_static_methods(
     roots,
     function_prototype,
     object_constructor,
+    "getOwnPropertyDescriptor",
+    2,
+    builtins::object_get_own_property_descriptor,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "getOwnPropertyDescriptors",
+    1,
+    builtins::object_get_own_property_descriptors,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "preventExtensions",
+    1,
+    builtins::object_prevent_extensions,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
     "isExtensible",
     1,
     builtins::object_is_extensible,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "seal",
+    1,
+    builtins::object_seal,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "isSealed",
+    1,
+    builtins::object_is_sealed,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "freeze",
+    1,
+    builtins::object_freeze,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "isFrozen",
+    1,
+    builtins::object_is_frozen,
   )?;
   install_object_static_method(
     vm,
@@ -686,8 +756,16 @@ impl Intrinsics {
     let object_prototype_to_string = vm.register_native_call(builtins::object_prototype_to_string)?;
     let object_prototype_has_own_property =
       vm.register_native_call(builtins::object_prototype_has_own_property)?;
-    let object_prototype_proto_get = vm.register_native_call(builtins::object_prototype___proto___get)?;
-    let object_prototype_proto_set = vm.register_native_call(builtins::object_prototype___proto___set)?;
+    let object_prototype_proto_get =
+      vm.register_native_call(builtins::object_prototype___proto___get)?;
+    let object_prototype_proto_set =
+      vm.register_native_call(builtins::object_prototype___proto___set)?;
+    let object_prototype_is_prototype_of =
+      vm.register_native_call(builtins::object_prototype_is_prototype_of)?;
+    let object_prototype_property_is_enumerable =
+      vm.register_native_call(builtins::object_prototype_property_is_enumerable)?;
+    let object_prototype_to_locale_string =
+      vm.register_native_call(builtins::object_prototype_to_locale_string)?;
     let function_prototype_call_method =
       vm.register_native_call(builtins::function_prototype_call_method)?;
     let function_prototype_apply_method =
@@ -1010,17 +1088,82 @@ impl Intrinsics {
         let key = PropertyKey::from_string(has_own_s);
         let func =
           scope.alloc_native_function(object_prototype_has_own_property, None, has_own_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+       scope.define_property(
+          object_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // Object.prototype.isPrototypeOf
+      {
+        let is_prototype_of_s = scope.alloc_string("isPrototypeOf")?;
+        scope.push_root(Value::String(is_prototype_of_s))?;
+        let key = PropertyKey::from_string(is_prototype_of_s);
+        let func = scope.alloc_native_function(
+          object_prototype_is_prototype_of,
+          None,
+          is_prototype_of_s,
+          1,
+        )?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()
           .object_set_prototype(func, Some(function_prototype))?;
-       scope.define_property(
-         object_prototype,
-         key,
-         data_desc(Value::Object(func), true, false, true),
-       )?;
-     }
+        scope.define_property(
+          object_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
 
+      // Object.prototype.propertyIsEnumerable
+      {
+        let property_is_enumerable_s = scope.alloc_string("propertyIsEnumerable")?;
+        scope.push_root(Value::String(property_is_enumerable_s))?;
+        let key = PropertyKey::from_string(property_is_enumerable_s);
+        let func = scope.alloc_native_function(
+          object_prototype_property_is_enumerable,
+          None,
+          property_is_enumerable_s,
+          1,
+        )?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          object_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // Object.prototype.toLocaleString
+      {
+        let to_locale_string_s = scope.alloc_string("toLocaleString")?;
+        scope.push_root(Value::String(to_locale_string_s))?;
+        let key = PropertyKey::from_string(to_locale_string_s);
+        let func = scope.alloc_native_function(
+          object_prototype_to_locale_string,
+          None,
+          to_locale_string_s,
+          0,
+        )?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          object_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
     // `%Function%`
     let function_call = vm.register_native_call(builtins::function_constructor_call)?;
     let function_construct =
