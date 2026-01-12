@@ -78,6 +78,37 @@ fn should_delegate_dom_interface(interface: &'static str) -> bool {
       | "DOMTokenList"
   )
 }
+
+impl WebIdlBindingsHost for BrowserDocumentDom2 {
+  fn call_operation(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _receiver: Option<Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented(
+      "WebIDL binding dispatch not implemented for operation",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented(
+      "WebIDL binding dispatch not implemented for constructor",
+    ))
+  }
+}
 #[derive(Debug, Clone, Copy)]
 struct RootedCallback {
   value: Value,
