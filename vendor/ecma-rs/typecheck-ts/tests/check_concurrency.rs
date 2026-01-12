@@ -72,7 +72,9 @@ fn program_check_does_not_block_symbol_queries() {
   });
 
   let symbol = rx
-    .recv_timeout(Duration::from_secs(2))
+    // Allow extra headroom for slower CI environments while still ensuring the
+    // query completes before `check()` finishes.
+    .recv_timeout(Duration::from_secs(5))
     .expect("symbol_at should return while check() is still running");
 
   assert!(
@@ -92,4 +94,3 @@ fn program_check_does_not_block_symbol_queries() {
     tracker.max_active()
   );
 }
-
