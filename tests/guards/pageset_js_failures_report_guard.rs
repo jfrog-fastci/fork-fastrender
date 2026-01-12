@@ -258,6 +258,17 @@ fn assert_sorted_top_exceptions(entries: &[Value]) {
   }
 }
 
+fn extract_section<'a>(doc: &'a str, start_heading: &str, end_heading: &str) -> &'a str {
+  let start = doc
+    .find(start_heading)
+    .unwrap_or_else(|| panic!("missing section heading {start_heading:?}"));
+  let after_start = &doc[start + start_heading.len()..];
+  let end = after_start
+    .find(end_heading)
+    .unwrap_or_else(|| panic!("missing section heading {end_heading:?} after {start_heading:?}"));
+  &after_start[..end]
+}
+
 #[test]
 fn pageset_js_failure_report_is_present_and_in_sync() {
   let root = repo_root();
@@ -424,6 +435,22 @@ fn pageset_js_failure_report_is_present_and_in_sync() {
   let md = fs::read_to_string(&md_path)
     .unwrap_or_else(|err| panic!("failed to read {}: {err}", md_path.display()));
   assert!(
+    md.contains(&format!("pageset_progress report --top-js-errors {top_n}")),
+    "markdown report must record the top-n command used to generate it"
+  );
+  for (label, value) in [
+    ("pages_total", pages_total as u64),
+    ("pages_with_js", pages_with_js as u64),
+    ("scripts_executed", expected.scripts_executed),
+    ("exceptions_thrown", expected.exceptions_thrown),
+    ("terminations_observed", expected.terminations_observed),
+  ] {
+    assert!(
+      md.contains(&format!("- {label}: {value}")),
+      "markdown report must include {label}={value}"
+    );
+  }
+  assert!(
     md.contains("# pageset_progress JavaScript failure report"),
     "markdown report missing title header"
   );
@@ -439,6 +466,65 @@ fn pageset_js_failure_report_is_present_and_in_sync() {
     md.contains("## Top exceptions"),
     "markdown report must include Top exceptions section"
   );
+
+  // Ensure termination breakdown lines match the aggregated report, so the markdown stays in sync
+  // even when all values are zero.
+  for (label, value) in [
+    ("out_of_fuel", expected.termination_out_of_fuel),
+    ("deadline_exceeded", expected.termination_deadline_exceeded),
+    ("interrupted", expected.termination_interrupted),
+    ("stack_overflow", expected.termination_stack_overflow),
+    ("out_of_memory", expected.termination_out_of_memory),
+  ] {
+    assert!(
+      md.contains(&format!("- {label}: {value}")),
+      "markdown report must include termination {label}={value}"
+    );
+  }
+
+  // Validate top list formatting inside each section.
+  let unimplemented_section = extract_section(&md, "## Top unimplemented", "## Top exceptions");
+  if expected.top_unimplemented.is_empty() {
+    assert!(
+      unimplemented_section.contains("(none)"),
+      "Top unimplemented section should contain (none) when empty"
+    );
+  } else {
+    assert!(
+      !unimplemented_section.contains("(none)"),
+      "Top unimplemented section should not contain (none) when entries exist"
+    );
+    for (message, count) in &expected.top_unimplemented {
+      let line = format!("- {count}: `{message}`");
+      assert!(
+        unimplemented_section.contains(&line),
+        "Top unimplemented section missing expected line: {line}"
+      );
+    }
+  }
+
+  let exceptions_section = md
+    .split("## Top exceptions")
+    .nth(1)
+    .expect("split top exceptions section");
+  if expected.top_exceptions.is_empty() {
+    assert!(
+      exceptions_section.contains("(none)"),
+      "Top exceptions section should contain (none) when empty"
+    );
+  } else {
+    assert!(
+      !exceptions_section.contains("(none)"),
+      "Top exceptions section should not contain (none) when entries exist"
+    );
+    for (type_, message, count) in &expected.top_exceptions {
+      let line = format!("- {count}: {type_}: `{message}`");
+      assert!(
+        exceptions_section.contains(&line),
+        "Top exceptions section missing expected line: {line}"
+      );
+    }
+  }
 
   // Keep the committed report small (it's intended to be read/reviewed in diffs).
   let md_size = md.len();
