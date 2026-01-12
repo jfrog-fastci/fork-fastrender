@@ -14,6 +14,7 @@ mod js_runtime_consolidation_guard;
 mod no_deprecated_test_harness_names;
 mod no_merge_markers;
 mod no_production_panics;
+mod stage_listener_guard_tests;
 mod style_regressions_presence;
 mod test_cleanup_inventory_guard;
 mod webidl_consolidation_guard;
