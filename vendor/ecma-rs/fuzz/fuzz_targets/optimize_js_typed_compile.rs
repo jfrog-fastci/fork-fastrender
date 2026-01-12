@@ -60,6 +60,10 @@ mod typed {
     // Toggle optimizer passes for coverage and to keep some iterations cheap.
     let opts = NativeReadyOptions {
       run_opt_passes: (first & 2) == 0,
+      // Strict-native validation is part of the native-ready pipeline; toggle it so we still
+      // exercise the verifier while keeping some iterations cheaper.
+      verify_strict_native: (first & 4) == 0,
+      ..Default::default()
     };
 
     let _ = compile_file_native_ready(program, file_id, mode, false, opts);
@@ -69,4 +73,3 @@ mod typed {
     fuzz_impl(data);
   });
 }
-
