@@ -46,7 +46,7 @@ export function main(): number {
 
   let ir = module.print_to_string().to_string();
   assert!(
-    ir.contains("@llvm.dbg.declare"),
+    ir.contains("call void @llvm.dbg.declare"),
     "expected llvm.dbg.declare in IR:\n{ir}"
   );
   assert!(
@@ -99,8 +99,7 @@ export function main(): number {
 
   let ir = module.print_to_string().to_string();
   assert!(
-    !ir.contains("@llvm.dbg.declare"),
+    !ir.contains("call void @llvm.dbg.declare"),
     "expected non-debug builds to omit llvm.dbg.declare:\n{ir}"
   );
 }
-

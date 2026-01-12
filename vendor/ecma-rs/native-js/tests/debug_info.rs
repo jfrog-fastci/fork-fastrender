@@ -266,7 +266,7 @@ export function main(): number {
   // before the GC/statepoint pipeline runs).
   let ir = std::fs::read_to_string(&ir_path).expect("read IR");
   assert!(
-    ir.contains("@llvm.dbg.value"),
+    ir.contains("call void @llvm.dbg.value"),
     "expected IR to contain llvm.dbg.value, got:\n{ir}"
   );
 

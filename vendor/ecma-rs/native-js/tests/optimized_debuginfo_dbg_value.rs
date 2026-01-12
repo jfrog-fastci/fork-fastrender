@@ -36,7 +36,7 @@ export function main(): number {
   let ir = std::fs::read_to_string(&artifact.path).expect("read IR");
 
   assert!(
-    ir.contains("@llvm.dbg.value"),
+    ir.contains("call void @llvm.dbg.value"),
     "expected optimized debug info to emit llvm.dbg.value intrinsics, got:\n{ir}"
   );
 
