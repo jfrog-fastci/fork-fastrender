@@ -1822,6 +1822,7 @@ pub fn proxy_revocable(
     &[Value::Object(proxy)],
   )?;
   scope.push_root(Value::Object(revoke))?;
+  set_function_job_realm_to_current(vm, &mut scope, revoke)?;
   scope
     .heap_mut()
     .object_set_prototype(revoke, Some(intr.function_prototype()))?;
