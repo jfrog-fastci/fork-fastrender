@@ -35,6 +35,7 @@ mod content_generation_test;
 mod counter_style_rules_test;
 mod counters_test;
 mod css_coverage_top_missing_test;
+mod css_font_feature_values_test;
 mod css_nesting_scope_integration_test;
 mod css_nesting_test;
 mod css_numeric_functions;
