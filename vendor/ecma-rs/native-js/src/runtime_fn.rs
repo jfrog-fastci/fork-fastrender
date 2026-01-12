@@ -20,22 +20,34 @@ pub enum RuntimeFn {
   // These entrypoints may allocate thread-local runtime state and/or block on GC-aware locks.
   // Calls from compiled code must therefore be eligible for statepoint rewriting.
 
-  /// Register the current OS thread with the runtime (`rt_thread_init`).
+  /// Register the current OS thread with the runtime.
+  ///
+  /// `rt_thread_init(kind: u32)`
   ThreadInit,
-  /// Unregister the current OS thread from the runtime (`rt_thread_deinit`).
+  /// Unregister the current OS thread from the runtime.
+  ///
+  /// `rt_thread_deinit()`
   ThreadDeinit,
-  /// Register the current OS thread and return a runtime-assigned thread id (`rt_thread_register`).
+  /// Register the current OS thread and return a runtime-assigned thread id.
+  ///
+  /// `rt_thread_register(kind: u32) -> u64`
   ThreadRegister,
   /// Unregister the current OS thread previously registered via [`RuntimeFn::ThreadRegister`].
+  ///
+  /// `rt_thread_unregister()`
   ThreadUnregister,
-  /// Mark/unmark the current thread as "parked" (`rt_thread_set_parked`).
+  /// Mark/unmark the current thread as "parked".
+  ///
+  /// `rt_thread_set_parked(parked: bool)`
   ThreadSetParked,
 
   // -----------------------------------------------------------------------------
   // Memory / shape tables
   // -----------------------------------------------------------------------------
 
-  /// Register the global shape table used by `RtShapeId` (`rt_register_shape_table`).
+  /// Register the global shape table used by [`runtime_native_abi::RtShapeId`].
+  ///
+  /// `rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize)`
   RegisterShapeTable,
   /// Allocation entrypoint: always may trigger GC.
   Alloc,
@@ -558,7 +570,7 @@ impl RuntimeFn {
 #[cfg(test)]
 mod tests {
   use super::*;
- 
+  
   fn count_codegen_params(abi: RuntimeFnAbi, ty: AbiTy) -> usize {
     abi.codegen_params.iter().copied().filter(|&t| t == ty).count()
   }

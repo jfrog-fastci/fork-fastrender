@@ -43,6 +43,27 @@ fn es5_host() -> MemoryHost {
   })
 }
 
+fn function_block(ir: &str, needle: &str) -> String {
+  let mut out = Vec::new();
+  let mut in_func = false;
+
+  for line in ir.lines() {
+    if !in_func && line.contains(needle) {
+      in_func = true;
+    }
+
+    if in_func {
+      out.push(line);
+      if line.trim() == "}" {
+        break;
+      }
+    }
+  }
+
+  assert!(in_func, "function block not found (needle={needle}):\n{ir}");
+  out.join("\n")
+}
+
 #[test]
 fn compile_emits_llvm_ir_file() {
   let mut host = es5_host();
@@ -145,6 +166,106 @@ fn compile_emits_executable_and_runs() {
     "unexpected exit status {status:?} stdout={stdout:?} stderr={stderr:?}"
   );
   assert_eq!(stdout, "");
+
+  let _ = std::fs::remove_file(&artifact.path);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn compile_executable_emits_runtime_thread_init_deinit_in_c_main_wrapper() {
+  if !command_works("clang-18") && !command_works("clang") {
+    eprintln!("skipping: clang not found in PATH");
+    return;
+  }
+  if !command_works("ld.lld-18") && !command_works("ld.lld") {
+    eprintln!("skipping: lld not found in PATH");
+    return;
+  }
+
+  let _permit = CodegenPermit::acquire();
+
+  let mut host = es5_host();
+  let key = FileKey::new("main.ts");
+  host.insert(key.clone(), "export function main(): number { return 3; }");
+
+  let program = Program::new(host, vec![key.clone()]);
+  let entry = program.file_id(&key).unwrap();
+
+  let tmp = tempfile::tempdir().unwrap();
+  let ll_path = tmp.path().join("out.ll");
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::Executable;
+  opts.emit_ir = Some(ll_path.clone());
+
+  let artifact = compile_program(&program, entry, &opts).unwrap();
+  assert_eq!(artifact.kind, EmitKind::Executable);
+
+  // Smoke-run the produced executable.
+  use std::process::{Command, Stdio};
+  use wait_timeout::ChildExt;
+
+  let mut child = Command::new(&artifact.path)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+
+  let Some(status) = child.wait_timeout(Duration::from_secs(5)).unwrap() else {
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("compiled executable timed out");
+  };
+
+  let mut stdout = String::new();
+  child.stdout.take().unwrap().read_to_string(&mut stdout).unwrap();
+  let mut stderr = String::new();
+  child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+
+  assert_eq!(
+    status.code(),
+    Some(3),
+    "unexpected exit status {status:?} stdout={stdout:?} stderr={stderr:?}"
+  );
+
+  // Inspect emitted IR for the C `main` wrapper.
+  let ir = std::fs::read_to_string(&ll_path).unwrap();
+  let main_ir = function_block(&ir, "define i32 @main(");
+
+  assert!(
+    main_ir.contains("notail call void @rt_thread_init(i32 0)"),
+    "expected C main wrapper to call rt_thread_init:\n{main_ir}"
+  );
+  assert!(
+    main_ir.contains("notail call void @rt_thread_deinit()"),
+    "expected C main wrapper to call rt_thread_deinit:\n{main_ir}"
+  );
+
+  // `rt_thread_init` must run before any module initializers.
+  let init_idx = main_ir
+    .find("@__nativejs_file_init_")
+    .expect("expected at least one module init call");
+  let thread_init_idx = main_ir
+    .find("notail call void @rt_thread_init")
+    .expect("rt_thread_init call missing");
+  assert!(
+    thread_init_idx < init_idx,
+    "expected rt_thread_init call before module init calls:\n{main_ir}"
+  );
+
+  // `rt_thread_deinit` must run after TS main returns, but before the C wrapper returns.
+  let ts_main_call_idx = main_ir
+    .find("@__nativejs_def_")
+    .expect("expected a call to the TS entrypoint function");
+  let thread_deinit_idx = main_ir
+    .find("notail call void @rt_thread_deinit")
+    .expect("rt_thread_deinit call missing");
+  let ret_idx = main_ir.find("ret i32").expect("ret missing");
+  assert!(
+    ts_main_call_idx < thread_deinit_idx && thread_deinit_idx < ret_idx,
+    "expected rt_thread_deinit after TS main call and before return:\n{main_ir}"
+  );
 
   let _ = std::fs::remove_file(&artifact.path);
 }

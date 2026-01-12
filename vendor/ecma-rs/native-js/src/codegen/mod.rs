@@ -47,6 +47,7 @@
 //! (`NJS0108..NJS0111`).
 use crate::builtins::NativeJsIntrinsic;
 use crate::resolve::BindingId;
+use crate::runtime_abi::{RuntimeAbi, RuntimeFn};
 use crate::strict::Entrypoint;
 use crate::codes;
 use crate::Resolver;
@@ -325,7 +326,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     // Build C entrypoint wrapper that runs module initializers and then calls TS main.
-    self.build_c_main(main_fn, &init_order);
+    self.build_c_main(entry_file, main_fn, &init_order)?;
 
     Ok(())
   }
@@ -608,9 +609,12 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
   fn build_c_main(
     &mut self,
+    entry_file: FileId,
     ts_main: FunctionValue<'ctx>,
     init_order: &[FileId],
-  ) {
+  ) -> Result<(), Vec<Diagnostic>> {
+    let ice_span = Span::new(entry_file, TextRange::new(0, 0));
+
     // Define `main` with no parameters (`int main(void)`), since our generated
     // wrapper does not currently use `argc`/`argv`.
     //
@@ -625,15 +629,39 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let bb = self.context.append_basic_block(c_main, "entry");
     builder.position_at_end(bb);
 
+    let abi = RuntimeAbi::new(self.context, &self.module);
+    let rt_thread_init = abi.get_or_declare_raw(RuntimeFn::ThreadInit);
+    let rt_thread_deinit = abi.get_or_declare_raw(RuntimeFn::ThreadDeinit);
+    let _rt_register_shape_table = abi.get_or_declare_raw(RuntimeFn::RegisterShapeTable);
+
+    let call = builder
+      .build_call(rt_thread_init, &[self.i32_ty.const_zero().into()], "rt.thread.init")
+      .map_err(|e| vec![diagnostics::ice(ice_span, format!("failed to build call to rt_thread_init: {e}"))])?;
+    crate::stack_walking::mark_call_notail(call);
+
+    // Shape table registration hook.
+    //
+    // Future work: once the native-js backend emits object shapes, it should also emit a
+    // `@__nativejs_shape_table` global containing `RtShapeDescriptor` entries, then call
+    // `rt_register_shape_table(ptr, len)` here so the runtime can resolve `RtShapeId` layouts.
+    //
+    // For now, native-js does not emit any shapes (so registration would be a no-op) and the
+    // runtime rejects `len == 0`, so we intentionally skip calling `rt_register_shape_table`.
+
     for file in init_order {
       if let Some(init) = self.file_inits.get(file).copied() {
-        let call = builder.build_call(init, &[], "init").expect("failed to build init call");
+        let call = builder.build_call(init, &[], "init").map_err(|e| {
+          vec![diagnostics::ice(
+            ice_span,
+            format!("failed to build call to module init function `{}`: {e}", init.get_name().to_string_lossy()),
+          )]
+        })?;
         crate::stack_walking::mark_call_notail(call);
       }
     }
     let call = builder
       .build_call(ts_main, &[], "ret")
-      .expect("failed to build call");
+      .map_err(|e| vec![diagnostics::ice(ice_span, format!("failed to build call to ts main: {e}"))])?;
     crate::stack_walking::mark_call_notail(call);
     let ret_val = call
       .try_as_basic_value()
@@ -647,9 +675,14 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     // This keeps the wrapper free of libc/vararg calls (e.g. `printf`) which are
     // not rewritten into statepoints by LLVM and therefore violate our GC callsite
     // invariants.
+    let call = builder
+      .build_call(rt_thread_deinit, &[], "rt.thread.deinit")
+      .map_err(|e| vec![diagnostics::ice(ice_span, format!("failed to build call to rt_thread_deinit: {e}"))])?;
+    crate::stack_walking::mark_call_notail(call);
     builder
       .build_return(Some(&ret_val))
-      .expect("failed to build return");
+      .map_err(|e| vec![diagnostics::ice(ice_span, format!("failed to build return in C main wrapper: {e}"))])?;
+    Ok(())
   }
 
   fn ensure_global_var(&mut self, def: DefId, span: Span) -> Result<GlobalValue<'ctx>, Vec<Diagnostic>> {
