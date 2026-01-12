@@ -2072,16 +2072,38 @@ impl<'a> Scope<'a> {
           // array object itself.
           if let Value::Object(receiver_obj) = receiver {
             if receiver_obj == obj {
-              // `TypedArraySetElement`: no-op for invalid integer indices, out-of-bounds, or
-              // detached buffers.
-              if numeric_index.is_finite()
+              // `TypedArraySetElement` always performs `ToNumber(value)` before checking
+              // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `"-1"`,
+              // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because `ToNumber(Symbol)`
+              // / `ToNumber(BigInt)` throw.
+              //
+              // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
+              let index = if numeric_index.is_finite()
                 && numeric_index.fract() == 0.0
                 && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
                 && numeric_index >= 0.0
               {
-                let _ = self
-                  .heap_mut()
-                  .typed_array_set_element_value(obj, numeric_index as usize, value)?;
+                let index = numeric_index as u128;
+                if index <= usize::MAX as u128 {
+                  Some(index as usize)
+                } else {
+                  None
+                }
+              } else {
+                None
+              };
+
+              match index {
+                Some(index) => {
+                  // `TypedArraySetElement`: no-op for out-of-bounds indices or detached buffers.
+                  let _ = self
+                    .heap_mut()
+                    .typed_array_set_element_value(obj, index, value)?;
+                }
+                None => {
+                  // Invalid numeric index: still `ToNumber(value)` per spec, but no element write.
+                  let _ = self.heap_mut().to_number(value)?;
+                }
               }
               return Ok(true);
             }
@@ -2213,16 +2235,38 @@ impl<'a> Scope<'a> {
           // array object itself.
           if let Value::Object(receiver_obj) = receiver {
             if receiver_obj == obj {
-              // `TypedArraySetElement`: no-op for invalid integer indices, out-of-bounds, or
-              // detached buffers.
-              if numeric_index.is_finite()
+              // `TypedArraySetElement` always performs `ToNumber(value)` before checking
+              // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `"-1"`,
+              // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because `ToNumber(Symbol)`
+              // / `ToNumber(BigInt)` throw.
+              //
+              // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
+              let index = if numeric_index.is_finite()
                 && numeric_index.fract() == 0.0
                 && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
                 && numeric_index >= 0.0
               {
-                let _ = self
-                  .heap_mut()
-                  .typed_array_set_element_value(obj, numeric_index as usize, value)?;
+                let index = numeric_index as u128;
+                if index <= usize::MAX as u128 {
+                  Some(index as usize)
+                } else {
+                  None
+                }
+              } else {
+                None
+              };
+
+              match index {
+                Some(index) => {
+                  // `TypedArraySetElement`: no-op for out-of-bounds indices or detached buffers.
+                  let _ = self
+                    .heap_mut()
+                    .typed_array_set_element_value(obj, index, value)?;
+                }
+                None => {
+                  // Invalid numeric index: still `ToNumber(value)` per spec, but no element write.
+                  let _ = self.heap_mut().to_number(value)?;
+                }
               }
               return Ok(true);
             }
