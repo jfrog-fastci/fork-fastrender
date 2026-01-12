@@ -71,8 +71,8 @@ What exists today (in-tree):
 - **Host-side execution bookkeeping:**
   - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
     script block” (classic scripts).
-  - `crates/js-dom-bindings`: QuickJS-backed DOM bindings that expose host-maintained state like
-    `document.currentScript` via `CurrentScriptStateHandle`.
+  - (Legacy) `src/js/legacy/quickjs_dom.rs`: QuickJS-backed DOM bindings that expose host-maintained
+    state like `document.currentScript` via `CurrentScriptStateHandle`.
 - **JS-enabled host container (early embedding surface):**
   - `src/api/browser_tab.rs`: `BrowserTab` couples `BrowserDocumentDom2` + `EventLoop` +
     `ScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. For HTML-string loads
@@ -187,8 +187,8 @@ we can land a correct classic-script core first:
     for module scripts and all edge cases).
 - End-to-end author-script execution with a production JS runtime + complete DOM/WebIDL bindings
   - Host-side `currentScript` bookkeeping exists (`src/js/orchestrator.rs`) and is exposed in the
-    QuickJS bindings (`crates/js-dom-bindings`), but full page script execution is still in
-    progress.
+    legacy QuickJS bindings (`src/js/legacy/quickjs_dom.rs`), but full page script execution is
+    still in progress.
 
 When adding any of the above later, treat the HTML Standard as the source of truth and extend the
 state machine; do not “patch in” ad-hoc behavior.
