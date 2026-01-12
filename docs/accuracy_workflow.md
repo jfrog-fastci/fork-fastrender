@@ -108,17 +108,19 @@ Add a test in the appropriate location:
 
 | Test type | Location | When to use |
 |-----------|----------|-------------|
-| Unit test | `src/*/mod.rs` | Parsing, cascade, computed values |
-| Layout test | `tests/layout/` | Box geometry, positioning |
-| Paint test | `tests/paint/` | Stacking, clipping, backgrounds |
-| Fixture test | `tests/pages/` | Complex interactions |
-| WPT reftest | `tests/wpt/` | Spec-aligned coverage |
+| Unit test (preferred) | `src/layout/**`, `src/paint/**`, `src/style/**` (in `#[cfg(test)] mod tests { ... }`) | Most correctness fixes (layout geometry, painting order, style computation) |
+| Public API integration test | `tests/api/**` (a module of `tests/integration.rs`) | End-to-end behavior through the public `FastRender` API |
+| Fixture test | `tests/pages/**` (a module of `tests/integration.rs`) | Offline HTML/page fixtures that reproduce complex interactions |
+| WPT reftest | `tests/wpt/**` (a module of `tests/integration.rs`) | Spec-aligned coverage |
 
 ### Step 9: Verify and repeat
 
 ```bash
-# Run the specific test
-timeout -k 10 300 bash scripts/cargo_agent.sh test --test layout_tests -- my_new_test
+# Run a unit test (tests live in `src/`)
+timeout -k 10 300 bash scripts/cargo_agent.sh test -p fastrender --lib my_new_test
+
+# Run an integration test (tests live under `tests/` and are wired through `tests/integration.rs`)
+timeout -k 10 300 bash scripts/cargo_agent.sh test -p fastrender --test integration my_new_test
 
 # Re-render the page
 timeout -k 10 300 bash scripts/run_limited.sh --as 64G -- \
