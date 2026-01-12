@@ -1,0 +1,196 @@
+name: typecheck-ts upstream conformance
+
+on:
+  push:
+    paths:
+      - "vendor/ecma-rs/**"
+      - "scripts/cargo_agent.sh"
+      - ".github/workflows/typecheck_ts_conformance_upstream.yml"
+  pull_request:
+    paths:
+      - "vendor/ecma-rs/**"
+      - "scripts/cargo_agent.sh"
+      - ".github/workflows/typecheck_ts_conformance_upstream.yml"
+  # Full upstream conformance runs are heavy; keep them on a schedule + manual dispatch.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+  # Conformance is large; keep the PR signal lightweight and run the full shard
+  # set only on schedule/workflow_dispatch.
+  #
+  # - PR/push: runs a single shard (`0/N`) as a smoke test.
+  # - schedule/manual: runs all `0..N-1` shards.
+  #
+  # Adjust `UPSTREAM_CONFORMANCE_SHARD_TOTAL` to change the full run size.
+  UPSTREAM_CONFORMANCE_SHARD_TOTAL: "16"
+  UPSTREAM_CONFORMANCE_PR_SHARDS: "0"
+
+jobs:
+  upstream-conformance-matrix:
+    name: Compute upstream conformance shard matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+    steps:
+      - name: Compute matrix
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shard_total="${UPSTREAM_CONFORMANCE_SHARD_TOTAL}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" || "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            shard_indices="$(python3 - <<PY
+          import json, os
+          n = int(os.environ["UPSTREAM_CONFORMANCE_SHARD_TOTAL"])
+          print(",".join(str(i) for i in range(n)))
+          PY
+            )"
+          else
+            # PR/push safety: only run a small shard set (see env docs above).
+            shard_indices="${UPSTREAM_CONFORMANCE_PR_SHARDS}"
+          fi
+
+          export shard_total shard_indices
+          matrix="$(python3 - <<PY
+          import json, os
+          n = int(os.environ["shard_total"])
+          indices = [int(x) for x in os.environ["shard_indices"].split(",") if x.strip() != ""]
+          print(json.dumps({"include": [{"shard_index": i, "shard_total": n} for i in indices]}))
+          PY
+          )"
+
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+
+  upstream-conformance:
+    name: Upstream TypeScript conformance (${{ matrix.shard_index }}/${{ matrix.shard_total }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: upstream-conformance-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.upstream-conformance-matrix.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # `submodules: recursive` is required so CI can see the upstream TypeScript suite at
+      # `vendor/ecma-rs/parse-js/tests/TypeScript`. The repository also has other heavyweight
+      # corpora/spec submodules that we do *not* need for this job, so mark only the TypeScript
+      # submodule as active to keep checkout time reasonable.
+      - name: Limit active submodules to TypeScript suite
+        run: |
+          set -euo pipefail
+          git config --global --unset-all submodule.active || true
+          # Matches the vendored layout (TypeScript suite submodule lives in the top-level repo).
+          git config --global --add submodule.active vendor/ecma-rs/parse-js/tests/TypeScript
+          # Matches the legacy layout where `vendor/ecma-rs` was itself a submodule.
+          git config --global --add submodule.active parse-js/tests/TypeScript
+
+      - name: Checkout (with TypeScript suite)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain (vendor/ecma-rs)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # Match `vendor/ecma-rs/rust-toolchain.toml`.
+          toolchain: "1.92.0"
+
+      - name: Setup Node.js (v20)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: vendor/ecma-rs/typecheck-ts-harness/package-lock.json
+
+      - name: Cache cargo registry (vendor/ecma-rs)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-typecheck-ts-upstream-conformance-cargo-registry-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-typecheck-ts-upstream-conformance-cargo-registry-
+
+      - name: Cache cargo git (vendor/ecma-rs)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-typecheck-ts-upstream-conformance-cargo-git-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-typecheck-ts-upstream-conformance-cargo-git-
+
+      - name: Cache target dir (vendor/ecma-rs)
+        uses: actions/cache@v4
+        with:
+          path: vendor/ecma-rs/target
+          key: ${{ runner.os }}-typecheck-ts-upstream-conformance-target-1.92.0-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-typecheck-ts-upstream-conformance-target-1.92.0-
+
+      - name: Init ecma-rs checkout (vendored/submodule compatibility)
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Install typecheck-ts-harness Node deps (npm ci)
+        run: |
+          set -euo pipefail
+          cd vendor/ecma-rs/typecheck-ts-harness
+          npm ci --ignore-scripts
+
+      - name: Run upstream TypeScript conformance shard (compare vs tsc)
+        id: run_conformance
+        working-directory: vendor/ecma-rs
+        env:
+          # Keep cargo_agent locks within the ecma-rs workspace target dir.
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+          # Cap Rust-side parallelism; the harness has its own `--jobs` flag.
+          RAYON_NUM_THREADS: 4
+        run: |
+          set -euo pipefail
+
+          report_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.json"
+          stderr_path="${GITHUB_WORKSPACE}/typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.stderr.log"
+          rm -f "${report_path}" "${stderr_path}"
+
+          status=0
+          timeout -k 10 600 bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
+            conformance \
+            --root parse-js/tests/TypeScript/tests/cases/conformance \
+            --compare tsc \
+            --fail-on new \
+            --manifest typecheck-ts-harness/fixtures/conformance-upstream/manifest.toml \
+            --json \
+            --jobs 4 \
+            --timeout-secs 10 \
+            --shard ${{ matrix.shard_index }}/${{ matrix.shard_total }} \
+            > "${report_path}" 2> >(tee "${stderr_path}" >&2) || status=$?
+
+          # The harness is expected to emit JSON even on failure (e.g. uncovered regressions).
+          if [[ ! -s "${report_path}" ]]; then
+            echo "::error::typecheck-ts-harness did not emit a JSON report (stdout was empty). See ${stderr_path}." >&2
+            echo "{\"error\":\"no_json_report\"}" > "${report_path}"
+            status=1
+          fi
+
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload conformance shard report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck_ts_conformance_upstream_shard_${{ matrix.shard_index }}
+          path: |
+            typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.json
+            typecheck-conformance-upstream-shard-${{ matrix.shard_index }}.stderr.log
+          if-no-files-found: error
+
+      - name: Fail on uncovered regressions (post-upload)
+        if: steps.run_conformance.outputs.status != '0'
+        run: exit ${{ steps.run_conformance.outputs.status }}
