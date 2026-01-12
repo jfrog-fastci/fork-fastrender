@@ -5824,10 +5824,9 @@ fn get_or_create_node_wrapper(
     return Ok(Value::Object(document_obj));
   }
 
-  let document_id = gc_object_id(document_obj);
-  let node_key = DomNodeKey::new(document_id, node_id);
+  let document_key = vm_js::WeakGcObject::from(document_obj);
   let wrapper = if let Some(platform) = dom_platform_mut(vm) {
-    if let Some(existing) = platform.get_existing_wrapper(scope.heap(), node_key) {
+    if let Some(existing) = platform.get_existing_wrapper(scope.heap(), document_key, node_id) {
       return Ok(Value::Object(existing));
     }
 
@@ -5836,7 +5835,7 @@ fn get_or_create_node_wrapper(
       primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
     }
 
-    platform.get_or_create_wrapper(scope, node_key, primary)?
+    platform.get_or_create_wrapper(scope, document_key, node_id, primary)?
   } else {
     scope.alloc_object()?
   };
@@ -7476,6 +7475,7 @@ fn maybe_adopt_node_into_document(
   )?;
 
   // Update wrapper `ownerDocument` for any existing wrappers in the adopted subtree.
+  let dest_document_key = vm_js::WeakGcObject::from(dest_document_obj);
   scope.push_root(Value::Object(dest_document_obj))?;
   let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
   let desc = PropertyDescriptor {
@@ -7490,9 +7490,7 @@ fn maybe_adopt_node_into_document(
     if new_id.index() == 0 {
       continue;
     }
-    let Some(wrapper_obj) =
-      platform.get_existing_wrapper(scope.heap(), DomNodeKey::new(dest_document_id, new_id))
-    else {
+    let Some(wrapper_obj) = platform.get_existing_wrapper(scope.heap(), dest_document_key, new_id) else {
       continue;
     };
     scope.define_property(wrapper_obj, wrapper_document_key, desc)?;
@@ -7677,9 +7675,9 @@ fn sync_cached_child_nodes_for_node_id(
   let wrapper_obj = if node_id.index() == 0 {
     Some(document_obj)
   } else {
-    let document_id = gc_object_id(document_obj);
+    let document_key = vm_js::WeakGcObject::from(document_obj);
     dom_platform_mut(vm)
-      .and_then(|platform| platform.get_existing_wrapper(scope.heap(), DomNodeKey::new(document_id, node_id)))
+      .and_then(|platform| platform.get_existing_wrapper(scope.heap(), document_key, node_id))
   };
   let Some(wrapper_obj) = wrapper_obj else {
     return Ok(());
@@ -7716,9 +7714,9 @@ fn sync_cached_children_for_node_id(
   let wrapper_obj = if node_id.index() == 0 {
     Some(document_obj)
   } else {
-    let document_id = gc_object_id(document_obj);
+    let document_key = vm_js::WeakGcObject::from(document_obj);
     dom_platform_mut(vm)
-      .and_then(|platform| platform.get_existing_wrapper(scope.heap(), DomNodeKey::new(document_id, node_id)))
+      .and_then(|platform| platform.get_existing_wrapper(scope.heap(), document_key, node_id))
   };
   let Some(wrapper_obj) = wrapper_obj else {
     return Ok(());
@@ -25025,7 +25023,7 @@ fn init_window_globals(
     },
   )?;
   if let Some(platform) = dom_platform.as_mut() {
-    let document_id = gc_object_id(document_obj);
+    let document_key = vm_js::WeakGcObject::from(document_obj);
     scope.heap_mut().object_set_prototype(
       document_obj,
       Some(platform.prototype_for(DomInterface::Document)),
@@ -25034,7 +25032,8 @@ fn init_window_globals(
     platform.register_wrapper(
       scope.heap(),
       document_obj,
-      DomNodeKey::new(document_id, NodeId::from_index(0)),
+      document_key,
+      NodeId::from_index(0),
       DomInterface::Document,
     );
   }
@@ -32556,10 +32555,12 @@ mod tests {
         // Register a unique document id so wrapper caching is document-aware. Document IDs are
         // derived from the JS Document wrapper identity.
         let doc2_id = gc_object_id(doc2_obj);
+        let doc2_key = vm_js::WeakGcObject::from(doc2_obj);
         platform.register_wrapper(
           scope.heap(),
           doc2_obj,
-          DomNodeKey::new(doc2_id, NodeId::from_index(0)),
+          doc2_key,
+          NodeId::from_index(0),
           DomInterface::Document,
         );
 

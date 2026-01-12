@@ -566,9 +566,7 @@ impl RegExpProgram {
           RegExpCompileError::OutOfMemory => VmError::OutOfMemory,
           RegExpCompileError::Vm(err) => err,
           // Cloning an already-compiled class should never fail with a syntax error.
-          RegExpCompileError::Syntax(_) => {
-            VmError::InvariantViolation("RegExpProgram clone syntax error")
-          }
+          RegExpCompileError::Syntax(_) => VmError::InvariantViolation("RegExpProgram clone syntax error"),
         })?),
         Inst::AssertStart => Inst::AssertStart,
         Inst::AssertEnd => Inst::AssertEnd,
@@ -597,7 +595,8 @@ impl RegExpProgram {
         },
         Inst::Match => Inst::Match,
       };
-      vec_try_push_vm(&mut insts, cloned)?;
+      // `insts` was reserved to `self.insts.len()` above; pushing within that bound is infallible.
+      insts.push(cloned);
     }
 
     Ok(Self {

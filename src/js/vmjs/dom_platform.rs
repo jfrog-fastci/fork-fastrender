@@ -21,10 +21,17 @@ pub type DocumentId = u64;
 /// and throws `DataCloneError` (HTML structured clone algorithm).
 pub const DOM_WRAPPER_HOST_TAG: u64 = 0x444F_4D57_5241_5050; // "DOMWRAPP"
 
+#[inline]
+fn document_id_from_key(document_key: WeakGcObject) -> DocumentId {
+  (document_key.index() as u64) | ((document_key.generation() as u64) << 32)
+}
+
 /// Unique identity for a `dom2` node in a realm.
 ///
 /// This is the cache key used by `DomPlatform` when maintaining stable wrapper identity across
 /// multiple documents inside the same realm.
+///
+/// Note: `dom2::NodeId` values are only unique within a document, not across documents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DomNodeKey {
   pub document_id: DocumentId,
@@ -37,14 +44,6 @@ impl DomNodeKey {
       document_id,
       node_id,
     }
-  }
-}
-
-impl From<NodeId> for DomNodeKey {
-  fn from(node_id: NodeId) -> Self {
-    // Legacy single-document call sites still pass bare `NodeId` values. Treat those as belonging
-    // to document 0 until callers are updated to pass an explicit `DocumentId`.
-    Self::new(0, node_id)
   }
 }
 
@@ -418,18 +417,20 @@ impl DomPlatform {
     &mut self,
     heap: &Heap,
     wrapper: GcObject,
-    node: impl Into<DomNodeKey>,
+    document_key: WeakGcObject,
+    node_id: NodeId,
     primary_interface: DomInterface,
   ) {
     self.sweep_dead_wrappers_if_needed(heap);
-    let key = node.into();
+    let document_id = document_id_from_key(document_key);
+    let key = DomNodeKey::new(document_id, node_id);
     let weak = WeakGcObject::from(wrapper);
     self.wrappers_by_node.insert(key, weak);
     self.meta_by_wrapper.insert(
       weak,
       DomWrapperMeta {
-        document_id: key.document_id,
-        node_id: key.node_id,
+        document_id,
+        node_id,
         primary_interface,
         realm_id: self.realm_id,
       },
@@ -437,9 +438,14 @@ impl DomPlatform {
   }
 
   /// Return an existing wrapper for `node_id` if still alive.
-  pub fn get_existing_wrapper(&mut self, heap: &Heap, node: impl Into<DomNodeKey>) -> Option<GcObject> {
+  pub fn get_existing_wrapper(
+    &mut self,
+    heap: &Heap,
+    document_key: WeakGcObject,
+    node_id: NodeId,
+  ) -> Option<GcObject> {
     self.sweep_dead_wrappers_if_needed(heap);
-    let key = node.into();
+    let key = DomNodeKey::new(document_id_from_key(document_key), node_id);
     self
       .wrappers_by_node
       .get(&key)
@@ -450,11 +456,11 @@ impl DomPlatform {
   pub fn get_or_create_wrapper(
     &mut self,
     scope: &mut Scope<'_>,
-    node: impl Into<DomNodeKey>,
+    document_key: WeakGcObject,
+    node_id: NodeId,
     primary_interface: DomInterface,
   ) -> Result<GcObject, VmError> {
-    let key = node.into();
-    if let Some(existing) = self.get_existing_wrapper(scope.heap(), key) {
+    if let Some(existing) = self.get_existing_wrapper(scope.heap(), document_key, node_id) {
       return Ok(existing);
     }
 
@@ -488,13 +494,20 @@ impl DomPlatform {
           enumerable: false,
           configurable: true,
           kind: PropertyKind::Data {
-            value: Value::Number(key.node_id.index() as f64),
+            value: Value::Number(node_id.index() as f64),
             writable: true,
           },
         },
       )?;
     }
-    self.register_wrapper(scope.heap(), wrapper, key, primary_interface);
+
+    self.register_wrapper(
+      scope.heap(),
+      wrapper,
+      document_key,
+      node_id,
+      primary_interface,
+    );
     Ok(wrapper)
   }
 
@@ -759,12 +772,8 @@ mod tests {
   use crate::dom2::{NodeId, NodeKind};
   use std::collections::HashMap;
   use vm_js::{
-    GcObject, Heap, HeapLimits, PropertyKey, Realm, Value, Vm, VmError, VmOptions, WeakGcObject,
+    Heap, HeapLimits, PropertyKey, Realm, Value, Vm, VmError, VmOptions, WeakGcObject,
   };
-
-  fn gc_object_id(obj: GcObject) -> u64 {
-    (obj.index() as u64) | ((obj.generation() as u64) << 32)
-  }
 
   fn split_runtime_realm(runtime: &mut vm_js::JsRuntime) -> (&Realm, &mut Heap) {
     // SAFETY: `realm` is stored separately from `vm` and `heap` inside `vm-js::JsRuntime`.
@@ -787,11 +796,17 @@ mod tests {
     let mut scope = heap.scope();
     let mut platform = DomPlatform::new(&mut scope, realm)?;
 
-    let key = DomNodeKey::new(1, NodeId::from_index(1));
-    let wrapper1 = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
+    let document_obj = scope.alloc_object()?;
+    let document_key = WeakGcObject::from(document_obj);
+    let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+
+    let node_id = NodeId::from_index(1);
+    let wrapper1 =
+      platform.get_or_create_wrapper(&mut scope, document_key, node_id, DomInterface::Element)?;
     let root = scope.heap_mut().add_root(Value::Object(wrapper1))?;
 
-    let wrapper2 = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
+    let wrapper2 =
+      platform.get_or_create_wrapper(&mut scope, document_key, node_id, DomInterface::Element)?;
     assert_eq!(wrapper1, wrapper2);
 
     scope.heap_mut().remove_root(root);
@@ -807,16 +822,16 @@ mod tests {
 
     let doc_a = scope.alloc_object()?;
     let doc_b = scope.alloc_object()?;
-    let doc_id_a = gc_object_id(doc_a);
-    let doc_id_b = gc_object_id(doc_b);
+    let doc_key_a = WeakGcObject::from(doc_a);
+    let doc_key_b = WeakGcObject::from(doc_b);
     let _doc_a_root = scope.heap_mut().add_root(Value::Object(doc_a))?;
     let _doc_b_root = scope.heap_mut().add_root(Value::Object(doc_b))?;
 
     let node_id = NodeId::from_index(1);
     let wrapper_a =
-      platform.get_or_create_wrapper(&mut scope, DomNodeKey::new(doc_id_a, node_id), DomInterface::Element)?;
+      platform.get_or_create_wrapper(&mut scope, doc_key_a, node_id, DomInterface::Element)?;
     let wrapper_b =
-      platform.get_or_create_wrapper(&mut scope, DomNodeKey::new(doc_id_b, node_id), DomInterface::Element)?;
+      platform.get_or_create_wrapper(&mut scope, doc_key_b, node_id, DomInterface::Element)?;
 
     assert_ne!(wrapper_a, wrapper_b);
     Ok(())
@@ -829,8 +844,13 @@ mod tests {
     let mut scope = heap.scope();
     let mut platform = DomPlatform::new(&mut scope, realm)?;
 
-    let key = DomNodeKey::new(1, NodeId::from_index(1));
-    let wrapper = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
+    let document_obj = scope.alloc_object()?;
+    let document_key = WeakGcObject::from(document_obj);
+    let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+
+    let node_id = NodeId::from_index(1);
+    let wrapper =
+      platform.get_or_create_wrapper(&mut scope, document_key, node_id, DomInterface::Element)?;
     let weak = WeakGcObject::from(wrapper);
     let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
@@ -840,7 +860,8 @@ mod tests {
     assert!(weak.upgrade(scope.heap()).is_none());
 
     // Re-wrapping after collection should succeed; identity may change.
-    let wrapper2 = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
+    let wrapper2 =
+      platform.get_or_create_wrapper(&mut scope, document_key, node_id, DomInterface::Element)?;
     assert_ne!(wrapper, wrapper2);
     Ok(())
   }
@@ -852,8 +873,15 @@ mod tests {
     let mut scope = heap.scope();
     let mut platform = DomPlatform::new(&mut scope, realm)?;
 
-    let key = DomNodeKey::new(1, NodeId::from_index(1));
-    let wrapper = platform.get_or_create_wrapper(&mut scope, key, DomInterface::Element)?;
+    let document_obj = scope.alloc_object()?;
+    let document_key = WeakGcObject::from(document_obj);
+    let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    let document_id = super::document_id_from_key(document_key);
+
+    let node_id = NodeId::from_index(1);
+    let key = DomNodeKey::new(document_id, node_id);
+    let wrapper =
+      platform.get_or_create_wrapper(&mut scope, document_key, node_id, DomInterface::Element)?;
     let _root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
     assert_eq!(
@@ -865,9 +893,14 @@ mod tests {
       key
     );
 
-    let input_key = DomNodeKey::new(1, NodeId::from_index(2));
-    let input_wrapper =
-      platform.get_or_create_wrapper(&mut scope, input_key, DomInterface::HTMLInputElement)?;
+    let input_node_id = NodeId::from_index(2);
+    let input_key = DomNodeKey::new(document_id, input_node_id);
+    let input_wrapper = platform.get_or_create_wrapper(
+      &mut scope,
+      document_key,
+      input_node_id,
+      DomInterface::HTMLInputElement,
+    )?;
     let _input_root = scope.heap_mut().add_root(Value::Object(input_wrapper))?;
     assert_eq!(
       platform.require_node_handle(scope.heap(), Value::Object(input_wrapper))?,
@@ -898,15 +931,13 @@ mod tests {
     let mut platform = DomPlatform::new(&mut scope, realm)?;
 
     let document_obj = scope.alloc_object()?;
-    let document_id = gc_object_id(document_obj);
+    let document_key = WeakGcObject::from(document_obj);
     let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    let document_id = super::document_id_from_key(document_key);
 
     let old_id = NodeId::from_index(5);
-    let wrapper = platform.get_or_create_wrapper(
-      &mut scope,
-      DomNodeKey::new(document_id, old_id),
-      DomInterface::Element,
-    )?;
+    let wrapper =
+      platform.get_or_create_wrapper(&mut scope, document_key, old_id, DomInterface::Element)?;
     let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
     let new_id = NodeId::from_index(9);
@@ -915,11 +946,8 @@ mod tests {
 
     platform.remap_node_ids(scope.heap_mut(), document_id, &mapping)?;
 
-    let wrapper2 = platform.get_or_create_wrapper(
-      &mut scope,
-      DomNodeKey::new(document_id, new_id),
-      DomInterface::Element,
-    )?;
+    let wrapper2 =
+      platform.get_or_create_wrapper(&mut scope, document_key, new_id, DomInterface::Element)?;
     assert_eq!(wrapper, wrapper2);
 
     let key = PropertyKey::from_string(scope.alloc_string(super::INTERNAL_NODE_ID_KEY)?);
@@ -967,6 +995,11 @@ mod tests {
     let mut scope = heap.scope();
     let mut platform = DomPlatform::new(&mut scope, realm)?;
 
+    let document_obj = scope.alloc_object()?;
+    let document_key = WeakGcObject::from(document_obj);
+    let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    let document_id = super::document_id_from_key(document_key);
+
     let node_kind = NodeKind::Doctype {
       name: "html".to_string(),
       public_id: "p".to_string(),
@@ -975,8 +1008,9 @@ mod tests {
     let primary = DomInterface::primary_for_node_kind(&node_kind);
     assert_eq!(primary, DomInterface::DocumentType);
 
-    let key = DomNodeKey::new(1, NodeId::from_index(1));
-    let wrapper = platform.get_or_create_wrapper(&mut scope, key, primary)?;
+    let node_id = NodeId::from_index(1);
+    let key = DomNodeKey::new(document_id, node_id);
+    let wrapper = platform.get_or_create_wrapper(&mut scope, document_key, node_id, primary)?;
     let _root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
     assert_eq!(
@@ -995,30 +1029,31 @@ mod tests {
 
     let document_a = scope.alloc_object()?;
     let document_b = scope.alloc_object()?;
-    let document_id_a = gc_object_id(document_a);
-    let document_id_b = gc_object_id(document_b);
+    let document_key_a = WeakGcObject::from(document_a);
+    let document_key_b = WeakGcObject::from(document_b);
+    let document_id_a = super::document_id_from_key(document_key_a);
+    let document_id_b = super::document_id_from_key(document_key_b);
     let _doc_a_root = scope.heap_mut().add_root(Value::Object(document_a))?;
     let _doc_b_root = scope.heap_mut().add_root(Value::Object(document_b))?;
 
     let old_id = NodeId::from_index(5);
-    let wrapper = platform.get_or_create_wrapper(
-      &mut scope,
-      DomNodeKey::new(document_id_a, old_id),
-      DomInterface::Element,
-    )?;
+    let wrapper =
+      platform.get_or_create_wrapper(&mut scope, document_key_a, old_id, DomInterface::Element)?;
     let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
     let new_id = NodeId::from_index(9);
     let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
     mapping.insert(old_id, new_id);
 
-    platform.remap_node_ids_between_documents(scope.heap_mut(), document_id_a, document_id_b, &mapping)?;
-
-    let wrapper2 = platform.get_or_create_wrapper(
-      &mut scope,
-      DomNodeKey::new(document_id_b, new_id),
-      DomInterface::Element,
+    platform.remap_node_ids_between_documents(
+      scope.heap_mut(),
+      document_id_a,
+      document_id_b,
+      &mapping,
     )?;
+
+    let wrapper2 =
+      platform.get_or_create_wrapper(&mut scope, document_key_b, new_id, DomInterface::Element)?;
     assert_eq!(wrapper, wrapper2);
 
     assert_eq!(
