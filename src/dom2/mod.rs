@@ -43,7 +43,7 @@ mod style_attr;
 mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
-pub use cross_document::AdoptedSubtree;
+pub use cross_document::{clone_node_into_document, clone_node_into_document_deep, AdoptedSubtree};
 
 pub use mutation_observer::{
   MutationObserverAgent, MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord,
@@ -2017,7 +2017,6 @@ mod script_internal_slots_tests;
 mod selector_query_tests;
 #[cfg(test)]
 mod selectors_detached_tests;
-#[cfg(test)]
 mod wbr_tests;
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use crate::dom::HTML_NAMESPACE;
 use selectors::context::QuirksMode;
 
-use super::{Document, DomError, NodeId, NodeKind};
+use super::{clone_node_into_document, Document, DomError, NodeId, NodeKind};
 
 fn id_attribute(kind: &NodeKind) -> Option<&str> {
   match kind {
@@ -155,6 +155,84 @@ fn clone_basic_element_and_text_subtree_across_documents() {
   let child = children[0];
   assert_eq!(dst.parent(child).unwrap(), Some(cloned));
   assert_eq!(dst.text_data(child).unwrap(), "hello");
+}
+
+#[test]
+fn clone_node_into_document_returns_complete_mapping_for_element_subtree() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let div = src.create_element("div", HTML_NAMESPACE);
+  src.set_attribute(div, "id", "a").unwrap();
+  src.append_child(src.root(), div).unwrap();
+  let text1 = src.create_text("Hello");
+  src.append_child(div, text1).unwrap();
+  let span = src.create_element("span", HTML_NAMESPACE);
+  src.append_child(div, span).unwrap();
+  let text2 = src.create_text("world");
+  src.append_child(span, text2).unwrap();
+
+  let expected_ids: Vec<NodeId> = src.subtree_preorder(div).collect();
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let (cloned, mapping) = clone_node_into_document(&src, div, &mut dst, /* deep */ true).unwrap();
+
+  assert_eq!(dst.parent(cloned).unwrap(), None);
+  assert_subtree_kinds_match(&src, div, &dst, cloned);
+
+  assert_eq!(
+    mapping.len(),
+    expected_ids.len(),
+    "expected mapping to contain one entry per cloned node"
+  );
+  let mut map = std::collections::HashMap::<NodeId, NodeId>::new();
+  for (old, new) in mapping {
+    map.insert(old, new);
+  }
+  assert_eq!(map.len(), expected_ids.len(), "source ids must be unique");
+  assert_eq!(map.get(&div).copied(), Some(cloned));
+
+  for old_id in expected_ids {
+    assert!(
+      map.contains_key(&old_id),
+      "missing mapping for cloned node id {old_id:?}"
+    );
+  }
+}
+
+#[test]
+fn clone_node_into_document_returns_complete_mapping_for_document_fragment() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+  let frag = src.create_document_fragment();
+  let a = src.create_element("a", HTML_NAMESPACE);
+  let a_text = src.create_text("link");
+  src.append_child(a, a_text).unwrap();
+  let b = src.create_element("b", HTML_NAMESPACE);
+  let b_text = src.create_text("bold");
+  src.append_child(b, b_text).unwrap();
+  src.append_child(frag, a).unwrap();
+  src.append_child(frag, b).unwrap();
+
+  let expected_ids: Vec<NodeId> = src.subtree_preorder(frag).collect();
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let (cloned, mapping) = clone_node_into_document(&src, frag, &mut dst, /* deep */ true).unwrap();
+
+  assert_eq!(dst.parent(cloned).unwrap(), None);
+  assert_subtree_kinds_match(&src, frag, &dst, cloned);
+  assert!(matches!(dst.node(cloned).kind, NodeKind::DocumentFragment));
+
+  assert_eq!(mapping.len(), expected_ids.len());
+  let mut map = std::collections::HashMap::<NodeId, NodeId>::new();
+  for (old, new) in mapping {
+    map.insert(old, new);
+  }
+  assert_eq!(map.len(), expected_ids.len());
+  assert_eq!(map.get(&frag).copied(), Some(cloned));
+  for old_id in expected_ids {
+    assert!(
+      map.contains_key(&old_id),
+      "missing mapping for cloned node id {old_id:?}"
+    );
+  }
 }
 
 #[test]

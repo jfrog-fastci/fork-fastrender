@@ -8,6 +8,41 @@ pub struct AdoptedSubtree {
   pub mapping: Vec<(NodeId, NodeId)>,
 }
 
+/// Clone a `dom2` subtree from `src` into the `dst` document, returning the new root plus a mapping
+/// of every cloned source node id to its corresponding destination node id.
+///
+/// This helper is intended for embedding layers that need to transfer subtrees across multiple
+/// `dom2::Document` instances (e.g. for DOM `Document.importNode()` and cross-document insertion).
+///
+/// The returned root is always detached in the destination document (`parent == None`).
+pub fn clone_node_into_document(
+  src: &Document,
+  src_root: NodeId,
+  dst: &mut Document,
+  deep: bool,
+) -> Result<(NodeId, Vec<(NodeId, NodeId)>), DomError> {
+  let mut mapping: Vec<(NodeId, NodeId)> = Vec::new();
+  let new_root = clone_subtree_from_other_document(
+    dst,
+    src,
+    src_root,
+    /* dst_parent */ None,
+    deep,
+    Some(&mut mapping),
+    CrossDocumentCloneSemantics::Clone,
+  )?;
+  Ok((new_root, mapping))
+}
+
+/// Convenience wrapper around [`clone_node_into_document`] for deep cloning.
+pub fn clone_node_into_document_deep(
+  src: &Document,
+  src_root: NodeId,
+  dst: &mut Document,
+) -> Result<(NodeId, Vec<(NodeId, NodeId)>), DomError> {
+  clone_node_into_document(src, src_root, dst, /* deep */ true)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrossDocumentCloneSemantics {
   /// Clone semantics as used by DOM `Node.cloneNode()` / `Document.importNode()`.
@@ -76,10 +111,9 @@ fn clone_node_shallow_from_other_document(
         // document node is still useful for same-document `cloneNode()` and for internal adoption
         // work. The cloned `Document` node must remain detached: `Document` nodes cannot be inserted
         // into a tree.
-        debug_assert!(
-          parent.is_none(),
-          "Document nodes cannot have a parent; cloning must only produce detached roots"
-        );
+        if parent.is_some() {
+          return Err(DomError::InvalidNodeType);
+        }
         NodeKind::Document {
           quirks_mode: *quirks_mode,
         }
