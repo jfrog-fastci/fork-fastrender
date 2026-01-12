@@ -705,6 +705,7 @@ fn fulfill_reactions_run_in_registration_order() -> Result<(), VmError> {
 
     promise_obj
   };
+  let promise_root = ctx.heap.add_root(Value::Object(promise_obj))?;
 
   assert_eq!(host.queue.len(), 0);
 
@@ -729,6 +730,7 @@ fn fulfill_reactions_run_in_registration_order() -> Result<(), VmError> {
 
   // Keep `promise_obj` used so the test exercises the promise API.
   assert_eq!(ctx.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  ctx.heap.remove_root(promise_root);
 
   realm.teardown(&mut ctx.heap);
   Ok(())

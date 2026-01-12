@@ -1,9 +1,13 @@
 use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
-fn new_runtime() -> JsRuntime {
+fn new_runtime_with_heap_limit(bytes: usize) -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(bytes, bytes));
   JsRuntime::new(vm, heap).unwrap()
+}
+
+fn new_runtime() -> JsRuntime {
+  new_runtime_with_heap_limit(2 * 1024 * 1024)
 }
 
 #[test]

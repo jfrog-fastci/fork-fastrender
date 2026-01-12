@@ -5978,7 +5978,7 @@ pub fn promise_reject(
 pub(crate) fn perform_promise_then_with_capability(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   promise: GcObject,
   on_fulfilled: Value,
   on_rejected: Value,
@@ -5992,7 +5992,7 @@ pub(crate) fn perform_promise_then_with_capability(
   // `PerformPromiseThen`: unhandled rejection tracking.
   let was_handled = scope.heap().promise_is_handled(promise)?;
   if scope.heap().promise_state(promise)? == PromiseState::Rejected && !was_handled {
-    host.host_promise_rejection_tracker(PromiseHandle(promise), PromiseRejectionOperation::Handle);
+    hooks.host_promise_rejection_tracker(PromiseHandle(promise), PromiseRejectionOperation::Handle);
   }
 
   // `PerformPromiseThen` sets `[[PromiseIsHandled]] = true`.
@@ -6001,12 +6001,14 @@ pub(crate) fn perform_promise_then_with_capability(
   // Normalize handlers: use "empty" when not callable.
   let on_fulfilled = match on_fulfilled {
     Value::Object(obj) if scope.heap().is_callable(Value::Object(obj))? => {
-      Some(host.host_make_job_callback(obj))
+      Some(hooks.host_make_job_callback(obj))
     }
     _ => None,
   };
   let on_rejected = match on_rejected {
-    Value::Object(obj) if scope.heap().is_callable(Value::Object(obj))? => Some(host.host_make_job_callback(obj)),
+    Value::Object(obj) if scope.heap().is_callable(Value::Object(obj))? => {
+      Some(hooks.host_make_job_callback(obj))
+    }
     _ => None,
   };
 
@@ -6033,14 +6035,14 @@ pub(crate) fn perform_promise_then_with_capability(
         .heap()
         .promise_result(promise)?
         .unwrap_or(Value::Undefined);
-      enqueue_promise_reaction_job(host, &mut scope, fulfill_reaction, arg, current_realm)?;
+      enqueue_promise_reaction_job(hooks, &mut scope, fulfill_reaction, arg, current_realm)?;
     }
     PromiseState::Rejected => {
       let arg = scope
         .heap()
         .promise_result(promise)?
         .unwrap_or(Value::Undefined);
-      enqueue_promise_reaction_job(host, &mut scope, reject_reaction, arg, current_realm)?;
+      enqueue_promise_reaction_job(hooks, &mut scope, reject_reaction, arg, current_realm)?;
     }
   }
 
@@ -6050,7 +6052,8 @@ pub(crate) fn perform_promise_then_with_capability(
 pub(crate) fn perform_promise_then(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   this: Value,
   on_fulfilled: Value,
   on_rejected: Value,
@@ -6061,7 +6064,7 @@ pub(crate) fn perform_promise_then(
     return throw_type_error(
       vm,
       scope,
-      host,
+      hooks,
       "Promise.prototype.then called on non-object",
     );
   };
@@ -6069,33 +6072,30 @@ pub(crate) fn perform_promise_then(
     return throw_type_error(
       vm,
       scope,
-      host,
+      hooks,
       "Promise.prototype.then called on non-promise",
     );
   }
 
-  // Root the input Promise + handlers before allocating the derived promise/capability.
-  //
-  // `Promise.prototype.then` allocates several objects (the derived promise and resolving
-  // functions). Those allocations can trigger GC, and the incoming `this`/handler values are only
-  // held in Rust locals at this point (not traced by GC). Root them so they remain valid.
+  // Root inputs: `SpeciesConstructor` and `NewPromiseCapability` can invoke user code.
   let mut scope = scope.reborrow();
-  scope.push_roots(&[Value::Object(promise), on_fulfilled, on_rejected])?;
+  scope.push_root(Value::Object(promise))?;
+  scope.push_root(on_fulfilled)?;
+  scope.push_root(on_rejected)?;
 
-  // Create the derived promise + capability.
-  let result_promise = scope.alloc_promise_with_prototype(Some(intr.promise_prototype()))?;
-  scope.push_root(Value::Object(result_promise))?;
-  let (resolve, reject) = create_promise_resolving_functions(vm, &mut scope, result_promise)?;
-  let capability = PromiseCapability {
-    promise: Value::Object(result_promise),
-    resolve,
-    reject,
-  };
+  // `constructor = SpeciesConstructor(promise, %Promise%)`
+  let default_ctor = Value::Object(intr.promise());
+  let constructor =
+    species_constructor_with_host_and_hooks(vm, &mut scope, host_ctx, hooks, promise, default_ctor)?;
+  scope.push_root(constructor)?;
+
+  // `resultCapability = NewPromiseCapability(constructor)`
+  let capability = new_promise_capability_with_host_and_hooks(vm, &mut scope, host_ctx, hooks, constructor)?;
 
   perform_promise_then_with_capability(
     vm,
     &mut scope,
-    host,
+    hooks,
     promise,
     on_fulfilled,
     on_rejected,
@@ -6274,49 +6274,9 @@ pub fn promise_prototype_then(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let intr = require_intrinsics(vm)?;
   let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
   let on_rejected = args.get(1).copied().unwrap_or(Value::Undefined);
-
-  let Value::Object(promise) = this else {
-    return throw_type_error(
-      vm,
-      scope,
-      hooks,
-      "Promise.prototype.then called on non-object",
-    );
-  };
-  if !scope.heap().is_promise_object(promise) {
-    return throw_type_error(
-      vm,
-      scope,
-      hooks,
-      "Promise.prototype.then called on non-promise",
-    );
-  }
-
-  // Root inputs: `SpeciesConstructor` and `NewPromiseCapability` can invoke user code.
-  let mut scope = scope.reborrow();
-  scope.push_roots(&[Value::Object(promise), on_fulfilled, on_rejected])?;
-
-  // `C = SpeciesConstructor(promise, %Promise%)`
-  let default_ctor = Value::Object(intr.promise());
-  let constructor =
-    species_constructor_with_host_and_hooks(vm, &mut scope, host, hooks, promise, default_ctor)?;
-  scope.push_root(constructor)?;
-
-  // `resultCapability = NewPromiseCapability(C)`
-  let capability = new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks, constructor)?;
-
-  perform_promise_then_with_capability(
-    vm,
-    &mut scope,
-    hooks,
-    promise,
-    on_fulfilled,
-    on_rejected,
-    capability,
-  )
+  perform_promise_then(vm, scope, host, hooks, this, on_fulfilled, on_rejected)
 }
 
 pub fn promise_prototype_catch(

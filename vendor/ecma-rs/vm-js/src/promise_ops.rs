@@ -194,12 +194,10 @@ pub fn perform_promise_then_with_host_and_hooks(
   on_fulfilled: Option<Value>,
   on_rejected: Option<Value>,
 ) -> Result<Value, VmError> {
-  // `PerformPromiseThen` currently does not need the host context, but accept it so embeddings can
-  // thread it through spec-shaped helper APIs consistently.
-  let _ = host_ctx;
   crate::builtins::perform_promise_then(
     vm,
     scope,
+    host_ctx,
     hooks,
     promise,
     on_fulfilled.unwrap_or(Value::Undefined),

@@ -407,6 +407,8 @@ impl VmHostHooks for SyncHostHooks {
 
 #[test]
 fn await_in_import_specifier() -> Result<(), VmError> {
+  // Dynamic import allocates module graph state and promise capabilities before the first microtask
+  // checkpoint. Keep the heap small to catch leaks, but large enough to cover the import pipeline.
   let mut rt = new_runtime();
 
   let record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 'ok';")?;

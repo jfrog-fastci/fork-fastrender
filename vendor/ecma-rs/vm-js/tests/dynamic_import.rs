@@ -213,10 +213,17 @@ impl VmHostHooks for SyncHostHooks {
   }
 }
 
-fn new_runtime() -> Result<JsRuntime, VmError> {
+fn new_runtime_with_heap_limit(bytes: usize) -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let heap = vm_js::Heap::new(HeapLimits::new(bytes, bytes));
   JsRuntime::new(vm, heap)
+}
+
+fn new_runtime() -> Result<JsRuntime, VmError> {
+  // Dynamic import allocates module graph state and Promise capabilities before the first microtask
+  // checkpoint. Keep the heap reasonably small to catch leaks, but large enough to cover the import
+  // pipeline.
+  new_runtime_with_heap_limit(8 * 1024 * 1024)
 }
 
 fn define_global(scope: &mut Scope<'_>, global: GcObject, name: &str, value: Value) -> Result<(), VmError> {
@@ -977,7 +984,9 @@ fn dynamic_import_options_proxy_get_trap_is_observed() -> Result<(), VmError> {
 
 #[test]
 fn dynamic_import_attributes_proxy_traps_are_observed() -> Result<(), VmError> {
-  let mut rt = new_runtime()?;
+  // Proxy-based attribute enumeration triggers a handful of allocations during import option
+  // normalization; keep the heap small to catch leaks, but large enough to cover the Proxy paths.
+  let mut rt = new_runtime_with_heap_limit(2 * 1024 * 1024)?;
   let mut host = TestHostHooks::new();
 
   // Create a Proxy target + handler in JS so the traps can mutate JS-visible state (`log`).

@@ -49,10 +49,11 @@ fn for_of_observes_proxy_get_trap_for_symbol_iterator() -> Result<(), VmError> {
   let trap = rt.exec_script(
     r#"
       globalThis.trapCount = 0;
-      (function (target, prop, receiver) {
+      globalThis.trap = (function (target, prop, receiver) {
         globalThis.trapCount++;
         return Reflect.get(target, prop, receiver);
-      })
+      });
+      globalThis.trap
     "#,
   )?;
 
@@ -104,7 +105,9 @@ fn for_of_observes_proxy_get_trap_for_symbol_iterator() -> Result<(), VmError> {
 #[test]
 fn iterator_result_done_and_value_use_proxy_get_trap() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Proxy-based iterator result inspection allocates a few intermediate objects; keep the heap
+  // small to catch leaks, but large enough to cover the Proxy + iteration pipeline.
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
   let global = rt.realm().global_object();
 
@@ -113,11 +116,12 @@ fn iterator_result_done_and_value_use_proxy_get_trap() -> Result<(), VmError> {
     r#"
       globalThis.doneGets = 0;
       globalThis.valueGets = 0;
-      (function (target, prop, receiver) {
+      globalThis.trap = (function (target, prop, receiver) {
         if (prop === "done") globalThis.doneGets++;
         if (prop === "value") globalThis.valueGets++;
         return Reflect.get(target, prop, receiver);
-      })
+      });
+      globalThis.trap
     "#,
   )?;
 
@@ -237,10 +241,11 @@ fn for_await_of_observes_proxy_get_trap_for_next_method() -> Result<(), VmError>
   let trap = rt.exec_script(
     r#"
       globalThis.nextGets = 0;
-      (function (target, prop, receiver) {
+      globalThis.trap = (function (target, prop, receiver) {
         if (prop === "next") globalThis.nextGets++;
         return Reflect.get(target, prop, receiver);
-      })
+      });
+      globalThis.trap
     "#,
   )?;
 

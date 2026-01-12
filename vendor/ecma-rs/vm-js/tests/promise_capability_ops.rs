@@ -71,39 +71,35 @@ fn promise_capability_resolve_runs_then_only_at_microtask_checkpoint() -> Result
 
   let mut host = vm_js::MicrotaskQueue::new();
 
-  let capability = {
-    let mut scope = heap.scope();
-    new_promise_capability(&mut vm, &mut scope, &mut host)?
-  };
+  // Keep the capability fields stack-rooted across subsequent allocations: the promise object does
+  // not retain references to `resolve`/`reject`, so they can otherwise be GC'd between scopes.
+  let mut scope = heap.scope();
+  let capability = new_promise_capability(&mut vm, &mut scope, &mut host)?;
+  scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
   // Attach `then_handler` to the capability promise.
-  {
-    let mut scope = heap.scope();
-    let call_id = vm.register_native_call(then_handler)?;
-    let name = scope.alloc_string("then_handler")?;
-    let on_fulfilled = scope.alloc_native_function(call_id, None, name, 1)?;
+  let call_id = vm.register_native_call(then_handler)?;
+  let name = scope.alloc_string("then_handler")?;
+  let on_fulfilled = scope.alloc_native_function(call_id, None, name, 1)?;
 
-    let _derived = perform_promise_then(
-      &mut vm,
-      &mut scope,
-      &mut host,
-      capability.promise,
-      Some(Value::Object(on_fulfilled)),
-      None,
-    )?;
-  }
+  let _derived = perform_promise_then(
+    &mut vm,
+    &mut scope,
+    &mut host,
+    capability.promise,
+    Some(Value::Object(on_fulfilled)),
+    None,
+  )?;
 
   // Resolve the promise, which should enqueue a reaction job but not run it synchronously.
-  {
-    let mut scope = heap.scope();
-    let _ = vm.call_with_host(
-      &mut scope,
-      &mut host,
-      capability.resolve,
-      Value::Undefined,
-      &[Value::Undefined],
-    )?;
-  }
+  let _ = vm.call_with_host(
+    &mut scope,
+    &mut host,
+    capability.resolve,
+    Value::Undefined,
+    &[Value::Undefined],
+  )?;
+  drop(scope);
 
   assert!(
     !THEN_CALLED.with(|c| c.get()),
