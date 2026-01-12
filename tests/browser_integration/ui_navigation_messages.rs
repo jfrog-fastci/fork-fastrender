@@ -192,3 +192,85 @@ fn navigation_file_url_emits_started_committed_and_loading_toggle() {
 
   handle.join().expect("join ui worker");
 }
+
+#[test]
+fn home_navigation_emits_started_and_committed_for_about_newtab() {
+  let _lock = super::stage_listener_test_lock();
+
+  let url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-navigation-home-test",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let tab_id = TabId(1);
+  handle
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("send CreateTab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (32, 32), 1.0))
+    .expect("send ViewportChanged");
+
+  handle
+    .ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("send Navigate");
+
+  let deadline = std::time::Instant::now() + support::DEFAULT_TIMEOUT;
+  let mut messages = Vec::new();
+  let mut started_idx = None;
+  let mut committed_idx = None;
+
+  loop {
+    let now = std::time::Instant::now();
+    if now >= deadline {
+      panic!(
+        "timed out waiting for NavigationStarted+NavigationCommitted; got:\n{}",
+        support::format_messages(&messages)
+      );
+    }
+    let remaining = deadline.saturating_duration_since(now);
+    match handle
+      .ui_rx
+      .recv_timeout(remaining.min(std::time::Duration::from_millis(100)))
+    {
+      Ok(msg) => {
+        let idx = messages.len();
+        match &msg {
+          WorkerToUi::NavigationStarted { url: msg_url, .. } if msg_url == &url => {
+            started_idx.get_or_insert(idx);
+          }
+          WorkerToUi::NavigationCommitted { url: msg_url, .. } if msg_url == &url => {
+            committed_idx.get_or_insert(idx);
+          }
+          _ => {}
+        }
+        messages.push(msg);
+        if started_idx.is_some() && committed_idx.is_some() {
+          break;
+        }
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  let started_idx = started_idx.unwrap_or_else(|| {
+    panic!("expected NavigationStarted for {url:?}, got {messages:?}");
+  });
+  let committed_idx = committed_idx.unwrap_or_else(|| {
+    panic!("expected NavigationCommitted for {url:?}, got {messages:?}");
+  });
+  assert!(
+    started_idx < committed_idx,
+    "expected NavigationStarted before NavigationCommitted"
+  );
+
+  handle.join().expect("join ui worker");
+}

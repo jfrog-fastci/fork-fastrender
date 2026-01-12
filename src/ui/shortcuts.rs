@@ -17,6 +17,8 @@ pub enum ShortcutAction {
   Back,
   Forward,
   Reload,
+  /// Navigate to the browser's configured home page.
+  GoHome,
   /// Activate a tab by its 1-based index (9 = last tab), matching typical browser shortcuts.
   ActivateTabNumber(u8),
   ZoomIn,
@@ -59,6 +61,7 @@ pub enum Key {
   C,
   D,
   F,
+  H,
   K,
   L,
   N,
@@ -205,6 +208,15 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
       if cmd && matches!(platform, Platform::Mac) =>
     {
       Some(ShortcutAction::Forward)
+    }
+    // Home page.
+    (Key::Home, Modifiers { ctrl: false, shift: false, alt: true, meta: false })
+      if matches!(platform, Platform::Other) =>
+    {
+      Some(ShortcutAction::GoHome)
+    }
+    (Key::H, Modifiers { shift: true, .. }) if cmd && matches!(platform, Platform::Mac) => {
+      Some(ShortcutAction::GoHome)
     }
     (
       Key::Left,
@@ -749,6 +761,36 @@ mod tests {
         Platform::Other
       ),
       None
+    );
+  }
+
+  #[test]
+  fn alt_home_goes_to_browser_home_on_other_platforms() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Home, Modifiers::new(false, false, true, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::GoHome)
+    );
+    // AltGr (often Ctrl+Alt) should not trigger this shortcut.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Home, Modifiers::new(true, false, true, false)),
+        Platform::Other
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn mac_cmd_shift_h_goes_to_browser_home() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::H, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::GoHome)
     );
   }
 

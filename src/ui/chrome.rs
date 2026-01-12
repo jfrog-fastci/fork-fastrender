@@ -43,6 +43,7 @@ pub enum ChromeAction {
   Forward,
   Reload,
   StopLoading,
+  Home,
   AddressBarFocusChanged(bool),
   /// Toggle a bookmark for the currently active tab.
   ToggleBookmarkForActiveTab,
@@ -81,6 +82,7 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::C => Key::C,
     egui::Key::D => Key::D,
     egui::Key::F => Key::F,
+    egui::Key::H => Key::H,
     egui::Key::K => Key::K,
     egui::Key::L => Key::L,
     egui::Key::N => Key::N,
@@ -206,6 +208,7 @@ pub fn chrome_ui_with_bookmarks(
     close_tab,
     reopen_closed_tab,
     reload,
+    home,
     tab_delta,
     tab_number,
     back,
@@ -220,6 +223,7 @@ pub fn chrome_ui_with_bookmarks(
     let mut close_tab = false;
     let mut reopen_closed_tab = false;
     let mut reload = false;
+    let mut home = false;
     let mut tab_delta: Option<isize> = None;
     let mut tab_number: Option<u8> = None;
     let mut back = false;
@@ -254,6 +258,7 @@ pub fn chrome_ui_with_bookmarks(
         ShortcutAction::CloseTab => close_tab = true,
         ShortcutAction::ReopenClosedTab => reopen_closed_tab = true,
         ShortcutAction::Reload => reload = true,
+        ShortcutAction::GoHome => home = true,
         ShortcutAction::NextTab => tab_delta = Some(1),
         ShortcutAction::PrevTab => tab_delta = Some(-1),
         ShortcutAction::ActivateTabNumber(n) => tab_number = Some(n),
@@ -273,6 +278,7 @@ pub fn chrome_ui_with_bookmarks(
       close_tab,
       reopen_closed_tab,
       reload,
+      home,
       tab_delta,
       tab_number,
       back,
@@ -344,6 +350,9 @@ pub fn chrome_ui_with_bookmarks(
   }
   if reload {
     actions.push(ChromeAction::Reload);
+  }
+  if home {
+    actions.push(ChromeAction::Home);
   }
   if let Some(zoom_action) = zoom_action {
     if let Some(tab) = app.active_tab_mut() {
@@ -439,6 +448,9 @@ pub fn chrome_ui_with_bookmarks(
         }
       } else if icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true).clicked() {
         actions.push(ChromeAction::Reload);
+      }
+      if ui.button("⌂").clicked() {
+        actions.push(ChromeAction::Home);
       }
 
       // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with

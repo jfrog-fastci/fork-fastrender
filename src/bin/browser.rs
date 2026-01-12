@@ -565,35 +565,41 @@ fn determine_startup_session(
     RestoreMode::Force => true,
   };
 
+  let mut loaded_session = match fastrender::ui::session::load_session(session_path) {
+    Ok(session) => session,
+    Err(err) => {
+      eprintln!("failed to load session from {}: {err}", session_path.display());
+      None
+    }
+  };
+
   if wants_restore {
-    match fastrender::ui::session::load_session(session_path) {
-      Ok(Some(session)) => {
-        if !session.did_exit_cleanly {
-          eprintln!("previous session ended unexpectedly; restoring");
-        }
-        return (session, StartupSessionSource::Restored);
+    if let Some(session) = loaded_session.take() {
+      if !session.did_exit_cleanly {
+        eprintln!("previous session ended unexpectedly; restoring");
       }
-      Ok(None) => {}
-      Err(err) => {
-        eprintln!(
-          "failed to load session from {}: {err}",
-          session_path.display()
-        );
-      }
+      return (session, StartupSessionSource::Restored);
     }
   }
 
+  // Preserve user/session configuration even when we don't restore tabs (e.g. `browser <url>`,
+  // `--no-restore`).
+  let home_url = loaded_session
+    .as_ref()
+    .map(|s| s.home_url.clone())
+    .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
+
   if let Some(url) = cli_url {
-    return (
-      fastrender::ui::BrowserSession::single(url),
-      StartupSessionSource::CliUrl,
-    );
+    let mut session = fastrender::ui::BrowserSession::single(url);
+    session.home_url = home_url;
+    return (session.sanitized(), StartupSessionSource::CliUrl);
   }
 
-  (
-    fastrender::ui::BrowserSession::single(fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()),
-    StartupSessionSource::DefaultNewTab,
-  )
+  let mut session = fastrender::ui::BrowserSession::single(
+    fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
+  );
+  session.home_url = home_url;
+  (session.sanitized(), StartupSessionSource::DefaultNewTab)
 }
 
 #[cfg(feature = "browser_ui")]
@@ -919,7 +925,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   //
   // This is the crash marker: if the process is terminated unexpectedly, `did_exit_cleanly`
   // remains false on disk and the next launch can restore + log.
-  let mut session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
+  let mut session =
+    fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
+  session.home_url = app.home_url.clone();
   session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
   session.did_exit_cleanly = false;
   session_autosave.request_save(session);
@@ -962,6 +970,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       if let Some(mut app) = app.take() {
         let mut session =
           fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
+        session.home_url = app.home_url.clone();
         session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
         session.did_exit_cleanly = true;
         session_autosave.request_save(session.clone());
@@ -976,9 +985,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("failed to save session to {}: {err}", session_path.display());
           }
         }
-
-        if let Err(err) =
-          fastrender::ui::save_bookmarks_atomic(&app.bookmarks_path, &app.bookmarks)
+        if let Err(err) = fastrender::ui::save_bookmarks_atomic(&app.bookmarks_path, &app.bookmarks)
         {
           eprintln!(
             "failed to save bookmarks to {}: {err}",
@@ -1025,6 +1032,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let request_autosave = |app: &App| {
       let mut session =
         fastrender::ui::BrowserSession::from_app_state(&app.browser_state, app.ui_scale);
+      session.home_url = app.home_url.clone();
       session.windows[session.active_window_index].window_state = capture_window_state(&app.window);
       session.did_exit_cleanly = false;
       session_autosave.request_save(session);
@@ -1846,6 +1854,8 @@ struct App {
   ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
   worker_join: Option<std::thread::JoinHandle<()>>,
   browser_state: fastrender::ui::BrowserAppState,
+  /// Configured home page URL (default: `about:newtab`).
+  home_url: String,
 
   bookmarks_path: std::path::PathBuf,
   history_path: std::path::PathBuf,
@@ -2221,6 +2231,7 @@ impl App {
       ui_to_worker_tx,
       worker_join: Some(worker_join),
       browser_state,
+      home_url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
       bookmarks_path,
       history_path,
       bookmarks,
@@ -2291,6 +2302,7 @@ impl App {
     use fastrender::ui::UiToWorker;
 
     let session = session.sanitized();
+    self.home_url = session.home_url.clone();
     let active_window_index = session.active_window_index;
     let fastrender::ui::BrowserSessionWindow {
       tabs,
@@ -5593,6 +5605,7 @@ impl App {
               | ShortcutAction::NextTab
               | ShortcutAction::PrevTab
               | ShortcutAction::Reload
+              | ShortcutAction::GoHome
               | ShortcutAction::ActivateTabNumber(_)
               | ShortcutAction::ZoomIn
               | ShortcutAction::ZoomOut
@@ -6190,8 +6203,37 @@ impl App {
             tab.title = tab.committed_title.clone();
           }
           self.browser_state.sync_address_bar_to_active();
- 
+
           self.send_worker_msg(UiToWorker::StopLoading { tab_id });
+        }
+        ChromeAction::Home => {
+          // Ensure the worker has the latest viewport before starting a navigation-affecting
+          // operation.
+          self.force_send_viewport_now();
+          let Some(tab_id) = self.browser_state.active_tab_id() else {
+            continue;
+          };
+          let msg = {
+            let Some(tab) = self.browser_state.tab_mut(tab_id) else {
+              continue;
+            };
+            tab.stage = None;
+            match tab.navigate_typed(&self.home_url) {
+              Ok(msg) => Some(msg),
+              Err(err) => {
+                tab.error = Some(err);
+                None
+              }
+            }
+          };
+          let Some(msg) = msg else {
+            continue;
+          };
+          session_dirty = true;
+          if let UiToWorker::Navigate { url, .. } = &msg {
+            self.browser_state.chrome.address_bar_text = url.clone();
+          }
+          self.send_worker_msg(msg);
         }
         ChromeAction::Back => {
           self.force_send_viewport_now();
@@ -7192,6 +7234,7 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::C => ShortcutKey::C,
     VirtualKeyCode::D => ShortcutKey::D,
     VirtualKeyCode::F => ShortcutKey::F,
+    VirtualKeyCode::H => ShortcutKey::H,
     VirtualKeyCode::K => ShortcutKey::K,
     VirtualKeyCode::L => ShortcutKey::L,
     VirtualKeyCode::N => ShortcutKey::N,

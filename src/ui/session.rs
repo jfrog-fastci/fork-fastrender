@@ -35,6 +35,14 @@ fn is_false(value: &bool) -> bool {
   !*value
 }
 
+fn default_home_url() -> String {
+  about_pages::ABOUT_NEWTAB.to_string()
+}
+
+fn is_default_home_url(url: &String) -> bool {
+  url == about_pages::ABOUT_NEWTAB
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSessionTab {
   pub url: String,
@@ -129,6 +137,11 @@ impl BrowserSessionWindow {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSession {
   pub version: u32,
+  #[serde(
+    default = "default_home_url",
+    skip_serializing_if = "is_default_home_url"
+  )]
+  pub home_url: String,
   #[serde(default)]
   pub windows: Vec<BrowserSessionWindow>,
   #[serde(default)]
@@ -152,6 +165,7 @@ impl BrowserSession {
   pub fn single(url: String) -> Self {
     Self {
       version: SESSION_VERSION,
+      home_url: default_home_url(),
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url,
@@ -209,6 +223,7 @@ impl BrowserSession {
 
     Self {
       version: SESSION_VERSION,
+      home_url: default_home_url(),
       windows: vec![BrowserSessionWindow {
         tabs,
         active_tab_index,
@@ -224,6 +239,15 @@ impl BrowserSession {
   /// Ensure the session is well-formed and contains only supported URLs.
   pub fn sanitized(mut self) -> Self {
     self.version = SESSION_VERSION;
+
+    let home_trimmed = self.home_url.trim().to_string();
+    self.home_url = if home_trimmed.is_empty()
+      || validate_user_navigation_url_scheme(&home_trimmed).is_err()
+    {
+      default_home_url()
+    } else {
+      home_trimmed
+    };
 
     if self.windows.is_empty() {
       self.windows.push(BrowserSessionWindow {
@@ -304,6 +328,7 @@ mod tests {
   fn session_sanitizes_invalid_zoom_values() {
     let session = BrowserSession {
       version: 123,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
       windows: vec![BrowserSessionWindow {
         tabs: vec![
           BrowserSessionTab {
@@ -385,6 +410,7 @@ mod tests {
   fn session_sanitizes_invalid_scroll_values() {
     let session = BrowserSession {
       version: 123,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
       windows: vec![BrowserSessionWindow {
         tabs: vec![
           BrowserSessionTab {
@@ -463,6 +489,7 @@ mod tests {
 
     let session = BrowserSession::from_app_state(&app, theme::DEFAULT_UI_SCALE);
     assert_eq!(session.active_window_index, 0);
+    assert_eq!(session.home_url, about_pages::ABOUT_NEWTAB);
     assert_eq!(session.windows[0].active_tab_index, 0);
     assert_eq!(
       session.windows[0].tabs,
@@ -500,6 +527,7 @@ mod tests {
 
     let session = load_session(&path).unwrap().unwrap();
     assert_eq!(session.version, SESSION_VERSION);
+    assert_eq!(session.home_url, about_pages::ABOUT_NEWTAB);
     assert_eq!(session.windows.len(), 1);
     assert_eq!(session.active_window_index, 0);
     assert_eq!(session.windows[0].active_tab_index, 1);
@@ -524,6 +552,7 @@ mod tests {
   fn session_sanitizes_empty_and_invalid_indices() {
     let session = BrowserSession {
       version: 999,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
       windows: vec![
         BrowserSessionWindow {
           tabs: vec![],
@@ -562,6 +591,7 @@ mod tests {
   fn session_sanitizes_window_geometry() {
     let session = BrowserSession {
       version: SESSION_VERSION,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
@@ -744,6 +774,7 @@ enum BrowserSessionFile {
 fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
   BrowserSession {
     version: SESSION_VERSION,
+    home_url: default_home_url(),
     windows: vec![BrowserSessionWindow {
       tabs: v1.tabs,
       active_tab_index: v1.active_tab_index,
