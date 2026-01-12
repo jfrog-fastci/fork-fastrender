@@ -234,10 +234,20 @@ impl RawEntry {
     }
 
     if let Some(id) = &self.id {
+      if id.contains('\\') {
+        return Err(HarnessError::Manifest(format!(
+          "invalid id '{id}': ids must use forward slashes"
+        )));
+      }
       return Ok(Matcher::Exact(id.clone()));
     }
 
     if let Some(glob) = &self.glob {
+      if glob.contains('\\') {
+        return Err(HarnessError::Manifest(format!(
+          "invalid glob '{glob}': globs must use forward slashes"
+        )));
+      }
       let compiled = Glob::new(glob)
         .map_err(|err| HarnessError::Manifest(format!("invalid glob '{glob}': {err}")))?
         .compile_matcher();
@@ -336,5 +346,34 @@ reason = "second"
     let path =
       Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/conformance-upstream/manifest.toml");
     Expectations::from_path(&path).expect("upstream conformance manifest parsed from file");
+  }
+
+  #[test]
+  fn manifest_rejects_backslashes_in_id_and_glob() {
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+id = "a\\b.ts"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("forward slashes"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+glob = "a\\**"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("forward slashes"),
+      "unexpected error: {err}"
+    );
   }
 }
