@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use diagnostics::paths::normalize_ts_path;
+use serde_json::Value;
 use typecheck_ts::lib_support::{CompilerOptions, ModuleKind};
 use typecheck_ts::resolve::{ModuleResolutionMode, ResolveFs, ResolveOptions, Resolver};
 use typecheck_ts::FileKey;
@@ -179,4 +180,73 @@ fn infer_default_module_resolution_mode(module: Option<ModuleKind>) -> ModuleRes
     Some(ModuleKind::CommonJs) => ModuleResolutionMode::Node10,
     _ => ModuleResolutionMode::Classic,
   }
+}
+
+fn type_package_entry(files: &HarnessFileSet, dir: &str) -> Option<FileKey> {
+  let pkg_json = normalize_ts_path(&Path::new(dir).join("package.json").to_string_lossy());
+  if let Some(key) = files.resolve_ref(&pkg_json) {
+    if let Some(text) = files.content(key) {
+      if let Ok(json) = serde_json::from_str::<Value>(&text) {
+        let fields = ["types", "typings"];
+        for field in fields {
+          if let Some(path) = json.get(field).and_then(|v| v.as_str()) {
+            let candidate = if path.starts_with('/')
+              || path.starts_with('\\')
+              || starts_with_drive_letter(path)
+            {
+              normalize_ts_path(path)
+            } else {
+              normalize_ts_path(&Path::new(dir).join(path).to_string_lossy())
+            };
+            if let Some(entry) = files.resolve(&candidate) {
+              return Some(entry);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  let index = normalize_ts_path(&Path::new(dir).join("index.d.ts").to_string_lossy());
+  files.resolve(&index)
+}
+
+/// Resolve `@types/*` specifiers using the configured `typeRoots`, matching TypeScript's behaviour.
+///
+/// When `typeRoots` is empty, the TypeScript compiler searches for
+/// `<ancestor>/node_modules/@types/<pkg>` for each ancestor directory of the importing file.
+pub(crate) fn resolve_at_types_entry(
+  files: &HarnessFileSet,
+  from: &FileKey,
+  type_roots: &[String],
+  specifier: &str,
+) -> Option<FileKey> {
+  let package = specifier.strip_prefix("@types/")?;
+  if package.is_empty() {
+    return None;
+  }
+
+  if !type_roots.is_empty() {
+    for root in type_roots {
+      let root = normalize_ts_path(root);
+      let dir = normalize_ts_path(&Path::new(&root).join(package).to_string_lossy());
+      if let Some(entry) = type_package_entry(files, &dir) {
+        return Some(entry);
+      }
+    }
+    return None;
+  }
+
+  let base_dir = Path::new(from.as_str())
+    .parent()
+    .unwrap_or_else(|| Path::new("/"));
+  for ancestor in base_dir.ancestors() {
+    let root = normalize_ts_path(&ancestor.join("node_modules").join("@types").to_string_lossy());
+    let dir = normalize_ts_path(&Path::new(&root).join(package).to_string_lossy());
+    if let Some(entry) = type_package_entry(files, &dir) {
+      return Some(entry);
+    }
+  }
+
+  None
 }

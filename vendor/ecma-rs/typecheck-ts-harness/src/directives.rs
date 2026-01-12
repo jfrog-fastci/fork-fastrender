@@ -913,11 +913,6 @@ fn tsc_only_option_notes(options: &HarnessOptions) -> Vec<String> {
         .to_string(),
     );
   }
-  if !options.type_roots.is_empty() {
-    notes.push(
-      "tsc option typeRoots is set via directives but is ignored by the Rust checker".to_string(),
-    );
-  }
   if options.base_url.is_some() {
     notes.push(
       "tsc option baseUrl is set via directives but is ignored by the Rust checker".to_string(),

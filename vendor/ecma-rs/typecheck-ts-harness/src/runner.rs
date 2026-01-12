@@ -11,7 +11,7 @@ use crate::discover::{
 use crate::expectations::{AppliedExpectation, ExpectationKind, Expectations};
 use crate::multifile::{is_normalized_virtual_path, normalize_name_into};
 use crate::profile::ProfileBuilder;
-use crate::resolve::resolve_module_specifier;
+use crate::resolve::{resolve_at_types_entry, resolve_module_specifier};
 use crate::tsc::{
   node_available, typescript_available, TscDiagnostics, TscKillSwitch, TscRequest, TscRunner,
   TSC_BASELINE_SCHEMA_VERSION,
@@ -1150,13 +1150,14 @@ fn execute_case(
 
   let rust_start = Instant::now();
   let compiler_options = harness_options.to_compiler_options();
+  let type_roots = harness_options.type_roots.clone();
   let (host, rust_trace) = if trace_resolution {
     let (host, trace) =
-      HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options.clone());
+      HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options.clone(), type_roots);
     (host, Some(trace))
   } else {
     (
-      HarnessHost::new(file_set.clone(), compiler_options.clone()),
+      HarnessHost::new(file_set.clone(), compiler_options.clone(), type_roots),
       None,
     )
   };
@@ -1292,7 +1293,11 @@ fn execute_case(
 #[cfg(test)]
 fn run_rust(file_set: &HarnessFileSet, options: &HarnessOptions) -> EngineDiagnostics {
   let compiler_options = options.to_compiler_options();
-  let host = HarnessHost::new(file_set.clone(), compiler_options.clone());
+  let host = HarnessHost::new(
+    file_set.clone(),
+    compiler_options.clone(),
+    options.type_roots.clone(),
+  );
   let roots = file_set.root_keys();
   let program = Program::new(host, roots);
   match run_rust_with_profile(&program, file_set, false) {
@@ -1738,14 +1743,20 @@ fn summarize(results: &[TestResult]) -> Summary {
 pub(crate) struct HarnessHost {
   files: HarnessFileSet,
   compiler_options: CompilerOptions,
+  type_roots: Vec<String>,
   resolution_trace: Option<ResolutionTraceHandle>,
 }
 
 impl HarnessHost {
-  pub(crate) fn new(files: HarnessFileSet, compiler_options: CompilerOptions) -> Self {
+  pub(crate) fn new(
+    files: HarnessFileSet,
+    compiler_options: CompilerOptions,
+    type_roots: Vec<String>,
+  ) -> Self {
     Self {
       files,
       compiler_options,
+      type_roots,
       resolution_trace: None,
     }
   }
@@ -1753,11 +1764,13 @@ impl HarnessHost {
   pub(crate) fn new_with_resolution_trace(
     files: HarnessFileSet,
     compiler_options: CompilerOptions,
+    type_roots: Vec<String>,
   ) -> (Self, ResolutionTraceHandle) {
     let trace = ResolutionTraceHandle::default();
     let host = Self {
       files,
       compiler_options,
+      type_roots,
       resolution_trace: Some(trace.clone()),
     };
     (host, trace)
@@ -1781,11 +1794,19 @@ impl Host for HarnessHost {
   }
 
   fn resolve(&self, from: &FileKey, specifier: &str) -> Option<FileKey> {
-    let resolved = self.files.resolve_import(
-      from,
-      specifier,
-      &self.compiler_options,
-    );
+    let resolved = if specifier.starts_with("@types/") && !self.type_roots.is_empty() {
+      // When `typeRoots` is specified, TypeScript resolves type packages solely
+      // from those roots and does not fall back to `node_modules/@types`.
+      resolve_at_types_entry(&self.files, from, &self.type_roots, specifier)
+    } else {
+      let mut resolved = self
+        .files
+        .resolve_import(from, specifier, &self.compiler_options);
+      if resolved.is_none() {
+        resolved = resolve_at_types_entry(&self.files, from, &self.type_roots, specifier);
+      }
+      resolved
+    };
     if let Some(trace) = self.resolution_trace.as_ref() {
       trace.push(ResolutionTraceEntry {
         from: from.as_str().to_string(),
@@ -2586,7 +2607,7 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), CompilerOptions::default());
+    let host = HarnessHost::new(file_set.clone(), CompilerOptions::default(), Vec::new());
     let roots = file_set.root_keys();
 
     assert_eq!(roots.len(), 2);
@@ -2608,7 +2629,11 @@ mod tests {
     harness_options.strict_null_checks = Some(true);
     let compiler_options = harness_options.to_compiler_options();
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options.clone());
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options.clone(),
+      harness_options.type_roots.clone(),
+    );
     let program = Program::new(host, file_set.root_keys());
 
     assert_eq!(program.compiler_options(), compiler_options);
@@ -2763,6 +2788,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -2787,6 +2813,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
     let from = file_set.resolve("/main.ts").unwrap();
     let resolved = host.resolve(&from, "dep").expect("dep should resolve");
@@ -2815,6 +2842,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/src/b.ts").unwrap();
@@ -2842,6 +2870,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/src/b.ts").unwrap();
@@ -2867,6 +2896,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -2874,6 +2904,33 @@ mod tests {
     let expected = file_set
       .resolve("/node_modules/@types/foo/index.d.ts")
       .unwrap();
+    assert_eq!(resolved, expected);
+  }
+
+  #[test]
+  fn resolves_at_types_package_via_explicit_type_roots() {
+    let files = vec![
+      VirtualFile {
+        name: "/a.ts".to_string(),
+        content: "export {};".into(),
+      },
+      VirtualFile {
+        name: "/custom_types/example/index.d.ts".to_string(),
+        content: "declare const example: string;".into(),
+      },
+    ];
+    let file_set = HarnessFileSet::new(&files);
+    let host = HarnessHost::new(
+      file_set.clone(),
+      CompilerOptions::default(),
+      vec!["/custom_types".to_string()],
+    );
+
+    let from = file_set.resolve("/a.ts").unwrap();
+    let resolved = host
+      .resolve(&from, "@types/example")
+      .expect("@types/example should resolve via explicit typeRoots");
+    let expected = file_set.resolve("/custom_types/example/index.d.ts").unwrap();
     assert_eq!(resolved, expected);
   }
 
@@ -2898,6 +2955,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -2927,6 +2985,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("c:/a.ts").unwrap();
@@ -2958,6 +3017,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node16"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/src/a.ts").unwrap();
@@ -2987,6 +3047,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node16"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/src/a.ts").unwrap();
@@ -3018,6 +3079,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node16"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -3049,6 +3111,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node16"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("c:/a.ts").unwrap();
@@ -3080,6 +3143,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node16"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -3111,6 +3175,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node16"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -3142,6 +3207,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node16"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -3166,7 +3232,7 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), CompilerOptions::default());
+    let host = HarnessHost::new(file_set.clone(), CompilerOptions::default(), Vec::new());
 
     let from = file_set.resolve("/a.ts").unwrap();
     let resolved = host
@@ -3242,6 +3308,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -3271,6 +3338,7 @@ mod tests {
     let host = HarnessHost::new(
       file_set.clone(),
       compiler_options_with_module_resolution("node"),
+      Vec::new(),
     );
 
     let from = file_set.resolve("/a.ts").unwrap();
@@ -3293,7 +3361,7 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), CompilerOptions::default());
+    let host = HarnessHost::new(file_set.clone(), CompilerOptions::default(), Vec::new());
 
     let from = file_set.resolve("/a.ts").unwrap();
     let resolved = host
@@ -3375,7 +3443,7 @@ echo '{"diagnostics":[]}'
     }]);
     let mut compiler_options = CompilerOptions::default();
     compiler_options.no_default_lib = true;
-    let host = HarnessHost::new(file_set.clone(), compiler_options);
+    let host = HarnessHost::new(file_set.clone(), compiler_options, Vec::new());
     let roots = file_set.root_keys();
     let program = Arc::new(Program::new(host, roots));
 
@@ -3406,7 +3474,7 @@ echo '{"diagnostics":[]}'
     }]);
     let mut compiler_options = CompilerOptions::default();
     compiler_options.no_default_lib = true;
-    let host = HarnessHost::new(file_set.clone(), compiler_options);
+    let host = HarnessHost::new(file_set.clone(), compiler_options, Vec::new());
     let roots = file_set.root_keys();
     let program = Arc::new(Program::new(host, roots));
 

@@ -358,7 +358,7 @@ fn run_case(
         .push(LibName::parse("esnext.disposable").expect("known lib name"));
     }
   }
-  let host = HarnessHost::new(file_set.clone(), compiler_options);
+  let host = HarnessHost::new(file_set.clone(), compiler_options, test.options.type_roots.clone());
   let roots = file_set.root_keys();
   let program = Arc::new(Program::new(host, roots));
 

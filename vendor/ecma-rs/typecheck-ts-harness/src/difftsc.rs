@@ -1046,6 +1046,7 @@ fn run_single_test(
 
   let timeout_guard = timeout_manager.register(deadline);
   let mut compiler_options = harness_options.to_compiler_options();
+  let type_roots = harness_options.type_roots.clone();
   // `typecheck-ts` still ships with an intentionally minimal lib surface (enough for
   // difftsc progress tracking, not a full TypeScript standard library). Running
   // difftsc with `skip_lib_check=false` would therefore flood the comparison with
@@ -1056,10 +1057,11 @@ fn run_single_test(
   // side when they need to assert specific diagnostics.
   compiler_options.skip_lib_check = true;
   let (host, rust_trace) = if args.trace_resolution {
-    let (host, trace) = HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options);
+    let (host, trace) =
+      HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options, type_roots);
     (host, Some(trace))
   } else {
-    (HarnessHost::new(file_set.clone(), compiler_options), None)
+    (HarnessHost::new(file_set.clone(), compiler_options, type_roots), None)
   };
   let roots = file_set.root_keys();
   let program = Arc::new(Program::new(host, roots));
@@ -2642,7 +2644,7 @@ mod tests {
     }]);
     let mut compiler_options = CompilerOptions::default();
     compiler_options.no_default_lib = true;
-    let host = HarnessHost::new(file_set.clone(), compiler_options);
+    let host = HarnessHost::new(file_set.clone(), compiler_options, Vec::new());
     let program = Arc::new(Program::new(host, file_set.root_keys()));
 
     guard.set_program(Arc::clone(&program));
@@ -2876,7 +2878,7 @@ span mismatches:
     let file_set = HarnessFileSet::new(&files);
     let mut compiler_options = CompilerOptions::default();
     compiler_options.no_default_lib = true;
-    let host = HarnessHost::new(file_set.clone(), compiler_options);
+    let host = HarnessHost::new(file_set.clone(), compiler_options, Vec::new());
     let program = Program::new(host, file_set.root_keys());
     let _ = program.check();
 

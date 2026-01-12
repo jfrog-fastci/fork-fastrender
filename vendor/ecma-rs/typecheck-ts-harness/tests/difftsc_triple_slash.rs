@@ -17,6 +17,8 @@ fn run_difftsc() -> Value {
     .join("difftsc");
   let manifest = source_suite.join("manifest.toml");
   let (_dir, suite) = common::temp_difftsc_suite(&[
+    "compiler_options_types",
+    "reference_types",
     "triple_slash_references.ts",
     "triple_slash_no_default_lib.ts",
     "triple_slash_path_imported",
@@ -87,6 +89,8 @@ fn difftsc_selected_cases_match_baselines() {
   );
 
   for name in [
+    "compiler_options_types",
+    "reference_types",
     "triple_slash_references",
     "triple_slash_no_default_lib",
     "triple_slash_path_imported",
