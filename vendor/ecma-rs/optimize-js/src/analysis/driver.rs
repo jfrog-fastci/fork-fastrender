@@ -14,7 +14,7 @@ use ahash::HashMapExt;
 
 use super::{
   alias, call_summary, consume, effect, encoding, escape, interproc_escape, nullability, ownership,
-  purity, range,
+  parallelize, purity, range,
 };
 
 /// Per-function analysis bundle.
@@ -524,6 +524,27 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
     .insert(FunctionKey::TopLevel, purities.top_level);
   for id in sorted_fn_ids(program) {
     analyses.purity.insert(FunctionKey::Fn(id), purities.for_fn(id));
+  }
+
+  // 2.5) parallelizability of preserved semantic ops
+  let callback_infos = parallelize::compute_callback_infos(program);
+  for &key in &keys {
+    parallelize::annotate_cfg_parallelize(
+      cfg_for_key_deconstructed_mut(program, key),
+      &effects,
+      &purities,
+      &callback_infos,
+      effects.constant_foreign_fns(),
+    );
+    if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
+      parallelize::annotate_cfg_parallelize(
+        cfg,
+        &effects,
+        &purities,
+        &callback_infos,
+        effects.constant_foreign_fns(),
+      );
+    }
   }
 
   // 3) alias

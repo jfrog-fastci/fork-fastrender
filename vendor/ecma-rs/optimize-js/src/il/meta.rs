@@ -234,6 +234,51 @@ pub enum ArgUseMode {
   Consume,
 }
 
+/// Parallelization metadata for semantic operations.
+///
+/// This is attached to semantic ops (e.g. `Array.prototype.map`, `Promise.all`) so downstream
+/// backends can make a single local decision about whether to emit parallel lowering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
+pub enum ParallelPlan {
+  /// The operation may be lowered using CPU data-parallel execution (e.g. parallel map/filter).
+  Parallelizable,
+  /// The operation should spawn all async tasks concurrently and await completion (e.g.
+  /// `Promise.all`).
+  SpawnAll,
+  /// The operation should spawn all async tasks concurrently, but the overall result is the first
+  /// settled promise (e.g. `Promise.race`).
+  SpawnAllButRaceResult,
+  /// The operation should be lowered sequentially.
+  NotParallelizable(ParallelReason),
+}
+
+impl ParallelPlan {
+  pub fn is_parallelizable(&self) -> bool {
+    matches!(
+      self,
+      ParallelPlan::Parallelizable | ParallelPlan::SpawnAll | ParallelPlan::SpawnAllButRaceResult
+    )
+  }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
+pub enum ParallelReason {
+  UnknownCallback,
+  ImpureCallback,
+  CallbackUnknownEffects,
+  CallbackReadsHeap,
+  CallbackWrites,
+  CallbackUsesIndex,
+  ReduceNotAssociative,
+  Await,
+}
+
 impl Default for ArgUseMode {
   fn default() -> Self {
     Self::Borrow
@@ -452,6 +497,11 @@ pub struct InstMeta {
     serde(default, skip_serializing_if = "Option::is_none")
   )]
   pub value: Option<ValueFacts>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub parallel: Option<ParallelPlan>,
 }
 
 impl InstMeta {
@@ -536,7 +586,9 @@ impl InstMeta {
       && self.result_escape.is_none()
       && self.callee_purity.is_default()
       && self.nullability_narrowing.is_none()
-      && self.value.is_none();
+      && self.value.is_none()
+      && self.parallel.is_none()
+      && self.parallel.is_none();
 
     #[cfg(feature = "native-async-ops")]
     {

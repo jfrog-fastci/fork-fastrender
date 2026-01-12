@@ -7,7 +7,7 @@ use std::fmt::{self};
 
 pub use crate::il::meta::{
   ArgUseMode, EffectLocation, EffectSet, InPlaceHint, InstMeta, Nullability, NullabilityNarrowing,
-  OwnershipState, Purity, StringEncoding, TypeInfo,
+  OwnershipState, ParallelPlan, ParallelReason, Purity, StringEncoding, TypeInfo,
 };
 pub use crate::types::ValueTypeSummary;
 
