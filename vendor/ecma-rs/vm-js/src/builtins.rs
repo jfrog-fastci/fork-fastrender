@@ -14318,7 +14318,7 @@ fn concat_with_colon_space(
   Ok(out)
 }
 
-/// `Error.prototype.toString` (minimal).
+/// `Error.prototype.toString` (ECMA-262).
 pub fn error_prototype_to_string(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -14328,44 +14328,41 @@ pub fn error_prototype_to_string(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let this_obj = match this {
-    Value::Object(o) => o,
-    _ => {
-      return Err(VmError::TypeError(
-        "Error.prototype.toString called on non-object",
-      ))
-    }
-  };
+  // Spec: https://tc39.es/ecma262/#sec-error.prototype.tostring
+  //
+  // 1. Let O be ? ToObject(this value).
+  // 2. Let name be ? Get(O, "name").
+  // 3. If name is undefined, set name to "Error".
+  // 4. Else, set name to ? ToString(name).
+  // 5. Let msg be ? Get(O, "message").
+  // 6. If msg is undefined, set msg to the empty String.
+  // 7. Else, set msg to ? ToString(msg).
+  // 8. If name is the empty String, return msg.
+  // 9. If msg is the empty String, return name.
+  // 10. Return the string-concatenation of name, ": ", and msg.
+  let mut scope = scope.reborrow();
 
-  // Root `this_obj` while allocating property keys and potentially invoking accessors.
-  scope.push_root(Value::Object(this_obj))?;
+  let o = scope.to_object(vm, host, hooks, this)?;
+  let receiver = Value::Object(o);
+  // Root `O` while performing property gets and allocating output strings.
+  scope.push_root(receiver)?;
 
-  let name_key = string_key(scope, "name")?;
-  let message_key = string_key(scope, "message")?;
+  let name_key = string_key(&mut scope, "name")?;
+  let message_key = string_key(&mut scope, "message")?;
 
-  // Spec: `Get(O, "name")` / `Get(O, "message")` (walk prototype chain + invoke accessors).
-  let name_value = scope.ordinary_get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    this_obj,
-    name_key,
-    Value::Object(this_obj),
-  )?;
-  let message_value = scope.ordinary_get_with_host_and_hooks(
-    vm,
-    host,
-    hooks,
-    this_obj,
-    message_key,
-    Value::Object(this_obj),
-  )?;
+  // `Get(O, "name")`: must be Proxy-aware and invoke accessors.
+  let name_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, o, name_key)?;
+  scope.push_root(name_value)?;
 
   let name = match name_value {
     Value::Undefined => scope.alloc_string("Error")?,
     other => scope.to_string(vm, host, hooks, other)?,
   };
   scope.push_root(Value::String(name))?;
+
+  // `Get(O, "message")`: must be Proxy-aware and invoke accessors.
+  let message_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, o, message_key)?;
+  scope.push_root(message_value)?;
 
   let message = match message_value {
     Value::Undefined => scope.alloc_string("")?,

@@ -1,6 +1,7 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::property_descriptor_ops;
 use crate::{GcObject, GcString, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use std::collections::HashSet;
 
 fn proxy_own_keys_result_to_property_keys(
   vm: &mut Vm,
@@ -1041,6 +1042,8 @@ impl<'a> Scope<'a> {
     ];
     scope.push_roots(&roots)?;
 
+    let key_value = roots[1];
+
     // Fast path: own property.
     if let Some(desc) = scope
       .heap()
@@ -1078,10 +1081,147 @@ impl<'a> Scope<'a> {
       return Ok(value);
     }
 
-    let Some(parent) = scope.heap().object_prototype(obj)? else {
+    let Some(proto) = scope.heap().object_prototype(obj)? else {
       return Ok(Value::Undefined);
     };
-    scope.get_with_host_and_hooks(vm, host, hooks, parent, key, receiver)
+
+    // Walk the prototype chain iteratively so Proxy objects in the chain are handled by their
+    // `[[Get]]` internal method (including `get` traps and revoked-proxy errors).
+    let mut visited: HashSet<GcObject> = HashSet::new();
+    if visited.try_reserve(2).is_err() {
+      return Err(VmError::OutOfMemory);
+    }
+    visited.insert(obj);
+    if !visited.insert(proto) {
+      return Err(VmError::PrototypeCycle);
+    }
+
+    let mut current = proto;
+    let mut steps = 0usize;
+
+    // Cache the `"get"` trap key across Proxy hops so we only allocate it once per operation.
+    let mut get_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      // Budget prototype/proxy traversal so deep chains can't run unbounded work inside a single
+      // `Get(O, P)` operation.
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      // --- Proxy [[Get]] dispatch (partial) ---
+      if scope.heap().is_proxy_object(current) {
+        let Some(target) = scope.heap().proxy_target(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+        };
+        let Some(handler) = scope.heap().proxy_handler(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+        };
+
+        // Let trap be ? GetMethod(handler, "get").
+        let get_key = match get_trap_key {
+          Some(k) => k,
+          None => {
+            let s = scope.alloc_string("get")?;
+            scope.push_root(Value::String(s))?;
+            let k = PropertyKey::from_string(s);
+            get_trap_key = Some(k);
+            k
+          }
+        };
+
+        // `GetMethod` uses `GetV`/`ToObject`. Here `handler` is already an object.
+        let trap = scope.get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          handler,
+          get_key,
+          Value::Object(handler),
+        )?;
+
+        // If trap is undefined or null, forward to the target.
+        if matches!(trap, Value::Undefined | Value::Null) {
+          current = target;
+          if visited.try_reserve(1).is_err() {
+            return Err(VmError::OutOfMemory);
+          }
+          if !visited.insert(current) {
+            return Err(VmError::PrototypeCycle);
+          }
+          continue;
+        }
+        if !scope.heap().is_callable(trap)? {
+          return Err(VmError::TypeError("Proxy get trap is not callable"));
+        }
+
+        let args = [Value::Object(target), key_value, receiver];
+        return vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          trap,
+          Value::Object(handler),
+          &args,
+        );
+      }
+
+      // Fast path: own property.
+      if let Some(desc) = scope
+        .heap()
+        .object_get_own_property_with_tick(current, &key, || vm.tick())?
+      {
+        return match desc.kind {
+          PropertyKind::Data { value, .. } => Ok(value),
+          PropertyKind::Accessor { get, .. } => {
+            if matches!(get, Value::Undefined) {
+              Ok(Value::Undefined)
+            } else {
+              if !scope.heap().is_callable(get)? {
+                return Err(VmError::TypeError("accessor getter is not callable"));
+              }
+              vm.call_with_host_and_hooks(host, &mut scope, hooks, get, receiver, &[])
+            }
+          }
+        };
+      }
+
+      if let Some(value) =
+        scope.string_object_get_index_value_with_tick(current, &key, || vm.tick())?
+      {
+        return Ok(value);
+      }
+
+      // Integer-indexed exotic objects (typed arrays): numeric index keys do not consult the
+      // prototype chain or host exotic hooks. If we didn't find an own property above, this is an
+      // out-of-bounds index.
+      if scope.heap().is_typed_array_object(current) && scope.heap().array_index(&key).is_some() {
+        return Ok(Value::Undefined);
+      }
+
+      // Host hook for "exotic" property getters (e.g. DOM named properties) runs before walking the
+      // prototype chain.
+      if let Some(value) = hooks.host_exotic_get(&mut scope, current, key, receiver)? {
+        return Ok(value);
+      }
+
+      let Some(proto) = scope.heap().object_prototype(current)? else {
+        return Ok(Value::Undefined);
+      };
+
+      current = proto;
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      if !visited.insert(current) {
+        return Err(VmError::PrototypeCycle);
+      }
+    }
   }
 
   /// ECMAScript `[[Get]]` for ordinary objects using a custom host hook implementation.

@@ -16,13 +16,14 @@ fn get_own_property<'a>(
 }
 
 #[test]
-fn error_prototype_to_string_on_non_object_throws_type_error() -> Result<(), VmError> {
+fn error_prototype_to_string_on_null_or_undefined_throws_type_error() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
 
   // Ensure the exception is catchable from JS.
-  let result = rt.exec_script(r#"try { Error.prototype.toString.call(1); "no"; } catch (e) { e.name }"#)?;
+  let result =
+    rt.exec_script(r#"try { Error.prototype.toString.call(undefined); "no"; } catch (e) { e.name }"#)?;
   let Value::String(s) = result else {
     panic!("expected string result, got {result:?}");
   };
