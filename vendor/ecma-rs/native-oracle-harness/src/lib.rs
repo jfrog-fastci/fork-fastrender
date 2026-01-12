@@ -28,9 +28,9 @@ use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use emit_js::{emit_top_level_diagnostic, EmitOptions};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use vm_js::{
-  format_stack_trace, format_termination, Budget, GcObject, Heap, HeapLimits, JsRuntime,
-  MicrotaskQueue, PromiseState, RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
-  VmJobContext, VmOptions,
+  format_stack_trace, format_termination, GcObject, Heap, HeapLimits, JsRuntime, MicrotaskQueue,
+  PromiseState, RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  VmOptions,
 };
 
 const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
@@ -39,12 +39,6 @@ const OBSERVE_SOURCE_NAME: &str = "<native-oracle-observe>";
 const CONSOLE_PRELUDE_SCRIPT: &str = "globalThis.console = { log: __native_print };";
 const CONSOLE_PRELUDE_SOURCE_NAME: &str = "<native-oracle-console-prelude>";
 const NATIVE_PRINT_NAME: &str = "__native_print";
-
-const HEAP_MAX_BYTES: usize = 8 * 1024 * 1024;
-const HEAP_GC_THRESHOLD_BYTES: usize = 4 * 1024 * 1024;
-
-// A deterministic guardrail for accidental infinite loops in fixtures.
-const VM_FUEL: u64 = 1_000_000;
 
 struct RootOnlyJobCtx<'a> {
   heap: &'a mut Heap,
@@ -97,7 +91,6 @@ fn teardown_microtasks(rt: &mut JsRuntime) {
   let mut ctx = RootOnlyJobCtx { heap };
   vm.microtask_queue_mut().teardown(&mut ctx);
 }
-
 #[derive(Debug)]
 pub enum TsToJsError {
   Parse(parse_js::error::SyntaxError),
@@ -363,9 +356,7 @@ pub fn run_js_source_with_options(
   source_text: impl Into<Arc<str>>,
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
-  let vm = Vm::new(options.vm_options.clone());
-  let heap = Heap::new(options.heap_limits);
-  let mut rt = JsRuntime::new(vm, heap).map_err(|e| OracleHarnessError::Vm {
+  let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
     message: e.to_string(),
   })?;
   let source = Arc::new(SourceText::new(source_name, source_text));
@@ -399,13 +390,10 @@ pub fn run_js_source_capture_stdout_with_options(
   source_text: impl Into<Arc<str>>,
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
-  let mut vm = Vm::new(options.vm_options.clone());
-  vm.set_user_data(StdoutCapture::default());
-
-  let heap = Heap::new(options.heap_limits);
-  let mut rt = JsRuntime::new(vm, heap).map_err(|e| OracleHarnessError::Vm {
+  let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
     message: e.to_string(),
   })?;
+  rt.vm.set_user_data(StdoutCapture::default());
 
   let out = (|| {
     rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)
@@ -683,15 +671,13 @@ fn ts_to_js(ts: &str) -> Result<String, Diagnostic> {
   })
 }
 
-fn new_runtime() -> Result<JsRuntime, VmError> {
-  let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(HEAP_MAX_BYTES, HEAP_GC_THRESHOLD_BYTES));
+fn new_runtime_with_options(options: &OracleHarnessOptions) -> Result<JsRuntime, VmError> {
+  let vm = Vm::new(options.vm_options.clone());
+  let heap = Heap::new(options.heap_limits);
   let mut rt = JsRuntime::new(vm, heap)?;
-  rt.vm.set_budget(Budget {
-    fuel: Some(VM_FUEL),
-    deadline: None,
-    check_time_every: 100,
-  });
+  // Reset the budget after runtime initialization so options apply deterministically to the guest
+  // script (not to realm/builtin setup).
+  rt.vm.reset_budget_to_default();
   Ok(rt)
 }
 
@@ -773,9 +759,20 @@ pub fn run_fixture_ts(source: &str) -> Result<String, Diagnostic> {
 
 /// Like [`run_fixture_ts`] but uses a custom source name for VM error reporting.
 pub fn run_fixture_ts_with_name(name: &str, source: &str) -> Result<String, Diagnostic> {
+  run_fixture_ts_with_name_and_options(name, source, &OracleHarnessOptions::default())
+}
+
+/// Like [`run_fixture_ts_with_name`] but allows configuring the VM/heap budgets via
+/// [`OracleHarnessOptions`].
+pub fn run_fixture_ts_with_name_and_options(
+  name: &str,
+  source: &str,
+  options: &OracleHarnessOptions,
+) -> Result<String, Diagnostic> {
   let js = ts_to_js(source)?;
 
-  let mut rt = new_runtime().map_err(|err| harness_error(format!("failed to init vm-js: {err}")))?;
+  let mut rt = new_runtime_with_options(options)
+    .map_err(|err| harness_error(format!("failed to init vm-js: {err}")))?;
 
   let fixture_source = Arc::new(SourceText::new(name, js));
   if let Err(err) = rt.exec_script_source(fixture_source) {
