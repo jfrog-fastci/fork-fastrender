@@ -293,13 +293,14 @@ impl WorldStoppedRememberedSet {
   #[inline]
   pub(crate) fn new() -> Self {
     // Stop-the-world GC uses `WorldStoppedRememberedSet` to iterate remembered
-    // objects without allocating. The exported write barrier records newly
-    // remembered objects into per-thread buffers (to avoid a contended global
-    // atomic on every old→young store).
+    // objects without allocating. The write barrier records remembered objects in
+    // per-thread buffers to avoid contending on the process-global list.
     //
-    // Before scanning we must merge those per-thread buffers into the
-    // process-global buffer that this adapter iterates.
-    registry::for_each_thread(|thread| thread.remset_drain_raw(|obj| remembered_set().insert(obj)));
+    // Before scanning we must merge those per-thread buffers into the global
+    // list that this adapter iterates.
+    registry::for_each_thread(|thread| {
+      remset_flush_thread_to_global(thread);
+    });
     Self
   }
 }

@@ -61,9 +61,12 @@ edition = "2021"
   )
   .expect("write Cargo.toml");
 
-  // Define `.data.rel.ro.llvm_stackmaps` bytes without creating any Rust-level
-  // references to them. With `--gc-sections` enabled, the linker would drop the
-  // section unless our linker script uses `KEEP(*(.data.rel.ro.llvm_stackmaps))`.
+  // Define stackmaps bytes without creating any Rust-level references to them.
+  //
+  // In PIE/DSO mode, native-js rewrites `.llvm_stackmaps` to
+  // `.data.rel.ro.llvm_stackmaps` so any relocations can be applied to writable
+  // memory without requiring text relocations. `link/stackmaps.ld` therefore
+  // keeps `.data.rel.ro.llvm_stackmaps` under `--gc-sections`.
   std::fs::write(
     project_dir.join("src/main.rs"),
     r##"use std::arch::global_asm;

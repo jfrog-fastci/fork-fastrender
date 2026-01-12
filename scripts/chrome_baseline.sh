@@ -283,7 +283,9 @@ is_snap_chromium() {
     fi
   fi
 
-  if head -c 4096 "${chrome_path}" 2>/dev/null | grep -aqE '/snap/bin/chromium|snap run chromium|snap run chromium-browser'; then
+  # Avoid `grep -q` under `set -o pipefail`: early pipe closure can SIGPIPE the producer (flaky
+  # across scheduling/buffering) and turn a match into a non-zero pipeline status.
+  if head -c 4096 "${chrome_path}" 2>/dev/null | grep -aE '/snap/bin/chromium|snap run chromium|snap run chromium-browser' >/dev/null; then
     return 0
   fi
 
@@ -318,7 +320,9 @@ fi
 mkdir -p "${OUT_DIR}"
 
 # Best-effort Chrome version string, recorded in per-page metadata for traceability.
-CHROME_VERSION="$("${CHROME}" --version 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+CHROME_VERSION="$("${CHROME}" --version 2>/dev/null || true)"
+CHROME_VERSION="${CHROME_VERSION%%$'\n'*}"
+CHROME_VERSION="${CHROME_VERSION%%$'\r'*}"
 
 # Snap-packaged Chromium runs under strict confinement (AppArmor + mount namespaces).
 # In that configuration, `/tmp` is private to the snap, and Chromium may be unable to
