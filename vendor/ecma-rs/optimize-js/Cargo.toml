@@ -11,6 +11,7 @@ semantic-ops = ["hir-js/semantic-ops", "emit-js/semantic-ops", "typecheck-ts?/se
 native-async-ops = []
 native-fusion = ["semantic-ops"]
 typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
+parallel-analyses = ["dep:rayon"]
 serde = [
   "dep:serde",
   "dep:serde_json",
@@ -35,6 +36,7 @@ itertools = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 once_cell = { workspace = true }
+rayon = { workspace = true, optional = true }
 ryu = { workspace = true }
 diagnostics = { workspace = true }
 parse-js = { workspace = true, features = ["diagnostics"] }

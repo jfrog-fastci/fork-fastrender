@@ -11,6 +11,8 @@ use crate::il::inst::NullabilityNarrowing;
 use crate::{FnId, Program, ProgramFunction};
 use ahash::HashMap;
 use ahash::HashMapExt;
+#[cfg(feature = "parallel-analyses")]
+use rayon::prelude::*;
 
 use super::{
   alias, array_repr, call_summary, consume, effect, encoding, escape, interproc_escape, nullability,
@@ -60,6 +62,26 @@ pub fn analyze_program_function_typed(
   types: &crate::types::TypeContext,
 ) -> FunctionAnalyses {
   analyze_cfg_typed(function.analyzed_cfg(), types)
+}
+
+/// Select whether whole-program analysis runs sequentially or uses Rayon when available.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnalysisParallelism {
+  Sequential,
+  Parallel,
+}
+
+impl Default for AnalysisParallelism {
+  fn default() -> Self {
+    #[cfg(feature = "parallel-analyses")]
+    {
+      AnalysisParallelism::Parallel
+    }
+    #[cfg(not(feature = "parallel-analyses"))]
+    {
+      AnalysisParallelism::Sequential
+    }
+  }
 }
 
 /// Stable identifier for a function in a [`Program`].
@@ -153,6 +175,26 @@ fn function_keys(program: &Program) -> Vec<FunctionKey> {
   keys.push(FunctionKey::TopLevel);
   keys.extend(sorted_fn_ids(program).into_iter().map(FunctionKey::Fn));
   keys
+}
+
+fn map_over_keys<R, F>(keys: &[FunctionKey], parallelism: AnalysisParallelism, f: F) -> Vec<(FunctionKey, R)>
+where
+  F: Fn(FunctionKey) -> R + Sync + Send,
+  R: Send,
+{
+  match parallelism {
+    AnalysisParallelism::Sequential => keys.iter().copied().map(|k| (k, f(k))).collect(),
+    AnalysisParallelism::Parallel => {
+      #[cfg(feature = "parallel-analyses")]
+      {
+        keys.par_iter().copied().map(|k| (k, f(k))).collect()
+      }
+      #[cfg(not(feature = "parallel-analyses"))]
+      {
+        keys.iter().copied().map(|k| (k, f(k))).collect()
+      }
+    }
+  }
 }
 
 fn cfg_for_key(program: &Program, key: FunctionKey) -> &Cfg {
@@ -387,6 +429,14 @@ fn annotate_cfg_nullability_narrowings(cfg: &mut Cfg) {
 
 /// Compute all analyses for `program` without mutating it.
 pub fn analyze_program(program: &Program) -> ProgramAnalyses {
+  analyze_program_with_parallelism(program, AnalysisParallelism::default())
+}
+
+/// Compute all analyses for `program` without mutating it, optionally using Rayon.
+pub fn analyze_program_with_parallelism(
+  program: &Program,
+  parallelism: AnalysisParallelism,
+) -> ProgramAnalyses {
   let keys = function_keys(program);
   let mut analyses = ProgramAnalyses::default();
   let call_summaries = call_summary::summarize_program(program);
@@ -412,26 +462,23 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
   }
 
   // 3) alias
-  for &key in &keys {
-    analyses
-      .alias
-      .insert(key, alias::calculate_alias(cfg_for_key(program, key)));
+  for (key, alias_result) in map_over_keys(&keys, parallelism, |key| {
+    alias::calculate_alias(cfg_for_key(program, key))
+  }) {
+    analyses.alias.insert(key, alias_result);
   }
 
   // 4) escape
   let escape_summaries = interproc_escape::compute_program_escape_summaries(program);
-  for &key in &keys {
-    analyses
-      .escape
-      .insert(
-        key,
-        escape::analyze_cfg_escapes_with_params_and_summaries(
-          cfg_for_key(program, key),
-          params_for_key(program, key),
-          Some(&escape_summaries),
-          Some(&call_summaries),
-        ),
-      );
+  for (key, escape_result) in map_over_keys(&keys, parallelism, |key| {
+    escape::analyze_cfg_escapes_with_params_and_summaries(
+      cfg_for_key(program, key),
+      params_for_key(program, key),
+      Some(&escape_summaries),
+      Some(&call_summaries),
+    )
+  }) {
+    analyses.escape.insert(key, escape_result);
   }
 
   // 4.5) array element representation (needs alias + escape)
@@ -451,38 +498,42 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
   }
 
   // 5) ownership
-  for &key in &keys {
-    let cfg = cfg_for_key(program, key);
-    let params = params_for_key(program, key);
-    let escapes = analyses
-      .escape
-      .get(&key)
-      .expect("escape results should be populated before ownership");
-    analyses
-      .ownership
-      .insert(
-        key,
-        ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
-          cfg,
-          params,
-          escapes,
-          Some(&call_summaries),
-        ),
-      );
+  let ownership_results = {
+    let escapes = &analyses.escape;
+    map_over_keys(&keys, parallelism, |key| {
+      let cfg = cfg_for_key(program, key);
+      let params = params_for_key(program, key);
+      let escapes = escapes
+        .get(&key)
+        .expect("escape results should be populated before ownership");
+      ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
+        cfg,
+        params,
+        escapes,
+        Some(&call_summaries),
+      )
+    })
+  };
+  for (key, ownership_result) in ownership_results {
+    analyses.ownership.insert(key, ownership_result);
   }
 
   // 6) nullability/range/encoding
-  for &key in &keys {
-    analyses.nullability.insert(
-      key,
-      nullability::calculate_nullability(cfg_for_key(program, key)),
-    );
-    analyses
-      .range
-      .insert(key, range::analyze_ranges(cfg_for_key(program, key)));
-    analyses
-      .encoding
-      .insert(key, encoding::analyze_cfg_encoding(cfg_for_key(program, key)));
+  for (key, (nullability_result, range_result, encoding_result)) in map_over_keys(
+    &keys,
+    parallelism,
+    |key| {
+      let cfg = cfg_for_key(program, key);
+      (
+        nullability::calculate_nullability(cfg),
+        range::analyze_ranges(cfg),
+        encoding::analyze_cfg_encoding(cfg),
+      )
+    },
+  ) {
+    analyses.nullability.insert(key, nullability_result);
+    analyses.range.insert(key, range_result);
+    analyses.encoding.insert(key, encoding_result);
   }
 
   analyses
@@ -498,6 +549,14 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
 /// Some analyses (e.g. range/nullability) currently only return side tables and do not attach
 /// per-instruction metadata beyond a handful of control-flow hints.
 pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
+  annotate_program_with_parallelism(program, AnalysisParallelism::default())
+}
+
+/// Compute all analyses for `program`, annotating per-instruction metadata, optionally using Rayon.
+pub fn annotate_program_with_parallelism(
+  program: &mut Program,
+  parallelism: AnalysisParallelism,
+) -> ProgramAnalyses {
   let keys = function_keys(program);
   let call_summaries = call_summary::summarize_program(program);
 
@@ -510,7 +569,14 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   }
 
   let effects = effect::compute_program_effects(program);
-  annotate_program_with_effects(program, &keys, &call_summaries, &effects, effect::annotate_cfg_effects)
+  annotate_program_with_effects(
+    program,
+    &keys,
+    &call_summaries,
+    &effects,
+    parallelism,
+    effect::annotate_cfg_effects,
+  )
 }
 
 fn annotate_program_with_effects<F>(
@@ -518,6 +584,7 @@ fn annotate_program_with_effects<F>(
   keys: &[FunctionKey],
   call_summaries: &[call_summary::FnSummary],
   effects: &effect::FnEffectMap,
+  parallelism: AnalysisParallelism,
   annotate_effects: F,
 ) -> ProgramAnalyses
 where
@@ -582,35 +649,54 @@ where
   }
 
   // 3) alias
-  for &key in keys {
-    analyses
-      .alias
-      .insert(key, alias::calculate_alias(cfg_for_key(program, key)));
+  let alias_results = {
+    let program_ref: &Program = program;
+    map_over_keys(keys, parallelism, |key| {
+      alias::calculate_alias(cfg_for_key(program_ref, key))
+    })
+  };
+  for (key, alias_result) in alias_results {
+    analyses.alias.insert(key, alias_result);
   }
 
   // 4) escape
   let escape_summaries = interproc_escape::compute_program_escape_summaries(program);
-  let mut deconstructed_escapes = HashMap::default();
-  for &key in keys {
-    let escapes = escape::analyze_cfg_escapes_with_params_and_summaries(
-      cfg_for_key(program, key),
-      params_for_key(program, key),
-      Some(&escape_summaries),
-      Some(call_summaries),
-    );
+  let escape_results = {
+    let program_ref: &Program = program;
+    map_over_keys(keys, parallelism, |key| {
+      escape::analyze_cfg_escapes_with_params_and_summaries(
+        cfg_for_key(program_ref, key),
+        params_for_key(program_ref, key),
+        Some(&escape_summaries),
+        Some(call_summaries),
+      )
+    })
+  };
+  let deconstructed_escapes: HashMap<FunctionKey, escape::EscapeResult> = {
+    let program_ref: &Program = program;
+    map_over_keys(keys, parallelism, |key| {
+      escape::analyze_cfg_escapes_with_params_and_summaries(
+        cfg_for_key_deconstructed(program_ref, key),
+        params_for_key(program_ref, key),
+        Some(&escape_summaries),
+        Some(call_summaries),
+      )
+    })
+    .into_iter()
+    .collect()
+  };
+
+  for (key, escapes) in escape_results {
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       annotate_cfg_escape_states(cfg, &escapes);
     }
     analyses.escape.insert(key, escapes);
-
-    let deconstructed_escape = escape::analyze_cfg_escapes_with_params_and_summaries(
-      cfg_for_key_deconstructed(program, key),
-      params_for_key(program, key),
-      Some(&escape_summaries),
-      Some(call_summaries),
-    );
-    annotate_cfg_escape_states(cfg_for_key_deconstructed_mut(program, key), &deconstructed_escape);
-    deconstructed_escapes.insert(key, deconstructed_escape);
+  }
+  for &key in &keys {
+    let deconstructed_escape = deconstructed_escapes
+      .get(&key)
+      .expect("deconstructed escape results should be populated");
+    annotate_cfg_escape_states(cfg_for_key_deconstructed_mut(program, key), deconstructed_escape);
   }
 
   // 4.5) array element representation + vectorization hints (analyzed CFG only)
@@ -631,12 +717,13 @@ where
   }
 
   // 5) ownership
-  for &key in keys {
-    let ownership_result = {
-      let cfg = cfg_for_key(program, key);
-      let params = params_for_key(program, key);
-      let escapes = analyses
-        .escape
+  let ownership_results = {
+    let program_ref: &Program = program;
+    let escapes = &analyses.escape;
+    map_over_keys(keys, parallelism, |key| {
+      let cfg = cfg_for_key(program_ref, key);
+      let params = params_for_key(program_ref, key);
+      let escapes = escapes
         .get(&key)
         .expect("escape results should be populated before ownership");
       ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
@@ -645,52 +732,71 @@ where
         escapes,
         Some(call_summaries),
       )
-    };
+    })
+  };
+  for (key, ownership_result) in ownership_results {
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       ownership::annotate_cfg_ownership(cfg, &ownership_result);
       consume::annotate_cfg_consumption(cfg, &ownership_result);
     }
     analyses.ownership.insert(key, ownership_result);
+  }
 
-    let deconstructed_escape = deconstructed_escapes
-      .get(&key)
-      .expect("deconstructed escape results should be populated before ownership");
-    let deconstructed_ownership = ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
-      cfg_for_key_deconstructed(program, key),
-      params_for_key(program, key),
-      deconstructed_escape,
-      Some(call_summaries),
-    );
-    {
-      let cfg = cfg_for_key_deconstructed_mut(program, key);
-      ownership::annotate_cfg_ownership(cfg, &deconstructed_ownership);
-      consume::annotate_cfg_consumption(cfg, &deconstructed_ownership);
-    }
+  let deconstructed_ownership_results = {
+    let program_ref: &Program = program;
+    map_over_keys(keys, parallelism, |key| {
+      let cfg = cfg_for_key_deconstructed(program_ref, key);
+      let params = params_for_key(program_ref, key);
+      let escapes = deconstructed_escapes
+        .get(&key)
+        .expect("deconstructed escape results should be populated before ownership");
+      ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
+        cfg,
+        params,
+        escapes,
+        Some(&call_summaries),
+      )
+    })
+  };
+  for (key, deconstructed_ownership) in deconstructed_ownership_results {
+    let cfg = cfg_for_key_deconstructed_mut(program, key);
+    ownership::annotate_cfg_ownership(cfg, &deconstructed_ownership);
+    consume::annotate_cfg_consumption(cfg, &deconstructed_ownership);
   }
 
   // 6) nullability/range/encoding
-  for &key in keys {
-    analyses.nullability.insert(
-      key,
-      nullability::calculate_nullability(cfg_for_key(program, key)),
-    );
-    analyses
-      .range
-      .insert(key, range::analyze_ranges(cfg_for_key(program, key)));
+  let analysis_results = {
+    let program_ref: &Program = program;
+    map_over_keys(keys, parallelism, |key| {
+      let cfg = cfg_for_key(program_ref, key);
+      (
+        nullability::calculate_nullability(cfg),
+        range::analyze_ranges(cfg),
+        encoding::analyze_cfg_encoding(cfg),
+      )
+    })
+  };
+  let deconstructed_encoding_results: HashMap<FunctionKey, encoding::EncodingResult> = {
+    let program_ref: &Program = program;
+    map_over_keys(keys, parallelism, |key| {
+      encoding::analyze_cfg_encoding(cfg_for_key_deconstructed(program_ref, key))
+    })
+    .into_iter()
+    .collect()
+  };
+
+  for (key, (nullability_result, range_result, encoding_result)) in analysis_results {
+    analyses.nullability.insert(key, nullability_result);
+    analyses.range.insert(key, range_result);
     annotate_cfg_nullability_narrowings(cfg_for_key_deconstructed_mut(program, key));
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       annotate_cfg_nullability_narrowings(cfg);
     }
-    let encoding_result = encoding::analyze_cfg_encoding(cfg_for_key(program, key));
     encoding::annotate_cfg_encoding(cfg_for_key_mut(program, key), &encoding_result);
-    // `encoding_result` is computed against the analyzed CFG (usually SSA-form), so
-    // we need a separate analysis pass to annotate the SSA-deconstructed CFG.
-    let deconstructed_encoding =
-      encoding::analyze_cfg_encoding(cfg_for_key_deconstructed(program, key));
-    encoding::annotate_cfg_encoding(
-      cfg_for_key_deconstructed_mut(program, key),
-      &deconstructed_encoding,
-    );
+    let deconstructed_encoding = deconstructed_encoding_results
+      .get(&key)
+      .expect("deconstructed encoding results should be populated");
+    encoding::annotate_cfg_encoding(cfg_for_key_deconstructed_mut(program, key), deconstructed_encoding);
     analyses.encoding.insert(key, encoding_result);
   }
 
@@ -727,6 +833,7 @@ pub fn annotate_program_typed(
     &keys,
     &call_summaries,
     &effects,
+    AnalysisParallelism::default(),
     |cfg, effects| effect::annotate_cfg_effects_typed(cfg, effects, type_program),
   )
 }

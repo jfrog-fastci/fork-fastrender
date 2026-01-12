@@ -6,7 +6,7 @@
 //!
 //! This module is only compiled when the crate is built with `feature = "serde"`.
 
-use ahash::HashMap;
+use ahash::{HashMap, HashSet};
 use serde::ser::{Serialize, SerializeSeq, Serializer};
 
 pub(crate) fn serialize_hashmap_sorted<K, V, S>(
@@ -27,6 +27,25 @@ where
   let mut out = serializer.serialize_seq(Some(entries.len()))?;
   for (k, v) in entries {
     out.serialize_element(&(k, v))?;
+  }
+  out.end()
+}
+
+#[allow(dead_code)]
+pub(crate) fn serialize_hashset_sorted<T, S>(
+  set: &HashSet<T>,
+  serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+  T: Ord + Serialize,
+  S: Serializer,
+{
+  let mut entries: Vec<_> = set.iter().collect();
+  entries.sort();
+
+  let mut out = serializer.serialize_seq(Some(entries.len()))?;
+  for value in entries {
+    out.serialize_element(value)?;
   }
   out.end()
 }

@@ -30,8 +30,9 @@ pub mod single_use_insts;
 pub mod value_types;
 
 pub use driver::{
-  analyze_cfg, analyze_program, analyze_program_function, annotate_escape_and_ownership,
-  annotate_program, FunctionAnalyses, FunctionKey, ProgramAnalyses,
+  analyze_cfg, analyze_program, analyze_program_function, analyze_program_with_parallelism,
+  annotate_escape_and_ownership, annotate_program, annotate_program_with_parallelism,
+  AnalysisParallelism, FunctionAnalyses, FunctionKey, ProgramAnalyses,
 };
 
 #[cfg(feature = "typed")]
