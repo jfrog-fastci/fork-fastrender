@@ -7,6 +7,7 @@ mod error;
 mod idl;
 mod numeric;
 mod to_js;
+pub mod ir;
 
 pub use error::{WebIdlError, WebIdlLimit};
 pub use idl::{ByteString, DomString, FrozenArray, IdlRecord, IdlString, IdlUndefined, UsvString};
