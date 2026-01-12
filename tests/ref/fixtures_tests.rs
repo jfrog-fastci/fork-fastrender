@@ -18,6 +18,10 @@ fn form_controls_reference_image_matches_golden() {
     }
 
     let result = harness.run_ref_test(fixture, &reference);
+    if result.passed {
+      let _ = std::fs::remove_dir_all(fixture.join("failures"));
+      return;
+    }
     if !result.passed {
       let actual_path = fixture.join("failures/form_controls_actual.png");
       if let (Ok(actual), Ok(expected)) = (load_png(&actual_path), load_png(&reference)) {
@@ -51,6 +55,10 @@ fn input_button_text_align_reference_image_matches_golden() {
     }
 
     let result = harness.run_ref_test(fixture, &reference);
+    if result.passed {
+      let _ = std::fs::remove_dir_all(fixture.join("failures"));
+      return;
+    }
     if !result.passed {
       let actual_path = fixture.join("failures/input_button_text_align_actual.png");
       if let (Ok(actual), Ok(expected)) = (load_png(&actual_path), load_png(&reference)) {
@@ -84,6 +92,10 @@ fn form_controls_rtl_mirror_reference_image_matches_golden() {
     }
 
     let result = harness.run_ref_test(fixture, &reference);
+    if result.passed {
+      let _ = std::fs::remove_dir_all(fixture.join("failures"));
+      return;
+    }
     if !result.passed {
       let actual_path = fixture.join("failures/form_controls_rtl_mirror_actual.png");
       if let (Ok(actual), Ok(expected)) = (load_png(&actual_path), load_png(&reference)) {
@@ -101,4 +113,3 @@ fn form_controls_rtl_mirror_reference_image_matches_golden() {
     );
   });
 }
-
