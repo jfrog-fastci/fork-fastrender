@@ -14,34 +14,55 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   let intr = *rt.realm().intrinsics();
   let wks = *rt.realm().well_known_symbols();
 
+  // Two separately created Array iterator instances should share the same prototype object.
+  let same_array_iterator_proto = rt.exec_script(
+    r#"
+      const it1 = [][Symbol.iterator]();
+      const it2 = [][Symbol.iterator]();
+      Object.getPrototypeOf(it1) === Object.getPrototypeOf(it2)
+    "#,
+  )?;
+  assert_eq!(same_array_iterator_proto, Value::Bool(true));
+
+  // `Array.prototype.values` should produce the same iterator shape as `%Array.prototype%[@@iterator]`.
+  let same_values_proto =
+    rt.exec_script("Object.getPrototypeOf([].values()) === Object.getPrototypeOf([][Symbol.iterator]())")?;
+  assert_eq!(same_values_proto, Value::Bool(true));
+
   let it = rt.exec_script("[][Symbol.iterator]()")?;
+  let array_iter_proto_v = rt.exec_script("Object.getPrototypeOf([][Symbol.iterator]())")?;
+  let iterator_proto_v =
+    rt.exec_script("Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()))")?;
+
   let Value::Object(it) = it else {
     return Err(VmError::InvariantViolation(
       "[][Symbol.iterator]() did not return an object",
     ));
   };
+  let Value::Object(array_iter_proto) = array_iter_proto_v else {
+    return Err(VmError::InvariantViolation(
+      "Object.getPrototypeOf(ArrayIterator) did not return an object",
+    ));
+  };
+  let Value::Object(iterator_proto) = iterator_proto_v else {
+    return Err(VmError::InvariantViolation(
+      "Object.getPrototypeOf(ArrayIteratorPrototype) did not return an object",
+    ));
+  };
 
   let mut scope = rt.heap.scope();
   scope.push_root(Value::Object(it))?;
+  scope.push_root(Value::Object(array_iter_proto))?;
+  scope.push_root(Value::Object(iterator_proto))?;
 
-  let array_iterator_proto = scope
-    .heap()
-    .object_prototype(it)?
-    .ok_or(VmError::InvariantViolation(
-      "Array iterator has no prototype",
-    ))?;
-  assert_ne!(array_iterator_proto, intr.object_prototype());
-
-  let iterator_proto = scope
-    .heap()
-    .object_prototype(array_iterator_proto)?
-    .ok_or(VmError::InvariantViolation(
-      "ArrayIteratorPrototype has no prototype",
-    ))?;
   assert_eq!(iterator_proto, intr.iterator_prototype());
   assert_eq!(
     scope.heap().object_prototype(iterator_proto)?,
     Some(intr.object_prototype())
+  );
+  assert_eq!(
+    scope.heap().object_prototype(array_iter_proto)?,
+    Some(iterator_proto)
   );
 
   // The iterator instance should inherit `.next` from `%ArrayIteratorPrototype%`.
@@ -52,7 +73,7 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
     .is_none());
   let next_desc = scope
     .heap()
-    .object_get_own_property(array_iterator_proto, &next_key)?
+    .object_get_own_property(array_iter_proto, &next_key)?
     .ok_or(VmError::InvariantViolation(
       "ArrayIteratorPrototype missing next",
     ))?;
@@ -74,7 +95,7 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   let tag_key = PropertyKey::from_symbol(wks.to_string_tag);
   let tag_desc = scope
     .heap()
-    .object_get_own_property(array_iterator_proto, &tag_key)?
+    .object_get_own_property(array_iter_proto, &tag_key)?
     .ok_or(VmError::InvariantViolation(
       "ArrayIteratorPrototype missing Symbol.toStringTag",
     ))?;
