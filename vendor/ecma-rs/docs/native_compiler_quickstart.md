@@ -1,14 +1,14 @@
 # Native compiler quickstart (strict-native + VM oracle)
 
 This is a practical guide for the **native compiler** track described in
-[`instructions/native_aot.md`](../instructions/native_aot.md) (formerly `EXEC.plan.md`, which is now a
-compatibility shim).
+[`instructions/native_aot.md`](../instructions/native_aot.md) (legacy entry point: [`EXEC.plan.md`](../EXEC.plan.md)).
 It’s aimed at developers/agents working on:
 
 - the **strict-native** TypeScript dialect (a strict subset we can compile/optimize reliably), and
 - the **TS → JS → `vm-js`** oracle harness used to validate native output.
 
 For the full rationale and long-form plan, read [`instructions/native_aot.md`](../instructions/native_aot.md)
+(source of truth).
 (source of truth).
 
 ---
@@ -18,13 +18,13 @@ For the full rationale and long-form plan, read [`instructions/native_aot.md`](.
 From the **repo root** (the checkout that contains `vendor/ecma-rs/`), run:
 
 ```bash
-bash vendor/ecma-rs/scripts/check_system.sh
+timeout -k 10 600 bash vendor/ecma-rs/scripts/check_system.sh
 ```
 
 If you’re working inside `vendor/ecma-rs/` directly:
 
 ```bash
-bash scripts/check_system.sh
+timeout -k 10 600 bash scripts/check_system.sh
 ```
 
 Expected output:
@@ -100,8 +100,8 @@ See [`native-js/README.md`](../native-js/README.md) for the canonical `native_js
 - `unknown`: allowed, but must be narrowed before use.
 - Dynamic property access: may be routed to a slow path (and can be diagnosed). Prefer known shapes and direct property access.
 
-See [`instructions/native_aot.md`](../instructions/native_aot.md#our-typescript-dialect-strict-mode) →
-“Our TypeScript Dialect (“Strict Mode”)” for the canonical list and rationale.
+See [`instructions/native_aot.md`](../instructions/native_aot.md#our-typescript-dialect-strict-mode) → “Our TypeScript Dialect (“Strict Mode”)”
+for the canonical list and rationale.
 
 ---
 
@@ -112,7 +112,8 @@ See [`instructions/native_aot.md`](../instructions/native_aot.md#our-typescript-
 If you’re in `vendor/ecma-rs/`:
 
 ```bash
-bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --native-strict path/to/file.ts
+timeout -k 10 600 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
+  typecheck --native-strict path/to/file.ts
 ```
 
 ### Recommended wrapper (agent-safe)
@@ -121,11 +122,11 @@ Use the repo’s concurrency/RAM-limiting wrapper for the vendored ecma-rs works
 
 ```bash
 # From the repo root (recommended):
-bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
   typecheck --native-strict typecheck-ts-cli/fixtures/basic.ts
 
 # Or, if you're already in vendor/ecma-rs/:
-bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
+timeout -k 10 600 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
   typecheck --native-strict typecheck-ts-cli/fixtures/basic.ts
 ```
 
@@ -157,10 +158,10 @@ with `NJS####` diagnostics. To run its regression tests:
 
 ```bash
 # From the repo root:
-bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_subset
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_subset
 
 # Or, if you're already in vendor/ecma-rs/:
-bash scripts/cargo_llvm.sh test -p native-js --test strict_subset
+timeout -k 10 900 bash scripts/cargo_llvm.sh test -p native-js --test strict_subset
 ```
 
 ---
@@ -176,7 +177,7 @@ The “native compiler” work needs a correctness backstop. We use a **VM oracl
 ### Inside the ecma-rs workspace
 
 ```bash
-bash scripts/cargo_agent.sh test -p native-oracle-harness
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p native-oracle-harness
 ```
 
 ### Recommended (agent-safe wrapper)
@@ -185,30 +186,30 @@ This crate is not LLVM-heavy today, so use the standard agent wrapper:
 
 ```bash
 # From the repo root:
-bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness
 
 # Or, if you're already in vendor/ecma-rs/:
-bash scripts/cargo_agent.sh test -p native-oracle-harness
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p native-oracle-harness
 ```
 
 To run just the fixture comparison test (useful when iterating on TS→JS erasure):
 
 ```bash
 # From the repo root:
-bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --test fixtures
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --test fixtures
 
 # Or, if you're already in vendor/ecma-rs/:
-bash scripts/cargo_agent.sh test -p native-oracle-harness --test fixtures
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p native-oracle-harness --test fixtures
 ```
 
 There is also a small binary (`native-oracle-harness/src/main.rs`) that runs the same `// EXPECT:` / `*.out` TS fixture comparisons:
 
 ```bash
 # From the repo root:
-bash vendor/ecma-rs/scripts/cargo_agent.sh run -p native-oracle-harness
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p native-oracle-harness
 
 # Or, if you're already in vendor/ecma-rs/:
-bash scripts/cargo_agent.sh run -p native-oracle-harness
+timeout -k 10 600 bash scripts/cargo_agent.sh run -p native-oracle-harness
 ```
 
 Expected output is standard Rust test output for the test invocations; the binary prints `ok ...` / `FAIL ...`
@@ -231,7 +232,7 @@ If TS→JS erasure fails (common causes: `ts-erase` rejects TypeScript *runtime*
 or `emit-js` reports unsupported syntax during emission), you can enable the heavier fallback:
 
 ```bash
-bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --features optimize-js-fallback
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --features optimize-js-fallback
 ```
 
 This switches the erasure step to:
@@ -254,13 +255,13 @@ Both require LLVM; use the LLVM wrapper:
 
 ```bash
 # Minimal emitter:
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- /tmp/main.ts
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- /tmp/main.ts
 
 # Typechecked AOT pipeline (expects the entry module to export `main()`):
 cat > /tmp/aot.ts <<'TS'
 export function main(): number { return 0; }
 TS
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run /tmp/aot.ts
+timeout -k 10 900 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run /tmp/aot.ts
 ```
 
 See [`native-js-cli/README.md`](../native-js-cli/README.md) for details and flags.

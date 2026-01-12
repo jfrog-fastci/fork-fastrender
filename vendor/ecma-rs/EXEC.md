@@ -33,7 +33,7 @@ Status: early exploration / brainstorming. Nothing committed.
 18. [References](#references)
 
 **Related Documents:**
-- `EXEC.plan.md` — Compatibility shim / stable permalink (points to [`instructions/native_aot.md`](./instructions/native_aot.md))
+- `instructions/native_aot.md` (legacy permalink: `EXEC.plan.md`) — Concrete implementation plan, optimization catalog, milestones
 - `EXEC.discussion.md` — Working notes on compiler architecture, IR design
 
 ---
