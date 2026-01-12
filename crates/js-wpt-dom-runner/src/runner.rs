@@ -135,10 +135,34 @@ impl Runner {
     }
 
     match backend_kind {
-      BackendKind::VmJs | BackendKind::VmJsRendered => {
+      BackendKind::VmJs => {
         #[cfg(feature = "vmjs")]
         {
           self.run_html_test_in_browser_tab(test, &html_source, timeout)
+        }
+        #[cfg(not(feature = "vmjs"))]
+        {
+          Err(RunError::Js(format!(
+            "selected backend `{backend_kind}` is not available in this build"
+          )))
+        }
+      }
+      BackendKind::VmJsRendered => {
+        #[cfg(feature = "vmjs")]
+        {
+          let base_dir = id_dir(&test.id);
+
+          let mut scripts = Vec::new();
+          push_testharness_bootstrap(&mut scripts);
+          for script in parsed.scripts {
+            match script {
+              ScriptToEval::Url(url) if is_required_harness_script(&url) => continue,
+              ScriptToEval::Url(url) if is_testharnessreport(&url) => continue,
+              other => scripts.push(other),
+            }
+          }
+
+          self.run_scripts_in_window(test, &base_dir, scripts, timeout)
         }
         #[cfg(not(feature = "vmjs"))]
         {
