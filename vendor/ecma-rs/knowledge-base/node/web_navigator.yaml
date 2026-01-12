@@ -1,0 +1,18 @@
+# Web-standard `navigator` APIs that are available in Node.js.
+#
+# Duplicated from `web/navigator.yaml` so `TargetEnv::Node` lookups can resolve
+# Node's minimal navigator support without matching the full browser navigator
+# surface area.
+#
+# Node notes:
+# - Modern Node versions expose a global `navigator` with a `userAgent` getter.
+#   We conservatively gate this to Node 21+.
+
+- name: navigator.userAgent
+  kind: getter
+  since: "v21.0.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly

@@ -1,0 +1,39 @@
+# WebSocket APIs exposed as globals in Node.js.
+#
+# Duplicated from `web/websocket.yaml` so `TargetEnv::Node` lookups can resolve
+# these entries without matching browser-only APIs.
+#
+# Node notes:
+# - Global `WebSocket` is relatively new in Node. We conservatively gate this to
+#   Node 21+.
+
+- name: WebSocket
+  kind: constructor
+  since: "v21.0.0"
+  effects:
+    base: [io, network, alloc, may_throw]
+    io: true
+    network: true
+    allocates: true
+    may_throw: true
+  purity: Impure
+
+- name: WebSocket.prototype.send
+  kind: function
+  since: "v21.0.0"
+  effects:
+    base: [io, network, may_throw]
+    io: true
+    network: true
+    may_throw: true
+  purity: Impure
+
+- name: WebSocket.prototype.close
+  kind: function
+  since: "v21.0.0"
+  effects:
+    base: [io, network, may_throw]
+    io: true
+    network: true
+    may_throw: true
+  purity: Impure

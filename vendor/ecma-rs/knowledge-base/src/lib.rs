@@ -2829,6 +2829,43 @@ properties:
   }
 
   #[test]
+  fn api_for_target_selects_newer_node_globals() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    let node_25 = TargetEnv::Node {
+      version: Version::parse("25.0.0").unwrap(),
+    };
+    let ws = kb
+      .api_for_target("WebSocket", &node_25)
+      .expect("WebSocket should resolve for Node 21+");
+    assert_eq!(ws.name, "WebSocket");
+    assert_eq!(
+      kb.source_for_target("WebSocket", &node_25),
+      Some("node/web_websocket.yaml")
+    );
+
+    let ua = kb
+      .api_for_target("navigator.userAgent", &node_25)
+      .expect("navigator.userAgent should resolve for Node 21+");
+    assert_eq!(ua.name, "navigator.userAgent");
+    assert_eq!(
+      kb.source_for_target("navigator.userAgent", &node_25),
+      Some("node/web_navigator.yaml")
+    );
+
+    let node_20 = TargetEnv::Node {
+      version: Version::parse("20.0.0").unwrap(),
+    };
+    assert!(
+      kb.api_for_target("WebSocket", &node_20).is_none(),
+      "WebSocket should not resolve for Node < 21"
+    );
+    assert!(
+      kb.api_for_target("navigator.userAgent", &node_20).is_none(),
+      "navigator.userAgent should not resolve for Node < 21"
+    );
+  }
+
+  #[test]
   fn env_and_platform_parses_web_subdirectories() {
     assert_eq!(
       env_and_platform_for_path("web/chrome/foo.yaml"),
