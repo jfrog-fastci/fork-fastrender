@@ -1743,6 +1743,7 @@ fn main() -> Result<(), DynError> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use common::file_url::file_url_for_path;
 
   #[test]
   fn meta_base_hint_selection_uses_meta_url() {

@@ -86,9 +86,10 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON=<json>` – **test-only** hook: override the restored session used by headless smoke mode with an explicit `BrowserSession` JSON value.
-- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON=<json>` – **test-only** hook: override the bookmarks snapshot used by headless smoke mode with an explicit JSON value.
-  - This is expected to be a `BookmarkStore` JSON object, but legacy bookmark list schemas are still accepted and migrated.
-- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON=<json>` – **test-only** hook: override the global history snapshot used by headless smoke mode with an explicit JSON value.
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON=<json>` – **test-only** hook: override the bookmarks store used by headless smoke mode with an explicit JSON value.
+  - This is expected to be the same schema as the bookmarks file on disk (`BookmarkStore`), but legacy bookmark list schemas are still accepted and migrated.
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON=<json>` – **test-only** hook: override the global history store used by headless smoke mode with an explicit JSON value.
+  - This is expected to be the same schema as the history file on disk (`PersistedGlobalHistoryStore`), but legacy list schemas are still accepted and migrated.
 
 ### Appearance / accessibility / debugging (browser UX)
 

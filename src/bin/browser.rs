@@ -710,8 +710,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let bookmarks_path = fastrender::ui::bookmarks_path();
   let history_path = fastrender::ui::history_path();
   let bookmarks = match fastrender::ui::load_bookmarks(&bookmarks_path) {
-    Ok(Some(store)) => store,
-    Ok(None) => fastrender::ui::BookmarkStore::default(),
+    Ok(outcome) => outcome.value,
     Err(err) => {
       eprintln!(
         "failed to load bookmarks from {}: {err}",
@@ -721,8 +720,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   };
   let history = match fastrender::ui::load_history(&history_path) {
-    Ok(Some(store)) => store,
-    Ok(None) => fastrender::ui::GlobalHistoryStore::default(),
+    Ok(outcome) => outcome.value,
     Err(err) => {
       eprintln!(
         "failed to load history from {}: {err}",
@@ -1201,7 +1199,7 @@ fn run_headless_smoke_mode(
   download_dir: std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
-  use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
+  use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
 
@@ -1215,19 +1213,21 @@ fn run_headless_smoke_mode(
   let session_json = serde_json::to_string(&session).unwrap_or_else(|_| "<invalid>".to_string());
   println!("HEADLESS_SESSION source={source_label} {session_json}");
 
-  let bookmarks_path = fastrender::ui::bookmarks_persistence::bookmarks_path();
-  let history_path = fastrender::ui::history_persistence::history_path();
+  let bookmarks_path = fastrender::ui::bookmarks_path();
+  let history_path = fastrender::ui::history_path();
 
   const BOOKMARKS_OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON";
   let (bookmarks_source, bookmarks_store) = match std::env::var(BOOKMARKS_OVERRIDE_ENV) {
     Ok(raw) if !raw.trim().is_empty() => {
-      let (store, _migration) = fastrender::ui::BookmarkStore::from_json_str_migrating(&raw)
-        .map_err(|err| format!("{BOOKMARKS_OVERRIDE_ENV}: invalid JSON: {err:?}"))?;
+      let store = fastrender::ui::parse_bookmarks_json(&raw)
+        .map_err(|err| format!("{BOOKMARKS_OVERRIDE_ENV}: invalid JSON: {err}"))?;
       ("override", store)
     }
-    _ => match fastrender::ui::bookmarks_persistence::load_bookmarks(&bookmarks_path) {
-      Ok(Some(store)) => ("disk", store),
-      Ok(None) => ("empty", fastrender::ui::BookmarkStore::default()),
+    _ => match fastrender::ui::load_bookmarks(&bookmarks_path) {
+      Ok(outcome) => match outcome.source {
+        fastrender::ui::LoadSource::Disk => ("disk", outcome.value),
+        fastrender::ui::LoadSource::Empty => ("empty", outcome.value),
+      },
       Err(err) => {
         eprintln!(
           "failed to load bookmarks from {}: {err}",
@@ -1237,31 +1237,33 @@ fn run_headless_smoke_mode(
       }
     },
   };
-  let bookmarks_json =
-    serde_json::to_string(&bookmarks_store).unwrap_or_else(|_| "<invalid>".to_string());
+  let bookmarks_json = serde_json::to_string(&bookmarks_store).unwrap_or_else(|_| "<invalid>".to_string());
   println!("HEADLESS_BOOKMARKS source={bookmarks_source} {bookmarks_json}");
 
   const HISTORY_OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON";
-  let (history_source, history_snapshot) = match std::env::var(HISTORY_OVERRIDE_ENV) {
+  let (history_source, history_store) = match std::env::var(HISTORY_OVERRIDE_ENV) {
     Ok(raw) if !raw.trim().is_empty() => {
-      let snapshot: serde_json::Value = serde_json::from_str(&raw)
+      let store = fastrender::ui::parse_history_json(&raw)
         .map_err(|err| format!("{HISTORY_OVERRIDE_ENV}: invalid JSON: {err}"))?;
-      ("override", snapshot)
+      ("override", store)
     }
-    _ => match fastrender::ui::history_persistence::load_history(&history_path) {
-      Ok(Some(snapshot)) => ("disk", snapshot),
-      Ok(None) => ("empty", serde_json::Value::Array(Vec::new())),
+    _ => match fastrender::ui::load_history(&history_path) {
+      Ok(outcome) => match outcome.source {
+        fastrender::ui::LoadSource::Disk => ("disk", outcome.value),
+        fastrender::ui::LoadSource::Empty => ("empty", outcome.value),
+      },
       Err(err) => {
         eprintln!(
           "failed to load history from {}: {err}",
           history_path.display()
         );
-        ("empty", serde_json::Value::Array(Vec::new()))
+        ("empty", fastrender::ui::GlobalHistoryStore::default())
       }
     },
   };
+  let persisted_history = fastrender::ui::PersistedGlobalHistoryStore::from_store(&history_store);
   let history_json =
-    serde_json::to_string(&history_snapshot).unwrap_or_else(|_| "<invalid>".to_string());
+    serde_json::to_string(&persisted_history).unwrap_or_else(|_| "<invalid>".to_string());
   println!("HEADLESS_HISTORY source={history_source} {history_json}");
 
   // Keep the smoke test cheap and deterministic: when Rayon is allowed to auto-initialize its
@@ -1280,7 +1282,10 @@ fn run_headless_smoke_mode(
   const VIEWPORT_CSS: (u32, u32) = (200, 120);
   // Use a DPR != 1.0 so the smoke test validates viewport↔device-pixel scaling.
   const DPR: f32 = 2.0;
-  const TIMEOUT: Duration = Duration::from_secs(20);
+  // First-frame rendering can be slow in debug builds / under CI resource limits (initial font
+  // parsing, CSS selector caches, etc). Keep this generous so the headless smoke tests remain
+  // robust rather than flaky.
+  const TIMEOUT: Duration = Duration::from_secs(60);
 
   let expected_pixmap_w = ((VIEWPORT_CSS.0 as f32) * DPR).round().max(1.0) as u32;
   let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
@@ -1296,12 +1301,16 @@ fn run_headless_smoke_mode(
   })?;
 
   let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
-  for tab in &active_window.tabs {
+  for _tab in &active_window.tabs {
     let tab_id = TabId::new();
     tab_ids.push(tab_id);
     ui_to_worker_tx.send(UiToWorker::CreateTab {
       tab_id,
-      initial_url: Some(tab.url.clone()),
+      // Do not start navigation until after the headless harness has applied viewport/DPR. This
+      // avoids a race where the worker begins rendering with its default (800x600, DPR=1) and only
+      // later receives the `ViewportChanged` message, which can make the smoke test slow/flaky on
+      // debug builds / constrained CI.
+      initial_url: None,
       cancel: CancelGens::new(),
     })?;
   }
@@ -1318,6 +1327,13 @@ fn run_headless_smoke_mode(
   ui_to_worker_tx.send(UiToWorker::SetActiveTab {
     tab_id: active_tab_id,
   })?;
+  if let Some(tab) = active_window.tabs.get(active_idx) {
+    ui_to_worker_tx.send(UiToWorker::Navigate {
+      tab_id: active_tab_id,
+      url: tab.url.clone(),
+      reason: NavigationReason::TypedUrl,
+    })?;
+  }
 
   // Close the channel so the worker thread exits after completing the above messages.
   drop(ui_to_worker_tx);
@@ -1401,19 +1417,14 @@ fn run_headless_smoke_mode(
     );
   }
 
-  if let Err(err) = fastrender::ui::bookmarks_persistence::save_bookmarks_atomic(
-    &bookmarks_path,
-    &bookmarks_store,
-  ) {
+  if let Err(err) = fastrender::ui::save_bookmarks_atomic(&bookmarks_path, &bookmarks_store) {
     eprintln!(
       "failed to save bookmarks to {}: {err}",
       bookmarks_path.display()
     );
   }
 
-  if let Err(err) =
-    fastrender::ui::history_persistence::save_history_atomic(&history_path, &history_snapshot)
-  {
+  if let Err(err) = fastrender::ui::save_history_atomic(&history_path, &history_store) {
     eprintln!(
       "failed to save history to {}: {err}",
       history_path.display()

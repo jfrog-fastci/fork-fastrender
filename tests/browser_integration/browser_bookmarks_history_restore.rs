@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::collections::BTreeMap;
 
 fn run_browser_headless_smoke(
   args: &[&str],
@@ -42,7 +43,7 @@ fn assert_browser_succeeded(status: ExitStatus, stderr: &str, stdout: &str) {
   );
 }
 
-fn parse_headless_json(stdout: &str, prefix: &str) -> (String, serde_json::Value) {
+fn parse_headless_json<T: serde::de::DeserializeOwned>(stdout: &str, prefix: &str) -> (String, T) {
   let line = stdout
     .lines()
     .find(|line| line.starts_with(prefix))
@@ -55,7 +56,7 @@ fn parse_headless_json(stdout: &str, prefix: &str) -> (String, serde_json::Value
     .strip_prefix("source=")
     .unwrap_or_else(|| panic!("unexpected {prefix} source prefix: {line:?}"))
     .to_string();
-  let value: serde_json::Value = serde_json::from_str(json).expect("parse JSON");
+  let value: T = serde_json::from_str(json).expect("parse JSON");
   (source, value)
 }
 
@@ -68,23 +69,37 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
   let bookmarks_path = dir.path().join("bookmarks.json");
   let history_path = dir.path().join("history.json");
 
-  // Legacy headless-smoke schema (pre-BH-04). The browser should migrate this into the new
-  // `BookmarkStore` format.
-  let seed_bookmarks: serde_json::Value =
-    serde_json::from_str(r#"[{"title":"Example","url":"https://example.com"}]"#)
-      .expect("parse seed bookmarks JSON");
-  let expected_bookmarks: serde_json::Value = serde_json::from_str(
-    r#"{"version":1,"next_id":2,"roots":[1],"nodes":{"1":{"type":"bookmark","id":1,"url":"https://example.com","title":"Example","added_at_ms":0}}}"#,
-  )
-  .expect("parse expected migrated bookmarks JSON");
-  let expected_history: serde_json::Value =
-    serde_json::from_str(r#"[{"title":"Example","url":"https://example.com","ts":123}]"#)
-      .expect("parse expected history JSON");
+  // Legacy headless-smoke schema: array of `{title,url}` objects.
+  // The browser should migrate this into the canonical `BookmarkStore` format.
+  let seed_bookmarks_json = r#"[{"title":"Example","url":"https://example.com"}]"#.to_string();
+  let expected_bookmarks = fastrender::ui::BookmarkStore {
+    version: fastrender::ui::BOOKMARK_STORE_VERSION,
+    next_id: fastrender::ui::BookmarkId(2),
+    roots: vec![fastrender::ui::BookmarkId(1)],
+    nodes: BTreeMap::from([(
+      fastrender::ui::BookmarkId(1),
+      fastrender::ui::BookmarkNode::Bookmark(fastrender::ui::bookmarks::BookmarkEntry {
+        id: fastrender::ui::BookmarkId(1),
+        url: "https://example.com".to_string(),
+        title: Some("Example".to_string()),
+        added_at_ms: 0,
+        parent: None,
+      }),
+    )]),
+  };
 
-  let seed_bookmarks_json =
-    serde_json::to_string(&seed_bookmarks).expect("serialize seed bookmarks");
-  let expected_history_json =
-    serde_json::to_string(&expected_history).expect("serialize expected history");
+  // Legacy headless-smoke history schema: array of `{title,url,ts}` objects.
+  // The browser should migrate this into the canonical persisted history format.
+  let seed_history_json = r#"[{"title":"Example","url":"https://example.com","ts":123}]"#.to_string();
+  let expected_history = fastrender::ui::PersistedGlobalHistoryStore {
+    entries: vec![fastrender::ui::GlobalHistoryEntry {
+      url: "https://example.com/".to_string(),
+      title: Some("Example".to_string()),
+      visited_at_ms: Some(123),
+      visit_count: 1,
+    }],
+    ..Default::default()
+  };
 
   // First run: seed bookmarks/history via override env vars and ensure they're written to disk.
   let (status, stderr, stdout) = run_browser_headless_smoke(
@@ -99,17 +114,19 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
       ),
       (
         "FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON",
-        &expected_history_json,
+        &seed_history_json,
       ),
     ],
   );
   assert_browser_succeeded(status, &stderr, &stdout);
 
-  let (bookmarks_source, bookmarks) = parse_headless_json(&stdout, "HEADLESS_BOOKMARKS ");
+  let (bookmarks_source, bookmarks): (String, fastrender::ui::BookmarkStore) =
+    parse_headless_json(&stdout, "HEADLESS_BOOKMARKS ");
   assert_eq!(bookmarks_source, "override");
   assert_eq!(bookmarks, expected_bookmarks);
 
-  let (history_source, history) = parse_headless_json(&stdout, "HEADLESS_HISTORY ");
+  let (history_source, history): (String, fastrender::ui::PersistedGlobalHistoryStore) =
+    parse_headless_json(&stdout, "HEADLESS_HISTORY ");
   assert_eq!(history_source, "override");
   assert_eq!(history, expected_history);
 
@@ -124,12 +141,12 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
     history_path.display()
   );
 
-  let bookmarks_on_disk: serde_json::Value =
+  let bookmarks_on_disk: fastrender::ui::BookmarkStore =
     serde_json::from_str(&std::fs::read_to_string(&bookmarks_path).expect("read bookmarks file"))
       .expect("parse bookmarks file JSON");
   assert_eq!(bookmarks_on_disk, expected_bookmarks);
 
-  let history_on_disk: serde_json::Value =
+  let history_on_disk: fastrender::ui::PersistedGlobalHistoryStore =
     serde_json::from_str(&std::fs::read_to_string(&history_path).expect("read history file"))
       .expect("parse history file JSON");
   assert_eq!(history_on_disk, expected_history);
@@ -145,11 +162,13 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
   );
   assert_browser_succeeded(status, &stderr, &stdout);
 
-  let (bookmarks_source, bookmarks) = parse_headless_json(&stdout, "HEADLESS_BOOKMARKS ");
+  let (bookmarks_source, bookmarks): (String, fastrender::ui::BookmarkStore) =
+    parse_headless_json(&stdout, "HEADLESS_BOOKMARKS ");
   assert_eq!(bookmarks_source, "disk");
   assert_eq!(bookmarks, expected_bookmarks);
 
-  let (history_source, history) = parse_headless_json(&stdout, "HEADLESS_HISTORY ");
+  let (history_source, history): (String, fastrender::ui::PersistedGlobalHistoryStore) =
+    parse_headless_json(&stdout, "HEADLESS_HISTORY ");
   assert_eq!(history_source, "disk");
   assert_eq!(history, expected_history);
 }

@@ -1,4 +1,4 @@
-use serde::{de::DeserializeOwned, Serialize};
+use crate::ui::profile_persistence::{save_bookmarks_atomic, save_history_atomic};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -8,154 +8,8 @@ use super::global_history::GlobalHistoryStore;
 #[cfg(test)]
 use super::global_history::GlobalHistoryEntry;
 
-const BOOKMARKS_ENV_PATH: &str = "FASTR_BROWSER_BOOKMARKS_PATH";
-const HISTORY_ENV_PATH: &str = "FASTR_BROWSER_HISTORY_PATH";
-const BOOKMARKS_FILE_NAME: &str = "fastrender_bookmarks.json";
-const HISTORY_FILE_NAME: &str = "fastrender_history.json";
-
 const DEFAULT_BOOKMARKS_DEBOUNCE: Duration = Duration::from_secs(1);
 const DEFAULT_HISTORY_DEBOUNCE: Duration = Duration::from_secs(8);
-
-/// Determine the on-disk bookmarks file location.
-///
-/// Order of precedence:
-/// 1. `FASTR_BROWSER_BOOKMARKS_PATH` env var (used by tests).
-/// 2. A deterministic per-user config file (via `directories`).
-/// 3. Fallback to `./fastrender_bookmarks.json` in the current working directory.
-pub fn bookmarks_path() -> PathBuf {
-  if let Some(raw) = std::env::var_os(BOOKMARKS_ENV_PATH) {
-    if !raw.is_empty() {
-      return PathBuf::from(raw);
-    }
-  }
-
-  #[cfg(feature = "browser_ui")]
-  {
-    if let Some(base_dirs) = directories::BaseDirs::new() {
-      return base_dirs
-        .config_dir()
-        .join("fastrender")
-        .join(BOOKMARKS_FILE_NAME);
-    }
-  }
-
-  PathBuf::from(format!("./{BOOKMARKS_FILE_NAME}"))
-}
-
-/// Determine the on-disk global history file location.
-///
-/// Order of precedence:
-/// 1. `FASTR_BROWSER_HISTORY_PATH` env var (used by tests).
-/// 2. A deterministic per-user config file (via `directories`).
-/// 3. Fallback to `./fastrender_history.json` in the current working directory.
-pub fn history_path() -> PathBuf {
-  if let Some(raw) = std::env::var_os(HISTORY_ENV_PATH) {
-    if !raw.is_empty() {
-      return PathBuf::from(raw);
-    }
-  }
-
-  #[cfg(feature = "browser_ui")]
-  {
-    if let Some(base_dirs) = directories::BaseDirs::new() {
-      return base_dirs
-        .config_dir()
-        .join("fastrender")
-        .join(HISTORY_FILE_NAME);
-    }
-  }
-
-  PathBuf::from(format!("./{HISTORY_FILE_NAME}"))
-}
-
-/// Attempt to read + parse a bookmarks file. Missing file is not an error.
-pub fn load_bookmarks(path: &Path) -> Result<Option<BookmarkStore>, String> {
-  let data = match std::fs::read_to_string(path) {
-    Ok(data) => data,
-    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-    Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
-  };
-
-  let (store, _migration) = BookmarkStore::from_json_str_migrating(&data)
-    .map_err(|err| format!("failed to parse {}: {err:?}", path.display()))?;
-  Ok(Some(store))
-}
-
-/// Attempt to read + parse a history file. Missing file is not an error.
-pub fn load_history(path: &Path) -> Result<Option<GlobalHistoryStore>, String> {
-  let Some(mut history) = load_json::<GlobalHistoryStore>(path)? else {
-    return Ok(None);
-  };
-  history.normalize_in_place();
-  Ok(Some(history))
-}
-
-/// Write the bookmarks file atomically (write temp file + rename).
-pub fn save_bookmarks_atomic(path: &Path, bookmarks: &BookmarkStore) -> Result<(), String> {
-  save_json_atomic(path, bookmarks)
-}
-
-/// Write the history file atomically (write temp file + rename).
-pub fn save_history_atomic(path: &Path, history: &GlobalHistoryStore) -> Result<(), String> {
-  save_json_atomic(path, history)
-}
-
-fn load_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
-  let data = match std::fs::read_to_string(path) {
-    Ok(data) => data,
-    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-    Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
-  };
-
-  let parsed: T =
-    serde_json::from_str(&data).map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
-  Ok(Some(parsed))
-}
-
-fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-  let parent_dir = path
-    .parent()
-    .filter(|p| !p.as_os_str().is_empty())
-    .unwrap_or_else(|| Path::new("."));
-  std::fs::create_dir_all(parent_dir)
-    .map_err(|err| format!("failed to create {}: {err}", parent_dir.display()))?;
-
-  let data = serde_json::to_vec_pretty(value).map_err(|err| err.to_string())?;
-
-  let mut tmp = tempfile::NamedTempFile::new_in(parent_dir)
-    .map_err(|err| format!("failed to create temp file in {}: {err}", parent_dir.display()))?;
-  use std::io::Write;
-  tmp
-    .write_all(&data)
-    .map_err(|err| format!("failed to write temp file: {err}"))?;
-  tmp
-    .flush()
-    .map_err(|err| format!("failed to flush temp file: {err}"))?;
-
-  // Best-effort durability: don't fail the whole save if syncing is unsupported.
-  let _ = tmp.as_file().sync_all();
-
-  match tmp.persist(path) {
-    Ok(_) => Ok(()),
-    Err(err) => {
-      // On Windows, rename fails if the destination exists. Fall back to removing the existing file
-      // and retrying (not strictly atomic, but best-effort cross-platform).
-      if matches!(
-        err.error.kind(),
-        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-      ) {
-        let _ = std::fs::remove_file(path);
-        err
-          .file
-          .persist(path)
-          .map(|_| ())
-          .map_err(|err| format!("failed to persist {}: {}", path.display(), err.error))
-      } else {
-        Err(format!("failed to persist {}: {}", path.display(), err.error))
-      }
-    }
-  }
-}
 
 #[derive(Debug)]
 pub enum AutosaveMsg {
@@ -324,27 +178,17 @@ fn autosave_worker_main(
           }
           next_bookmarks_write = None;
         }
+
         if next_history_write.is_some_and(|t| now >= t) {
           if let Some(history) = pending_history.take() {
             if let Err(err) = save_history_atomic(&history_path, &history) {
-              eprintln!(
-                "failed to autosave history to {}: {err}",
-                history_path.display()
-              );
+              eprintln!("failed to autosave history to {}: {err}", history_path.display());
             }
           }
           next_history_write = None;
         }
       }
-      Err(mpsc::RecvTimeoutError::Disconnected) => {
-        flush_pending(
-          &bookmarks_path,
-          &history_path,
-          &mut pending_bookmarks,
-          &mut pending_history,
-        );
-        break;
-      }
+      Err(mpsc::RecvTimeoutError::Disconnected) => break,
     }
   }
 }
@@ -366,10 +210,7 @@ fn flush_pending(
 
   if let Some(history) = pending_history.take() {
     if let Err(err) = save_history_atomic(history_path, &history) {
-      eprintln!(
-        "failed to autosave history to {}: {err}",
-        history_path.display()
-      );
+      eprintln!("failed to autosave history to {}: {err}", history_path.display());
     }
   }
 }
@@ -377,6 +218,7 @@ fn flush_pending(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ui::profile_persistence::PersistedGlobalHistoryStore;
 
   #[test]
   fn flush_writes_last_update() {
@@ -397,9 +239,7 @@ mod tests {
     let mut bookmarks_b = BookmarkStore::default();
     bookmarks_b.toggle("https://b.example/", Some("b"));
 
-    autosave
-      .send(AutosaveMsg::UpdateBookmarks(bookmarks_a))
-      .unwrap();
+    autosave.send(AutosaveMsg::UpdateBookmarks(bookmarks_a)).unwrap();
     autosave
       .send(AutosaveMsg::UpdateBookmarks(bookmarks_b.clone()))
       .unwrap();
@@ -412,6 +252,7 @@ mod tests {
           visited_at_ms: None,
           visit_count: 1,
         }],
+        ..Default::default()
       }))
       .unwrap();
     autosave
@@ -422,6 +263,7 @@ mod tests {
           visited_at_ms: Some(2),
           visit_count: 1,
         }],
+        ..Default::default()
       }))
       .unwrap();
 
@@ -431,18 +273,19 @@ mod tests {
       serde_json::from_str(&std::fs::read_to_string(&bookmarks_path).unwrap()).unwrap();
     assert_eq!(saved_bookmarks, bookmarks_b);
 
-    let saved_history: GlobalHistoryStore =
+    let saved_history: PersistedGlobalHistoryStore =
       serde_json::from_str(&std::fs::read_to_string(&history_path).unwrap()).unwrap();
     assert_eq!(
       saved_history,
-      GlobalHistoryStore {
+      PersistedGlobalHistoryStore::from_store(&GlobalHistoryStore {
         entries: vec![GlobalHistoryEntry {
           url: "https://2.example/".to_string(),
           title: Some("two".to_string()),
           visited_at_ms: Some(2),
           visit_count: 1,
         }],
-      }
+        ..Default::default()
+      })
     );
 
     autosave.shutdown_with_timeout(Duration::from_millis(500));
