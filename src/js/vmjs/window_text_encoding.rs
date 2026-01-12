@@ -14,6 +14,7 @@ use vm_js::{
 
 const TEXT_ENCODER_HOST_TAG: u64 = 0x5445_5854_454E_4344; // "TEXTENCD"
 const TEXT_DECODER_HOST_TAG: u64 = 0x5445_5854_4445_4344; // "TEXTDECD"
+const TEXT_ENCODER_STREAM_HOST_TAG: u64 = 0x5445_5354_454E_5354; // "TESTENST" (TextEncoderStream)
 
 const TEXT_DECODER_FLAG_FATAL: u64 = 1 << 0;
 const TEXT_DECODER_FLAG_IGNORE_BOM: u64 = 1 << 1;
@@ -219,6 +220,24 @@ fn require_text_encoder_receiver(
   Ok(obj)
 }
 
+fn require_text_encoder_stream_receiver(
+  scope: &Scope<'_>,
+  this: Value,
+) -> Result<vm_js::GcObject, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "TextEncoderStream.prototype.encoding called on non-object",
+    ));
+  };
+  let slots = receiver_host_slots(scope, obj)?;
+  if slots.a != TEXT_ENCODER_STREAM_HOST_TAG {
+    return Err(VmError::TypeError(
+      "TextEncoderStream.prototype.encoding called on incompatible receiver",
+    ));
+  }
+  Ok(obj)
+}
+
 fn require_text_decoder_receiver(
   scope: &Scope<'_>,
   this: Value,
@@ -265,6 +284,310 @@ fn text_encoder_call(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   Err(VmError::TypeError("TextEncoder constructor requires 'new'"))
+}
+
+// --- TextEncoderStream -------------------------------------------------------
+
+const TEXT_ENCODER_STREAM_CTOR_SLOT_GLOBAL: usize = 0;
+const TEXT_ENCODER_STREAM_CTOR_SLOT_TRANSFORM_STREAM_KEY: usize = 1;
+const TEXT_ENCODER_STREAM_CTOR_SLOT_READABLE_KEY: usize = 2;
+const TEXT_ENCODER_STREAM_CTOR_SLOT_WRITABLE_KEY: usize = 3;
+const TEXT_ENCODER_STREAM_CTOR_SLOT_TRANSFORM_KEY: usize = 4;
+const TEXT_ENCODER_STREAM_CTOR_SLOT_TRANSFORM_FN: usize = 5;
+
+const TEXT_ENCODER_STREAM_TRANSFORM_SLOT_ENQUEUE_KEY: usize = 0;
+
+fn text_encoder_stream_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "TextEncoderStream constructor requires 'new'",
+  ))
+}
+
+fn text_encoder_stream_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(callee))?;
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let global = match slots
+    .get(TEXT_ENCODER_STREAM_CTOR_SLOT_GLOBAL)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextEncoderStream constructor missing global slot",
+      ))
+    }
+  };
+  let transform_stream_key_s = match slots
+    .get(TEXT_ENCODER_STREAM_CTOR_SLOT_TRANSFORM_STREAM_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextEncoderStream constructor missing TransformStream key slot",
+      ))
+    }
+  };
+  let readable_key_s = match slots
+    .get(TEXT_ENCODER_STREAM_CTOR_SLOT_READABLE_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextEncoderStream constructor missing readable key slot",
+      ))
+    }
+  };
+  let writable_key_s = match slots
+    .get(TEXT_ENCODER_STREAM_CTOR_SLOT_WRITABLE_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextEncoderStream constructor missing writable key slot",
+      ))
+    }
+  };
+  let transform_key_s = match slots
+    .get(TEXT_ENCODER_STREAM_CTOR_SLOT_TRANSFORM_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextEncoderStream constructor missing transform key slot",
+      ))
+    }
+  };
+  let transform_fn = match slots
+    .get(TEXT_ENCODER_STREAM_CTOR_SLOT_TRANSFORM_FN)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextEncoderStream constructor missing transform function slot",
+      ))
+    }
+  };
+
+  // Construct internal TransformStream.
+  scope.push_root(Value::Object(global))?;
+  let transform_stream_key = PropertyKey::from_string(transform_stream_key_s);
+  let ts_ctor = vm.get_with_host_and_hooks(host, &mut scope, hooks, global, transform_stream_key)?;
+  let Value::Object(_ts_ctor_obj) = ts_ctor else {
+    return Err(VmError::TypeError("TransformStream is not available"));
+  };
+  scope.push_root(ts_ctor)?;
+
+  let transformer_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(transformer_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(transformer_obj, Some(intr.object_prototype()))?;
+  let transform_key = PropertyKey::from_string(transform_key_s);
+  scope.define_property(
+    transformer_obj,
+    transform_key,
+    data_desc(Value::Object(transform_fn)),
+  )?;
+
+  let ts = vm.construct_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    ts_ctor,
+    &[Value::Object(transformer_obj)],
+    ts_ctor,
+  )?;
+  let Value::Object(ts_obj) = ts else {
+    return Err(VmError::InvariantViolation(
+      "TransformStream constructor must return object",
+    ));
+  };
+  scope.push_root(Value::Object(ts_obj))?;
+
+  // Extract `{ readable, writable }` from the internal TransformStream.
+  let readable_key = PropertyKey::from_string(readable_key_s);
+  let writable_key = PropertyKey::from_string(writable_key_s);
+  let readable_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, ts_obj, readable_key)?;
+  scope.push_root(readable_val)?;
+  let writable_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, ts_obj, writable_key)?;
+  scope.push_root(writable_val)?;
+
+  let proto = {
+    let key_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    match scope
+      .heap()
+      .object_get_own_data_property_value(callee, &key)?
+    {
+      Some(Value::Object(proto)) => proto,
+      _ => intr.object_prototype(),
+    }
+  };
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: TEXT_ENCODER_STREAM_HOST_TAG,
+      b: 0,
+    },
+  )?;
+
+  scope.define_property(obj, readable_key, read_only_data_desc(readable_val))?;
+  scope.define_property(obj, writable_key, read_only_data_desc(writable_val))?;
+
+  Ok(Value::Object(obj))
+}
+
+fn text_encoder_stream_get_encoding(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = require_text_encoder_stream_receiver(scope, this)?;
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.first().copied() {
+    Some(Value::String(s)) => Ok(Value::String(s)),
+    _ => Err(VmError::InvariantViolation(
+      "TextEncoderStream encoding getter missing utf-8 slot",
+    )),
+  }
+}
+
+fn text_encoder_stream_transform(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let chunk = args.get(0).copied().unwrap_or(Value::Undefined);
+  let controller = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let Value::Object(controller_obj) = controller else {
+    return Err(VmError::TypeError(
+      "TextEncoderStream transform missing controller",
+    ));
+  };
+
+  // Encode input chunk to UTF-8 bytes (matching `TextEncoder.encode` default empty-string parameter
+  // semantics).
+  let view_obj = if matches!(chunk, Value::Undefined) {
+    let ab = scope.alloc_array_buffer_from_u8_vec(Vec::new())?;
+    scope.push_root(Value::Object(ab))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+    let view = scope.alloc_uint8_array(ab, 0, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+    view
+  } else {
+    let s = match chunk {
+      Value::String(s) => s,
+      other => scope.heap_mut().to_string(other)?,
+    };
+    let code_units = scope.heap().get_string(s)?.as_code_units();
+    let byte_len = utf8_len_from_utf16_units(code_units)?;
+    if byte_len > MAX_TEXT_ENCODER_OUTPUT_BYTES {
+      return Err(VmError::TypeError("TextEncoderStream chunk output too large"));
+    }
+
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes
+      .try_reserve_exact(byte_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    encode_utf16_units_to_utf8(code_units, &mut bytes);
+    debug_assert_eq!(bytes.len(), byte_len);
+
+    let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+    scope.push_root(Value::Object(ab))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+
+    let view = scope.alloc_uint8_array(ab, 0, byte_len)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+    view
+  };
+
+  // Root objects across the property lookup + enqueue call in case those operations trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(controller_obj))?;
+  scope.push_root(Value::Object(view_obj))?;
+
+  // controller.enqueue(view)
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let enqueue_key_s = match slots
+    .get(TEXT_ENCODER_STREAM_TRANSFORM_SLOT_ENQUEUE_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextEncoderStream transform missing enqueue key slot",
+      ))
+    }
+  };
+  let enqueue_key = PropertyKey::from_string(enqueue_key_s);
+  let enqueue_fn =
+    vm.get_with_host_and_hooks(host, &mut scope, hooks, controller_obj, enqueue_key)?;
+  vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    enqueue_fn,
+    Value::Object(controller_obj),
+    &[Value::Object(view_obj)],
+  )?;
+
+  Ok(Value::Undefined)
 }
 
 fn text_encoder_construct(
@@ -852,6 +1175,121 @@ pub(crate) fn install_window_text_encoding_bindings(
 
   let te_key = alloc_key(&mut scope, "TextEncoder")?;
   scope.define_property(global, te_key, data_desc(Value::Object(te_ctor)))?;
+
+  // --- TextEncoderStream -----------------------------------------------------
+  let tes_call_id: NativeFunctionId = vm.register_native_call(text_encoder_stream_call)?;
+  let tes_construct_id: NativeConstructId =
+    vm.register_native_construct(text_encoder_stream_construct)?;
+
+  let transform_stream_key_s = scope.alloc_string("TransformStream")?;
+  scope.push_root(Value::String(transform_stream_key_s))?;
+  let readable_key_s = scope.alloc_string("readable")?;
+  scope.push_root(Value::String(readable_key_s))?;
+  let writable_key_s = scope.alloc_string("writable")?;
+  scope.push_root(Value::String(writable_key_s))?;
+  let transform_key_s = scope.alloc_string("transform")?;
+  scope.push_root(Value::String(transform_key_s))?;
+  let enqueue_key_s = scope.alloc_string("enqueue")?;
+  scope.push_root(Value::String(enqueue_key_s))?;
+
+  let tes_transform_call_id: NativeFunctionId =
+    vm.register_native_call(text_encoder_stream_transform)?;
+  let tes_transform_name_s = scope.alloc_string("transform")?;
+  scope.push_root(Value::String(tes_transform_name_s))?;
+  let tes_transform_slots = [Value::String(enqueue_key_s)];
+  let tes_transform_fn = scope.alloc_native_function_with_slots(
+    tes_transform_call_id,
+    None,
+    tes_transform_name_s,
+    2,
+    &tes_transform_slots,
+  )?;
+  scope.push_root(Value::Object(tes_transform_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(tes_transform_fn, Some(intr.function_prototype()))?;
+
+  let tes_name_s = scope.alloc_string("TextEncoderStream")?;
+  scope.push_root(Value::String(tes_name_s))?;
+
+  let tes_ctor_slots = [
+    Value::Object(global),
+    Value::String(transform_stream_key_s),
+    Value::String(readable_key_s),
+    Value::String(writable_key_s),
+    Value::String(transform_key_s),
+    Value::Object(tes_transform_fn),
+  ];
+  let tes_ctor = scope.alloc_native_function_with_slots(
+    tes_call_id,
+    Some(tes_construct_id),
+    tes_name_s,
+    0,
+    &tes_ctor_slots,
+  )?;
+  scope.push_root(Value::Object(tes_ctor))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(tes_ctor, Some(intr.function_prototype()))?;
+
+  let tes_proto = {
+    let key_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    match scope
+      .heap()
+      .object_get_own_data_property_value(tes_ctor, &key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "TextEncoderStream constructor missing prototype object",
+        ))
+      }
+    }
+  };
+  scope.push_root(Value::Object(tes_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(tes_proto, Some(intr.object_prototype()))?;
+
+  // `TextEncoderStream.prototype.encoding` (read-only accessor property).
+  let tes_encoding_get_call_id: NativeFunctionId =
+    vm.register_native_call(text_encoder_stream_get_encoding)?;
+  let tes_encoding_get_name_s = scope.alloc_string("get encoding")?;
+  scope.push_root(Value::String(tes_encoding_get_name_s))?;
+  let tes_encoding_get_slots = [Value::String(utf8_s)];
+  let tes_encoding_get_fn = scope.alloc_native_function_with_slots(
+    tes_encoding_get_call_id,
+    None,
+    tes_encoding_get_name_s,
+    0,
+    &tes_encoding_get_slots,
+  )?;
+  scope.push_root(Value::Object(tes_encoding_get_fn))?;
+  scope.heap_mut().object_set_prototype(
+    tes_encoding_get_fn,
+    Some(intr.function_prototype()),
+  )?;
+
+  let encoding_key = alloc_key(&mut scope, "encoding")?;
+  scope.define_property(
+    tes_proto,
+    encoding_key,
+    accessor_desc(Value::Object(tes_encoding_get_fn), Value::Undefined),
+  )?;
+
+  // @@toStringTag
+  let tes_tag_s = scope.alloc_string("TextEncoderStream")?;
+  scope.push_root(Value::String(tes_tag_s))?;
+  scope.define_property(
+    tes_proto,
+    PropertyKey::Symbol(intr.well_known_symbols().to_string_tag),
+    read_only_data_desc(Value::String(tes_tag_s)),
+  )?;
+
+  let tes_key = alloc_key(&mut scope, "TextEncoderStream")?;
+  scope.define_property(global, tes_key, data_desc(Value::Object(tes_ctor)))?;
 
   // --- TextDecoder -----------------------------------------------------------
   let td_call_id: NativeFunctionId = vm.register_native_call(text_decoder_call)?;

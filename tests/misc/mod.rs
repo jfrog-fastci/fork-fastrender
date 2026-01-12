@@ -117,6 +117,7 @@ mod vendor_prefix_aliasing_test;
 mod video_placeholder_test;
 mod vm_js_crypto_subtle_digest;
 mod vm_js_define_own_property_smoke;
+mod vm_js_text_encoder_stream;
 mod vm_js_dom_exception_smoke;
 mod vm_js_dynamic_script_crossorigin_cors;
 mod vm_js_function_call_apply_bind_smoke;
