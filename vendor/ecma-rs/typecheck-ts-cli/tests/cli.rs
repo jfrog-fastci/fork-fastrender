@@ -148,7 +148,9 @@ fn resolves_relative_modules_and_index_files() {
   let path = fixture("resolution/entry.ts");
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck", "--lib", "es5"])
+    // Directory index resolution (`./nested` -> `nested/index.ts`) is part of
+    // TypeScript's Node-style module resolution, not Classic resolution.
+    .args(["typecheck", "--lib", "es5", "--node-resolve"])
     .arg(path.as_os_str())
     .assert()
     .success()
