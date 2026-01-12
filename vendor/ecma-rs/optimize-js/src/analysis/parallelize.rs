@@ -6,10 +6,9 @@ use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp, Para
 use crate::il::inst::ArrayChainOp;
 use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
-use std::collections::BTreeMap;
-
 #[cfg(feature = "native-async-ops")]
 use effect_model::ThrowBehavior;
+use std::collections::BTreeMap;
 #[cfg(feature = "native-async-ops")]
 use std::collections::BTreeSet;
 
@@ -49,15 +48,15 @@ fn resolve_alias(mut var: u32, aliases: &BTreeMap<u32, u32>) -> u32 {
   var
 }
 
-#[derive(Clone, Debug)]
 #[cfg(feature = "native-async-ops")]
+#[derive(Clone, Debug)]
 struct ValueDefInfo {
   uses: Vec<u32>,
   effects: EffectSet,
 }
 
-#[derive(Clone, Debug)]
 #[cfg(feature = "native-async-ops")]
+#[derive(Clone, Debug)]
 enum ValueDef {
   Known(ValueDefInfo),
   Unknown,
