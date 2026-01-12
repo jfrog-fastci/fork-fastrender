@@ -404,9 +404,13 @@ fn namespace_then_value_emits_ts2434_and_merges_members() {
 
   let program = Program::new(host, vec![key.clone()]);
   let diagnostics = program.check();
-  assert!(
-    diagnostics.iter().any(|d| d.code.as_str() == "TS2434"),
-    "expected TS2434 diagnostic, got {diagnostics:?}"
+  let ts2434_count = diagnostics
+    .iter()
+    .filter(|d| d.code.as_str() == "TS2434")
+    .count();
+  assert_eq!(
+    ts2434_count, 1,
+    "expected exactly one TS2434 diagnostic, got {diagnostics:?}"
   );
 
   let file_id = program.file_id(&key).expect("file id");
@@ -486,4 +490,25 @@ fn namespace_then_value_emits_ts2434_and_merges_members() {
     _ => false,
   });
   assert!(ns_has_bar, "namespace side should include merged members");
+}
+
+#[test]
+fn namespace_not_merged_with_default_export_emits_single_ts2395() {
+  let mut host = MemoryHost::default();
+  let key = fk(9);
+  host.insert(
+    key.clone(),
+    "export default function foo() {}\nnamespace foo { export const x = 1; }\n",
+  );
+
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  let ts2395_count = diagnostics
+    .iter()
+    .filter(|d| d.code.as_str() == "TS2395")
+    .count();
+  assert_eq!(
+    ts2395_count, 1,
+    "expected exactly one TS2395 diagnostic, got {diagnostics:?}"
+  );
 }

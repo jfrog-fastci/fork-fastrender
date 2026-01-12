@@ -1852,8 +1852,11 @@ fn lower_hir_for(db: &dyn Db, file: FileInput) -> LowerResultWithDiagnostics {
 fn sem_hir_for(db: &dyn Db, file: FileInput) -> sem_ts::HirFile {
   let lowered = lower_hir_for(db, file);
   let parsed = parse_for(db, file);
+  let source = file_text_for(db, file);
   match (parsed.ast.as_ref(), lowered.lowered.as_ref()) {
-    (Some(ast), Some(lowered)) => sem_ts::from_hir_js::lower_to_ts_hir(ast, lowered),
+    (Some(ast), Some(lowered)) => {
+      sem_ts::from_hir_js::lower_to_ts_hir(ast, lowered, source.as_ref())
+    }
     _ => empty_sem_hir(file.file_id(db), lowered.file_kind),
   }
 }
@@ -2041,11 +2044,6 @@ fn ts_semantics_for(db: &dyn Db) -> Arc<TsSemantics> {
     Some(cancelled_flag.as_ref()),
   );
   panic_if_cancelled(db);
-  // `semantic-js` emits binder diagnostics for namespace/value merges (TS2395/TS2434),
-  // but the checker also reports these with tsc-aligned identifier spans. The binder
-  // currently points at whole-declaration spans, which causes duplicate diagnostics
-  // in the difftsc harness. Filter these until the binder spans are fixed.
-  bind_diags.retain(|diag| !matches!(diag.code.as_str(), "TS2395" | "TS2434"));
   diagnostics.append(&mut bind_diags);
   diagnostics.sort();
   diagnostics.dedup();
@@ -3923,7 +3921,7 @@ fn program_diagnostics_for(db: &dyn Db) -> Arc<[Diagnostic]> {
   let semantic_diags = semantics
     .diagnostics
     .iter()
-    .filter(|diag| diag.code.as_str() != "BIND1002" && diag.code.as_str() != "TS2434")
+    .filter(|diag| diag.code.as_str() != "BIND1002")
     .cloned()
     .chain(module_diags.into_iter());
   aggregate_program_diagnostics(parse_diags, lower_diags, semantic_diags, body_diags)

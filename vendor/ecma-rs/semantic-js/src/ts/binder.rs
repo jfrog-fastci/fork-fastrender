@@ -364,6 +364,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     }
 
     sort_diagnostics(&mut self.diagnostics);
+    self.diagnostics.dedup();
     (
       TsProgramSemantics {
         symbols: self.symbols.clone(),
@@ -755,6 +756,8 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     ambient_modules: &[AmbientModule],
     deps: &mut Vec<FileId>,
   ) {
+    // Ambient module declarations implicitly export their top-level declarations. However, an
+    // export assignment (`export = Foo`) defines the module's exports explicitly.
     let implicit_export = implicit_export
       && !exports
         .iter()
@@ -804,6 +807,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         decl.is_global,
         exported_for_decl.clone(),
         decl.span,
+        decl.name_span,
         order,
         Some(decl.def_id),
         None,
@@ -1002,6 +1006,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             } else {
               Exported::No
             },
+            import.local_span,
             import.local_span,
             order,
             import_def_ids.get(&import.local).copied(),
@@ -1817,6 +1822,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       true,
       Exported::No,
       export.span.range,
+      export.span.range,
       export.span.range.start,
       None,
       None,
@@ -1873,6 +1879,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       false,
       false,
       Exported::No,
+      entry.local_span,
       entry.local_span,
       order,
       entry.def_id,
@@ -2794,6 +2801,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
       false,
       Exported::No,
       expr_span.range,
+      expr_span.range,
       expr_span.range.start,
       None,
       Some(AliasTarget::ExportAssignment {
@@ -3149,10 +3157,10 @@ fn emit_merge_mismatch_diagnostics(
             "Individual declarations in merged declaration '{}' must be all exported or all local.",
             name
           ),
-          Span::new(decl_data.file, decl_data.span),
+          Span::new(decl_data.file, decl_data.name_span),
         )
         .with_label(Label::secondary(
-          Span::new(baseline_data.file, baseline_data.span),
+          Span::new(baseline_data.file, baseline_data.name_span),
           "first declaration here",
         )),
       );
@@ -3228,11 +3236,11 @@ fn emit_namespace_ordering_diagnostics(
       diags.push(
         Diagnostic::error(
           "TS2434",
-          "Namespace declaration cannot appear before the class or function it merges with.",
-          Span::new(ns_data.file, ns_data.span),
+          "A namespace declaration cannot be located prior to a class or function with which it is merged.",
+          Span::new(ns_data.file, ns_data.name_span),
         )
         .with_label(Label::secondary(
-          Span::new(target_data.file, target_data.span),
+          Span::new(target_data.file, target_data.name_span),
           "merge target here",
         )),
       );

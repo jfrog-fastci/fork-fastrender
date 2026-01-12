@@ -34,6 +34,7 @@ impl Resolver for StaticResolver {
 }
 
 fn mk_decl(def: u32, name: &str, kind: DeclKind, exported: Exported) -> Decl {
+  let span = span(def);
   Decl {
     def_id: DefId::new(FileId(0), def),
     name: name.to_string(),
@@ -41,7 +42,8 @@ fn mk_decl(def: u32, name: &str, kind: DeclKind, exported: Exported) -> Decl {
     is_ambient: false,
     is_global: false,
     exported,
-    span: span(def),
+    span,
+    name_span: span,
   }
 }
 
@@ -989,7 +991,7 @@ fn mixed_type_only_local_export_from_ast_does_not_leak_value_exports() {
   let file = FileId(230);
   let ast = parse(source).expect("parse");
   let lowered = lower_file(file, HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
   let resolver = StaticResolver::new(HashMap::new());
@@ -1302,12 +1304,12 @@ fn type_query_imports_are_traversed() {
   let src_a = "export interface Foo {}";
   let ast_a = parse(src_a).expect("parse file A");
   let lower_a = lower_file(file_a, HirFileKind::Ts, &ast_a);
-  let hir_a = lower_to_ts_hir(&ast_a, &lower_a);
+  let hir_a = lower_to_ts_hir(&ast_a, &lower_a, src_a);
 
   let src_b = "type Bar = typeof import(\"a\").Foo;";
   let ast_b = parse(src_b).expect("parse file B");
   let lower_b = lower_file(file_b, HirFileKind::Ts, &ast_b);
-  let hir_b = lower_to_ts_hir(&ast_b, &lower_b);
+  let hir_b = lower_to_ts_hir(&ast_b, &lower_b, src_b);
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
     file_a => Arc::new(hir_a),
@@ -1338,7 +1340,7 @@ fn import_type_expressions_are_traversed() {
   let src_a = "export interface Foo {}";
   let ast_a = parse(src_a).expect("parse file A");
   let lower_a = lower_file(file_a, HirFileKind::Ts, &ast_a);
-  let hir_a = lower_to_ts_hir(&ast_a, &lower_a);
+  let hir_a = lower_to_ts_hir(&ast_a, &lower_a, src_a);
 
   let src_b = r#"
     type Bar = import("a").Foo;
@@ -1346,7 +1348,7 @@ fn import_type_expressions_are_traversed() {
   "#;
   let ast_b = parse(src_b).expect("parse file B");
   let lower_b = lower_file(file_b, HirFileKind::Ts, &ast_b);
-  let hir_b = lower_to_ts_hir(&ast_b, &lower_b);
+  let hir_b = lower_to_ts_hir(&ast_b, &lower_b, src_b);
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
     file_a => Arc::new(hir_a),
@@ -2117,7 +2119,7 @@ fn ambient_modules_lower_from_ast() {
   let ast = parse(source).expect("parse");
   let file = FileId(55);
   let lower = lower_file(file, HirFileKind::Dts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lower);
+  let hir = lower_to_ts_hir(&ast, &lower, source);
 
   let pkg_file = FileId(56);
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
@@ -2145,7 +2147,7 @@ fn export_modifier_on_ambient_module_reports_ts2668() {
   let file = FileId(3200);
   let ast = parse(source).expect("parse");
   let lowered = lower_file(file, HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
  
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
   let resolver = StaticResolver::new(HashMap::new());
@@ -2181,7 +2183,7 @@ fn ambient_module_in_dts_script_does_not_report_ts2395_for_namespace_merge() {
   let file = FileId(3000);
   let ast = parse(source).expect("parse");
   let lowered = lower_file(file, HirFileKind::Dts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! { file => Arc::new(hir) };
   let resolver = StaticResolver::new(HashMap::new());
@@ -2198,7 +2200,7 @@ fn module_augmentation_implicitly_exports_unexported_decls() {
   let src_a = "export {};";
   let ast_a = parse(src_a).expect("parse");
   let lowered_a = lower_file(file_a, HirFileKind::Dts, &ast_a);
-  let hir_a = lower_to_ts_hir(&ast_a, &lowered_a);
+  let hir_a = lower_to_ts_hir(&ast_a, &lowered_a, src_a);
 
   let file_aug = FileId(3101);
   let src_aug = r#"
@@ -2211,7 +2213,7 @@ fn module_augmentation_implicitly_exports_unexported_decls() {
   "#;
   let ast_aug = parse(src_aug).expect("parse");
   let lowered_aug = lower_file(file_aug, HirFileKind::Dts, &ast_aug);
-  let hir_aug = lower_to_ts_hir(&ast_aug, &lowered_aug);
+  let hir_aug = lower_to_ts_hir(&ast_aug, &lowered_aug, src_aug);
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
     file_a => Arc::new(hir_a),
@@ -2725,6 +2727,7 @@ fn global_symbol_table_is_deterministic_across_root_orders() {
   let file_b = FileId(4201);
 
   let mut a = HirFile::script(file_a);
+  let span_a = span(0);
   a.decls.push(Decl {
     def_id: DefId::new(file_a, 0),
     name: "Foo".to_string(),
@@ -2732,10 +2735,12 @@ fn global_symbol_table_is_deterministic_across_root_orders() {
     is_ambient: false,
     is_global: false,
     exported: Exported::No,
-    span: span(0),
+    span: span_a,
+    name_span: span_a,
   });
 
   let mut b = HirFile::script(file_b);
+  let span_b = span(1);
   b.decls.push(Decl {
     def_id: DefId::new(file_b, 0),
     name: "Foo".to_string(),
@@ -2743,7 +2748,8 @@ fn global_symbol_table_is_deterministic_across_root_orders() {
     is_ambient: false,
     is_global: false,
     exported: Exported::No,
-    span: span(1),
+    span: span_b,
+    name_span: span_b,
   });
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
@@ -2883,6 +2889,73 @@ fn duplicate_import_binding_reports_previous_span() {
   assert_eq!(label.span.file, file_main);
   assert_eq!(label.span.range, first_local_span);
   assert!(!label.is_primary);
+}
+
+#[test]
+fn merge_mismatch_diagnostic_ts2395_uses_identifier_spans() {
+  // https://github.com/microsoft/TypeScript/blob/main/tests/cases/compiler/namespaceNotMergedWithFunctionDefaultExport.ts
+  let source = "export default function foo() {}\nnamespace foo { export const x = 1; }\n";
+  let file = FileId(9000);
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
+
+  let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  let ts2395: Vec<_> = diags.iter().filter(|d| d.code == "TS2395").collect();
+  assert_eq!(ts2395.len(), 1, "expected one TS2395 diagnostic, got {diags:?}");
+  let diag = ts2395[0];
+
+  let occs = positions(source, "foo");
+  assert_eq!(
+    occs.len(),
+    2,
+    "expected two `foo` occurrences (function + namespace), got {occs:?}"
+  );
+  let len = "foo".len() as u32;
+  let function_name = TextRange::new(occs[0], occs[0] + len);
+  let namespace_name = TextRange::new(occs[1], occs[1] + len);
+
+  assert_eq!(diag.primary.file, file);
+  assert_eq!(diag.primary.range, namespace_name);
+  assert_eq!(diag.labels.len(), 1);
+  assert_eq!(diag.labels[0].span.file, file);
+  assert_eq!(diag.labels[0].span.range, function_name);
+}
+
+#[test]
+fn namespace_ordering_diagnostic_ts2434_uses_identifier_spans() {
+  let source = "namespace foo { export const x = 1; }\nfunction foo() {}\n";
+  let file = FileId(9001);
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
+
+  let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| files.get(&f).unwrap().clone());
+
+  let ts2434: Vec<_> = diags.iter().filter(|d| d.code == "TS2434").collect();
+  assert_eq!(ts2434.len(), 1, "expected one TS2434 diagnostic, got {diags:?}");
+  let diag = ts2434[0];
+
+  let occs = positions(source, "foo");
+  assert_eq!(
+    occs.len(),
+    2,
+    "expected two `foo` occurrences (namespace + function), got {occs:?}"
+  );
+  let len = "foo".len() as u32;
+  let namespace_name = TextRange::new(occs[0], occs[0] + len);
+  let function_name = TextRange::new(occs[1], occs[1] + len);
+
+  assert_eq!(diag.primary.file, file);
+  assert_eq!(diag.primary.range, namespace_name);
+  assert_eq!(diag.labels.len(), 1);
+  assert_eq!(diag.labels[0].span.file, file);
+  assert_eq!(diag.labels[0].span.range, function_name);
 }
 
 #[test]
@@ -3358,7 +3431,7 @@ fn export_import_equals_entity_name_is_not_treated_as_script() {
   let source = "export import Foo = Bar;";
   let ast = parse(source).expect("parse");
   let lowered = lower_file(file, HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
   assert_eq!(hir.module_kind, ModuleKind::Module);
 
   let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
@@ -3906,7 +3979,7 @@ fn module_augmentation_in_ts_module_reports_ts2664_when_target_missing() {
   let file = FileId(5000);
   let ast = parse(source).expect("parse");
   let lowered = lower_file(file, HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
   let module_name_span = hir
     .ambient_modules
     .first()
@@ -3959,7 +4032,7 @@ fn module_augmentation_in_dts_module_allows_new_ambient_module_without_ts2664() 
   let file = FileId(5001);
   let ast = parse(source).expect("parse");
   let lowered = lower_file(file, HirFileKind::Dts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
   let resolver = StaticResolver::new(HashMap::new());
@@ -3985,7 +4058,7 @@ fn relative_module_augmentation_reports_ts2664_when_target_missing() {
   let file = FileId(5002);
   let ast = parse(source).expect("parse");
   let lowered = lower_file(file, HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
   let module_name_span = hir
     .ambient_modules
     .first()
@@ -4115,7 +4188,7 @@ fn module_augmentation_export_equals_value_reports_ts2671() {
   "#;
   let ast_1 = parse(src_1).expect("parse file1");
   let lower_1 = lower_file(file_1, HirFileKind::Ts, &ast_1);
-  let hir_1 = lower_to_ts_hir(&ast_1, &lower_1);
+  let hir_1 = lower_to_ts_hir(&ast_1, &lower_1, src_1);
 
   let src_2 = r#"
     import x = require("./file1");
@@ -4125,7 +4198,7 @@ fn module_augmentation_export_equals_value_reports_ts2671() {
   "#;
   let ast_2 = parse(src_2).expect("parse file2");
   let lower_2 = lower_file(file_2, HirFileKind::Ts, &ast_2);
-  let hir_2 = lower_to_ts_hir(&ast_2, &lower_2);
+  let hir_2 = lower_to_ts_hir(&ast_2, &lower_2, src_2);
 
   let module_name_span = hir_2
     .ambient_modules
@@ -4172,7 +4245,7 @@ fn module_augmentation_export_equals_namespace_is_allowed() {
   "#;
   let ast_1 = parse(src_1).expect("parse file1");
   let lower_1 = lower_file(file_1, HirFileKind::Ts, &ast_1);
-  let hir_1 = lower_to_ts_hir(&ast_1, &lower_1);
+  let hir_1 = lower_to_ts_hir(&ast_1, &lower_1, src_1);
 
   let src_2 = r#"
     import x = require("./file1");
@@ -4182,7 +4255,7 @@ fn module_augmentation_export_equals_namespace_is_allowed() {
   "#;
   let ast_2 = parse(src_2).expect("parse file2");
   let lower_2 = lower_file(file_2, HirFileKind::Ts, &ast_2);
-  let hir_2 = lower_to_ts_hir(&ast_2, &lower_2);
+  let hir_2 = lower_to_ts_hir(&ast_2, &lower_2, src_2);
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
     file_1 => Arc::new(hir_1),
@@ -4314,7 +4387,7 @@ fn lower_ambient_module_from_dts() {
   let source = r#"declare module "pkg" { interface Foo {} }"#;
   let ast = parse(source).expect("parse");
   let lowered = lower_file(FileId(200), HirFileKind::Dts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   assert_eq!(hir.module_kind, ModuleKind::Script);
   assert!(
@@ -4352,7 +4425,7 @@ fn lower_export_declare_module_records_export_modifier_span() {
   let source = r#"export declare module "M" {}"#;
   let ast = parse(source).expect("parse");
   let lowered = lower_file(FileId(206), HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   assert_eq!(hir.ambient_modules.len(), 1);
   let ambient = &hir.ambient_modules[0];
@@ -4374,7 +4447,7 @@ fn nested_module_syntax_stays_in_ambient_module() {
   "#;
   let ast = parse(source).expect("parse");
   let lowered = lower_file(FileId(201), HirFileKind::Dts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   assert_eq!(hir.module_kind, ModuleKind::Script);
   assert!(
@@ -4404,7 +4477,7 @@ fn lower_export_import_equals_entity_name_is_module() {
   let source = "export import Foo = Bar;";
   let ast = parse(source).expect("parse");
   let lowered = lower_file(FileId(202), HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
   assert_eq!(hir.module_kind, ModuleKind::Module);
 }
 
@@ -4413,7 +4486,7 @@ fn lower_export_default_function_is_module() {
   let source = "export default function f() {}";
   let ast = parse(source).expect("parse");
   let lowered = lower_file(FileId(203), HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
   assert_eq!(hir.module_kind, ModuleKind::Module);
 }
 
@@ -4422,7 +4495,7 @@ fn lower_export_default_class_is_module() {
   let source = "export default class C {}";
   let ast = parse(source).expect("parse");
   let lowered = lower_file(FileId(204), HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
   assert_eq!(hir.module_kind, ModuleKind::Module);
 }
 
@@ -4431,7 +4504,7 @@ fn lower_ambient_module_does_not_make_ts_file_module() {
   let source = r#"declare module "pkg" {}"#;
   let ast = parse(source).expect("parse");
   let lowered = lower_file(FileId(205), HirFileKind::Ts, &ast);
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
   assert_eq!(hir.module_kind, ModuleKind::Script);
 }
 
@@ -4522,18 +4595,14 @@ fn locals_imports_use_expected_namespaces() {
 
 #[test]
 fn module_scope_locals_map_to_program_symbols() {
-  let ast_a = parse(
-    r#"
+  let src_a = r#"
     export const Foo = 1;
-  "#,
-  )
-  .unwrap();
-  let mut ast_b = parse(
-    r#"
+  "#;
+  let ast_a = parse(src_a).unwrap();
+  let src_b = r#"
     import { Foo } from "./a";
-  "#,
-  )
-  .unwrap();
+  "#;
+  let mut ast_b = parse(src_b).unwrap();
   let file_a = FileId(99);
   let file_b = FileId(100);
 
@@ -4542,8 +4611,8 @@ fn module_scope_locals_map_to_program_symbols() {
   let locals_b = bind_ts_locals(&mut ast_b, file_b);
 
   let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
-    file_a => Arc::new(lower_to_ts_hir(&ast_a, &lower_a)),
-    file_b => Arc::new(lower_to_ts_hir(&ast_b, &lower_b)),
+    file_a => Arc::new(lower_to_ts_hir(&ast_a, &lower_a, src_a)),
+    file_b => Arc::new(lower_to_ts_hir(&ast_b, &lower_b, src_b)),
   };
   let resolver = StaticResolver::new(maplit::hashmap! {
     "./a".to_string() => file_a,

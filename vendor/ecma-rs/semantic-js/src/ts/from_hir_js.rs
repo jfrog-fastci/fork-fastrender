@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 /// This adapter preserves `DefId`s from `hir-js` so downstream semantics and type
 /// checking can correlate binder declarations with lowered HIR data without
 /// renumbering.
-pub fn lower_to_ts_hir(ast: &Node<TopLevel>, lower: &LowerResult) -> HirFile {
+pub fn lower_to_ts_hir(ast: &Node<TopLevel>, lower: &LowerResult, source: &str) -> HirFile {
   let file_id = lower.hir.file;
   let item_ids: HashSet<DefId> = lower.hir.items.iter().copied().collect();
 
@@ -71,9 +71,10 @@ pub fn lower_to_ts_hir(ast: &Node<TopLevel>, lower: &LowerResult) -> HirFile {
     Some(&item_ids),
     &import_specifier_span,
     &export_specifier_span,
+    source,
   );
 
-  let finalized = finalize_block(block, lower, module_kind);
+  let finalized = finalize_block(block, lower, module_kind, source);
   let type_imports = collect_type_imports(lower);
 
   HirFile {
@@ -154,6 +155,7 @@ fn lower_block(
   allowed_defs: Option<&HashSet<DefId>>,
   import_specifier_span: &impl Fn(TextRange) -> Option<TextRange>,
   export_specifier_span: &impl Fn(TextRange) -> Option<TextRange>,
+  source: &str,
 ) -> BlockResult {
   let targets = collect_def_targets(stmts);
   let local_defs = resolve_def_targets(&targets, lower, allowed_defs);
@@ -513,8 +515,9 @@ fn lower_block(
             None,
             import_specifier_span,
             export_specifier_span,
+            source,
           );
-          let nested = finalize_block(nested, lower, outer_module_kind);
+          let nested = finalize_block(nested, lower, outer_module_kind, source);
           result.ambient_modules.push(AmbientModule {
             name: spec.clone(),
             name_span,
@@ -538,6 +541,7 @@ fn lower_block(
           allowed_defs,
           import_specifier_span,
           export_specifier_span,
+          source,
         );
         result.local_defs.extend(nested.local_defs);
         result.exported.extend(nested.exported);
@@ -596,6 +600,7 @@ fn finalize_block(
   block: BlockResult,
   lower: &LowerResult,
   _module_kind: ModuleKind,
+  source: &str,
 ) -> LoweredBlock {
   let exported = block.exported;
 
@@ -627,6 +632,7 @@ fn finalize_block(
         .unwrap_or("<anon>")
         .to_string();
       let exported = exported.get(&def_id).cloned().unwrap_or(Exported::No);
+      let name_span = find_name_span(source, &name, def.span);
       decls.push(Decl {
         def_id,
         name,
@@ -635,6 +641,7 @@ fn finalize_block(
         is_global: def.in_global,
         exported,
         span: def.span,
+        name_span,
       });
     }
   }
@@ -647,6 +654,39 @@ fn finalize_block(
     export_as_namespace: block.export_as_namespace,
     ambient_modules: block.ambient_modules,
   }
+}
+
+fn is_ident_char(byte: u8) -> bool {
+  byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
+}
+
+fn find_name_span(source: &str, name: &str, range: TextRange) -> TextRange {
+  if name.is_empty() || name == "<anon>" {
+    return range;
+  }
+
+  let bytes = source.as_bytes();
+  let start = (range.start as usize).min(bytes.len());
+  let end = (range.end as usize).min(bytes.len());
+  let slice = &source[start..end];
+  let mut offset = 0usize;
+  while offset <= slice.len() {
+    let Some(pos) = slice[offset..].find(name) else {
+      break;
+    };
+    let abs_start = start + offset + pos;
+    let abs_end = abs_start + name.len();
+    if abs_end > bytes.len() {
+      break;
+    }
+    let before_ok = abs_start == 0 || !is_ident_char(bytes[abs_start - 1]);
+    let after_ok = abs_end == bytes.len() || !is_ident_char(bytes[abs_end]);
+    if before_ok && after_ok {
+      return TextRange::new(abs_start as u32, abs_end as u32);
+    }
+    offset = offset.saturating_add(pos.saturating_add(name.len().max(1)));
+  }
+  range
 }
 
 #[derive(Clone, Copy)]

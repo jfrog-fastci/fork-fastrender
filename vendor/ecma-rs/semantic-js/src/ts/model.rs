@@ -184,6 +184,12 @@ pub struct Decl {
   pub is_global: bool,
   pub exported: Exported,
   pub span: TextRange,
+  /// Span of the identifier token for this declaration.
+  ///
+  /// This is separate from [`Decl::span`], which may cover the entire
+  /// declaration. TypeScript binder diagnostics generally target the identifier
+  /// span.
+  pub name_span: TextRange,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -374,6 +380,7 @@ pub struct DeclData {
   pub is_global: bool,
   pub exported: Exported,
   pub span: TextRange,
+  pub name_span: TextRange,
   pub order: u32,
   /// Alias metadata for declarations that create a local binding referencing
   /// another entity (e.g. `import Foo = Bar.Baz`).
@@ -655,6 +662,7 @@ impl SymbolTable {
     is_global: bool,
     exported: Exported,
     span: TextRange,
+    name_span: TextRange,
     order: u32,
     def_id: Option<DefId>,
     alias: Option<AliasTarget>,
@@ -679,6 +687,11 @@ impl SymbolTable {
         id
       );
       debug_assert_eq!(existing.span, span, "decl span mismatch for {:?}", id);
+      debug_assert_eq!(
+        existing.name_span, name_span,
+        "decl name span mismatch for {:?}",
+        id
+      );
     } else {
       self.decls.insert(
         id,
@@ -693,6 +706,7 @@ impl SymbolTable {
           is_global,
           exported,
           span,
+          name_span,
           order,
           alias,
         },

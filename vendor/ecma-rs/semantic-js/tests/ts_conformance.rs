@@ -270,7 +270,7 @@ impl TsConformanceCase {
       )
       .unwrap_or_else(|e| panic!("failed to parse {name:?}: {e:?}"));
       let lower = lower_file(file_id, hir_kind_for_filename(&name), &ast);
-      let ts_hir = lower_to_ts_hir(&ast, &lower);
+      let ts_hir = lower_to_ts_hir(&ast, &lower, file_source.as_str());
       hir_by_id.insert(file_id, Arc::new(ts_hir));
     }
 

@@ -16,34 +16,6 @@ impl ProgramState {
 
   pub(in super::super) fn merge_namespace_value_types(&mut self) -> Result<(), FatalError> {
     let store = Arc::clone(&self.store);
-    fn is_ident_char(byte: u8) -> bool {
-      byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
-    }
-
-    fn find_name_span(source: &str, name: &str, range: TextRange) -> TextRange {
-      let bytes = source.as_bytes();
-      let start = (range.start as usize).min(bytes.len());
-      let end = (range.end as usize).min(bytes.len());
-      let slice = &source[start..end];
-      let mut offset = 0usize;
-      while offset <= slice.len() {
-        let Some(pos) = slice[offset..].find(name) else {
-          break;
-        };
-        let abs_start = start + offset + pos;
-        let abs_end = abs_start + name.len();
-        if abs_end > bytes.len() {
-          break;
-        }
-        let before_ok = abs_start == 0 || !is_ident_char(bytes[abs_start - 1]);
-        let after_ok = abs_end == bytes.len() || !is_ident_char(bytes[abs_end]);
-        if before_ok && after_ok {
-          return TextRange::new(abs_start as u32, abs_end as u32);
-        }
-        offset = offset.saturating_add(pos.saturating_add(name.len().max(1)));
-      }
-      range
-    }
 
     #[derive(Default)]
     struct MergeGroup {
@@ -76,7 +48,7 @@ impl ProgramState {
       };
 
       // `namespace_object_types` is keyed by `(file, name)`, but declaration
-      // merging is scoped. Emit diagnostics and merge types for both:
+      // merging is scoped. Merge types for both:
       // - top-level declarations (parent: None)
       // - declarations inside top-level ambient modules (`declare module "x" { ... }`)
       //
@@ -127,7 +99,6 @@ impl ProgramState {
         }
       }
 
-      let file_text = db::file_text(&self.typecheck_db, file);
       let mut parents: Vec<_> = groups.keys().copied().collect();
       parents.sort_by_key(|parent| match parent {
         None => (0u8, 0u64),
@@ -150,33 +121,15 @@ impl ProgramState {
           continue;
         };
 
-        let namespace_name_span = find_name_span(file_text.as_ref(), &name, ns_span);
-        let value_name_span = find_name_span(file_text.as_ref(), &name, val_span);
-
         let mut has_error = false;
         if ns_export != val_export {
+          // Match tsc: TS2395 is reported by the binder.
           has_error = true;
-          self.push_program_diagnostic(codes::MERGED_DECLARATIONS_EXPORT_MISMATCH.error(
-            format!(
-              "Individual declarations in merged declaration '{name}' must be all exported or all local."
-            ),
-            Span::new(file, namespace_name_span),
-          ));
-          self.push_program_diagnostic(codes::MERGED_DECLARATIONS_EXPORT_MISMATCH.error(
-            format!(
-              "Individual declarations in merged declaration '{name}' must be all exported or all local."
-            ),
-            Span::new(file, value_name_span),
-          ));
         }
 
         if ns_span.start < val_span.start {
-          // Match tsc: TS2434 still reports, but the merge continues so namespace
-          // members remain visible on the merged value.
-          self.push_program_diagnostic(codes::NAMESPACE_BEFORE_MERGE_TARGET.error(
-            "A namespace declaration cannot be located prior to a class or function with which it is merged.",
-            Span::new(file, namespace_name_span),
-          ));
+          // Match tsc: TS2434 is reported by the binder, but the merge continues so
+          // namespace members remain visible on the merged value.
         }
 
         if has_error {

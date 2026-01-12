@@ -370,6 +370,7 @@ fn gen_decl(
       gen_decl_kind(cursor)
     }
   });
+  let span = spans.next_range(cursor);
   ts::Decl {
     def_id: ts::DefId::new(file_id, cursor.next_u32()),
     name: name_override.unwrap_or_else(|| maybe_pick_name(cursor, names, "d")),
@@ -377,7 +378,8 @@ fn gen_decl(
     is_ambient: cursor.next_bool(),
     is_global: cursor.next_bool(),
     exported: exported_override.unwrap_or_else(|| gen_exported(cursor)),
-    span: spans.next_range(cursor),
+    span,
+    name_span: span,
   }
 }
 

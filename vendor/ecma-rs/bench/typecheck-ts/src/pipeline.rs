@@ -220,7 +220,7 @@ pub fn bind_module_graph(graph: &ModuleGraphFixture) -> BindSummary {
     resolver.insert(file_id, fixture.name.to_string());
     let parsed = parse_only(fixture).expect("fixture should parse for binding");
     let lowered = lower_to_hir(file_id, hir_kind(fixture.kind), &parsed);
-    let sem_hir = lower_to_ts_hir(&parsed, &lowered);
+    let sem_hir = lower_to_ts_hir(&parsed, &lowered, fixture.source);
     files.insert(file_id, Arc::new(sem_hir));
   }
 

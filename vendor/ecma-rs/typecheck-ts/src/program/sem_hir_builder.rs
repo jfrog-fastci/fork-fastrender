@@ -57,6 +57,7 @@ impl SemHirBuilder {
       is_global: false,
       exported,
       span,
+      name_span: span,
     });
   }
 

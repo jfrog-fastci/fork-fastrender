@@ -26,7 +26,7 @@ fn declare_global_from_dts_is_available_globally() {
   let ast = parse(source).expect("parse");
   let (lowered, diags) = lower_file_with_diagnostics(HirFileId(0), HirFileKind::Dts, &ast);
   assert!(diags.is_empty());
-  let hir = lower_to_ts_hir(&ast, &lowered);
+  let hir = lower_to_ts_hir(&ast, &lowered, source);
 
   let files: HashMap<FileId, Arc<semantic_js::ts::HirFile>> =
     HashMap::from([(FileId(0), Arc::new(hir))]);
