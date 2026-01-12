@@ -103,7 +103,7 @@ fn conformance_doc_links_to_real_code_and_tests() {
     "tests/text/line_break_test.rs",
     "tests/text/hyphenation_test.rs",
     "tests/text/justify_test.rs",
-    "tests/animation_tests.rs",
+    "tests/animation/mod.rs",
     "tests/bin/fetch_and_render_animation_time_test.rs",
     "tests/accessibility/test.rs",
     "tests/accessibility/name_computation.rs",
