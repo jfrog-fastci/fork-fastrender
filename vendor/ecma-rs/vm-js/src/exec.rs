@@ -6012,7 +6012,14 @@ impl<'a> Evaluator<'a> {
     let mut in_class = false;
     let mut escaped = false;
     let mut end_pat: Option<usize> = None;
+    // Budget scanning for the closing `/` so enormous regexp literals can't monopolize CPU.
+    const TICK_EVERY: usize = 1024;
+    let mut steps = 0usize;
     for (i, ch) in literal.char_indices().skip(1) {
+      if steps % TICK_EVERY == 0 {
+        self.vm.tick()?;
+      }
+      steps += 1;
       if escaped {
         escaped = false;
         continue;
