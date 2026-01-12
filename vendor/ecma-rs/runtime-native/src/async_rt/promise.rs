@@ -693,7 +693,8 @@ pub(crate) fn cancel_all_pending_reactions() {
     }
 
     let reactions = unsafe { &(*promise).waiters };
-    let mut head = reactions.swap(0, Ordering::AcqRel) as *mut PromiseReactionNode;
+    let head_val = reactions.swap(0, Ordering::AcqRel);
+    let mut head = decode_waiters_ptr(head_val);
     while !head.is_null() {
       let next = unsafe { (*head).next };
       unsafe {
@@ -1079,7 +1080,8 @@ pub(crate) fn promise_drop(p: PromiseRef) {
   // These would otherwise be leaked if the promise never settles (or if the embedding drops the
   // promise early). We treat promise drop as a teardown operation, so callbacks are *not* executed.
   let reactions = unsafe { &(*ptr).header.waiters };
-  let mut head = reactions.swap(0, Ordering::AcqRel) as *mut PromiseReactionNode;
+  let head_val = reactions.swap(0, Ordering::AcqRel);
+  let mut head = decode_waiters_ptr(head_val);
   while !head.is_null() {
     let next = unsafe { (*head).next };
     unsafe {
