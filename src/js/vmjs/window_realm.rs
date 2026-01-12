@@ -2403,62 +2403,8 @@ fn console_label_for_map_lookup<T>(map: &HashMap<String, T>, label: String) -> S
   label
 }
 
-fn console_format_value(scope: &mut Scope<'_>, value: Value) -> String {
-  crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), &[value])
-}
-
 fn console_format_assert_data(scope: &mut Scope<'_>, data: &[Value]) -> String {
-  if data.is_empty() {
-    return String::new();
-  }
-
-  let Value::String(fmt_s) = data[0] else {
-    return crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), data);
-  };
-
-  // `format_console_arguments_limited` does not apply substitution (`%d`, `%s`, ...), but real-world
-  // usage of `console.assert` often relies on it. Implement a small, deterministic subset here.
-  let fmt = match scope.heap().get_string(fmt_s) {
-    Ok(js) => js.to_utf8_lossy(),
-    Err(_) => String::new(),
-  };
-
-  let mut out = String::new();
-  let mut arg_idx = 1usize;
-  let mut chars = fmt.chars();
-  while let Some(ch) = chars.next() {
-    if ch != '%' {
-      out.push(ch);
-      continue;
-    }
-
-    match chars.next() {
-      Some('%') => out.push('%'),
-      Some(spec @ ('s' | 'd' | 'i' | 'f' | 'o' | 'O' | 'c')) => {
-        if let Some(value) = data.get(arg_idx).copied() {
-          out.push_str(&console_format_value(scope, value));
-          arg_idx += 1;
-        } else {
-          out.push('%');
-          out.push(spec);
-        }
-      }
-      Some(other) => {
-        out.push('%');
-        out.push(other);
-      }
-      None => out.push('%'),
-    }
-  }
-
-  for value in data.iter().copied().skip(arg_idx) {
-    if !out.is_empty() {
-      out.push(' ');
-    }
-    out.push_str(&console_format_value(scope, value));
-  }
-
-  out
+  crate::js::vm_error_format::format_console_arguments_limited(scope.heap_mut(), data)
 }
 
 fn console_assert_native(
