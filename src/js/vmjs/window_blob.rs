@@ -861,6 +861,7 @@ mod tests {
   run("Blob", () => new Blob([buf]));
   run("TextDecoder", () => new TextDecoder().decode(buf));
   run("Request", () => new Request("https://example.com", { method: "POST", body: buf }));
+  run("CryptoDigest", () => crypto.subtle.digest("SHA-256", buf));
 
   return results.join(",");
 })()
@@ -873,6 +874,15 @@ mod tests {
         if name != "skip" {
           assert_ne!(name, "transfer did not detach");
           assert!(name.contains("Blob:"), "expected Blob result, got {name:?}");
+          assert!(
+            name.contains("TextDecoder:"),
+            "expected TextDecoder result, got {name:?}"
+          );
+          assert!(name.contains("Request:"), "expected Request result, got {name:?}");
+          assert!(
+            name.contains("CryptoDigest:"),
+            "expected CryptoDigest result, got {name:?}"
+          );
           // Allow any JS-catchable error; the invariant is that detached buffers must not abort the
           // VM with a non-catchable `InvariantViolation`.
           assert!(!name.is_empty());
