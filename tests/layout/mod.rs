@@ -19,6 +19,7 @@ mod padding_offsets;
 mod parallel_stats;
 mod profile_diagnostics;
 mod render_wrap;
+mod text_item_cache;
 mod text_wrap_pretty_does_not_rebalance;
 
 mod test_locks;

@@ -984,6 +984,43 @@ impl InlineFormattingContext {
     INLINE_FC_WITH_FACTORY_CALLS.with(|calls| calls.set(0));
   }
 
+  #[cfg(any(test, debug_assertions))]
+  #[doc(hidden)]
+  pub fn debug_enable_text_item_cache_diagnostics() {
+    enable_text_inline_item_cache_diagnostics();
+  }
+
+  #[cfg(any(test, debug_assertions))]
+  #[doc(hidden)]
+  pub fn debug_clear_text_item_cache_current_thread() {
+    TEXT_INLINE_ITEM_CACHE_TL.with(|cache| cache.borrow_mut().clear());
+    TEXT_INLINE_ITEM_CACHE_TL_EPOCH.with(|epoch| epoch.set(0));
+  }
+
+  #[cfg(any(test, debug_assertions))]
+  #[doc(hidden)]
+  pub fn debug_text_item_cache_stats() -> (usize, usize, usize, usize) {
+    if !text_inline_item_cache_diagnostics_enabled() {
+      return (0, 0, 0, 0);
+    }
+    (
+      TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_LOOKUPS.with(|c| c.get()),
+      TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_HITS.with(|c| c.get()),
+      TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_MISSES.with(|c| c.get()),
+      TEXT_INLINE_ITEM_CACHE_DIAGNOSTICS_STORES.with(|c| c.get()),
+    )
+  }
+
+  #[cfg(any(test, debug_assertions))]
+  #[doc(hidden)]
+  pub fn debug_with_style_override<R>(
+    node_id: usize,
+    style: Arc<ComputedStyle>,
+    f: impl FnOnce() -> R,
+  ) -> R {
+    crate::layout::style_override::with_style_override(node_id, style, f)
+  }
+
   fn hyphenator_for(&self, language: &str) -> Option<Hyphenator> {
     let language = language.trim();
     if language.is_empty() {
@@ -1717,17 +1754,16 @@ impl InlineFormattingContext {
           }
           MarkerContent::Image(replaced_box) => {
             self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
+            let style_override = crate::layout::style_override::style_override_for(child.id);
+            let style_arc = style_override.unwrap_or_else(|| child.style.clone());
+            let style = &style_arc;
             let mut item =
               self.create_replaced_item(child, replaced_box, available_width, available_height)?;
-            let gap = marker_inline_gap(
-              &child.style,
-              &self.font_context,
-              self.viewport_size,
-              root_font_metrics,
-            );
-            item = item.as_marker(gap, child.style.list_style_position, child.style.direction);
+            let gap =
+              marker_inline_gap(style, &self.font_context, self.viewport_size, root_font_metrics);
+            item = item.as_marker(gap, style.list_style_position, style.direction);
             current_items.push(InlineItem::Replaced(item));
-            if matches!(child.style.list_style_position, ListStylePosition::Outside) {
+            if matches!(style.list_style_position, ListStylePosition::Outside) {
               whitespace.note_ignorable();
             } else {
               whitespace.note_content();
