@@ -29356,6 +29356,50 @@ mod tests {
   }
 
   #[test]
+  fn event_handler_survives_wrapper_gc() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Create an element + handler without keeping the wrapper alive in JS.
+    let el_value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+         globalThis.__clicked = '';\n\
+         const el = document.createElement('div');\n\
+         el.id = 't';\n\
+         el.onclick = function (_e) { globalThis.__clicked = this.id; };\n\
+         document.body.appendChild(el);\n\
+         return el;\n\
+       })()",
+    )?;
+    let el_obj = match el_value {
+      Value::Object(obj) => obj,
+      other => panic!("expected element object, got {other:?}"),
+    };
+    let weak = vm_js::WeakGcObject::new(el_obj);
+
+    // The wrapper cache is weak; ensure the element wrapper can be collected.
+    realm.heap_mut().collect_garbage();
+    assert!(
+      weak.upgrade(realm.heap()).is_none(),
+      "expected element wrapper to be collectable"
+    );
+
+    // Re-wrapping the same node should still observe the previously configured handler.
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "document.getElementById('t').dispatchEvent(new Event('click'));",
+    )?;
+    let clicked = realm.exec_script("__clicked")?;
+    assert_eq!(get_string(realm.heap(), clicked), "t");
+    Ok(())
+  }
+
+  #[test]
   fn event_return_value_false_prevents_default_for_cancelable_event() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     assert_eq!(
