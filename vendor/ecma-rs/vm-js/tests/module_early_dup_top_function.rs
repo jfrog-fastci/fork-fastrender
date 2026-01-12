@@ -12,6 +12,8 @@ fn assert_module_syntax_error(source: &str) {
 // - language/module-code/early-dup-top-function-generator.js
 // - language/module-code/early-dup-top-function-async.js
 // - language/module-code/early-dup-top-function-async-generator.js
+// - language/module-code/parse-err-hoist-lex-fun.js
+// - language/module-code/parse-err-hoist-lex-gen.js
 #[test]
 fn rejects_duplicate_top_level_function_decls() {
   assert_module_syntax_error(
@@ -48,6 +50,26 @@ fn rejects_duplicate_top_level_async_generator_function_decls() {
     r#"
       function x() {}
       async function* x() {}
+    "#,
+  );
+}
+
+#[test]
+fn rejects_var_and_top_level_function_name_collision() {
+  assert_module_syntax_error(
+    r#"
+      var f;
+      function f() {}
+    "#,
+  );
+}
+
+#[test]
+fn rejects_var_and_top_level_generator_function_name_collision() {
+  assert_module_syntax_error(
+    r#"
+      var g;
+      function* g() {}
     "#,
   );
 }
