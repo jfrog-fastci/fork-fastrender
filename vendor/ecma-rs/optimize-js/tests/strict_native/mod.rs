@@ -51,7 +51,7 @@ fn rejects_object_literal_with_dynamic_computed_key() {
 fn rejects_object_literal_with_proto_key() {
   let src = r#"
     const obj = { __proto__: {} };
-    obj;
+    throw obj;
   "#;
 
   let err = optimize_js::compile_source_typed_strict_native(
@@ -380,6 +380,29 @@ fn rejects_function_via_reflect_construct() {
     StrictNativeOpts::default(),
   )
   .expect_err("Reflect.construct(Function, ...) should be rejected");
+
+  assert!(
+    err
+      .iter()
+      .any(|d| d.code == "OPTN0005" && d.message.contains("constructing `Function`")),
+    "expected OPTN0005 diagnostic mentioning constructing Function, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_new_function_constructor() {
+  let src = r#"
+    const f = new Function("return 1");
+    f;
+  "#;
+
+  let err = optimize_js::compile_source_typed_strict_native(
+    src,
+    TopLevelMode::Module,
+    false,
+    StrictNativeOpts::default(),
+  )
+  .expect_err("new Function should be rejected");
 
   assert!(
     err

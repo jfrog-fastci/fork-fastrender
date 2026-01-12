@@ -178,7 +178,7 @@ fn compute_value_states(cfg: &Cfg) -> HashMap<u32, ValueState> {
 }
 
 fn compute_known_arrays(cfg: &Cfg) -> HashMap<u32, Vec<Arg>> {
-  // Map SSA vars to the arguments used to construct an internal `__optimize_js_array(...)` marker.
+  // Map SSA vars to the elements of an array literal.
   //
   // This is *not* a general constant evaluator. It exists to support strict-native validation of
   // indirect call patterns like:
@@ -186,8 +186,9 @@ fn compute_known_arrays(cfg: &Cfg) -> HashMap<u32, Vec<Arg>> {
   // - `Reflect.construct.apply(Reflect, [Function, ["return 1"]])`
   //
   // In these cases the banned builtin (`eval`/`Function`) is an element of an array literal. We can
-  // conservatively recover the element list by recognizing the optimizer's internal array marker.
-  const INTERNAL_ARRAY_CALLEE: &str = "__optimize_js_array";
+  // conservatively recover the element list by recognizing `InstTyp::ArrayLit` (preferred) and
+  // the legacy internal marker call form (`Call(__optimize_js_array, ...)`).
+  const LEGACY_INTERNAL_ARRAY_CALLEE: &str = "__optimize_js_array";
 
   // Collect SSA defs in deterministic order.
   let labels = cfg.graph.labels_sorted();
@@ -202,18 +203,28 @@ fn compute_known_arrays(cfg: &Cfg) -> HashMap<u32, Vec<Arg>> {
 
   let mut arrays: HashMap<u32, Vec<Arg>> = HashMap::new();
   for (tgt, inst) in defs.iter().copied() {
-    if inst.t != InstTyp::Call || inst.spreads.len() != 0 {
-      continue;
+    match inst.t {
+      InstTyp::ArrayLit => {
+        if inst.tgts.len() != 1 || !inst.spreads.is_empty() {
+          continue;
+        }
+        arrays.insert(tgt, inst.args.clone());
+      }
+      InstTyp::Call => {
+        if inst.spreads.len() != 0 {
+          continue;
+        }
+        if inst.tgts.len() != 1 {
+          continue;
+        }
+        if !matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == LEGACY_INTERNAL_ARRAY_CALLEE) {
+          continue;
+        }
+        // Per `InstTyp::Call` convention: args[2..] are call arguments.
+        arrays.insert(tgt, inst.args.get(2..).unwrap_or_default().to_vec());
+      }
+      _ => {}
     }
-    if inst.tgts.len() != 1 {
-      continue;
-    }
-    if !matches!(inst.args.get(0), Some(Arg::Builtin(path)) if path == INTERNAL_ARRAY_CALLEE) {
-      continue;
-    }
-
-    // Per `InstTyp::Call` convention: args[2..] are call arguments.
-    arrays.insert(tgt, inst.args.get(2..).unwrap_or_default().to_vec());
   }
 
   // Propagate array literals through simple SSA moves / merges so we can recognize patterns like:
@@ -334,9 +345,10 @@ fn resolves_to_proto_key(arg: &Arg, vars: &HashMap<u32, ValueState>) -> bool {
   )
 }
 
-fn validate_object_literal_call_args(
+fn validate_object_literal_args(
   program: &Program,
   inst: &Inst,
+  args: &[Arg],
   vars: &HashMap<u32, ValueState>,
   diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -344,13 +356,10 @@ fn validate_object_literal_call_args(
   const INTERNAL_OBJECT_COMPUTED_MARKER: &str = "__optimize_js_object_prop_computed";
   const INTERNAL_OBJECT_SPREAD_MARKER: &str = "__optimize_js_object_spread";
 
-  // Convention: `__optimize_js_object` encodes each property as a triple:
+  // Convention: object literals encode each property as a triple:
   // - marker (builtin)
   // - key/spread expr
   // - value (or `undefined` for spreads)
-  let Some(args) = inst.args.get(2..) else {
-    return;
-  };
   if args.len() % 3 != 0 {
     return;
   }
@@ -757,11 +766,11 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
             _ => {}
           }
         }
-        InstTyp::Call => {
-          if !opts.allow_spread_calls && !inst.spreads.is_empty() {
-            diagnostics.push(diag(
-              program,
-              inst,
+    InstTyp::Call => {
+      if !opts.allow_spread_calls && !inst.spreads.is_empty() {
+        diagnostics.push(diag(
+          program,
+          inst,
               CODE_SPREAD_CALL,
               "strict-native forbids spread arguments in calls",
             ));
@@ -790,12 +799,42 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
             }
           }
 
-          if let Some(callee_path) = resolve_builtin_path(&inst.args[0], &vars) {
-            if callee_path == "__optimize_js_object" {
-              validate_object_literal_call_args(program, inst, &vars, &mut diagnostics);
-            }
+      if let Some(callee_path) = resolve_builtin_path(&inst.args[0], &vars) {
+        if callee_path == "__optimize_js_object" {
+          if let Some(args) = inst.args.get(2..) {
+            validate_object_literal_args(program, inst, args, &vars, &mut diagnostics);
           }
         }
+      }
+    }
+    InstTyp::ObjectLit => {
+      validate_object_literal_args(program, inst, &inst.args, &vars, &mut diagnostics);
+    }
+    InstTyp::New => {
+      if !opts.allow_spread_calls && !inst.spreads.is_empty() {
+        diagnostics.push(diag(
+          program,
+          inst,
+          CODE_SPREAD_CALL,
+          "strict-native forbids spread arguments in `new` expressions",
+        ));
+      }
+
+      if let Some(ctor) = inst
+        .args
+        .get(0)
+        .and_then(|arg| resolve_builtin_path(arg, &vars))
+      {
+        if is_banned_constructor(&ctor) {
+          diagnostics.push(diag(
+            program,
+            inst,
+            CODE_BANNED_BUILTIN,
+            format!("strict-native forbids constructing `{ctor}`"),
+          ));
+        }
+      }
+    }
         #[cfg(feature = "semantic-ops")]
         InstTyp::KnownApiCall { api } => {
           if !opts.allow_spread_calls && !inst.spreads.is_empty() {
