@@ -6277,15 +6277,32 @@ impl<'a> Checker<'a> {
           .store
           .intern_type(TypeKind::NumberLiteral(OrderedFloat::from(num.stx.value.0))),
       ),
+      AstExpr::LitBigInt(bigint) => Some(self.store.intern_type(TypeKind::BigIntLiteral(
+        bigint.stx.value.clone(),
+      ))),
       AstExpr::LitBool(b) => Some(self.store.intern_type(TypeKind::BooleanLiteral(b.stx.value))),
       AstExpr::LitNull(_) => Some(prim.null),
       AstExpr::TypeAssertion(assert) if assert.stx.const_assertion => {
         self.jsx_discriminant_value_type(&assert.stx.expression)
       }
+      AstExpr::NonNullAssertion(assert) => self.jsx_discriminant_value_type(&assert.stx.expression),
+      AstExpr::SatisfiesExpr(satisfies) => self.jsx_discriminant_value_type(&satisfies.stx.expression),
       AstExpr::Id(id) => {
         let binding_ty = self.lookup(&id.stx.name).map(|binding| binding.ty);
         let ty = binding_ty.or_else(|| self.recorded_expr_type(expr.loc))?;
         is_literal_type(self, ty).then_some(ty)
+      }
+      AstExpr::Member(member) if !member.stx.optional_chaining => {
+        // Only handle the simple, context-free case `Id.prop` where `Id` is a
+        // known binding and `prop` resolves to a literal type (e.g. `const K =
+        // { A: "a", B: "b" } as const; <Foo kind={K.A} />`).
+        let left = match member.stx.left.stx.as_ref() {
+          AstExpr::Id(id) => self.lookup(&id.stx.name).map(|binding| binding.ty),
+          _ => None,
+        };
+        let left = left.or_else(|| self.recorded_expr_type(member.stx.left.loc))?;
+        let prop_ty = self.member_type(left, &member.stx.right);
+        is_literal_type(self, prop_ty).then_some(prop_ty)
       }
       _ => None,
     }
