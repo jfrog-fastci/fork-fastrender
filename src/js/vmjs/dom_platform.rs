@@ -474,6 +474,87 @@ impl DomPlatform {
     Ok(wrapper)
   }
 
+  fn rebind_wrapper_impl(
+    &mut self,
+    heap: &mut Heap,
+    node_id_key: &PropertyKey,
+    old: DomNodeKey,
+    new: DomNodeKey,
+  ) -> Result<(), VmError> {
+    if old == new {
+      return Ok(());
+    }
+
+    self.sweep_dead_wrappers_if_needed(heap);
+
+    let Some(weak) = self.wrappers_by_node.remove(&old) else {
+      return Ok(());
+    };
+    let Some(wrapper) = weak.upgrade(heap) else {
+      // Wrapper was collected since the last sweep; nothing to preserve.
+      return Ok(());
+    };
+
+    // Overwrite any existing mapping for `new`. In the expected clone+mapping case, `new` refers
+    // to freshly-created nodes with no wrappers yet.
+    self.wrappers_by_node.insert(new, weak);
+
+    if let Some(meta) = self.meta_by_wrapper.get_mut(&weak) {
+      meta.document_id = new.document_id;
+      meta.node_id = new.node_id;
+    }
+
+    // Keep the wrapper's own node ID property in sync so native methods that read it directly
+    // continue to work.
+    match heap.object_set_existing_data_property_value(
+      wrapper,
+      node_id_key,
+      Value::Number(new.node_id.index() as f64),
+    ) {
+      Ok(()) => {}
+      Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+        // Some wrappers (e.g. those constructed directly in unit tests) may not have the property
+        // yet. Define it eagerly so future native calls can rely on its presence.
+        let mut scope = heap.scope();
+        scope.define_property(
+          wrapper,
+          *node_id_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: Value::Number(new.node_id.index() as f64),
+              writable: true,
+            },
+          },
+        )?;
+      }
+      Err(err) => return Err(err),
+    }
+
+    Ok(())
+  }
+
+  /// Move an existing live wrapper mapping from `old` to `new`, updating both host-side metadata and
+  /// the wrapper's own `__fastrender_node_id` property.
+  ///
+  /// This is intended for DOM operations implemented as clone+mapping (e.g. cross-document adoption)
+  /// that must preserve JS wrapper object identity even when the underlying `dom2::NodeId` changes.
+  pub fn rebind_wrapper(
+    &mut self,
+    heap: &mut Heap,
+    old: DomNodeKey,
+    new: DomNodeKey,
+  ) -> Result<(), VmError> {
+    // Allocate the property key once. `PropertyKey` string comparisons are by content, so it will
+    // match existing keys even if wrappers were created using a different `GcString` handle.
+    let node_id_key = {
+      let mut scope = heap.scope();
+      PropertyKey::from_string(scope.alloc_string(INTERNAL_NODE_ID_KEY)?)
+    };
+    self.rebind_wrapper_impl(heap, &node_id_key, old, new)
+  }
+
   /// Remap cached wrapper identity for nodes whose `dom2::NodeId` indices have changed.
   ///
   /// This is intended for DOM operations that are implemented as clone+mapping (rather than
@@ -491,67 +572,46 @@ impl DomPlatform {
       return Ok(());
     }
 
-    self.sweep_dead_wrappers_if_needed(heap);
-
-    // Allocate the property key once. `PropertyKey` string comparisons are by content, so it will
-    // match existing keys even if wrappers were created using a different `GcString` handle.
     let node_id_key = {
       let mut scope = heap.scope();
       PropertyKey::from_string(scope.alloc_string(INTERNAL_NODE_ID_KEY)?)
     };
-
     for (&old_id, &new_id) in mapping {
-      let old_key = DomNodeKey::new(document_id, old_id);
-      let new_key = DomNodeKey::new(document_id, new_id);
-
-      let Some(weak) = self.wrappers_by_node.remove(&old_key) else {
-        continue;
-      };
-      let Some(wrapper) = weak.upgrade(heap) else {
-        // Wrapper was collected since the last sweep; nothing to preserve.
-        continue;
-      };
-
-      // Overwrite any existing mapping for `new_key`. In the expected clone+mapping case, `new_id`
-      // refers to freshly-created nodes with no wrappers yet.
-      self.wrappers_by_node.insert(new_key, weak);
-
-      if let Some(meta) = self.meta_by_wrapper.get_mut(&weak) {
-        meta.document_id = document_id;
-        meta.node_id = new_id;
-      }
-
-      // Keep the wrapper's own node ID property in sync so native methods that read it directly
-      // continue to work.
-      match heap.object_set_existing_data_property_value(
-        wrapper,
+      self.rebind_wrapper_impl(
+        heap,
         &node_id_key,
-        Value::Number(new_id.index() as f64),
-      ) {
-        Ok(()) => {}
-        Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
-          // Some wrappers (e.g. those constructed directly in unit tests) may not have the property
-          // yet. Define it eagerly so future native calls can rely on its presence.
-          {
-            let mut scope = heap.scope();
-            scope.define_property(
-              wrapper,
-              node_id_key,
-              PropertyDescriptor {
-                enumerable: false,
-                configurable: true,
-                kind: PropertyKind::Data {
-                  value: Value::Number(new_id.index() as f64),
-                  writable: true,
-                },
-              },
-            )?;
-          }
-        }
-        Err(err) => return Err(err),
-      }
+        DomNodeKey::new(document_id, old_id),
+        DomNodeKey::new(document_id, new_id),
+      )?;
+    }
+    Ok(())
+  }
+
+  /// Remap wrapper identity across documents (e.g. `adoptNode`-style moves implemented as
+  /// clone+mapping).
+  pub fn remap_node_ids_between_documents(
+    &mut self,
+    heap: &mut Heap,
+    old_document_id: DocumentId,
+    new_document_id: DocumentId,
+    mapping: &HashMap<NodeId, NodeId>,
+  ) -> Result<(), VmError> {
+    if mapping.is_empty() {
+      return Ok(());
     }
 
+    let node_id_key = {
+      let mut scope = heap.scope();
+      PropertyKey::from_string(scope.alloc_string(INTERNAL_NODE_ID_KEY)?)
+    };
+    for (&old_id, &new_id) in mapping {
+      self.rebind_wrapper_impl(
+        heap,
+        &node_id_key,
+        DomNodeKey::new(old_document_id, old_id),
+        DomNodeKey::new(new_document_id, new_id),
+      )?;
+    }
     Ok(())
   }
 
@@ -852,6 +912,57 @@ mod tests {
       scope.heap().object_prototype(html_input_proto)?,
       Some(html_element_proto)
     );
+    Ok(())
+  }
+
+  #[test]
+  fn remap_across_documents_preserves_wrapper_identity() -> Result<(), VmError> {
+    let mut runtime = make_runtime()?;
+    let (realm, heap) = split_runtime_realm(&mut runtime);
+    let mut scope = heap.scope();
+    let mut platform = DomPlatform::new(&mut scope, realm)?;
+
+    let document_a = scope.alloc_object()?;
+    let document_b = scope.alloc_object()?;
+    let document_id_a = gc_object_id(document_a);
+    let document_id_b = gc_object_id(document_b);
+    let _doc_a_root = scope.heap_mut().add_root(Value::Object(document_a))?;
+    let _doc_b_root = scope.heap_mut().add_root(Value::Object(document_b))?;
+
+    let old_id = NodeId::from_index(5);
+    let wrapper = platform.get_or_create_wrapper(
+      &mut scope,
+      DomNodeKey::new(document_id_a, old_id),
+      DomInterface::Element,
+    )?;
+    let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
+
+    let new_id = NodeId::from_index(9);
+    let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
+    mapping.insert(old_id, new_id);
+
+    platform.remap_node_ids_between_documents(scope.heap_mut(), document_id_a, document_id_b, &mapping)?;
+
+    let wrapper2 = platform.get_or_create_wrapper(
+      &mut scope,
+      DomNodeKey::new(document_id_b, new_id),
+      DomInterface::Element,
+    )?;
+    assert_eq!(wrapper, wrapper2);
+
+    assert_eq!(
+      platform.require_node_handle(scope.heap(), Value::Object(wrapper))?,
+      DomNodeKey::new(document_id_b, new_id)
+    );
+
+    let key = PropertyKey::from_string(scope.alloc_string(super::INTERNAL_NODE_ID_KEY)?);
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper, &key)?
+      .unwrap_or(Value::Undefined);
+    assert_eq!(value, Value::Number(new_id.index() as f64));
+
+    scope.heap_mut().remove_root(root);
     Ok(())
   }
 }
