@@ -115,7 +115,8 @@ fuzz_target!(|data: &[u8]| {
     data
   };
 
-  let Ok(stackmaps) = llvm_stackmaps::StackMaps::parse(data) else {
+  let opts = llvm_stackmaps::ParseOptions::FUZZING;
+  let Ok(stackmaps) = llvm_stackmaps::StackMaps::parse_with_options(data, &opts) else {
     return;
   };
 
