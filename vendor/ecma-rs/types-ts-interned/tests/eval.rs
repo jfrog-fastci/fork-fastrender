@@ -4505,6 +4505,49 @@ fn void_intersection_empty_object_is_never() {
 }
 
 #[test]
+fn intersection_with_empty_object_is_identity_without_strict_null_checks() {
+  let store = TypeStore::with_options(TypeOptions {
+    strict_null_checks: false,
+    ..TypeOptions::default()
+  });
+  let primitives = store.primitive_ids();
+
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let union = store.union(vec![primitives.string, primitives.null, primitives.undefined]);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![union, empty_object]));
+
+  assert_eq!(store.evaluate(intersection), union);
+}
+
+#[test]
+fn null_intersection_empty_object_without_strict_null_checks_is_null() {
+  let store = TypeStore::with_options(TypeOptions {
+    strict_null_checks: false,
+    ..TypeOptions::default()
+  });
+  let primitives = store.primitive_ids();
+
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![primitives.null, empty_object]));
+
+  assert_eq!(store.evaluate(intersection), primitives.null);
+}
+
+#[test]
+fn void_intersection_empty_object_without_strict_null_checks_is_void() {
+  let store = TypeStore::with_options(TypeOptions {
+    strict_null_checks: false,
+    ..TypeOptions::default()
+  });
+  let primitives = store.primitive_ids();
+
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let intersection = store.intern_type(TypeKind::Intersection(vec![primitives.void, empty_object]));
+
+  assert_eq!(store.evaluate(intersection), primitives.void);
+}
+
+#[test]
 fn intersection_with_empty_object_removes_void_from_union() {
   let store = TypeStore::new();
   let primitives = store.primitive_ids();
