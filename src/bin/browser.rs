@@ -5705,6 +5705,7 @@ impl App {
               &tab.scroll_state,
               metrics.bounds_css,
             );
+
             // If a wheel scroll is happening this frame, register it before drawing so scrollbars
             // become visible immediately (even if this is a single-tick wheel scroll).
             if !wheel_events.is_empty() && !wheel_blocked_by_dropdown && response.hovered() {
@@ -5775,7 +5776,9 @@ impl App {
                 }
               };
 
-              let clamp_alpha = |base: u8| ((base as f32) * alpha).round().clamp(0.0, 255.0) as u8;
+              let clamp_alpha = |base: u8| {
+                ((base as f32) * alpha).round().clamp(0.0, 255.0) as u8
+              };
 
               let visuals = ui.visuals();
               // Use theme-aware colors (dark mode uses light thumbs, light mode uses dark thumbs)
