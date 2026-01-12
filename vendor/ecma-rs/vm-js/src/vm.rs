@@ -1064,8 +1064,35 @@ impl Vm {
     let mut termination_err: Option<VmError> = None;
 
     loop {
+      // FinalizationRegistry cleanup jobs are discovered during GC, but are enqueued outside of GC
+      // to avoid allocating during collection.
+      //
+      // Ensure a microtask checkpoint will also run these cleanup jobs even when the Promise job
+      // queue is currently empty.
+      if self.microtasks.is_empty() {
+        let mut fr_hooks = LocalHost::new();
+        let enqueue_result = heap.enqueue_finalization_registry_cleanup_jobs(self, &mut fr_hooks);
+        fr_hooks.drain_into(&mut self.microtasks);
+
+        match enqueue_result {
+          Ok(()) => {}
+          Err(e @ VmError::Termination(_)) => {
+            termination_err = Some(e);
+            break;
+          }
+          Err(e) => {
+            if first_err.is_none() {
+              first_err = Some(e);
+            }
+          }
+        }
+        if self.microtasks.is_empty() {
+          break;
+        }
+      }
+
       let Some((_realm, job)) = self.microtasks.pop_front() else {
-        break;
+        continue;
       };
 
       let job_result = {

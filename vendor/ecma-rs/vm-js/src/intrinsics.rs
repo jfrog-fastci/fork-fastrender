@@ -64,6 +64,8 @@ pub struct Intrinsics {
   set_prototype: GcObject,
   weak_map_prototype: GcObject,
   weak_set_prototype: GcObject,
+  weak_ref_prototype: GcObject,
+  finalization_registry_prototype: GcObject,
   object_constructor: GcObject,
   function_constructor: GcObject,
   generator_function_constructor: GcObject,
@@ -91,6 +93,8 @@ pub struct Intrinsics {
   set: GcObject,
   weak_map: GcObject,
   weak_set: GcObject,
+  weak_ref: GcObject,
+  finalization_registry: GcObject,
   is_nan: GcObject,
   is_finite: GcObject,
   eval: GcObject,
@@ -124,6 +128,7 @@ pub struct Intrinsics {
   promise: GcObject,
   promise_prototype: GcObject,
   promise_prototype_then: GcObject,
+  finalization_registry_prototype_cleanup_some: GcObject,
   promise_capability_executor_call: NativeFunctionId,
   promise_resolving_function_call: NativeFunctionId,
   promise_finally_handler_call: NativeFunctionId,
@@ -758,7 +763,8 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(data_view_prototype, Some(object_prototype))?;
 
-    // `%Map.prototype%` / `%Set.prototype%` / `%WeakMap.prototype%` / `%WeakSet.prototype%` (minimal).
+    // `%Map.prototype%` / `%Set.prototype%` / `%WeakMap.prototype%` / `%WeakSet.prototype%` /
+    // `%WeakRef.prototype%` / `%FinalizationRegistry.prototype%` (minimal).
     //
     // These prototypes are used for `Object.prototype.toString` tagging via `@@toStringTag`.
     let map_prototype = alloc_rooted_object(scope, roots)?;
@@ -777,6 +783,14 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(weak_set_prototype, Some(object_prototype))?;
+    let weak_ref_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(weak_ref_prototype, Some(object_prototype))?;
+    let finalization_registry_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(finalization_registry_prototype, Some(object_prototype))?;
 
     // `@@toStringTag` on intrinsic prototypes (ECMA-262).
     //
@@ -842,6 +856,13 @@ impl Intrinsics {
     install_to_string_tag(scope, set_prototype, well_known_symbols.to_string_tag, "Set")?;
     install_to_string_tag(scope, weak_map_prototype, well_known_symbols.to_string_tag, "WeakMap")?;
     install_to_string_tag(scope, weak_set_prototype, well_known_symbols.to_string_tag, "WeakSet")?;
+    install_to_string_tag(scope, weak_ref_prototype, well_known_symbols.to_string_tag, "WeakRef")?;
+    install_to_string_tag(
+      scope,
+      finalization_registry_prototype,
+      well_known_symbols.to_string_tag,
+      "FinalizationRegistry",
+    )?;
 
     {
       let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
@@ -5224,6 +5245,156 @@ impl Intrinsics {
       )?;
     }
 
+    // `%WeakRef%`
+    let weak_ref_call = vm.register_native_call(builtins::weak_ref_constructor_call)?;
+    let weak_ref_construct = vm.register_native_construct(builtins::weak_ref_constructor_construct)?;
+    let weak_ref_name = scope.alloc_string("WeakRef")?;
+    let weak_ref = alloc_rooted_native_function(
+      scope,
+      roots,
+      weak_ref_call,
+      Some(weak_ref_construct),
+      weak_ref_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(weak_ref, Some(function_prototype))?;
+    scope.define_property(
+      weak_ref,
+      common.prototype,
+      data_desc(Value::Object(weak_ref_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      weak_ref,
+      common.name,
+      data_desc(Value::String(weak_ref_name), false, false, true),
+    )?;
+    scope.define_property(
+      weak_ref,
+      common.length,
+      data_desc(Value::Number(1.0), false, false, true),
+    )?;
+    scope.define_property(
+      weak_ref_prototype,
+      common.constructor,
+      data_desc(Value::Object(weak_ref), true, false, true),
+    )?;
+
+    // WeakRef.prototype.deref
+    {
+      let deref_call = vm.register_native_call(builtins::weak_ref_prototype_deref)?;
+      let deref_s = scope.alloc_string("deref")?;
+      scope.push_root(Value::String(deref_s))?;
+      let key = PropertyKey::from_string(deref_s);
+      let func = scope.alloc_native_function(deref_call, None, deref_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_ref_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // `%FinalizationRegistry%`
+    let finalization_registry_call =
+      vm.register_native_call(builtins::finalization_registry_constructor_call)?;
+    let finalization_registry_construct =
+      vm.register_native_construct(builtins::finalization_registry_constructor_construct)?;
+    let finalization_registry_name = scope.alloc_string("FinalizationRegistry")?;
+    let finalization_registry = alloc_rooted_native_function(
+      scope,
+      roots,
+      finalization_registry_call,
+      Some(finalization_registry_construct),
+      finalization_registry_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(finalization_registry, Some(function_prototype))?;
+    scope.define_property(
+      finalization_registry,
+      common.prototype,
+      data_desc(
+        Value::Object(finalization_registry_prototype),
+        true,
+        false,
+        false,
+      ),
+    )?;
+    scope.define_property(
+      finalization_registry,
+      common.name,
+      data_desc(Value::String(finalization_registry_name), false, false, true),
+    )?;
+    scope.define_property(
+      finalization_registry,
+      common.length,
+      data_desc(Value::Number(1.0), false, false, true),
+    )?;
+    scope.define_property(
+      finalization_registry_prototype,
+      common.constructor,
+      data_desc(Value::Object(finalization_registry), true, false, true),
+    )?;
+
+    let finalization_registry_prototype_cleanup_some;
+    // FinalizationRegistry.prototype.register / unregister / cleanupSome
+    {
+      let register_call = vm.register_native_call(builtins::finalization_registry_prototype_register)?;
+      let register_s = scope.alloc_string("register")?;
+      scope.push_root(Value::String(register_s))?;
+      let key = PropertyKey::from_string(register_s);
+      let func = scope.alloc_native_function(register_call, None, register_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        finalization_registry_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let unregister_call =
+        vm.register_native_call(builtins::finalization_registry_prototype_unregister)?;
+      let unregister_s = scope.alloc_string("unregister")?;
+      scope.push_root(Value::String(unregister_s))?;
+      let key = PropertyKey::from_string(unregister_s);
+      let func = scope.alloc_native_function(unregister_call, None, unregister_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        finalization_registry_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let cleanup_some_call =
+        vm.register_native_call(builtins::finalization_registry_prototype_cleanup_some)?;
+      let cleanup_some_s = scope.alloc_string("cleanupSome")?;
+      scope.push_root(Value::String(cleanup_some_s))?;
+      let key = PropertyKey::from_string(cleanup_some_s);
+      let func = scope.alloc_native_function(cleanup_some_call, None, cleanup_some_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        finalization_registry_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      finalization_registry_prototype_cleanup_some = func;
+    }
+
     // --- TypedArray prototype accessors/methods ---
     let typed_array_byte_length_get_call =
       vm.register_native_call(builtins::typed_array_prototype_byte_length_get)?;
@@ -6143,6 +6314,8 @@ impl Intrinsics {
       set_prototype,
       weak_map_prototype,
       weak_set_prototype,
+      weak_ref_prototype,
+      finalization_registry_prototype,
       object_constructor,
       function_constructor,
       generator_function_constructor: generator_function,
@@ -6170,6 +6343,8 @@ impl Intrinsics {
       set,
       weak_map,
       weak_set,
+      weak_ref,
+      finalization_registry,
       is_nan,
       is_finite,
       eval,
@@ -6202,6 +6377,7 @@ impl Intrinsics {
       promise,
       promise_prototype,
       promise_prototype_then,
+      finalization_registry_prototype_cleanup_some,
       promise_capability_executor_call,
       promise_resolving_function_call,
       promise_finally_handler_call,
@@ -6351,6 +6527,14 @@ impl Intrinsics {
     self.weak_set_prototype
   }
 
+  pub fn weak_ref_prototype(&self) -> GcObject {
+    self.weak_ref_prototype
+  }
+
+  pub fn finalization_registry_prototype(&self) -> GcObject {
+    self.finalization_registry_prototype
+  }
+
   pub fn object_constructor(&self) -> GcObject {
     self.object_constructor
   }
@@ -6457,6 +6641,14 @@ impl Intrinsics {
 
   pub fn weak_set(&self) -> GcObject {
     self.weak_set
+  }
+
+  pub fn weak_ref(&self) -> GcObject {
+    self.weak_ref
+  }
+
+  pub fn finalization_registry(&self) -> GcObject {
+    self.finalization_registry
   }
 
   pub fn is_nan(&self) -> GcObject {
@@ -6585,6 +6777,10 @@ impl Intrinsics {
 
   pub(crate) fn promise_prototype_then(&self) -> GcObject {
     self.promise_prototype_then
+  }
+
+  pub(crate) fn finalization_registry_prototype_cleanup_some(&self) -> GcObject {
+    self.finalization_registry_prototype_cleanup_some
   }
 
   pub(crate) fn promise_capability_executor_call(&self) -> NativeFunctionId {

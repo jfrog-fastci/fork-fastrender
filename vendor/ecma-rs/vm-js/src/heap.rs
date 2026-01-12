@@ -12,8 +12,8 @@ use crate::symbol::JsSymbol;
 use crate::CompiledFunctionRef;
 use crate::handle::GcModuleNamespaceExports;
 use crate::{
-  EnvRootId, GcEnv, GcObject, GcString, GcSymbol, HeapId, RealmId, RootId, Value, Vm, VmError,
-  VmHost, VmHostHooks, WeakGcObject,
+  EnvRootId, GcEnv, GcObject, GcString, GcSymbol, HeapId, Job, JobKind, RealmId, RootId, Value, Vm,
+  VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 use std::cell::Cell;
 use core::mem;
@@ -216,6 +216,13 @@ pub struct Heap {
   common_key_length: Option<GcString>,
   common_key_constructor: Option<GcString>,
   common_key_prototype: Option<GcString>,
+
+  /// True if at least one `FinalizationRegistry` has pending cleanup work.
+  ///
+  /// This is set during GC when an unreachable target is discovered and cleared from a registry's
+  /// internal cell list. The corresponding cleanup jobs are enqueued outside of GC to avoid
+  /// allocating during collection.
+  finalization_registry_cleanup_jobs_pending: bool,
 }
 
 /// RAII wrapper for a persistent GC root created by [`Heap::add_root`].
@@ -305,6 +312,7 @@ impl Heap {
       common_key_length: None,
       common_key_constructor: None,
       common_key_prototype: None,
+      finalization_registry_cleanup_jobs_pending: false,
     }
   }
 
@@ -813,8 +821,140 @@ impl Heap {
       // Slot `bytes` accounting remains unchanged because the allocation capacity is unchanged.
     }
 
+    // FinalizationRegistry hygiene: clear dead targets from live registries.
+    //
+    // This uses the same "take the vector out, operate without holding a slot borrow" pattern as
+    // WeakMap/WeakSet hygiene so we can query liveness via `WeakGcObject::upgrade`.
+    //
+    // We do **not** enqueue cleanup jobs during GC (which must not allocate). Instead we mark
+    // registries as having `cleanup_pending` and set a heap-global flag that will be observed by
+    // microtask checkpoints.
+    let mut any_pending_cleanup = false;
+    for idx in 0..self.slots.len() {
+      let mut cells = {
+        let Some(HeapObject::FinalizationRegistry(fr)) = self.slots[idx].value.as_mut() else {
+          continue;
+        };
+        mem::take(&mut fr.cells)
+      };
+
+      let mut registry_pending = false;
+      for cell in cells.iter_mut() {
+        match cell.target {
+          Some(target) => {
+            if target.upgrade(&*self).is_none() {
+              cell.target = None;
+              registry_pending = true;
+            }
+          }
+          None => registry_pending = true,
+        }
+      }
+
+      let Some(HeapObject::FinalizationRegistry(fr)) = self.slots[idx].value.as_mut() else {
+        continue;
+      };
+      fr.cells = cells;
+      fr.cleanup_pending = registry_pending;
+      if registry_pending {
+        any_pending_cleanup = true;
+      }
+      // Note: we do not shrink the underlying allocation here; `retain` only updates length.
+      // Slot `bytes` accounting remains unchanged because the allocation capacity is unchanged.
+    }
+
+    self.finalization_registry_cleanup_jobs_pending = any_pending_cleanup;
+
     #[cfg(debug_assertions)]
     self.debug_assert_used_bytes_is_correct();
+  }
+
+  /// Enqueues `FinalizationRegistry` cleanup jobs into a host job queue.
+  ///
+  /// GC clears dead `FinalizationRegistry` targets during collection, but does **not** allocate job
+  /// objects. Instead it sets [`Heap::finalization_registry_cleanup_jobs_pending`], and hosts (or
+  /// the VM's microtask checkpoint loop) are expected to call this method to translate pending work
+  /// into concrete jobs.
+  ///
+  /// The enqueued jobs invoke `%FinalizationRegistry.prototype.cleanupSome%` on each registry with
+  /// pending cleanup, ensuring cleanup callbacks run through the normal job/microtask machinery.
+  pub(crate) fn enqueue_finalization_registry_cleanup_jobs(
+    &mut self,
+    vm: &mut Vm,
+    hooks: &mut dyn VmHostHooks,
+  ) -> Result<(), VmError> {
+    if !self.finalization_registry_cleanup_jobs_pending {
+      return Ok(());
+    }
+    let Some(intr) = vm.intrinsics() else {
+      // If there is no realm/intrinsics, `FinalizationRegistry` instances should not be observable.
+      // Avoid surfacing internal errors in this low-level helper.
+      //
+      // Also clear the heap-level pending flag so callers that poll for pending work do not loop
+      // forever.
+      self.finalization_registry_cleanup_jobs_pending = false;
+      return Ok(());
+    };
+
+    // The cleanup job calls the intrinsic builtin `FinalizationRegistry.prototype.cleanupSome` on
+    // the registry. Capture the function object here so the job closure doesn't need to look it up.
+    let cleanup_some = intr.finalization_registry_prototype_cleanup_some();
+
+    const TICK_EVERY: usize = 256;
+    let mut any_pending = false;
+
+    for idx in 0..self.slots.len() {
+      if idx % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+
+      let (pending, realm, generation) = {
+        let slot = &self.slots[idx];
+        let Some(HeapObject::FinalizationRegistry(fr)) = slot.value.as_ref() else {
+          continue;
+        };
+        (fr.cleanup_pending, fr.realm, slot.generation)
+      };
+      if !pending {
+        continue;
+      }
+      any_pending = true;
+
+      let registry = GcObject(HeapId::from_parts(idx as u32, generation));
+
+      // Root captured handles for the lifetime of the queued job.
+      let registry_root = self.add_root(Value::Object(registry))?;
+      let cleanup_some_root = match self.add_root(Value::Object(cleanup_some)) {
+        Ok(root) => root,
+        Err(err) => {
+          self.remove_root(registry_root);
+          return Err(err);
+        }
+      };
+
+      let mut roots: Vec<RootId> = Vec::new();
+      if roots.try_reserve_exact(2).is_err() {
+        self.remove_root(registry_root);
+        self.remove_root(cleanup_some_root);
+        return Err(VmError::OutOfMemory);
+      }
+      roots.push(registry_root);
+      roots.push(cleanup_some_root);
+
+      let job = Job::new(JobKind::FinalizationRegistryCleanup, move |ctx, host| {
+        // `FinalizationRegistryCleanupJob` calls `cleanupSome` with no argument, which uses the
+        // registry's own `[[CleanupCallback]]`.
+        let _ = ctx.call(host, Value::Object(cleanup_some), Value::Object(registry), &[])?;
+        Ok(())
+      })
+      .with_roots(roots);
+
+      hooks.host_enqueue_promise_job(job, realm);
+    }
+
+    // Keep the heap-level flag in sync with whether any registry still has pending cleanup work.
+    self.finalization_registry_cleanup_jobs_pending = any_pending;
+    Ok(())
   }
 
   /// Adds a persistent root and returns an RAII guard that removes it on drop.
@@ -988,8 +1128,10 @@ impl Heap {
           | HeapObject::Promise(_)
           | HeapObject::Map(_)
           | HeapObject::Set(_)
+          | HeapObject::WeakRef(_)
           | HeapObject::WeakMap(_)
           | HeapObject::WeakSet(_)
+          | HeapObject::FinalizationRegistry(_)
           | HeapObject::Generator(_)
       )
     )
@@ -1112,6 +1254,19 @@ impl Heap {
   /// Returns `true` if `obj` currently points to a live WeakSet object allocation.
   pub fn is_weak_set_object(&self, obj: GcObject) -> bool {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::WeakSet(_)))
+  }
+
+  /// Returns `true` if `obj` currently points to a live WeakRef object allocation.
+  pub fn is_weak_ref_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::WeakRef(_)))
+  }
+
+  /// Returns `true` if `obj` currently points to a live FinalizationRegistry object allocation.
+  pub fn is_finalization_registry_object(&self, obj: GcObject) -> bool {
+    matches!(
+      self.get_heap_object(obj.0),
+      Ok(HeapObject::FinalizationRegistry(_))
+    )
   }
 
   /// Returns `true` if `obj` currently points to a live ArrayBuffer view (typed array or DataView).
@@ -1776,8 +1931,10 @@ impl Heap {
         | HeapObject::Promise(_)
         | HeapObject::Map(_)
         | HeapObject::Set(_)
+        | HeapObject::WeakRef(_)
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
+        | HeapObject::FinalizationRegistry(_)
         | HeapObject::Generator(_),
       ) => {
         self.slots[idx].host_slots = Some(slots);
@@ -1804,8 +1961,10 @@ impl Heap {
         | HeapObject::Promise(_)
         | HeapObject::Map(_)
         | HeapObject::Set(_)
+        | HeapObject::WeakRef(_)
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
+        | HeapObject::FinalizationRegistry(_)
         | HeapObject::Generator(_),
       ) => Ok(self.slots[idx].host_slots),
       _ => Err(VmError::invalid_handle()),
@@ -1829,8 +1988,10 @@ impl Heap {
         | HeapObject::Promise(_)
         | HeapObject::Map(_)
         | HeapObject::Set(_)
+        | HeapObject::WeakRef(_)
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
+        | HeapObject::FinalizationRegistry(_)
         | HeapObject::Generator(_),
       ) => {
         self.slots[idx].host_slots = None;
@@ -1953,8 +2114,10 @@ impl Heap {
       HeapObject::Promise(p) => Ok(&p.object.base),
       HeapObject::Map(m) => Ok(&m.base),
       HeapObject::Set(s) => Ok(&s.base),
+      HeapObject::WeakRef(wr) => Ok(&wr.base),
       HeapObject::WeakMap(wm) => Ok(&wm.base),
       HeapObject::WeakSet(ws) => Ok(&ws.base),
+      HeapObject::FinalizationRegistry(fr) => Ok(&fr.base),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -1971,8 +2134,10 @@ impl Heap {
       HeapObject::Promise(p) => Ok(&mut p.object.base),
       HeapObject::Map(m) => Ok(&mut m.base),
       HeapObject::Set(s) => Ok(&mut s.base),
+      HeapObject::WeakRef(wr) => Ok(&mut wr.base),
       HeapObject::WeakMap(wm) => Ok(&mut wm.base),
       HeapObject::WeakSet(ws) => Ok(&mut ws.base),
+      HeapObject::FinalizationRegistry(fr) => Ok(&mut fr.base),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -2807,6 +2972,245 @@ impl Heap {
     }
   }
 
+  /// Implements `WeakRef.prototype.deref`.
+  ///
+  /// Returns the target object if it is still alive, otherwise `None`.
+  pub fn weak_ref_deref(&self, weak_ref: GcObject) -> Result<Option<GcObject>, VmError> {
+    match self.get_heap_object(weak_ref.0)? {
+      HeapObject::WeakRef(wr) => Ok(wr.target.upgrade(self)),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  /// Returns the `[[CleanupCallback]]` internal slot for a `FinalizationRegistry`.
+  pub(crate) fn finalization_registry_cleanup_callback(&self, registry: GcObject) -> Result<Value, VmError> {
+    match self.get_heap_object(registry.0)? {
+      HeapObject::FinalizationRegistry(fr) => Ok(fr.cleanup_callback),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  /// Adds a new registration to `FinalizationRegistry`.
+  pub fn finalization_registry_register(
+    &mut self,
+    registry: GcObject,
+    target: GcObject,
+    held_value: Value,
+    unregister_token: Option<GcObject>,
+  ) -> Result<(), VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(held_value));
+    if !self.is_valid_object(registry) {
+      return Err(VmError::invalid_handle());
+    }
+    if !self.is_valid_object(target) {
+      return Err(VmError::invalid_handle());
+    }
+    if let Some(token) = unregister_token {
+      if !self.is_valid_object(token) {
+        return Err(VmError::invalid_handle());
+      }
+    }
+
+    // Root inputs across any potential GC while growing the cell vector.
+    let mut scope = self.scope();
+    let mut roots = [Value::Undefined; 4];
+    let mut root_count = 0usize;
+    roots[root_count] = Value::Object(registry);
+    root_count += 1;
+    roots[root_count] = Value::Object(target);
+    root_count += 1;
+    roots[root_count] = held_value;
+    root_count += 1;
+    if let Some(token) = unregister_token {
+      roots[root_count] = Value::Object(token);
+      root_count += 1;
+    }
+    scope.push_roots(&roots[..root_count])?;
+
+    scope
+      .heap
+      .finalization_registry_register_rooted(registry, target, held_value, unregister_token)
+  }
+
+  fn finalization_registry_register_rooted(
+    &mut self,
+    registry: GcObject,
+    target: GcObject,
+    held_value: Value,
+    unregister_token: Option<GcObject>,
+  ) -> Result<(), VmError> {
+    let slot_idx = self
+      .validate(registry.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let (cell_len, cell_cap, property_count, old_bytes) = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::FinalizationRegistry(fr)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      (
+        fr.cells.len(),
+        fr.cells.capacity(),
+        fr.base.properties.len(),
+        slot.bytes,
+      )
+    };
+
+    let required_len = cell_len.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    let desired_capacity = grown_capacity(cell_cap, required_len);
+    if desired_capacity == usize::MAX {
+      return Err(VmError::OutOfMemory);
+    }
+
+    let expected_new_bytes =
+      JsFinalizationRegistry::heap_size_bytes_for_counts(property_count, desired_capacity);
+    let grow_by = expected_new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      self.ensure_can_allocate(grow_by)?;
+      let Some(HeapObject::FinalizationRegistry(fr)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      reserve_vec_to_len::<FinalizationRegistryCell>(&mut fr.cells, required_len)?;
+    }
+
+    let Some(HeapObject::FinalizationRegistry(fr)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    fr.cells.push(FinalizationRegistryCell {
+      target: Some(WeakGcObject::from(target)),
+      held_value,
+      unregister_token: unregister_token.map(WeakGcObject::from),
+    });
+
+    if grow_by != 0 {
+      let new_bytes = fr.heap_size_bytes();
+      self.update_slot_bytes(slot_idx, new_bytes);
+      #[cfg(debug_assertions)]
+      self.debug_assert_used_bytes_is_correct();
+    }
+
+    Ok(())
+  }
+
+  /// Implements `FinalizationRegistry.prototype.unregister`.
+  pub fn finalization_registry_unregister_with_tick(
+    &mut self,
+    registry: GcObject,
+    unregister_token: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    if !self.is_valid_object(registry) {
+      return Err(VmError::invalid_handle());
+    }
+    if !self.is_valid_object(unregister_token) {
+      return Err(VmError::invalid_handle());
+    }
+
+    let needle = WeakGcObject::from(unregister_token);
+    let slot_idx = self
+      .validate(registry.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let Some(HeapObject::FinalizationRegistry(fr)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+
+    const TICK_EVERY: usize = 1024;
+    let mut removed = false;
+    let mut pending = false;
+    let mut steps = 0usize;
+    let mut i = 0usize;
+    while i < fr.cells.len() {
+      if steps % TICK_EVERY == 0 {
+        tick()?;
+      }
+      steps = steps.checked_add(1).ok_or(VmError::OutOfMemory)?;
+
+      let cell = fr.cells[i];
+      if cell.unregister_token == Some(needle) {
+        removed = true;
+        fr.cells.swap_remove(i);
+        continue;
+      }
+
+      if cell.target.is_none() {
+        pending = true;
+      }
+
+      i = i.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    }
+
+    fr.cleanup_pending = pending;
+    if pending {
+      self.finalization_registry_cleanup_jobs_pending = true;
+    }
+
+    Ok(removed)
+  }
+
+  /// Removes and returns one held value for a cleared (collected) target in `registry`.
+  ///
+  /// This is used by `%FinalizationRegistry.prototype.cleanupSome%` and by the GC-scheduled cleanup
+  /// job.
+  pub(crate) fn finalization_registry_pop_pending_cleanup_value_with_tick(
+    &mut self,
+    registry: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<Value>, VmError> {
+    if !self.is_valid_object(registry) {
+      return Err(VmError::invalid_handle());
+    }
+
+    let slot_idx = self
+      .validate(registry.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let Some(HeapObject::FinalizationRegistry(fr)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+
+    const TICK_EVERY: usize = 1024;
+    let mut steps = 0usize;
+
+    let mut i = 0usize;
+    while i < fr.cells.len() {
+      if steps % TICK_EVERY == 0 {
+        tick()?;
+      }
+      steps = steps.checked_add(1).ok_or(VmError::OutOfMemory)?;
+
+      let cell = fr.cells[i];
+      if cell.target.is_none() {
+        let held_value = cell.held_value;
+        fr.cells.swap_remove(i);
+
+        // Recompute whether there are any other pending cells. We have already verified that cells
+        // before `i` were live (their targets were not cleared), so scan from `i` onward (including
+        // the element swapped into `i`).
+        let mut pending = false;
+        for (j, cell) in fr.cells.iter().enumerate().skip(i) {
+          if j % TICK_EVERY == 0 {
+            tick()?;
+          }
+          if cell.target.is_none() {
+            pending = true;
+            break;
+          }
+        }
+        fr.cleanup_pending = pending;
+        if pending {
+          self.finalization_registry_cleanup_jobs_pending = true;
+        }
+        return Ok(Some(held_value));
+      }
+
+      i = i.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    }
+
+    // No pending cells.
+    fr.cleanup_pending = false;
+    Ok(None)
+  }
+
   fn get_regexp(&self, obj: GcObject) -> Result<&JsRegExp, VmError> {
     match self.get_heap_object(obj.0)? {
       HeapObject::RegExp(r) => Ok(r),
@@ -3137,6 +3541,10 @@ impl Heap {
       WeakSet {
         entry_capacity: usize,
       },
+      WeakRef,
+      FinalizationRegistry {
+        cell_capacity: usize,
+      },
       Generator {
         continuation_bytes: usize,
       },
@@ -3261,6 +3669,26 @@ impl Heap {
           },
           ws.base.properties.len(),
         ),
+        HeapObject::WeakRef(wr) => (
+          wr
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::WeakRef,
+          wr.base.properties.len(),
+        ),
+        HeapObject::FinalizationRegistry(fr) => (
+          fr
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::FinalizationRegistry {
+            cell_capacity: fr.cells.capacity(),
+          },
+          fr.base.properties.len(),
+        ),
         HeapObject::Generator(g) => (
           g.object
             .base
@@ -3311,6 +3739,10 @@ impl Heap {
       ),
       TargetKind::WeakSet { entry_capacity } => {
         JsWeakSet::heap_size_bytes_for_counts(new_property_count, entry_capacity)
+      }
+      TargetKind::WeakRef => JsWeakRef::heap_size_bytes_for_property_count(new_property_count),
+      TargetKind::FinalizationRegistry { cell_capacity } => {
+        JsFinalizationRegistry::heap_size_bytes_for_counts(new_property_count, cell_capacity)
       }
       TargetKind::Generator {
         continuation_bytes,
@@ -3372,6 +3804,14 @@ impl Heap {
           buf.extend_from_slice(&ws.base.properties[..idx]);
           buf.extend_from_slice(&ws.base.properties[idx + 1..]);
         }
+        Some(HeapObject::WeakRef(wr)) => {
+          buf.extend_from_slice(&wr.base.properties[..idx]);
+          buf.extend_from_slice(&wr.base.properties[idx + 1..]);
+        }
+        Some(HeapObject::FinalizationRegistry(fr)) => {
+          buf.extend_from_slice(&fr.base.properties[..idx]);
+          buf.extend_from_slice(&fr.base.properties[idx + 1..]);
+        }
         Some(HeapObject::Generator(g)) => {
           buf.extend_from_slice(&g.object.base.properties[..idx]);
           buf.extend_from_slice(&g.object.base.properties[idx + 1..]);
@@ -3396,6 +3836,8 @@ impl Heap {
       HeapObject::Function(func) => func.base.properties = properties,
       HeapObject::Promise(p) => p.object.base.properties = properties,
       HeapObject::WeakSet(ws) => ws.base.properties = properties,
+      HeapObject::WeakRef(wr) => wr.base.properties = properties,
+      HeapObject::FinalizationRegistry(fr) => fr.base.properties = properties,
       HeapObject::Generator(g) => g.object.base.properties = properties,
       _ => return Err(VmError::invalid_handle()),
     }
@@ -4059,6 +4501,30 @@ impl Heap {
   fn get_data_view(&self, obj: GcObject) -> Result<&JsDataView, VmError> {
     match self.get_heap_object(obj.0)? {
       HeapObject::DataView(v) => Ok(v),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  fn get_weak_ref(&self, obj: GcObject) -> Result<&JsWeakRef, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::WeakRef(wr) => Ok(wr),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  fn get_finalization_registry(&self, obj: GcObject) -> Result<&JsFinalizationRegistry, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::FinalizationRegistry(fr) => Ok(fr),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  fn get_finalization_registry_mut(
+    &mut self,
+    obj: GcObject,
+  ) -> Result<&mut JsFinalizationRegistry, VmError> {
+    match self.get_heap_object_mut(obj.0)? {
+      HeapObject::FinalizationRegistry(fr) => Ok(fr),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -5306,6 +5772,10 @@ impl Heap {
       WeakSet {
         entry_capacity: usize,
       },
+      WeakRef,
+      FinalizationRegistry {
+        cell_capacity: usize,
+      },
       Generator {
         continuation_bytes: usize,
       },
@@ -5490,6 +5960,36 @@ impl Heap {
             None,
           )
         }
+        HeapObject::WeakRef(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::WeakRef,
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
+        HeapObject::FinalizationRegistry(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::FinalizationRegistry {
+              cell_capacity: obj.cells.capacity(),
+            },
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
         HeapObject::Generator(g) => {
           let existing_idx = g
             .object
@@ -5554,7 +6054,9 @@ impl Heap {
           Some(HeapObject::WeakMap(wm)) => wm.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Function(func)) => func.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Promise(p)) => p.object.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::WeakRef(wr)) => wr.base.properties[existing_idx].desc = desc,
           Some(HeapObject::WeakSet(ws)) => ws.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::FinalizationRegistry(fr)) => fr.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Generator(g)) => g.object.base.properties[existing_idx].desc = desc,
           _ => return Err(VmError::invalid_handle()),
         }
@@ -5590,6 +6092,10 @@ impl Heap {
           TargetKind::WeakSet { entry_capacity } => {
             JsWeakSet::heap_size_bytes_for_counts(new_property_count, entry_capacity)
           }
+          TargetKind::WeakRef => JsWeakRef::heap_size_bytes_for_property_count(new_property_count),
+          TargetKind::FinalizationRegistry { cell_capacity } => {
+            JsFinalizationRegistry::heap_size_bytes_for_counts(new_property_count, cell_capacity)
+          }
           TargetKind::Generator {
             continuation_bytes,
           } => ObjectBase::properties_heap_size_bytes_for_count(new_property_count)
@@ -5620,7 +6126,9 @@ impl Heap {
             Some(HeapObject::WeakMap(wm)) => buf.extend_from_slice(&wm.base.properties),
             Some(HeapObject::Function(func)) => buf.extend_from_slice(&func.base.properties),
             Some(HeapObject::Promise(p)) => buf.extend_from_slice(&p.object.base.properties),
+            Some(HeapObject::WeakRef(wr)) => buf.extend_from_slice(&wr.base.properties),
             Some(HeapObject::WeakSet(ws)) => buf.extend_from_slice(&ws.base.properties),
+            Some(HeapObject::FinalizationRegistry(fr)) => buf.extend_from_slice(&fr.base.properties),
             Some(HeapObject::Generator(g)) => buf.extend_from_slice(&g.object.base.properties),
             _ => return Err(VmError::invalid_handle()),
           }
@@ -5640,7 +6148,9 @@ impl Heap {
           Some(HeapObject::WeakMap(wm)) => wm.base.properties = properties,
           Some(HeapObject::Function(func)) => func.base.properties = properties,
           Some(HeapObject::Promise(p)) => p.object.base.properties = properties,
+          Some(HeapObject::WeakRef(wr)) => wr.base.properties = properties,
           Some(HeapObject::WeakSet(ws)) => ws.base.properties = properties,
+          Some(HeapObject::FinalizationRegistry(fr)) => fr.base.properties = properties,
           Some(HeapObject::Generator(g)) => g.object.base.properties = properties,
           _ => return Err(VmError::invalid_handle()),
         }
@@ -6630,6 +7140,63 @@ impl<'a> Scope<'a> {
     scope.heap.ensure_can_allocate(new_bytes)?;
 
     let obj = HeapObject::WeakMap(JsWeakMap::new(prototype));
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates a `WeakRef` object on the heap with an explicit `[[Prototype]]`.
+  pub fn alloc_weak_ref_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+    target: GcObject,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    let mut roots = [Value::Object(target); 2];
+    let mut root_count = 0usize;
+    if let Some(proto) = prototype {
+      roots[root_count] = Value::Object(proto);
+      root_count += 1;
+    }
+    roots[root_count] = Value::Object(target);
+    root_count += 1;
+    scope.push_roots(&roots[..root_count])?;
+
+    let new_bytes = JsWeakRef::heap_size_bytes_for_property_count(0);
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::WeakRef(JsWeakRef::new(prototype, target));
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates a `FinalizationRegistry` object on the heap with an explicit `[[Prototype]]`.
+  pub fn alloc_finalization_registry_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+    cleanup_callback: Value,
+    realm: Option<RealmId>,
+  ) -> Result<GcObject, VmError> {
+    debug_assert!(self.heap.debug_value_is_valid_or_primitive(cleanup_callback));
+
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    let mut roots = [Value::Undefined; 2];
+    let mut root_count = 0usize;
+    if let Some(proto) = prototype {
+      roots[root_count] = Value::Object(proto);
+      root_count += 1;
+    }
+    roots[root_count] = cleanup_callback;
+    root_count += 1;
+    scope.push_roots(&roots[..root_count])?;
+
+    let new_bytes = JsFinalizationRegistry::heap_size_bytes_for_counts(0, 0);
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::FinalizationRegistry(JsFinalizationRegistry::new(
+      prototype,
+      cleanup_callback,
+      realm,
+    ));
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
@@ -7936,8 +8503,10 @@ enum HeapObject {
   Promise(JsPromise),
   Map(JsMap),
   Set(JsSet),
+  WeakRef(JsWeakRef),
   WeakMap(JsWeakMap),
   WeakSet(JsWeakSet),
+  FinalizationRegistry(JsFinalizationRegistry),
   Generator(JsGenerator),
 }
 
@@ -7958,8 +8527,10 @@ impl Trace for HeapObject {
       HeapObject::Promise(p) => p.trace(tracer),
       HeapObject::Map(m) => m.trace(tracer),
       HeapObject::Set(s) => s.trace(tracer),
+      HeapObject::WeakRef(wr) => wr.trace(tracer),
       HeapObject::WeakMap(wm) => wm.trace(tracer),
       HeapObject::WeakSet(ws) => ws.trace(tracer),
+      HeapObject::FinalizationRegistry(fr) => fr.trace(tracer),
       HeapObject::Generator(g) => g.trace(tracer),
     }
   }
@@ -8320,6 +8891,86 @@ impl Trace for JsDataView {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     self.base.trace(tracer);
     tracer.trace_value(Value::Object(self.viewed_array_buffer));
+  }
+}
+
+#[derive(Debug)]
+struct JsWeakRef {
+  base: ObjectBase,
+  target: WeakGcObject,
+}
+
+impl JsWeakRef {
+  fn new(prototype: Option<GcObject>, target: GcObject) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      target: WeakGcObject::from(target),
+    }
+  }
+
+  fn heap_size_bytes_for_property_count(property_count: usize) -> usize {
+    ObjectBase::properties_heap_size_bytes_for_count(property_count)
+  }
+}
+
+impl Trace for JsWeakRef {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    // WeakRef targets are weak: do not trace `target`.
+    self.base.trace(tracer);
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FinalizationRegistryCell {
+  /// Weak reference to the target object. Cleared to `None` when the target is collected.
+  target: Option<WeakGcObject>,
+  /// Strongly-held value passed to the cleanup callback.
+  held_value: Value,
+  /// Optional weak unregister token.
+  unregister_token: Option<WeakGcObject>,
+}
+
+#[derive(Debug)]
+struct JsFinalizationRegistry {
+  base: ObjectBase,
+  cleanup_callback: Value,
+  cells: Vec<FinalizationRegistryCell>,
+  realm: Option<RealmId>,
+  cleanup_pending: bool,
+}
+
+impl JsFinalizationRegistry {
+  fn new(prototype: Option<GcObject>, cleanup_callback: Value, realm: Option<RealmId>) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      cleanup_callback,
+      cells: Vec::new(),
+      realm,
+      cleanup_pending: false,
+    }
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    Self::heap_size_bytes_for_counts(self.base.properties.len(), self.cells.capacity())
+  }
+
+  fn heap_size_bytes_for_counts(property_count: usize, cell_capacity: usize) -> usize {
+    let props_bytes = ObjectBase::properties_heap_size_bytes_for_count(property_count);
+    let cell_bytes = cell_capacity
+      .checked_mul(mem::size_of::<FinalizationRegistryCell>())
+      .unwrap_or(usize::MAX);
+    props_bytes.saturating_add(cell_bytes)
+  }
+}
+
+impl Trace for JsFinalizationRegistry {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.base.trace(tracer);
+    tracer.trace_value(self.cleanup_callback);
+    // Cells keep held values alive, but targets and unregister tokens are weak.
+    for cell in self.cells.iter() {
+      tracer.trace_value(cell.held_value);
+    }
   }
 }
 

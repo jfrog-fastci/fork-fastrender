@@ -652,6 +652,21 @@ impl Realm {
         Value::Object(intrinsics.weak_set()),
       )?;
 
+      let weak_ref_key = PropertyKey::from_string(scope.alloc_string("WeakRef")?);
+      scope.define_property(
+        global_object,
+        weak_ref_key,
+        global_data_desc(Value::Object(intrinsics.weak_ref())),
+      )?;
+
+      let finalization_registry_key =
+        PropertyKey::from_string(scope.alloc_string("FinalizationRegistry")?);
+      scope.define_property(
+        global_object,
+        finalization_registry_key,
+        global_data_desc(Value::Object(intrinsics.finalization_registry())),
+      )?;
+
       Ok(())
     })() {
       for root in roots.drain(..) {

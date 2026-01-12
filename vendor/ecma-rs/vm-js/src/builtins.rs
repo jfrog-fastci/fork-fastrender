@@ -21801,6 +21801,259 @@ pub fn weak_set_constructor_construct(
   }
 }
 
+pub fn weak_ref_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("WeakRef constructor requires 'new'"))
+}
+
+pub fn weak_ref_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let intr = require_intrinsics(vm)?;
+
+  let target = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target else {
+    return Err(VmError::TypeError("WeakRef target must be an object"));
+  };
+
+  let weak_ref = scope.alloc_weak_ref_with_prototype(Some(intr.weak_ref_prototype()), target_obj)?;
+  Ok(Value::Object(weak_ref))
+}
+
+pub fn weak_ref_prototype_deref(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(weak_ref) = this else {
+    return Err(VmError::TypeError("WeakRef.prototype.deref called on non-object"));
+  };
+  if !scope.heap().is_weak_ref_object(weak_ref) {
+    return Err(VmError::TypeError(
+      "WeakRef.prototype.deref called on incompatible receiver",
+    ));
+  }
+
+  let Some(target) = scope.heap().weak_ref_deref(weak_ref)? else {
+    return Ok(Value::Undefined);
+  };
+  Ok(Value::Object(target))
+}
+
+pub fn finalization_registry_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "FinalizationRegistry constructor requires 'new'",
+  ))
+}
+
+pub fn finalization_registry_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let intr = require_intrinsics(vm)?;
+
+  let cleanup_callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(cleanup_callback)? {
+    return Err(VmError::TypeError("FinalizationRegistry cleanup callback is not callable"));
+  }
+
+  // Root callback across allocation: GC can run while growing the heap slot table.
+  scope.push_root(cleanup_callback)?;
+  let registry = scope.alloc_finalization_registry_with_prototype(
+    Some(intr.finalization_registry_prototype()),
+    cleanup_callback,
+    vm.current_realm(),
+  )?;
+  Ok(Value::Object(registry))
+}
+
+pub fn finalization_registry_prototype_register(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(registry) = this else {
+    return Err(VmError::TypeError(
+      "FinalizationRegistry.prototype.register called on non-object",
+    ));
+  };
+  if !scope.heap().is_finalization_registry_object(registry) {
+    return Err(VmError::TypeError(
+      "FinalizationRegistry.prototype.register called on incompatible receiver",
+    ));
+  }
+
+  let target = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target else {
+    return Err(VmError::TypeError("FinalizationRegistry target must be an object"));
+  };
+
+  let held_value = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let token = args.get(2).copied().unwrap_or(Value::Undefined);
+  let unregister_token = match token {
+    Value::Undefined => None,
+    Value::Object(o) => Some(o),
+    _ => {
+      return Err(VmError::TypeError(
+        "FinalizationRegistry unregisterToken must be an object",
+      ))
+    }
+  };
+
+  // Root inputs across potential GC while growing the registry's cell list.
+  scope.push_roots(&[Value::Object(registry), Value::Object(target_obj), held_value])?;
+  if let Some(token) = unregister_token {
+    scope.push_root(Value::Object(token))?;
+  }
+
+  scope
+    .heap_mut()
+    .finalization_registry_register(registry, target_obj, held_value, unregister_token)?;
+  Ok(Value::Undefined)
+}
+
+pub fn finalization_registry_prototype_unregister(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(registry) = this else {
+    return Err(VmError::TypeError(
+      "FinalizationRegistry.prototype.unregister called on non-object",
+    ));
+  };
+  if !scope.heap().is_finalization_registry_object(registry) {
+    return Err(VmError::TypeError(
+      "FinalizationRegistry.prototype.unregister called on incompatible receiver",
+    ));
+  }
+
+  let token = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(token_obj) = token else {
+    return Err(VmError::TypeError(
+      "FinalizationRegistry unregisterToken must be an object",
+    ));
+  };
+
+  // Root inputs across in-place cell table scanning.
+  scope.push_roots(&[Value::Object(registry), Value::Object(token_obj)])?;
+
+  let removed = scope
+    .heap_mut()
+    .finalization_registry_unregister_with_tick(registry, token_obj, || vm.tick())?;
+  Ok(Value::Bool(removed))
+}
+
+pub fn finalization_registry_prototype_cleanup_some(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(registry) = this else {
+    return Err(VmError::TypeError(
+      "FinalizationRegistry.prototype.cleanupSome called on non-object",
+    ));
+  };
+  if !scope.heap().is_finalization_registry_object(registry) {
+    return Err(VmError::TypeError(
+      "FinalizationRegistry.prototype.cleanupSome called on incompatible receiver",
+    ));
+  }
+
+  // Root the receiver for the duration of cleanup so we can freely allocate/call user code.
+  scope.push_root(Value::Object(registry))?;
+
+  let callback_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let callback = if matches!(callback_arg, Value::Undefined) {
+    scope.heap().finalization_registry_cleanup_callback(registry)?
+  } else {
+    callback_arg
+  };
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("FinalizationRegistry cleanup callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
+  const TICK_EVERY: usize = 32;
+  let mut i = 0usize;
+  loop {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    i = i.checked_add(1).ok_or(VmError::OutOfMemory)?;
+
+    let held = scope
+      .heap_mut()
+      .finalization_registry_pop_pending_cleanup_value_with_tick(registry, || vm.tick())?;
+    let Some(held) = held else {
+      break;
+    };
+
+    // Use a nested scope so per-iteration roots do not accumulate.
+    let mut call_scope = scope.reborrow();
+    call_scope.push_root(held)?;
+    let _ = vm.call_with_host_and_hooks(
+      host,
+      &mut call_scope,
+      hooks,
+      callback,
+      Value::Undefined,
+      &[held],
+    )?;
+  }
+
+  Ok(Value::Undefined)
+}
+
 pub fn weak_map_prototype_get(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
