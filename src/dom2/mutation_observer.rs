@@ -431,13 +431,16 @@ impl Document {
     for observer in pending {
       let (node_list, records) = {
         let mut agent = self.mutation_observer_agent.borrow_mut();
-        let Some(state) = agent.observers.get_mut(&observer) else {
-          continue;
+        let (node_list, records, record_count) = {
+          let Some(state) = agent.observers.get_mut(&observer) else {
+            continue;
+          };
+          state.in_pending = false;
+          let node_list = state.node_list.clone();
+          let records = std::mem::take(&mut state.records);
+          let record_count = records.len();
+          (node_list, records, record_count)
         };
-        state.in_pending = false;
-        let node_list = state.node_list.clone();
-        let records = std::mem::take(&mut state.records);
-        let record_count = records.len();
         agent.total_records = agent.total_records.saturating_sub(record_count);
         (node_list, records)
       };

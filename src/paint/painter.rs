@@ -13307,7 +13307,6 @@ impl Painter {
       );
     }
   }
-
   fn paint_missing_image_placeholder(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
     self.paint_solid_rect_simple(content_rect, Rgba::rgb(192, 192, 192), clip_mask);
 
@@ -13362,7 +13361,7 @@ impl Painter {
     if let Some(path) = diag2.finish() {
       self
         .pixmap
-        .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+      .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
     }
   }
 
@@ -13391,7 +13390,6 @@ impl Painter {
       .pixmap
       .fill_rect(sk_rect, &paint, Transform::identity(), clip_mask);
   }
-
   fn effective_text_align(style: &ComputedStyle) -> crate::style::types::TextAlign {
     use crate::style::types::{Direction, TextAlign};
     match style.text_align {

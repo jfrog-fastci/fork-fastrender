@@ -294,6 +294,9 @@ pub(crate) struct WindowRealmUserData {
   /// Cached JS `window` global object for mapping `EventTargetId::Window` back into JS when the
   /// target is not a DOM-backed node/document.
   window_obj: Option<GcObject>,
+  /// Cached JS `window.history` object for updating `history.state`/`history.length` during
+  /// same-document navigations (fragment navigations and session history traversal).
+  history_obj: Option<GcObject>,
   /// Cached JS `document` object for rooting event listener callbacks and mapping
   /// `EventTargetId::Document` back into JS.
   document_obj: Option<GcObject>,
@@ -358,6 +361,7 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("has_dom_platform", &self.dom_platform.is_some())
       .field("crypto_rng_state", &self.crypto_rng_state)
       .field("has_window_obj", &self.window_obj.is_some())
+      .field("has_history_obj", &self.history_obj.is_some())
       .field("has_document_obj", &self.document_obj.is_some())
       .field("has_location_obj", &self.location_obj.is_some())
       .finish()
@@ -408,6 +412,7 @@ impl WindowRealmUserData {
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
       realm_document_registry: RealmDocumentRegistry::default(),
       window_obj: None,
+      history_obj: None,
       document_obj: None,
       location_obj: None,
       console_counts: HashMap::new(),
@@ -3959,6 +3964,161 @@ fn request_location_navigation(
   Ok(Value::Undefined)
 }
 
+fn queue_hashchange_task(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  old_url: String,
+  new_url: String,
+) -> Result<(), VmError> {
+  if let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) {
+    return event_loop
+      .queue_task(TaskSource::Script, move |host, event_loop| {
+        dispatch_hashchange_event(host, event_loop, &old_url, &new_url)
+      })
+      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()));
+  }
+  if let Some(event_loop) = event_loop_mut_from_hooks::<BrowserTabHost>(hooks) {
+    return event_loop
+      .queue_task(TaskSource::Script, move |host, event_loop| {
+        dispatch_hashchange_event(host, event_loop, &old_url, &new_url)
+      })
+      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()));
+  }
+
+  Ok(())
+}
+
+fn dispatch_hashchange_event_in_realm(
+  vm: &mut Vm,
+  heap: &mut Heap,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_obj: GcObject,
+  old_url: &str,
+  new_url: &str,
+) -> Result<(), VmError> {
+  let mut scope = heap.scope();
+  scope.push_root(Value::Object(global_obj))?;
+
+  let type_s = scope.alloc_string("hashchange")?;
+  scope.push_root(Value::String(type_s))?;
+
+  let old_url_s = scope.alloc_string(old_url)?;
+  let new_url_s = scope.alloc_string(new_url)?;
+  scope.push_root(Value::String(old_url_s))?;
+  scope.push_root(Value::String(new_url_s))?;
+
+  let init_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(init_obj))?;
+  let old_url_key = alloc_key(&mut scope, "oldURL")?;
+  scope.define_property(init_obj, old_url_key, data_desc(Value::String(old_url_s)))?;
+  let new_url_key = alloc_key(&mut scope, "newURL")?;
+  scope.define_property(init_obj, new_url_key, data_desc(Value::String(new_url_s)))?;
+
+  let hash_change_ctor_key = alloc_key(&mut scope, "HashChangeEvent")?;
+  let hash_change_ctor =
+    vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, hash_change_ctor_key)?;
+  scope.push_root(hash_change_ctor)?;
+
+  let (event_value, needs_payload_define) =
+    if scope.heap().is_callable(hash_change_ctor).unwrap_or(false) {
+      (
+        vm.construct_with_host_and_hooks(
+          vm_host,
+          &mut scope,
+          hooks,
+          hash_change_ctor,
+          &[Value::String(type_s), Value::Object(init_obj)],
+          hash_change_ctor,
+        )?,
+        false,
+      )
+    } else {
+      let event_ctor_key = alloc_key(&mut scope, "Event")?;
+      let event_ctor =
+        vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, event_ctor_key)?;
+      scope.push_root(event_ctor)?;
+      (
+        vm.construct_with_host_and_hooks(
+          vm_host,
+          &mut scope,
+          hooks,
+          event_ctor,
+          &[Value::String(type_s), Value::Object(init_obj)],
+          event_ctor,
+        )?,
+        true,
+      )
+    };
+
+  let Value::Object(event_obj) = event_value else {
+    return Err(VmError::Unimplemented(
+      "HashChangeEvent/Event constructor returned non-object",
+    ));
+  };
+  scope.push_root(Value::Object(event_obj))?;
+
+  if needs_payload_define {
+    scope.define_property(
+      event_obj,
+      old_url_key,
+      read_only_data_desc(Value::String(old_url_s)),
+    )?;
+    scope.define_property(
+      event_obj,
+      new_url_key,
+      read_only_data_desc(Value::String(new_url_s)),
+    )?;
+  }
+
+  let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
+  let dispatch = vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, global_obj, dispatch_key)?;
+  let _ = vm.call_with_host_and_hooks(
+    vm_host,
+    &mut scope,
+    hooks,
+    dispatch,
+    Value::Object(global_obj),
+    &[Value::Object(event_obj)],
+  )?;
+
+  Ok(())
+}
+
+fn dispatch_hashchange_event<Host: WindowRealmHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+  old_url: &str,
+  new_url: &str,
+) -> crate::error::Result<()> {
+  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+  hooks.set_event_loop(event_loop);
+  window_realm.reset_interrupt();
+
+  let global_obj = window_realm.global_object();
+  let budget = window_realm.vm_budget_now();
+  let (vm, heap) = window_realm.vm_and_heap_mut();
+
+  let result: Result<(), VmError> = (|| {
+    let mut vm = vm.push_budget(budget);
+    vm.tick()?;
+    dispatch_hashchange_event_in_realm(&mut *vm, heap, vm_host, &mut hooks, global_obj, old_url, new_url)
+  })();
+
+  let finish_err = hooks.finish(heap);
+  if let Some(err) = finish_err {
+    return Err(err);
+  }
+
+  match result {
+    Ok(()) => Ok(()),
+    Err(err) => Err(crate::js::vm_error_format::vm_error_to_error(heap, err)),
+  }
+}
+
 fn window_location_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5125,6 +5285,7 @@ fn schedule_history_traversal(
   {
     dispatch_history_traversal_events(vm, scope, vm_host, hooks, window_obj, &traversal)?;
   }
+
   Ok(())
 }
 
@@ -30330,6 +30491,7 @@ fn init_window_globals(
   // `new EventTarget()` instances.
   if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
     user_data.window_obj = Some(global);
+    user_data.history_obj = Some(history_obj);
     user_data.document_obj = Some(document_obj);
     user_data.location_obj = Some(location_obj);
   }

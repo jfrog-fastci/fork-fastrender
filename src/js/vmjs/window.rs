@@ -5815,6 +5815,204 @@ mod tests {
     );
     Ok(())
   }
+
+  #[test]
+  fn history_traversal_fires_popstate_with_state() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host, event_loop| {
+      host.exec_script_in_event_loop(
+        event_loop,
+        r#"
+        globalThis.__count = 0;
+        globalThis.__state_x = null;
+        globalThis.__href = "";
+        addEventListener('popstate', (e) => {
+          globalThis.__count++;
+          globalThis.__state_x = e.state && e.state.x;
+          globalThis.__href = location.href;
+        });
+        history.pushState({x: 1}, '', '/a');
+        history.pushState({x: 2}, '', '/b');
+        history.back();
+        "#,
+      )?;
+      Ok(())
+    })?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(get_global_prop(&mut host, "__count"), Value::Number(1.0));
+    assert_eq!(get_global_prop(&mut host, "__state_x"), Value::Number(1.0));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__href").as_deref(),
+      Some("https://example.invalid/a")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn location_hash_set_fires_hashchange_with_old_and_new_url() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host, event_loop| {
+      host.exec_script_in_event_loop(
+        event_loop,
+        r#"
+        globalThis.__old = undefined;
+        globalThis.__new = undefined;
+        addEventListener('hashchange', (e) => {
+          globalThis.__old = e.oldURL;
+          globalThis.__new = e.newURL;
+        });
+        location.hash = '#a';
+        "#,
+      )?;
+      Ok(())
+    })?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let hash = host.exec_script("location.hash")?;
+    assert_eq!(value_to_string(&host, hash), "#a");
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__old").as_deref(),
+      Some("https://example.invalid/")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__new").as_deref(),
+      Some("https://example.invalid/#a")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn history_traversal_fragment_change_fires_popstate_then_hashchange() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host, event_loop| {
+      host.exec_script_in_event_loop(
+        event_loop,
+        r#"
+        globalThis.__events = "";
+        addEventListener('popstate', () => { globalThis.__events += "popstate,"; });
+        addEventListener('hashchange', () => { globalThis.__events += "hashchange,"; });
+        location.hash = '#a';
+        location.hash = '#b';
+        history.back();
+        "#,
+      )?;
+      Ok(())
+    })?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let events = get_global_prop_utf8(&mut host, "__events").unwrap_or_default();
+    assert!(
+      events.ends_with("popstate,hashchange,"),
+      "unexpected event order: {events:?}"
+    );
+
+    let hash = host.exec_script("location.hash")?;
+    assert_eq!(value_to_string(&host, hash), "#a");
+    Ok(())
+  }
+
+  #[test]
+  fn window_onpopstate_runs_on_traversal() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host, event_loop| {
+      host.exec_script_in_event_loop(
+        event_loop,
+        r#"
+        globalThis.__calls = 0;
+        globalThis.__state_x = null;
+        window.onpopstate = (e) => {
+          globalThis.__calls++;
+          globalThis.__state_x = e.state && e.state.x;
+        };
+        history.pushState({x: 1}, '', '/a');
+        history.pushState({x: 2}, '', '/b');
+        history.back();
+        "#,
+      )?;
+      Ok(())
+    })?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+    assert_eq!(get_global_prop(&mut host, "__calls"), Value::Number(1.0));
+    assert_eq!(get_global_prop(&mut host, "__state_x"), Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn window_onhashchange_runs_for_hash_navigation() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host, event_loop| {
+      host.exec_script_in_event_loop(
+        event_loop,
+        r#"
+        globalThis.__calls = 0;
+        globalThis.__old = "";
+        globalThis.__new = "";
+        window.onhashchange = (e) => {
+          globalThis.__calls++;
+          globalThis.__old = e.oldURL;
+          globalThis.__new = e.newURL;
+        };
+        location.hash = '#a';
+        "#,
+      )?;
+      Ok(())
+    })?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+    assert_eq!(get_global_prop(&mut host, "__calls"), Value::Number(1.0));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__old").as_deref(),
+      Some("https://example.invalid/")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__new").as_deref(),
+      Some("https://example.invalid/#a")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn hash_only_location_navigation_does_not_request_full_navigation() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script("location.href = '#a'")?;
+    assert!(
+      host
+        .host_mut()
+        .window_mut()
+        .take_pending_navigation_request()
+        .is_none(),
+      "hash-only location.href navigation should not request full navigation"
+    );
+
+    host.exec_script("location = '#b'")?;
+    assert!(
+      host
+        .host_mut()
+        .window_mut()
+        .take_pending_navigation_request()
+        .is_none(),
+      "hash-only `location =` navigation should not request full navigation"
+    );
+
+    Ok(())
+  }
 }
 
 #[cfg(test)]
