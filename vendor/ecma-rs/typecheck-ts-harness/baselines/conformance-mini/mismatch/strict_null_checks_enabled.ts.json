@@ -7,7 +7,6 @@
       "lib": [
         "lib.es5.d.ts"
       ],
-      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -23,8 +22,8 @@
     {
       "code": 2322,
       "file": "strict_null_checks_enabled.ts",
-      "start": 5,
-      "end": 10,
+      "start": 6,
+      "end": 11,
       "category": "error",
       "message": "Type 'null' is not assignable to type 'string'."
     }

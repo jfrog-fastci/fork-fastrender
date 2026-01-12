@@ -8,7 +8,6 @@
         "lib.es2015.iterable.d.ts",
         "lib.es2015.promise.d.ts"
       ],
-      "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
       "noUncheckedIndexedAccess": false,
@@ -27,14 +26,6 @@
       "start": 0,
       "end": 0,
       "category": "error",
-      "message": "Cannot find global type 'Array'."
-    },
-    {
-      "code": 2318,
-      "file": null,
-      "start": 0,
-      "end": 0,
-      "category": "error",
       "message": "Cannot find global type 'Boolean'."
     },
     {
@@ -44,14 +35,6 @@
       "end": 0,
       "category": "error",
       "message": "Cannot find global type 'Function'."
-    },
-    {
-      "code": 2318,
-      "file": null,
-      "start": 0,
-      "end": 0,
-      "category": "error",
-      "message": "Cannot find global type 'IArguments'."
     },
     {
       "code": 2318,
@@ -76,14 +59,6 @@
       "end": 0,
       "category": "error",
       "message": "Cannot find global type 'RegExp'."
-    },
-    {
-      "code": 2318,
-      "file": null,
-      "start": 0,
-      "end": 0,
-      "category": "error",
-      "message": "Cannot find global type 'String'."
     }
   ]
 }
