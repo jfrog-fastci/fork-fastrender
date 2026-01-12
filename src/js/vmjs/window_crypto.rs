@@ -2,7 +2,7 @@
 //!
 //! This module implements the RNG-facing subset of WebCrypto that is commonly used by real-world
 //! scripts:
-//! - `crypto.getRandomValues(Uint8Array)`
+//! - `crypto.getRandomValues(typedArray)`
 //! - `crypto.randomUUID()`
 //!
 //! ## Determinism
@@ -190,47 +190,131 @@ fn crypto_ctor_illegal_construct(
 fn crypto_get_random_values_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  const TYPE_ERROR_MSG: &str = "crypto.getRandomValues expects an integer TypedArray";
+
   let arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(array_obj) = arg else {
-    return Err(VmError::TypeError(
-      "crypto.getRandomValues expects an integer TypedArray",
-    ));
+    return Err(VmError::TypeError(TYPE_ERROR_MSG));
   };
 
-  if !scope.heap().is_uint8_array_object(array_obj) {
-    return Err(VmError::TypeError(
-      "crypto.getRandomValues expects an integer TypedArray",
-    ));
-  }
+  // Root the argument object for the duration of any property gets / allocations (property access
+  // can run JS and trigger GC).
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(array_obj))?;
 
-  let len = {
-    // Avoid holding the heap borrow across the subsequent write loop.
-    scope.heap().uint8_array_data(array_obj)?.len()
+  // WebCrypto spec: fill the **bytes** of the passed TypedArray view, respecting `byteOffset` and
+  // `byteLength`, and return the same object.
+  //
+  // We implement this by writing through a `Uint8Array` view:
+  // - If the input is a native `Uint8Array`, write directly to it.
+  // - Otherwise, read `buffer`/`byteOffset`/`byteLength` and create a temporary `Uint8Array` view
+  //   over those bytes for efficient filling.
+  let (write_view_obj, byte_len) = if scope.heap().is_uint8_array_object(array_obj) {
+    let len = {
+      // Avoid holding the heap borrow across the subsequent write loop.
+      scope.heap().uint8_array_data(array_obj)?.len()
+    };
+    if len > MAX_GET_RANDOM_VALUES_BYTES {
+      // WebCrypto quota: 65536 bytes (measured on byteLength).
+      return Err(VmError::Throw(create_dom_exception_like(
+        &mut scope,
+        "QuotaExceededError",
+        "",
+      )?));
+    }
+    (array_obj, len)
+  } else {
+    // --- Type check (spec: only integer TypedArray variants are accepted) ----------------------
+    let ctor_key = alloc_key(&mut scope, "constructor")?;
+    let ctor = vm.get_with_host_and_hooks(host, &mut scope, hooks, array_obj, ctor_key)?;
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::TypeError(TYPE_ERROR_MSG));
+    };
+    scope.push_root(Value::Object(ctor_obj))?;
+
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, ctor_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      return Err(VmError::TypeError(TYPE_ERROR_MSG));
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    let is_integer_typed_array = matches!(
+      name.as_str(),
+      "Int8Array"
+        | "Uint8Array"
+        | "Uint8ClampedArray"
+        | "Int16Array"
+        | "Uint16Array"
+        | "Int32Array"
+        | "Uint32Array"
+    );
+    if !is_integer_typed_array {
+      return Err(VmError::TypeError(TYPE_ERROR_MSG));
+    }
+
+    // --- Extract view fields ------------------------------------------------------------------
+    let buffer_key = alloc_key(&mut scope, "buffer")?;
+    let byte_offset_key = alloc_key(&mut scope, "byteOffset")?;
+    let byte_length_key = alloc_key(&mut scope, "byteLength")?;
+
+    let buffer_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, array_obj, buffer_key)?;
+    let Value::Object(buffer_obj) = buffer_val else {
+      return Err(VmError::TypeError(TYPE_ERROR_MSG));
+    };
+    if !scope.heap().is_array_buffer_object(buffer_obj) {
+      return Err(VmError::TypeError(TYPE_ERROR_MSG));
+    }
+
+    fn to_nonneg_usize(value: Value) -> Option<usize> {
+      match value {
+        Value::Number(n) if n.is_finite() && n >= 0.0 && n.fract() == 0.0 => {
+          if n > (usize::MAX as f64) {
+            None
+          } else {
+            Some(n as usize)
+          }
+        }
+        _ => None,
+      }
+    }
+
+    let byte_offset_val =
+      vm.get_with_host_and_hooks(host, &mut scope, hooks, array_obj, byte_offset_key)?;
+    let byte_offset = to_nonneg_usize(byte_offset_val).ok_or(VmError::TypeError(TYPE_ERROR_MSG))?;
+
+    let byte_length_val =
+      vm.get_with_host_and_hooks(host, &mut scope, hooks, array_obj, byte_length_key)?;
+    let byte_len = to_nonneg_usize(byte_length_val).ok_or(VmError::TypeError(TYPE_ERROR_MSG))?;
+
+    // WebCrypto quota: 65536 bytes per call (measured on the view's byte length).
+    if byte_len > MAX_GET_RANDOM_VALUES_BYTES {
+      return Err(VmError::Throw(create_dom_exception_like(
+        &mut scope,
+        "QuotaExceededError",
+        "",
+      )?));
+    }
+
+    // Allocate a temporary Uint8Array view over the same bytes so we can populate it efficiently
+    // via `Heap::uint8_array_write`.
+    let view = scope.alloc_uint8_array(buffer_obj, byte_offset, byte_len)?;
+    (view, byte_len)
   };
-
-  if len > MAX_GET_RANDOM_VALUES_BYTES {
-    // WebCrypto quota: 65536 bytes.
-    return Err(VmError::Throw(create_dom_exception_like(
-      scope,
-      "QuotaExceededError",
-      "",
-    )?));
-  }
 
   let mut offset = 0usize;
   let mut buf = [0u8; 64];
-  while offset < len {
-    let n = (len - offset).min(buf.len());
+  while offset < byte_len {
+    let n = (byte_len - offset).min(buf.len());
     crypto_rng_fill_bytes(vm, &mut buf[..n])?;
     let wrote = scope
       .heap_mut()
-      .uint8_array_write(array_obj, offset, &buf[..n])?;
+      .uint8_array_write(write_view_obj, offset, &buf[..n])?;
     debug_assert_eq!(wrote, n, "uint8_array_write should write full chunk");
     offset += wrote;
   }
@@ -692,5 +776,134 @@ mod tests {
         "1ddd6c89-4bce-4447-9d65-79e0a8a6cfab"
       );
     }
+  }
+
+  fn install_typed_array_polyfills(realm: &mut WindowRealm) {
+    realm
+      .exec_script(
+        r#"
+        (() => {
+          function initView(obj, n, bytesPerElement) {
+            obj.buffer = new ArrayBuffer(n * bytesPerElement);
+            obj.byteOffset = 0;
+            obj.byteLength = n * bytesPerElement;
+            obj.length = n;
+          }
+
+          // `vm-js` only implements `%Uint8Array%` currently; define minimal TypedArray-like
+          // constructors for unit tests (only when missing).
+          if (typeof Int8Array !== 'function') {
+            globalThis.Int8Array = function Int8Array(n) { initView(this, n, 1); };
+          }
+          if (typeof Uint8ClampedArray !== 'function') {
+            globalThis.Uint8ClampedArray = function Uint8ClampedArray(n) { initView(this, n, 1); };
+          }
+          if (typeof Int16Array !== 'function') {
+            globalThis.Int16Array = function Int16Array(n) { initView(this, n, 2); };
+          }
+          if (typeof Uint16Array !== 'function') {
+            globalThis.Uint16Array = function Uint16Array(n) { initView(this, n, 2); };
+          }
+          if (typeof Int32Array !== 'function') {
+            globalThis.Int32Array = function Int32Array(n) { initView(this, n, 4); };
+          }
+          if (typeof Uint32Array !== 'function') {
+            globalThis.Uint32Array = function Uint32Array(n) { initView(this, n, 4); };
+          }
+
+          if (typeof Float32Array !== 'function') {
+            globalThis.Float32Array = function Float32Array(n) { initView(this, n, 4); };
+          }
+          return true;
+        })()
+        "#,
+      )
+      .expect("install typed array polyfills");
+  }
+
+  #[test]
+  fn crypto_get_random_values_accepts_integer_typed_arrays() {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+    )
+    .expect("create realm");
+    install_typed_array_polyfills(&mut realm);
+
+    for ta in [
+      "Int8Array",
+      "Uint8Array",
+      "Uint8ClampedArray",
+      "Int16Array",
+      "Uint16Array",
+      "Int32Array",
+      "Uint32Array",
+    ] {
+      let src = format!(
+        r#"
+        (() => {{
+          const a = new {ta}(4);
+          const b = crypto.getRandomValues(a);
+          return b === a && b.length === 4;
+        }})()
+        "#
+      );
+      let v = realm.exec_script(&src).expect("script should run");
+      assert_eq!(v, Value::Bool(true), "TA={ta}");
+    }
+  }
+
+  #[test]
+  fn crypto_get_random_values_rejects_float32_array() {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+    )
+    .expect("create realm");
+    install_typed_array_polyfills(&mut realm);
+
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          try { crypto.getRandomValues(new Float32Array(4)); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "TypeError");
+  }
+
+  #[test]
+  fn crypto_get_random_values_enforces_quota_in_bytes() {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/").with_crypto_rng_seed(1),
+    )
+    .expect("create realm");
+    install_typed_array_polyfills(&mut realm);
+
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          try { crypto.getRandomValues(new Uint8Array(65537)); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "QuotaExceededError");
+
+    // Quota is enforced on the view's *byteLength*, not element length.
+    let v = realm
+      .exec_script(
+        r#"
+        (() => {
+          try { crypto.getRandomValues(new Uint32Array(16385)); return "no-error"; }
+          catch (e) { return e && e.name || String(e); }
+        })()
+        "#,
+      )
+      .expect("script should catch and return");
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "QuotaExceededError");
   }
 }
