@@ -198,6 +198,14 @@ fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
   }
 }
 
+fn vec_try_push_vm<T>(vec: &mut Vec<T>, value: T) -> Result<(), VmError> {
+  if vec.len() == vec.capacity() {
+    vec.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+  }
+  vec.push(value);
+  Ok(())
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RegExpFlags {
   pub(crate) global: bool,
