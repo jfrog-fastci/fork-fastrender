@@ -30,6 +30,7 @@ use std::future::Future;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
@@ -1676,6 +1677,150 @@ fn rt_io_register_rooted_h_callback_receives_relocated_ptr_after_gc() {
 
   rt_io_unregister(id);
   runtime_native::rt_async_run_until_idle();
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_io_register_rooted_h_reads_slot_after_lock_acquired() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, wfd) = pipe_nonblocking().unwrap();
+
+  ROOTED_H_CB_FIRED.store(false, Ordering::SeqCst);
+  ROOTED_H_CB_PTR.store(0, Ordering::SeqCst);
+
+  let base_roots = runtime_native::roots::global_persistent_handle_table().live_count();
+
+  // Pointers are treated as opaque addresses; they do not need to be dereferenceable in this test.
+  let mut slot_value: *mut u8 = 0x1111usize as *mut u8;
+  let new_value: *mut u8 = 0x2222usize as *mut u8;
+  // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+  let slot_ptr: usize = (&mut slot_value as *mut *mut u8) as usize;
+  let rfd_raw = rfd.as_raw_fd();
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  let watcher_id = std::thread::scope(|scope| {
+    // Thread A holds the persistent handle table lock.
+    let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+    let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+    // Thread C attempts to register a rooted-h watcher while the lock is held.
+    let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+    let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+    let (c_done_tx, c_done_rx) = mpsc::channel::<u64>();
+
+    scope.spawn(move || {
+      threading::register_current_thread(ThreadKind::Worker);
+      runtime_native::roots::global_persistent_handle_table().debug_with_read_lock_for_tests(|| {
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+      });
+      threading::unregister_current_thread();
+    });
+
+    a_locked_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread A should acquire the persistent handle table lock");
+
+    scope.spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      c_registered_tx.send(id).unwrap();
+
+      c_start_rx.recv().unwrap();
+
+      let slot_ptr = slot_ptr as *mut *mut u8;
+      // Safety: `slot_ptr` is a valid slot pointer.
+      let id = unsafe { rt_io_register_rooted_h(rfd_raw, RT_IO_READABLE, record_rooted_h_ptr, slot_ptr) };
+      c_done_tx.send(id).unwrap();
+
+      threading::unregister_current_thread();
+    });
+
+    let c_id = c_registered_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread C should register with the thread registry");
+
+    // Start thread C's registration attempt (it should block on the handle table lock).
+    c_start_tx.send(()).unwrap();
+
+    // Wait until thread C is marked NativeSafe (meaning it's blocked on the GC-aware lock).
+    let start = Instant::now();
+    loop {
+      let mut native_safe = false;
+      threading::registry::for_each_thread(|t| {
+        if t.id() == c_id {
+          native_safe = t.is_native_safe();
+        }
+      });
+
+      if native_safe {
+        break;
+      }
+      if start.elapsed() > TIMEOUT {
+        panic!("thread C did not enter a GC-safe region while blocked on the persistent handle table lock");
+      }
+      std::thread::yield_now();
+    }
+
+    // Update the slot while thread C is blocked. If `rt_io_register_rooted_h` (or its internal
+    // plumbing) incorrectly reads the slot before acquiring the lock, it would still observe the
+    // old value.
+    slot_value = new_value;
+
+    // Release the lock so `alloc_from_slot` can proceed and read the updated slot value.
+    a_release_tx.send(()).unwrap();
+
+    let id = c_done_rx
+      .recv_timeout(TIMEOUT)
+      .expect("watcher registration should complete after lock is released");
+    assert_ne!(id, 0, "expected rooted_h registration to succeed");
+    id
+  });
+
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots + 1,
+    "rooted_h registration should allocate exactly one persistent handle while watcher is live"
+  );
+
+  // Ensure `rt_async_poll_legacy` will not block forever if the readiness edge is lost.
+  let timed_out = Box::new(AtomicBool::new(false));
+  let timed_out_ptr: *mut AtomicBool = Box::into_raw(timed_out);
+  let timer_id = runtime_native::async_rt::global().schedule_timer(
+    Instant::now() + Duration::from_secs(1),
+    runtime_native::async_rt::Task::new(set_timeout_flag, timed_out_ptr.cast::<u8>()),
+  );
+
+  write_byte(wfd.as_raw_fd());
+  while !ROOTED_H_CB_FIRED.load(Ordering::SeqCst) {
+    let _ = rt_async_poll();
+    if unsafe { &*timed_out_ptr }.load(Ordering::SeqCst) {
+      panic!("timed out waiting for rooted_h I/O watcher callback");
+    }
+  }
+
+  let _ = runtime_native::async_rt::global().cancel_timer(timer_id);
+  unsafe {
+    drop(Box::from_raw(timed_out_ptr));
+  }
+
+  assert_eq!(
+    ROOTED_H_CB_PTR.load(Ordering::SeqCst),
+    new_value as usize,
+    "rooted_h watcher must read the slot value after acquiring the handle table lock"
+  );
+
+  rt_io_unregister(watcher_id);
+  runtime_native::rt_async_run_until_idle();
+
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    base_roots,
+    "rooted_h watcher should release its persistent handle when unregistered"
+  );
 
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle after unregistering the watcher");
