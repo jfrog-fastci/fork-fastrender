@@ -7274,7 +7274,10 @@ fn resolve_event_target(
 }
 
 fn parse_add_event_listener_options(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   value: Value,
 ) -> Result<web_events::AddEventListenerOptions, VmError> {
   let mut opts = web_events::AddEventListenerOptions::default();
@@ -7285,28 +7288,16 @@ fn parse_add_event_listener_options(
     }
     Value::Object(obj) => {
       let capture_key = alloc_key(scope, "capture")?;
-      if let Some(v) = scope
-        .heap()
-        .object_get_own_data_property_value(obj, &capture_key)?
-      {
-        opts.capture = scope.heap().to_boolean(v)?;
-      }
+      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, capture_key)?;
+      opts.capture = scope.heap().to_boolean(v)?;
 
       let once_key = alloc_key(scope, "once")?;
-      if let Some(v) = scope
-        .heap()
-        .object_get_own_data_property_value(obj, &once_key)?
-      {
-        opts.once = scope.heap().to_boolean(v)?;
-      }
+      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, once_key)?;
+      opts.once = scope.heap().to_boolean(v)?;
 
       let passive_key = alloc_key(scope, "passive")?;
-      if let Some(v) = scope
-        .heap()
-        .object_get_own_data_property_value(obj, &passive_key)?
-      {
-        opts.passive = scope.heap().to_boolean(v)?;
-      }
+      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, passive_key)?;
+      opts.passive = scope.heap().to_boolean(v)?;
 
       Ok(opts)
     }
@@ -7314,18 +7305,19 @@ fn parse_add_event_listener_options(
   }
 }
 
-fn parse_event_listener_capture(scope: &mut Scope<'_>, value: Value) -> Result<bool, VmError> {
+fn parse_event_listener_capture(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<bool, VmError> {
   Ok(match value {
     Value::Bool(b) => b,
     Value::Object(obj) => {
       let capture_key = alloc_key(scope, "capture")?;
-      match scope
-        .heap()
-        .object_get_own_data_property_value(obj, &capture_key)?
-      {
-        Some(v) => scope.heap().to_boolean(v)?,
-        None => false,
-      }
+      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, capture_key)?;
+      scope.heap().to_boolean(v)?
     }
     _ => false,
   })
@@ -8670,7 +8662,7 @@ fn event_target_add_event_listener_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
@@ -8700,36 +8692,32 @@ fn event_target_add_event_listener_native(
   };
 
   let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let options = parse_add_event_listener_options(vm, scope, host, hooks, options_value)?;
   let mut signal_obj: Option<GcObject> = None;
   if let Value::Object(options_obj) = options_value {
     let signal_key = alloc_key(scope, "signal")?;
-    if let Some(signal_value) = scope
-      .heap()
-      .object_get_own_data_property_value(options_obj, &signal_key)?
-    {
-      match signal_value {
-        Value::Undefined | Value::Null => {}
-        Value::Object(obj) => {
-          if !is_branded_abort_signal(scope, obj)? {
-            return Err(VmError::TypeError(
-              "EventTarget.addEventListener: options.signal must be an AbortSignal",
-            ));
-          }
-          if abort_signal_is_aborted(scope, obj)? {
-            // Per spec, listeners added with an already-aborted signal are ignored.
-            return Ok(Value::Undefined);
-          }
-          signal_obj = Some(obj);
-        }
-        _ => {
+    let signal_value = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, signal_key)?;
+    match signal_value {
+      Value::Undefined | Value::Null => {}
+      Value::Object(obj) => {
+        if !is_branded_abort_signal(scope, obj)? {
           return Err(VmError::TypeError(
             "EventTarget.addEventListener: options.signal must be an AbortSignal",
-          ))
+          ));
         }
+        if abort_signal_is_aborted(scope, obj)? {
+          // Per spec, listeners added with an already-aborted signal are ignored.
+          return Ok(Value::Undefined);
+        }
+        signal_obj = Some(obj);
+      }
+      _ => {
+        return Err(VmError::TypeError(
+          "EventTarget.addEventListener: options.signal must be an AbortSignal",
+        ))
       }
     }
   }
-  let options = parse_add_event_listener_options(scope, options_value)?;
   let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 
   // SAFETY: `dom_ptr` is derived from the current `VmHost` (or the realm's fallback document) and
@@ -8830,7 +8818,7 @@ fn event_target_remove_event_listener_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
@@ -8858,7 +8846,7 @@ fn event_target_remove_event_listener_native(
   };
 
   let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
-  let capture = parse_event_listener_capture(scope, options_value)?;
+  let capture = parse_event_listener_capture(vm, scope, host, hooks, options_value)?;
   let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 
   // SAFETY: `dom_ptr` is derived from the current `VmHost` (or the realm's fallback document) and
