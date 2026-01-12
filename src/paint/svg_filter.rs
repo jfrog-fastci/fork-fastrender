@@ -69,6 +69,9 @@ fn record_resource_error(
   }
 }
 
+#[cfg(test)]
+mod tests;
+
 fn filter_cache() -> &'static Mutex<FilterCache> {
   FILTER_CACHE.get_or_init(|| Mutex::new(FilterCache::new(FilterCacheConfig::from_env())))
 }
