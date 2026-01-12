@@ -1833,6 +1833,83 @@ fn collects_nested_defs_in_object_literal_methods() {
 }
 
 #[test]
+fn collects_nested_defs_under_unary_expr() {
+  let source = r#"const x = !(function inner() { return 1; });"#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+  assert_no_missing_exprs(&result);
+}
+
+#[test]
+fn collects_nested_defs_under_new_expr() {
+  let source = r#"const x = new (class Inner { constructor() {} })();"#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+  assert_no_missing_exprs(&result);
+}
+
+#[test]
+fn collects_nested_defs_under_await_expr() {
+  let source = r#"async function f(){ return await (() => 1)(); }"#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+  assert_no_missing_exprs(&result);
+}
+
+#[test]
+fn collects_nested_defs_in_dynamic_import_call() {
+  let source = r#"
+    const x = import(function inner() { return 1; });
+    const y = import("m", { with: { type: "json" } });
+  "#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+  assert_no_missing_exprs(&result);
+}
+
+#[test]
+fn collects_nested_defs_in_object_literal_computed_keys() {
+  let source = r#"const obj = { [(() => "k")()]: 1 };"#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+  assert_no_missing_exprs(&result);
+}
+
+#[test]
+fn collects_nested_defs_in_param_patterns() {
+  let source = r#"function f({a = (() => 1)()}) { return a; }"#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+  assert_no_missing_exprs(&result);
+}
+
+#[test]
+fn collects_nested_defs_in_for_of_patterns() {
+  let source = r#"for (const {a = (()=>1)()} of xs) { }"#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+  assert_no_missing_exprs(&result);
+
+  let offset = source.find("a =").expect("binding `a`") as u32;
+  let def_id = result
+    .hir
+    .span_map
+    .def_at_offset(offset)
+    .expect("binding def at `a` offset");
+  let def = result.def(def_id).expect("def data");
+  assert_eq!(def.path.kind, DefKind::Var);
+}
+
+#[test]
+fn collects_catch_bindings_as_defs() {
+  let source = r#"try { throw 1; } catch (e) { e; }"#;
+  let result = lower_from_source_with_kind(FileKind::Ts, source).expect("lower");
+  assert_no_missing_exprs(&result);
+
+  let offset = (source.find("catch (e)").expect("catch binding") + "catch (".len()) as u32;
+  let def_id = result
+    .hir
+    .span_map
+    .def_at_offset(offset)
+    .expect("binding def at `catch (e)`");
+  let def = result.def(def_id).expect("def data");
+  assert_eq!(def.path.kind, DefKind::Var);
+}
+
+#[test]
 fn computed_member_names_are_distinct_and_stable() {
   let base_source = "const obj = { [foo]() {}, [bar()]() {}, [foo]() {} };";
   let base = lower_from_source_with_kind(FileKind::Ts, base_source).expect("lower base");
