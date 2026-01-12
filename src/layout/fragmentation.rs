@@ -3549,9 +3549,16 @@ fn collect_break_opportunities(
     .map(|grid_items| grid_items.items.len().min(node.children.len()))
     .unwrap_or(0);
 
-  if let (Some(grid_tracks), Some(grid_items)) = (node.grid_tracks.as_deref(), grid_items) {
-    let tracks = grid_tracks_in_fragmentation_axis(grid_tracks, axis);
-    if !tracks.is_empty() && grid_item_count > 0 {
+  let grid_tracks = node
+    .grid_tracks
+    .as_deref()
+    .map(|tracks| grid_tracks_in_fragmentation_axis(tracks, axis));
+  let grid_item_break_hints_use_tracks =
+    grid_item_count > 0 && grid_tracks.is_some_and(|tracks| !tracks.is_empty());
+  let grid_item_break_hints_fallback_to_edges = grid_item_count > 0 && !grid_item_break_hints_use_tracks;
+
+  if let (Some(tracks), Some(grid_items)) = (grid_tracks, grid_items) {
+    if grid_item_break_hints_use_tracks {
       let in_flow_count = grid_item_count;
 
       // One slot per grid line (track_count + 1). Index `i` corresponds to the boundary at line
@@ -3820,7 +3827,7 @@ fn collect_break_opportunities(
       });
     }
 
-    let child_break_before = if idx < grid_item_count {
+    let child_break_before = if idx < grid_item_count && grid_item_break_hints_use_tracks {
       BreakBetween::Auto
     } else {
       child_style.break_before
@@ -3862,6 +3869,31 @@ fn collect_break_opportunities(
       });
     }
 
+    if grid_item_break_hints_fallback_to_edges
+      && idx > 0
+      && idx < grid_item_count
+      && !matches!(child_style.break_before, BreakBetween::Auto)
+    {
+      let mut strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+      strength = apply_avoid_penalty(strength, inside_avoid > 0);
+      if suppress_forced_breaks && matches!(strength, BreakStrength::Forced) {
+        strength = BreakStrength::Auto;
+      }
+      if strength == BreakStrength::Auto
+        && matches!(child.content, FragmentContent::Block { box_id: None })
+      {
+        strength = BreakStrength::Avoid;
+      }
+      if !matches!(strength, BreakStrength::Auto) {
+        collection.opportunities.push(BreakOpportunity {
+          pos: child_abs_start,
+          end: child_abs_start,
+          strength,
+          kind: BreakKind::BetweenSiblings,
+        });
+      }
+    }
+
     // In pagination, treat in-flow grid items as parallel fragmentation flows so their internal
     // break opportunities (including forced breaks) do not affect sibling items (CSS Grid 2
     // §Fragmenting Grid Layout).
@@ -3899,7 +3931,7 @@ fn collect_break_opportunities(
       );
     }
 
-    let child_break_after = if idx < grid_item_count {
+    let child_break_after = if idx < grid_item_count && grid_item_break_hints_use_tracks {
       BreakBetween::Auto
     } else {
       child_style.break_after
@@ -4144,6 +4176,16 @@ fn collect_forced_boundaries_with_axes_internal(
       .as_ref()
       .map(|grid_items| grid_items.items.len().min(node.children.len()))
       .unwrap_or(0);
+    let grid_track_ranges_in_axis = if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
+      node
+        .grid_tracks
+        .as_deref()
+        .map(|tracks| grid_tracks_in_fragmentation_axis(tracks, axis))
+    } else {
+      None
+    };
+    let grid_item_break_hints_fallback_to_edges =
+      in_flow_grid_item_count > 0 && !grid_track_ranges_in_axis.is_some_and(|tracks| !tracks.is_empty());
 
     let mut grid_item_count = 0usize;
     if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
@@ -4357,8 +4399,23 @@ fn collect_forced_boundaries_with_axes_internal(
         }
       }
 
+      if grid_item_break_hints_fallback_to_edges
+        && idx > 0
+        && idx < in_flow_grid_item_count
+        && child_style.position.is_in_flow()
+        && is_forced_page_break(child_style.break_before, include_always)
+      {
+        forced.push(ForcedBoundary {
+          position: child_abs_start,
+          page_side: break_side_hint(child_style.break_before, page_progression_is_ltr),
+        });
+      }
+
       let break_after = is_forced_page_break(child_style.break_after, include_always);
-      let break_before = is_forced_page_break(next_style.break_before, include_always);
+      let mut break_before = is_forced_page_break(next_style.break_before, include_always);
+      if break_before && grid_item_break_hints_fallback_to_edges && idx + 1 < in_flow_grid_item_count {
+        break_before = false;
+      }
       if break_after || break_before {
         let break_from_grid =
           (break_after && idx < grid_item_count) || (break_before && idx + 1 < grid_item_count);
@@ -4379,11 +4436,15 @@ fn collect_forced_boundaries_with_axes_internal(
           if break_after && node.children.get(idx + 1).is_none() {
             boundary = abs_start + parent_block_size;
           }
+          let page_side = if break_before {
+            break_side_hint(next_style.break_before, page_progression_is_ltr)
+              .or(break_side_hint(child_style.break_after, page_progression_is_ltr))
+          } else {
+            break_side_hint(child_style.break_after, page_progression_is_ltr)
+          };
           forced.push(ForcedBoundary {
             position: boundary,
-            page_side: break_side_hint(next_style.break_before, page_progression_is_ltr).or(
-              break_side_hint(child_style.break_after, page_progression_is_ltr),
-            ),
+            page_side,
           });
         }
       }
@@ -6125,6 +6186,196 @@ mod tests {
       (boundaries.last().copied().unwrap_or(0.0) - 60.0).abs() < BREAK_EPSILON,
       "expected boundaries to end at the grid content extent (60px), got {boundaries:?}"
     );
+  }
+
+  #[test]
+  fn grid_item_break_before_is_respected_without_grid_tracks() {
+    let fragmentainer_size = 100.0;
+    let axes = default_axes();
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let item_style = Arc::new(item_style);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.break_before = BreakBetween::Page;
+    let break_style = Arc::new(break_style);
+
+    let mut item1 = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 10.0),
+      vec![],
+      Arc::clone(&item_style),
+    );
+    item1.content = FragmentContent::Block { box_id: Some(1) };
+
+    // Leave a large gap before item2 so pagination would normally prefer the fragmentainer limit
+    // over the between-sibling boundary; the forced break must still win.
+    let mut item2 = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 40.0, 100.0, 10.0),
+      vec![],
+      break_style,
+    );
+    item2.content = FragmentContent::Block { box_id: Some(2) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+      vec![item1, item2],
+      grid_style,
+    );
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 1,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 2,
+          row_start: 2,
+          row_end: 3,
+          column_start: 1,
+          column_end: 2,
+        },
+      ],
+    }));
+
+    let expected = 40.0;
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &grid,
+      FragmentationContext::Page,
+      axes,
+      true,
+      Some(fragmentainer_size),
+    );
+    assert!(
+      analyzer.is_forced_break_at(expected),
+      "expected a forced break opportunity at {expected}px when `grid_fragmentation` is present without grid tracks"
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let forced = collect_forced_boundaries_for_pagination_with_axes(&grid, 0.0, axes);
+
+    assert!(
+      boundaries
+        .iter()
+        .any(|b| (*b - expected).abs() < BREAK_EPSILON),
+      "expected pagination boundaries to include the forced break at the grid item start (y=40), got {boundaries:?}"
+    );
+    let Some(forced_boundary) = forced
+      .iter()
+      .find(|b| (b.position - expected).abs() < BREAK_EPSILON)
+    else {
+      panic!(
+        "expected forced boundaries to include a break at the grid item start (y=40), got {forced:?}"
+      );
+    };
+    assert_eq!(
+      forced_boundary.page_side, None,
+      "expected `break-before: page` not to set a page side hint"
+    );
+  }
+
+  #[test]
+  fn grid_item_break_before_side_hint_is_preserved_without_grid_tracks() {
+    let fragmentainer_size = 100.0;
+    let axes = default_axes();
+
+    for (break_before, expected_side) in [
+      (BreakBetween::Left, Some(PageSide::Left)),
+      (BreakBetween::Right, Some(PageSide::Right)),
+    ] {
+      let mut grid_style = ComputedStyle::default();
+      grid_style.display = Display::Grid;
+      let grid_style = Arc::new(grid_style);
+
+      let mut item_style = ComputedStyle::default();
+      item_style.display = Display::Block;
+      let item_style = Arc::new(item_style);
+
+      let mut break_style = ComputedStyle::default();
+      break_style.display = Display::Block;
+      break_style.break_before = break_before;
+      let break_style = Arc::new(break_style);
+
+      let mut item1 = FragmentNode::new_block_styled(
+        Rect::from_xywh(0.0, 0.0, 100.0, 10.0),
+        vec![],
+        Arc::clone(&item_style),
+      );
+      item1.content = FragmentContent::Block { box_id: Some(1) };
+
+      let mut item2 = FragmentNode::new_block_styled(
+        Rect::from_xywh(0.0, 40.0, 100.0, 10.0),
+        vec![],
+        break_style,
+      );
+      item2.content = FragmentContent::Block { box_id: Some(2) };
+
+      let mut grid = FragmentNode::new_block_styled(
+        Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+        vec![item1, item2],
+        grid_style,
+      );
+      grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+        items: vec![
+          GridItemFragmentationData {
+            box_id: 1,
+            row_start: 1,
+            row_end: 2,
+            column_start: 1,
+            column_end: 2,
+          },
+          GridItemFragmentationData {
+            box_id: 2,
+            row_start: 2,
+            row_end: 3,
+            column_start: 1,
+            column_end: 2,
+          },
+        ],
+      }));
+
+      let expected = 40.0;
+      let forced = collect_forced_boundaries_for_pagination_with_axes(&grid, 0.0, axes);
+      let Some(boundary) = forced
+        .iter()
+        .find(|b| (b.position - expected).abs() < BREAK_EPSILON)
+      else {
+        panic!(
+          "expected forced boundaries to include a break at the grid item start (y=40), got {forced:?}"
+        );
+      };
+      assert_eq!(
+        boundary.page_side, expected_side,
+        "expected page-side hint {expected_side:?} for `break-before: {break_before:?}`, got {boundary:?}"
+      );
+
+      // Also ensure boundary resolution honours the forced break position (even though we cannot
+      // encode the page side hint in break opportunities).
+      let mut analyzer = FragmentationAnalyzer::new(
+        &grid,
+        FragmentationContext::Page,
+        axes,
+        true,
+        Some(fragmentainer_size),
+      );
+      let total_extent = analyzer.content_extent().max(fragmentainer_size);
+      let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+      assert!(
+        boundaries
+          .iter()
+          .any(|b| (*b - expected).abs() < BREAK_EPSILON),
+        "expected pagination boundaries to include the forced break at the grid item start (y=40), got {boundaries:?}"
+      );
+    }
   }
 
   #[test]
