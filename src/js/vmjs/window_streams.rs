@@ -675,6 +675,44 @@ pub(crate) fn create_readable_byte_stream_lazy(
   Ok(obj)
 }
 
+/// Returns `true` if `obj` is a `ReadableStream` created by this module's bindings.
+///
+/// This is used by Fetch BodyInit parsing to avoid treating stream bodies as strings.
+pub(crate) fn is_readable_stream_object(vm: &Vm, heap: &Heap, obj: GcObject) -> bool {
+  let mut registry = registry()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+
+  let key = WeakGcObject::from(obj);
+  let gc_runs = heap.gc_runs();
+
+  if let Some(realm_id) = vm.current_realm() {
+    let Some(state) = registry.realms.get_mut(&realm_id) else {
+      return false;
+    };
+    if gc_runs != state.last_gc_runs {
+      state.last_gc_runs = gc_runs;
+      state.streams.retain(|k, _| k.upgrade(heap).is_some());
+      state.readers.retain(|k, _| k.upgrade(heap).is_some());
+    }
+    return state.streams.contains_key(&key);
+  }
+
+  // If we don't have a current realm (e.g. tests calling native handlers directly), fall back to
+  // scanning all installed realm states. The number of realms is expected to be small.
+  for state in registry.realms.values_mut() {
+    if gc_runs != state.last_gc_runs {
+      state.last_gc_runs = gc_runs;
+      state.streams.retain(|k, _| k.upgrade(heap).is_some());
+      state.readers.retain(|k, _| k.upgrade(heap).is_some());
+    }
+    if state.streams.contains_key(&key) {
+      return true;
+    }
+  }
+  false
+}
+
 pub fn install_window_streams_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) -> Result<(), VmError> {
   let intr = realm.intrinsics();
   let realm_id = realm.id();

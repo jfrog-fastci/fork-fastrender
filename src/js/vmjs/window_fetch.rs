@@ -15,6 +15,7 @@ use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
 use crate::js::window_form_data;
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
+use crate::js::window_streams;
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
 };
@@ -850,6 +851,26 @@ fn readable_stream_reader_info_from_this(scope: &mut Scope<'_>, this: Value) -> 
   let reader_id = number_to_u64(reader_val)
     .map_err(|_| VmError::TypeError("ReadableStreamDefaultReader: illegal invocation"))?;
   Ok((env_id, reader_id))
+}
+
+fn is_fetch_readable_stream_object(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
+  let stream_val = get_data_prop(scope, obj, READABLE_STREAM_ID_KEY)?;
+  if !matches!(env_val, Value::Number(_)) || !matches!(stream_val, Value::Number(_)) {
+    return Ok(false);
+  }
+
+  let Ok(env_id) = number_to_u64(env_val) else {
+    return Ok(false);
+  };
+  let Ok(stream_id) = number_to_u64(stream_val) else {
+    return Ok(false);
+  };
+
+  match with_env_state(env_id, |state| Ok(state.readable_streams.contains_key(&stream_id))) {
+    Ok(found) => Ok(found),
+    Err(_) => Ok(false),
+  }
 }
 
 fn response_body_stream_locked(env_id: u64, response_id: u64) -> Result<bool, VmError> {
@@ -2176,6 +2197,17 @@ fn apply_request_init(
 
     let bytes: Vec<u8> = match body_val {
       Value::Object(obj) => {
+        if window_streams::is_readable_stream_object(vm, scope.heap(), obj)
+          || is_fetch_readable_stream_object(scope, obj)?
+        {
+          return Err(throw_type_error(
+            vm,
+            scope,
+            host,
+            host_hooks,
+            "Request body ReadableStream is not supported yet",
+          ));
+        }
         if scope.heap().is_array_buffer_object(obj) {
           let data = scope.heap().array_buffer_data(obj)?;
           if data.len() > max_body_bytes {
@@ -4521,6 +4553,17 @@ fn response_ctor_construct(
     let max_body_bytes = headers.limits().max_response_body_bytes;
     let bytes: Vec<u8> = match body {
       Value::Object(obj) => {
+        if window_streams::is_readable_stream_object(vm, scope.heap(), obj)
+          || is_fetch_readable_stream_object(scope, obj)?
+        {
+          return Err(throw_type_error(
+            vm,
+            scope,
+            host,
+            host_hooks,
+            "Response body ReadableStream is not supported yet",
+          ));
+        }
         if scope.heap().is_array_buffer_object(obj) {
           let data = scope.heap().array_buffer_data(obj)?;
           if data.len() > max_body_bytes {
@@ -7278,6 +7321,136 @@ mod tests {
     };
     let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
     assert_eq!(name, "TypeError");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_constructors_reject_readable_stream_bodies_in_bodyinit() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+
+    let Value::Object(stream_ctor) = get_data_prop(&mut scope, global, "ReadableStream")? else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream constructor missing",
+      ));
+    };
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+      return Err(VmError::InvariantViolation("Request constructor missing"));
+    };
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+
+    // After installing ReadableStream, constructing a stream should succeed.
+    let Value::Object(stream_obj) = readable_stream_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      stream_ctor,
+      &[],
+      Value::Object(stream_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream constructor must return an object",
+      ));
+    };
+    scope.push_root(Value::Object(stream_obj))?;
+
+    // `new Response(new ReadableStream())` should throw (don't silently stringify).
+    let err = response_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      response_ctor,
+      &[Value::Object(stream_obj)],
+      Value::Object(response_ctor),
+    )
+    .expect_err("expected ReadableStream body to be rejected");
+
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let msg_key = alloc_key(&mut scope, "message")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let msg_val = vm.get(&mut scope, err_obj, msg_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected TypeError.name to be a string, got {name_val:?}");
+    };
+    let Value::String(msg_s) = msg_val else {
+      panic!("expected TypeError.message to be a string, got {msg_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    let msg = scope.heap().get_string(msg_s)?.to_utf8_lossy();
+    assert_eq!(name, "TypeError");
+    assert!(msg.contains("ReadableStream"), "msg={msg}");
+
+    // `new Request('https://x/', { method:'POST', body: new ReadableStream() })` should throw too.
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let post_s = scope.alloc_string("POST")?;
+    scope.push_root(Value::String(post_s))?;
+    set_data_prop(&mut scope, init_obj, "method", Value::String(post_s), true)?;
+    set_data_prop(&mut scope, init_obj, "body", Value::Object(stream_obj), true)?;
+
+    let url_s = scope.alloc_string("https://x/")?;
+    scope.push_root(Value::String(url_s))?;
+    let err = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Object(init_obj)],
+      Value::Object(request_ctor),
+    )
+    .expect_err("expected ReadableStream RequestInit.body to be rejected");
+
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let msg_key = alloc_key(&mut scope, "message")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let msg_val = vm.get(&mut scope, err_obj, msg_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected TypeError.name to be a string, got {name_val:?}");
+    };
+    let Value::String(msg_s) = msg_val else {
+      panic!("expected TypeError.message to be a string, got {msg_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    let msg = scope.heap().get_string(msg_s)?.to_utf8_lossy();
+    assert_eq!(name, "TypeError");
+    assert!(msg.contains("ReadableStream"), "msg={msg}");
 
     drop(scope);
     drop(bindings);

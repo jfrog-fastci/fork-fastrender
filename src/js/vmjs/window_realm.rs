@@ -408,11 +408,11 @@ impl WindowRealm {
           unregister_match_media_env(id);
         }
         crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, heap);
+        crate::js::window_streams::teardown_window_streams_bindings_for_realm(realm_id);
         crate::js::window_blob::teardown_window_blob_bindings_for_realm(realm_id);
         crate::js::window_file::teardown_window_file_bindings_for_realm(realm_id);
         crate::js::window_file_reader::teardown_window_file_reader_bindings_for_realm(realm_id);
         crate::js::window_form_data::teardown_window_form_data_bindings_for_realm(realm_id);
-        crate::js::window_streams::teardown_window_streams_bindings_for_realm(realm_id);
         return Err(err);
       }
     };
@@ -559,11 +559,11 @@ impl WindowRealm {
       }
     }
     let realm_id = self.runtime.realm().id();
+    crate::js::window_streams::teardown_window_streams_bindings_for_realm(realm_id);
     crate::js::window_blob::teardown_window_blob_bindings_for_realm(realm_id);
     crate::js::window_file::teardown_window_file_bindings_for_realm(realm_id);
     crate::js::window_file_reader::teardown_window_file_reader_bindings_for_realm(realm_id);
     crate::js::window_form_data::teardown_window_form_data_bindings_for_realm(realm_id);
-    crate::js::window_streams::teardown_window_streams_bindings_for_realm(realm_id);
     crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, &mut self.runtime.heap);
   }
 

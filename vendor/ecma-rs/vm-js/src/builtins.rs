@@ -1581,7 +1581,6 @@ pub fn array_constructor_construct(
 ) -> Result<Value, VmError> {
   array_constructor_impl(vm, scope, args)
 }
-
 /// `Proxy(..)` call behavior (ECMA-262).
 ///
 /// The `Proxy` constructor is not callable without `new`.
@@ -1691,6 +1690,7 @@ pub fn proxy_revocable(
 
   Ok(Value::Object(out))
 }
+
 /// Revocation function created by `Proxy.revocable`.
 pub fn proxy_revoker(
   _vm: &mut Vm,
