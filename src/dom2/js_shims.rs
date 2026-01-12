@@ -428,29 +428,113 @@ impl Document {
       .collect()
   }
 
-  pub fn select_selected_index(&self, select: NodeId) -> i32 {
-    for (idx, option) in self.select_options(select).into_iter().enumerate() {
-      if self.has_attribute(option, "selected").unwrap_or(false) {
-        return idx as i32;
+  fn select_multiple(&self, select: NodeId) -> bool {
+    self.has_attribute(select, "multiple").unwrap_or(false)
+  }
+
+  fn option_selectedness(&self, option: NodeId) -> bool {
+    self
+      .option_states
+      .get(option.index())
+      .and_then(|s| s.as_ref())
+      .is_some_and(|s| s.selectedness)
+  }
+
+  fn set_option_selectedness(&mut self, option: NodeId, selected: bool, dirty: bool) -> bool {
+    let Some(state) = self
+      .option_states
+      .get_mut(option.index())
+      .and_then(|s| s.as_mut())
+    else {
+      return false;
+    };
+
+    let mut changed = false;
+    if state.selectedness != selected {
+      state.selectedness = selected;
+      changed = true;
+    }
+    if dirty && !state.dirty_selectedness {
+      state.dirty_selectedness = true;
+      changed = true;
+    }
+    if changed {
+      self.bump_mutation_generation();
+    }
+    changed
+  }
+
+  fn normalize_select_single(&mut self, options: &[NodeId]) {
+    if options.is_empty() {
+      return;
+    }
+
+    let mut last_selected: Option<usize> = None;
+    for (idx, &opt) in options.iter().enumerate() {
+      if self.option_selectedness(opt) {
+        last_selected = Some(idx);
       }
     }
-    -1
+
+    let chosen = last_selected.unwrap_or(0);
+    for (idx, &opt) in options.iter().enumerate() {
+      let selected = idx == chosen;
+      self.set_option_selectedness(opt, selected, false);
+    }
+  }
+
+  pub fn select_selected_index(&mut self, select: NodeId) -> i32 {
+    let options = self.select_options(select);
+    if options.is_empty() {
+      return -1;
+    }
+    if !self.select_multiple(select) {
+      self.normalize_select_single(&options);
+    }
+    options
+      .into_iter()
+      .enumerate()
+      .find_map(|(idx, option)| self.option_selectedness(option).then_some(idx as i32))
+      .unwrap_or(-1)
   }
 
   pub fn set_select_selected_index(&mut self, select: NodeId, index: i32) -> Result<bool, DomError> {
     let options = self.select_options(select);
     let mut changed = false;
-    if index < 0 || (index as usize) >= options.len() {
-      for option in options {
-        changed |= self.set_bool_attribute(option, "selected", false)?;
-      }
+    let multiple = self.select_multiple(select);
+
+    let target = (index >= 0)
+      .then(|| index as usize)
+      .and_then(|idx| options.get(idx).copied());
+
+    if multiple {
+      let Some(target) = target else {
+        for option in options {
+          if self.option_selectedness(option) {
+            changed |= self.set_option_selectedness(option, false, true);
+          }
+        }
+        return Ok(changed);
+      };
+
+      changed |= self.set_option_selectedness(target, true, true);
       return Ok(changed);
     }
 
-    let target = index as usize;
-    for (idx, option) in options.into_iter().enumerate() {
-      changed |= self.set_bool_attribute(option, "selected", idx == target)?;
+    let Some(target) = target.or_else(|| options.first().copied()) else {
+      return Ok(false);
+    };
+
+    changed |= self.set_option_selectedness(target, true, true);
+    for option in options {
+      if option == target {
+        continue;
+      }
+      if self.option_selectedness(option) {
+        changed |= self.set_option_selectedness(option, false, true);
+      }
     }
+
     Ok(changed)
   }
 
@@ -462,9 +546,16 @@ impl Document {
     content
   }
 
-  pub fn select_value(&self, select: NodeId) -> String {
-    for option in self.select_options(select) {
-      if self.has_attribute(option, "selected").unwrap_or(false) {
+  pub fn select_value(&mut self, select: NodeId) -> String {
+    let options = self.select_options(select);
+    if options.is_empty() {
+      return String::new();
+    }
+    if !self.select_multiple(select) {
+      self.normalize_select_single(&options);
+    }
+    for option in options {
+      if self.option_selectedness(option) {
         return self.option_value(option);
       }
     }
@@ -473,16 +564,13 @@ impl Document {
 
   pub fn set_select_value(&mut self, select: NodeId, value: &str) -> Result<bool, DomError> {
     let options = self.select_options(select);
-    let target = options
+    let Some(idx) = options
       .iter()
-      .enumerate()
-      .find_map(|(idx, &option)| (self.option_value(option) == value).then_some(idx));
-
-    let mut changed = false;
-    for (idx, option) in options.into_iter().enumerate() {
-      changed |= self.set_bool_attribute(option, "selected", Some(idx) == target)?;
-    }
-    Ok(changed)
+      .position(|&option| self.option_value(option) == value)
+    else {
+      return Ok(false);
+    };
+    self.set_select_selected_index(select, idx as i32)
   }
 
   pub fn form_elements(&self, form: NodeId) -> Vec<NodeId> {
@@ -711,29 +799,29 @@ mod tests {
       doc.select_options(select),
       vec![option_a, option_b, option_two, option_c]
     );
-    assert_eq!(doc.select_selected_index(select), -1);
-    assert_eq!(doc.select_value(select), "");
+    assert_eq!(doc.select_selected_index(select), 0);
+    assert_eq!(doc.select_value(select), "a");
+    assert!(doc.option_selected(option_a).unwrap());
+    assert!(!doc.option_selected(option_b).unwrap());
+    assert!(!doc.option_selected(option_two).unwrap());
+    assert!(!doc.option_selected(option_c).unwrap());
 
     doc.set_select_selected_index(select, 1).unwrap();
     assert_eq!(doc.select_selected_index(select), 1);
     assert_eq!(doc.select_value(select), "b");
-    assert!(!doc.has_attribute(option_a, "selected").unwrap());
-    assert!(doc.has_attribute(option_b, "selected").unwrap());
-    assert!(!doc.has_attribute(option_two, "selected").unwrap());
-    assert!(!doc.has_attribute(option_c, "selected").unwrap());
+    assert!(!doc.option_selected(option_a).unwrap());
+    assert!(doc.option_selected(option_b).unwrap());
+    assert!(!doc.option_selected(option_two).unwrap());
+    assert!(!doc.option_selected(option_c).unwrap());
 
     doc.set_select_value(select, "Two").unwrap();
     assert_eq!(doc.select_selected_index(select), 2);
     assert_eq!(doc.select_value(select), "Two");
-    assert!(doc.has_attribute(option_two, "selected").unwrap());
+    assert!(doc.option_selected(option_two).unwrap());
 
     doc.set_select_value(select, "missing").unwrap();
-    assert_eq!(doc.select_selected_index(select), -1);
-    assert_eq!(doc.select_value(select), "");
-    assert!(!doc.has_attribute(option_a, "selected").unwrap());
-    assert!(!doc.has_attribute(option_b, "selected").unwrap());
-    assert!(!doc.has_attribute(option_two, "selected").unwrap());
-    assert!(!doc.has_attribute(option_c, "selected").unwrap());
+    assert_eq!(doc.select_selected_index(select), 2);
+    assert_eq!(doc.select_value(select), "Two");
   }
 
   #[test]

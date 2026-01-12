@@ -2430,6 +2430,14 @@ const INPUT_CHECKED_SET_KEY: &str = "__fastrender_input_checked_set";
 const TEXTAREA_VALUE_GET_KEY: &str = "__fastrender_textarea_value_get";
 const TEXTAREA_VALUE_SET_KEY: &str = "__fastrender_textarea_value_set";
 const FORM_RESET_KEY: &str = "__fastrender_form_reset";
+const SELECT_OPTIONS_GET_KEY: &str = "__fastrender_select_options_get";
+const SELECT_SELECTED_INDEX_GET_KEY: &str = "__fastrender_select_selected_index_get";
+const SELECT_SELECTED_INDEX_SET_KEY: &str = "__fastrender_select_selected_index_set";
+const SELECT_VALUE_GET_KEY: &str = "__fastrender_select_value_get";
+const SELECT_VALUE_SET_KEY: &str = "__fastrender_select_value_set";
+const OPTION_SELECTED_GET_KEY: &str = "__fastrender_option_selected_get";
+const OPTION_SELECTED_SET_KEY: &str = "__fastrender_option_selected_set";
+const SELECT_OPTIONS_CACHE_KEY: &str = "__fastrender_select_options_cache";
 
 /// List of internal (non-standard) document-owned `__fastrender_*` properties that store shared
 /// native function objects.
@@ -6436,6 +6444,48 @@ fn get_or_create_node_wrapper(
       .heap()
       .object_get_own_data_property_value(document_obj, &key)?
   };
+  let select_options_get = {
+    let key = alloc_key(scope, SELECT_OPTIONS_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let select_selected_index_get = {
+    let key = alloc_key(scope, SELECT_SELECTED_INDEX_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let select_selected_index_set = {
+    let key = alloc_key(scope, SELECT_SELECTED_INDEX_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let select_value_get = {
+    let key = alloc_key(scope, SELECT_VALUE_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let select_value_set = {
+    let key = alloc_key(scope, SELECT_VALUE_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let option_selected_get = {
+    let key = alloc_key(scope, OPTION_SELECTED_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let option_selected_set = {
+    let key = alloc_key(scope, OPTION_SELECTED_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
 
   let class_name_get = {
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_GET_KEY)?;
@@ -7481,6 +7531,85 @@ fn get_or_create_node_wrapper(
           }
         }
 
+        if is_html && tag_name.eq_ignore_ascii_case("select") {
+          if let Some(Value::Object(get)) = select_options_get {
+            let key = alloc_key(scope, "options")?;
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Undefined,
+                  },
+                },
+              )?;
+            }
+          }
+
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) =
+            (select_selected_index_get, select_selected_index_set)
+          {
+            let key = alloc_key(scope, "selectedIndex")?;
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Object(set),
+                  },
+                },
+              )?;
+            }
+          }
+
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (select_value_get, select_value_set) {
+            let key = alloc_key(scope, "value")?;
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Object(set),
+                  },
+                },
+              )?;
+            }
+          }
+        }
+
+        if is_html && tag_name.eq_ignore_ascii_case("option") {
+          if let (Some(Value::Object(get)), Some(Value::Object(set))) = (option_selected_get, option_selected_set)
+          {
+            let key = alloc_key(scope, "selected")?;
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Object(set),
+                  },
+                },
+              )?;
+            }
+          }
+        }
+
         if is_html && tag_name.eq_ignore_ascii_case("form") {
           if let Some(Value::Object(func)) = form_reset {
             let key = alloc_key(scope, "reset")?;
@@ -8249,6 +8378,58 @@ fn sync_child_nodes_array(
       configurable: false,
       kind: PropertyKind::Data {
         value: Value::Number(children.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(())
+}
+
+fn sync_select_options_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: &dom2::Document,
+  select_id: NodeId,
+  array: GcObject,
+) -> Result<(), VmError> {
+  let options = dom.select_options(select_id);
+
+  scope.push_root(Value::Object(document_obj))?;
+  scope.push_root(Value::Object(array))?;
+
+  let length_key = alloc_key(scope, "length")?;
+  let old_len = match scope
+    .heap()
+    .object_get_own_data_property_value(array, &length_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0,
+  };
+
+  let mut idx_buf = [0u8; 20];
+  for (idx, option_id) in options.iter().copied().enumerate() {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), option_id)?;
+    scope.define_property(array, key, data_desc(wrapper))?;
+  }
+
+  for idx in options.len()..old_len {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    scope.heap_mut().delete_property_or_throw(array, key)?;
+  }
+
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(options.len() as f64),
         writable: true,
       },
     },
@@ -22795,6 +22976,217 @@ fn form_reset_native(
   Ok(Value::Undefined)
 }
 
+fn select_options_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, wrapper_obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let NodeKind::Element {
+    tag_name,
+    namespace,
+    ..
+  } = &dom.node(node_id).kind
+  else {
+    return Ok(Value::Undefined);
+  };
+  let is_html = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+  if !(is_html && tag_name.eq_ignore_ascii_case("select")) {
+    return Ok(Value::Undefined);
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+
+  let options_key = alloc_key(scope, SELECT_OPTIONS_CACHE_KEY)?;
+  let array = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &options_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      let array = scope.alloc_array(0)?;
+      scope.push_root(Value::Object(array))?;
+      if let Some(intrinsics) = vm.intrinsics() {
+        scope
+          .heap_mut()
+          .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+      }
+      scope.define_property(
+        wrapper_obj,
+        options_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(array),
+            writable: false,
+          },
+        },
+      )?;
+      array
+    }
+  };
+
+  sync_select_options_array(vm, scope, document_obj, dom, node_id, array)?;
+  Ok(Value::Object(array))
+}
+
+fn select_selected_index_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  Ok(Value::Number(dom.select_selected_index(node_id) as f64))
+}
+
+fn select_selected_index_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let idx_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let idx = scope.heap_mut().to_number(idx_value)? as i32;
+  let _ = dom.set_select_selected_index(node_id, idx);
+  Ok(Value::Undefined)
+}
+
+fn select_value_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let value = dom.select_value(node_id);
+  Ok(Value::String(scope.alloc_string(&value)?))
+}
+
+fn select_value_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+  let _ = dom.set_select_value(node_id, &new_value);
+  Ok(Value::Undefined)
+}
+
+fn option_selected_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let Ok(selected) = dom.option_selected(node_id) else {
+    return Ok(Value::Undefined);
+  };
+  Ok(Value::Bool(selected))
+}
+
+fn option_selected_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let selected_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let selected = scope.heap().to_boolean(selected_value)?;
+  let _ = dom.set_option_selected(node_id, selected);
+  Ok(Value::Undefined)
+}
+
 fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
   match &dom.node(node_id).kind {
     dom2::NodeKind::Element {
@@ -32290,6 +32682,133 @@ fn init_window_globals(
     data_desc(Value::Object(form_reset_func)),
   )?;
 
+  let select_options_get_call_id = vm.register_native_call(select_options_get_native)?;
+  let select_options_get_name = scope.alloc_string("get options")?;
+  scope.push_root(Value::String(select_options_get_name))?;
+  let select_options_get_func =
+    scope.alloc_native_function(select_options_get_call_id, None, select_options_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    select_options_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(select_options_get_func))?;
+  let select_options_get_key = alloc_key(&mut scope, SELECT_OPTIONS_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    select_options_get_key,
+    data_desc(Value::Object(select_options_get_func)),
+  )?;
+
+  let select_selected_index_get_call_id = vm.register_native_call(select_selected_index_get_native)?;
+  let select_selected_index_get_name = scope.alloc_string("get selectedIndex")?;
+  scope.push_root(Value::String(select_selected_index_get_name))?;
+  let select_selected_index_get_func = scope.alloc_native_function(
+    select_selected_index_get_call_id,
+    None,
+    select_selected_index_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    select_selected_index_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(select_selected_index_get_func))?;
+  let select_selected_index_get_key = alloc_key(&mut scope, SELECT_SELECTED_INDEX_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    select_selected_index_get_key,
+    data_desc(Value::Object(select_selected_index_get_func)),
+  )?;
+
+  let select_selected_index_set_call_id = vm.register_native_call(select_selected_index_set_native)?;
+  let select_selected_index_set_name = scope.alloc_string("set selectedIndex")?;
+  scope.push_root(Value::String(select_selected_index_set_name))?;
+  let select_selected_index_set_func = scope.alloc_native_function(
+    select_selected_index_set_call_id,
+    None,
+    select_selected_index_set_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    select_selected_index_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(select_selected_index_set_func))?;
+  let select_selected_index_set_key = alloc_key(&mut scope, SELECT_SELECTED_INDEX_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    select_selected_index_set_key,
+    data_desc(Value::Object(select_selected_index_set_func)),
+  )?;
+
+  let select_value_get_call_id = vm.register_native_call(select_value_get_native)?;
+  let select_value_get_name = scope.alloc_string("get value")?;
+  scope.push_root(Value::String(select_value_get_name))?;
+  let select_value_get_func =
+    scope.alloc_native_function(select_value_get_call_id, None, select_value_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    select_value_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(select_value_get_func))?;
+  let select_value_get_key = alloc_key(&mut scope, SELECT_VALUE_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    select_value_get_key,
+    data_desc(Value::Object(select_value_get_func)),
+  )?;
+
+  let select_value_set_call_id = vm.register_native_call(select_value_set_native)?;
+  let select_value_set_name = scope.alloc_string("set value")?;
+  scope.push_root(Value::String(select_value_set_name))?;
+  let select_value_set_func =
+    scope.alloc_native_function(select_value_set_call_id, None, select_value_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    select_value_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(select_value_set_func))?;
+  let select_value_set_key = alloc_key(&mut scope, SELECT_VALUE_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    select_value_set_key,
+    data_desc(Value::Object(select_value_set_func)),
+  )?;
+
+  let option_selected_get_call_id = vm.register_native_call(option_selected_get_native)?;
+  let option_selected_get_name = scope.alloc_string("get selected")?;
+  scope.push_root(Value::String(option_selected_get_name))?;
+  let option_selected_get_func =
+    scope.alloc_native_function(option_selected_get_call_id, None, option_selected_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    option_selected_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(option_selected_get_func))?;
+  let option_selected_get_key = alloc_key(&mut scope, OPTION_SELECTED_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    option_selected_get_key,
+    data_desc(Value::Object(option_selected_get_func)),
+  )?;
+
+  let option_selected_set_call_id = vm.register_native_call(option_selected_set_native)?;
+  let option_selected_set_name = scope.alloc_string("set selected")?;
+  scope.push_root(Value::String(option_selected_set_name))?;
+  let option_selected_set_func =
+    scope.alloc_native_function(option_selected_set_call_id, None, option_selected_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    option_selected_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(option_selected_set_func))?;
+  let option_selected_set_key = alloc_key(&mut scope, OPTION_SELECTED_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    option_selected_set_key,
+    data_desc(Value::Object(option_selected_set_func)),
+  )?;
+
   // Store shared CSSStyleDeclaration methods on `document` so wrappers can reuse them.
   let style_get_property_value_call_id =
     vm.register_native_call(css_style_get_property_value_native)?;
@@ -35637,6 +36156,50 @@ mod tests {
           illegalOk = e && e.name === 'TypeError' && String(e.message).includes('Illegal constructor');\n\
         }\n\
         return ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && illegalOk;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_select_element_options_selected_index_and_value() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const s = document.createElement('select');\n\
+        const o1 = document.createElement('option');\n\
+        o1.setAttribute('value', 'a');\n\
+        const o2 = document.createElement('option');\n\
+        o2.setAttribute('value', 'b');\n\
+        s.appendChild(o1);\n\
+        s.appendChild(o2);\n\
+\n\
+        const opts = s.options;\n\
+        const ok0 = s instanceof HTMLSelectElement;\n\
+        const ok0b = o1 instanceof HTMLOptionElement && o2 instanceof HTMLOptionElement;\n\
+        const ok1 = opts === s.options;\n\
+        const ok2 = opts.length === 2 && opts[0] === o1 && opts[1] === o2;\n\
+\n\
+        const ok3 = s.selectedIndex === 0;\n\
+        const ok4 = s.value === 'a';\n\
+\n\
+        o2.selected = true;\n\
+        const ok5 = s.selectedIndex === 1 && s.value === 'b' && o2.selected === true && o1.selected === false;\n\
+\n\
+        s.selectedIndex = 0;\n\
+        const ok6 = o1.selected === true && o2.selected === false && s.value === 'a';\n\
+\n\
+        s.value = 'b';\n\
+        const ok7 = s.selectedIndex === 1 && o2.selected === true;\n\
+\n\
+        return ok0 && ok0b && ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));

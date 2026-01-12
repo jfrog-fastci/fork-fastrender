@@ -279,10 +279,86 @@ impl Document {
 
   pub fn set_option_selected(&mut self, option: NodeId, selected: bool) -> Result<(), DomError> {
     let _ = self.node_checked(option)?;
-    let state = self.option_state_mut(option)?;
-    state.dirty_selectedness = true;
-    state.selectedness = selected;
+
+    {
+      let state = self.option_state_mut(option)?;
+      state.dirty_selectedness = true;
+      state.selectedness = selected;
+    }
     self.bump_mutation_generation();
+
+    let Some(select) = self
+      .ancestors(option)
+      .skip(1)
+      .find(|&ancestor| {
+        let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &self.node(ancestor).kind
+        else {
+          return false;
+        };
+        self.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("select")
+      })
+    else {
+      return Ok(());
+    };
+
+    let multiple = self.has_attribute(select, "multiple")?;
+    if multiple {
+      return Ok(());
+    }
+
+    let options = self.select_options(select);
+    if options.is_empty() {
+      return Ok(());
+    }
+
+    if selected {
+      for other in options {
+        if other == option {
+          continue;
+        }
+        let Some(state) = self
+          .option_states
+          .get_mut(other.index())
+          .and_then(|s| s.as_mut())
+        else {
+          continue;
+        };
+        if state.selectedness {
+          state.selectedness = false;
+          state.dirty_selectedness = true;
+          self.bump_mutation_generation();
+        }
+      }
+      return Ok(());
+    }
+
+    let any_selected = options.iter().any(|&opt| {
+      self
+        .option_states
+        .get(opt.index())
+        .and_then(|s| s.as_ref())
+        .is_some_and(|s| s.selectedness)
+    });
+    if any_selected {
+      return Ok(());
+    }
+
+    let first = options[0];
+    let Some(state) = self
+      .option_states
+      .get_mut(first.index())
+      .and_then(|s| s.as_mut())
+    else {
+      return Ok(());
+    };
+    if !state.selectedness {
+      state.selectedness = true;
+      self.bump_mutation_generation();
+    }
     Ok(())
   }
 
