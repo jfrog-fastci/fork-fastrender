@@ -757,6 +757,7 @@ pub mod body_check {
     pub def_id_spans: Arc<HashMap<DefId, TextRange>>,
     pub exports: Arc<HashMap<FileId, ExportMap>>,
     pub module_namespace_defs: Arc<HashMap<FileId, DefId>>,
+    pub value_defs: Arc<HashMap<DefId, DefId>>,
     pub(crate) namespace_members: Arc<NamespaceMemberIndex>,
     pub qualified_def_members: Arc<HashMap<(DefId, String, sem_ts::Namespace), DefId>>,
     pub(crate) file_registry: Arc<FileRegistry>,
@@ -1151,6 +1152,7 @@ pub mod body_check {
         &caches,
         &bindings,
         resolver,
+        ctx.value_defs.as_ref(),
         Some(&expander),
         Some(&ctx.interned_type_param_decls),
         contextual_fn_ty,
@@ -1640,6 +1642,34 @@ pub mod body_check {
           unknown,
           &mut seen_names,
         );
+      }
+      for stmt_id in body.root_stmts.iter().copied() {
+        let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+          continue;
+        };
+        let hir_js::StmtKind::Decl(type_def) = &stmt.kind else {
+          continue;
+        };
+        if !matches!(
+          ctx.def_kinds.get(type_def),
+          Some(crate::DefKind::Class(_))
+        ) {
+          continue;
+        }
+        let Some(def_data) = lowered.def(*type_def) else {
+          continue;
+        };
+        let Some(name) = lowered.names.resolve(def_data.name) else {
+          continue;
+        };
+        let value_def = ctx.value_defs.get(type_def).copied().unwrap_or(*type_def);
+        let ty = ctx.store.intern_type(types_ts_interned::TypeKind::Ref {
+          def: value_def,
+          args: Vec::new(),
+        });
+        let name = name.to_string();
+        bindings.insert(name.clone(), ty);
+        binding_defs.insert(name, *type_def);
       }
       current = ctx.body_parents.get(&parent).copied();
     }

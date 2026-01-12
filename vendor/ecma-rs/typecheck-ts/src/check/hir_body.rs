@@ -942,6 +942,7 @@ pub fn check_body(
   use_define_for_class_fields: bool,
   caches: &BodyCaches,
   bindings: &HashMap<String, TypeId>,
+  value_defs: &HashMap<DefId, DefId>,
   resolver: Option<Arc<dyn TypeResolver>>,
 ) -> BodyCheckResult {
   check_body_with_expander(
@@ -956,6 +957,7 @@ pub fn check_body(
     caches,
     bindings,
     resolver,
+    value_defs,
     None,
     None,
     None,
@@ -981,6 +983,7 @@ pub fn check_body_with_expander(
   caches: &BodyCaches,
   bindings: &HashMap<String, TypeId>,
   resolver: Option<Arc<dyn TypeResolver>>,
+  value_defs: &HashMap<DefId, DefId>,
   relate_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
   type_param_decls: Option<&HashMap<DefId, Arc<[TypeParamDecl]>>>,
   contextual_fn_ty: Option<TypeId>,
@@ -1014,6 +1017,12 @@ pub fn check_body_with_expander(
     .enumerate()
     .map(|(idx, pat)| (pat.span, PatId(idx as u32)))
     .collect();
+  let mut decl_def_by_span: HashMap<TextRange, DefId> = HashMap::new();
+  for stmt in body.stmts.iter() {
+    if let StmtKind::Decl(def) = &stmt.kind {
+      decl_def_by_span.insert(stmt.span, *def);
+    }
+  }
 
   let body_range = body_range(body);
   let mut relate_hooks = super::relate_hooks();
@@ -1064,10 +1073,12 @@ pub fn check_body_with_expander(
     pat_spans,
     expr_map,
     pat_map,
+    decl_def_by_span,
     diagnostics: Vec::new(),
     implicit_any_reported: HashSet::new(),
     return_types: Vec::new(),
     index: ast_index,
+    value_defs,
     scopes: vec![Scope::default()],
     type_param_scopes: Vec::new(),
     namespace_scopes: HashMap::new(),
@@ -1209,10 +1220,12 @@ struct Checker<'a> {
   pat_spans: Vec<TextRange>,
   expr_map: HashMap<TextRange, ExprId>,
   pat_map: HashMap<TextRange, PatId>,
+  decl_def_by_span: HashMap<TextRange, DefId>,
   diagnostics: Vec<Diagnostic>,
   implicit_any_reported: HashSet<TextRange>,
   return_types: Vec<TypeId>,
   index: &'a AstIndex,
+  value_defs: &'a HashMap<DefId, DefId>,
   scopes: Vec<Scope>,
   type_param_scopes: Vec<Vec<TypeParamDecl>>,
   namespace_scopes: HashMap<String, Scope>,
@@ -2337,6 +2350,35 @@ impl<'a> Checker<'a> {
             self.insert_binding(name_str, ty, Vec::new());
           } else {
             self.insert_binding(name_str, fn_ty, Vec::new());
+          }
+        }
+      }
+      Stmt::ClassDecl(class_decl) => {
+        if let Some(name) = class_decl.stx.name.as_ref() {
+          let name_str = name.stx.name.clone();
+          let stmt_span = loc_to_range(self.file, stmt.loc);
+          if let Some(type_def) = self.decl_def_by_span.get(&stmt_span).copied() {
+            let value_def = self.value_defs.get(&type_def).copied().unwrap_or(type_def);
+            let class_ty = self.store.intern_type(TypeKind::Ref {
+              def: value_def,
+              args: Vec::new(),
+            });
+            if let Some(existing) = self.lookup(&name_str) {
+              let has_constructables = !construct_signatures_with_expander(
+                self.store.as_ref(),
+                existing.ty,
+                self.ref_expander,
+              )
+              .is_empty();
+              let ty = if has_constructables {
+                existing.ty
+              } else {
+                self.store.intersection(vec![existing.ty, class_ty])
+              };
+              self.insert_binding(name_str, ty, Vec::new());
+            } else {
+              self.insert_binding(name_str, class_ty, Vec::new());
+            }
           }
         }
       }

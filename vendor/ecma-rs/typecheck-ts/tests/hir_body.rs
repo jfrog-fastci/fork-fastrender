@@ -69,6 +69,7 @@ fn infers_basic_literals_and_identifiers() {
     true,
     &caches,
     &bindings,
+    &HashMap::new(),
     None,
   );
 
@@ -116,6 +117,7 @@ fn object_literal_methods_have_checkable_bodies() {
     ScriptTarget::Es2015,
     true,
     &caches,
+    &HashMap::new(),
     &HashMap::new(),
     None,
   );
@@ -191,6 +193,7 @@ fn local_variable_widening_respects_decl_mode() {
     true,
     &caches,
     &bindings,
+    &HashMap::new(),
     None,
   );
 
@@ -262,6 +265,7 @@ fn expression_spans_match_body_indices() {
     true,
     &caches,
     &bindings,
+    &HashMap::new(),
     None,
   );
 
@@ -309,6 +313,7 @@ fn expr_at_returns_innermost_type() {
     true,
     &caches,
     &bindings,
+    &HashMap::new(),
     None,
   );
 
@@ -409,6 +414,7 @@ fn diagnostics_are_stably_sorted() {
     true,
     &caches,
     &bindings,
+    &HashMap::new(),
     None,
   );
   let starts: Vec<u32> = result
@@ -455,6 +461,7 @@ fn call_with_missing_arguments_types_arguments_once() {
     ScriptTarget::Es2015,
     true,
     &caches,
+    &HashMap::new(),
     &HashMap::new(),
     None,
   );

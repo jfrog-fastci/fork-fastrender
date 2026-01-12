@@ -747,6 +747,7 @@ impl ProgramState {
         &caches,
         &bindings,
         resolver,
+        &self.value_defs,
         Some(&expander),
         Some(&self.interned_type_param_decls),
         contextual_fn_ty,

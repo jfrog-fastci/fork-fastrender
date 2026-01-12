@@ -54,6 +54,7 @@ fn check_top_level(
     true,
     &caches,
     bindings,
+    &HashMap::new(),
     None,
   )
 }

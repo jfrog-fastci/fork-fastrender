@@ -267,6 +267,27 @@ impl ProgramState {
           &mut seen_names,
         );
       }
+      for stmt_id in body.root_stmts.iter().copied() {
+        let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+          continue;
+        };
+        let hir_js::StmtKind::Decl(type_def) = &stmt.kind else {
+          continue;
+        };
+        let Some(def_data) = self.def_data.get(type_def) else {
+          continue;
+        };
+        if !matches!(def_data.kind, DefKind::Class(_)) {
+          continue;
+        }
+        let value_def = self.value_defs.get(type_def).copied().unwrap_or(*type_def);
+        let ty = store.intern_type(tti::TypeKind::Ref {
+          def: value_def,
+          args: Vec::new(),
+        });
+        bindings.insert(def_data.name.clone(), ty);
+        binding_defs.insert(def_data.name.clone(), *type_def);
+      }
       if parent_result.pat_types.is_empty() && matches!(meta.kind, HirBodyKind::Function) {
         // If we're checking a nested body while the parent is still being checked, `check_body`
         // returns an empty result to break cycles. Seed parameter bindings directly from the

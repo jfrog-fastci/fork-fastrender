@@ -159,6 +159,7 @@ impl ProgramState {
       def_id_spans,
       exports,
       module_namespace_defs: Arc::new(self.module_namespace_defs.clone()),
+      value_defs: Arc::new(self.value_defs.clone()),
       namespace_members,
       qualified_def_members: Arc::clone(&self.qualified_def_members),
       file_registry: Arc::new(self.file_registry.clone()),

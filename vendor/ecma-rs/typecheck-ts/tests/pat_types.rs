@@ -48,6 +48,7 @@ fn records_pattern_types_for_params_and_vars() {
     true,
     &caches,
     &bindings,
+    &HashMap::new(),
     None,
   );
   let prim = store.primitive_ids();
