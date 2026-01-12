@@ -1225,6 +1225,20 @@ fn module_static_semantics_early_errors(
   let var_declared_names = module_var_declared_names(top, ctx)?;
   let lex_declared_names = module_lex_declared_names(top, ctx)?;
 
+  // It is a Syntax Error if any element of the LexicallyDeclaredNames of ModuleItemList also
+  // occurs in the VarDeclaredNames of ModuleItemList.
+  module_lex_var_declared_names_do_not_intersect(
+    &var_declared_names,
+    &lex_declared_names,
+    top.loc,
+    ctx,
+  )?;
+
+  // It is a Syntax Error if ContainsDuplicateLabels of ModuleItemList with argument « » is true.
+  if module_contains_duplicate_labels(top, ctx)? {
+    return Err(syntax_error(top.loc, "duplicate label"));
+  }
+
   // Import-bound names (+ strict-mode restrictions + collisions).
   let import_bound_names =
     module_import_bound_names(record, &var_declared_names, &lex_declared_names, top.loc, ctx)?;
@@ -1258,27 +1272,24 @@ fn module_var_declared_names(
     .map_err(|_| VmError::OutOfMemory)?;
 
   // `var` is module-scoped even when nested inside blocks/loops/etc.
-  // Top-level `function` declarations are also var-scoped in modules (Annex B does not apply).
-  module_var_declared_names_from_stmt_list(&top.stx.body, true, &mut names, ctx)?;
+  module_var_declared_names_from_stmt_list(&top.stx.body, &mut names, ctx)?;
   Ok(names)
 }
 
 fn module_var_declared_names_from_stmt_list(
   stmts: &[Node<Stmt>],
-  is_module_item_list: bool,
   out: &mut HashSet<String>,
   ctx: &mut ModuleRecordParseCtx<'_>,
 ) -> Result<(), VmError> {
   for stmt in stmts {
     ctx.budget_tick()?;
-    module_var_declared_names_from_stmt(stmt, is_module_item_list, out, ctx)?;
+    module_var_declared_names_from_stmt(stmt, out, ctx)?;
   }
   Ok(())
 }
 
 fn module_var_declared_names_from_stmt(
   stmt: &Node<Stmt>,
-  is_module_item_list: bool,
   out: &mut HashSet<String>,
   ctx: &mut ModuleRecordParseCtx<'_>,
 ) -> Result<(), VmError> {
@@ -1292,29 +1303,18 @@ fn module_var_declared_names_from_stmt(
       }
     }
 
-    Stmt::FunctionDecl(decl) => {
-      if is_module_item_list {
-        if let Some(name) = decl.stx.name.as_ref() {
-          ctx.budget_tick()?;
-          out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-          out.insert(try_string_from_str(&name.stx.name)?);
-        }
-      }
-      // Function bodies are boundaries: do not descend.
-    }
-
     // Control-flow / statement-list containers.
     Stmt::Block(block) => {
-      module_var_declared_names_from_stmt_list(&block.stx.body, false, out, ctx)?;
+      module_var_declared_names_from_stmt_list(&block.stx.body, out, ctx)?;
     }
-    Stmt::DoWhile(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, false, out, ctx)?,
+    Stmt::DoWhile(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, out, ctx)?,
     Stmt::If(stmt) => {
-      module_var_declared_names_from_stmt(&stmt.stx.consequent, false, out, ctx)?;
+      module_var_declared_names_from_stmt(&stmt.stx.consequent, out, ctx)?;
       if let Some(alt) = stmt.stx.alternate.as_ref() {
-        module_var_declared_names_from_stmt(alt, false, out, ctx)?;
+        module_var_declared_names_from_stmt(alt, out, ctx)?;
       }
     }
-    Stmt::While(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, false, out, ctx)?,
+    Stmt::While(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, out, ctx)?,
     Stmt::ForTriple(stmt) => {
       match &stmt.stx.init {
         parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) if decl.stx.mode == VarDeclMode::Var => {
@@ -1325,7 +1325,7 @@ fn module_var_declared_names_from_stmt(
         }
         _ => {}
       }
-      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, false, out, ctx)?;
+      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, out, ctx)?;
     }
     Stmt::ForIn(stmt) => {
       if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.stx.lhs {
@@ -1333,7 +1333,7 @@ fn module_var_declared_names_from_stmt(
           pat_decl_bound_names(&pat_decl.stx, out, ctx)?;
         }
       }
-      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, false, out, ctx)?;
+      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, out, ctx)?;
     }
     Stmt::ForOf(stmt) => {
       if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.stx.lhs {
@@ -1341,28 +1341,28 @@ fn module_var_declared_names_from_stmt(
           pat_decl_bound_names(&pat_decl.stx, out, ctx)?;
         }
       }
-      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, false, out, ctx)?;
+      module_var_declared_names_from_stmt_list(&stmt.stx.body.stx.body, out, ctx)?;
     }
     Stmt::Label(stmt) => {
       // Labels do not introduce a new scope.
-      module_var_declared_names_from_stmt(&stmt.stx.statement, is_module_item_list, out, ctx)?;
+      module_var_declared_names_from_stmt(&stmt.stx.statement, out, ctx)?;
     }
     Stmt::Switch(stmt) => {
       for branch in &stmt.stx.branches {
         ctx.budget_tick()?;
-        module_var_declared_names_from_stmt_list(&branch.stx.body, false, out, ctx)?;
+        module_var_declared_names_from_stmt_list(&branch.stx.body, out, ctx)?;
       }
     }
     Stmt::Try(stmt) => {
-      module_var_declared_names_from_stmt_list(&stmt.stx.wrapped.stx.body, false, out, ctx)?;
+      module_var_declared_names_from_stmt_list(&stmt.stx.wrapped.stx.body, out, ctx)?;
       if let Some(catch) = stmt.stx.catch.as_ref() {
-        module_var_declared_names_from_stmt_list(&catch.stx.body, false, out, ctx)?;
+        module_var_declared_names_from_stmt_list(&catch.stx.body, out, ctx)?;
       }
       if let Some(finally) = stmt.stx.finally.as_ref() {
-        module_var_declared_names_from_stmt_list(&finally.stx.body, false, out, ctx)?;
+        module_var_declared_names_from_stmt_list(&finally.stx.body, out, ctx)?;
       }
     }
-    Stmt::With(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, false, out, ctx)?,
+    Stmt::With(stmt) => module_var_declared_names_from_stmt(&stmt.stx.body, out, ctx)?,
 
     // Class bodies are boundaries: do not descend.
     Stmt::ClassDecl(_) => {}
@@ -1397,7 +1397,18 @@ fn module_lex_declared_names(
       {
         for declarator in &decl.stx.declarators {
           ctx.budget_tick()?;
-          pat_decl_bound_names(&declarator.pattern.stx, &mut names, ctx)?;
+          pat_decl_bound_names_no_dupes(&declarator.pattern.stx, &mut names, ctx)?;
+        }
+      }
+
+      Stmt::FunctionDecl(decl) => {
+        let Some(name) = decl.stx.name.as_ref() else {
+          continue;
+        };
+        ctx.budget_tick()?;
+        names.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        if !names.insert(try_string_from_str(&name.stx.name)?) {
+          return Err(syntax_error(name.loc, "duplicate lexically declared name"));
         }
       }
 
@@ -1407,7 +1418,9 @@ fn module_lex_declared_names(
         };
         ctx.budget_tick()?;
         names.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-        names.insert(try_string_from_str(&name.stx.name)?);
+        if !names.insert(try_string_from_str(&name.stx.name)?) {
+          return Err(syntax_error(name.loc, "duplicate lexically declared name"));
+        }
       }
 
       _ => {}
@@ -1465,6 +1478,178 @@ fn pat_bound_names(
   }
 
   Ok(())
+}
+
+fn pat_decl_bound_names_no_dupes(
+  pat: &parse_js::ast::stmt::decl::PatDecl,
+  out: &mut HashSet<String>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  pat_bound_names_no_dupes(&pat.pat, out, ctx)
+}
+
+fn pat_bound_names_no_dupes(
+  pat: &Node<Pat>,
+  out: &mut HashSet<String>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  ctx.budget_tick()?;
+
+  match &*pat.stx {
+    Pat::Id(id) => {
+      out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      if !out.insert(try_string_from_str(&id.stx.name)?) {
+        return Err(syntax_error(pat.loc, "duplicate lexically declared name"));
+      }
+    }
+    Pat::Arr(arr) => {
+      for elem in &arr.stx.elements {
+        let Some(elem) = elem.as_ref() else {
+          // Array patterns can contain arbitrarily many elisions (`[,,,,x]`); ensure the traversal
+          // can't do `O(N)` work without ticking.
+          ctx.budget_tick()?;
+          continue;
+        };
+        pat_bound_names_no_dupes(&elem.target, out, ctx)?;
+      }
+      if let Some(rest) = arr.stx.rest.as_ref() {
+        pat_bound_names_no_dupes(rest, out, ctx)?;
+      }
+    }
+    Pat::Obj(obj) => {
+      for prop in &obj.stx.properties {
+        ctx.budget_tick()?;
+        pat_bound_names_no_dupes(&prop.stx.target, out, ctx)?;
+      }
+      if let Some(rest) = obj.stx.rest.as_ref() {
+        pat_bound_names_no_dupes(rest, out, ctx)?;
+      }
+    }
+    // Assignment targets are not valid binding patterns, but can appear in the AST for recovery.
+    Pat::AssignTarget(_) => {}
+  }
+
+  Ok(())
+}
+
+fn module_lex_var_declared_names_do_not_intersect(
+  var_declared_names: &HashSet<String>,
+  lex_declared_names: &HashSet<String>,
+  loc: parse_js::loc::Loc,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  for name in lex_declared_names {
+    ctx.budget_tick()?;
+    if var_declared_names.contains(name.as_str()) {
+      return Err(syntax_error(
+        loc,
+        "lexical declaration collides with var declaration",
+      ));
+    }
+  }
+  Ok(())
+}
+
+fn module_contains_duplicate_labels(
+  top: &Node<TopLevel>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<bool, VmError> {
+  let mut stack: Vec<&str> = Vec::new();
+  stmt_list_contains_duplicate_labels(&top.stx.body, &mut stack, ctx)
+}
+
+fn stmt_list_contains_duplicate_labels<'a>(
+  stmts: &'a [Node<Stmt>],
+  label_stack: &mut Vec<&'a str>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<bool, VmError> {
+  for stmt in stmts {
+    if stmt_contains_duplicate_labels(stmt, label_stack, ctx)? {
+      return Ok(true);
+    }
+  }
+  Ok(false)
+}
+
+fn stmt_contains_duplicate_labels<'a>(
+  stmt: &'a Node<Stmt>,
+  label_stack: &mut Vec<&'a str>,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<bool, VmError> {
+  ctx.budget_tick()?;
+
+  Ok(match &*stmt.stx {
+    Stmt::Label(labelled) => {
+      let name = labelled.stx.name.as_str();
+      for existing in label_stack.iter() {
+        ctx.budget_tick()?;
+        if *existing == name {
+          return Ok(true);
+        }
+      }
+      label_stack.push(name);
+      let found = stmt_contains_duplicate_labels(&labelled.stx.statement, label_stack, ctx)?;
+      label_stack.pop();
+      found
+    }
+
+    Stmt::Block(block) => stmt_list_contains_duplicate_labels(&block.stx.body, label_stack, ctx)?,
+    Stmt::DoWhile(stmt) => stmt_contains_duplicate_labels(&stmt.stx.body, label_stack, ctx)?,
+    Stmt::If(stmt) => {
+      if stmt_contains_duplicate_labels(&stmt.stx.consequent, label_stack, ctx)? {
+        true
+      } else if let Some(alt) = stmt.stx.alternate.as_ref() {
+        stmt_contains_duplicate_labels(alt, label_stack, ctx)?
+      } else {
+        false
+      }
+    }
+    Stmt::While(stmt) => stmt_contains_duplicate_labels(&stmt.stx.body, label_stack, ctx)?,
+    Stmt::ForTriple(stmt) => {
+      stmt_list_contains_duplicate_labels(&stmt.stx.body.stx.body, label_stack, ctx)?
+    }
+    Stmt::ForIn(stmt) => {
+      stmt_list_contains_duplicate_labels(&stmt.stx.body.stx.body, label_stack, ctx)?
+    }
+    Stmt::ForOf(stmt) => {
+      stmt_list_contains_duplicate_labels(&stmt.stx.body.stx.body, label_stack, ctx)?
+    }
+    Stmt::Switch(stmt) => {
+      let mut found = false;
+      for branch in &stmt.stx.branches {
+        ctx.budget_tick()?;
+        if stmt_list_contains_duplicate_labels(&branch.stx.body, label_stack, ctx)? {
+          found = true;
+          break;
+        }
+      }
+      found
+    }
+    Stmt::Try(stmt) => {
+      if stmt_list_contains_duplicate_labels(&stmt.stx.wrapped.stx.body, label_stack, ctx)? {
+        true
+      } else if let Some(catch) = stmt.stx.catch.as_ref() {
+        if stmt_list_contains_duplicate_labels(&catch.stx.body, label_stack, ctx)? {
+          true
+        } else if let Some(finally) = stmt.stx.finally.as_ref() {
+          stmt_list_contains_duplicate_labels(&finally.stx.body, label_stack, ctx)?
+        } else {
+          false
+        }
+      } else if let Some(finally) = stmt.stx.finally.as_ref() {
+        stmt_list_contains_duplicate_labels(&finally.stx.body, label_stack, ctx)?
+      } else {
+        false
+      }
+    }
+    Stmt::With(stmt) => stmt_contains_duplicate_labels(&stmt.stx.body, label_stack, ctx)?,
+
+    // Function-like boundaries: do not descend.
+    Stmt::FunctionDecl(_) => false,
+
+    // Everything else is leaf-like for label scanning.
+    _ => false,
+  })
 }
 
 fn module_import_bound_names<'a>(
@@ -2407,6 +2592,47 @@ mod tests {
       r#"
       import { x } from 'm';
       import { x } from 'n';
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_duplicate_lex_declared_name() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      let x;
+      const x = 0;
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_lex_and_var_collision() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      let x;
+      var x;
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_duplicate_top_level_function_decl() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      function x() {}
+      function x() {}
+    "#,
+    ));
+  }
+
+  #[test]
+  fn module_early_error_duplicate_labels() {
+    assert_syntax(SourceTextModuleRecord::parse(
+      r#"
+      label: {
+        label: 0;
+      }
     "#,
     ));
   }
