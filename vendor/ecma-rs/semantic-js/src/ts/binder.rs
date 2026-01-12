@@ -374,9 +374,12 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     let mut deps = Vec::new();
     // Ambient modules declared in `.d.ts` files can still satisfy module
     // resolution even when the file is an external module (e.g. `import "pkg"`
-    // alongside `declare module "pkg" { ... }`). Pass the ambient module list so
-    // `resolve_spec` can see in-file declarations before they've been bound.
-    let ambient_modules_for_resolution: &[AmbientModule] = &hir.ambient_modules;
+    // alongside `declare module "pkg" { ... }`).
+    let ambient_modules_for_resolution: &[AmbientModule] = if hir.file_kind == FileKind::Dts {
+      &hir.ambient_modules
+    } else {
+      &[]
+    };
 
     self.bind_module_items(
       &mut state,
@@ -421,11 +424,20 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
         });
         deps.push(target);
       } else if !is_relative_module_specifier(&ambient.name) {
-        // If the module specifier does not resolve to a file and is non-relative,
-        // treat it as an ambient module declaration even within an external
-        // module. This matches existing `.d.ts` patterns that declare packages
-        // inline and then import from them.
-        deps.extend(self.bind_ambient_module(hir.file_id, hir.file_kind, ambient));
+        match hir.file_kind {
+          FileKind::Ts => {
+            // In `.ts` external modules, `declare module "..."` is a module
+            // augmentation, so the target must already exist.
+            self.invalid_module_name_in_augmentation(hir.file_id, &ambient.name, ambient.name_span);
+          }
+          FileKind::Dts => {
+            // If the module specifier does not resolve to a file and is
+            // non-relative, treat it as an ambient module declaration even
+            // within an external `.d.ts` module. This matches common patterns
+            // that declare packages inline and then import from them.
+            deps.extend(self.bind_ambient_module(hir.file_id, hir.file_kind, ambient));
+          }
+        }
       } else {
         // Relative module declarations inside modules are treated as augmentations
         // and must resolve to an existing file or ambient module.
@@ -532,6 +544,16 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     if applied_any {
       self.pending_augmentations = remaining;
     } else {
+      let mut seen: BTreeSet<(FileId, TextRange)> = BTreeSet::new();
+      for aug in &remaining {
+        if seen.insert((aug.origin, aug.module.name_span)) {
+          self.invalid_module_name_in_augmentation(
+            aug.origin,
+            &aug.module.name,
+            aug.module.name_span,
+          );
+        }
+      }
       // No progress was made; any remaining augmentations target modules that are
       // not present in this program. Report them deterministically, then drop
       // them to prevent an infinite loop.
@@ -551,6 +573,17 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     }
 
     deps
+  }
+
+  fn invalid_module_name_in_augmentation(&mut self, file_id: FileId, name: &str, span: TextRange) {
+    self.diagnostics.push(Diagnostic::error(
+      "TS2664",
+      format!(
+        "Invalid module name in augmentation, module '{}' cannot be found.",
+        name
+      ),
+      Span::new(file_id, span),
+    ));
   }
 
   fn bind_ambient_module(

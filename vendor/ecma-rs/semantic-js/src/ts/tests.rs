@@ -3481,6 +3481,127 @@ fn unresolved_module_augmentation_reports_diagnostic() {
 }
 
 #[test]
+fn module_augmentation_in_ts_module_reports_ts2664_when_target_missing() {
+  // `ambientExternalModuleInAnotherExternalModule.ts`
+  let source = r#"
+    class D { }
+    export = D;
+
+    declare module "ext" {
+        export class C { }
+    }
+
+    // Cannot resolve this ext module reference
+    import ext = require("ext");
+    var x = ext;
+  "#;
+  let file = FileId(5000);
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered);
+  let module_name_span = hir
+    .ambient_modules
+    .first()
+    .expect("ambient module present")
+    .name_span;
+  let import_span = hir
+    .import_equals
+    .first()
+    .and_then(|ie| match &ie.target {
+      ImportEqualsTarget::Require { specifier_span, .. } => Some(*specifier_span),
+      _ => None,
+    })
+    .expect("import equals require span");
+
+  let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+
+  let ts2664 = diags
+    .iter()
+    .find(|d| d.code == "TS2664")
+    .expect("expected TS2664 diagnostic");
+  assert_eq!(
+    ts2664.message,
+    "Invalid module name in augmentation, module 'ext' cannot be found."
+  );
+  assert_eq!(ts2664.primary.file, file);
+  assert_eq!(ts2664.primary.range, module_name_span);
+
+  assert!(
+    diags
+      .iter()
+      .any(|d| d.code == "BIND1002" && d.primary.range == import_span),
+    "expected unresolved import diagnostic for require(\"ext\"), got {:?}",
+    diags
+  );
+}
+
+#[test]
+fn module_augmentation_in_dts_module_allows_new_ambient_module_without_ts2664() {
+  // `moduleAugmentationInDependency.ts` uses an external `.d.ts` file that still
+  // declares a new ambient module.
+  let source = r#"
+    declare module "ext" {
+    }
+    export {};
+  "#;
+  let file = FileId(5001);
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Dts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered);
+
+  let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+
+  assert!(
+    diags.is_empty(),
+    "expected no diagnostics for ambient module declaration in .d.ts external module, got {:?}",
+    diags
+  );
+}
+
+#[test]
+fn relative_module_augmentation_reports_ts2664_when_target_missing() {
+  let source = r#"
+    export {};
+    declare module "./ext" {
+      export interface X {}
+    }
+  "#;
+  let file = FileId(5002);
+  let ast = parse(source).expect("parse");
+  let lowered = lower_file(file, HirFileKind::Ts, &ast);
+  let hir = lower_to_ts_hir(&ast, &lowered);
+  let module_name_span = hir
+    .ambient_modules
+    .first()
+    .expect("ambient module present")
+    .name_span;
+
+  let files: HashMap<FileId, Arc<HirFile>> = HashMap::from([(file, Arc::new(hir))]);
+  let resolver = StaticResolver::new(HashMap::new());
+  let (_semantics, diags) = bind_ts_program(&[file], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+
+  assert_eq!(diags.len(), 1, "unexpected diagnostics: {:?}", diags);
+  let diag = &diags[0];
+  assert_eq!(diag.code, "TS2664");
+  assert_eq!(
+    diag.message,
+    "Invalid module name in augmentation, module './ext' cannot be found."
+  );
+  assert_eq!(diag.primary.file, file);
+  assert_eq!(diag.primary.range, module_name_span);
+}
+
+#[test]
 fn imports_use_ambient_modules_when_file_missing() {
   let file_import = FileId(130);
   let file_ambient = FileId(131);
