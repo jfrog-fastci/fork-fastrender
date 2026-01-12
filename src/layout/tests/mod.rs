@@ -44,6 +44,7 @@ mod collapsible_whitespace_before_abspos;
 mod collapsible_whitespace_before_floats;
 mod complex_script_wrap_test;
 mod contain_layout;
+mod containment_intrinsic_inline_size_test;
 mod container_query_border_calc;
 mod container_query_percentage_padding;
 mod container_query_replaced_style_refresh;
