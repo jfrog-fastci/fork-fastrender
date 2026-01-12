@@ -2,7 +2,10 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // `for await...of` exercises async iteration + Promise/job queuing. With ongoing vm-js builtin
+  // growth, a 1MiB heap can be too tight and cause spurious `VmError::OutOfMemory` failures that
+  // are not relevant to the semantics being tested here.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 

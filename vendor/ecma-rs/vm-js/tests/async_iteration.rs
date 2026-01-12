@@ -349,6 +349,11 @@ fn get_async_iterator_sync_fallback_awaits_array_values() -> Result<(), VmError>
       let intr = realm.intrinsics();
       let mut scope = heap.scope();
 
+      // Root the Promise across subsequent allocations (array creation, property key strings, etc).
+      // Otherwise, it is only held in a Rust local (not traced by GC) and can be collected if a GC
+      // runs during allocation.
+      let promise = scope.push_root(promise)?;
+
       let array = scope.alloc_array(0)?;
       scope.push_root(Value::Object(array))?;
       scope
@@ -366,6 +371,10 @@ fn get_async_iterator_sync_fallback_awaits_array_values() -> Result<(), VmError>
     // Resolve the awaited IteratorResult and validate the unwrapped `value`.
     {
       let mut scope = heap.scope();
+      // Root the promise returned by `AsyncIteratorNext` across the callback allocations and
+      // PerformPromiseThen work. Otherwise it is only held by a Rust local and can be collected if a
+      // GC runs during those allocations.
+      let next_promise = scope.push_root(next_promise)?;
       let call_id = vm.register_native_call(check_array_next_iterator_result)?;
       let name = scope.alloc_string("check")?;
       let on_fulfilled = scope.alloc_native_function(call_id, None, name, 1)?;

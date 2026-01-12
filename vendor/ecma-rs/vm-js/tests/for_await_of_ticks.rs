@@ -2,7 +2,10 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // These tests assert microtask tick ordering for `for await...of`, and therefore allocate and
+  // run a fair amount of Promise/job machinery. Use a slightly larger heap to avoid spurious
+  // `VmError::OutOfMemory` failures as vm-js grows its builtin surface area.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 

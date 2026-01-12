@@ -5643,17 +5643,33 @@ pub(crate) fn perform_promise_then(
     );
   }
 
+  // Root the input Promise + handlers before allocating the derived promise/capability.
+  //
+  // `Promise.prototype.then` allocates several objects (the derived promise and resolving
+  // functions). Those allocations can trigger GC, and the incoming `this`/handler values are only
+  // held in Rust locals at this point (not traced by GC). Root them so they remain valid.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(promise), on_fulfilled, on_rejected])?;
+
   // Create the derived promise + capability.
   let result_promise = scope.alloc_promise_with_prototype(Some(intr.promise_prototype()))?;
   scope.push_root(Value::Object(result_promise))?;
-  let (resolve, reject) = create_promise_resolving_functions(vm, scope, result_promise)?;
+  let (resolve, reject) = create_promise_resolving_functions(vm, &mut scope, result_promise)?;
   let capability = PromiseCapability {
     promise: Value::Object(result_promise),
     resolve,
     reject,
   };
 
-  perform_promise_then_with_capability(vm, scope, host, promise, on_fulfilled, on_rejected, capability)
+  perform_promise_then_with_capability(
+    vm,
+    &mut scope,
+    host,
+    promise,
+    on_fulfilled,
+    on_rejected,
+    capability,
+  )
 }
 
 /// `PerformPromiseThen(promise, onFulfilled, onRejected, resultCapability = undefined)`.
