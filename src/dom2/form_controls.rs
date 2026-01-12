@@ -40,7 +40,10 @@ fn is_input_checkable(type_attr: Option<&str>) -> bool {
 }
 
 impl Document {
-  pub(crate) fn init_form_control_state_for_node_kind(&self, kind: &NodeKind) -> (Option<InputState>, Option<TextareaState>) {
+  pub(crate) fn init_form_control_state_for_node_kind(
+    &self,
+    kind: &NodeKind,
+  ) -> (Option<InputState>, Option<TextareaState>) {
     let NodeKind::Element {
       tag_name,
       namespace,

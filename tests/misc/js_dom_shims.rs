@@ -126,18 +126,23 @@ fn input_helpers_reflect_to_dom2_attributes() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let input = doc.create_element("input", "");
 
-  assert_eq!(doc.input_value(input), "");
-  doc.set_input_value(input, "a").unwrap();
-  assert_eq!(doc.input_value(input), "a");
-  assert_eq!(doc.get_attribute(input, "value").unwrap(), Some("a"));
+  // The `dom2` form control shim tracks value as internal state (with a dirty flag), not as a
+  // reflected content attribute.
+  assert_eq!(doc.input_value(input).unwrap(), "");
+  doc.set_attribute(input, "value", "attr").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "attr");
 
-  assert!(!doc.input_checked(input));
+  doc.set_input_value(input, "state").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "state");
+  // Updating the content attribute no longer affects the current value once dirty.
+  doc.set_attribute(input, "value", "newattr").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "state");
+
+  assert!(!doc.input_checked(input).unwrap());
   doc.set_input_checked(input, true).unwrap();
-  assert!(doc.input_checked(input));
-  assert!(doc.has_attribute(input, "checked").unwrap());
+  assert!(doc.input_checked(input).unwrap());
   doc.set_input_checked(input, false).unwrap();
-  assert!(!doc.input_checked(input));
-  assert!(!doc.has_attribute(input, "checked").unwrap());
+  assert!(!doc.input_checked(input).unwrap());
 
   assert!(!doc.input_disabled(input));
   doc.set_input_disabled(input, true).unwrap();
@@ -154,20 +159,20 @@ fn textarea_value_uses_text_content() {
   let textarea = doc.create_element("textarea", "");
   let text = doc.create_text("hello");
   doc.append_child(textarea, text).unwrap();
-  assert_eq!(doc.textarea_value(textarea), "hello");
+  assert_eq!(doc.textarea_value(textarea).unwrap(), "hello");
 
+  // Setting the runtime value does not mutate the underlying child text nodes.
   doc.set_textarea_value(textarea, "world").unwrap();
-  assert_eq!(doc.textarea_value(textarea), "world");
+  assert_eq!(doc.textarea_value(textarea).unwrap(), "world");
   let children = doc.children(textarea).unwrap();
   assert_eq!(children.len(), 1);
-  assert_eq!(doc.text_data(children[0]).unwrap(), "world");
+  assert_eq!(doc.text_data(children[0]).unwrap(), "hello");
 
-  // Attribute fallback when there are no text nodes.
-  let textarea = doc.create_element("textarea", "");
-  doc.set_attribute(textarea, "value", "from-attr").unwrap();
-  assert_eq!(doc.textarea_value(textarea), "from-attr");
-  doc.set_textarea_value(textarea, "").unwrap();
-  assert_eq!(doc.textarea_value(textarea), "");
+  // Form reset restores the default value based on the current descendant text nodes.
+  let form = doc.create_element("form", "");
+  doc.append_child(form, textarea).unwrap();
+  doc.form_reset(form).unwrap();
+  assert_eq!(doc.textarea_value(textarea).unwrap(), "hello");
 }
 
 #[test]
@@ -240,7 +245,7 @@ fn form_elements_collect_descendant_controls() {
 
   assert_eq!(doc.form_elements(form), vec![input, select, textarea]);
 
-  // `submit()` and `reset()` are currently no-ops, but should be callable.
+  // `submit()`/`reset()` should be callable (reset implements minimal default-value semantics).
   doc.form_submit(form).unwrap();
   doc.form_reset(form).unwrap();
 }
