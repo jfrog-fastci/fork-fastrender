@@ -836,14 +836,13 @@ mod tests {
     let result = realm.exec_script(
       r#"
 (() => {
-  // ArrayBuffer detachment is introduced via the ES2024 transfer APIs.
-  // If the engine doesn't implement it yet, skip this regression test.
-  if (typeof ArrayBuffer.prototype.transfer !== "function") {
+  // Detach the buffer via the structured clone transfer list.
+  if (typeof structuredClone !== "function") {
     return "skip";
   }
 
   const buf = new ArrayBuffer(1);
-  buf.transfer(); // Detaches `buf`.
+  structuredClone(buf, { transfer: [buf] }); // Detaches `buf`.
   if (buf.byteLength !== 0) {
     return "transfer did not detach";
   }
