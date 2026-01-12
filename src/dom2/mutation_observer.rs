@@ -336,23 +336,31 @@ impl Document {
   ) -> Result<(), DomError> {
     self.node_checked(target)?;
 
-    let existing_registration_ids: Vec<RegistrationId> = self.nodes[target.index()]
+    // WHATWG DOM observe(): if an observer is already registered on `target`, update the existing
+    // (non-transient) registration and remove transient registered observers sourced from that
+    // registration from every node in the observer's node list.
+    //
+    // Transient registered observers are not treated as existing registrations for observe(), so
+    // `observe()` on a node that currently only has transient registrations will create a new
+    // non-transient registration that survives the next transient-cleanup pass.
+    let existing_registration_id = self.nodes[target.index()]
       .registered_observers
       .iter()
-      .filter(|reg| reg.observer == observer)
-      .map(|reg| reg.id)
-      .collect();
+      .find(|reg| reg.observer == observer && reg.transient_source.is_none())
+      .map(|reg| reg.id);
 
-    if !existing_registration_ids.is_empty() {
+    if let Some(existing_registration_id) = existing_registration_id {
       // Spec: if updating an existing registration, remove transient registered observers whose
       // source is the updated registration from all nodes in the observer's node list.
       let nodes_to_cleanup = {
         let mut agent = self.mutation_observer_agent.borrow_mut();
         let state = agent.state_for_observer_mut(observer)?;
+        if !state.node_list.contains(&target) {
+          state.node_list.push(target);
+        }
         state.node_list.clone()
       };
 
-      let source_ids: HashSet<RegistrationId> = existing_registration_ids.into_iter().collect();
       for node_id in nodes_to_cleanup {
         let Some(node) = self.nodes.get_mut(node_id.index()) else {
           continue;
@@ -371,36 +379,37 @@ impl Document {
         }
         node
           .registered_observers
-          .retain(|reg| !reg.transient_source.is_some_and(|src| source_ids.contains(&src)));
+          .retain(|reg| reg.transient_source != Some(existing_registration_id));
       }
 
       {
         let node = self.node_checked_mut(target)?;
-        for reg in &mut node.registered_observers {
-          if reg.observer == observer {
-            reg.options = options.clone();
-          }
+        if let Some(reg) = node
+          .registered_observers
+          .iter_mut()
+          .find(|reg| reg.observer == observer && reg.transient_source.is_none())
+        {
+          reg.options = options;
         }
       }
     } else {
+      // Ensure the observer state exists (and we're within observer limits) before mutating per-node
+      // registration lists.
       let id = {
         let mut agent = self.mutation_observer_agent.borrow_mut();
+        let state = agent.state_for_observer_mut(observer)?;
+        if !state.node_list.contains(&target) {
+          state.node_list.push(target);
+        }
         agent.alloc_registration_id()
       };
       let node = self.node_checked_mut(target)?;
       node.registered_observers.push(RegisteredObserver {
         id,
         observer,
-        options: options.clone(),
+        options,
         transient_source: None,
       });
-    }
-
-    // Ensure the observer tracks the target in its node list.
-    let mut agent = self.mutation_observer_agent.borrow_mut();
-    let state = agent.state_for_observer_mut(observer)?;
-    if !state.node_list.contains(&target) {
-      state.node_list.push(target);
     }
 
     Ok(())
@@ -459,10 +468,8 @@ impl Document {
     let pending = std::mem::take(&mut agent.pending);
     let mut out: Vec<(MutationObserverId, Vec<MutationRecord>)> = Vec::new();
     for observer in pending {
-      let Some((node_list, records, record_count)) = agent
-        .observers
-        .get_mut(&observer)
-        .map(|state| {
+      let Some((node_list, records, record_count)) =
+        agent.observers.get_mut(&observer).map(|state| {
           state.in_pending = false;
           let records = std::mem::take(&mut state.records);
           let record_count = records.len();
@@ -476,10 +483,7 @@ impl Document {
 
       // DOM: notify mutation observers removes all transient registered observers for `observer`.
       Self::mutation_observer_cleanup_transient_registrations(
-        nodes,
-        &mut agent,
-        observer,
-        &node_list,
+        nodes, &mut agent, observer, &node_list,
       );
 
       if !records.is_empty() {
@@ -505,12 +509,20 @@ impl Document {
       let list = &self.nodes[ancestor.index()].registered_observers;
       for reg in list {
         if reg.options.subtree {
-          to_add.push((reg.observer, reg.options.clone(), reg.id));
+          // If this ancestor registration is itself transient, ensure newly-created transients still
+          // point at the original non-transient registration. This keeps transient cleanup via
+          // `observe()` updates effective even when multiple removals happen before the transient
+          // cleanup pass runs.
+          let source_id = reg.transient_source.unwrap_or(reg.id);
+          to_add.push((reg.observer, reg.options.clone(), source_id));
         }
       }
 
       // MutationObserver ancestor traversal uses the DOM tree. Shadow roots are tree roots.
-      if matches!(self.nodes[ancestor.index()].kind, NodeKind::ShadowRoot { .. }) {
+      if matches!(
+        self.nodes[ancestor.index()].kind,
+        NodeKind::ShadowRoot { .. }
+      ) {
         break;
       }
       let parent = self.nodes[ancestor.index()].parent;
@@ -529,7 +541,11 @@ impl Document {
     let mut agent = self.mutation_observer_agent.borrow_mut();
     for (observer, options, source_id) in to_add {
       let id = agent.alloc_registration_id();
-      if let Some(list) = self.nodes.get_mut(node.index()).map(|n| &mut n.registered_observers) {
+      if let Some(list) = self
+        .nodes
+        .get_mut(node.index())
+        .map(|n| &mut n.registered_observers)
+      {
         list.push(RegisteredObserver {
           id,
           observer,
@@ -582,9 +598,9 @@ impl Document {
         continue;
       }
 
-      node.registered_observers.retain(|reg| {
-        !(reg.observer == observer && reg.transient_source.is_some())
-      });
+      node
+        .registered_observers
+        .retain(|reg| !(reg.observer == observer && reg.transient_source.is_some()));
 
       let still_observing = node
         .registered_observers
@@ -831,7 +847,9 @@ mod tests {
   #[test]
   fn queue_record_creates_state_and_schedules_delivery() {
     let mut agent = MutationObserverAgent::new();
-    agent.queue_record(1, record(NodeId::from_index(0))).unwrap();
+    agent
+      .queue_record(1, record(NodeId::from_index(0)))
+      .unwrap();
 
     assert!(agent.microtask_queued);
     assert!(agent.microtask_needs_queueing);
@@ -852,8 +870,12 @@ mod tests {
       max_total_records: 10,
     });
 
-    agent.queue_record(1, record(NodeId::from_index(0))).unwrap();
-    agent.queue_record(1, record(NodeId::from_index(0))).unwrap();
+    agent
+      .queue_record(1, record(NodeId::from_index(0)))
+      .unwrap();
+    agent
+      .queue_record(1, record(NodeId::from_index(0)))
+      .unwrap();
 
     assert_eq!(agent.total_records, 1);
     assert_eq!(agent.pending, vec![1]);
@@ -869,8 +891,12 @@ mod tests {
       max_total_records: 1,
     });
 
-    agent.queue_record(1, record(NodeId::from_index(0))).unwrap();
-    agent.queue_record(2, record(NodeId::from_index(0))).unwrap();
+    agent
+      .queue_record(1, record(NodeId::from_index(0)))
+      .unwrap();
+    agent
+      .queue_record(2, record(NodeId::from_index(0)))
+      .unwrap();
 
     assert_eq!(agent.total_records, 1);
     assert!(agent.observers.contains_key(&1));
@@ -909,9 +935,12 @@ mod tests {
     // root (`child`).
     doc.remove_child(parent, child).unwrap();
     assert_eq!(doc.mutation_observer_transient_registration_count(child), 1);
-    assert!(doc.nodes[child.index()].registered_observers.iter().any(|reg| {
-      reg.observer == observer && reg.transient_source == Some(parent_registration_id)
-    }));
+    assert!(doc.nodes[child.index()]
+      .registered_observers
+      .iter()
+      .any(|reg| {
+        reg.observer == observer && reg.transient_source == Some(parent_registration_id)
+      }));
 
     // Mutations inside the detached subtree should still be observed via the transient registration.
     doc.set_attribute(grandchild, "id", "before").unwrap();
@@ -932,6 +961,160 @@ mod tests {
       .unwrap();
 
     assert_eq!(doc.mutation_observer_transient_registration_count(child), 0);
+
+    doc.set_attribute(grandchild, "id", "after").unwrap();
+    let records = doc.mutation_observer_take_records(observer);
+    assert!(records.is_empty());
+  }
+
+  #[test]
+  fn observe_creates_non_transient_registration_when_only_transient_exists() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+
+    let parent = doc.create_element("div", "");
+    let child = doc.create_element("div", "");
+    let grandchild = doc.create_element("div", "");
+    doc.append_child(child, grandchild).unwrap();
+    doc.append_child(parent, child).unwrap();
+
+    let observer = 1;
+    doc
+      .mutation_observer_observe(
+        observer,
+        parent,
+        MutationObserverInit {
+          attributes: true,
+          subtree: true,
+          ..MutationObserverInit::default()
+        },
+      )
+      .unwrap();
+
+    let parent_registration_id = doc.nodes[parent.index()]
+      .registered_observers
+      .iter()
+      .find(|reg| reg.observer == observer && reg.transient_source.is_none())
+      .unwrap()
+      .id;
+
+    // Detach the subtree; `child` should receive a transient registration sourced from `parent`.
+    doc.remove_child(parent, child).unwrap();
+    assert!(doc.nodes[child.index()]
+      .registered_observers
+      .iter()
+      .any(|reg| {
+        reg.observer == observer && reg.transient_source == Some(parent_registration_id)
+      }));
+    assert!(!doc.nodes[child.index()]
+      .registered_observers
+      .iter()
+      .any(|reg| reg.observer == observer && reg.transient_source.is_none()));
+
+    // `observe(child, ...)` should create a new non-transient registration (transients are not
+    // treated as existing registrations for `observe()`).
+    doc
+      .mutation_observer_observe(
+        observer,
+        child,
+        MutationObserverInit {
+          attributes: true,
+          subtree: true,
+          ..MutationObserverInit::default()
+        },
+      )
+      .unwrap();
+    assert!(doc.nodes[child.index()]
+      .registered_observers
+      .iter()
+      .any(|reg| reg.observer == observer && reg.transient_source.is_none()));
+
+    // Simulate the microtask checkpoint that removes transients.
+    let _ = doc.mutation_observer_take_deliveries();
+    assert_eq!(doc.mutation_observer_transient_registration_count(child), 0);
+
+    // The non-transient registration must remain active after transient cleanup.
+    doc.set_attribute(grandchild, "id", "after").unwrap();
+    let records = doc.mutation_observer_take_records(observer);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].type_, MutationRecordType::Attributes);
+    assert_eq!(records[0].target, grandchild);
+  }
+
+  #[test]
+  fn observe_update_removes_nested_transient_registrations() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+
+    let parent = doc.create_element("div", "");
+    let child = doc.create_element("div", "");
+    let grandchild = doc.create_element("div", "");
+    doc.append_child(child, grandchild).unwrap();
+    doc.append_child(parent, child).unwrap();
+
+    let observer = 1;
+    let initial_options = MutationObserverInit {
+      attributes: true,
+      subtree: true,
+      ..MutationObserverInit::default()
+    };
+    doc
+      .mutation_observer_observe(observer, parent, initial_options)
+      .unwrap();
+
+    let parent_registration_id = doc.nodes[parent.index()]
+      .registered_observers
+      .iter()
+      .find(|reg| reg.observer == observer && reg.transient_source.is_none())
+      .unwrap()
+      .id;
+
+    // Remove `child` from `parent`, then remove `grandchild` from `child` before transient cleanup
+    // runs. This creates a nested transient chain. We want all transients to ultimately be sourced
+    // from the original `parent` registration so observe() update cleanup can remove them.
+    doc.remove_child(parent, child).unwrap();
+    let child_transient_id = doc.nodes[child.index()]
+      .registered_observers
+      .iter()
+      .find(|reg| reg.observer == observer && reg.transient_source == Some(parent_registration_id))
+      .unwrap()
+      .id;
+
+    doc.remove_child(child, grandchild).unwrap();
+    assert_eq!(
+      doc.mutation_observer_transient_registration_count(grandchild),
+      1
+    );
+    assert!(doc.nodes[grandchild.index()]
+      .registered_observers
+      .iter()
+      .any(|reg| {
+        reg.observer == observer
+          && reg.transient_source == Some(parent_registration_id)
+          && reg.transient_source != Some(child_transient_id)
+      }));
+
+    // Updating the observer's registration on `parent` must remove transients in the detached
+    // subtree, including those created via nested removals.
+    doc
+      .mutation_observer_observe(
+        observer,
+        parent,
+        MutationObserverInit {
+          attributes: true,
+          subtree: false,
+          ..MutationObserverInit::default()
+        },
+      )
+      .unwrap();
+
+    assert_eq!(doc.mutation_observer_transient_registration_count(child), 0);
+    assert_eq!(
+      doc.mutation_observer_transient_registration_count(grandchild),
+      0
+    );
+
+    // Clear any records queued by the removals above so the final assertion only covers the new
+    // mutation below.
+    let _ = doc.mutation_observer_take_records(observer);
 
     doc.set_attribute(grandchild, "id", "after").unwrap();
     let records = doc.mutation_observer_take_records(observer);
