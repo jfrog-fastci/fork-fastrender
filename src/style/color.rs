@@ -1749,26 +1749,52 @@ fn parse_dynamic_range_limit_mix_color(input: &str) -> Result<Color, ColorParseE
 /// Parse an RGB channel (number or percentage) clamped to 0-255.
 fn parse_rgb_channel(parser: &mut cssparser::Parser<'_, '_>) -> Result<u8, ColorParseError> {
   use cssparser::Token;
+  let start = parser.position();
   let token = parser
     .next()
     .map_err(|_| ColorParseError::InvalidFormat("rgb".to_string()))?;
   let value = match token {
     Token::Number { value, .. } => value.clamp(0.0, 255.0),
     Token::Percentage { unit_value, .. } => (unit_value * 255.0).clamp(0.0, 255.0),
-    _ => return Err(ColorParseError::InvalidComponent(format!("{:?}", token))),
+    Token::Function(ref _name) => {
+      // CSS Color 4 allows calc() and related math functions inside rgb()/rgba() channels.
+      //
+      // Example from real-world stylesheets:
+      //   rgb(calc(25 + var(--coef) * 230), ...)
+      //
+      // Reuse the calc-enabled number parser used by numeric CSS properties.
+      // cssparser's `parse_nested_block` returns an error when the provided closure doesn't
+      // consume the nested parser's token stream. We only need it here to advance the outer
+      // parser to the end of the function so we can slice the raw source and delegate parsing to
+      // `parse_function_number`.
+      let _ = parser.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'_, ()>>(()));
+      let raw = parser.slice_from(start);
+      let num = crate::css::properties::parse_function_number(raw)
+        .ok_or_else(|| ColorParseError::InvalidComponent(raw.to_string()))?;
+      num.clamp(0.0, 255.0)
+    }
+    other => return Err(ColorParseError::InvalidComponent(format!("{:?}", other))),
   };
   Ok(value.round() as u8)
 }
 
 fn parse_alpha_component(parser: &mut cssparser::Parser<'_, '_>) -> Result<f32, ColorParseError> {
   use cssparser::Token;
+  let start = parser.position();
   let token = parser
     .next()
     .map_err(|_| ColorParseError::InvalidFormat("alpha".to_string()))?;
   let value = match token {
     Token::Number { value, .. } => *value,
     Token::Percentage { unit_value, .. } => unit_value * 1.0,
-    _ => return Err(ColorParseError::InvalidComponent(format!("{:?}", token))),
+    Token::Function(ref _name) => {
+      // Allow calc() in alpha position (CSS Color 4).
+      let _ = parser.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'_, ()>>(()));
+      let raw = parser.slice_from(start);
+      crate::css::properties::parse_function_number(raw)
+        .ok_or_else(|| ColorParseError::InvalidComponent(raw.to_string()))?
+    }
+    other => return Err(ColorParseError::InvalidComponent(format!("{:?}", other))),
   };
   Ok(value.clamp(0.0, 1.0))
 }
@@ -3744,6 +3770,25 @@ mod tests {
     assert_eq!(color.to_rgba(Rgba::BLACK), Rgba::new(26, 51, 77, 0.5));
 
     let color = Color::parse("rgb(255 0 0 / 50%)").unwrap();
+    assert_eq!(color.to_rgba(Rgba::BLACK), Rgba::new(255, 0, 0, 0.5));
+  }
+
+  #[test]
+  fn test_parse_rgb_with_calc_channels() {
+    // CSS Color 4 allows math functions (calc/min/max/...) in rgb()/rgba() channel positions.
+    //
+    // Kotlin's homepage uses `rgb(calc(25 + var(--coef) * 230), ...)` to flip between dark and
+    // light theme colors.
+    let color = Color::parse("rgb(calc(25 + 1*230), calc(25 + 1*230), calc(28 + 1*227))").unwrap();
+    assert_eq!(color.to_rgba(Rgba::BLACK), Rgba::WHITE);
+
+    let color = Color::parse("rgb(calc(25 + 0*230) calc(25 + 0*230) calc(28 + 0*227))").unwrap();
+    assert_eq!(color.to_rgba(Rgba::BLACK), Rgba::rgb(25, 25, 28));
+  }
+
+  #[test]
+  fn test_parse_rgb_with_calc_alpha() {
+    let color = Color::parse("rgb(255 0 0 / calc(1/2))").unwrap();
     assert_eq!(color.to_rgba(Rgba::BLACK), Rgba::new(255, 0, 0, 0.5));
   }
 
