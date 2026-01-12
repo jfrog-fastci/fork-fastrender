@@ -614,10 +614,16 @@ matching the validator’s checks):
   - `this`
   - classes / class expressions
   - `async` / generator functions, `await`, `yield`
-  - object literals
+  - object literals are supported only as plain data objects:
+    - no spread properties
+    - property keys must be identifiers or literal strings/numbers (no computed keys)
+    - no getters/setters/methods
+    - `__proto__` is rejected
   - array literals with spreads or holes (`[1, , 2]`, `[...xs]`)
   - destructuring patterns (object/array destructuring)
-  - property access is only supported for array/tuple indexing (`arr[i]`) and `.length`
+  - property access is supported only for:
+    - array/tuple indexing (`arr[i]`) and `.length`
+    - plain object property access with static keys (`obj.foo`, `obj["foo"]`, `obj[0]`)
   - conditional expressions (`cond ? a : b`)
   - function/arrow expressions
   - some operators are not supported yet (non-exhaustive):
@@ -645,8 +651,9 @@ matching the validator’s checks):
     - `number`/`boolean`/`string` and `void`/`undefined`/`never` (plus literal
       types like numeric literals, boolean literals, and string literals)
     - arrays and tuples whose element types are supported by the current ABI
-  - e.g. unions/intersections, object types, function types, nominal/reference
-    types, `null`, `bigint`, `symbol`, template-literal types, etc.
+    - plain object types with a fixed set of non-optional data properties whose field types are supported by the current ABI
+  - e.g. unions/intersections, function types, nominal/reference types, non-plain object types (methods, indexers, symbol keys), `null`,
+    `bigint`, `symbol`, template-literal types, etc.
   - builtin intrinsics may provide exceptions:
     - the checked pipeline injects a small `.d.ts` builtin library that declares
       `print(value: number | string): void` (see `native-js/src/builtins.rs`)

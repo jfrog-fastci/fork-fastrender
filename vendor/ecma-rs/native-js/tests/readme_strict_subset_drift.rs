@@ -74,3 +74,26 @@ fn strict_subset_readme_matches_current_checked_backend_and_validator() {
     "native-js README strict-subset section must document `number` lowering as `double`/`f64`"
   );
 }
+
+#[test]
+fn strict_subset_readme_mentions_object_literals_and_static_property_access() {
+  let readme = readme_text();
+  let strict_subset = section(&readme, "## Strict compilation subset (`native_js::validate`)");
+
+  assert!(
+    strict_subset.contains("object literals are supported"),
+    "native-js README strict-subset section should mention that object literals are supported:\n{strict_subset}"
+  );
+  assert!(
+    !strict_subset.contains("object literals and destructuring patterns"),
+    "native-js README strict-subset section still claims object literals are rejected:\n{strict_subset}"
+  );
+  assert!(
+    !strict_subset.contains("most property access (`obj.prop`, `obj[\"prop\"]`)"),
+    "native-js README strict-subset section still claims most property access is rejected:\n{strict_subset}"
+  );
+  assert!(
+    strict_subset.contains("`obj.foo`"),
+    "native-js README strict-subset section should document static object property access (e.g. `obj.foo`):\n{strict_subset}"
+  );
+}

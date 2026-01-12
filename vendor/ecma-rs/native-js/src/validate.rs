@@ -18,11 +18,24 @@ use crate::resolve::{BindingId, Resolver};
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
   ArrayElement, AssignOp, BinaryOp, Body, BodyId, BodyKind, ExprId, ExprKind, FileKind, ForInit, FunctionBody,
-  Literal, NameId, ObjectKey, PatKind, StmtId, StmtKind, TypeExprId, TypeExprKind, UnaryOp, VarDecl, VarDeclKind,
+  Literal, NameId, ObjectKey, ObjectProperty, PatKind, StmtId, StmtKind, TypeExprId, TypeExprKind, UnaryOp, VarDecl,
+  VarDeclKind,
 };
 use std::collections::{HashMap, HashSet};
 use typecheck_ts::{Program, TypeKindSummary};
 use types_ts_interned as tti;
+use parse_js::num::JsNumber;
+
+fn number_literal_to_i64(raw: &str) -> Option<i64> {
+  let n = JsNumber::from_literal(raw).map(|n| n.0)?;
+  if !n.is_finite() || n.fract() != 0.0 {
+    return None;
+  }
+  if n < i64::MIN as f64 || n > i64::MAX as f64 {
+    return None;
+  }
+  Some(n as i64)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TypeKindGroup {
@@ -623,27 +636,108 @@ fn validate_body_syntax(
           );
           continue;
         }
-        // Only allow the two member-expression forms we can lower:
+
+        // Reject `__proto__` access (prototype mutation).
+        // Note: even if the receiver is a plain object in our subset, `__proto__` has special
+        // semantics in JS and is not a normal data property.
+        let is_proto = match &member.property {
+          ObjectKey::Ident(name) => lowered.names.resolve(*name) == Some("__proto__"),
+          ObjectKey::Computed(key_expr) => body
+            .exprs
+            .get(key_expr.0 as usize)
+            .is_some_and(|e| matches!(&e.kind, ExprKind::Literal(Literal::String(s)) if s.lossy == "__proto__")),
+          ObjectKey::String(s) => s == "__proto__",
+          _ => false,
+        };
+        if is_proto {
+          push_unsupported_syntax(out, Span::new(file, expr.span), "`__proto__` is not supported by native-js");
+          continue;
+        }
+
+        // Only allow member-expression forms we can lower:
         // - `arr[i]` (array/tuple indexing)
         // - `arr.length`
+        // - `obj.foo` / `obj['foo']` / `obj[0]` for supported plain object types
         match &member.property {
-          ObjectKey::Ident(name) if lowered.names.resolve(*name) == Some("length") => {}
+          ObjectKey::Ident(_) => {}
           ObjectKey::Computed(_) => {}
           _ => {
             push_unsupported_syntax(
               out,
               Span::new(file, expr.span),
-              "property access is only supported for array/tuple indexing (`arr[i]`) and `.length` in native-js strict subset",
+              "unsupported member expression property syntax in native-js strict subset",
             );
           }
         }
       }
-      ExprKind::Object(_) => {
-        push_unsupported_syntax(
-          out,
-          Span::new(file, expr.span),
-          "object literals are not supported by native-js yet",
-        );
+      ExprKind::Object(obj) => {
+        // Allow a strict subset of object literal syntax:
+        // - no spread properties
+        // - no computed keys
+        // - no getters/setters/methods
+        // - reject `__proto__` (prototype mutation)
+        for prop in obj.properties.iter() {
+          match prop {
+            ObjectProperty::Spread(_) => {
+              push_unsupported_syntax(
+                out,
+                Span::new(file, expr.span),
+                "object literals with spread properties are not supported by native-js yet",
+              );
+            }
+            ObjectProperty::Getter { .. } | ObjectProperty::Setter { .. } => {
+              push_unsupported_syntax(
+                out,
+                Span::new(file, expr.span),
+                "object literals with getters/setters are not supported by native-js yet",
+              );
+            }
+            ObjectProperty::KeyValue {
+              key,
+              method,
+              value: _,
+              shorthand: _,
+            } => {
+              if *method {
+                push_unsupported_syntax(
+                  out,
+                  Span::new(file, expr.span),
+                  "object literals with methods are not supported by native-js yet",
+                );
+                continue;
+              }
+
+              match key {
+                ObjectKey::Ident(name) => {
+                  if lowered.names.resolve(*name) == Some("__proto__") {
+                    push_unsupported_syntax(out, Span::new(file, expr.span), "`__proto__` is not supported by native-js");
+                  }
+                }
+                ObjectKey::String(s) => {
+                  if s == "__proto__" {
+                    push_unsupported_syntax(out, Span::new(file, expr.span), "`__proto__` is not supported by native-js");
+                  }
+                }
+                ObjectKey::Number(raw) => {
+                  if number_literal_to_i64(raw).is_none() {
+                    push_unsupported_syntax(
+                      out,
+                      Span::new(file, expr.span),
+                      format!("invalid numeric object property key literal `{raw}`"),
+                    );
+                  }
+                }
+                ObjectKey::Computed(_) => {
+                  push_unsupported_syntax(
+                    out,
+                    Span::new(file, expr.span),
+                    "computed property keys in object literals are not supported by native-js yet",
+                  );
+                }
+              }
+            }
+          }
+        }
       }
       ExprKind::Array(arr) => {
         // Array literals are supported as the backing representation for both `T[]` and tuple
@@ -927,8 +1021,8 @@ fn validate_body_types(
   }
 
   // Member expressions are only supported for:
-  // - array/tuple indexing (`arr[i]`)
-  // - `.length`
+  // - array/tuple indexing (`arr[i]`) and `.length`
+  // - plain object property access with statically known keys (`obj.foo`, `obj["foo"]`, `obj[0]`)
   for expr in hir.exprs.iter() {
     let ExprKind::Member(member) = &expr.kind else { continue };
     if member.optional {
@@ -939,18 +1033,157 @@ fn validate_body_types(
       continue;
     };
     let obj_kind = program.type_kind(obj_ty);
-    if !matches!(obj_kind, TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }) {
+    match obj_kind {
+      TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. } => match &member.property {
+        ObjectKey::Ident(name) if lowered.names.resolve(*name) == Some("length") => {}
+        ObjectKey::Computed(key_expr) => {
+          let Some(key_ty) = result.expr_type(*key_expr) else {
+            continue;
+          };
+          if !matches!(
+            program.type_kind(key_ty),
+            TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_)
+          ) {
+            push_unsupported_syntax(
+              out,
+              Span::new(file, expr.span),
+              "array/tuple index expressions must have type `number` in native-js strict subset",
+            );
+          }
+        }
+        _ => {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "property access on arrays/tuples is only supported for indexing (`arr[i]`) and `.length` in native-js strict subset",
+          );
+        }
+      },
+      TypeKindSummary::Object | TypeKindSummary::EmptyObject => {
+        // Determine the statically known property key.
+        let key: Option<(bool, String, i64)> = match &member.property {
+          ObjectKey::Ident(name) => lowered
+            .names
+            .resolve(*name)
+            .map(|s| (true, s.to_string(), 0)),
+          ObjectKey::Computed(key_expr) => hir
+            .exprs
+            .get(key_expr.0 as usize)
+            .and_then(|e| match &e.kind {
+              ExprKind::Literal(Literal::String(s)) => Some((true, s.lossy.clone(), 0)),
+              ExprKind::Literal(Literal::Number(raw)) => {
+                let n = number_literal_to_i64(raw)?;
+                Some((false, String::new(), n))
+              }
+              _ => None,
+            }),
+          _ => None,
+        };
+
+        let Some((is_string, str_key, num_key)) = key else {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "object property access is only supported with statically known keys (`obj.foo`, `obj[\"foo\"]`, `obj[0]`) in native-js strict subset",
+          );
+          continue;
+        };
+
+        if is_string && str_key == "__proto__" {
+          push_unsupported_syntax(out, Span::new(file, expr.span), "`__proto__` is not supported by native-js");
+          continue;
+        }
+
+        let store = program.interned_type_store();
+        let tti::TypeKind::Object(obj_id) = program.interned_type_kind(obj_ty) else {
+          // `EmptyObject` (TS `{}`) and other object-like types do not have a fixed runtime shape.
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "unsupported object receiver type for native-js property access",
+          );
+          continue;
+        };
+        let obj = store.object(obj_id);
+        let shape = store.shape(obj.shape);
+
+        if !shape.call_signatures.is_empty() || !shape.construct_signatures.is_empty() || !shape.indexers.is_empty() {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "only plain object types with a fixed set of properties are supported by native-js yet",
+          );
+          continue;
+        }
+
+        let has_prop = shape.properties.iter().any(|prop| match &prop.key {
+          tti::PropKey::String(id) if is_string => store.name(*id) == str_key,
+          tti::PropKey::Number(n) if !is_string => *n == num_key,
+          _ => false,
+        });
+        if !has_prop {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "unsupported object property access in native-js strict subset (property not found on the receiver type)",
+          );
+        }
+      }
+      _ => {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, expr.span),
+          "unsupported member expression receiver type in native-js strict subset",
+        );
+      }
+    }
+  }
+
+  // Assignment to a member expression is only supported for:
+  // - array/tuple element stores: `arr[i] = value`
+  // - plain object property stores with statically known keys: `obj.foo = value`, `obj['foo'] = value`, `obj[0] = value`
+  for expr in hir.exprs.iter() {
+    let ExprKind::Assignment { op, target, value: _ } = &expr.kind else {
+      continue;
+    };
+    let Some(pat) = hir.pats.get(target.0 as usize) else {
+      continue;
+    };
+    let PatKind::AssignTarget(target_expr) = pat.kind else {
+      continue;
+    };
+    let Some(target_expr_data) = hir.exprs.get(target_expr.0 as usize) else {
+      continue;
+    };
+    let ExprKind::Member(member) = &target_expr_data.kind else {
+      continue;
+    };
+    if member.optional {
+      continue;
+    }
+
+    if *op != AssignOp::Assign {
       push_unsupported_syntax(
         out,
         Span::new(file, expr.span),
-        "member access is only supported on arrays/tuples (`arr[i]` and `arr.length`) in native-js strict subset",
+        "only simple `=` assignment is supported for member expression targets in native-js strict subset",
       );
       continue;
     }
 
-    match &member.property {
-      ObjectKey::Ident(name) if lowered.names.resolve(*name) == Some("length") => {}
-      ObjectKey::Computed(key_expr) => {
+    let Some(obj_ty) = result.expr_type(member.object) else {
+      continue;
+    };
+    match program.type_kind(obj_ty) {
+      TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. } => {
+        let ObjectKey::Computed(key_expr) = &member.property else {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "array/tuple assignment targets must be of the form `arr[i]` in native-js strict subset",
+          );
+          continue;
+        };
         let Some(key_ty) = result.expr_type(*key_expr) else {
           continue;
         };
@@ -965,11 +1198,76 @@ fn validate_body_types(
           );
         }
       }
+      TypeKindSummary::Object | TypeKindSummary::EmptyObject => {
+        // Mirror member-load validation above.
+        let key: Option<(bool, String, i64)> = match &member.property {
+          ObjectKey::Ident(name) => lowered
+            .names
+            .resolve(*name)
+            .map(|s| (true, s.to_string(), 0)),
+          ObjectKey::Computed(key_expr) => hir
+            .exprs
+            .get(key_expr.0 as usize)
+            .and_then(|e| match &e.kind {
+              ExprKind::Literal(Literal::String(s)) => Some((true, s.lossy.clone(), 0)),
+              ExprKind::Literal(Literal::Number(raw)) => {
+                let n = number_literal_to_i64(raw)?;
+                Some((false, String::new(), n))
+              }
+              _ => None,
+            }),
+          _ => None,
+        };
+        let Some((is_string, str_key, num_key)) = key else {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "object assignment targets must use statically known keys (`obj.foo`, `obj[\"foo\"]`, `obj[0]`) in native-js strict subset",
+          );
+          continue;
+        };
+        if is_string && str_key == "__proto__" {
+          push_unsupported_syntax(out, Span::new(file, expr.span), "`__proto__` is not supported by native-js");
+          continue;
+        }
+
+        let store = program.interned_type_store();
+        let tti::TypeKind::Object(obj_id) = program.interned_type_kind(obj_ty) else {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "unsupported object receiver type for native-js property assignment",
+          );
+          continue;
+        };
+        let obj = store.object(obj_id);
+        let shape = store.shape(obj.shape);
+        if !shape.call_signatures.is_empty() || !shape.construct_signatures.is_empty() || !shape.indexers.is_empty() {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "only plain object types with a fixed set of properties are supported by native-js yet",
+          );
+          continue;
+        }
+        let has_prop = shape.properties.iter().any(|prop| match &prop.key {
+          tti::PropKey::String(id) if is_string => store.name(*id) == str_key,
+          tti::PropKey::Number(n) if !is_string => *n == num_key,
+          _ => false,
+        });
+        if !has_prop {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "unsupported object property assignment in native-js strict subset (property not found on the receiver type)",
+          );
+        }
+      }
       _ => {
         push_unsupported_syntax(
           out,
           Span::new(file, expr.span),
-          "property access is only supported for array/tuple indexing (`arr[i]`) and `.length` in native-js strict subset",
+          "unsupported assignment target receiver type in native-js strict subset",
         );
       }
     }
@@ -1164,7 +1462,7 @@ fn validate_type_kind(
   out.push(
     codes::STRICT_SUBSET_UNSUPPORTED_TYPE
       .error(message, span)
-      .with_note("supported types are currently limited to: number, boolean, string, void/undefined, never, arrays, tuples"),
+      .with_note("supported types are currently limited to: number, boolean, string, void/undefined, never, arrays, tuples, and plain objects"),
   );
 }
 
@@ -1187,6 +1485,7 @@ fn supported_abi_kind(
     tti::TypeKind::Boolean | tti::TypeKind::BooleanLiteral(_) => Some(SupportedAbiKind::Boolean),
     tti::TypeKind::Number | tti::TypeKind::NumberLiteral(_) => Some(SupportedAbiKind::Number),
     tti::TypeKind::String | tti::TypeKind::StringLiteral(_) => Some(SupportedAbiKind::String),
+    tti::TypeKind::EmptyObject => Some(SupportedAbiKind::GcPtr),
 
     // Arrays: GC pointer + uniform element stride. Element type must be representable.
     tti::TypeKind::Array { ty: elem_ty, .. } => match supported_abi_kind(program, elem_ty, cache, visiting) {
@@ -1204,7 +1503,10 @@ fn supported_abi_kind(
           elem_kind = None;
           break;
         }
-        let k = supported_abi_kind(program, elem.ty, cache, visiting)?;
+        let Some(k) = supported_abi_kind(program, elem.ty, cache, visiting) else {
+          elem_kind = None;
+          break;
+        };
         if matches!(k, SupportedAbiKind::Void) {
           elem_kind = None;
           break;
@@ -1231,6 +1533,37 @@ fn supported_abi_kind(
     // Type wrappers: recurse through the underlying type.
     tti::TypeKind::Infer { constraint, .. } => constraint.and_then(|inner| supported_abi_kind(program, inner, cache, visiting)),
     tti::TypeKind::Intrinsic { ty, .. } => supported_abi_kind(program, ty, cache, visiting),
+    tti::TypeKind::Object(obj_id) => {
+      let store = program.interned_type_store();
+      let obj = store.object(obj_id);
+      let shape = store.shape(obj.shape);
+
+      // Support only plain data objects with a fixed set of fields.
+      if !shape.call_signatures.is_empty() || !shape.construct_signatures.is_empty() || !shape.indexers.is_empty() {
+        None
+      } else if shape.properties.iter().any(|prop| prop.data.optional || prop.data.is_method) {
+        None
+      } else if shape
+        .properties
+        .iter()
+        .any(|prop| matches!(prop.key, tti::PropKey::Symbol(_)))
+      {
+        None
+      } else {
+        let mut ok = true;
+        for prop in shape.properties.iter() {
+          let Some(k) = supported_abi_kind(program, prop.data.ty, cache, visiting) else {
+            ok = false;
+            break;
+          };
+          if matches!(k, SupportedAbiKind::Void) {
+            ok = false;
+            break;
+          }
+        }
+        ok.then_some(SupportedAbiKind::GcPtr)
+      }
+    }
 
     _ => None,
   };
@@ -1290,9 +1623,7 @@ fn unsupported_type_message(kind: &TypeKindSummary) -> String {
     TypeKindSummary::Intersection { .. } => {
       "intersection types are not supported by native-js strict subset yet".to_string()
     }
-    TypeKindSummary::Object | TypeKindSummary::EmptyObject => {
-      "object types are not supported by native-js strict subset yet".to_string()
-    }
+    TypeKindSummary::Object | TypeKindSummary::EmptyObject => "unsupported object type in native-js strict subset".to_string(),
     TypeKindSummary::Callable { .. } => "function types are not supported by native-js strict subset yet".to_string(),
     TypeKindSummary::Ref { .. } => "reference/nominal types are not supported by native-js strict subset yet".to_string(),
     TypeKindSummary::BigInt | TypeKindSummary::BigIntLiteral(_) => {

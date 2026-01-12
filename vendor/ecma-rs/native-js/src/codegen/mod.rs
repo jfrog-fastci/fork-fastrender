@@ -58,7 +58,7 @@ mod debuginfo;
 use diagnostics::{Diagnostic, Label, Span, TextRange};
 use hir_js::{
   ArrayElement, AssignOp, BinaryOp, ExprId, ExprKind, FileKind, ForInit, ImportKind, Literal, NameId, ObjectKey,
-  PatKind, StmtId, StmtKind, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
+  ObjectProperty, PatKind, StmtId, StmtKind, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
 };
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -171,6 +171,27 @@ impl TsAbiKind {
       _ => None,
     }
   }
+}
+
+fn number_literal_to_i64(raw: &str) -> Option<i64> {
+  let n = JsNumber::from_literal(raw).map(|n| n.0)?;
+  if !n.is_finite() || n.fract() != 0.0 {
+    return None;
+  }
+  if n < i64::MIN as f64 || n > i64::MAX as f64 {
+    return None;
+  }
+  Some(n as i64)
+}
+
+fn canonical_decimal_string_to_i64(raw: &str) -> Option<i64> {
+  if raw == "0" {
+    return Some(0);
+  }
+  if raw.is_empty() || raw.starts_with('0') || !raw.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
+  raw.parse().ok()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1093,11 +1114,13 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       if shape_table.len > 0 {
         let table_ptr = shape_table.table_global.as_pointer_value();
         let len_i64 = self.i64_ty.const_int(shape_table.len as u64, false);
-        let call = builder.build_call(
-          rt_register_shape_table,
-          &[table_ptr.into(), len_i64.into()],
-          "rt.register_shape_table",
-        ).map_err(|e| {
+        let call = builder
+          .build_call(
+            rt_register_shape_table,
+            &[table_ptr.into(), len_i64.into()],
+            "rt.register_shape_table",
+          )
+          .map_err(|e| {
           vec![diagnostics::ice(
             ice_span,
             format!("failed to build call to rt_register_shape_table: {e}"),
@@ -2168,9 +2191,82 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .ensure_shape_for_type(self.cg.context, &self.cg.module, self.cg.program, obj_ty, span)?;
 
     let store = self.cg.program.interned_type_store();
-    let name = self.member_property_static_name(key, span)?;
-    let name_id = store.intern_name_ref(&name);
-    let wanted = tti::FieldKey::Prop(tti::PropKey::String(name_id));
+    let (wanted_keys, label): (Vec<tti::FieldKey>, String) = match key {
+      hir_js::ObjectKey::Ident(name) => {
+        let name = self
+          .names
+          .resolve(*name)
+          .ok_or_else(|| vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error("failed to resolve object property name", span)])?;
+        let name_id = store.intern_name_ref(name);
+        (
+          vec![tti::FieldKey::Prop(tti::PropKey::String(name_id))],
+          name.to_string(),
+        )
+      }
+      hir_js::ObjectKey::String(s) => {
+        let mut keys = Vec::new();
+        let name_id = store.intern_name_ref(s);
+        keys.push(tti::FieldKey::Prop(tti::PropKey::String(name_id)));
+        if let Some(n) = canonical_decimal_string_to_i64(s) {
+          keys.push(tti::FieldKey::Prop(tti::PropKey::Number(n)));
+        }
+        (keys, s.clone())
+      }
+      hir_js::ObjectKey::Number(raw) => {
+        let n = number_literal_to_i64(raw).ok_or_else(|| {
+          vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+            format!("unsupported numeric object property key `{raw}` (expected an integer literal)"),
+            span,
+          )]
+        })?;
+        let s = n.to_string();
+        let name_id = store.intern_name_ref(&s);
+        (
+          vec![
+            tti::FieldKey::Prop(tti::PropKey::Number(n)),
+            tti::FieldKey::Prop(tti::PropKey::String(name_id)),
+          ],
+          s,
+        )
+      }
+      hir_js::ObjectKey::Computed(expr) => {
+        let expr = self.expr_data(*expr)?;
+        match &expr.kind {
+          ExprKind::Literal(Literal::String(s)) => {
+            let mut keys = Vec::new();
+            let name_id = store.intern_name_ref(&s.lossy);
+            keys.push(tti::FieldKey::Prop(tti::PropKey::String(name_id)));
+            if let Some(n) = canonical_decimal_string_to_i64(&s.lossy) {
+              keys.push(tti::FieldKey::Prop(tti::PropKey::Number(n)));
+            }
+            (keys, s.lossy.clone())
+          }
+          ExprKind::Literal(Literal::Number(raw)) => {
+            let n = number_literal_to_i64(raw).ok_or_else(|| {
+              vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+                format!("unsupported numeric object property key `{raw}` (expected an integer literal)"),
+                span,
+              )]
+            })?;
+            let s = n.to_string();
+            let name_id = store.intern_name_ref(&s);
+            (
+              vec![
+                tti::FieldKey::Prop(tti::PropKey::Number(n)),
+                tti::FieldKey::Prop(tti::PropKey::String(name_id)),
+              ],
+              s,
+            )
+          }
+          _ => {
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+              "unsupported computed property access in this codegen subset (expected a literal string or integer key)",
+              span,
+            )]);
+          }
+        }
+      }
+    };
 
     let tti::Layout::Struct { fields, .. } = store.layout(shape.payload_layout) else {
       return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
@@ -2179,9 +2275,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       )]);
     };
 
-    let field = fields.into_iter().find(|f| f.key == wanted).ok_or_else(|| {
+    let field = fields
+      .iter()
+      .find(|f| wanted_keys.iter().any(|wanted| &f.key == wanted))
+      .ok_or_else(|| {
       vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
-        format!("unknown object property `{name}` in native-js codegen"),
+        format!("unknown object property `{label}` in native-js codegen"),
         span,
       )]
     })?;
@@ -3526,7 +3625,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             span,
           )]
         })?;
-
         let shape = self
           .cg
           .shapes
@@ -3556,7 +3654,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
         // Initialize properties in source order.
         for prop in &obj.properties {
-          let hir_js::ObjectProperty::KeyValue {
+          let ObjectProperty::KeyValue {
             key,
             value,
             method,
@@ -3611,7 +3709,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 
         Ok(NativeValue::GcPtr(obj_ptr))
       }
-
       ExprKind::Unary { op, expr } => {
         let inner = self.codegen_expr(expr)?;
         match op {
@@ -3832,10 +3929,8 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         // - `arr[i]` indexing (bounds-checked, traps on OOB)
         // - `arr.length`
         if let Some(obj_ty) = self.types.expr_type(member.object) {
-          if matches!(
-            self.cg.program.type_kind(obj_ty),
-            TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }
-          ) {
+          let obj_kind = self.cg.program.type_kind(obj_ty);
+          if matches!(obj_kind, TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }) {
             match &member.property {
               ObjectKey::Ident(name) if self.names.resolve(*name) == Some("length") => {
                 let NativeValue::GcPtr(arr) = self.codegen_expr(member.object)? else {
@@ -3921,6 +4016,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               }
             }
           }
+
         }
 
         // Namespace import member access (`import * as ns from "./dep"; ns.x`).
