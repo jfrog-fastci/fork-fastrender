@@ -8214,10 +8214,197 @@ pub fn function_prototype_symbol_has_instance(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  // `Function.prototype[@@hasInstance]` implements `OrdinaryHasInstance` directly. However, the
+  // `OrdinaryHasInstance` algorithm delegates bound functions to `InstanceofOperator` on the bound
+  // target. If we naively call `InstanceofOperator` (which would call `GetMethod(BC, @@hasInstance)`
+  // and then call `Function.prototype[@@hasInstance]` again), an attacker can build an extremely
+  // deep bound-function chain (`f = f.bind(null)` in a loop) and trigger a Rust stack overflow.
+  //
+  // To avoid recursion while remaining spec-correct, we inline `InstanceofOperator` for the bound
+  // target and treat this intrinsic `Function.prototype[@@hasInstance]` function as a special
+  // "default" method: instead of calling it, we inline its semantics.
+  fn instanceof_operator_for_bound_target(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    object: Value,
+    mut constructor: Value,
+    default_has_instance_call: CallHandler,
+  ) -> Result<bool, VmError> {
+    let intr = require_intrinsics(vm)?;
+
+    let has_instance_key = PropertyKey::from_symbol(intr.well_known_symbols().has_instance);
+
+    // Budget bound-function delegation so hostile inputs can't hang us if an invariant is violated.
+    let mut bound_steps = 0usize;
+
+    loop {
+      // Root inputs for this iteration: `GetMethod`/`Get`/`Call` can allocate and trigger GC.
+      let mut iter_scope = scope.reborrow();
+      iter_scope.push_roots(&[object, constructor])?;
+
+      // InstanceofOperator(O, C): 1. If Type(C) is not Object, throw a TypeError exception.
+      let Value::Object(constructor_obj) = constructor else {
+        return Err(VmError::TypeError(
+          "Right-hand side of 'instanceof' is not an object",
+        ));
+      };
+
+      // 2. Let instOfHandler be ? GetMethod(C, @@hasInstance).
+      let inst_of_handler =
+        vm.get_method_with_host_and_hooks(host, &mut iter_scope, hooks, constructor, has_instance_key)?;
+
+      // 3. If instOfHandler is not undefined, then return ToBoolean(? Call(instOfHandler, C, [O])).
+      if let Some(inst_of_handler) = inst_of_handler {
+        // Special-case the default `Function.prototype[@@hasInstance]` implementation: when
+        // observed through `GetMethod`, calling it would recurse back into this builtin. Inline it
+        // instead, but preserve the spec behavior for non-callable objects (default returns false,
+        // whereas the `instanceof` operator would throw if we treated it as absent).
+        if let Value::Object(handler_obj) = inst_of_handler {
+          let is_default = match (
+            &default_has_instance_call,
+            iter_scope.heap().get_function_call_handler(handler_obj).ok(),
+          ) {
+            (CallHandler::Native(default_id), Some(CallHandler::Native(id))) => *default_id == id,
+            _ => false,
+          };
+          if is_default {
+            if !iter_scope.heap().is_callable(constructor)? {
+              return Ok(false);
+            }
+            // Treat as "no override" and fall through to OrdinaryHasInstance below.
+          } else {
+            // Root the method across the call: Proxy `get` traps can synthesize a fresh function
+            // object that is not reachable from any rooted object.
+            iter_scope.push_root(inst_of_handler)?;
+            let result = vm.call_with_host_and_hooks(
+              host,
+              &mut iter_scope,
+              hooks,
+              inst_of_handler,
+              constructor,
+              &[object],
+            )?;
+            return Ok(iter_scope.heap().to_boolean(result)?);
+          }
+        } else {
+          // `GetMethod` returning `Some` implies callability; callables are objects in vm-js.
+          iter_scope.push_root(inst_of_handler)?;
+          let result = vm.call_with_host_and_hooks(
+            host,
+            &mut iter_scope,
+            hooks,
+            inst_of_handler,
+            constructor,
+            &[object],
+          )?;
+          return Ok(iter_scope.heap().to_boolean(result)?);
+        }
+      }
+
+      // 4. If IsCallable(C) is false, throw a TypeError exception.
+      if !iter_scope.heap().is_callable(constructor)? {
+        return Err(VmError::TypeError(
+          "Right-hand side of 'instanceof' is not callable",
+        ));
+      }
+
+      // OrdinaryHasInstance(C, O): 2. Bound functions delegate to the target via InstanceofOperator.
+      if let Ok(func) = iter_scope.heap().get_function(constructor_obj) {
+        if let Some(bound_target) = func.bound_target {
+          // Budget extremely deep bound chains, and prevent hangs if an invariant is violated.
+          const TICK_EVERY: usize = 32;
+          if bound_steps != 0 && bound_steps % TICK_EVERY == 0 {
+            vm.tick()?;
+          }
+          if bound_steps >= crate::MAX_PROTOTYPE_CHAIN {
+            return Err(VmError::PrototypeChainTooDeep);
+          }
+          bound_steps += 1;
+
+          constructor = Value::Object(bound_target);
+          continue;
+        }
+      }
+
+      // OrdinaryHasInstance(C, O): 3. If Type(O) is not Object, return false.
+      let Value::Object(object) = object else {
+        return Ok(false);
+      };
+
+      // OrdinaryHasInstance(C, O): 4. Let P be Get(C, "prototype").
+      let prototype_s = iter_scope.alloc_string("prototype")?;
+      iter_scope.push_root(Value::String(prototype_s))?;
+      let prototype = iter_scope.get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        constructor_obj,
+        PropertyKey::from_string(prototype_s),
+        constructor,
+      )?;
+
+      // 5. If Type(P) is not Object, throw a TypeError exception.
+      let Value::Object(prototype) = prototype else {
+        return Err(VmError::TypeError(
+          "Function has non-object prototype in instanceof check",
+        ));
+      };
+
+      // Root `prototype` for the duration of the algorithm. For Proxy constructors, `Get(C,
+      // "prototype")` can return an object that is not reachable from `C`/its target/handler, and we
+      // must keep it alive across the prototype-chain walk.
+      iter_scope.push_root(Value::Object(prototype))?;
+
+      // 6. Repeat
+      //   a. Let O be O.[[GetPrototypeOf]]().
+      //   b. ReturnIfAbrupt(O).
+      //   c. If O is null, return false.
+      //   d. If SameValue(P, O) is true, return true.
+      let mut current = iter_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, object)?;
+      let mut steps = 0usize;
+      let mut visited: HashSet<GcObject> = HashSet::new();
+      while let Some(obj) = current {
+        // Budget the prototype traversal: hostile inputs can synthesize extremely deep chains.
+        //
+        // Note: avoid ticking on the first iteration so shallow checks don't double-charge fuel (the
+        // surrounding expression/call already ticks).
+        const TICK_EVERY: usize = 32;
+        if steps != 0 && steps % TICK_EVERY == 0 {
+          vm.tick()?;
+        }
+
+        if steps >= crate::MAX_PROTOTYPE_CHAIN {
+          return Err(VmError::PrototypeChainTooDeep);
+        }
+        steps += 1;
+
+        if visited.try_reserve(1).is_err() {
+          return Err(VmError::OutOfMemory);
+        }
+        if !visited.insert(obj) {
+          return Err(VmError::PrototypeCycle);
+        }
+
+        // Root this prototype step. Proxy `getPrototypeOf` traps can synthesize objects that are not
+        // necessarily reachable from the original LHS; keep them alive until the algorithm completes.
+        iter_scope.push_root(Value::Object(obj))?;
+
+        if obj == prototype {
+          return Ok(true);
+        }
+        current = iter_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)?;
+      }
+
+      return Ok(false);
+    }
+  }
+
   // 1. Let F be the this value.
   // 2. Return OrdinaryHasInstance(F, V).
   //
@@ -8230,7 +8417,7 @@ pub fn function_prototype_symbol_has_instance(
   if !scope.heap().is_callable(this)? {
     return Ok(Value::Bool(false));
   }
-  let Value::Object(mut constructor) = this else {
+  let Value::Object(constructor) = this else {
     // `IsCallable` returning true for a non-object would be an internal bug.
     return Err(VmError::InvariantViolation(
       "Function.prototype[@@hasInstance]: IsCallable returned true for non-object",
@@ -8238,23 +8425,26 @@ pub fn function_prototype_symbol_has_instance(
   };
 
   // 2. Bound functions delegate `instanceof` checks to their target.
-  let mut bound_steps = 0usize;
-  while let Ok(func) = scope.heap().get_function(constructor) {
-    let Some(bound_target) = func.bound_target else {
-      break;
-    };
-
-    // Budget extremely deep bound chains, and prevent hangs if an invariant is violated.
-    const TICK_EVERY: usize = 32;
-    if bound_steps != 0 && bound_steps % TICK_EVERY == 0 {
-      vm.tick()?;
+  if let Ok(func) = scope.heap().get_function(constructor) {
+    if let Some(bound_target) = func.bound_target {
+      // Identify the default `Function.prototype[@@hasInstance]` implementation so the helper can
+      // inline it instead of recursing.
+      let default_has_instance_call = scope
+        .heap()
+        .get_function(callee)?
+        .call
+        .clone();
+      let ok = instanceof_operator_for_bound_target(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        v,
+        Value::Object(bound_target),
+        default_has_instance_call,
+      )?;
+      return Ok(Value::Bool(ok));
     }
-
-    if bound_steps >= crate::MAX_PROTOTYPE_CHAIN {
-      return Err(VmError::PrototypeChainTooDeep);
-    }
-    bound_steps += 1;
-    constructor = bound_target;
   }
 
   // 3. If Type(O) is not Object, return false.

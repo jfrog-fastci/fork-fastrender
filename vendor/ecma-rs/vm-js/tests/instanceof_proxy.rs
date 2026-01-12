@@ -263,6 +263,37 @@ fn instanceof_uses_function_prototype_has_instance_via_proxy_get_trap() -> Resul
 }
 
 #[test]
+fn instanceof_bound_function_delegates_to_bound_target_has_instance() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var seen = false;
+      function f() {}
+
+      var p = new Proxy(f, {
+        get(target, prop, receiver) {
+          // This should be observed during `({} instanceof b)` via the OrdinaryHasInstance bound
+          // function delegation path.
+          if (prop === Symbol.hasInstance) {
+            seen = true;
+            return function(v) { return true; };
+          }
+          return target[prop];
+        }
+      });
+
+      var b = p.bind(null);
+
+      ({} instanceof b) === true && seen === true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
 fn instanceof_throws_type_error_on_revoked_proxy_lhs_or_rhs() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let global = rt.realm().global_object();
