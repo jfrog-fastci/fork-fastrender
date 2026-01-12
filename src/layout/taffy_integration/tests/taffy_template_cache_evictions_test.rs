@@ -4,11 +4,12 @@ use std::collections::HashMap;
 
 #[test]
 fn taffy_template_cache_evictions_are_reported_in_diagnostics() {
-  let toggles = RuntimeToggles::from_map(HashMap::from([(
+  let toggles = RuntimeToggles::from_map(HashMap::from([
+    // Ensure `DiagnosticsLevel::None` isn't overridden by env-derived toggles.
+    ("FASTR_DIAGNOSTICS_LEVEL".to_string(), "none".to_string()),
     // Force the template cache small enough that inserting multiple templates will evict entries.
-    "FASTR_TAFFY_CACHE_LIMIT".to_string(),
-    "1".to_string(),
-  )]));
+    ("FASTR_TAFFY_CACHE_LIMIT".to_string(), "1".to_string()),
+  ]));
 
   let config = FastRenderConfig::default()
     .with_font_sources(FontConfig::bundled_only())
