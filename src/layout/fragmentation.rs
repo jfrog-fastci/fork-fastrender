@@ -4618,6 +4618,17 @@ fn collect_atomic_candidate_for_node(
     .map(|s| s.as_ref())
     .unwrap_or(default_style());
 
+  if matches!(node.content, FragmentContent::Replaced { .. })
+    && style.display.is_block_level()
+    && !style.float.is_floating()
+  {
+    let required = (end - start).max(0.0);
+    candidates.push(AtomicCandidate {
+      range: AtomicRange { start, end },
+      required_fragmentainer_size: required,
+    });
+  }
+
   if style.float.is_floating() {
     // Floats are only atomic when they fit within a single fragmentainer. Compute the candidate
     // range here and defer the "fits" decision to boundary selection.
@@ -5237,6 +5248,111 @@ mod tests {
       FragmentContent::Block { box_id } => box_id,
       _ => None,
     }
+  }
+
+  #[test]
+  fn block_level_replaced_is_not_split_even_when_early_sibling_breaks_are_disallowed() {
+    // Regression: block-level replaced fragments (e.g. `display: block` images/canvas/SVG) must not
+    // be sliced across fragmentainers when they fit wholly on the next fragmentainer.
+    //
+    // This fixture triggers the "early sibling break" heuristic: there is a long gap between the
+    // first sibling and the replaced fragment, so the normal between-sibling break opportunity
+    // occurs well before the fragmentainer limit. Without treating the replaced fragment as atomic,
+    // pagination falls back to the limit and clips the replaced content.
+    let fragmentainer_size = 100.0;
+
+    let first = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 10.0), vec![]);
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Block;
+    let replaced_style = Arc::new(replaced_style);
+
+    // Starts far before the 100px fragmentainer limit (at 50px) but extends past it (to 110px). The
+    // element itself is only 60px tall, so it would fit on the next fragmentainer.
+    let mut replaced =
+      FragmentNode::new_replaced(Rect::from_xywh(0.0, 50.0, 100.0, 60.0), ReplacedType::Canvas);
+    replaced.style = Some(replaced_style);
+
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 110.0),
+      vec![first, replaced],
+    );
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Page,
+      default_axes(),
+      true,
+      Some(fragmentainer_size),
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .expect("boundaries");
+
+    let first_boundary = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+
+    assert!(
+      (first_boundary - 50.0).abs() < BREAK_EPSILON,
+      "expected the replaced fragment to be moved to the next fragmentainer (break at 50px), got {first_boundary} (boundaries={boundaries:?})"
+    );
+    assert!(
+      boundaries
+        .iter()
+        .all(|b| (*b - 100.0).abs() > BREAK_EPSILON || *b <= BREAK_EPSILON),
+      "no boundary should fall inside the replaced fragment (boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
+  fn inline_replaced_inside_line_does_not_create_atomic_pagination() {
+    // Negative regression test: inline replaced fragments should not become atomic candidates. If
+    // they did, their vertical range could clamp the fragmentainer limit *inside* a line box,
+    // forcing a boundary that produces an empty first fragmentainer (blank page).
+    let fragmentainer_size = 100.0;
+
+    let mut inline_style = ComputedStyle::default();
+    inline_style.display = Display::Inline;
+    let inline_style = Arc::new(inline_style);
+
+    // Inline replaced content positioned within the line box. It intentionally overflows the line's
+    // own bounds so that (incorrect) atomic handling would clamp the first boundary to 60px.
+    let mut inline_replaced =
+      FragmentNode::new_replaced(Rect::from_xywh(0.0, 60.0, 100.0, 60.0), ReplacedType::Canvas);
+    inline_replaced.style = Some(inline_style);
+
+    let line = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 0.0, 100.0, 80.0),
+      0.0,
+      vec![inline_replaced],
+    );
+
+    // Trailing block content so pagination produces multiple fragments.
+    let trailing = FragmentNode::new_block(Rect::from_xywh(0.0, 80.0, 100.0, 80.0), vec![]);
+
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 160.0),
+      vec![line, trailing],
+    );
+
+    let options = FragmentationOptions::new(fragmentainer_size);
+    let fragments = fragment_tree(&root, &options).expect("fragment tree");
+    assert!(
+      fragments.len() >= 2,
+      "expected multi-fragment output, got {fragments:?}"
+    );
+    assert!(
+      !fragments[0].children.is_empty(),
+      "expected the first fragmentainer to contain content (inline replaced must not force an early atomic boundary)"
+    );
+    assert!(
+      matches!(fragments[0].children[0].content, FragmentContent::Line { .. }),
+      "expected the first fragmentainer to contain the line box"
+    );
   }
 
   #[test]
