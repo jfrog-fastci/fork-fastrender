@@ -1,8 +1,8 @@
-use fastrender::api::FastRender;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::color::Rgba;
-use fastrender::style::media::MediaType;
-use fastrender::style::types::ContainerType;
+use crate::api::FastRender;
+use crate::style::cascade::StyledNode;
+use crate::style::color::Rgba;
+use crate::style::media::MediaType;
+use crate::style::types::ContainerType;
 
 fn styled_tree_for(html: &str) -> StyledNode {
   let mut renderer = FastRender::new().expect("renderer");

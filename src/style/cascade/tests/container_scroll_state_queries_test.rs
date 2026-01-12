@@ -1,10 +1,10 @@
-use fastrender::api::{FastRender, RenderOptions};
-use fastrender::scroll::{ScrollBounds, ScrollChainState};
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::color::Rgba;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
-use fastrender::{Point, Size};
+use crate::api::{FastRender, RenderOptions};
+use crate::scroll::{ScrollBounds, ScrollChainState};
+use crate::style::cascade::StyledNode;
+use crate::style::color::Rgba;
+use crate::tree::box_tree::BoxNode;
+use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
+use crate::{Point, Size};
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node.node.get_attribute_ref("id") == Some(id) {

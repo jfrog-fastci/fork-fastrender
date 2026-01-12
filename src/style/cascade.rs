@@ -19152,6 +19152,8 @@ mod tests {
 
   mod overflow_visibility_case_insensitive_test;
   mod scroll_box_shorthand_parsing_test;
+  mod container_scroll_state_queries_test;
+  mod container_style_queries;
 
   fn cascade_global_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
