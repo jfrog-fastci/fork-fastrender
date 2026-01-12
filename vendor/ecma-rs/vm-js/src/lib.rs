@@ -317,6 +317,8 @@ pub use crate::property_descriptor_ops::from_property_descriptor_patch;
 pub use crate::property_descriptor_ops::is_compatible_property_descriptor;
 pub use crate::property_descriptor_ops::to_property_descriptor_with_host_and_hooks;
 pub use crate::realm::Realm;
+pub use crate::regexp::RegExpFlags;
+pub use crate::regexp::RegExpProgram;
 pub use crate::source::format_stack_trace;
 pub use crate::source::SourceText;
 pub use crate::source::StackFrame;

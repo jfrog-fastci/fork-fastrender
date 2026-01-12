@@ -10,6 +10,7 @@
 //! - ArrayBuffer (copy or transfer)
 //! - Uint8Array (clones underlying ArrayBuffer and re-creates the view)
 //! - Date
+//! - RegExp
 //! - boxed primitives (`new Boolean(...)`, `new Number(...)`, `new String(...)`, `Object(1n)`)
 //! - Error objects (preserves intrinsic error prototypes + `name`/`message`)
 //! - Blob (FastRender host implementation)
@@ -24,7 +25,7 @@ use crate::js::window_realm::make_dom_exception;
 use std::collections::{HashMap, HashSet};
 use vm_js::{
   GcObject, GcString, GcSymbol, Intrinsics, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  RealmId, RegExpFlags, RegExpProgram, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
 /// Native slot index for the `structuredClone` function's realm global object.
@@ -315,6 +316,12 @@ enum Node {
   },
   Date {
     time: f64,
+  },
+  RegExp {
+    original_source: GcString,
+    original_flags: GcString,
+    flags: RegExpFlags,
+    program: Option<RegExpProgram>,
   },
   Blob {
     data: Option<BlobData>,
@@ -1047,6 +1054,27 @@ fn serialize_object(
     return Ok(EncodedValue::Object(id));
   }
 
+  // RegExp.
+  if scope.heap().is_regexp_object(obj) {
+    let original_source = scope.heap().regexp_original_source(obj)?;
+    let original_flags = scope.heap().regexp_original_flags(obj)?;
+    let flags = scope.heap().regexp_flags(obj)?;
+    let program = scope.heap().regexp_program(obj)?.try_clone()?;
+
+    let id = state.push_node(
+      Node::RegExp {
+        original_source,
+        original_flags,
+        flags,
+        program: Some(program),
+      },
+      vm,
+      scope,
+    )?;
+    state.object_to_id.insert(obj, id);
+    return Ok(EncodedValue::Object(id));
+  }
+
   // Blob.
   if let Some(encoded) = try_serialize_blob_object(vm, scope, state, obj)? {
     return Ok(encoded);
@@ -1302,6 +1330,7 @@ fn deserialize_node(
     Some(Node::StringObject { .. }) => 9u8,
     Some(Node::BigIntObject { .. }) => 10u8,
     Some(Node::Error { .. }) => 11u8,
+    Some(Node::RegExp { .. }) => 12u8,
     None => return Err(VmError::InvariantViolation("structuredClone node id out of bounds")),
   };
 
@@ -1708,6 +1737,33 @@ fn deserialize_node(
 
       obj
     }
+    12 => {
+      // RegExp.
+      let (original_source, original_flags, flags, program) = match state.nodes.get_mut(id) {
+        Some(Node::RegExp {
+          original_source,
+          original_flags,
+          flags,
+          program,
+        }) => (
+          *original_source,
+          *original_flags,
+          *flags,
+          program.take(),
+        ),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+      let program =
+        program.ok_or(VmError::InvariantViolation("structuredClone missing RegExp program"))?;
+
+      let re = scope.alloc_regexp(original_source, original_flags, flags, program)?;
+      scope.push_root(Value::Object(re))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(re, Some(intr.regexp_prototype()))?;
+      state.clones.insert(id, re);
+      re
+    }
     _ => return Err(VmError::InvariantViolation("structuredClone invalid node kind tag")),
   };
 
@@ -1791,6 +1847,28 @@ mod tests {
          if (y.length !== 3) return false;\
          if (1 in y) return false;\
          return y[0] === y[2] && y[0] !== a;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_clones_regexp() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const r = /a+/gi;\
+         const c = structuredClone(r);\
+         if (!(c instanceof RegExp)) return false;\
+         if (c.source !== r.source) return false;\
+         if (c.flags !== r.flags) return false;\
+         if (structuredClone(/a+/g).test('aa') !== true) return false;\
+         const r2 = /x/;\
+         r2.foo = 1;\
+         if (structuredClone(r2).foo !== undefined) return false;\
+         return true;\
        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));

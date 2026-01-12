@@ -59,7 +59,7 @@ fn vec_try_push_vm<T>(buf: &mut Vec<T>, value: T) -> Result<(), VmError> {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct RegExpFlags {
+pub struct RegExpFlags {
   pub(crate) global: bool,
   pub(crate) ignore_case: bool,
   pub(crate) multiline: bool,
@@ -163,7 +163,7 @@ impl RegExpFlags {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RegExpProgram {
+pub struct RegExpProgram {
   insts: Box<[Inst]>,
   pub(crate) capture_count: usize,
   pub(crate) repeat_count: usize,
@@ -443,6 +443,62 @@ impl RegExpProgram {
     }
 
     Ok(None)
+  }
+
+  /// Fallibly clones this program.
+  ///
+  /// Note: `RegExpProgram` also implements `Clone`, but the derived `Clone` implementation may
+  /// allocate infallibly. Embeddings that want to avoid abort-on-OOM should prefer this method.
+  pub fn try_clone(&self) -> Result<Self, VmError> {
+    let mut insts: Vec<Inst> = Vec::new();
+    insts
+      .try_reserve_exact(self.insts.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    for inst in self.insts.iter() {
+      let cloned = match inst {
+        Inst::Char(u) => Inst::Char(*u),
+        Inst::Any => Inst::Any,
+        Inst::Class(cls) => Inst::Class(cls.try_clone().map_err(|e| match e {
+          RegExpCompileError::OutOfMemory => VmError::OutOfMemory,
+          // Cloning an already-compiled class should never fail with a syntax error.
+          RegExpCompileError::Syntax(_) => VmError::InvariantViolation("RegExpProgram clone syntax error"),
+        })?),
+        Inst::AssertStart => Inst::AssertStart,
+        Inst::AssertEnd => Inst::AssertEnd,
+        Inst::WordBoundary { negated } => Inst::WordBoundary { negated: *negated },
+        Inst::Save(slot) => Inst::Save(*slot),
+        Inst::BackRef(group) => Inst::BackRef(*group),
+        Inst::Split(a, b) => Inst::Split(*a, *b),
+        Inst::Jump(target) => Inst::Jump(*target),
+        Inst::RepeatStart {
+          id,
+          min,
+          max,
+          greedy,
+          exit,
+        } => Inst::RepeatStart {
+          id: *id,
+          min: *min,
+          max: *max,
+          greedy: *greedy,
+          exit: *exit,
+        },
+        Inst::RepeatEnd { start } => Inst::RepeatEnd { start: *start },
+        Inst::LookAhead { program, negative } => Inst::LookAhead {
+          program: Box::new(program.try_clone()?),
+          negative: *negative,
+        },
+        Inst::Match => Inst::Match,
+      };
+      vec_try_push_vm(&mut insts, cloned)?;
+    }
+
+    Ok(Self {
+      insts: insts.into_boxed_slice(),
+      capture_count: self.capture_count,
+      repeat_count: self.repeat_count,
+    })
   }
 }
 

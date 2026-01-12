@@ -2061,19 +2061,19 @@ impl Heap {
     }
   }
 
-  pub(crate) fn regexp_original_source(&self, obj: GcObject) -> Result<GcString, VmError> {
+  pub fn regexp_original_source(&self, obj: GcObject) -> Result<GcString, VmError> {
     Ok(self.get_regexp(obj)?.original_source)
   }
 
-  pub(crate) fn regexp_original_flags(&self, obj: GcObject) -> Result<GcString, VmError> {
+  pub fn regexp_original_flags(&self, obj: GcObject) -> Result<GcString, VmError> {
     Ok(self.get_regexp(obj)?.original_flags)
   }
 
-  pub(crate) fn regexp_flags(&self, obj: GcObject) -> Result<RegExpFlags, VmError> {
+  pub fn regexp_flags(&self, obj: GcObject) -> Result<RegExpFlags, VmError> {
     Ok(self.get_regexp(obj)?.flags)
   }
 
-  pub(crate) fn regexp_program(&self, obj: GcObject) -> Result<&RegExpProgram, VmError> {
+  pub fn regexp_program(&self, obj: GcObject) -> Result<&RegExpProgram, VmError> {
     Ok(&self.get_regexp(obj)?.program)
   }
   fn get_env(&self, env: GcEnv) -> Result<&EnvRecord, VmError> {
@@ -5920,7 +5920,7 @@ impl<'a> Scope<'a> {
   ///
   /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller (typically via
   /// `OrdinaryCreateFromConstructor`).
-  pub(crate) fn alloc_regexp(
+  pub fn alloc_regexp(
     &mut self,
     original_source: GcString,
     original_flags: GcString,
