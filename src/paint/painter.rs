@@ -743,6 +743,7 @@ enum DisplayCommand {
     rect: Rect,
     style: Arc<ComputedStyle>,
     text_clip: Option<Arc<[DisplayCommand]>>,
+    scroll_delta: Point,
   },
   Border {
     rect: Rect,
@@ -2229,6 +2230,7 @@ impl Painter {
       self.enqueue_background_and_borders(
         fragment,
         abs_bounds,
+        scroll_delta,
         root_background,
         &mut local_commands,
       );
@@ -2426,7 +2428,13 @@ impl Painter {
     }
 
     // Stacking context: paint own background/border first
-    self.enqueue_background_and_borders(fragment, abs_bounds, root_background, &mut local_commands);
+    self.enqueue_background_and_borders(
+      fragment,
+      abs_bounds,
+      scroll_delta,
+      root_background,
+      &mut local_commands,
+    );
 
     // Partition children into stacking-context buckets and normal flow (preserving DOM order)
     let mut negative_contexts = Vec::new();
@@ -2777,6 +2785,7 @@ impl Painter {
     &self,
     fragment: &FragmentNode,
     abs_bounds: Rect,
+    scroll_delta: Point,
     root_background: Option<bool>,
     items: &mut Vec<DisplayCommand>,
   ) {
@@ -2815,6 +2824,7 @@ impl Painter {
         rect: background_rect,
         style: style.clone(),
         text_clip,
+        scroll_delta,
       });
     }
 
@@ -3153,11 +3163,19 @@ impl Painter {
         rect,
         style,
         text_clip,
+        scroll_delta,
       } => {
         if let Some(text_clip) = text_clip.as_deref() {
-          self.paint_background_with_text_clip(rect, &style, text_clip)?;
+          self.paint_background_with_text_clip(rect, &style, text_clip, scroll_delta)?;
         } else {
-          self.paint_background(rect.x(), rect.y(), rect.width(), rect.height(), &style);
+          self.paint_background(
+            rect.x(),
+            rect.y(),
+            rect.width(),
+            rect.height(),
+            &style,
+            scroll_delta,
+          );
         }
       }
       DisplayCommand::Border { rect, style, gap } => {
@@ -5458,6 +5476,7 @@ impl Painter {
     rect: Rect,
     style: &ComputedStyle,
     text_clip: &[DisplayCommand],
+    scroll_delta: Point,
   ) -> RenderResult<()> {
     check_active(RenderStage::Paint)?;
 
@@ -5654,12 +5673,12 @@ impl Painter {
             text_mask,
             blend_mode,
             |painter| {
-              painter.paint_background_image_layer(&rects, style, &layer_src, image);
+              painter.paint_background_image_layer(&rects, style, &layer_src, image, scroll_delta);
             },
           )?;
         }
       } else {
-        self.paint_background_image_layer(&rects, style, layer, image);
+        self.paint_background_image_layer(&rects, style, layer, image, scroll_delta);
       }
     }
 
@@ -5771,7 +5790,15 @@ impl Painter {
   }
 
   /// Paints the background of a fragment
-  fn paint_background(&mut self, x: f32, y: f32, width: f32, height: f32, style: &ComputedStyle) {
+  fn paint_background(
+    &mut self,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    style: &ComputedStyle,
+    scroll_delta: Point,
+  ) {
     let timer = self.diagnostics_enabled.then(Instant::now);
     let rects = background_rects(
       x,
@@ -5822,7 +5849,7 @@ impl Painter {
 
     for layer in style.background_layers.iter().rev() {
       if let Some(image) = &layer.image {
-        self.paint_background_image_layer(&rects, style, layer, image);
+        self.paint_background_image_layer(&rects, style, layer, image, scroll_delta);
       }
     }
     if let Some(start) = timer {
@@ -5846,6 +5873,7 @@ impl Painter {
     style: &ComputedStyle,
     layer: &BackgroundLayer,
     bg: &BackgroundImage,
+    scroll_delta: Point,
   ) {
     let mut tiles_painted = 0u64;
     let record_tiles = self.diagnostics_enabled;
@@ -5889,6 +5917,11 @@ impl Painter {
         crate::style::types::BackgroundBox::ContentBox
         | crate::style::types::BackgroundBox::Text => rects.content,
       }
+    };
+    let origin_rect_css = if is_local {
+      origin_rect_css.translate(scroll_delta)
+    } else {
+      origin_rect_css
     };
 
     if clip_rect_css.width() <= 0.0 || clip_rect_css.height() <= 0.0 {
@@ -11389,6 +11422,7 @@ impl Painter {
                 track_rect.width(),
                 track_rect.height(),
                 track_style,
+                Point::ZERO,
               );
             } else {
               let radii = BorderRadii::uniform(track_height / 2.0);
@@ -22330,7 +22364,7 @@ mod tests {
     assert!((rects.content.y() - 14.0).abs() < 0.01);
     assert!((rects.content.width() - 12.0).abs() < 0.01);
     assert!((rects.content.height() - 12.0).abs() < 0.01);
-    painter.paint_background(box_x, box_y, box_size, box_size, &style);
+    painter.paint_background(box_x, box_y, box_size, box_size, &style, Point::ZERO);
     painter.paint_replaced(
       &ReplacedType::Svg {
         content: SvgContent::raw(red_svg()),
@@ -23211,11 +23245,13 @@ mod tests {
         rect: root_rect,
         style: style.clone(),
         text_clip: None,
+        scroll_delta: Point::ZERO,
       },
       DisplayCommand::Background {
         rect: Rect::from_xywh(1000.0, 0.0, 10.0, 10.0),
         style,
         text_clip: None,
+        scroll_delta: Point::ZERO,
       },
     ];
     let clip = Some(StackingClip {
@@ -24062,6 +24098,7 @@ mod tests {
         rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
         style,
         text_clip: None,
+        scroll_delta: Point::ZERO,
       }],
     };
 
@@ -24838,7 +24875,7 @@ mod tests {
 
     let mut painter = Painter::new(12, 6, Rgba::WHITE).expect("painter");
     painter.fill_background();
-    painter.paint_background(0.0, 0.0, 12.0, 6.0, &style);
+    painter.paint_background(0.0, 0.0, 12.0, 6.0, &style, Point::ZERO);
 
     let top_left = painter.pixmap.pixel(0, 0).unwrap();
     let top_right_tile = painter.pixmap.pixel(3, 0).unwrap();

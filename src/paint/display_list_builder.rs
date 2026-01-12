@@ -2173,6 +2173,8 @@ impl DisplayListBuilder {
             ),
             frame.fragment.bounds.size,
           );
+          let element_scroll = self.element_scroll_offset(frame.fragment);
+          let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
           let mut skip_contents = style_opt.is_some_and(|style| match style.content_visibility {
             ContentVisibility::Hidden => true,
             ContentVisibility::Auto => frame
@@ -2393,6 +2395,7 @@ impl DisplayListBuilder {
                     style,
                     text_clip.as_ref(),
                     frame.visibility.rect,
+                    scroll_delta,
                   );
                 }
                 if has_inset {
@@ -2412,6 +2415,7 @@ impl DisplayListBuilder {
                       style,
                       text_clip.as_ref(),
                       frame.visibility.rect,
+                      scroll_delta,
                     );
                   } else {
                     self.emit_background_from_style_with_text_clip_and_culling_rect(
@@ -2419,6 +2423,7 @@ impl DisplayListBuilder {
                       style,
                       text_clip.as_ref(),
                       frame.visibility.rect,
+                      scroll_delta,
                     );
                   }
                 }
@@ -2429,6 +2434,7 @@ impl DisplayListBuilder {
                     style,
                     text_clip.as_ref(),
                     frame.visibility.rect,
+                    scroll_delta,
                   );
                 }
               }
@@ -2488,7 +2494,6 @@ impl DisplayListBuilder {
           };
 
           if frame.recurse_children && !skip_contents {
-            let element_scroll = self.element_scroll_offset(frame.fragment);
             let child_offset = Point::new(
               absolute_rect.origin.x - element_scroll.x,
               absolute_rect.origin.y - element_scroll.y,
@@ -2562,7 +2567,6 @@ impl DisplayListBuilder {
                 .and_then(|map| map.get(&box_id))
                 .cloned()
             });
-            let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
             let overlays = match (appearance_none_control.as_deref(), style_opt) {
               (Some(control), Some(style)) => self.appearance_none_text_edit_overlays(
                 control,
@@ -2902,6 +2906,8 @@ impl DisplayListBuilder {
       ),
       fragment.bounds.size,
     );
+    let element_scroll = self.element_scroll_offset(fragment);
+    let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
     if let Some(vis) = visibility.rect {
       if !vis.intersects(absolute_rect) {
         return;
@@ -2940,7 +2946,12 @@ impl DisplayListBuilder {
         if let Some(clip) = decoration_clip {
           self.list.push(DisplayItem::PushClip(clip));
         }
-        self.emit_background_from_style_with_culling_rect(decoration_rect, style, visibility.rect);
+        self.emit_background_from_style_with_culling_rect(
+          decoration_rect,
+          style,
+          visibility.rect,
+          scroll_delta,
+        );
         let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
         self.emit_border_from_style(decoration_rect, style, gap);
         if decoration_clip_pushed {
@@ -2970,7 +2981,6 @@ impl DisplayListBuilder {
       }
 
       // Recurse to children
-      let element_scroll = self.element_scroll_offset(fragment);
       let child_offset = Point::new(
         absolute_rect.origin.x - element_scroll.x,
         absolute_rect.origin.y - element_scroll.y,
@@ -8231,12 +8241,13 @@ impl DisplayListBuilder {
     }
   }
 
-  fn emit_background_from_style(&mut self, rect: Rect, style: &ComputedStyle) {
+  fn emit_background_from_style(&mut self, rect: Rect, style: &ComputedStyle, scroll_delta: Point) {
     self.emit_background_from_style_with_text_clip_and_culling_rect(
       rect,
       style,
       None,
       self.viewport_rect(),
+      scroll_delta,
     );
   }
 
@@ -8245,12 +8256,14 @@ impl DisplayListBuilder {
     rect: Rect,
     style: &ComputedStyle,
     culling_rect: Option<Rect>,
+    scroll_delta: Point,
   ) {
     self.emit_background_from_style_with_text_clip_and_culling_rect(
       rect,
       style,
       None,
       culling_rect,
+      scroll_delta,
     );
   }
 
@@ -8259,12 +8272,14 @@ impl DisplayListBuilder {
     rect: Rect,
     style: &ComputedStyle,
     text_clip: Option<&Arc<[TextItem]>>,
+    scroll_delta: Point,
   ) {
     self.emit_background_from_style_with_text_clip_and_culling_rect(
       rect,
       style,
       text_clip,
       self.viewport_rect(),
+      scroll_delta,
     );
   }
 
@@ -8274,6 +8289,7 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     text_clip: Option<&Arc<[TextItem]>>,
     culling_rect: Option<Rect>,
+    scroll_delta: Point,
   ) {
     let has_images = style.background_layers.iter().any(|l| l.image.is_some());
     if style.background_color.is_transparent() && !has_images {
@@ -8286,6 +8302,7 @@ impl DisplayListBuilder {
       style,
       text_clip,
       culling_rect,
+      scroll_delta,
     );
   }
 
@@ -8293,6 +8310,7 @@ impl DisplayListBuilder {
     &mut self,
     rects: &BackgroundRects,
     style: &ComputedStyle,
+    scroll_delta: Point,
   ) {
     self.emit_background_from_style_with_rects_and_origin_and_text_clip(
       rects,
@@ -8300,6 +8318,7 @@ impl DisplayListBuilder {
       style,
       None,
       self.viewport_rect(),
+      scroll_delta,
     );
   }
 
@@ -8308,6 +8327,7 @@ impl DisplayListBuilder {
     rects: &BackgroundRects,
     origin_rects: &BackgroundRects,
     style: &ComputedStyle,
+    scroll_delta: Point,
   ) {
     self.emit_background_from_style_with_rects_and_origin_and_text_clip(
       rects,
@@ -8315,6 +8335,7 @@ impl DisplayListBuilder {
       style,
       None,
       self.viewport_rect(),
+      scroll_delta,
     );
   }
 
@@ -8323,6 +8344,7 @@ impl DisplayListBuilder {
     rects: &BackgroundRects,
     style: &ComputedStyle,
     text_clip: Option<&Arc<[TextItem]>>,
+    scroll_delta: Point,
   ) {
     self.emit_background_from_style_with_rects_and_origin_and_text_clip(
       rects,
@@ -8330,6 +8352,7 @@ impl DisplayListBuilder {
       style,
       text_clip,
       self.viewport_rect(),
+      scroll_delta,
     );
   }
 
@@ -8339,6 +8362,7 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     text_clip: Option<&Arc<[TextItem]>>,
     culling_rect: Option<Rect>,
+    scroll_delta: Point,
   ) {
     self.emit_background_from_style_with_rects_and_origin_and_text_clip(
       rects,
@@ -8346,6 +8370,7 @@ impl DisplayListBuilder {
       style,
       text_clip,
       culling_rect,
+      scroll_delta,
     );
   }
 
@@ -8356,6 +8381,7 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     text_clip: Option<&Arc<[TextItem]>>,
     culling_rect: Option<Rect>,
+    scroll_delta: Point,
   ) {
     let has_images = style.background_layers.iter().any(|l| l.image.is_some());
     if style.background_color.is_transparent() && !has_images {
@@ -8422,6 +8448,7 @@ impl DisplayListBuilder {
           image,
           text_clip,
           culling_rect,
+          scroll_delta,
         );
       }
     }
@@ -8430,7 +8457,12 @@ impl DisplayListBuilder {
   fn emit_root_background(&mut self, root: &RootBackground) {
     let rects = Self::background_rects(root.paint_rect, &root.style, self.viewport);
     let origin_rects = Self::background_rects(root.origin_rect, &root.style, self.viewport);
-    self.emit_background_from_style_with_rects_and_origin(&rects, &origin_rects, &root.style);
+    self.emit_background_from_style_with_rects_and_origin(
+      &rects,
+      &origin_rects,
+      &root.style,
+      Point::ZERO,
+    );
     if root.paint_border {
       self.emit_border_from_style(root.paint_rect, &root.style, None);
     }
@@ -8445,6 +8477,7 @@ impl DisplayListBuilder {
     bg: &BackgroundImage,
     text_clip: Option<&Arc<[TextItem]>>,
     culling_rect: Option<Rect>,
+    scroll_delta: Point,
   ) {
     if self.deadline_reached() {
       return;
@@ -8482,6 +8515,11 @@ impl DisplayListBuilder {
         BackgroundBox::PaddingBox => origin_rects.padding,
         BackgroundBox::ContentBox | BackgroundBox::Text => origin_rects.content,
       }
+    };
+    let origin_rect = if is_local {
+      origin_rect.translate(scroll_delta)
+    } else {
+      origin_rect
     };
 
     if clip_rect.width() <= 0.0
@@ -13879,6 +13917,7 @@ impl DisplayListBuilder {
                   track_rect,
                   track_style,
                   culling_rect,
+                  Point::ZERO,
                 );
               } else {
                 self
@@ -13959,6 +13998,7 @@ impl DisplayListBuilder {
               knob_rect,
               style_for_thumb,
               culling_rect,
+              Point::ZERO,
             );
             self.emit_box_shadows_from_style(knob_rect, style_for_thumb, true);
             self.emit_border_from_style(knob_rect, style_for_thumb, None);
@@ -14380,6 +14420,7 @@ impl DisplayListBuilder {
             button_rect,
             button_style,
             culling_rect,
+            Point::ZERO,
           );
           self.emit_box_shadows_from_style(button_rect, button_style, true);
           self.emit_border_from_style(button_rect, button_style, None);

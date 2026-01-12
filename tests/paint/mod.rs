@@ -11,6 +11,7 @@ mod backface_culling_non_stacking_context;
 mod backface_culling_test;
 mod backface_visibility_does_not_create_stacking_context;
 mod background_clip_text_test;
+mod background_attachment_local_scroll;
 mod border_bottom_single_edge_snapping;
 mod border_dotted;
 mod border_image_outset_bounds;
