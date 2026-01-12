@@ -9601,6 +9601,8 @@ fn error_event_constructor_impl(
   let error_key = alloc_key(scope, "error")?;
   scope.define_property(obj, error_key, read_only_data_desc(error))?;
 
+  brand_event_object(scope, obj, BrandedEventKind::Event)?;
+
   Ok(Value::Object(obj))
 }
 
@@ -9696,6 +9698,8 @@ fn before_unload_event_constructor_impl(
     return_value_key,
     data_desc(Value::String(return_value)),
   )?;
+
+  brand_event_object(scope, obj, BrandedEventKind::Event)?;
 
   Ok(Value::Object(obj))
 }
@@ -9798,6 +9802,8 @@ fn page_transition_event_constructor_impl(
     persisted_key,
     read_only_data_desc(Value::Bool(persisted)),
   )?;
+
+  brand_event_object(scope, obj, BrandedEventKind::Event)?;
 
   Ok(Value::Object(obj))
 }
