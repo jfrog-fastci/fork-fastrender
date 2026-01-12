@@ -442,8 +442,67 @@ fn get_element_by_id_ignores_shadow_root_subtrees() {
 }
 
 #[test]
-fn query_selector_skips_inert_templates_and_shadow_roots_by_default_but_can_scope_into_shadow_root()
-{
+fn shadow_root_get_element_by_id_finds_nodes_in_tree_scope() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<template shadowroot=open><span id=shadow></span></template>",
+    "<span id=light></span>",
+    "</div>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  assert_eq!(doc.get_element_by_id("shadow"), None);
+
+  let shadow_root = doc
+    .nodes()
+    .iter()
+    .enumerate()
+    .find_map(|(idx, node)| matches!(&node.kind, NodeKind::ShadowRoot { .. }).then_some(NodeId(idx)))
+    .expect("shadow root not found");
+
+  let shadow_el = doc
+    .query_selector("#shadow", Some(shadow_root))
+    .unwrap()
+    .expect("expected shadow element within scoped query");
+
+  assert_eq!(doc.get_element_by_id_from(shadow_root, "shadow"), Some(shadow_el));
+}
+
+#[test]
+fn closest_does_not_cross_shadow_root_boundary_to_host() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<template shadowroot=open><span id=shadow></span></template>",
+    "</div>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let shadow_root = doc
+    .nodes()
+    .iter()
+    .enumerate()
+    .find_map(|(idx, node)| matches!(&node.kind, NodeKind::ShadowRoot { .. }).then_some(NodeId(idx)))
+    .expect("shadow root not found");
+
+  let shadow_el = doc
+    .query_selector("#shadow", Some(shadow_root))
+    .unwrap()
+    .expect("expected shadow element within scoped query");
+
+  assert_eq!(doc.closest(shadow_el, "#host").unwrap(), None);
+  assert_eq!(doc.closest(shadow_el, "#shadow").unwrap(), Some(shadow_el));
+}
+
+#[test]
+fn query_selector_skips_inert_templates_and_shadow_roots_by_default_but_can_scope_into_shadow_root() {
   let html = concat!(
     "<!doctype html>",
     "<html><body>",

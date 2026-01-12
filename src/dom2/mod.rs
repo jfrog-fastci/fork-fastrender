@@ -686,12 +686,21 @@ impl Document {
   /// - returns `None` for an empty `id`,
   /// - ignores detached subtrees, and
   /// - ignores nodes inside inert `<template>` contents (`Node::inert_subtree`).
+  ///
+  /// Shadow-root semantics:
+  /// - `Document.getElementById` does not traverse into shadow roots.
+  /// - `ShadowRoot.getElementById` traverses its own tree scope, but does not pierce into nested
+  ///   shadow roots.
   pub fn get_element_by_id_from(&self, root: NodeId, id: &str) -> Option<NodeId> {
     if id.is_empty() {
       return None;
     }
 
-    // Document.getElementById does not traverse into shadow roots.
+    let allow_root_shadow = self
+      .nodes
+      .get(root.index())
+      .is_some_and(|node| matches!(&node.kind, NodeKind::ShadowRoot { .. }));
+
     let mut remaining = self.nodes.len() + 1;
     let mut stack: Vec<NodeId> = vec![root];
     while let Some(node_id) = stack.pop() {
@@ -730,7 +739,7 @@ impl Document {
       if node.inert_subtree {
         continue;
       }
-      if matches!(&node.kind, NodeKind::ShadowRoot { .. }) {
+      if matches!(&node.kind, NodeKind::ShadowRoot { .. }) && !(allow_root_shadow && node_id == root) {
         continue;
       }
 
@@ -1958,6 +1967,9 @@ impl Document {
   /// Inert `<template>` contents are treated as disconnected: traversal stops before the inert
   /// template boundary so `closest()` does not see ancestors outside the template's `.content`
   /// subtree.
+  ///
+  /// Shadow roots are tree-scope boundaries: traversal stops before a `ShadowRoot` node so
+  /// `closest()` does not cross from a shadow tree to its host element.
   pub fn closest(
     &mut self,
     element: NodeId,
@@ -1987,16 +1999,21 @@ impl Document {
         return Ok(Some(current));
       }
 
-      let Some(parent) = self.parent_node(current) else {
-        return Ok(None);
-      };
-      if matches!(self.node(parent).kind, NodeKind::ShadowRoot { .. }) {
-        return Ok(None);
+      let mut cursor = current;
+      loop {
+        let Some(parent) = self.parent_node(cursor) else {
+          return Ok(None);
+        };
+        let parent_node = self.node(parent);
+        if matches!(&parent_node.kind, NodeKind::ShadowRoot { .. }) || parent_node.inert_subtree {
+          return Ok(None);
+        }
+        if matches!(&parent_node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. }) {
+          current = parent;
+          break;
+        }
+        cursor = parent;
       }
-      if self.node(parent).inert_subtree {
-        return Ok(None);
-      }
-      current = parent;
     }
   }
 }
