@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 #[repr(C)]
 struct TaskCtx {
   started: AtomicBool,
+  finished: AtomicBool,
 }
 
 extern "C" fn write_u64_sleep(data: *mut u8, out_payload: *mut u8) -> u8 {
@@ -22,7 +23,22 @@ extern "C" fn write_u64_sleep(data: *mut u8, out_payload: *mut u8) -> u8 {
     *(out_payload as *mut u64) = 0x1122_3344_5566_7788u64;
   }
   std::thread::sleep(Duration::from_millis(200));
+  ctx.finished.store(true, Ordering::Release);
   0 // fulfill
+}
+
+#[repr(C)]
+struct RejectCtx {
+  done: AtomicBool,
+}
+
+extern "C" fn write_u32_and_reject(data: *mut u8, out_payload: *mut u8) -> u8 {
+  let ctx = unsafe { &*(data as *const RejectCtx) };
+  unsafe {
+    *(out_payload as *mut u32) = 123;
+  }
+  ctx.done.store(true, Ordering::Release);
+  1 // reject
 }
 
 #[test]
@@ -41,6 +57,7 @@ fn spawn_blocking_promise_is_gc_managed_and_gc_safe() {
 
   let ctx = Box::new(TaskCtx {
     started: AtomicBool::new(false),
+    finished: AtomicBool::new(false),
   });
   let ctx_ptr = Box::into_raw(ctx);
 
@@ -76,6 +93,24 @@ fn spawn_blocking_promise_is_gc_managed_and_gc_safe() {
     assert!(Instant::now() < deadline, "timeout waiting for rt_gc_collect to complete");
     // Cooperatively poll for a stop-the-world request while waiting.
     threading::safepoint_poll();
+    std::thread::yield_now();
+  }
+
+  // Wait for the blocking task to finish without draining microtasks. The promise must still be
+  // pending: settlement happens via a microtask hop back to the event-loop thread.
+  let deadline = Instant::now() + TIMEOUT;
+  while !unsafe { &*ctx_ptr }.finished.load(Ordering::Acquire) {
+    assert!(Instant::now() < deadline, "timeout waiting for spawn_blocking_promise task to finish");
+    std::thread::yield_now();
+  }
+  let deadline = Instant::now() + Duration::from_millis(50);
+  while Instant::now() < deadline {
+    let state = unsafe { &*promise_root.get() }.state.load(Ordering::Acquire);
+    assert_eq!(
+      state,
+      PromiseHeader::PENDING,
+      "promise must not settle before its settle microtask runs"
+    );
     std::thread::yield_now();
   }
 
@@ -120,5 +155,54 @@ fn spawn_blocking_promise_is_gc_managed_and_gc_safe() {
     drop(Box::from_raw(ctx_ptr));
   }
 
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn spawn_blocking_promise_rejects_when_tag_is_nonzero() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  const TIMEOUT: Duration = if cfg!(debug_assertions) {
+    Duration::from_secs(10)
+  } else {
+    Duration::from_secs(2)
+  };
+
+  let ctx = Box::new(RejectCtx {
+    done: AtomicBool::new(false),
+  });
+  let ctx_ptr = Box::into_raw(ctx);
+
+  let promise =
+    runtime_native::rt_spawn_blocking_promise(write_u32_and_reject, ctx_ptr.cast::<u8>(), PromiseLayout::of::<u32>());
+  let promise_root = Root::<PromiseHeader>::new(promise.0.cast::<PromiseHeader>());
+
+  // Ensure the worker ran the callback.
+  let deadline = Instant::now() + TIMEOUT;
+  while !unsafe { &*ctx_ptr }.done.load(Ordering::Acquire) {
+    assert!(Instant::now() < deadline, "timeout waiting for blocking task to run");
+    std::thread::yield_now();
+  }
+
+  // Drain microtasks until the settle job runs.
+  let deadline = Instant::now() + TIMEOUT;
+  loop {
+    let state = unsafe { &*promise_root.get() }.state.load(Ordering::Acquire);
+    if state == PromiseHeader::REJECTED {
+      break;
+    }
+    runtime_native::rt_drain_microtasks();
+    assert!(Instant::now() < deadline, "timeout waiting for reject microtask to run");
+    std::thread::yield_now();
+  }
+
+  let payload_ptr = runtime_native::rt_promise_payload_ptr(PromiseRef(promise_root.get().cast()));
+  assert!(!payload_ptr.is_null());
+  assert_eq!(unsafe { *(payload_ptr as *const u32) }, 123);
+
+  unsafe {
+    drop(Box::from_raw(ctx_ptr));
+  }
   threading::unregister_current_thread();
 }
