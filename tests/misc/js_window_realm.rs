@@ -1919,6 +1919,64 @@ setTimeout(() => { p.catch(() => {}); }, 0);
 }
 
 #[test]
+fn readable_stream_pipe_through_internal_promises_do_not_trigger_unhandledrejection() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+window.__unhandled = false;
+addEventListener('unhandledrejection', () => { window.__unhandled = true; });
+
+let ctrl;
+const rs = new ReadableStream({
+  start(controller) { ctrl = controller; },
+});
+
+// Force the internal pipeThrough pump to throw inside its promise reaction callback by
+// monkey-patching the writer returned by TextEncoderStream's writable.
+const ts = new TextEncoderStream();
+const origGetWriter = ts.writable.getWriter;
+ts.writable.getWriter = function () {
+  const writer = origGetWriter.call(this);
+  writer.write = () => { throw new Error('boom'); };
+  return writer;
+};
+
+rs.pipeThrough(ts);
+ctrl.enqueue("x");
+"#,
+  )?;
+
+  // Run the pump microtasks, then any resulting tasks (e.g. unhandledrejection).
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 25,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let unhandled = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    get_data_prop(&mut scope, global, "__unhandled")
+  };
+  assert_eq!(unhandled, Value::Bool(false));
+  Ok(())
+}
+
+#[test]
 fn abort_signal_abort_event_handlers_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
