@@ -390,6 +390,22 @@ pub const USE_BEFORE_ASSIGNMENT: Code = Code::new(
   &[],
 );
 
+/// TS17009: `super()` must be called before accessing `this` in a derived constructor.
+///
+/// TypeScript reports this diagnostic when a derived class constructor attempts
+/// to evaluate `this` (or access `super` properties) before calling `super()`.
+///
+/// - Primary span: the offending `this` expression or `super.<...>` member expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const SUPER_MUST_BE_CALLED_BEFORE_THIS: Code = Code::new(
+  "TS17009",
+  "super must be called before accessing this",
+  "`this` expression or `super` member access in a derived constructor before `super()`",
+  &["primary: `this`/`super` access before `super()`"],
+  &[],
+);
+
 /// TS2416: Property in type is not assignable to the same property in base type.
 ///
 /// TypeScript emits this diagnostic when a class member conflicts with the

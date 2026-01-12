@@ -70,10 +70,11 @@ impl InitState {
 }
 
 /// Per-point variable environment used during flow-sensitive checks.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Env {
   vars: HashMap<FlowKey, TypeId>,
   init: HashMap<BindingKey, InitState>,
+  pub(super) this_init: InitState,
 }
 
 impl Env {
@@ -81,6 +82,7 @@ impl Env {
     Env {
       vars: HashMap::new(),
       init: HashMap::new(),
+      this_init: InitState::Assigned,
     }
   }
 
@@ -229,6 +231,17 @@ impl Env {
         changed = true;
       }
     }
+    let joined_this = self.this_init.join(other.this_init);
+    if self.this_init != joined_this {
+      self.this_init = joined_this;
+      changed = true;
+    }
     changed
+  }
+}
+
+impl Default for Env {
+  fn default() -> Self {
+    Self::new()
   }
 }

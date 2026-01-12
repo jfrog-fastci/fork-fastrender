@@ -2175,7 +2175,6 @@ pub mod body_check {
           flow_hooks,
           caches.relation.clone(),
         );
-
         let mut expr_def_types: HashMap<DefId, TypeId> = HashMap::new();
         for expr in body.exprs.iter() {
           match expr.kind {
@@ -2210,6 +2209,30 @@ pub mod body_check {
           }
         }
 
+        let is_derived_constructor = (|| {
+          if !matches!(meta.kind, HirBodyKind::Function) || meta.hir.is_none() {
+            return None;
+          }
+          let owner_def = lowered.def(body.owner)?;
+          if owner_def.path.kind != hir_js::ids::DefKind::Constructor {
+            return None;
+          }
+          let parent_id = owner_def.parent?;
+          let parent_def = lowered.def(parent_id)?;
+          if parent_def.path.kind != hir_js::ids::DefKind::Class {
+            return None;
+          }
+          let extends_in_type_info = parent_def.type_info.as_ref().is_some_and(|info| {
+            matches!(info, hir_js::DefTypeInfo::Class { extends: Some(_), .. })
+          });
+          let extends_in_body = parent_def
+            .body
+            .and_then(|body_id| lowered.body(body_id))
+            .and_then(|body| body.class.as_ref())
+            .is_some_and(|class_body| class_body.extends.is_some());
+          Some(extends_in_type_info || extends_in_body)
+        })()
+        .unwrap_or(false);
         let flow_result = check_body_with_env_tables_with_bindings(
           body_id,
           body,
@@ -2225,6 +2248,7 @@ pub mod body_check {
           Some(&expander),
           this_super_context,
           strict_native,
+          is_derived_constructor,
         );
         let mut relate_hooks = relate_hooks();
         relate_hooks.expander = Some(&expander);

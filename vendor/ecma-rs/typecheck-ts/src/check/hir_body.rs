@@ -11220,6 +11220,7 @@ pub fn check_body_with_env_with_bindings_strict_native(
     relate,
     ref_expander,
     strict_native,
+    false,
   );
   checker.run();
   codes::normalize_diagnostics(&mut checker.diagnostics);
@@ -11254,6 +11255,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
   this_super_context: BodyThisSuperContext,
   strict_native: bool,
+  is_derived_constructor: bool,
 ) -> FlowBodyCheckTables {
   let mut checker = FlowBodyChecker::new(
     body_id,
@@ -11269,6 +11271,7 @@ pub(crate) fn check_body_with_env_tables_with_bindings(
     relate,
     ref_expander,
     strict_native,
+    is_derived_constructor,
   );
   checker.run();
   codes::normalize_diagnostics(&mut checker.diagnostics);
@@ -11334,6 +11337,7 @@ struct FlowBodyChecker<'a> {
   return_types: Vec<TypeId>,
   return_indices: HashMap<StmtId, usize>,
   widen_object_literals: bool,
+  is_derived_constructor: bool,
   ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
   expr_def_types: &'a HashMap<DefId, TypeId>,
   initial: HashMap<FlowBindingId, TypeId>,
@@ -12049,6 +12053,7 @@ impl<'a> FlowBodyChecker<'a> {
     relate: RelateCtx<'a>,
     ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
     _strict_native: bool,
+    is_derived_constructor: bool,
   ) -> Self {
     let prim = store.primitive_ids();
     let expr_types = vec![prim.unknown; body.exprs.len()];
@@ -12134,6 +12139,7 @@ impl<'a> FlowBodyChecker<'a> {
       return_types,
       return_indices,
       widen_object_literals: true,
+      is_derived_constructor,
       ref_expander,
       expr_def_types,
       initial: initial_flow,
@@ -12205,7 +12211,11 @@ impl<'a> FlowBodyChecker<'a> {
         initial_env.push((id, *binding, prim.unknown));
       }
     }
-    in_envs[cfg.entry.0] = Some(Env::with_initial(&initial_env));
+    let mut entry_env = Env::with_initial(&initial_env);
+    if self.is_derived_constructor {
+      entry_env.this_init = InitState::Unassigned;
+    }
+    in_envs[cfg.entry.0] = Some(entry_env);
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
     worklist.push_back(cfg.entry);
 
@@ -12811,7 +12821,13 @@ impl<'a> FlowBodyChecker<'a> {
         }
       }
       ExprKind::Call(call) => {
+        let is_direct_super_call = self.is_derived_constructor
+          && !call.is_new
+          && matches!(self.body.exprs.get(call.callee.0 as usize).map(|e| &e.kind), Some(ExprKind::Super));
         let (ret_ty, chain_short_circuit) = self.eval_call(expr_id, call, env, &mut facts);
+        if is_direct_super_call {
+          env.this_init = InitState::Assigned;
+        }
         if call.optional || chain_short_circuit {
           self.record_optional_chain_exec_type(expr_id, ret_ty);
         }
@@ -12948,6 +12964,20 @@ impl<'a> FlowBodyChecker<'a> {
         prim.unknown
       }
       ExprKind::Member(mem) => {
+        if self.is_derived_constructor
+          && env.this_init != InitState::Assigned
+          && matches!(
+            self.body.exprs.get(mem.object.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Super)
+          )
+        {
+          self.diagnostics.push(
+            codes::SUPER_MUST_BE_CALLED_BEFORE_THIS.error(
+              "'super' must be called before accessing 'this' in the constructor of a derived class.",
+              Span::new(self.file, expr.span),
+            ),
+          );
+        }
         let obj_ty = self.eval_expr(mem.object, env).0;
         let chain_short_circuit = self.optional_chain_short_circuits(expr_id, env);
         if !mem.optional && !chain_short_circuit {
@@ -13188,6 +13218,17 @@ impl<'a> FlowBodyChecker<'a> {
         let ty = self.eval_expr(*expr, env).0;
         self.widen_object_literals = prev;
         ty
+      }
+      ExprKind::This => {
+        if self.is_derived_constructor && env.this_init != InitState::Assigned {
+          self.diagnostics.push(
+            codes::SUPER_MUST_BE_CALLED_BEFORE_THIS.error(
+              "'super' must be called before accessing 'this' in the constructor of a derived class.",
+              Span::new(self.file, expr.span),
+            ),
+          );
+        }
+        prim.unknown
       }
       ExprKind::Jsx(elem) => {
         for attr in elem.attributes.iter() {
