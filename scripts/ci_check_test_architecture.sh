@@ -29,6 +29,25 @@ if command -v rg >/dev/null 2>&1; then
   have_rg=1
 fi
 
+# Check 4) Never allow `#[path = "..."]` shims under `tests/`.
+#
+# The broader test-binary consolidation is still in-flight, but `#[path]` shims are always wrong
+# (they create duplicate binaries / module graphs). Enforce this invariant unconditionally so we
+# don't regress while other migrations are ongoing.
+if [[ "${have_rg}" -eq 1 ]]; then
+  shim_matches="$(rg -n '#\[path\s*=\s*"' tests || true)"
+else
+  shim_matches="$(grep -RInE '#\\[[[:space:]]*path[[:space:]]*=[[:space:]]*"' tests || true)"
+fi
+if [[ -n "${shim_matches}" ]]; then
+  echo "error: found #[path = \"...\"] shims under tests/ (these create extra test binaries):" >&2
+  echo "${shim_matches}" >&2
+  echo >&2
+  echo "see: ${doc_ref}" >&2
+  echo "hint: delete the shim and include the module normally via mod.rs + tests/integration.rs" >&2
+  exit 1
+fi
+
 # Check 3) Always forbid hidden integration-test binaries via Cargo.toml [[test]] entries.
 # This can regress independently of the unified-harness migration.
 if [[ "${have_rg}" -eq 1 ]]; then
@@ -125,19 +144,5 @@ if [[ "${#missing[@]}" -ne 0 || "${#extra[@]}" -ne 0 ]]; then
   fi
   echo "hint: add integration tests as modules under tests/ and include them from tests/integration.rs" >&2
   echo "hint: unit tests belong in src/ (run with: cargo test --lib)" >&2
-  exit 1
-fi
-
-if [[ "${have_rg}" -eq 1 ]]; then
-  shim_matches="$(rg -n '#\[path\s*=\s*"' tests || true)"
-else
-  shim_matches="$(grep -RInE '#\\[[[:space:]]*path[[:space:]]*=[[:space:]]*"' tests || true)"
-fi
-if [[ -n "${shim_matches}" ]]; then
-  echo "error: found #[path = \"...\"] shims under tests/ (these create extra test binaries):" >&2
-  echo "${shim_matches}" >&2
-  echo >&2
-  echo "see: ${doc_ref}" >&2
-  echo "hint: delete the shim and include the module normally via mod.rs + tests/integration.rs" >&2
   exit 1
 fi
