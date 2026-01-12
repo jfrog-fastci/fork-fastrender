@@ -3436,15 +3436,22 @@ mod tests {
             divIsElement: div instanceof Element,
             divIsNode: div instanceof Node,
 
-            inputIsHTMLInputElement: input instanceof HTMLInputElement,
             inputIsHTMLElement: input instanceof HTMLElement,
+            inputIsHTMLInputElement: input instanceof HTMLInputElement,
             inputIsElement: input instanceof Element,
             inputIsNode: input instanceof Node,
             inputProtoIsHTMLInput: Object.getPrototypeOf(input) === HTMLInputElement.prototype,
 
+            textareaIsHTMLElement: textarea instanceof HTMLElement,
             textareaIsHTMLTextAreaElement: textarea instanceof HTMLTextAreaElement,
+
+            selectIsHTMLElement: select instanceof HTMLElement,
             selectIsHTMLSelectElement: select instanceof HTMLSelectElement,
+
+            formIsHTMLElement: form instanceof HTMLElement,
             formIsHTMLFormElement: form instanceof HTMLFormElement,
+
+            optionIsHTMLElement: option instanceof HTMLElement,
             optionIsHTMLOptionElement: option instanceof HTMLOptionElement,
 
             headIsHTMLElement: document.head instanceof HTMLElement,
@@ -3474,9 +3481,16 @@ mod tests {
       assert_eq!(v["inputIsNode"], true);
       assert_eq!(v["inputProtoIsHTMLInput"], true);
 
+      assert_eq!(v["textareaIsHTMLElement"], true);
       assert_eq!(v["textareaIsHTMLTextAreaElement"], true);
+
+      assert_eq!(v["selectIsHTMLElement"], true);
       assert_eq!(v["selectIsHTMLSelectElement"], true);
+
+      assert_eq!(v["formIsHTMLElement"], true);
       assert_eq!(v["formIsHTMLFormElement"], true);
+
+      assert_eq!(v["optionIsHTMLElement"], true);
       assert_eq!(v["optionIsHTMLOptionElement"], true);
 
       assert_eq!(v["headIsHTMLElement"], true);
