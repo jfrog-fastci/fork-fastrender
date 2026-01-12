@@ -616,6 +616,21 @@ impl Realm {
         Value::Object(intrinsics.promise()),
       )?;
 
+      // Map / Set
+      let map_key = PropertyKey::from_string(scope.alloc_string("Map")?);
+      scope.define_property(
+        global_object,
+        map_key,
+        global_data_desc(Value::Object(intrinsics.map())),
+      )?;
+
+      let set_key = PropertyKey::from_string(scope.alloc_string("Set")?);
+      scope.define_property(
+        global_object,
+        set_key,
+        global_data_desc(Value::Object(intrinsics.set())),
+      )?;
+
       // WeakMap / WeakSet
       define_global_data_property_once(
         &mut scope,

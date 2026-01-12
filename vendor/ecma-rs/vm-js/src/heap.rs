@@ -22,6 +22,7 @@ use parse_js::ast::node::Node;
 use semantic_js::js::SymbolId;
 use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
+use crate::tick;
 use std::sync::Arc;
 
 /// Hard upper bound for `[[Prototype]]` chain traversals.
@@ -985,6 +986,8 @@ impl Heap {
           | HeapObject::Proxy(_)
           | HeapObject::RegExp(_)
           | HeapObject::Promise(_)
+          | HeapObject::Map(_)
+          | HeapObject::Set(_)
           | HeapObject::WeakMap(_)
           | HeapObject::WeakSet(_)
           | HeapObject::Generator(_)
@@ -1094,6 +1097,16 @@ impl Heap {
   /// Returns `true` if `obj` currently points to a live WeakMap object allocation.
   pub fn is_weak_map_object(&self, obj: GcObject) -> bool {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::WeakMap(_)))
+  }
+
+  /// Returns `true` if `obj` currently points to a live Map object allocation.
+  pub fn is_map_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Map(_)))
+  }
+
+  /// Returns `true` if `obj` currently points to a live Set object allocation.
+  pub fn is_set_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Set(_)))
   }
 
   /// Returns `true` if `obj` currently points to a live WeakSet object allocation.
@@ -1749,15 +1762,17 @@ impl Heap {
       .validate(obj.0)
       .ok_or_else(|| VmError::invalid_handle())?;
 
-    match self.slots[idx].value {
-      Some(
-        HeapObject::Object(_)
+      match self.slots[idx].value {
+        Some(
+          HeapObject::Object(_)
         | HeapObject::ArrayBuffer(_)
         | HeapObject::TypedArray(_)
         | HeapObject::DataView(_)
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
+        | HeapObject::Map(_)
+        | HeapObject::Set(_)
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::Generator(_),
@@ -1775,15 +1790,17 @@ impl Heap {
       .validate(obj.0)
       .ok_or_else(|| VmError::invalid_handle())?;
 
-    match self.slots[idx].value {
-      Some(
-        HeapObject::Object(_)
+      match self.slots[idx].value {
+        Some(
+          HeapObject::Object(_)
         | HeapObject::ArrayBuffer(_)
         | HeapObject::TypedArray(_)
         | HeapObject::DataView(_)
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
+        | HeapObject::Map(_)
+        | HeapObject::Set(_)
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::Generator(_),
@@ -1798,15 +1815,17 @@ impl Heap {
       .validate(obj.0)
       .ok_or_else(|| VmError::invalid_handle())?;
 
-    match self.slots[idx].value {
-      Some(
-        HeapObject::Object(_)
+      match self.slots[idx].value {
+        Some(
+          HeapObject::Object(_)
         | HeapObject::ArrayBuffer(_)
         | HeapObject::TypedArray(_)
         | HeapObject::DataView(_)
         | HeapObject::Function(_)
         | HeapObject::Proxy(_)
         | HeapObject::Promise(_)
+        | HeapObject::Map(_)
+        | HeapObject::Set(_)
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::Generator(_),
@@ -1929,6 +1948,8 @@ impl Heap {
       HeapObject::RegExp(r) => Ok(&r.base),
       HeapObject::Generator(g) => Ok(&g.object.base),
       HeapObject::Promise(p) => Ok(&p.object.base),
+      HeapObject::Map(m) => Ok(&m.base),
+      HeapObject::Set(s) => Ok(&s.base),
       HeapObject::WeakMap(wm) => Ok(&wm.base),
       HeapObject::WeakSet(ws) => Ok(&ws.base),
       _ => Err(VmError::invalid_handle()),
@@ -1945,10 +1966,522 @@ impl Heap {
       HeapObject::RegExp(r) => Ok(&mut r.base),
       HeapObject::Generator(g) => Ok(&mut g.object.base),
       HeapObject::Promise(p) => Ok(&mut p.object.base),
+      HeapObject::Map(m) => Ok(&mut m.base),
+      HeapObject::Set(s) => Ok(&mut s.base),
       HeapObject::WeakMap(wm) => Ok(&mut wm.base),
       HeapObject::WeakSet(ws) => Ok(&mut ws.base),
       _ => Err(VmError::invalid_handle()),
     }
+  }
+
+  fn normalize_same_value_zero(value: Value) -> Value {
+    // Map/Set use SameValueZero semantics, which treat -0 and +0 as the same key/value.
+    // Canonicalize to +0 at insertion/lookup so internal equality checks can reuse SameValue for
+    // numbers.
+    match value {
+      Value::Number(n) if n == 0.0 => Value::Number(0.0),
+      other => other,
+    }
+  }
+
+  fn same_value_zero_with_tick(
+    &self,
+    a: Value,
+    b: Value,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    let a = Self::normalize_same_value_zero(a);
+    let b = Self::normalize_same_value_zero(b);
+    match (a, b) {
+      (Value::Number(a), Value::Number(b)) => {
+        if a.is_nan() && b.is_nan() {
+          return Ok(true);
+        }
+        Ok(a == b)
+      }
+      (Value::String(a), Value::String(b)) => {
+        let a_units = self.get_string(a)?.as_code_units();
+        let b_units = self.get_string(b)?.as_code_units();
+        Ok(crate::tick::code_units_eq_with_ticks(a_units, b_units, || tick())?)
+      }
+      _ => Ok(a.same_value(b, self)),
+    }
+  }
+
+  /// Returns the `[[MapData]]` entry list length for `map` (including deleted slots).
+  pub fn map_entries_len(&self, map: GcObject) -> Result<usize, VmError> {
+    match self.get_heap_object(map.0)? {
+      HeapObject::Map(m) => Ok(m.entries.len()),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  /// Returns the entry at `index` for `map`, if present and not deleted.
+  pub fn map_entry_at(&self, map: GcObject, index: usize) -> Result<Option<(Value, Value)>, VmError> {
+    let HeapObject::Map(m) = self.get_heap_object(map.0)? else {
+      return Err(VmError::invalid_handle());
+    };
+    let Some(entry) = m.entries.get(index) else {
+      return Ok(None);
+    };
+    let (Some(k), Some(v)) = (entry.key, entry.value) else {
+      return Ok(None);
+    };
+    Ok(Some((k, v)))
+  }
+
+  pub fn map_size(&self, map: GcObject) -> Result<usize, VmError> {
+    match self.get_heap_object(map.0)? {
+      HeapObject::Map(m) => Ok(m.size),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub fn map_get_with_tick(
+    &self,
+    map: GcObject,
+    key: Value,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<Value>, VmError> {
+    let key = Self::normalize_same_value_zero(key);
+    let HeapObject::Map(m) = self.get_heap_object(map.0)? else {
+      return Err(VmError::invalid_handle());
+    };
+
+    for (i, entry) in m.entries.iter().enumerate() {
+      tick::tick_every(i, tick::DEFAULT_TICK_EVERY, &mut tick)?;
+      let (Some(k), Some(v)) = (entry.key, entry.value) else {
+        continue;
+      };
+      if self.same_value_zero_with_tick(k, key, &mut tick)? {
+        return Ok(Some(v));
+      }
+    }
+    Ok(None)
+  }
+
+  pub fn map_has_with_tick(
+    &self,
+    map: GcObject,
+    key: Value,
+    tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    Ok(self.map_get_with_tick(map, key, tick)?.is_some())
+  }
+
+  pub fn map_set_with_tick(
+    &mut self,
+    map: GcObject,
+    key: Value,
+    value: Value,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(key));
+    debug_assert!(self.debug_value_is_valid_or_primitive(value));
+
+    if !self.is_valid_object(map) {
+      return Err(VmError::invalid_handle());
+    }
+
+    // Canonicalize -0 to +0 at insertion time.
+    let key = Self::normalize_same_value_zero(key);
+
+    // Root inputs across any potential GC while growing the entry vector or property table.
+    let mut scope = self.scope();
+    scope.push_roots(&[Value::Object(map), key, value])?;
+    scope.heap.map_set_rooted_with_tick(map, key, value, &mut tick)
+  }
+
+  fn map_set_rooted_with_tick(
+    &mut self,
+    map: GcObject,
+    key: Value,
+    value: Value,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
+    let slot_idx = self
+      .validate(map.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    // Two-phase borrow: search without holding a mutable borrow of the map allocation while calling
+    // `same_value_zero_with_tick` (which needs `&self` for string reads).
+    let (existing_idx, entry_len, entry_cap, property_count, old_bytes) = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::Map(m)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+
+      let mut existing_idx: Option<usize> = None;
+      for (i, entry) in m.entries.iter().enumerate() {
+        tick::tick_every(i, tick::DEFAULT_TICK_EVERY, tick)?;
+        let Some(k) = entry.key else {
+          continue;
+        };
+        if self.same_value_zero_with_tick(k, key, tick)? {
+          existing_idx = Some(i);
+          break;
+        }
+      }
+
+      (
+        existing_idx,
+        m.entries.len(),
+        m.entries.capacity(),
+        m.base.properties.len(),
+        slot.bytes,
+      )
+    };
+
+    if let Some(existing_idx) = existing_idx {
+      let Some(HeapObject::Map(m)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      if let Some(entry) = m.entries.get_mut(existing_idx) {
+        // Existing live entry: replace value without changing insertion order.
+        entry.value = Some(value);
+      }
+      return Ok(());
+    }
+
+    let required_len = entry_len.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    let desired_capacity = grown_capacity(entry_cap, required_len);
+    if desired_capacity == usize::MAX {
+      return Err(VmError::OutOfMemory);
+    }
+
+    let expected_new_bytes = JsMap::heap_size_bytes_for_counts(property_count, desired_capacity);
+    let grow_by = expected_new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      self.ensure_can_allocate(grow_by)?;
+      let Some(HeapObject::Map(m)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      reserve_vec_to_len::<MapEntry>(&mut m.entries, required_len)?;
+    }
+
+    let Some(HeapObject::Map(m)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    m.entries.push(MapEntry {
+      key: Some(key),
+      value: Some(value),
+    });
+    m.size = m.size.saturating_add(1);
+    let new_bytes = m.heap_size_bytes();
+    self.update_slot_bytes(slot_idx, new_bytes);
+
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  pub fn map_delete_with_tick(
+    &mut self,
+    map: GcObject,
+    key: Value,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(key));
+    if !self.is_valid_object(map) {
+      return Err(VmError::invalid_handle());
+    }
+    let key = Self::normalize_same_value_zero(key);
+
+    let mut scope = self.scope();
+    scope.push_roots(&[Value::Object(map), key])?;
+    scope.heap.map_delete_rooted_with_tick(map, key, &mut tick)
+  }
+
+  fn map_delete_rooted_with_tick(
+    &mut self,
+    map: GcObject,
+    key: Value,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    let slot_idx = self
+      .validate(map.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let existing_idx = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::Map(m)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+
+      let mut found: Option<usize> = None;
+      for (i, entry) in m.entries.iter().enumerate() {
+        tick::tick_every(i, tick::DEFAULT_TICK_EVERY, tick)?;
+        let Some(k) = entry.key else {
+          continue;
+        };
+        if self.same_value_zero_with_tick(k, key, tick)? {
+          found = Some(i);
+          break;
+        }
+      }
+      found
+    };
+
+    let Some(idx) = existing_idx else {
+      return Ok(false);
+    };
+
+    let Some(HeapObject::Map(m)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    if let Some(entry) = m.entries.get_mut(idx) {
+      if entry.key.is_some() {
+        entry.key = None;
+        entry.value = None;
+        m.size = m.size.saturating_sub(1);
+        return Ok(true);
+      }
+    }
+    Ok(false)
+  }
+
+  pub fn map_clear_with_tick(
+    &mut self,
+    map: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
+    if !self.is_valid_object(map) {
+      return Err(VmError::invalid_handle());
+    }
+
+    let slot_idx = self
+      .validate(map.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let Some(HeapObject::Map(m)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+
+    for (i, entry) in m.entries.iter_mut().enumerate() {
+      tick::tick_every(i, tick::DEFAULT_TICK_EVERY, &mut tick)?;
+      entry.key = None;
+      entry.value = None;
+    }
+    m.size = 0;
+    Ok(())
+  }
+
+  pub fn set_entries_len(&self, set: GcObject) -> Result<usize, VmError> {
+    match self.get_heap_object(set.0)? {
+      HeapObject::Set(s) => Ok(s.entries.len()),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub fn set_entry_at(&self, set: GcObject, index: usize) -> Result<Option<Value>, VmError> {
+    let HeapObject::Set(s) = self.get_heap_object(set.0)? else {
+      return Err(VmError::invalid_handle());
+    };
+    let Some(entry) = s.entries.get(index) else {
+      return Ok(None);
+    };
+    Ok(*entry)
+  }
+
+  pub fn set_size(&self, set: GcObject) -> Result<usize, VmError> {
+    match self.get_heap_object(set.0)? {
+      HeapObject::Set(s) => Ok(s.size),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub fn set_has_with_tick(
+    &self,
+    set: GcObject,
+    value: Value,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    let value = Self::normalize_same_value_zero(value);
+    let HeapObject::Set(s) = self.get_heap_object(set.0)? else {
+      return Err(VmError::invalid_handle());
+    };
+    for (i, entry) in s.entries.iter().enumerate() {
+      tick::tick_every(i, tick::DEFAULT_TICK_EVERY, &mut tick)?;
+      let Some(v) = *entry else {
+        continue;
+      };
+      if self.same_value_zero_with_tick(v, value, &mut tick)? {
+        return Ok(true);
+      }
+    }
+    Ok(false)
+  }
+
+  pub fn set_add_with_tick(
+    &mut self,
+    set: GcObject,
+    value: Value,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(value));
+    if !self.is_valid_object(set) {
+      return Err(VmError::invalid_handle());
+    }
+    let value = Self::normalize_same_value_zero(value);
+
+    let mut scope = self.scope();
+    scope.push_roots(&[Value::Object(set), value])?;
+    scope.heap.set_add_rooted_with_tick(set, value, &mut tick)
+  }
+
+  fn set_add_rooted_with_tick(
+    &mut self,
+    set: GcObject,
+    value: Value,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
+    let slot_idx = self
+      .validate(set.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let (already_present, entry_len, entry_cap, property_count, old_bytes) = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::Set(s)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+
+      let mut already_present = false;
+      for (i, entry) in s.entries.iter().enumerate() {
+        tick::tick_every(i, tick::DEFAULT_TICK_EVERY, tick)?;
+        let Some(v) = *entry else {
+          continue;
+        };
+        if self.same_value_zero_with_tick(v, value, tick)? {
+          already_present = true;
+          break;
+        }
+      }
+
+      (
+        already_present,
+        s.entries.len(),
+        s.entries.capacity(),
+        s.base.properties.len(),
+        slot.bytes,
+      )
+    };
+
+    if already_present {
+      return Ok(());
+    }
+
+    let required_len = entry_len.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    let desired_capacity = grown_capacity(entry_cap, required_len);
+    if desired_capacity == usize::MAX {
+      return Err(VmError::OutOfMemory);
+    }
+
+    let expected_new_bytes = JsSet::heap_size_bytes_for_counts(property_count, desired_capacity);
+    let grow_by = expected_new_bytes.saturating_sub(old_bytes);
+    if grow_by != 0 {
+      self.ensure_can_allocate(grow_by)?;
+      let Some(HeapObject::Set(s)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      reserve_vec_to_len::<Option<Value>>(&mut s.entries, required_len)?;
+    }
+
+    let Some(HeapObject::Set(s)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    s.entries.push(Some(value));
+    s.size = s.size.saturating_add(1);
+    let new_bytes = s.heap_size_bytes();
+    self.update_slot_bytes(slot_idx, new_bytes);
+
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  pub fn set_delete_with_tick(
+    &mut self,
+    set: GcObject,
+    value: Value,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(value));
+    if !self.is_valid_object(set) {
+      return Err(VmError::invalid_handle());
+    }
+    let value = Self::normalize_same_value_zero(value);
+
+    let mut scope = self.scope();
+    scope.push_roots(&[Value::Object(set), value])?;
+    scope.heap.set_delete_rooted_with_tick(set, value, &mut tick)
+  }
+
+  fn set_delete_rooted_with_tick(
+    &mut self,
+    set: GcObject,
+    value: Value,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    let slot_idx = self
+      .validate(set.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let existing_idx = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::Set(s)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+
+      let mut found: Option<usize> = None;
+      for (i, entry) in s.entries.iter().enumerate() {
+        tick::tick_every(i, tick::DEFAULT_TICK_EVERY, tick)?;
+        let Some(v) = *entry else {
+          continue;
+        };
+        if self.same_value_zero_with_tick(v, value, tick)? {
+          found = Some(i);
+          break;
+        }
+      }
+      found
+    };
+
+    let Some(idx) = existing_idx else {
+      return Ok(false);
+    };
+
+    let Some(HeapObject::Set(s)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    if let Some(entry) = s.entries.get_mut(idx) {
+      if entry.is_some() {
+        *entry = None;
+        s.size = s.size.saturating_sub(1);
+        return Ok(true);
+      }
+    }
+    Ok(false)
+  }
+
+  pub fn set_clear_with_tick(
+    &mut self,
+    set: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
+    if !self.is_valid_object(set) {
+      return Err(VmError::invalid_handle());
+    }
+    let slot_idx = self
+      .validate(set.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let Some(HeapObject::Set(s)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    for (i, entry) in s.entries.iter_mut().enumerate() {
+      tick::tick_every(i, tick::DEFAULT_TICK_EVERY, &mut tick)?;
+      *entry = None;
+    }
+    s.size = 0;
+    Ok(())
   }
 
   /// Returns the value associated with `key` in `map`, if present.
@@ -2561,6 +3094,12 @@ impl Heap {
       ArrayBuffer,
       TypedArray,
       DataView,
+      Map {
+        entry_capacity: usize,
+      },
+      Set {
+        entry_capacity: usize,
+      },
       WeakMap {
         entry_capacity: usize,
       },
@@ -2632,6 +3171,26 @@ impl Heap {
             .position(|prop| self.property_key_eq(&prop.key, key)),
           TargetKind::DataView,
           view.base.properties.len(),
+        ),
+        HeapObject::Map(m) => (
+          m.base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::Map {
+            entry_capacity: m.entries.capacity(),
+          },
+          m.base.properties.len(),
+        ),
+        HeapObject::Set(s) => (
+          s.base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::Set {
+            entry_capacity: s.entries.capacity(),
+          },
+          s.base.properties.len(),
         ),
         HeapObject::WeakMap(wm) => (
           wm
@@ -2710,6 +3269,8 @@ impl Heap {
       TargetKind::ArrayBuffer => JsArrayBuffer::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::TypedArray => JsTypedArray::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::DataView => JsDataView::heap_size_bytes_for_property_count(new_property_count),
+      TargetKind::Map { entry_capacity } => JsMap::heap_size_bytes_for_counts(new_property_count, entry_capacity),
+      TargetKind::Set { entry_capacity } => JsSet::heap_size_bytes_for_counts(new_property_count, entry_capacity),
       TargetKind::WeakMap { entry_capacity } => {
         JsWeakMap::heap_size_bytes_for_counts(new_property_count, entry_capacity)
       }
@@ -2764,6 +3325,14 @@ impl Heap {
           buf.extend_from_slice(&obj.base.properties[..idx]);
           buf.extend_from_slice(&obj.base.properties[idx + 1..]);
         }
+        Some(HeapObject::Map(m)) => {
+          buf.extend_from_slice(&m.base.properties[..idx]);
+          buf.extend_from_slice(&m.base.properties[idx + 1..]);
+        }
+        Some(HeapObject::Set(s)) => {
+          buf.extend_from_slice(&s.base.properties[..idx]);
+          buf.extend_from_slice(&s.base.properties[idx + 1..]);
+        }
         Some(HeapObject::WeakMap(wm)) => {
           buf.extend_from_slice(&wm.base.properties[..idx]);
           buf.extend_from_slice(&wm.base.properties[idx + 1..]);
@@ -2798,6 +3367,8 @@ impl Heap {
       HeapObject::ArrayBuffer(obj) => obj.base.properties = properties,
       HeapObject::TypedArray(obj) => obj.base.properties = properties,
       HeapObject::DataView(obj) => obj.base.properties = properties,
+      HeapObject::Map(m) => m.base.properties = properties,
+      HeapObject::Set(s) => s.base.properties = properties,
       HeapObject::WeakMap(wm) => wm.base.properties = properties,
       HeapObject::Function(func) => func.base.properties = properties,
       HeapObject::Promise(p) => p.object.base.properties = properties,
@@ -4696,6 +5267,8 @@ impl Heap {
       ArrayBuffer,
       TypedArray,
       DataView,
+      Map { entry_capacity: usize },
+      Set { entry_capacity: usize },
       WeakMap {
         entry_capacity: usize,
       },
@@ -4787,6 +5360,38 @@ impl Heap {
             .position(|entry| self.property_key_eq(&entry.key, &key));
           (
             TargetKind::DataView,
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
+        HeapObject::Map(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::Map {
+              entry_capacity: obj.entries.capacity(),
+            },
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
+        HeapObject::Set(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::Set {
+              entry_capacity: obj.entries.capacity(),
+            },
             obj.base.properties.len(),
             slot.bytes,
             existing_idx,
@@ -4921,6 +5526,8 @@ impl Heap {
           Some(HeapObject::ArrayBuffer(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::TypedArray(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::DataView(obj)) => obj.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::Map(m)) => m.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::Set(s)) => s.base.properties[existing_idx].desc = desc,
           Some(HeapObject::WeakMap(wm)) => wm.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Function(func)) => func.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Promise(p)) => p.object.base.properties[existing_idx].desc = desc,
@@ -4940,6 +5547,8 @@ impl Heap {
           TargetKind::ArrayBuffer => JsArrayBuffer::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::TypedArray => JsTypedArray::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::DataView => JsDataView::heap_size_bytes_for_property_count(new_property_count),
+          TargetKind::Map { entry_capacity } => JsMap::heap_size_bytes_for_counts(new_property_count, entry_capacity),
+          TargetKind::Set { entry_capacity } => JsSet::heap_size_bytes_for_counts(new_property_count, entry_capacity),
           TargetKind::WeakMap { entry_capacity } => {
             JsWeakMap::heap_size_bytes_for_counts(new_property_count, entry_capacity)
           }
@@ -4983,6 +5592,8 @@ impl Heap {
             Some(HeapObject::ArrayBuffer(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::TypedArray(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::DataView(obj)) => buf.extend_from_slice(&obj.base.properties),
+            Some(HeapObject::Map(m)) => buf.extend_from_slice(&m.base.properties),
+            Some(HeapObject::Set(s)) => buf.extend_from_slice(&s.base.properties),
             Some(HeapObject::WeakMap(wm)) => buf.extend_from_slice(&wm.base.properties),
             Some(HeapObject::Function(func)) => buf.extend_from_slice(&func.base.properties),
             Some(HeapObject::Promise(p)) => buf.extend_from_slice(&p.object.base.properties),
@@ -5001,6 +5612,8 @@ impl Heap {
           Some(HeapObject::ArrayBuffer(obj)) => obj.base.properties = properties,
           Some(HeapObject::TypedArray(obj)) => obj.base.properties = properties,
           Some(HeapObject::DataView(obj)) => obj.base.properties = properties,
+          Some(HeapObject::Map(m)) => m.base.properties = properties,
+          Some(HeapObject::Set(s)) => s.base.properties = properties,
           Some(HeapObject::WeakMap(wm)) => wm.base.properties = properties,
           Some(HeapObject::Function(func)) => func.base.properties = properties,
           Some(HeapObject::Promise(p)) => p.object.base.properties = properties,
@@ -5869,6 +6482,52 @@ impl<'a> Scope<'a> {
 
     let obj = HeapObject::Object(JsObject::new(None));
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates an empty `Map` object on the heap.
+  pub fn alloc_map(&mut self) -> Result<GcObject, VmError> {
+    self.alloc_map_with_prototype(None)
+  }
+
+  /// Allocates an empty `Map` object on the heap with an explicit `[[Prototype]]`.
+  pub fn alloc_map_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(proto) = prototype {
+      scope.push_root(Value::Object(proto))?;
+    }
+
+    let new_bytes = JsMap::heap_size_bytes_for_counts(0, 0);
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::Map(JsMap::new(prototype));
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates an empty `Set` object on the heap.
+  pub fn alloc_set(&mut self) -> Result<GcObject, VmError> {
+    self.alloc_set_with_prototype(None)
+  }
+
+  /// Allocates an empty `Set` object on the heap with an explicit `[[Prototype]]`.
+  pub fn alloc_set_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(proto) = prototype {
+      scope.push_root(Value::Object(proto))?;
+    }
+
+    let new_bytes = JsSet::heap_size_bytes_for_counts(0, 0);
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::Set(JsSet::new(prototype));
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
   /// Allocates an empty `WeakSet` object on the heap.
@@ -7218,6 +7877,8 @@ enum HeapObject {
   RegExp(JsRegExp),
   Env(EnvRecord),
   Promise(JsPromise),
+  Map(JsMap),
+  Set(JsSet),
   WeakMap(JsWeakMap),
   WeakSet(JsWeakSet),
   Generator(JsGenerator),
@@ -7238,6 +7899,8 @@ impl Trace for HeapObject {
       HeapObject::RegExp(r) => r.trace(tracer),
       HeapObject::Env(e) => e.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
+      HeapObject::Map(m) => m.trace(tracer),
+      HeapObject::Set(s) => s.trace(tracer),
       HeapObject::WeakMap(wm) => wm.trace(tracer),
       HeapObject::WeakSet(ws) => ws.trace(tracer),
       HeapObject::Generator(g) => g.trace(tracer),
@@ -7600,6 +8263,98 @@ impl Trace for JsDataView {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     self.base.trace(tracer);
     tracer.trace_value(Value::Object(self.viewed_array_buffer));
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MapEntry {
+  key: Option<Value>,
+  value: Option<Value>,
+}
+
+#[derive(Debug)]
+struct JsMap {
+  base: ObjectBase,
+  entries: Vec<MapEntry>,
+  /// Count of live entries (where `key` is not empty).
+  size: usize,
+}
+
+impl JsMap {
+  fn new(prototype: Option<GcObject>) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      entries: Vec::new(),
+      size: 0,
+    }
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    Self::heap_size_bytes_for_counts(self.base.properties.len(), self.entries.capacity())
+  }
+
+  fn heap_size_bytes_for_counts(property_count: usize, entry_capacity: usize) -> usize {
+    let props_bytes = ObjectBase::properties_heap_size_bytes_for_count(property_count);
+    let entries_bytes = entry_capacity
+      .checked_mul(mem::size_of::<MapEntry>())
+      .unwrap_or(usize::MAX);
+    props_bytes.saturating_add(entries_bytes)
+  }
+}
+
+impl Trace for JsMap {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.base.trace(tracer);
+    for entry in self.entries.iter() {
+      let Some(k) = entry.key else {
+        continue;
+      };
+      tracer.trace_value(k);
+      if let Some(v) = entry.value {
+        tracer.trace_value(v);
+      }
+    }
+  }
+}
+
+#[derive(Debug)]
+struct JsSet {
+  base: ObjectBase,
+  entries: Vec<Option<Value>>,
+  /// Count of live entries (where entry is not empty).
+  size: usize,
+}
+
+impl JsSet {
+  fn new(prototype: Option<GcObject>) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      entries: Vec::new(),
+      size: 0,
+    }
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    Self::heap_size_bytes_for_counts(self.base.properties.len(), self.entries.capacity())
+  }
+
+  fn heap_size_bytes_for_counts(property_count: usize, entry_capacity: usize) -> usize {
+    let props_bytes = ObjectBase::properties_heap_size_bytes_for_count(property_count);
+    let entries_bytes = entry_capacity
+      .checked_mul(mem::size_of::<Option<Value>>())
+      .unwrap_or(usize::MAX);
+    props_bytes.saturating_add(entries_bytes)
+  }
+}
+
+impl Trace for JsSet {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.base.trace(tracer);
+    for entry in self.entries.iter() {
+      if let Some(v) = *entry {
+        tracer.trace_value(v);
+      }
+    }
   }
 }
 

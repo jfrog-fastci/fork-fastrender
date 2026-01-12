@@ -20,6 +20,7 @@ use parse_js::{Dialect, ParseOptions, SourceType};
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::sync::Arc;
+use crate::tick;
 
 fn strict_mode_stmts_contain_with(
   vm: &mut Vm,
@@ -9285,6 +9286,12 @@ fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, Vm
 const ARRAY_ITERATOR_ARRAY_MARKER: &str = "vm-js.internal.ArrayIteratorArray";
 const ARRAY_ITERATOR_INDEX_MARKER: &str = "vm-js.internal.ArrayIteratorIndex";
 const ARRAY_ITERATOR_KIND_MARKER: &str = "vm-js.internal.ArrayIteratorKind";
+const MAP_ITERATOR_MAP_MARKER: &str = "vm-js.internal.MapIteratorMap";
+const MAP_ITERATOR_INDEX_MARKER: &str = "vm-js.internal.MapIteratorIndex";
+const MAP_ITERATOR_KIND_MARKER: &str = "vm-js.internal.MapIteratorKind";
+const SET_ITERATOR_SET_MARKER: &str = "vm-js.internal.SetIteratorSet";
+const SET_ITERATOR_INDEX_MARKER: &str = "vm-js.internal.SetIteratorIndex";
+const SET_ITERATOR_KIND_MARKER: &str = "vm-js.internal.SetIteratorKind";
 const GENERATOR_STATE_MARKER: &str = "vm-js.internal.GeneratorState";
 /// `Array.prototype.map` (minimal).
 pub fn array_prototype_map(
@@ -20339,6 +20346,1039 @@ pub fn json_stringify(
   serialize_json_value(vm, &mut scope, host, hooks, &mut state, &mut out, root_value)?;
 
   Ok(Value::String(scope.alloc_string_from_u16_vec(out.buf)?))
+}
+
+pub fn map_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("Map constructor requires 'new'"))
+}
+
+pub fn map_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+  scope.push_root(new_target)?;
+
+  let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    new_target,
+    intr.map_prototype(),
+  )?;
+
+  let map = scope.alloc_map_with_prototype(Some(proto))?;
+  scope.push_root(Value::Object(map))?;
+
+  let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(iterable, Value::Undefined | Value::Null) {
+    return Ok(Value::Object(map));
+  }
+
+  // AddEntriesFromIterable (ECMA-262).
+  scope.push_root(iterable)?;
+
+  // adder = Get(map, "set")
+  let set_key = string_key(&mut scope, "set")?;
+  let adder = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, map, set_key, Value::Object(map))?;
+  if !scope.heap().is_callable(adder)? {
+    return Err(VmError::TypeError("Map constructor set method is not callable"));
+  }
+  scope.push_root(adder)?;
+
+  // iteratorRecord = GetIterator(iterable)
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let result: Result<(), VmError> = (|| {
+    let mut i = 0usize;
+    loop {
+      if i % tick::DEFAULT_TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      i = i.saturating_add(1);
+
+      let next_value =
+        crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
+      let Some(next_value) = next_value else {
+        return Ok(());
+      };
+
+      // Use a nested scope so per-entry roots do not accumulate.
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+
+      let Value::Object(entry_obj) = next_value else {
+        return Err(VmError::TypeError("Map constructor: iterator value is not an object"));
+      };
+
+      let zero_key = string_key(&mut step_scope, "0")?;
+      let key = step_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        entry_obj,
+        zero_key,
+        next_value,
+      )?;
+      step_scope.push_root(key)?;
+
+      let one_key = string_key(&mut step_scope, "1")?;
+      let value = step_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        entry_obj,
+        one_key,
+        next_value,
+      )?;
+      step_scope.push_root(value)?;
+
+      let _ = vm.call_with_host_and_hooks(
+        host,
+        &mut step_scope,
+        hooks,
+        adder,
+        Value::Object(map),
+        &[key, value],
+      )?;
+    }
+  })();
+
+  match result {
+    Ok(()) => Ok(Value::Object(map)),
+    Err(err) => {
+      if !iterator_record.done {
+        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
+        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
+        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
+        let original_is_throw = err.is_throw_completion();
+        let pending_root = err
+          .thrown_value()
+          .map(|v| scope.heap_mut().add_root(v))
+          .transpose()?;
+        let close_res = crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          &mut scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        );
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
+        if let Err(close_err) = close_res {
+          // Only propagate close errors for non-catchable failures; otherwise preserve the original
+          // throw completion.
+          if original_is_throw && !close_err.is_throw_completion() {
+            return Err(close_err);
+          }
+        }
+      }
+      Err(err)
+    }
+  }
+}
+
+pub fn set_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("Set constructor requires 'new'"))
+}
+
+pub fn set_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+  scope.push_root(new_target)?;
+
+  let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    new_target,
+    intr.set_prototype(),
+  )?;
+
+  let set = scope.alloc_set_with_prototype(Some(proto))?;
+  scope.push_root(Value::Object(set))?;
+
+  let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(iterable, Value::Undefined | Value::Null) {
+    return Ok(Value::Object(set));
+  }
+
+  // AddEntriesFromIterable (ECMA-262).
+  scope.push_root(iterable)?;
+
+  // adder = Get(set, "add")
+  let add_key = string_key(&mut scope, "add")?;
+  let adder = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, set, add_key, Value::Object(set))?;
+  if !scope.heap().is_callable(adder)? {
+    return Err(VmError::TypeError("Set constructor add method is not callable"));
+  }
+  scope.push_root(adder)?;
+
+  // iteratorRecord = GetIterator(iterable)
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let result: Result<(), VmError> = (|| {
+    let mut i = 0usize;
+    loop {
+      if i % tick::DEFAULT_TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      i = i.saturating_add(1);
+
+      let next_value =
+        crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
+      let Some(next_value) = next_value else {
+        return Ok(());
+      };
+
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+      let _ =
+        vm.call_with_host_and_hooks(host, &mut step_scope, hooks, adder, Value::Object(set), &[next_value])?;
+    }
+  })();
+
+  match result {
+    Ok(()) => Ok(Value::Object(set)),
+    Err(err) => {
+      if !iterator_record.done {
+        // Per ECMA-262 `IteratorClose`, if the original completion is a *throw completion*, errors
+        // produced while getting/calling `iterator.return` are suppressed. However, vm-js also has
+        // non-catchable VM failures (termination, OOM, etc) which must never be suppressed.
+        let original_is_throw = err.is_throw_completion();
+        let pending_root = err
+          .thrown_value()
+          .map(|v| scope.heap_mut().add_root(v))
+          .transpose()?;
+        let close_res = crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          &mut scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::Throw,
+        );
+        if let Some(root) = pending_root {
+          scope.heap_mut().remove_root(root);
+        }
+        if let Err(close_err) = close_res {
+          // Only propagate close errors for non-catchable failures; otherwise preserve the original
+          // throw completion.
+          if original_is_throw && !close_err.is_throw_completion() {
+            return Err(close_err);
+          }
+        }
+      }
+      Err(err)
+    }
+  }
+}
+
+#[derive(Clone, Copy)]
+enum MapIteratorKind {
+  Keys = 0,
+  Values = 1,
+  Entries = 2,
+}
+
+#[derive(Clone, Copy)]
+enum SetIteratorKind {
+  Values = 1,
+  Entries = 2,
+}
+
+fn create_map_iterator_with_kind(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  this: Value,
+  kind: MapIteratorKind,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let map_obj = match this {
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("Map iterator called on non-object")),
+  };
+  if !scope.heap().is_map_object(map_obj) {
+    return Err(VmError::TypeError("Map iterator called on incompatible receiver"));
+  }
+
+  // Root the iterated map across allocations for the iterator object + internal slots.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(map_obj))?;
+
+  let iter = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(iter, Some(intr.map_iterator_prototype()))?;
+
+  let map_key = internal_symbol_key(&mut scope, MAP_ITERATOR_MAP_MARKER)?;
+  scope.define_property(iter, map_key, data_desc(Value::Object(map_obj), true, false, true))?;
+  let index_key = internal_symbol_key(&mut scope, MAP_ITERATOR_INDEX_MARKER)?;
+  scope.define_property(iter, index_key, data_desc(Value::Number(0.0), true, false, true))?;
+  let kind_key = internal_symbol_key(&mut scope, MAP_ITERATOR_KIND_MARKER)?;
+  scope.define_property(
+    iter,
+    kind_key,
+    data_desc(Value::Number(kind as u8 as f64), true, false, true),
+  )?;
+
+  Ok(Value::Object(iter))
+}
+
+fn create_set_iterator_with_kind(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  this: Value,
+  kind: SetIteratorKind,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let set_obj = match this {
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("Set iterator called on non-object")),
+  };
+  if !scope.heap().is_set_object(set_obj) {
+    return Err(VmError::TypeError("Set iterator called on incompatible receiver"));
+  }
+
+  // Root the iterated set across allocations for the iterator object + internal slots.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(set_obj))?;
+
+  let iter = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(iter, Some(intr.set_iterator_prototype()))?;
+
+  let set_key = internal_symbol_key(&mut scope, SET_ITERATOR_SET_MARKER)?;
+  scope.define_property(iter, set_key, data_desc(Value::Object(set_obj), true, false, true))?;
+  let index_key = internal_symbol_key(&mut scope, SET_ITERATOR_INDEX_MARKER)?;
+  scope.define_property(iter, index_key, data_desc(Value::Number(0.0), true, false, true))?;
+  let kind_key = internal_symbol_key(&mut scope, SET_ITERATOR_KIND_MARKER)?;
+  scope.define_property(
+    iter,
+    kind_key,
+    data_desc(Value::Number(kind as u8 as f64), true, false, true),
+  )?;
+
+  Ok(Value::Object(iter))
+}
+
+pub fn map_prototype_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("Map.prototype.get called on non-object"));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.get called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  Ok(scope
+    .heap()
+    .map_get_with_tick(map, key, || vm.tick())?
+    .unwrap_or(Value::Undefined))
+}
+
+pub fn map_prototype_set(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("Map.prototype.set called on non-object"));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.set called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope
+    .heap_mut()
+    .map_set_with_tick(map, key, value, || vm.tick())?;
+  Ok(Value::Object(map))
+}
+
+pub fn map_prototype_has(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("Map.prototype.has called on non-object"));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.has called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  Ok(Value::Bool(scope.heap().map_has_with_tick(map, key, || vm.tick())?))
+}
+
+pub fn map_prototype_delete(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("Map.prototype.delete called on non-object"));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.delete called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  Ok(Value::Bool(
+    scope.heap_mut().map_delete_with_tick(map, key, || vm.tick())?,
+  ))
+}
+
+pub fn map_prototype_clear(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("Map.prototype.clear called on non-object"));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.clear called on incompatible receiver",
+    ));
+  }
+
+  scope.heap_mut().map_clear_with_tick(map, || vm.tick())?;
+  Ok(Value::Undefined)
+}
+
+pub fn map_prototype_for_each(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("Map.prototype.forEach called on non-object"));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.forEach called on incompatible receiver",
+    ));
+  }
+  scope.push_root(Value::Object(map))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Map.prototype.forEach callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let mut idx = 0usize;
+  loop {
+    if idx % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let len = scope.heap().map_entries_len(map)?;
+    if idx >= len {
+      break;
+    }
+
+    let entry = scope.heap().map_entry_at(map, idx)?;
+    idx = idx.saturating_add(1);
+    let Some((key, value)) = entry else {
+      continue;
+    };
+
+    let args = [value, key, Value::Object(map)];
+    let mut call_scope = scope.reborrow();
+    let _ = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, callback, this_arg, &args)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+pub fn map_prototype_keys(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  create_map_iterator_with_kind(vm, scope, host, hooks, this, MapIteratorKind::Keys)
+}
+
+pub fn map_prototype_values(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  create_map_iterator_with_kind(vm, scope, host, hooks, this, MapIteratorKind::Values)
+}
+
+pub fn map_prototype_entries(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  create_map_iterator_with_kind(vm, scope, host, hooks, this, MapIteratorKind::Entries)
+}
+
+pub fn map_prototype_size_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("Map.prototype.size called on non-object"));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.size called on incompatible receiver",
+    ));
+  }
+  let size = scope.heap().map_size(map)?;
+  Ok(Value::Number(size as f64))
+}
+
+pub fn set_prototype_add(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.add called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.add called on incompatible receiver",
+    ));
+  }
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.heap_mut().set_add_with_tick(set, value, || vm.tick())?;
+  Ok(Value::Object(set))
+}
+
+pub fn set_prototype_has(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.has called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.has called on incompatible receiver",
+    ));
+  }
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  Ok(Value::Bool(scope.heap().set_has_with_tick(set, value, || vm.tick())?))
+}
+
+pub fn set_prototype_delete(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.delete called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.delete called on incompatible receiver",
+    ));
+  }
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  Ok(Value::Bool(
+    scope.heap_mut().set_delete_with_tick(set, value, || vm.tick())?,
+  ))
+}
+
+pub fn set_prototype_clear(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.clear called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.clear called on incompatible receiver",
+    ));
+  }
+  scope.heap_mut().set_clear_with_tick(set, || vm.tick())?;
+  Ok(Value::Undefined)
+}
+
+pub fn set_prototype_for_each(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.forEach called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.forEach called on incompatible receiver",
+    ));
+  }
+  scope.push_root(Value::Object(set))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Set.prototype.forEach callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let mut idx = 0usize;
+  loop {
+    if idx % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let len = scope.heap().set_entries_len(set)?;
+    if idx >= len {
+      break;
+    }
+
+    let entry = scope.heap().set_entry_at(set, idx)?;
+    idx = idx.saturating_add(1);
+    let Some(value) = entry else {
+      continue;
+    };
+
+    // Set forEach callback receives (value, value, set).
+    let args = [value, value, Value::Object(set)];
+    let mut call_scope = scope.reborrow();
+    let _ = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, callback, this_arg, &args)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+pub fn set_prototype_values(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  create_set_iterator_with_kind(vm, scope, host, hooks, this, SetIteratorKind::Values)
+}
+
+pub fn set_prototype_entries(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  create_set_iterator_with_kind(vm, scope, host, hooks, this, SetIteratorKind::Entries)
+}
+
+pub fn set_prototype_size_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let scope = scope.reborrow();
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.size called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.size called on incompatible receiver",
+    ));
+  }
+  let size = scope.heap().set_size(set)?;
+  Ok(Value::Number(size as f64))
+}
+
+pub fn map_iterator_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let this_obj = match this {
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("Map iterator next called on non-object")),
+  };
+
+  // Root `this` across allocations performed while advancing the iterator.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let map_key = internal_symbol_key(&mut scope, MAP_ITERATOR_MAP_MARKER)?;
+  let map_value = match get_data_property_value(vm, &mut scope, this_obj, &map_key) {
+    Ok(Some(v)) => v,
+    Ok(None) => return Err(VmError::TypeError("Map iterator missing internal map")),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Map iterator internal map is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
+
+  let map_obj = match map_value {
+    Value::Undefined => {
+      let out = iterator_result_object(&mut scope, intr.object_prototype(), Value::Undefined, true)?;
+      return Ok(Value::Object(out));
+    }
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("Map iterator internal map is not an object")),
+  };
+  if !scope.heap().is_map_object(map_obj) {
+    return Err(VmError::TypeError("Map iterator internal map is not a Map"));
+  }
+  scope.push_root(Value::Object(map_obj))?;
+
+  let index_key = internal_symbol_key(&mut scope, MAP_ITERATOR_INDEX_MARKER)?;
+  let index_value = match get_data_property_value(vm, &mut scope, this_obj, &index_key) {
+    Ok(v) => v.unwrap_or(Value::Number(0.0)),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Map iterator internal index is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
+  let mut idx = match index_value {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0usize,
+  };
+
+  let kind_key = internal_symbol_key(&mut scope, MAP_ITERATOR_KIND_MARKER)?;
+  let kind_value = match get_data_property_value(vm, &mut scope, this_obj, &kind_key) {
+    Ok(v) => v.unwrap_or(Value::Number(MapIteratorKind::Entries as u8 as f64)),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Map iterator internal kind is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
+  let kind = match kind_value {
+    Value::Number(n) if n.is_finite() && n.fract() == 0.0 => match n as u8 {
+      0 => MapIteratorKind::Keys,
+      1 => MapIteratorKind::Values,
+      2 => MapIteratorKind::Entries,
+      _ => return Err(VmError::TypeError("Map iterator internal kind is invalid")),
+    },
+    _ => return Err(VmError::TypeError("Map iterator internal kind is not a number")),
+  };
+
+  let mut scanned = 0usize;
+  loop {
+    if scanned % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    scanned = scanned.saturating_add(1);
+
+    let len = scope.heap().map_entries_len(map_obj)?;
+    if idx >= len {
+      // End-of-iteration: clear `[[Map]]` so the underlying map can be collected if this iterator
+      // is retained.
+      scope.define_property(this_obj, map_key, data_desc(Value::Undefined, true, false, true))?;
+      let out = iterator_result_object(&mut scope, intr.object_prototype(), Value::Undefined, true)?;
+      return Ok(Value::Object(out));
+    }
+
+    let entry = scope.heap().map_entry_at(map_obj, idx)?;
+    idx = idx.saturating_add(1);
+    scope.define_property(this_obj, index_key, data_desc(Value::Number(idx as f64), true, false, true))?;
+
+    let Some((key, value)) = entry else {
+      continue;
+    };
+
+    let out_value = match kind {
+      MapIteratorKind::Keys => key,
+      MapIteratorKind::Values => value,
+      MapIteratorKind::Entries => {
+        let entry_arr = scope.alloc_array(0)?;
+        scope.push_root(Value::Object(entry_arr))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(entry_arr, Some(intr.array_prototype()))?;
+        let key0 = string_key(&mut scope, "0")?;
+        scope.create_data_property_or_throw(entry_arr, key0, key)?;
+        let key1 = string_key(&mut scope, "1")?;
+        scope.create_data_property_or_throw(entry_arr, key1, value)?;
+        Value::Object(entry_arr)
+      }
+    };
+
+    let out = iterator_result_object(&mut scope, intr.object_prototype(), out_value, false)?;
+    return Ok(Value::Object(out));
+  }
+}
+
+pub fn set_iterator_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let this_obj = match this {
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("Set iterator next called on non-object")),
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let set_key = internal_symbol_key(&mut scope, SET_ITERATOR_SET_MARKER)?;
+  let set_value = match get_data_property_value(vm, &mut scope, this_obj, &set_key) {
+    Ok(Some(v)) => v,
+    Ok(None) => return Err(VmError::TypeError("Set iterator missing internal set")),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Set iterator internal set is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
+
+  let set_obj = match set_value {
+    Value::Undefined => {
+      let out = iterator_result_object(&mut scope, intr.object_prototype(), Value::Undefined, true)?;
+      return Ok(Value::Object(out));
+    }
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("Set iterator internal set is not an object")),
+  };
+  if !scope.heap().is_set_object(set_obj) {
+    return Err(VmError::TypeError("Set iterator internal set is not a Set"));
+  }
+  scope.push_root(Value::Object(set_obj))?;
+
+  let index_key = internal_symbol_key(&mut scope, SET_ITERATOR_INDEX_MARKER)?;
+  let index_value = match get_data_property_value(vm, &mut scope, this_obj, &index_key) {
+    Ok(v) => v.unwrap_or(Value::Number(0.0)),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Set iterator internal index is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
+  let mut idx = match index_value {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0usize,
+  };
+
+  let kind_key = internal_symbol_key(&mut scope, SET_ITERATOR_KIND_MARKER)?;
+  let kind_value = match get_data_property_value(vm, &mut scope, this_obj, &kind_key) {
+    Ok(v) => v.unwrap_or(Value::Number(SetIteratorKind::Values as u8 as f64)),
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "Set iterator internal kind is not a data property",
+      ));
+    }
+    Err(err) => return Err(err),
+  };
+  let kind = match kind_value {
+    Value::Number(n) if n.is_finite() && n.fract() == 0.0 => match n as u8 {
+      1 => SetIteratorKind::Values,
+      2 => SetIteratorKind::Entries,
+      _ => return Err(VmError::TypeError("Set iterator internal kind is invalid")),
+    },
+    _ => return Err(VmError::TypeError("Set iterator internal kind is not a number")),
+  };
+
+  let mut scanned = 0usize;
+  loop {
+    if scanned % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    scanned = scanned.saturating_add(1);
+
+    let len = scope.heap().set_entries_len(set_obj)?;
+    if idx >= len {
+      scope.define_property(this_obj, set_key, data_desc(Value::Undefined, true, false, true))?;
+      let out = iterator_result_object(&mut scope, intr.object_prototype(), Value::Undefined, true)?;
+      return Ok(Value::Object(out));
+    }
+
+    let entry = scope.heap().set_entry_at(set_obj, idx)?;
+    idx = idx.saturating_add(1);
+    scope.define_property(this_obj, index_key, data_desc(Value::Number(idx as f64), true, false, true))?;
+
+    let Some(value) = entry else {
+      continue;
+    };
+
+    let out_value = match kind {
+      SetIteratorKind::Values => value,
+      SetIteratorKind::Entries => {
+        let entry_arr = scope.alloc_array(0)?;
+        scope.push_root(Value::Object(entry_arr))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(entry_arr, Some(intr.array_prototype()))?;
+        let key0 = string_key(&mut scope, "0")?;
+        scope.create_data_property_or_throw(entry_arr, key0, value)?;
+        let key1 = string_key(&mut scope, "1")?;
+        scope.create_data_property_or_throw(entry_arr, key1, value)?;
+        Value::Object(entry_arr)
+      }
+    };
+
+    let out = iterator_result_object(&mut scope, intr.object_prototype(), out_value, false)?;
+    return Ok(Value::Object(out));
+  }
 }
 
 pub fn weak_map_constructor_call(

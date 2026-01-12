@@ -40,6 +40,8 @@ pub struct Intrinsics {
   array_prototype: GcObject,
   string_iterator_prototype: GcObject,
   array_iterator_next: GcObject,
+  map_iterator_prototype: GcObject,
+  set_iterator_prototype: GcObject,
   string_prototype: GcObject,
   regexp_prototype: GcObject,
   number_prototype: GcObject,
@@ -58,6 +60,8 @@ pub struct Intrinsics {
   float32_array_prototype: GcObject,
   float64_array_prototype: GcObject,
   data_view_prototype: GcObject,
+  map_prototype: GcObject,
+  set_prototype: GcObject,
   weak_map_prototype: GcObject,
   weak_set_prototype: GcObject,
   object_constructor: GcObject,
@@ -83,6 +87,8 @@ pub struct Intrinsics {
   float32_array: GcObject,
   float64_array: GcObject,
   data_view: GcObject,
+  map: GcObject,
+  set: GcObject,
   weak_map: GcObject,
   weak_set: GcObject,
   is_nan: GcObject,
@@ -640,6 +646,18 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(string_iterator_prototype, Some(iterator_prototype))?;
+
+    // `%MapIteratorPrototype%`
+    let map_iterator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(map_iterator_prototype, Some(iterator_prototype))?;
+
+    // `%SetIteratorPrototype%`
+    let set_iterator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(set_iterator_prototype, Some(iterator_prototype))?;
     let array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
@@ -740,10 +758,17 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(data_view_prototype, Some(object_prototype))?;
 
-    // `%WeakMap.prototype%` / `%WeakSet.prototype%` (minimal).
+    // `%Map.prototype%` / `%Set.prototype%` / `%WeakMap.prototype%` / `%WeakSet.prototype%` (minimal).
     //
-    // These prototypes are currently used for `Object.prototype.toString` tagging via
-    // `@@toStringTag`.
+    // These prototypes are used for `Object.prototype.toString` tagging via `@@toStringTag`.
+    let map_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(map_prototype, Some(object_prototype))?;
+    let set_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(set_prototype, Some(object_prototype))?;
     let weak_map_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
@@ -813,6 +838,8 @@ impl Intrinsics {
       "Float64Array",
     )?;
     install_to_string_tag(scope, data_view_prototype, well_known_symbols.to_string_tag, "DataView")?;
+    install_to_string_tag(scope, map_prototype, well_known_symbols.to_string_tag, "Map")?;
+    install_to_string_tag(scope, set_prototype, well_known_symbols.to_string_tag, "Set")?;
     install_to_string_tag(scope, weak_map_prototype, well_known_symbols.to_string_tag, "WeakMap")?;
     install_to_string_tag(scope, weak_set_prototype, well_known_symbols.to_string_tag, "WeakSet")?;
 
@@ -4522,6 +4549,481 @@ impl Intrinsics {
       data_desc(Value::Object(data_view), true, false, true),
     )?;
 
+    // `%Map%`
+    let map_call = vm.register_native_call(builtins::map_constructor_call)?;
+    let map_construct = vm.register_native_construct(builtins::map_constructor_construct)?;
+    let map_name = scope.alloc_string("Map")?;
+    let map = alloc_rooted_native_function(
+      scope,
+      roots,
+      map_call,
+      Some(map_construct),
+      map_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(map, Some(function_prototype))?;
+    scope.define_property(
+      map,
+      common.prototype,
+      data_desc(Value::Object(map_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      map,
+      common.name,
+      data_desc(Value::String(map_name), false, false, true),
+    )?;
+    scope.define_property(
+      map,
+      common.length,
+      data_desc(Value::Number(0.0), false, false, true),
+    )?;
+    scope.define_property(
+      map_prototype,
+      common.constructor,
+      data_desc(Value::Object(map), true, false, true),
+    )?;
+
+    // Map[@@species]
+    {
+      let species_call = vm.register_native_call(builtins::promise_species_get)?;
+      let species_name = scope.alloc_string("get [Symbol.species]")?;
+      let species_getter =
+        alloc_rooted_native_function(scope, roots, species_call, None, species_name, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(species_getter, Some(function_prototype))?;
+      scope.define_property(
+        map,
+        PropertyKey::Symbol(well_known_symbols.species),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(species_getter),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // `%MapIteratorPrototype%.next`
+    {
+      let next_call = vm.register_native_call(builtins::map_iterator_next)?;
+      let next_name = scope.alloc_string("next")?;
+      let next = alloc_rooted_native_function(scope, roots, next_call, None, next_name, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(next, Some(function_prototype))?;
+      scope.define_property(
+        map_iterator_prototype,
+        PropertyKey::from_string(next_name),
+        data_desc(Value::Object(next), true, false, true),
+      )?;
+      install_to_string_tag(
+        scope,
+        map_iterator_prototype,
+        well_known_symbols.to_string_tag,
+        "Map Iterator",
+      )?;
+    }
+
+    // Map.prototype.get / set / has / delete / clear / forEach / keys / values / entries / size
+    {
+      let get_call = vm.register_native_call(builtins::map_prototype_get)?;
+      let get_s = scope.alloc_string("get")?;
+      scope.push_root(Value::String(get_s))?;
+      let get_key = PropertyKey::from_string(get_s);
+      let get_fn = scope.alloc_native_function(get_call, None, get_s, 1)?;
+      scope.push_root(Value::Object(get_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        get_key,
+        data_desc(Value::Object(get_fn), true, false, true),
+      )?;
+
+      let set_call = vm.register_native_call(builtins::map_prototype_set)?;
+      let set_s = scope.alloc_string("set")?;
+      scope.push_root(Value::String(set_s))?;
+      let set_key = PropertyKey::from_string(set_s);
+      let set_fn = scope.alloc_native_function(set_call, None, set_s, 2)?;
+      scope.push_root(Value::Object(set_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(set_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        set_key,
+        data_desc(Value::Object(set_fn), true, false, true),
+      )?;
+
+      let has_call = vm.register_native_call(builtins::map_prototype_has)?;
+      let has_s = scope.alloc_string("has")?;
+      scope.push_root(Value::String(has_s))?;
+      let has_key = PropertyKey::from_string(has_s);
+      let has_fn = scope.alloc_native_function(has_call, None, has_s, 1)?;
+      scope.push_root(Value::Object(has_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(has_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        has_key,
+        data_desc(Value::Object(has_fn), true, false, true),
+      )?;
+
+      let delete_call = vm.register_native_call(builtins::map_prototype_delete)?;
+      let delete_s = scope.alloc_string("delete")?;
+      scope.push_root(Value::String(delete_s))?;
+      let delete_key = PropertyKey::from_string(delete_s);
+      let delete_fn = scope.alloc_native_function(delete_call, None, delete_s, 1)?;
+      scope.push_root(Value::Object(delete_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(delete_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        delete_key,
+        data_desc(Value::Object(delete_fn), true, false, true),
+      )?;
+
+      let clear_call = vm.register_native_call(builtins::map_prototype_clear)?;
+      let clear_s = scope.alloc_string("clear")?;
+      scope.push_root(Value::String(clear_s))?;
+      let clear_key = PropertyKey::from_string(clear_s);
+      let clear_fn = scope.alloc_native_function(clear_call, None, clear_s, 0)?;
+      scope.push_root(Value::Object(clear_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(clear_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        clear_key,
+        data_desc(Value::Object(clear_fn), true, false, true),
+      )?;
+
+      let for_each_call = vm.register_native_call(builtins::map_prototype_for_each)?;
+      let for_each_s = scope.alloc_string("forEach")?;
+      scope.push_root(Value::String(for_each_s))?;
+      let for_each_key = PropertyKey::from_string(for_each_s);
+      let for_each_fn = scope.alloc_native_function(for_each_call, None, for_each_s, 1)?;
+      scope.push_root(Value::Object(for_each_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(for_each_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        for_each_key,
+        data_desc(Value::Object(for_each_fn), true, false, true),
+      )?;
+
+      // Create iterator methods first so `@@iterator` can alias `entries` with the same function
+      // object.
+      let keys_call = vm.register_native_call(builtins::map_prototype_keys)?;
+      let keys_s = scope.alloc_string("keys")?;
+      scope.push_root(Value::String(keys_s))?;
+      let keys_key = PropertyKey::from_string(keys_s);
+      let keys_fn = scope.alloc_native_function(keys_call, None, keys_s, 0)?;
+      scope.push_root(Value::Object(keys_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(keys_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        keys_key,
+        data_desc(Value::Object(keys_fn), true, false, true),
+      )?;
+
+      let values_call = vm.register_native_call(builtins::map_prototype_values)?;
+      let values_s = scope.alloc_string("values")?;
+      scope.push_root(Value::String(values_s))?;
+      let values_key = PropertyKey::from_string(values_s);
+      let values_fn = scope.alloc_native_function(values_call, None, values_s, 0)?;
+      scope.push_root(Value::Object(values_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(values_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        values_key,
+        data_desc(Value::Object(values_fn), true, false, true),
+      )?;
+
+      let entries_call = vm.register_native_call(builtins::map_prototype_entries)?;
+      let entries_s = scope.alloc_string("entries")?;
+      scope.push_root(Value::String(entries_s))?;
+      let entries_key = PropertyKey::from_string(entries_s);
+      let entries_fn = scope.alloc_native_function(entries_call, None, entries_s, 0)?;
+      scope.push_root(Value::Object(entries_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(entries_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        entries_key,
+        data_desc(Value::Object(entries_fn), true, false, true),
+      )?;
+      scope.define_property(
+        map_prototype,
+        PropertyKey::Symbol(well_known_symbols.iterator),
+        data_desc(Value::Object(entries_fn), true, false, true),
+      )?;
+
+      let size_get_call = vm.register_native_call(builtins::map_prototype_size_get)?;
+      let size_get_name = scope.alloc_string("get size")?;
+      let size_get = scope.alloc_native_function(size_get_call, None, size_get_name, 0)?;
+      scope.push_root(Value::Object(size_get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(size_get, Some(function_prototype))?;
+      let size_key_s = scope.alloc_string("size")?;
+      scope.push_root(Value::String(size_key_s))?;
+      let size_key = PropertyKey::from_string(size_key_s);
+      scope.define_property(
+        map_prototype,
+        size_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(size_get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // `%Set%`
+    let set_call = vm.register_native_call(builtins::set_constructor_call)?;
+    let set_construct = vm.register_native_construct(builtins::set_constructor_construct)?;
+    let set_name = scope.alloc_string("Set")?;
+    let set = alloc_rooted_native_function(
+      scope,
+      roots,
+      set_call,
+      Some(set_construct),
+      set_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(set, Some(function_prototype))?;
+    scope.define_property(
+      set,
+      common.prototype,
+      data_desc(Value::Object(set_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      set,
+      common.name,
+      data_desc(Value::String(set_name), false, false, true),
+    )?;
+    scope.define_property(
+      set,
+      common.length,
+      data_desc(Value::Number(0.0), false, false, true),
+    )?;
+    scope.define_property(
+      set_prototype,
+      common.constructor,
+      data_desc(Value::Object(set), true, false, true),
+    )?;
+
+    // Set[@@species]
+    {
+      let species_call = vm.register_native_call(builtins::promise_species_get)?;
+      let species_name = scope.alloc_string("get [Symbol.species]")?;
+      let species_getter =
+        alloc_rooted_native_function(scope, roots, species_call, None, species_name, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(species_getter, Some(function_prototype))?;
+      scope.define_property(
+        set,
+        PropertyKey::Symbol(well_known_symbols.species),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(species_getter),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // `%SetIteratorPrototype%.next`
+    {
+      let next_call = vm.register_native_call(builtins::set_iterator_next)?;
+      let next_name = scope.alloc_string("next")?;
+      let next = alloc_rooted_native_function(scope, roots, next_call, None, next_name, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(next, Some(function_prototype))?;
+      scope.define_property(
+        set_iterator_prototype,
+        PropertyKey::from_string(next_name),
+        data_desc(Value::Object(next), true, false, true),
+      )?;
+      install_to_string_tag(
+        scope,
+        set_iterator_prototype,
+        well_known_symbols.to_string_tag,
+        "Set Iterator",
+      )?;
+    }
+
+    // Set.prototype.add / has / delete / clear / forEach / keys / values / entries / size
+    {
+      let add_call = vm.register_native_call(builtins::set_prototype_add)?;
+      let add_s = scope.alloc_string("add")?;
+      scope.push_root(Value::String(add_s))?;
+      let add_key = PropertyKey::from_string(add_s);
+      let add_fn = scope.alloc_native_function(add_call, None, add_s, 1)?;
+      scope.push_root(Value::Object(add_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(add_fn, Some(function_prototype))?;
+      scope.define_property(
+        set_prototype,
+        add_key,
+        data_desc(Value::Object(add_fn), true, false, true),
+      )?;
+
+      let has_call = vm.register_native_call(builtins::set_prototype_has)?;
+      let has_s = scope.alloc_string("has")?;
+      scope.push_root(Value::String(has_s))?;
+      let has_key = PropertyKey::from_string(has_s);
+      let has_fn = scope.alloc_native_function(has_call, None, has_s, 1)?;
+      scope.push_root(Value::Object(has_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(has_fn, Some(function_prototype))?;
+      scope.define_property(
+        set_prototype,
+        has_key,
+        data_desc(Value::Object(has_fn), true, false, true),
+      )?;
+
+      let delete_call = vm.register_native_call(builtins::set_prototype_delete)?;
+      let delete_s = scope.alloc_string("delete")?;
+      scope.push_root(Value::String(delete_s))?;
+      let delete_key = PropertyKey::from_string(delete_s);
+      let delete_fn = scope.alloc_native_function(delete_call, None, delete_s, 1)?;
+      scope.push_root(Value::Object(delete_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(delete_fn, Some(function_prototype))?;
+      scope.define_property(
+        set_prototype,
+        delete_key,
+        data_desc(Value::Object(delete_fn), true, false, true),
+      )?;
+
+      let clear_call = vm.register_native_call(builtins::set_prototype_clear)?;
+      let clear_s = scope.alloc_string("clear")?;
+      scope.push_root(Value::String(clear_s))?;
+      let clear_key = PropertyKey::from_string(clear_s);
+      let clear_fn = scope.alloc_native_function(clear_call, None, clear_s, 0)?;
+      scope.push_root(Value::Object(clear_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(clear_fn, Some(function_prototype))?;
+      scope.define_property(
+        set_prototype,
+        clear_key,
+        data_desc(Value::Object(clear_fn), true, false, true),
+      )?;
+
+      let for_each_call = vm.register_native_call(builtins::set_prototype_for_each)?;
+      let for_each_s = scope.alloc_string("forEach")?;
+      scope.push_root(Value::String(for_each_s))?;
+      let for_each_key = PropertyKey::from_string(for_each_s);
+      let for_each_fn = scope.alloc_native_function(for_each_call, None, for_each_s, 1)?;
+      scope.push_root(Value::Object(for_each_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(for_each_fn, Some(function_prototype))?;
+      scope.define_property(
+        set_prototype,
+        for_each_key,
+        data_desc(Value::Object(for_each_fn), true, false, true),
+      )?;
+
+      let values_call = vm.register_native_call(builtins::set_prototype_values)?;
+      let values_s = scope.alloc_string("values")?;
+      scope.push_root(Value::String(values_s))?;
+      let values_key = PropertyKey::from_string(values_s);
+      let values_fn = scope.alloc_native_function(values_call, None, values_s, 0)?;
+      scope.push_root(Value::Object(values_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(values_fn, Some(function_prototype))?;
+      scope.define_property(
+        set_prototype,
+        values_key,
+        data_desc(Value::Object(values_fn), true, false, true),
+      )?;
+
+      // Per ECMA-262, Set.prototype.keys is an alias of Set.prototype.values (same function object).
+      let keys_s = scope.alloc_string("keys")?;
+      scope.push_root(Value::String(keys_s))?;
+      let keys_key = PropertyKey::from_string(keys_s);
+      scope.define_property(
+        set_prototype,
+        keys_key,
+        data_desc(Value::Object(values_fn), true, false, true),
+      )?;
+
+      let entries_call = vm.register_native_call(builtins::set_prototype_entries)?;
+      let entries_s = scope.alloc_string("entries")?;
+      scope.push_root(Value::String(entries_s))?;
+      let entries_key = PropertyKey::from_string(entries_s);
+      let entries_fn = scope.alloc_native_function(entries_call, None, entries_s, 0)?;
+      scope.push_root(Value::Object(entries_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(entries_fn, Some(function_prototype))?;
+      scope.define_property(
+        set_prototype,
+        entries_key,
+        data_desc(Value::Object(entries_fn), true, false, true),
+      )?;
+
+      scope.define_property(
+        set_prototype,
+        PropertyKey::Symbol(well_known_symbols.iterator),
+        data_desc(Value::Object(values_fn), true, false, true),
+      )?;
+
+      let size_get_call = vm.register_native_call(builtins::set_prototype_size_get)?;
+      let size_get_name = scope.alloc_string("get size")?;
+      let size_get = scope.alloc_native_function(size_get_call, None, size_get_name, 0)?;
+      scope.push_root(Value::Object(size_get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(size_get, Some(function_prototype))?;
+      let size_key_s = scope.alloc_string("size")?;
+      scope.push_root(Value::String(size_key_s))?;
+      let size_key = PropertyKey::from_string(size_key_s);
+      scope.define_property(
+        set_prototype,
+        size_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(size_get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
     // `%WeakMap%`
     let weak_map_call = vm.register_native_call(builtins::weak_map_constructor_call)?;
     let weak_map_construct = vm.register_native_construct(builtins::weak_map_constructor_construct)?;
@@ -5600,6 +6102,8 @@ impl Intrinsics {
       array_prototype,
       string_iterator_prototype,
       array_iterator_next,
+      map_iterator_prototype,
+      set_iterator_prototype,
       string_prototype,
       regexp_prototype,
       number_prototype,
@@ -5618,6 +6122,8 @@ impl Intrinsics {
       float32_array_prototype,
       float64_array_prototype,
       data_view_prototype,
+      map_prototype,
+      set_prototype,
       weak_map_prototype,
       weak_set_prototype,
       object_constructor,
@@ -5643,6 +6149,8 @@ impl Intrinsics {
       float32_array,
       float64_array,
       data_view,
+      map,
+      set,
       weak_map,
       weak_set,
       is_nan,
@@ -5730,6 +6238,14 @@ impl Intrinsics {
     self.string_iterator_prototype
   }
 
+  pub(crate) fn map_iterator_prototype(&self) -> GcObject {
+    self.map_iterator_prototype
+  }
+
+  pub(crate) fn set_iterator_prototype(&self) -> GcObject {
+    self.set_iterator_prototype
+  }
+
   pub fn string_prototype(&self) -> GcObject {
     self.string_prototype
   }
@@ -5800,6 +6316,14 @@ impl Intrinsics {
 
   pub fn data_view_prototype(&self) -> GcObject {
     self.data_view_prototype
+  }
+
+  pub fn map_prototype(&self) -> GcObject {
+    self.map_prototype
+  }
+
+  pub fn set_prototype(&self) -> GcObject {
+    self.set_prototype
   }
 
   pub fn weak_map_prototype(&self) -> GcObject {
@@ -5900,6 +6424,14 @@ impl Intrinsics {
 
   pub fn data_view(&self) -> GcObject {
     self.data_view
+  }
+
+  pub fn map(&self) -> GcObject {
+    self.map
+  }
+
+  pub fn set(&self) -> GcObject {
+    self.set
   }
 
   pub fn weak_map(&self) -> GcObject {

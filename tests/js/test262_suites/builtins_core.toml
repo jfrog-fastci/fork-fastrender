@@ -1,4 +1,4 @@
-# Curated suite: core built-ins (Object/Array/String/Number/Boolean/Symbol).
+# Curated suite: core built-ins (Object/Array/String/Number/Boolean/Symbol/Map/Set).
 #
 # This suite avoids extremely large method directories (e.g. `Object/defineProperty`,
 # `Array/prototype/**`) until budgets are proven. It still provides meaningful signal for
@@ -73,6 +73,10 @@ include = [
 
   # Symbol
   "built-ins/Symbol/**/*.js",
+
+  # Map / Set
+  "built-ins/Map/**/*.js",
+  "built-ins/Set/**/*.js",
 ]
 
 exclude = [

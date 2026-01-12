@@ -153,6 +153,8 @@ include = [
   "built-ins/Number/NEGATIVE_INFINITY/**/*.js",
   "built-ins/Boolean/**/*.js",
   "built-ins/Symbol/**/*.js",
+  "built-ins/Map/**/*.js",
+  "built-ins/Set/**/*.js",
   "built-ins/JSON/**/*.js",
   "built-ins/Math/**/*.js",
   "built-ins/Function/prototype/apply/**/*.js",

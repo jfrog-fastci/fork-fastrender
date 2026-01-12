@@ -750,6 +750,67 @@ glob = "built-ins/Symbol/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
 
+# --- Map / Set (core built-ins, partially implemented) ---
+[[expectations]]
+glob = "built-ins/Map/groupBy/**"
+status = "xfail"
+reason = "vm-js: Map.groupBy is not implemented."
+
+[[expectations]]
+glob = "built-ins/Map/prototype/getOrInsert/**"
+status = "xfail"
+reason = "vm-js: Map.prototype.getOrInsert is not implemented."
+
+[[expectations]]
+glob = "built-ins/Map/prototype/getOrInsertComputed/**"
+status = "xfail"
+reason = "vm-js: Map.prototype.getOrInsertComputed is not implemented."
+
+[[expectations]]
+id = "built-ins/Map/valid-keys.js"
+status = "xfail"
+reason = "vm-js: language operator support is incomplete (test uses an unimplemented binary operator)."
+
+[[expectations]]
+glob = "built-ins/Set/prototype/union/**"
+status = "xfail"
+reason = "vm-js: Set.prototype.union is not implemented."
+
+[[expectations]]
+glob = "built-ins/Set/prototype/difference/**"
+status = "xfail"
+reason = "vm-js: Set.prototype.difference is not implemented."
+
+[[expectations]]
+glob = "built-ins/Set/prototype/intersection/**"
+status = "xfail"
+reason = "vm-js: Set.prototype.intersection is not implemented."
+
+[[expectations]]
+glob = "built-ins/Set/prototype/symmetricDifference/**"
+status = "xfail"
+reason = "vm-js: Set.prototype.symmetricDifference is not implemented."
+
+[[expectations]]
+glob = "built-ins/Set/prototype/isDisjointFrom/**"
+status = "xfail"
+reason = "vm-js: Set.prototype.isDisjointFrom is not implemented."
+
+[[expectations]]
+glob = "built-ins/Set/prototype/isSupersetOf/**"
+status = "xfail"
+reason = "vm-js: Set.prototype.isSupersetOf is not implemented."
+
+[[expectations]]
+glob = "built-ins/Set/prototype/isSubsetOf/**"
+status = "xfail"
+reason = "vm-js: Set.prototype.isSubsetOf is not implemented."
+
+[[expectations]]
+id = "built-ins/Set/valid-values.js"
+status = "xfail"
+reason = "vm-js: language operator support is incomplete (test uses an unimplemented binary operator)."
+
 [[expectations]]
 glob = "built-ins/JSON/**"
 status = "xfail"
