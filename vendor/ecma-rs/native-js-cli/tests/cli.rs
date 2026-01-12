@@ -1016,6 +1016,36 @@ fn checked_pipeline_run_supports_reexported_main() {
 }
 
 #[test]
+fn checked_pipeline_run_supports_local_reexported_main() {
+  let tmp = TempDir::new().unwrap();
+
+  let impl_file = tmp.path().join("impl.ts");
+  fs::write(
+    &impl_file,
+    "print(1);\nexport function main(): number { print(3); return 7; }\n",
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "import { main } from \"./impl\";\nprint(2);\nexport { main };\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(7)
+    .stdout(predicate::eq("1\n2\n3\n"));
+}
+
+#[test]
 fn checked_pipeline_run_supports_renamed_reexported_main() {
   let tmp = TempDir::new().unwrap();
 
@@ -1035,6 +1065,36 @@ fn checked_pipeline_run_supports_renamed_reexported_main() {
     .failure()
     .code(7)
     .stdout(predicate::eq(""));
+}
+
+#[test]
+fn checked_pipeline_run_supports_renamed_local_reexported_main() {
+  let tmp = TempDir::new().unwrap();
+
+  let impl_file = tmp.path().join("impl.ts");
+  fs::write(
+    &impl_file,
+    "print(1);\nexport function run(): number { print(3); return 7; }\n",
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "import { run } from \"./impl\";\nprint(2);\nexport { run as main };\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(7)
+    .stdout(predicate::eq("1\n2\n3\n"));
 }
 
 #[test]
