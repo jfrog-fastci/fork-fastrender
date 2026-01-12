@@ -98,6 +98,16 @@ pub(crate) enum AbiTy {
   I64,
   /// Raw runtime pointer (addrspace(0)).
   RawPtr,
+  /// Handle ABI pointer (`GcHandle = *mut *mut u8`, i.e. pointer-to-slot).
+  ///
+  /// In LLVM IR this is represented as a normal `ptr` (addrspace(0)), but it has a distinct
+  /// *semantic* meaning from [`AbiTy::RawPtr`]: the pointee is a caller-owned root slot containing a
+  /// relocatable GC pointer.
+  ///
+  /// This is used for `may_gc` runtime entrypoints that need GC pointer arguments: passing handles
+  /// keeps the runtime's own stack/registers free of raw GC pointers, while still allowing the GC to
+  /// update the caller's slot in-place.
+  GcHandle,
   /// GC pointer in generated code (addrspace(1)).
   GcPtr,
 }
@@ -282,9 +292,9 @@ impl RuntimeFn {
         },
         abi: RuntimeFnAbi {
           runtime_ret: AbiTy::RawPtr,
-          runtime_params: &[AbiTy::RawPtr],
+          runtime_params: &[AbiTy::GcHandle],
           codegen_ret: AbiTy::GcPtr,
-          codegen_params: &[AbiTy::RawPtr],
+          codegen_params: &[AbiTy::GcHandle],
         },
       },
       RuntimeFn::GcCollect => RuntimeFnDecl {
@@ -428,5 +438,53 @@ impl RuntimeFn {
 
   pub(crate) const fn abi(self) -> RuntimeFnAbi {
     self.decl().abi
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+ 
+  fn count_codegen_params(abi: RuntimeFnAbi, ty: AbiTy) -> usize {
+    abi.codegen_params.iter().copied().filter(|&t| t == ty).count()
+  }
+ 
+  #[test]
+  fn runtime_fn_registry_metadata_matches_abi() {
+    // When adding a runtime entrypoint, keep the GC-safety metadata and ABI signature metadata in
+    // sync. This test is intentionally internal (unit test) so it can see the `AbiTy` variants.
+    for f in [
+      RuntimeFn::Alloc,
+      RuntimeFn::AllocPinned,
+      RuntimeFn::AllocArray,
+      RuntimeFn::GlobalRootRegister,
+      RuntimeFn::GlobalRootUnregister,
+      RuntimeFn::GcSafepoint,
+      RuntimeFn::GcSafepointSlow,
+      RuntimeFn::GcSafepointRelocateH,
+      RuntimeFn::GcCollect,
+      RuntimeFn::GcPoll,
+      RuntimeFn::WriteBarrier,
+      RuntimeFn::WriteBarrierRange,
+      RuntimeFn::KeepAliveGcRef,
+      RuntimeFn::ParallelSpawn,
+      RuntimeFn::ParallelJoin,
+      RuntimeFn::ParallelFor,
+    ] {
+      let decl = f.decl();
+      let spec = decl.spec;
+      let abi = decl.abi;
+ 
+      assert_eq!(
+        spec.gc_ptr_args,
+        count_codegen_params(abi, AbiTy::GcPtr),
+        "runtime fn spec mismatch for {f:?}: gc_ptr_args must equal number of AbiTy::GcPtr params"
+      );
+      assert_eq!(
+        spec.gc_handle_args,
+        count_codegen_params(abi, AbiTy::GcHandle),
+        "runtime fn spec mismatch for {f:?}: gc_handle_args must equal number of AbiTy::GcHandle params"
+      );
+    }
   }
 }

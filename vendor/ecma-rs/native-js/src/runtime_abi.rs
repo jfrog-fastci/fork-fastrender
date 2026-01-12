@@ -140,7 +140,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       AbiTy::I1 => self.context.bool_type().into(),
       AbiTy::I32 => self.context.i32_type().into(),
       AbiTy::I64 => self.context.i64_type().into(),
-      AbiTy::RawPtr => self.ptr_raw().into(),
+      AbiTy::RawPtr | AbiTy::GcHandle => self.ptr_raw().into(),
       AbiTy::GcPtr => self.ptr_gc().into(),
     }
   }
@@ -151,7 +151,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       AbiTy::I1 => Some(self.context.bool_type().into()),
       AbiTy::I32 => Some(self.context.i32_type().into()),
       AbiTy::I64 => Some(self.context.i64_type().into()),
-      AbiTy::RawPtr => Some(self.ptr_raw().into()),
+      AbiTy::RawPtr | AbiTy::GcHandle => Some(self.ptr_raw().into()),
       AbiTy::GcPtr => Some(self.ptr_gc().into()),
     }
   }
@@ -163,7 +163,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       AbiTy::I1 => self.context.bool_type().into(),
       AbiTy::I32 => self.context.i32_type().into(),
       AbiTy::I64 => self.context.i64_type().into(),
-      AbiTy::RawPtr | AbiTy::GcPtr => self.ptr_raw().into(),
+      AbiTy::RawPtr | AbiTy::GcHandle | AbiTy::GcPtr => self.ptr_raw().into(),
     }
   }
 
@@ -173,7 +173,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       AbiTy::I1 => Some(self.context.bool_type().into()),
       AbiTy::I32 => Some(self.context.i32_type().into()),
       AbiTy::I64 => Some(self.context.i64_type().into()),
-      AbiTy::RawPtr | AbiTy::GcPtr => Some(self.ptr_raw().into()),
+      AbiTy::RawPtr | AbiTy::GcHandle | AbiTy::GcPtr => Some(self.ptr_raw().into()),
     }
   }
 
